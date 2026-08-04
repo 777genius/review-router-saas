@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 
-const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+const root = process.env.REVIEWROUTER_ARCHITECTURE_ROOT
+  ? resolve(process.env.REVIEWROUTER_ARCHITECTURE_ROOT)
+  : new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const boundaryRoots = [
   join(root, "packages", "features"),
   join(root, "packages", "subscription-runtime"),
@@ -271,6 +273,9 @@ async function collectAllSourceFiles(directory) {
 
 async function checkRevisionAwareReviewRatchet(violations) {
   const contexts = [
+    strictContext("review-context-attestation", true),
+    strictContext("review-investigation-operations", false),
+    strictContext("review-investigations", true),
     strictContext("review-run-control", true),
     strictContext("review-evidence", true),
     strictContext("review-executions", true),

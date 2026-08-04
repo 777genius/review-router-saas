@@ -6,6 +6,9 @@ import {
   ActualModelCompatibilityMode,
   ContextAttestationVerificationDenialReason,
   ContextAttestationVerificationStatus,
+  InvestigationCertificateConclusion,
+  InvestigationCertificateVerificationDenialReason,
+  InvestigationCertificateVerificationStatus,
   ProviderExecutionProfile,
   ProviderResultCompletionStatus,
   ReviewExecutionAttemptReportState,
@@ -211,7 +214,7 @@ describe("AcceptReviewObservation", () => {
     );
   });
 
-  it("accepts a fresh context-gateway observation without reusable attestation", async () => {
+  it("rejects a context-gateway observation without an accepted attestation", async () => {
     const verifyAcceptedAttestation = vi.fn();
     const fixture = setup({ verifyAcceptedAttestation });
     fixture.attempts.put(
@@ -222,13 +225,62 @@ describe("AcceptReviewObservation", () => {
 
     const result = await fixture.useCase.execute(command());
 
-    expect(result.status).toBe(AcceptReviewObservationStatus.Accepted);
-    expect(result.observation).toMatchObject({
-      executionProfile: ProviderExecutionProfile.ContextGatewayV1,
-      contextDependencyAttestationId: null,
-      contextDependencyAttestationHash: null,
+    expect(result).toEqual({
+      status: AcceptReviewObservationStatus.Rejected,
+      reason:
+        AcceptReviewObservationRejectionReason.ContextAttestationNotAccepted,
     });
     expect(verifyAcceptedAttestation).not.toHaveBeenCalled();
+  });
+
+  it("accepts an investigation observation only through its bound certificate", async () => {
+    const verifyAcceptedCertificate = vi.fn(async () => ({
+      status: InvestigationCertificateVerificationStatus.Accepted,
+      reason: InvestigationCertificateVerificationDenialReason.None,
+      acceptedCertificateHash: hash("8"),
+      conclusion: InvestigationCertificateConclusion.VerifiedClean,
+    }));
+    const fixture = setup(undefined, { verifyAcceptedCertificate }, true);
+    fixture.attempts.put(
+      attemptFacts({
+        executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
+      }),
+    );
+
+    const result = await fixture.useCase.execute(
+      command({
+        investigationCertificateId: "certificate-1",
+        investigationCertificateHash: hash("8"),
+        payload: payload({ normalizedFindings: [] }),
+      }),
+    );
+    expect(result.status).toBe(AcceptReviewObservationStatus.Accepted);
+    expect(verifyAcceptedCertificate).toHaveBeenCalledOnce();
+    expect(fixture.store.all()).toHaveLength(1);
+  });
+
+  it("keeps investigation certificate acceptance disabled by default", async () => {
+    const verifyAcceptedCertificate = vi.fn();
+    const fixture = setup(undefined, { verifyAcceptedCertificate });
+    fixture.attempts.put(
+      attemptFacts({
+        executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
+      }),
+    );
+    await expect(
+      fixture.useCase.execute(
+        command({
+          investigationCertificateId: "certificate-1",
+          investigationCertificateHash: hash("8"),
+          payload: payload({ normalizedFindings: [] }),
+        }),
+      ),
+    ).resolves.toEqual({
+      status: AcceptReviewObservationStatus.Rejected,
+      reason:
+        AcceptReviewObservationRejectionReason.InvestigationCertificatePathDisabled,
+    });
+    expect(verifyAcceptedCertificate).not.toHaveBeenCalled();
   });
 
   it("rejects an incomplete context attestation reference", async () => {
@@ -288,14 +340,25 @@ describe("AcceptReviewObservation", () => {
 });
 
 function setup(
-  contextAttestations: ConstructorParameters<
+  contextAttestations:
+    | ConstructorParameters<
+        typeof AcceptReviewObservation
+      >[0]["contextAttestations"]
+    | undefined = undefined,
+  investigationCertificates: ConstructorParameters<
     typeof AcceptReviewObservation
-  >[0]["contextAttestations"] = {
+  >[0]["investigationCertificates"] = {
+    verifyAcceptedCertificate: async () => {
+      throw new Error("unexpected_investigation_certificate_verification");
+    },
+  },
+  investigationCertificateAcceptanceEnabled = false,
+) {
+  const resolvedContextAttestations = contextAttestations ?? {
     verifyAcceptedAttestation: async () => {
       throw new Error("unexpected_context_attestation_verification");
     },
-  },
-) {
+  };
   const attempts = new InMemoryReviewExecutionAttemptFactsPort();
   const safety = new InMemoryReviewEvidenceSafetyPort(
     { effectAllowed: true, safetyDecisionHash: hash("f") },
@@ -327,7 +390,9 @@ function setup(
       safety,
       observations: store,
       identities: new SequentialReviewObservationIdentityPort(),
-      contextAttestations,
+      contextAttestations: resolvedContextAttestations,
+      investigationCertificates,
+      investigationCertificateAcceptanceEnabled,
       digest: new NodeSha256DigestAdapter(),
       clock,
       reuseTtlMs: 7 * dayMs,
@@ -354,6 +419,8 @@ function command(
     transportAttemptCount: 1,
     contextDependencyAttestationId: null,
     contextDependencyAttestationHash: null,
+    investigationCertificateId: null,
+    investigationCertificateHash: null,
     ...overrides,
   };
 }

@@ -88,6 +88,7 @@ export type ReviewSafetyResolutionTarget = {
 
 const shadowCapable = new Set<ReviewSafetyCapability>([
   ReviewSafetyCapability.RunAuthorizationV2,
+  ReviewSafetyCapability.ReviewInvestigationV1,
   ReviewSafetyCapability.EvidenceReuseV2,
   ReviewSafetyCapability.PromptOnlyReuse,
   ReviewSafetyCapability.ContextGatewayReuse,
@@ -98,6 +99,9 @@ const decisionCapabilities: Readonly<
 > = {
   [ReviewSafetyDecisionKind.RunAuthorization]: [
     ReviewSafetyCapability.RunAuthorizationV2,
+  ],
+  [ReviewSafetyDecisionKind.InvestigationExecution]: [
+    ReviewSafetyCapability.ReviewInvestigationV1,
   ],
   [ReviewSafetyDecisionKind.InvocationLeaseAdmission]: [
     ReviewSafetyCapability.RunAuthorizationV2,

@@ -38,6 +38,7 @@ export type GatewaySession = Readonly<{
   sourceExecutionId: string;
   sourceWorkSlotId: string;
   attemptId: string;
+  openingIntentHash: string;
   sourceLeaseId: string;
   sourceFencingToken: string;
   providerKind: ContextProviderKind;
@@ -71,6 +72,7 @@ export function openGatewaySession(
   assertIdentifier(candidate.sourceExecutionId, "source_execution_id");
   assertIdentifier(candidate.sourceWorkSlotId, "source_work_slot_id");
   assertIdentifier(candidate.attemptId, "attempt_id");
+  assertSha256(candidate.openingIntentHash, "opening_intent_hash");
   assertIdentifier(candidate.sourceLeaseId, "source_lease_id");
   assertPositiveIntegerString(
     candidate.sourceFencingToken,

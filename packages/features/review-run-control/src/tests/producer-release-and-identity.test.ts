@@ -18,13 +18,19 @@ import { reviewMutationAuthorityProofReference } from "../domain/review-mutation
 import {
   hashA,
   hashB,
+  hashC,
   limits,
   limitsDigest,
   releaseCandidate,
   sloDigest,
   sloThresholds,
 } from "./fixtures";
-import { canonicalReviewProtocolLimits } from "../domain/producer-release";
+import {
+  canonicalReviewProtocolLimits,
+  createProducerRelease,
+  reviewInvestigationCapabilityV1,
+  type ProducerReviewInvestigationProfile,
+} from "../domain/producer-release";
 
 describe("immutable release registries", () => {
   it("rejects caller-supplied profile digests that do not match canonical bytes", async () => {
@@ -103,6 +109,111 @@ describe("immutable release registries", () => {
       },
     );
     expect(restored.status).toBe(ImmutableRegistryWriteStatus.Restored);
+  });
+
+  it("normalizes a legacy producer release to an explicit null investigation profile", () => {
+    const release = createProducerRelease(
+      releaseCandidate,
+      new Date("2026-07-22T12:00:00.000Z"),
+    );
+
+    expect(release.reviewInvestigationProfile).toBeNull();
+  });
+
+  it("preserves the complete investigation profile in the immutable release tuple", async () => {
+    const kit = createReviewRunControlTestKit();
+    await kit.control.producerReleases.registerProtocolLimitsProfile({
+      protocolLimitsProfileId: "limits-1",
+      limitsDigest,
+      limits,
+    });
+    await kit.control.producerReleases.registerOperationalSloProfile({
+      operationalSloProfileId: "slo-1",
+      sloDigest,
+      thresholds: sloThresholds,
+      ownerRefs: ["team-reviewrouter"],
+      runbookRefs: ["runbook/review-v2"],
+    });
+    const reviewInvestigationProfile = {
+      capability: reviewInvestigationCapabilityV1,
+      coverageProfileHash: hashA,
+      policyHash: hashB,
+    } as const;
+    const candidate = {
+      ...releaseCandidate,
+      contextGatewayPolicyVersion: "review-context-gateway.v1",
+      contextGatewayEntrypointDigest: hashC,
+      reviewInvestigationProfile,
+    } as const;
+
+    const created = await kit.control.producerReleases.registerProducerRelease({
+      candidate,
+      expectedProtocolLimitsDigest: limitsDigest,
+      expectedOperationalSloDigest: sloDigest,
+    });
+    expect(created).toMatchObject({
+      status: ImmutableRegistryWriteStatus.Created,
+      value: { reviewInvestigationProfile },
+    });
+
+    const changedProfile =
+      await kit.control.producerReleases.registerProducerRelease({
+        candidate: {
+          ...candidate,
+          reviewInvestigationProfile: {
+            ...reviewInvestigationProfile,
+            policyHash: hashC,
+          },
+        },
+        expectedProtocolLimitsDigest: limitsDigest,
+        expectedOperationalSloDigest: sloDigest,
+      });
+    expect(changedProfile).toEqual({
+      status: ImmutableRegistryWriteStatus.Conflict,
+      existingId: releaseCandidate.producerReleaseId,
+    });
+  });
+
+  it("rejects malformed, partial, or gateway-less investigation profiles", () => {
+    const registeredAt = new Date("2026-07-22T12:00:00.000Z");
+    const gatewayCandidate = {
+      ...releaseCandidate,
+      contextGatewayPolicyVersion: "review-context-gateway.v1",
+      contextGatewayEntrypointDigest: hashC,
+    } as const;
+    const partialProfile = {
+      capability: reviewInvestigationCapabilityV1,
+      coverageProfileHash: hashA,
+    } as unknown as ProducerReviewInvestigationProfile;
+    const invalidCapability = {
+      capability: "review_investigation_v2",
+      coverageProfileHash: hashA,
+      policyHash: hashB,
+    } as unknown as ProducerReviewInvestigationProfile;
+    const completeProfile = {
+      capability: reviewInvestigationCapabilityV1,
+      coverageProfileHash: hashA,
+      policyHash: hashB,
+    } as const;
+
+    expect(() =>
+      createProducerRelease(
+        { ...gatewayCandidate, reviewInvestigationProfile: partialProfile },
+        registeredAt,
+      ),
+    ).toThrow("review_investigation_policy_hash_invalid");
+    expect(() =>
+      createProducerRelease(
+        { ...gatewayCandidate, reviewInvestigationProfile: invalidCapability },
+        registeredAt,
+      ),
+    ).toThrow("review_investigation_capability_invalid");
+    expect(() =>
+      createProducerRelease(
+        { ...releaseCandidate, reviewInvestigationProfile: completeProfile },
+        registeredAt,
+      ),
+    ).toThrow("review_investigation_context_gateway_artifact_required");
   });
 
   it("requires registered matching profiles and never reactivates a revoked release", async () => {

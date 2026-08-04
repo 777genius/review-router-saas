@@ -61,14 +61,13 @@ export class PrismaProducerReleaseRepository
         `id:${profile.protocolLimitsProfileId}`,
         `digest:${profile.limitsDigest}`,
       ]);
-      const [existingById, existingByDigest] = await Promise.all([
-        transaction.reviewProtocolLimitsV2.findUnique({
-          where: { protocolLimitsProfileId: profile.protocolLimitsProfileId },
-        }),
-        transaction.reviewProtocolLimitsV2.findUnique({
+      const existingById = await transaction.reviewProtocolLimitsV2.findUnique({
+        where: { protocolLimitsProfileId: profile.protocolLimitsProfileId },
+      });
+      const existingByDigest =
+        await transaction.reviewProtocolLimitsV2.findUnique({
           where: { limitsDigest: profile.limitsDigest },
-        }),
-      ]);
+        });
       if (existingById) {
         const existing = protocolLimitsToDomain(existingById);
         return limitsComparable(existing) === limitsComparable(profile)
@@ -114,16 +113,16 @@ export class PrismaProducerReleaseRepository
         `id:${profile.operationalSloProfileId}`,
         `digest:${profile.sloDigest}`,
       ]);
-      const [existingById, existingByDigest] = await Promise.all([
-        transaction.reviewOperationalSloProfileV2.findUnique({
+      const existingById =
+        await transaction.reviewOperationalSloProfileV2.findUnique({
           where: {
             operationalSloProfileId: profile.operationalSloProfileId,
           },
-        }),
-        transaction.reviewOperationalSloProfileV2.findUnique({
+        });
+      const existingByDigest =
+        await transaction.reviewOperationalSloProfileV2.findUnique({
           where: { sloDigest: profile.sloDigest },
-        }),
-      ]);
+        });
       if (existingById) {
         const existing = operationalSloToDomain(existingById);
         return sloComparable(existing) === sloComparable(profile)
@@ -198,12 +197,19 @@ export class PrismaProducerReleaseRepository
           existingId: tupleOwner.producerReleaseId,
         };
       }
+      const { reviewInvestigationProfile, ...releaseRecord } = release;
       const created = await transaction.producerRelease.create({
         data: {
-          ...release,
+          ...releaseRecord,
           distributionKind: distributionKindToPersistence(
             release.distributionKind,
           ),
+          reviewInvestigationCapability:
+            reviewInvestigationProfile?.capability ?? null,
+          reviewInvestigationCoverageProfileHash:
+            reviewInvestigationProfile?.coverageProfileHash ?? null,
+          reviewInvestigationPolicyHash:
+            reviewInvestigationProfile?.policyHash ?? null,
           state: producerStateToPersistence(release.state),
         },
       });
@@ -279,6 +285,12 @@ function producerReleaseTupleWhere(release: ProducerRelease) {
     runtimeEntrypointDigest: release.runtimeEntrypointDigest,
     contextGatewayPolicyVersion: release.contextGatewayPolicyVersion,
     contextGatewayEntrypointDigest: release.contextGatewayEntrypointDigest,
+    reviewInvestigationCapability:
+      release.reviewInvestigationProfile?.capability ?? null,
+    reviewInvestigationCoverageProfileHash:
+      release.reviewInvestigationProfile?.coverageProfileHash ?? null,
+    reviewInvestigationPolicyHash:
+      release.reviewInvestigationProfile?.policyHash ?? null,
     schemaDigest: release.schemaDigest,
     capabilityProfile: release.capabilityProfile,
     protocolLimitsProfileId: release.protocolLimitsProfileId,

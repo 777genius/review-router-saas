@@ -76,6 +76,7 @@ export const reviewRunControlContractDescriptor = Object.freeze({
   ]),
   capabilities: Object.freeze([
     ReviewSafetyCapability.RunAuthorizationV2,
+    ReviewSafetyCapability.ReviewInvestigationV1,
     ReviewSafetyCapability.EvidenceWritesV2,
     ReviewSafetyCapability.EvidenceReuseV2,
     ReviewSafetyCapability.PromptOnlyReuse,

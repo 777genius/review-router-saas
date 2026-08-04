@@ -12,6 +12,14 @@ import {
   invalid,
 } from "./review-run-control-types";
 
+export const reviewInvestigationCapabilityV1 = "review_investigation_v1";
+
+export type ProducerReviewInvestigationProfile = Readonly<{
+  readonly capability: typeof reviewInvestigationCapabilityV1;
+  readonly coverageProfileHash: string;
+  readonly policyHash: string;
+}>;
+
 export type ReviewProtocolLimits = {
   readonly maxWorkSlots: number;
   readonly maxAttemptsPerSlot: number;
@@ -62,6 +70,7 @@ export type ProducerRelease = {
   readonly runtimeEntrypointDigest: string;
   readonly contextGatewayPolicyVersion: string | null;
   readonly contextGatewayEntrypointDigest: string | null;
+  readonly reviewInvestigationProfile: ProducerReviewInvestigationProfile | null;
   readonly schemaDigest: string;
   readonly capabilityProfile: ReviewCapabilityProfile;
   readonly protocolLimitsProfileId: string;
@@ -78,9 +87,11 @@ export type ProducerReleaseCandidate = Omit<
   | "revokedAt"
   | "contextGatewayPolicyVersion"
   | "contextGatewayEntrypointDigest"
+  | "reviewInvestigationProfile"
 > & {
   readonly contextGatewayPolicyVersion?: string | null;
   readonly contextGatewayEntrypointDigest?: string | null;
+  readonly reviewInvestigationProfile?: ProducerReviewInvestigationProfile | null;
 };
 
 export function createReviewProtocolLimitsProfile(input: {
@@ -206,11 +217,34 @@ export function createProducerRelease(
     candidate.contextGatewayPolicyVersion ?? null;
   const contextGatewayEntrypointDigest =
     candidate.contextGatewayEntrypointDigest ?? null;
+  const reviewInvestigationProfile =
+    candidate.reviewInvestigationProfile ?? null;
   if (
     (contextGatewayPolicyVersion === null) !==
     (contextGatewayEntrypointDigest === null)
   ) {
     invalid("context_gateway_release_artifact_incomplete");
+  }
+  if (reviewInvestigationProfile !== null) {
+    if (
+      reviewInvestigationProfile.capability !== reviewInvestigationCapabilityV1
+    ) {
+      invalid("review_investigation_capability_invalid");
+    }
+    assertSha256(
+      reviewInvestigationProfile.coverageProfileHash,
+      "review_investigation_coverage_profile_hash",
+    );
+    assertSha256(
+      reviewInvestigationProfile.policyHash,
+      "review_investigation_policy_hash",
+    );
+    if (
+      contextGatewayPolicyVersion === null ||
+      contextGatewayEntrypointDigest === null
+    ) {
+      invalid("review_investigation_context_gateway_artifact_required");
+    }
   }
   if (
     contextGatewayPolicyVersion !== null &&
@@ -235,6 +269,7 @@ export function createProducerRelease(
     ...candidate,
     contextGatewayPolicyVersion,
     contextGatewayEntrypointDigest,
+    reviewInvestigationProfile,
     state: ProducerReleaseState.Registered,
     registeredAt: cloneDate(registeredAt),
     revokedAt: null,
@@ -272,6 +307,12 @@ export function producerReleaseImmutableKey(
     contextGatewayPolicyVersion: release.contextGatewayPolicyVersion ?? null,
     contextGatewayEntrypointDigest:
       release.contextGatewayEntrypointDigest ?? null,
+    reviewInvestigationCapability:
+      release.reviewInvestigationProfile?.capability ?? null,
+    reviewInvestigationCoverageProfileHash:
+      release.reviewInvestigationProfile?.coverageProfileHash ?? null,
+    reviewInvestigationPolicyHash:
+      release.reviewInvestigationProfile?.policyHash ?? null,
     schemaDigest: release.schemaDigest,
     capabilityProfile: release.capabilityProfile,
     protocolLimitsProfileId: release.protocolLimitsProfileId,

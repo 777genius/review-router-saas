@@ -17,6 +17,13 @@ import {
   ReviewProviderKind as EvidenceProviderKind,
   ReviewTaskKind as EvidenceTaskKind,
 } from "@reviewrouter/features-review-evidence";
+import { PrismaReviewObservationStore } from "@reviewrouter/features-review-evidence/composition";
+import { PrismaInvestigationStore } from "@reviewrouter/features-review-investigations/composition";
+import { ResolveInvestigationRollout } from "@reviewrouter/features-review-investigation-operations";
+import {
+  EnvironmentInvestigationRolloutPolicyQuery,
+  RunControlInvestigationEmergencyStopQuery,
+} from "@reviewrouter/features-review-investigation-operations/composition";
 import type { OutboxHandler } from "@reviewrouter/features-outbox";
 import {
   PrismaReviewExecutionStore,
@@ -66,6 +73,7 @@ import {
   ReviewMutationMode,
   ReviewRunAuthorizationState,
   ReviewSafetyDecisionKind,
+  ReviewSafetyPolicyScope,
 } from "@reviewrouter/features-review-run-control";
 import {
   PrismaProducerReleaseRepository,
@@ -116,6 +124,7 @@ import {
   type ReviewV2PublicationFreshnessPort,
   type ReviewV2ScmLiveRevisionPort,
 } from "./review-v2-publication-ports";
+import { createProductionReviewInvestigationPublicationEffectGate } from "./review-v2-production-publication-effect-gate";
 import {
   CanonicalReviewV2ProjectionAdapter,
   type ReviewV2FinalizedArtifactQueryPort,
@@ -173,6 +182,8 @@ export function createProductionReviewV2WorkerRuntime(input: {
 }): ProductionReviewV2WorkerRuntime {
   const capabilityKeyRing = readCapabilityKeyRing(input.env);
   const executions = new PrismaReviewExecutionStore(input.prisma);
+  const observations = new PrismaReviewObservationStore(input.prisma);
+  const investigations = new PrismaInvestigationStore(input.prisma);
   const attempts = new PrismaReviewPublicationRepository(input.prisma);
   const releases = new PrismaProducerReleaseRepository(input.prisma);
   const authorizations = new PrismaReviewRunAuthorizationRepository(
@@ -466,6 +477,30 @@ export function createProductionReviewV2WorkerRuntime(input: {
         activeSigningKeyId: async () =>
           (await capabilityKeyRing.activeSigningKey()).keyId,
       },
+      effectGate: createProductionReviewInvestigationPublicationEffectGate({
+        executions,
+        observations,
+        investigations,
+        authorizations,
+        rollout: new ResolveInvestigationRollout(
+          new EnvironmentInvestigationRolloutPolicyQuery(input.env),
+          new RunControlInvestigationEmergencyStopQuery({
+            findApplicable: async (target) =>
+              (
+                await safetyControls.findApplicableReviewSafetyEmergencyControls(
+                  {
+                    workspaceId: target.workspaceId,
+                    repositoryConnectionId: target.repositoryConnectionId,
+                    scmRepositoryIdentityId: target.scmRepositoryIdentityId,
+                  },
+                )
+              ).map((control) => ({
+                global: control.scope.scope === ReviewSafetyPolicyScope.Global,
+                stopped: control.stopped,
+              })),
+          }),
+        ),
+      }),
       clock: input.clock,
     },
     {

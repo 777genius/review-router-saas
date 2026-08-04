@@ -51,6 +51,8 @@ import {
   PrismaReviewExecutionCheckpointRepository,
   pruneExpiredReviewExecutionCheckpoints,
 } from "@reviewrouter/features-review-execution-checkpoints";
+import { PrismaInvestigationStore } from "@reviewrouter/features-review-investigations/composition";
+import { PrismaInvestigationShadowEvidenceStore } from "@reviewrouter/features-review-evidence/composition";
 import {
   OctokitGitHubRepositorySource,
   PrismaRepositoryConnectionRepository,
@@ -77,6 +79,11 @@ import {
   safeWorkerErrorSummary,
   sleep,
 } from "./outbox-worker-loop";
+import { InvestigationPrunerMaintenanceAdapter } from "./review-investigation-maintenance-adapter";
+import {
+  createReviewInvestigationMaintenanceFeature,
+  createReviewInvestigationMaintenanceRuntime,
+} from "./review-investigation-maintenance-runtime";
 import {
   createReviewV2WorkerFeature,
   reviewExecutionFinalizedEventType,
@@ -136,6 +143,8 @@ async function main(): Promise<void> {
     const pruneReviewSnapshots = createReviewSnapshotMaintenance(prisma, clock);
     const pruneReviewExecutionCheckpoints =
       createReviewExecutionCheckpointMaintenance(prisma, clock);
+    const reviewInvestigationMaintenance =
+      createReviewInvestigationMaintenanceRunner(prisma, clock);
     const expirePendingMemorySuggestions =
       createMemorySuggestionExpiryMaintenanceRunner(prisma, clock);
     const expireActiveMemoryItems = createMemoryItemExpiryMaintenanceRunner(
@@ -183,6 +192,7 @@ async function main(): Promise<void> {
       await pruneActionOidcReplayNonces();
       await pruneReviewSnapshots();
       await pruneReviewExecutionCheckpoints();
+      await reviewInvestigationMaintenance.runMaintenance();
       await expirePendingMemorySuggestions();
       await expireActiveMemoryItems();
       await pruneTerminalMemoryItems();
@@ -505,6 +515,53 @@ function createReviewExecutionCheckpointMaintenance(
       );
     }
   };
+}
+
+function createReviewInvestigationMaintenanceRunner(
+  prisma: ReturnType<typeof createPrismaClient>,
+  clock: SystemClock,
+) {
+  return createReviewInvestigationMaintenanceFeature({
+    env: process.env,
+    createEnabledRuntime: () => {
+      const investigations = new PrismaInvestigationStore(prisma);
+      const shadowEvidence = new PrismaInvestigationShadowEvidenceStore(prisma);
+      return createReviewInvestigationMaintenanceRuntime(
+        {
+          privateMaterialLimit: readPositiveIntegerEnv(
+            "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_PRUNE_BATCH_SIZE",
+            100,
+          ),
+          investigationLimit: readPositiveIntegerEnv(
+            "REVIEW_ROUTER_REVIEW_INVESTIGATION_DOSSIER_PRUNE_BATCH_SIZE",
+            100,
+          ),
+          shadowEvidenceLimit: readPositiveIntegerEnv(
+            "REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_EVIDENCE_PRUNE_BATCH_SIZE",
+            100,
+          ),
+          intervalMs: readPositiveIntegerEnv(
+            "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRUNE_INTERVAL_MS",
+            60 * 60 * 1000,
+          ),
+          lockTtlMs: readPositiveIntegerEnv(
+            "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRUNE_LOCK_TTL_MS",
+            5 * 60 * 1000,
+          ),
+        },
+        {
+          clock,
+          lock: new PostgresLeaseLock(prisma),
+          prune: new InvestigationPrunerMaintenanceAdapter({
+            privateMaterial: investigations,
+            investigations,
+            shadowEvidence,
+          }),
+          logger,
+        },
+      );
+    },
+  });
 }
 
 function createMemoryUsageTelemetryMaintenanceRunner(

@@ -194,13 +194,13 @@ A tag or branch is not accepted for Direct V2. The control plane also requires:
 Generate and validate release material from the exact Action checkout:
 
 ```bash
-pnpm protocol:release-manifest -- \
+pnpm protocol:release-manifest \
   --action-repo /path/to/review-router \
   --target-branch RELEASE_BRANCH \
   --expected-head ACTION_COMMIT_SHA \
   --output /secure/path/review-action-v2-release-manifest.json
 
-pnpm protocol:release-manifest:check -- \
+pnpm protocol:release-manifest:check \
   --manifest /secure/path/review-action-v2-release-manifest.json \
   --action-repo /path/to/review-router
 ```

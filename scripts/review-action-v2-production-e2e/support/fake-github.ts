@@ -4,6 +4,7 @@ export type FakeGitHubRevision = Readonly<{
   baseSha: string;
   mergeBaseSha: string;
   headSha: string;
+  headTreeSha?: string;
 }>;
 
 type StoredComment = {
@@ -139,6 +140,17 @@ export class FakeGitHubTransport {
     ) {
       return json(200, {
         merge_base_commit: { sha: this.revision.mergeBaseSha },
+      });
+    }
+    if (
+      method === "GET" &&
+      this.revision.headTreeSha &&
+      url.pathname ===
+        `${repositoryPrefix}/git/commits/${this.revision.headSha}`
+    ) {
+      return json(200, {
+        sha: this.revision.headSha,
+        tree: { sha: this.revision.headTreeSha },
       });
     }
 

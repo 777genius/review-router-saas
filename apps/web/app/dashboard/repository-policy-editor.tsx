@@ -1140,6 +1140,14 @@ export function ReviewConfigForm({
           name="targetTokensPerBatch"
           value={config.limits.targetTokensPerBatch}
         />
+        {Object.entries(config.investigationRollout).map(([name, enabled]) => (
+          <input
+            key={name}
+            type="hidden"
+            name={`investigationRollout.${name}`}
+            value={String(enabled)}
+          />
+        ))}
         {legacyCodexReconnectRequired ? (
           <div className="rounded-xl border border-amber-300/25 bg-amber-300/[0.08] p-3 text-sm leading-6 text-amber-50">
             Legacy Codex setup requires reconnect. This form has switched Codex

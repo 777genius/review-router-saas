@@ -246,6 +246,7 @@ describe("AcceptedDependencyAttestation", () => {
       sourceExecutionId: "execution-1",
       sourceWorkSlotId: "slot-1",
       attemptId: "attempt-1",
+      openingIntentHash: hash("1"),
       sourceLeaseId: "lease-1",
       sourceFencingToken: "1",
       providerKind: ContextProviderKind.Codex,
@@ -278,6 +279,10 @@ describe("AcceptedDependencyAttestation", () => {
 
     expect(accepted.session.state).toBe(GatewaySessionState.Accepted);
     expect(accepted.attestation.sourceFencingToken).toBe("1");
+    expect(accepted.attestation.manifest.manifestVersion).toBe(2);
+    if (accepted.attestation.manifest.manifestVersion !== 2) {
+      throw new Error("legacy_manifest_expected");
+    }
     expect(accepted.attestation.manifest.dependencies).toHaveLength(1);
   });
 });

@@ -1,6 +1,29 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+const investigationReleaseFixture = JSON.parse(
+  readFileSync(
+    new URL(
+      "./self-hosted-e2e/review-investigation-release.fixture.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+);
+if (
+  investigationReleaseFixture.contextGateway.policyVersion !==
+    "context-gateway-v4" ||
+  !investigationReleaseFixture.contextGateway.supportedPolicyVersions.includes(
+    "context-gateway-v3",
+  ) ||
+  !investigationReleaseFixture.contextGateway.supportedPolicyVersions.includes(
+    "context-gateway-v4",
+  )
+) {
+  throw new Error("self_hosted_investigation_gateway_metadata_invalid");
+}
 
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const privateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" });
@@ -26,6 +49,21 @@ const producerReleaseAttestations = JSON.stringify([
     capabilityProfile: "exact_revision_v2",
     protocolLimitsProfileId: "self-hosted-limits-v2",
     operationalSloProfileId: "self-hosted-slo-v2",
+  },
+]);
+const investigationProducerReleaseAttestations = JSON.stringify([
+  {
+    ...JSON.parse(producerReleaseAttestations)[0],
+    contextGatewayPolicyVersion:
+      investigationReleaseFixture.contextGateway.policyVersion,
+    contextGatewayEntrypointDigest:
+      investigationReleaseFixture.contextGateway.entrypointDigest,
+    reviewInvestigationCapability:
+      investigationReleaseFixture.reviewInvestigation.capability,
+    reviewInvestigationCoverageProfileHash:
+      investigationReleaseFixture.reviewInvestigation.coverageProfileHash,
+    reviewInvestigationPolicyHash:
+      investigationReleaseFixture.reviewInvestigation.policyHash,
   },
 ]);
 
@@ -201,6 +239,35 @@ const cases = [
     },
   },
   {
+    name: "T0 accepts a complete investigation-capable producer release",
+    expectSuccess: true,
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON:
+        investigationProducerReleaseAttestations,
+    },
+  },
+  {
+    name: "T0 rejects a partial investigation producer profile",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON must contain 1-100 valid",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON:
+        JSON.stringify([
+          {
+            ...JSON.parse(investigationProducerReleaseAttestations)[0],
+            reviewInvestigationPolicyHash: null,
+          },
+        ]),
+    },
+  },
+  {
     name: "T0 rejects malformed provider vote lanes",
     expectSuccess: false,
     expectedError:
@@ -210,6 +277,30 @@ const cases = [
       REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
       REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
       REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON: JSON.stringify([{}]),
+    },
+  },
+  {
+    name: "investigation recording requires retention maintenance",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED must be 1 when investigation recording is enabled.",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "0",
+    },
+  },
+  {
+    name: "investigation recording accepts active retention maintenance",
+    expectSuccess: true,
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "1",
     },
   },
   {

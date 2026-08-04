@@ -198,6 +198,8 @@ function toCreateInput(
     contextDependencyAttestationId: observation.contextDependencyAttestationId,
     contextDependencyAttestationHash:
       observation.contextDependencyAttestationHash,
+    investigationCertificateId: observation.investigationCertificateId,
+    investigationCertificateHash: observation.investigationCertificateHash,
     createdAt: new Date(observation.createdAtMs),
     reuseExpiresAt: new Date(observation.reuseExpiresAtMs),
     retainUntil: new Date(observation.retainUntilMs),
@@ -252,6 +254,8 @@ function toDomain(record: ReviewEvidenceObservationRecord): ReviewObservation {
     transportAttemptCount: record.transportAttemptCount,
     contextDependencyAttestationId: record.contextDependencyAttestationId,
     contextDependencyAttestationHash: record.contextDependencyAttestationHash,
+    investigationCertificateId: record.investigationCertificateId,
+    investigationCertificateHash: record.investigationCertificateHash,
     trustDomain: fromPrismaTrustDomain(record.trustDomain),
     createdAtMs: record.createdAt.getTime(),
     reuseExpiresAtMs: record.reuseExpiresAt.getTime(),
@@ -403,6 +407,8 @@ const decodableQualityFlags = {
   [ReviewObservationQualityFlag.ContextInspectionIncomplete]: true,
   [ReviewObservationQualityFlag.ContextAttestationUnavailable]: true,
   [ReviewObservationQualityFlag.CrossRevisionReuseDisabled]: true,
+  [ReviewObservationQualityFlag.InvestigationFindings]: true,
+  [ReviewObservationQualityFlag.InvestigationInconclusive]: true,
   [ReviewObservationQualityFlag.Unknown]: false,
 } as const satisfies Record<ReviewObservationQualityFlag, boolean>;
 
@@ -492,6 +498,8 @@ function toPrismaExecutionProfile(
       return PrismaExecutionProfile.agentic_unbounded_v1;
     case ProviderExecutionProfile.ContextGatewayV1:
       return PrismaExecutionProfile.context_gateway_v1;
+    case ProviderExecutionProfile.InvestigationGatewayV1:
+      return PrismaExecutionProfile.investigation_gateway_v1;
     case ProviderExecutionProfile.Unknown:
       throw new Error("review_observation_execution_profile_unknown");
   }
@@ -507,6 +515,8 @@ function fromPrismaExecutionProfile(
       return ProviderExecutionProfile.AgenticUnboundedV1;
     case PrismaExecutionProfile.context_gateway_v1:
       return ProviderExecutionProfile.ContextGatewayV1;
+    case PrismaExecutionProfile.investigation_gateway_v1:
+      return ProviderExecutionProfile.InvestigationGatewayV1;
   }
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -17,6 +17,16 @@ const tempDirectory = mkdtempSync(
   join(tmpdir(), "reviewrouter-self-hosted-e2e-"),
 );
 const envFile = join(tempDirectory, "self-hosted.env");
+const investigationReleaseFixture = JSON.parse(
+  readFileSync(
+    join(
+      repoRoot,
+      "scripts/self-hosted-e2e/review-investigation-release.fixture.json",
+    ),
+    "utf8",
+  ),
+);
+assertInvestigationReleaseFixture(investigationReleaseFixture);
 let composeTouched = false;
 let testDatabaseCreated = false;
 
@@ -82,7 +92,7 @@ try {
   console.log(`control-plane-commit=${controlPlaneCommit}`);
   console.log(`action-ref=${testEnv.REVIEW_ROUTER_ACTION_REF}`);
   console.log(
-    "compose=healthy migrations=idempotent review-v2=passed action-oidc=passed logs=clean",
+    "compose=healthy migrations=idempotent review-v2=passed investigation-same-release=passed action-oidc=passed logs=clean",
   );
 } catch (error) {
   if (composeTouched) printSafeDiagnostics();
@@ -125,6 +135,7 @@ function createTestSecrets() {
     reviewV2Capability: randomBytes(32).toString("base64"),
     reviewV2ContextSession: randomBytes(32).toString("base64"),
     reviewV2ContextReplay: randomBytes(32).toString("base64"),
+    investigationPrivateMaterial: randomBytes(32).toString("base64url"),
     reviewV2Operator: randomSecret(),
     privateKey: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
   };
@@ -204,8 +215,16 @@ function createTestEnvironment() {
         runtimeCommitSha: "b".repeat(40),
         wrapperEntrypointDigest: null,
         runtimeEntrypointDigest: "c".repeat(64),
-        contextGatewayPolicyVersion: "review-context-gateway.v1",
-        contextGatewayEntrypointDigest: "d".repeat(64),
+        contextGatewayPolicyVersion:
+          investigationReleaseFixture.contextGateway.policyVersion,
+        contextGatewayEntrypointDigest:
+          investigationReleaseFixture.contextGateway.entrypointDigest,
+        reviewInvestigationCapability:
+          investigationReleaseFixture.reviewInvestigation.capability,
+        reviewInvestigationCoverageProfileHash:
+          investigationReleaseFixture.reviewInvestigation.coverageProfileHash,
+        reviewInvestigationPolicyHash:
+          investigationReleaseFixture.reviewInvestigation.policyHash,
         schemaDigest: "e".repeat(64),
         canonicalizerDigest: "f".repeat(64),
         capabilityProfile: "exact_revision_v2",
@@ -231,6 +250,27 @@ function createTestEnvironment() {
     REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: createHash("sha256")
       .update(secrets.reviewV2Operator, "utf8")
       .digest("hex"),
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "0",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED: "0",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "0",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED: "0",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_SELECTORS_JSON: JSON.stringify({
+      context_critic: [],
+      recording: [],
+      shadow: [],
+    }),
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_ACTIVE_KEY_ID:
+      "self-hosted-e2e-private-material",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_KEYS_JSON:
+      JSON.stringify({
+        "self-hosted-e2e-private-material":
+          secrets.investigationPrivateMaterial,
+      }),
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_TTL_MS: "86400000",
     REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "1",
     REVIEW_ROUTER_DEFAULT_MODEL: "gpt-5.5",
     REVIEW_ROUTER_DEFAULT_EFFORT: "xhigh",
@@ -305,6 +345,18 @@ function writeEnvFile(env) {
     "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID",
     "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON",
     "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_SELECTORS_JSON",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_ACTIVE_KEY_ID",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_KEYS_JSON",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_TTL_MS",
     "REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK",
     "REVIEW_ROUTER_DEFAULT_MODEL",
     "REVIEW_ROUTER_DEFAULT_EFFORT",
@@ -454,6 +506,7 @@ function containerE2ECommand() {
     "test_url=$(node -e 'const u=new URL(process.env.DATABASE_URL);u.pathname=`/${process.env.REVIEW_ROUTER_E2E_DATABASE}`;process.stdout.write(u.href)')",
     'DATABASE_URL="$test_url" pnpm --filter @reviewrouter/platform-db db:migrate:deploy',
     'REVIEW_ROUTER_REVIEW_V2_E2E_ALLOW_DOCKER_DATABASE=1 REVIEW_ROUTER_TEST_DATABASE_URL="$test_url" pnpm review-v2:e2e',
+    'REVIEW_ROUTER_REVIEW_V2_E2E_ALLOW_DOCKER_DATABASE=1 REVIEW_ROUTER_SELF_HOSTED_REVIEW_PATHS_E2E=1 REVIEW_ROUTER_TEST_DATABASE_URL="$test_url" pnpm exec vitest run scripts/self-hosted-e2e/self-hosted-review-paths.e2e.test.ts',
     'DATABASE_URL="$test_url" REVIEW_ROUTER_TARGET_REPO="reviewrouter-e2e/self-hosted-fixture" pnpm spike:action:e2e',
   ].join("\n");
 }
@@ -523,6 +576,44 @@ function redact(value) {
 
 function randomSecret() {
   return randomBytes(36).toString("base64url");
+}
+
+function assertInvestigationReleaseFixture(fixture) {
+  const gateway = fixture?.contextGateway;
+  const investigation = fixture?.reviewInvestigation;
+  const policyHash = createHash("sha256")
+    .update(canonicalJson(investigation?.policy))
+    .digest("hex");
+  if (
+    gateway?.policyVersion !== "context-gateway-v4" ||
+    JSON.stringify(gateway.supportedPolicyVersions) !==
+      JSON.stringify(["context-gateway-v3", "context-gateway-v4"]) ||
+    !isSha256(gateway.entrypointDigest) ||
+    investigation?.capability !== "review_investigation_v1" ||
+    !isSha256(investigation.coverageProfileHash) ||
+    !isSha256(investigation.policyHash) ||
+    investigation.policyHash !== policyHash
+  ) {
+    throw new Error("self_hosted_investigation_release_fixture_invalid");
+  }
+}
+
+function canonicalJson(value) {
+  return JSON.stringify(canonicalValue(value));
+}
+
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, canonicalValue(value[key])]),
+  );
+}
+
+function isSha256(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
 function parseComposeRecords(value) {

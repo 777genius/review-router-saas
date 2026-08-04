@@ -16,6 +16,11 @@ import {
   type ReviewRequestedIntent,
 } from "@reviewrouter/features-review-executions";
 import {
+  InvestigationRolloutCapability,
+  isInvestigationRolloutCapability,
+  isInvestigationRolloutCapabilitySetDependencyClosed,
+} from "@reviewrouter/features-review-investigation-operations";
+import {
   ProducerDistributionKind,
   CanonicalReviewRevisionResolutionStatus,
   ProducerReleaseAttestationStatus,
@@ -34,6 +39,7 @@ import {
   type ProducerReleaseQueryPort,
   type ProviderVoteLane,
   type ReviewProtocolLimits,
+  type ReviewRunAuthorization,
   type ReviewRunAuthorizationUseCaseResult,
   type ScmRepositoryIdentityQueryPort,
   type Sha256DigestPort,
@@ -70,6 +76,36 @@ export type ReviewActionV2ResolvedAdmission = {
   readonly revision: ReviewActionV2ResolvedRevision;
   readonly producerRelease: ProducerRelease;
 };
+
+export type ReviewInvestigationAuthorizationProviderCapabilities = Readonly<{
+  readonly providerKind: "codex" | "claude_code";
+  readonly capabilities: readonly InvestigationRolloutCapability[];
+}>;
+
+export type ReviewInvestigationAuthorizationCapability = Readonly<{
+  readonly authorizationDescriptorVersion: 2;
+  readonly capability: "review_investigation_v1";
+  readonly coverageProfileHash: string;
+  readonly policyHash: string;
+  readonly providerCapabilities: readonly ReviewInvestigationAuthorizationProviderCapabilities[];
+}>;
+
+export type ReviewInvestigationAuthorizationTarget = Pick<
+  ReviewRunAuthorization,
+  | "workspaceId"
+  | "repositoryConnectionId"
+  | "scmRepositoryIdentityId"
+  | "trustDomain"
+  | "producerReleaseId"
+  | "providerVoteLanes"
+>;
+
+export interface ReviewInvestigationAuthorizationCapabilityPort {
+  resolve(input: {
+    readonly target: ReviewInvestigationAuthorizationTarget;
+    readonly producerRelease: ProducerRelease;
+  }): Promise<ReviewInvestigationAuthorizationCapability | null>;
+}
 
 export interface ReviewActionV2RunAdmissionFactsPort {
   resolve(input: {
@@ -359,6 +395,9 @@ export type ReviewActionV2RunControlHandlerDependencies = {
   readonly absoluteProtocolMaxima: ReviewProtocolLimits;
   readonly authorizationTtlMs: number;
   readonly maxAuthorizationLifetimeMs: number;
+  readonly reviewInvestigationCapability?:
+    | ReviewInvestigationAuthorizationCapabilityPort
+    | undefined;
 };
 
 export function composeReviewActionV2RunControlRoutes(input: {
@@ -409,6 +448,23 @@ async function authorizeReviewRun(
     resolved.producerRelease,
   );
   await assertRegisteredRelease(resolved.facts, dependencies);
+  const resolvedReviewInvestigation =
+    await dependencies.reviewInvestigationCapability?.resolve({
+      target: {
+        workspaceId: resolved.identity.workspaceId,
+        repositoryConnectionId: resolved.identity.repositoryConnectionId,
+        scmRepositoryIdentityId: resolved.identity.scmRepositoryIdentityId,
+        trustDomain: resolved.identity.trustDomain,
+        producerReleaseId: resolved.facts.producerReleaseId,
+        providerVoteLanes: resolved.facts.providerVoteLanes,
+      },
+      producerRelease: resolved.producerRelease,
+    });
+  const reviewInvestigationSnapshot =
+    bindInvestigationCapabilityToAuthorization(
+      resolvedReviewInvestigation,
+      resolved.facts.providerVoteLanes,
+    );
   const [protocolOfferHash, oidcReplayKeyHash] = await Promise.all([
     dependencies.digest.digestUtf8(canonicalProtocolOffer(request)),
     dependencies.digest.digestUtf8(
@@ -421,6 +477,10 @@ async function authorizeReviewRun(
     protocolOfferHash,
     oidcReplayKeyHash,
     providerVoteLanes: resolved.facts.providerVoteLanes,
+    reviewInvestigationAuthorizationDescriptorCanonicalJson:
+      reviewInvestigationSnapshot === null
+        ? null
+        : canonicalJson(reviewInvestigationSnapshot),
     authorizationTtlMs: dependencies.authorizationTtlMs,
     maxAuthorizationLifetimeMs: dependencies.maxAuthorizationLifetimeMs,
   });
@@ -458,6 +518,11 @@ async function authorizeReviewRun(
     protocolLimits,
     dependencies.absoluteProtocolMaxima,
   );
+  const reviewInvestigation = restoreInvestigationCapabilitySnapshot(
+    success.authorization
+      .reviewInvestigationAuthorizationDescriptorCanonicalJson,
+    success.authorization.providerVoteLanes,
+  );
   return {
     statusCode:
       success.status === ReviewRunAuthorizationUseCaseStatus.Authorized
@@ -488,10 +553,127 @@ async function authorizeReviewRun(
         selectedProtocolVersion: success.authorization.selectedProtocolVersion,
         schemaDigest: success.authorization.schemaDigest,
         providerVoteLanes: success.authorization.providerVoteLanes,
+        ...(reviewInvestigation === undefined || reviewInvestigation === null
+          ? {}
+          : { reviewInvestigation }),
       }),
       protocolLimitsCanonicalJson,
     },
   };
+}
+
+function bindInvestigationCapabilityToAuthorization(
+  capability: ReviewInvestigationAuthorizationCapability | null | undefined,
+  providerVoteLanes: readonly ProviderVoteLane[],
+): ReviewInvestigationAuthorizationCapability | null {
+  if (capability === null || capability === undefined) return null;
+  if (
+    !isRecord(capability) ||
+    !hasExactKeys(capability, [
+      "authorizationDescriptorVersion",
+      "capability",
+      "coverageProfileHash",
+      "policyHash",
+      "providerCapabilities",
+    ])
+  ) {
+    return null;
+  }
+  const providerCapabilities = capability.providerCapabilities;
+  const authorizedProviderKinds = new Set<string>(
+    providerVoteLanes.map((lane) => lane.providerKind),
+  );
+  if (
+    capability.authorizationDescriptorVersion !== 2 ||
+    capability.capability !== "review_investigation_v1" ||
+    !isSha256(capability.coverageProfileHash) ||
+    !isSha256(capability.policyHash) ||
+    !Array.isArray(providerCapabilities) ||
+    providerCapabilities.length === 0 ||
+    providerCapabilities.length > 2
+  ) {
+    return null;
+  }
+
+  const providerKinds: ("codex" | "claude_code")[] = [];
+  const boundRows: ReviewInvestigationAuthorizationProviderCapabilities[] = [];
+  for (const row of providerCapabilities) {
+    if (
+      !isRecord(row) ||
+      !hasExactKeys(row, ["capabilities", "providerKind"]) ||
+      (row.providerKind !== "codex" && row.providerKind !== "claude_code") ||
+      !authorizedProviderKinds.has(row.providerKind) ||
+      !Array.isArray(row.capabilities) ||
+      row.capabilities.length === 0 ||
+      row.capabilities.length > 6 ||
+      row.capabilities.some(
+        (rolloutCapability) =>
+          !isInvestigationRolloutCapability(rolloutCapability),
+      ) ||
+      new Set(row.capabilities).size !== row.capabilities.length ||
+      !isStrictlyLexicographicallySorted(row.capabilities) ||
+      !row.capabilities.includes(InvestigationRolloutCapability.Recording) ||
+      !isInvestigationRolloutCapabilitySetDependencyClosed(
+        new Set(row.capabilities),
+      )
+    ) {
+      return null;
+    }
+    providerKinds.push(row.providerKind);
+    boundRows.push(
+      Object.freeze({
+        providerKind: row.providerKind,
+        capabilities: Object.freeze([...row.capabilities]),
+      }),
+    );
+  }
+  if (
+    new Set(providerKinds).size !== providerKinds.length ||
+    !isStrictlyLexicographicallySorted(providerKinds)
+  ) {
+    return null;
+  }
+
+  // This is participation eligibility only. Independent critic activation
+  // still requires its own fenced Review Executions prepared manifest.
+  return Object.freeze({
+    authorizationDescriptorVersion: 2,
+    capability: capability.capability,
+    coverageProfileHash: capability.coverageProfileHash,
+    policyHash: capability.policyHash,
+    providerCapabilities: Object.freeze(boundRows),
+  });
+}
+
+function restoreInvestigationCapabilitySnapshot(
+  canonicalSnapshot: string | null,
+  providerVoteLanes: readonly ProviderVoteLane[],
+): ReviewInvestigationAuthorizationCapability | null {
+  if (canonicalSnapshot === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(canonicalSnapshot);
+  } catch {
+    throw routeFailure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "review_investigation_authorization_snapshot_invalid",
+    );
+  }
+  const bound = isRecord(parsed)
+    ? bindInvestigationCapabilityToAuthorization(
+        parsed as ReviewInvestigationAuthorizationCapability,
+        providerVoteLanes,
+      )
+    : null;
+  if (canonicalJson(parsed) !== canonicalSnapshot || bound === null) {
+    throw routeFailure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "review_investigation_authorization_snapshot_invalid",
+    );
+  }
+  return bound;
 }
 
 async function renewReviewRun(
@@ -983,6 +1165,28 @@ function isCommitSha(value: string): boolean {
 
 function isSha256(value: string): boolean {
   return /^[a-f0-9]{64}$/.test(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(
+  value: Readonly<Record<string, unknown>>,
+  expected: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return (
+    actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index])
+  );
+}
+
+function isStrictlyLexicographicallySorted(values: readonly string[]): boolean {
+  return values.every(
+    (value, index) => index === 0 || values[index - 1]! < value,
+  );
 }
 
 function toSnakeCase(value: string): string {

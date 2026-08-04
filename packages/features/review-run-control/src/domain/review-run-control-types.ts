@@ -66,6 +66,7 @@ export enum ReviewSafetyPolicyScope {
 
 export enum ReviewSafetyCapability {
   RunAuthorizationV2 = "run_authorization_v2",
+  ReviewInvestigationV1 = "review_investigation_v1",
   EvidenceWritesV2 = "evidence_writes_v2",
   EvidenceReuseV2 = "evidence_reuse_v2",
   PromptOnlyReuse = "prompt_only_reuse",
@@ -83,6 +84,7 @@ export enum ReviewSafetyRolloutMode {
 
 export enum ReviewSafetyDecisionKind {
   RunAuthorization = "run_authorization",
+  InvestigationExecution = "investigation_execution",
   InvocationLeaseAdmission = "invocation_lease_admission",
   ObservationAcceptance = "observation_acceptance",
   AuthorizedExecutionContinuation = "authorized_execution_continuation",

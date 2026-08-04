@@ -21,6 +21,13 @@ import {
   ReviewContextGatewaySealResultStatus,
   ReviewContextReplayCommitResultStatus,
   ReviewEvidenceLookupResultStatus,
+  ReviewInvestigationMutationResultStatus,
+  ReviewInvestigationNextAction,
+  ReviewInvestigationOpenResultStatus,
+  ReviewInvestigationPublishedAbortReason,
+  ReviewInvestigationPublishedRuntimeProfile,
+  ReviewInvestigationPublishedState,
+  ReviewInvestigationRestoreResultStatus,
   serializeProviderInvocationManifestV1CanonicalWireJson,
 } from "../index.js";
 import {
@@ -123,7 +130,7 @@ describe("generated Review Action v2 negotiation contract", () => {
     ).toThrow("protocol_contract_operation_id_duplicate");
   });
 
-  it("publishes all nineteen strict operation schemas and fixtures", async () => {
+  it("publishes all twenty-eight strict operation schemas and fixtures", async () => {
     const schema = JSON.parse(
       await readFile(
         new URL("../generated/review-action-v2.schema.json", import.meta.url),
@@ -131,9 +138,9 @@ describe("generated Review Action v2 negotiation contract", () => {
       ),
     ) as { readonly $defs: Readonly<Record<string, unknown>> };
 
-    expect(reviewActionV2Operations).toHaveLength(19);
-    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(19);
-    expect(Object.keys(schema.$defs)).toHaveLength(38);
+    expect(reviewActionV2Operations).toHaveLength(28);
+    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(28);
+    expect(Object.keys(schema.$defs)).toHaveLength(56);
     expect(sha256(canonicalJson(schema))).toBe(
       reviewActionV2PublishedSchemaDigest,
     );
@@ -223,7 +230,7 @@ describe("generated Review Action v2 negotiation contract", () => {
 
   it("publishes the context-attestation trust chain without making the session secret semantic", async () => {
     const sources = await loadCompiledContractSources();
-    expect(sources.semanticFragments).toHaveLength(6);
+    expect(sources.semanticFragments).toHaveLength(7);
     const fragment = sources.semanticFragments.find(
       (candidate) => candidate.boundedContext === "review_context_attestation",
     );
@@ -233,6 +240,7 @@ describe("generated Review Action v2 negotiation contract", () => {
     ).toEqual([
       ReviewActionV2OperationId.ReviewContextGatewayOpen,
       ReviewActionV2OperationId.ReviewContextGatewaySeal,
+      ReviewActionV2OperationId.ReviewContextReceiptReplayCommit,
       ReviewActionV2OperationId.ReviewContextReplayCommit,
     ]);
 
@@ -379,6 +387,97 @@ describe("generated Review Action v2 negotiation contract", () => {
     });
   });
 
+  it("publishes typed investigation operations with bounded retry semantics", async () => {
+    const sources = await loadCompiledContractSources();
+    const fragment = sources.semanticFragments.find(
+      (candidate) => candidate.boundedContext === "review_investigations",
+    );
+    expect(
+      fragment?.operations.map((operation) => operation.operationId),
+    ).toEqual([
+      ReviewActionV2OperationId.ReviewInvestigationOpen,
+      ReviewActionV2OperationId.ReviewInvestigationRestore,
+      ReviewActionV2OperationId.ReviewInvestigationTurnPlan,
+      ReviewActionV2OperationId.ReviewInvestigationTurnCommit,
+      ReviewActionV2OperationId.ReviewInvestigationTurnAbort,
+      ReviewActionV2OperationId.ReviewInvestigationReplayPrepare,
+      ReviewActionV2OperationId.ReviewInvestigationReplay,
+      ReviewActionV2OperationId.ReviewInvestigationConclude,
+    ]);
+    expect(Object.values(ReviewInvestigationNextAction)).toEqual([
+      "run_turn",
+      "run_critic",
+      "await_capacity",
+      "conclude",
+      "terminal",
+    ]);
+    expect(Object.values(ReviewInvestigationPublishedState)).toContain(
+      "inconclusive",
+    );
+    expect(Object.values(ReviewInvestigationPublishedRuntimeProfile)).toContain(
+      "gateway_attested_agent_v1",
+    );
+    expect(Object.values(ReviewInvestigationPublishedAbortReason)).toContain(
+      "capacity_unavailable",
+    );
+
+    const operations = new Map(
+      reviewActionV2Operations.map((operation) => [
+        operation.operationId,
+        operation,
+      ]),
+    );
+    expect(
+      operations.get(ReviewActionV2OperationId.ReviewInvestigationOpen),
+    ).toMatchObject({
+      boundedContext: "review_investigations",
+      semanticRetryClass: "same_request",
+      bodyLimitBytes: 524_288,
+      successStatuses: [200, 201],
+      resultStatuses: Object.values(ReviewInvestigationOpenResultStatus),
+    });
+    expect(
+      operations.get(ReviewActionV2OperationId.ReviewInvestigationRestore),
+    ).toMatchObject({
+      semanticRetryClass: "read_only",
+      resultStatuses: Object.values(ReviewInvestigationRestoreResultStatus),
+    });
+    expect(
+      operations.get(ReviewActionV2OperationId.ReviewInvestigationTurnCommit),
+    ).toMatchObject({
+      callerAuthority:
+        ReviewActionV2CallerAuthority.RunAuthorizationAndLeaseCapability,
+      bodyLimitBytes: 2_097_152,
+      resultStatuses: Object.values(ReviewInvestigationMutationResultStatus),
+    });
+
+    const schema = JSON.parse(
+      await readFile(
+        new URL("../generated/review-action-v2.schema.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { readonly $defs: Readonly<Record<string, unknown>> };
+    expect(
+      requestProperties(schema, "review_investigation_open").runtimeProfile,
+    ).toEqual({
+      enum: Object.values(ReviewInvestigationPublishedRuntimeProfile),
+    });
+    expect(
+      requestProperties(schema, "review_investigation_turn_abort").abortReason,
+    ).toEqual({
+      enum: Object.values(ReviewInvestigationPublishedAbortReason),
+    });
+    expect(
+      successResultProperties(schema, "review_investigation_turn_plan")
+        .nextAction,
+    ).toEqual({
+      anyOf: [
+        { enum: Object.values(ReviewInvestigationNextAction) },
+        { type: "null" },
+      ],
+    });
+  });
+
   it("publishes replay-required lookup fields as nullable target-replay material", async () => {
     const schema = JSON.parse(
       await readFile(
@@ -496,7 +595,7 @@ describe("generated Review Action v2 negotiation contract", () => {
       contextDependencyAttestationId: expect.any(Object),
       contextDependencyAttestationHash: expect.any(Object),
     });
-    expect(commitSchema?.allOf).toHaveLength(1);
+    expect(commitSchema?.allOf).toHaveLength(2);
   });
 
   it("keeps the generated manifest canonicalizer byte-identical to Review Evidence", async () => {

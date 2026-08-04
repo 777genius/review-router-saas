@@ -39,6 +39,9 @@ export type ReviewRunAuthorization = ReviewRunScope &
     readonly operationalSloProfileId: string;
     readonly mutationEpoch: bigint;
     readonly providerVoteLanes: readonly ProviderVoteLane[];
+    readonly reviewInvestigationAuthorizationDescriptorCanonicalJson:
+      | string
+      | null;
     readonly authorizationSafetyDecisionHash: string;
     readonly protocolOfferHash: string;
     readonly oidcReplayKeyHash: string;
@@ -54,8 +57,15 @@ export type ReviewRunAuthorization = ReviewRunScope &
 
 export type ReviewRunAuthorizationCandidate = Omit<
   ReviewRunAuthorization,
-  "version" | "state" | "renewedAt"
->;
+  | "version"
+  | "state"
+  | "renewedAt"
+  | "reviewInvestigationAuthorizationDescriptorCanonicalJson"
+> & {
+  readonly reviewInvestigationAuthorizationDescriptorCanonicalJson?:
+    | string
+    | null;
+};
 
 export function createReviewRunAuthorization(
   candidate: ReviewRunAuthorizationCandidate,
@@ -63,6 +73,10 @@ export function createReviewRunAuthorization(
   assertAuthorizationCandidate(candidate);
   return {
     ...candidate,
+    reviewInvestigationAuthorizationDescriptorCanonicalJson:
+      normalizeReviewInvestigationAuthorizationDescriptor(
+        candidate.reviewInvestigationAuthorizationDescriptorCanonicalJson,
+      ),
     version: 1,
     providerVoteLanes: normalizeProviderVoteLanes(candidate.providerVoteLanes),
     state: ReviewRunAuthorizationState.Active,
@@ -268,6 +282,33 @@ function assertAuthorizationCandidate(
     invalid("authorization_expiry_invalid");
   }
   normalizeProviderVoteLanes(candidate.providerVoteLanes);
+  normalizeReviewInvestigationAuthorizationDescriptor(
+    candidate.reviewInvestigationAuthorizationDescriptorCanonicalJson,
+  );
+}
+
+function normalizeReviewInvestigationAuthorizationDescriptor(
+  value: string | null | undefined,
+): string | null {
+  if (value === null || value === undefined) return null;
+  if (value.length === 0 || value.length > 16_384) {
+    invalid("review_investigation_authorization_descriptor_invalid");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    invalid("review_investigation_authorization_descriptor_invalid");
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    canonicalJson(parsed) !== value
+  ) {
+    invalid("review_investigation_authorization_descriptor_invalid");
+  }
+  return value;
 }
 
 function normalizeProviderVoteLanes(

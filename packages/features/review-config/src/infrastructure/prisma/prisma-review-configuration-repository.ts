@@ -184,6 +184,17 @@ async function saveNextReviewConfigurationVersion(
       inlineMinAgreement: config.execution.inlineMinAgreement,
       targetTokensPerBatch: config.limits.targetTokensPerBatch,
       reviewLanguage: config.reviewLanguage ?? null,
+      investigationRecordingEnabled:
+        config.investigationRollout.recordingEnabled,
+      investigationShadowEnabled: config.investigationRollout.shadowEnabled,
+      investigationContextCriticEnabled:
+        config.investigationRollout.contextCriticEnabled,
+      investigationVerifiedCleanEnabled:
+        config.investigationRollout.verifiedCleanEnabled,
+      investigationCrossRevisionReplayEnabled:
+        config.investigationRollout.crossRevisionReplayEnabled,
+      investigationProductionEffectsEnabled:
+        config.investigationRollout.productionEffectsEnabled,
       providers: {
         create: config.providers.map((provider, index) => ({
           order: index,
@@ -233,6 +244,12 @@ const versionSelect = {
   inlineMinAgreement: true,
   targetTokensPerBatch: true,
   reviewLanguage: true,
+  investigationRecordingEnabled: true,
+  investigationShadowEnabled: true,
+  investigationContextCriticEnabled: true,
+  investigationVerifiedCleanEnabled: true,
+  investigationCrossRevisionReplayEnabled: true,
+  investigationProductionEffectsEnabled: true,
   providers: {
     orderBy: { order: "asc" },
     select: {
@@ -264,6 +281,12 @@ type VersionRecord = {
   readonly inlineMinAgreement: number;
   readonly targetTokensPerBatch: number;
   readonly reviewLanguage: string | null;
+  readonly investigationRecordingEnabled: boolean;
+  readonly investigationShadowEnabled: boolean;
+  readonly investigationContextCriticEnabled: boolean;
+  readonly investigationVerifiedCleanEnabled: boolean;
+  readonly investigationCrossRevisionReplayEnabled: boolean;
+  readonly investigationProductionEffectsEnabled: boolean;
   readonly providers: readonly {
     readonly providerKind: string;
     readonly providerAuthMode: string;
@@ -324,6 +347,18 @@ function toPersistedConfiguration(
         targetTokensPerBatch: version.targetTokensPerBatch,
       },
       reviewLanguage: version.reviewLanguage ?? undefined,
+      investigationRollout: {
+        recordingEnabled: version.investigationRecordingEnabled ?? false,
+        shadowEnabled: version.investigationShadowEnabled ?? false,
+        contextCriticEnabled:
+          version.investigationContextCriticEnabled ?? false,
+        verifiedCleanEnabled:
+          version.investigationVerifiedCleanEnabled ?? false,
+        crossRevisionReplayEnabled:
+          version.investigationCrossRevisionReplayEnabled ?? false,
+        productionEffectsEnabled:
+          version.investigationProductionEffectsEnabled ?? false,
+      },
     }),
   };
 }

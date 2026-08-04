@@ -1,5 +1,5 @@
 import type { AcceptedDependencyAttestation } from "../../domain/accepted-dependency-attestation";
-import type { ContextDependencyManifest } from "../../domain/context-dependency-manifest";
+import type { ContextAttestationManifest } from "../../domain/context-attestation-manifest";
 import type { EncryptedContextReplayMaterial } from "../../domain/encrypted-context-replay-material";
 import type {
   ContextAttestationRevision,
@@ -15,6 +15,7 @@ export type TrustedGatewaySessionOpeningFacts = Readonly<{
   sourceExecutionId: string;
   sourceWorkSlotId: string;
   attemptId: string;
+  openingIntentHash: string;
   sourceLeaseId: string;
   sourceFencingToken: string;
   providerKind: ContextProviderKind;
@@ -40,7 +41,7 @@ export interface TrustedGatewaySessionOpeningFactsPort {
 export type TrustedSealedGatewayTranscript = Readonly<{
   sessionId: string;
   confinementProofHash: string;
-  manifest: ContextDependencyManifest;
+  manifest: ContextAttestationManifest;
   actualModel: string;
   terminalOutcomeHash: string;
   providerSucceeded: boolean;
@@ -135,6 +136,8 @@ export type TargetReplayFacts = Readonly<{
   replayBinaryHash: string;
   replayPolicyVersion: string;
   reusePolicyVectorHash: string;
+  sourceOperationReceiptIds: readonly string[];
+  sourceOperationReceiptIdsHash: string | null;
   proofLifetimeMs: number;
 }>;
 

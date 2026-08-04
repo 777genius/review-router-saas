@@ -165,6 +165,10 @@ export const reviewEvidenceActionContractFragment = Object.freeze({
           "contextDependencyAttestationId",
           "contextDependencyAttestationHash",
         ]),
+        Object.freeze([
+          "investigationCertificateId",
+          "investigationCertificateHash",
+        ]),
       ]),
       requestFields: Object.freeze([
         Object.freeze({ name: "attemptId", type: "identifier" }),
@@ -181,6 +185,14 @@ export const reviewEvidenceActionContractFragment = Object.freeze({
         }),
         Object.freeze({
           name: "contextDependencyAttestationHash",
+          type: "nullable_hash",
+        }),
+        Object.freeze({
+          name: "investigationCertificateId",
+          type: "nullable_identifier",
+        }),
+        Object.freeze({
+          name: "investigationCertificateHash",
           type: "nullable_hash",
         }),
         Object.freeze({ name: "payloadCanonicalJson", type: "canonical_json" }),

@@ -14,6 +14,10 @@ export const reviewContextAttestationActionContractFragment = Object.freeze({
       typeName: "ReviewContextReplayCommitResultStatus",
       values: Object.freeze(["accepted", "idempotent", "denied", "conflict"]),
     }),
+    Object.freeze({
+      typeName: "ReviewContextReceiptReplayCommitResultStatus",
+      values: Object.freeze(["accepted", "idempotent", "denied", "conflict"]),
+    }),
   ]),
   operations: Object.freeze([
     Object.freeze({
@@ -104,6 +108,41 @@ export const reviewContextAttestationActionContractFragment = Object.freeze({
       resultFields: Object.freeze([
         Object.freeze({ name: "attestationId", type: "nullable_identifier" }),
         Object.freeze({ name: "attestationHash", type: "nullable_hash" }),
+      ]),
+    }),
+    Object.freeze({
+      operationId: "review_context_receipt_replay_commit",
+      requestTypeName: "ReviewContextReceiptReplayCommitRequest",
+      resultTypeName: "ReviewContextReceiptReplayCommitResult",
+      callerAuthority: "run_authorization",
+      mutability: "command",
+      naturalIdempotencyPreimage: Object.freeze([
+        "execution_id",
+        "work_slot_id",
+        "attestation_id",
+        "source_operation_receipt_ids_hash",
+        "target_review_revision_hash",
+        "replay_result_hash",
+      ]),
+      semanticRetryClass: "same_request",
+      requestFields: Object.freeze([
+        Object.freeze({ name: "executionId", type: "identifier" }),
+        Object.freeze({ name: "workSlotId", type: "identifier" }),
+        Object.freeze({ name: "attestationId", type: "identifier" }),
+        Object.freeze({ name: "attestationHash", type: "hash" }),
+        Object.freeze({ name: "targetReviewRevisionHash", type: "hash" }),
+        Object.freeze({ name: "targetCheckoutTreeOid", type: "git_oid" }),
+        Object.freeze({ name: "replayCapability", type: "token" }),
+        Object.freeze({
+          name: "replayResultCanonicalJson",
+          type: "canonical_json",
+        }),
+        Object.freeze({ name: "replayResultHash", type: "hash" }),
+      ]),
+      resultStatusEnum: "ReviewContextReceiptReplayCommitResultStatus",
+      resultFields: Object.freeze([
+        Object.freeze({ name: "replayProofId", type: "nullable_identifier" }),
+        Object.freeze({ name: "replayProofHash", type: "nullable_hash" }),
       ]),
     }),
     Object.freeze({

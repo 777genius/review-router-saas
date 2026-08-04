@@ -319,6 +319,7 @@ function safetyCapabilityToPersistence(
   capability: ReviewSafetyCapability,
 ):
   | "run_authorization_v2"
+  | "review_investigation_v1"
   | "evidence_writes_v2"
   | "evidence_reuse_v2"
   | "prompt_only_reuse"
@@ -328,6 +329,8 @@ function safetyCapabilityToPersistence(
   switch (capability) {
     case ReviewSafetyCapability.RunAuthorizationV2:
       return "run_authorization_v2";
+    case ReviewSafetyCapability.ReviewInvestigationV1:
+      return "review_investigation_v1";
     case ReviewSafetyCapability.EvidenceWritesV2:
       return "evidence_writes_v2";
     case ReviewSafetyCapability.EvidenceReuseV2:

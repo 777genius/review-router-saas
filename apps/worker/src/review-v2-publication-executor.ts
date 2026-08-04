@@ -24,6 +24,7 @@ import {
 import {
   ReviewV2PublicationCompensationDecision,
   ReviewV2PublicationExecutionStatus,
+  ReviewV2PublicationEffectGateDecision,
   ReviewV2PublicationFreshnessReadStatus,
   ReviewV2ScmCredentialPurpose,
   ReviewV2ScmProvider,
@@ -297,6 +298,26 @@ export class ExecuteReviewV2PublicationOperation {
       const finalMutationLease = await this.renewForMutation(command, claim);
       if ("result" in finalMutationLease) return finalMutationLease.result;
       claim = finalMutationLease.claim;
+      const effectDecision = await this.authorizeEffect(
+        command.provider,
+        begun.attempt.permit,
+        begun.operation,
+      );
+      if (
+        effectDecision === ReviewV2PublicationEffectGateDecision.Unavailable
+      ) {
+        return retryable("publication_effect_gate_unavailable");
+      }
+      if (effectDecision === ReviewV2PublicationEffectGateDecision.Disabled) {
+        return this.terminalizeKnownOutcome({
+          command,
+          operation: begun.operation,
+          claim,
+          finalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+          finalReason: "publication_effect_gate_disabled",
+          lastErrorCode: "publication_effect_gate_disabled",
+        });
+      }
       try {
         applied = await mutationSession.gateway.applyOperation({
           operation: begun.operation,
@@ -779,6 +800,17 @@ export class ExecuteReviewV2PublicationOperation {
         );
         if ("result" in finalCleanupLease) return finalCleanupLease.result;
         cleanupClaim = finalCleanupLease.claim;
+        const cleanupDecision = await this.authorizeEffect(
+          input.command.provider,
+          view.attempt.permit,
+          input.operation,
+        );
+        if (cleanupDecision !== ReviewV2PublicationEffectGateDecision.Allowed) {
+          return cleanupDecision ===
+            ReviewV2PublicationEffectGateDecision.Unavailable
+            ? retryable("publication_effect_gate_unavailable")
+            : manual("publication_effect_gate_disabled");
+        }
         cleanupStatus = await input.gateway.markStaleOrDelete({
           operation: input.operation,
           canonicalExternalObjectId: canonicalObject.externalObjectId,
@@ -935,6 +967,20 @@ export class ExecuteReviewV2PublicationOperation {
               return finalCompensationLease.result;
             }
             compensationClaim = finalCompensationLease.claim;
+            const compensationEffectDecision = await this.authorizeEffect(
+              input.command.provider,
+              input.permit,
+              input.operation,
+            );
+            if (
+              compensationEffectDecision !==
+              ReviewV2PublicationEffectGateDecision.Allowed
+            ) {
+              return compensationEffectDecision ===
+                ReviewV2PublicationEffectGateDecision.Unavailable
+                ? retryable("publication_effect_gate_unavailable")
+                : manual("publication_effect_gate_disabled");
+            }
             const compensationStatus = await input.gateway.markStaleOrDelete({
               operation: input.operation,
               canonicalExternalObjectId: canonicalObject.externalObjectId,
@@ -1039,6 +1085,22 @@ export class ExecuteReviewV2PublicationOperation {
       finalReason: "stale_effect_requires_manual_reconciliation",
       lastErrorCode: input.lastErrorCode,
     });
+  }
+
+  private async authorizeEffect(
+    provider: ReviewV2ScmProvider,
+    permit: ReviewPublicationPermitIdentity,
+    operation: ReviewPublicationOperation,
+  ): Promise<ReviewV2PublicationEffectGateDecision> {
+    try {
+      return await this.dependencies.effectGate.authorize({
+        provider,
+        permit,
+        operation,
+      });
+    } catch {
+      return ReviewV2PublicationEffectGateDecision.Unavailable;
+    }
   }
 
   private async terminalizeKnownAmbiguity(input: {

@@ -20,6 +20,7 @@ import { ExecuteReviewV2PublicationOperation } from "./review-v2-publication-exe
 import {
   ReviewV2PublicationCompensationDecision,
   ReviewV2PublicationExecutionStatus,
+  ReviewV2PublicationEffectGateDecision,
   ReviewV2PublicationFreshnessReadStatus,
   ReviewV2ScmCredentialPurpose,
   ReviewV2ScmMutationError,
@@ -162,6 +163,102 @@ describe("protocol v2 publication executor", () => {
     );
     expect(fixture.credentials.purposes).toEqual([]);
     expect(fixture.gateway.applyCalls).toBe(0);
+  });
+
+  it("rechecks the effect gate immediately before the SCM mutation", async () => {
+    const fixture = await createFixture();
+    fixture.effectGate.decision =
+      ReviewV2PublicationEffectGateDecision.Disabled;
+
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Terminalized,
+        safeReason: "publication_effect_gate_disabled",
+        terminalOutcome: "failed_no_effect",
+      },
+    );
+    expect(fixture.effectGate.calls).toBe(1);
+    expect(fixture.gateway.applyCalls).toBe(0);
+  });
+
+  it("fails closed without retrying internally when the effect gate is unavailable", async () => {
+    const unavailable = await createFixture();
+    unavailable.effectGate.decision =
+      ReviewV2PublicationEffectGateDecision.Unavailable;
+
+    await expect(
+      unavailable.executor.execute(executionCommand()),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationExecutionStatus.Retryable,
+      safeReason: "publication_effect_gate_unavailable",
+    });
+    expect(unavailable.effectGate.calls).toBe(1);
+    expect(unavailable.gateway.applyCalls).toBe(0);
+
+    const rejected = await createFixture();
+    rejected.effectGate.error = new Error("rollout_store_unavailable");
+    await expect(
+      rejected.executor.execute(executionCommand()),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationExecutionStatus.Retryable,
+      safeReason: "publication_effect_gate_unavailable",
+    });
+    expect(rejected.effectGate.calls).toBe(1);
+    expect(rejected.gateway.applyCalls).toBe(0);
+  });
+
+  it("re-reads the effect gate immediately before duplicate cleanup", async () => {
+    const fixture = await createFixture();
+    const staleObject = {
+      ...gatewayObject("stale-summary"),
+      bodyHash: hash("9"),
+      observedObjectHash: hash("4"),
+    };
+    fixture.gateway.pages = [{ objects: [staleObject], nextCursor: null }];
+    fixture.gateway.postApplyObjects = [staleObject];
+    fixture.effectGate.decisions = [
+      ReviewV2PublicationEffectGateDecision.Allowed,
+      ReviewV2PublicationEffectGateDecision.Unavailable,
+    ];
+
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Retryable,
+        safeReason: "publication_effect_gate_unavailable",
+      },
+    );
+
+    expect(fixture.effectGate.calls).toBe(2);
+    expect(fixture.gateway.applyCalls).toBe(1);
+    expect(fixture.gateway.compensationCalls).toBe(0);
+  });
+
+  it("re-reads the effect gate immediately before stale-effect compensation", async () => {
+    const fixture = await createFixture();
+    fixture.freshness.sequence = [
+      currentFreshness(),
+      currentFreshness(),
+      currentFreshness(),
+      changedFreshness(),
+      changedFreshness(),
+    ];
+    fixture.compensation.decision =
+      ReviewV2PublicationCompensationDecision.Allowed;
+    fixture.effectGate.decisions = [
+      ReviewV2PublicationEffectGateDecision.Allowed,
+      ReviewV2PublicationEffectGateDecision.Unavailable,
+    ];
+
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Retryable,
+        safeReason: "publication_effect_gate_unavailable",
+      },
+    );
+
+    expect(fixture.effectGate.calls).toBe(2);
+    expect(fixture.gateway.applyCalls).toBe(1);
+    expect(fixture.gateway.compensationCalls).toBe(0);
   });
 
   it("records an acknowledged late effect, compensates by policy, and persists the exact terminal outcome", async () => {
@@ -327,6 +424,7 @@ async function createFixture(
       return this.decision;
     },
   };
+  const effectGate = new MutableEffectGate();
   const executor = new ExecuteReviewV2PublicationOperation(
     {
       attempts: repository,
@@ -349,6 +447,7 @@ async function createFixture(
           return "test-signing-key";
         },
       },
+      effectGate,
       clock,
     },
     {
@@ -362,6 +461,7 @@ async function createFixture(
     clock,
     compensation,
     credentials,
+    effectGate,
     executor,
     freshness,
     gateway,
@@ -381,6 +481,19 @@ class MutableFreshness {
     this.reads += 1;
     this.onRead?.(this.reads);
     return this.sequence.shift() ?? this.current;
+  }
+}
+
+class MutableEffectGate {
+  calls = 0;
+  decision = ReviewV2PublicationEffectGateDecision.Allowed;
+  decisions: ReviewV2PublicationEffectGateDecision[] = [];
+  error: Error | null = null;
+
+  async authorize(): Promise<ReviewV2PublicationEffectGateDecision> {
+    this.calls += 1;
+    if (this.error) throw this.error;
+    return this.decisions.shift() ?? this.decision;
   }
 }
 

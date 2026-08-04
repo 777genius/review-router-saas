@@ -121,6 +121,8 @@ export type ReviewObservation = Readonly<{
   transportAttemptCount: number;
   contextDependencyAttestationId: string | null;
   contextDependencyAttestationHash: string | null;
+  investigationCertificateId: string | null;
+  investigationCertificateHash: string | null;
   trustDomain: ReviewTrustDomain;
   createdAtMs: number;
   reuseExpiresAtMs: number;
@@ -252,6 +254,7 @@ export function createReviewObservation(
   }
   assertSha256(candidate.payloadHash, "payload_hash");
   validateContextDependencyAttestationReference(candidate);
+  validateInvestigationCertificateReference(candidate);
   assertNonNegativeInteger(candidate.byteCount, "byte_count");
   assertNonNegativeInteger(candidate.findingCount, "finding_count");
   if (
@@ -351,6 +354,8 @@ export function sameReviewObservationAcceptance(
       left.transportAttemptCount,
       left.contextDependencyAttestationId,
       left.contextDependencyAttestationHash,
+      left.investigationCertificateId,
+      left.investigationCertificateHash,
     ]) ===
     JSON.stringify([
       reviewObservationAttemptIdentity(right),
@@ -369,6 +374,8 @@ export function sameReviewObservationAcceptance(
       right.transportAttemptCount,
       right.contextDependencyAttestationId,
       right.contextDependencyAttestationHash,
+      right.investigationCertificateId,
+      right.investigationCertificateHash,
     ])
   );
 }
@@ -399,6 +406,36 @@ function validateContextDependencyAttestationReference(
     hasAttestationId
   ) {
     throw new Error("context_dependency_attestation_profile_invalid");
+  }
+}
+
+function validateInvestigationCertificateReference(
+  candidate: ReviewObservationCandidate,
+): void {
+  const hasId = candidate.investigationCertificateId !== null;
+  const hasHash = candidate.investigationCertificateHash !== null;
+  if (hasId !== hasHash) {
+    throw new Error("investigation_certificate_reference_incomplete");
+  }
+  if (candidate.investigationCertificateId !== null) {
+    assertIdentifier(
+      candidate.investigationCertificateId,
+      "investigation_certificate_id",
+    );
+  }
+  if (candidate.investigationCertificateHash !== null) {
+    assertSha256(
+      candidate.investigationCertificateHash,
+      "investigation_certificate_hash",
+    );
+  }
+  if (
+    candidate.executionProfile ===
+    ProviderExecutionProfile.InvestigationGatewayV1
+      ? !hasId
+      : hasId
+  ) {
+    throw new Error("investigation_certificate_profile_invalid");
   }
 }
 

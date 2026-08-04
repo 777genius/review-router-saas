@@ -7,11 +7,13 @@ import {
   ReviewActionV2OperationId,
   ReviewActionV2ProtocolErrorCode,
   ReviewExecutionRestoreResultStatus,
+  ReviewInvestigationOpenResultStatus,
 } from "@reviewrouter/protocol-review-action-v2";
 import {
   registerReviewContextAttestationV2Routes,
   registerReviewEvidenceV2Routes,
   registerReviewExecutionV2Routes,
+  registerReviewInvestigationV2Routes,
   registerReviewPublicationRequestV2Routes,
   registerReviewRunControlV2Routes,
   registerReviewSnapshotReadV2Routes,
@@ -29,6 +31,7 @@ describe("Review Action v2 route registrars", () => {
     const app = Fastify();
     await registerReviewRunControlV2Routes(app, runtime);
     await registerReviewExecutionV2Routes(app, runtime);
+    await registerReviewInvestigationV2Routes(app, runtime);
     await registerReviewContextAttestationV2Routes(app, runtime);
     await registerReviewEvidenceV2Routes(app, runtime);
     await registerReviewSnapshotReadV2Routes(app, runtime);
@@ -64,6 +67,103 @@ describe("Review Action v2 route registrars", () => {
         });
       }
     }
+  });
+
+  it("publishes investigation routes as disabled until composition enables them", async () => {
+    const app = Fastify();
+    await registerReviewInvestigationV2Routes(app, runtime);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-investigations/open",
+      payload: reviewActionV2GoldenFixtures.review_investigation_open.request,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({
+      requestId:
+        reviewActionV2GoldenFixtures.review_investigation_open.request
+          .requestId,
+      error: {
+        errorCode: ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
+        retryClass: "never",
+        details: { issues: ["capability_disabled"] },
+      },
+    });
+    await app.close();
+  });
+
+  it("strictly parses investigation enums before invoking an enabled handler", async () => {
+    const app = Fastify();
+    let calls = 0;
+    await registerReviewInvestigationV2Routes(app, {
+      ...runtime,
+      open: {
+        capabilityEnabled: true,
+        execute: async () => {
+          calls += 1;
+          return {
+            statusCode: 201,
+            result: { status: ReviewInvestigationOpenResultStatus.Opened },
+          };
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-investigations/open",
+      payload: {
+        ...reviewActionV2GoldenFixtures.review_investigation_open.request,
+        runtimeProfile: "unknown_runtime_profile",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: {
+        errorCode: ReviewActionV2ProtocolErrorCode.InvalidRequest,
+      },
+    });
+    expect(calls).toBe(0);
+    await app.close();
+  });
+
+  it("wraps an enabled investigation handler in the generated envelope", async () => {
+    const app = Fastify();
+    await registerReviewInvestigationV2Routes(app, {
+      ...runtime,
+      open: {
+        capabilityEnabled: true,
+        execute: async () => ({
+          statusCode: 201,
+          result: {
+            status: ReviewInvestigationOpenResultStatus.Opened,
+            investigationId: "investigation_fixture",
+          },
+        }),
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-investigations/open",
+      payload: reviewActionV2GoldenFixtures.review_investigation_open.request,
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      protocolVersion: "2",
+      requestId:
+        reviewActionV2GoldenFixtures.review_investigation_open.request
+          .requestId,
+      serverTime: serverTime.toISOString(),
+      result: {
+        status: ReviewInvestigationOpenResultStatus.Opened,
+        investigationId: "investigation_fixture",
+      },
+    });
+    await app.close();
   });
 
   it("strictly rejects unknown fields before invoking a context handler", async () => {

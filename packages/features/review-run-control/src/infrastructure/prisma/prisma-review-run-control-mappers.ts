@@ -14,6 +14,7 @@ import type {
   ReviewOperationalSloProfileV2,
   ReviewProtocolLimitsV2,
 } from "../../domain/producer-release";
+import { reviewInvestigationCapabilityV1 } from "../../domain/producer-release";
 import type { ReviewMutationAuthority } from "../../domain/review-mutation-authority";
 import type { ReviewRunAuthorization } from "../../domain/review-run-authorization";
 import type {
@@ -62,14 +63,54 @@ export function operationalSloToDomain(
 export function producerReleaseToDomain(
   row: PrismaProducerRelease,
 ): ProducerRelease {
+  const {
+    reviewInvestigationCapability,
+    reviewInvestigationCoverageProfileHash,
+    reviewInvestigationPolicyHash,
+    ...release
+  } = row;
   return {
-    ...row,
+    ...release,
+    reviewInvestigationProfile:
+      reviewInvestigationCapability === null &&
+      reviewInvestigationCoverageProfileHash === null &&
+      reviewInvestigationPolicyHash === null
+        ? null
+        : {
+            capability: requireReviewInvestigationCapability(
+              reviewInvestigationCapability,
+            ),
+            coverageProfileHash: requireSha256Persistence(
+              reviewInvestigationCoverageProfileHash,
+              "review_investigation_coverage_profile_hash",
+            ),
+            policyHash: requireSha256Persistence(
+              reviewInvestigationPolicyHash,
+              "review_investigation_policy_hash",
+            ),
+          },
     distributionKind: producerDistributionKindToDomain(row.distributionKind),
     capabilityProfile: reviewCapabilityProfileToDomain(row.capabilityProfile),
     state: producerReleaseStateToDomain(row.state),
     registeredAt: new Date(row.registeredAt),
     revokedAt: row.revokedAt ? new Date(row.revokedAt) : null,
   };
+}
+
+function requireReviewInvestigationCapability(
+  value: string | null,
+): typeof reviewInvestigationCapabilityV1 {
+  if (value !== reviewInvestigationCapabilityV1) {
+    return corrupt("review_investigation_capability", String(value));
+  }
+  return value;
+}
+
+function requireSha256Persistence(value: string | null, field: string): string {
+  if (value === null || !/^[a-f0-9]{64}$/u.test(value)) {
+    return corrupt(field, String(value));
+  }
+  return value;
 }
 
 export function scmRepositoryIdentityToDomain(
@@ -161,6 +202,8 @@ export function reviewRunAuthorizationToDomain(
     operationalSloProfileId: row.operationalSloProfileId,
     mutationEpoch: row.mutationEpoch,
     providerVoteLanes: parseProviderVoteLanes(row.providerVoteLanes),
+    reviewInvestigationAuthorizationDescriptorCanonicalJson:
+      row.reviewInvestigationAuthorizationDescriptorCanonicalJson,
     authorizationSafetyDecisionHash: row.authorizationSafetyDecisionHash,
     protocolOfferHash: row.protocolOfferHash,
     oidcReplayKeyHash: row.oidcReplayKeyHash,
@@ -328,6 +371,8 @@ function reviewSafetyCapabilityToDomain(value: string): ReviewSafetyCapability {
   switch (value) {
     case "run_authorization_v2":
       return ReviewSafetyCapability.RunAuthorizationV2;
+    case "review_investigation_v1":
+      return ReviewSafetyCapability.ReviewInvestigationV1;
     case "evidence_writes_v2":
       return ReviewSafetyCapability.EvidenceWritesV2;
     case "evidence_reuse_v2":

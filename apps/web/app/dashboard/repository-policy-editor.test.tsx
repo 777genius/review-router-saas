@@ -91,6 +91,39 @@ function pageText(): string {
 }
 
 describe("ReviewConfigForm", () => {
+  it("preserves configured investigation rollout values in dashboard submissions", () => {
+    renderReviewConfigForm({
+      config: {
+        ...safeDefaultReviewConfiguration,
+        investigationRollout: {
+          recordingEnabled: true,
+          shadowEnabled: true,
+          contextCriticEnabled: true,
+          verifiedCleanEnabled: true,
+          crossRevisionReplayEnabled: true,
+          productionEffectsEnabled: true,
+        },
+      },
+    });
+
+    for (const flag of [
+      "recordingEnabled",
+      "shadowEnabled",
+      "contextCriticEnabled",
+      "verifiedCleanEnabled",
+      "crossRevisionReplayEnabled",
+      "productionEffectsEnabled",
+    ]) {
+      expect(
+        (
+          document.querySelector(
+            `input[name="investigationRollout.${flag}"]`,
+          ) as HTMLInputElement
+        ).value,
+      ).toBe("true");
+    }
+  });
+
   it("keeps at least one provider and adds an OpenRouter provider", () => {
     renderReviewConfigForm({ config: openRouterReviewConfiguration() });
 

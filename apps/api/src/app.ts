@@ -19,12 +19,14 @@ import {
   registerReviewContextAttestationV2Routes,
   registerReviewEvidenceV2Routes,
   registerReviewExecutionV2Routes,
+  registerReviewInvestigationV2Routes,
   registerReviewPublicationRequestV2Routes,
   registerReviewRunControlV2Routes,
   registerReviewSnapshotReadV2Routes,
   type RegisterReviewContextAttestationV2RoutesDependencies,
   type RegisterReviewEvidenceV2RoutesDependencies,
   type RegisterReviewExecutionV2RoutesDependencies,
+  type RegisterReviewInvestigationV2RoutesDependencies,
   type RegisterReviewPublicationRequestV2RoutesDependencies,
   type RegisterReviewRunControlV2RoutesDependencies,
   type RegisterReviewSnapshotReadV2RoutesDependencies,
@@ -134,6 +136,14 @@ import {
   assertReviewIntentRolloutConfiguration,
   composeReviewActionV2ProductionRoutes,
 } from "./review-action-v2-production-composition.js";
+import {
+  composePrismaReviewInvestigationOperations,
+  type ReviewInvestigationTerminalTelemetrySamplePort,
+} from "./review-investigation-operations-composition.js";
+import {
+  registerReviewInvestigationOperatorRoutes,
+  type RegisterReviewInvestigationOperatorRoutesDependencies,
+} from "./review-investigation-operator-routes.js";
 import { appRouter } from "./trpc.js";
 import { ProductionHostedReviewPreleaseGate } from "./hosted-review-prelease-gate.js";
 
@@ -147,12 +157,15 @@ export type CreateApiAppOptions = {
   readonly reviewRunControlV2Enabled?: boolean;
   readonly reviewActionV2Env?: Readonly<Record<string, string | undefined>>;
   readonly reviewExecutionV2Dependencies?: RegisterReviewExecutionV2RoutesDependencies;
+  readonly reviewInvestigationV2Dependencies?: RegisterReviewInvestigationV2RoutesDependencies;
   readonly reviewContextAttestationV2Dependencies?: RegisterReviewContextAttestationV2RoutesDependencies;
   readonly reviewEvidenceV2Dependencies?: RegisterReviewEvidenceV2RoutesDependencies;
   readonly reviewSnapshotReadV2Dependencies?: RegisterReviewSnapshotReadV2RoutesDependencies;
   readonly reviewPublicationRequestV2Dependencies?: RegisterReviewPublicationRequestV2RoutesDependencies;
   readonly actionMemoryDependencies?: RegisterActionMemoryRoutesDependencies;
   readonly operatorReviewConfigDependencies?: OperatorReviewConfigurationDependencies;
+  readonly reviewInvestigationOperatorDependencies?: RegisterReviewInvestigationOperatorRoutesDependencies;
+  readonly reviewInvestigationTelemetrySamples?: ReviewInvestigationTerminalTelemetrySamplePort;
   readonly actionSessionSecret?: string;
   readonly actionOidcAudience?: string;
   readonly actionControlPlaneEnabled?: boolean;
@@ -169,6 +182,21 @@ export async function createApiApp(
   const reviewActionV2Env = options.reviewActionV2Env ?? process.env;
   const operatorCredentialSha256 =
     readOperatorCredentialSha256(reviewActionV2Env);
+  const investigationPromotionCredentialSha256 = readCredentialSha256(
+    reviewActionV2Env.REVIEW_ROUTER_INVESTIGATION_PROMOTION_CREDENTIAL_SHA256,
+    "review_router_investigation_promotion_credential_hash_invalid",
+  );
+  const investigationEvaluationImportCredentialSha256 = readCredentialSha256(
+    reviewActionV2Env.REVIEW_ROUTER_INVESTIGATION_EVALUATION_IMPORT_CREDENTIAL_SHA256,
+    "review_router_investigation_evaluation_import_credential_hash_invalid",
+  );
+  if (
+    !operatorCredentialSha256 &&
+    (investigationPromotionCredentialSha256 ||
+      investigationEvaluationImportCredentialSha256)
+  ) {
+    throw new Error("review_router_investigation_status_credential_required");
+  }
   const reviewRunControlV2Enabled =
     options.reviewRunControlV2Enabled ??
     reviewActionV2Env.REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED === "1";
@@ -177,7 +205,9 @@ export async function createApiApp(
     (options.githubWebhookSecret ||
     options.actionSessionSecret ||
     reviewRunControlV2Enabled ||
-    operatorCredentialSha256
+    operatorCredentialSha256 ||
+    investigationPromotionCredentialSha256 ||
+    investigationEvaluationImportCredentialSha256
       ? createPrismaClient()
       : undefined);
   const clock = new SystemClock();
@@ -240,6 +270,37 @@ export async function createApiApp(
     await registerOperatorReviewConfigRoutes(
       app,
       operatorReviewConfigDependencies,
+    );
+  }
+
+  const reviewInvestigationOperatorDependencies =
+    options.reviewInvestigationOperatorDependencies ??
+    (prisma && operatorCredentialSha256
+      ? composePrismaReviewInvestigationOperations({
+          prisma,
+          operatorCredentialSha256,
+          ...definedOption(
+            "promotionCredentialSha256",
+            investigationPromotionCredentialSha256,
+          ),
+          ...definedOption(
+            "evaluationImportCredentialSha256",
+            investigationEvaluationImportCredentialSha256,
+          ),
+          ...definedOption(
+            "evaluationPublicKeysJson",
+            reviewActionV2Env.REVIEW_ROUTER_INVESTIGATION_EVALUATION_PUBLIC_KEYS_JSON,
+          ),
+          ...definedOption(
+            "promotionPolicyProfilesJson",
+            reviewActionV2Env.REVIEW_ROUTER_INVESTIGATION_PROMOTION_POLICY_PROFILES_JSON,
+          ),
+        }).operatorRoutes
+      : undefined);
+  if (reviewInvestigationOperatorDependencies) {
+    await registerReviewInvestigationOperatorRoutes(
+      app,
+      reviewInvestigationOperatorDependencies,
     );
   }
 
@@ -496,6 +557,7 @@ export async function createApiApp(
     !options.reviewRunControlV2Dependencies &&
     !options.reviewRunControlV2HandlerDependencies &&
     !options.reviewExecutionV2Dependencies &&
+    !options.reviewInvestigationV2Dependencies &&
     !options.reviewContextAttestationV2Dependencies &&
     !options.reviewEvidenceV2Dependencies &&
     !options.reviewSnapshotReadV2Dependencies &&
@@ -509,6 +571,16 @@ export async function createApiApp(
           ...(options.actionOidcAudience
             ? { oidcAudience: options.actionOidcAudience }
             : {}),
+          ...(options.reviewInvestigationTelemetrySamples
+            ? {
+                investigationTelemetrySamples:
+                  options.reviewInvestigationTelemetrySamples,
+              }
+            : {}),
+          recordInvestigationOperationsDiagnostic: (code) =>
+            logger.warn("Review investigation operations diagnostic", {
+              code,
+            }),
         })
       : undefined;
   const reviewRunControlV2Dependencies =
@@ -533,6 +605,16 @@ export async function createApiApp(
     disabledReviewActionV2RuntimeDependencies;
   if (reviewExecutionV2Dependencies) {
     await registerReviewExecutionV2Routes(app, reviewExecutionV2Dependencies);
+  }
+  const reviewInvestigationV2Dependencies =
+    options.reviewInvestigationV2Dependencies ??
+    productionReviewActionV2Dependencies?.investigation ??
+    disabledReviewActionV2RuntimeDependencies;
+  if (reviewInvestigationV2Dependencies) {
+    await registerReviewInvestigationV2Routes(
+      app,
+      reviewInvestigationV2Dependencies,
+    );
   }
   const reviewContextAttestationV2Dependencies =
     options.reviewContextAttestationV2Dependencies ??
@@ -770,6 +852,16 @@ function readOperatorCredentialSha256(
   if (!/^[a-f0-9]{64}$/.test(value)) {
     throw new Error("review_router_operator_credential_hash_invalid");
   }
+  return value;
+}
+
+function readCredentialSha256(
+  raw: string | undefined,
+  errorCode: string,
+): string | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  if (!/^[a-f0-9]{64}$/.test(value)) throw new Error(errorCode);
   return value;
 }
 

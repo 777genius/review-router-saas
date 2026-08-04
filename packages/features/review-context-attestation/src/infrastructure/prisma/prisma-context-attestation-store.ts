@@ -15,10 +15,11 @@ import {
   type AcceptedDependencyAttestation,
 } from "../../domain/accepted-dependency-attestation";
 import {
-  canonicalContextDependencyManifest,
-  createContextDependencyManifest,
-  type ContextDependencyManifest,
-} from "../../domain/context-dependency-manifest";
+  canonicalContextAttestationManifest,
+  contextAttestationManifestEventCount,
+  createContextAttestationManifest,
+  type ContextAttestationManifest,
+} from "../../domain/context-attestation-manifest";
 import {
   contextReplayMaterialEncryptionAlgorithm,
   createEncryptedContextReplayMaterial,
@@ -44,41 +45,31 @@ type AttestationWithSession =
     include: { session: true; replayMaterial: true };
   }>;
 
+export const legacyContextGatewayOpeningIntentHash =
+  "4d29442a15edaf0c8d2a044f12e695b0a514842ab5d4a566c2a26e451a55c19b";
+
 export class PrismaContextAttestationStore implements ContextAttestationStorePort {
   constructor(private readonly prisma: PrismaClient) {}
 
   async openSession(
     session: GatewaySession,
   ): Promise<ContextAttestationPersistenceResult<GatewaySession>> {
-    try {
-      const record = await this.prisma.reviewContextGatewaySession.create({
-        data: toSessionCreateInput(session),
-      });
-      return persisted(
-        ContextAttestationPersistenceStatus.Created,
-        toGatewaySession(record),
-      );
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) throw error;
-      const existing = await this.prisma.reviewContextGatewaySession.findFirst({
-        where: {
-          OR: [
-            { sessionId: session.sessionId },
-            { attemptId: session.attemptId },
-          ],
-        },
-        orderBy: { sessionId: "asc" },
-      });
-      if (!existing) {
-        throw new Error("gateway_session_unique_conflict_missing", {
-          cause: error,
-        });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          (transaction) => persistGatewaySessionOpening(transaction, session),
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        );
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) throw error;
+        if (attempt === 2) {
+          throw new Error("gateway_session_unique_conflict_missing", {
+            cause: error,
+          });
+        }
       }
-      const domain = toGatewaySession(existing);
-      return sameOpening(domain, session)
-        ? persisted(ContextAttestationPersistenceStatus.Idempotent, domain)
-        : conflict();
     }
+    throw new Error("gateway_session_opening_retry_exhausted");
   }
 
   async findSession(sessionId: string): Promise<GatewaySession | null> {
@@ -264,6 +255,8 @@ export class PrismaContextAttestationStore implements ContextAttestationStorePor
                 targetWorkSlotId: proof.targetWorkSlotId,
                 targetReviewRevisionHash: proof.targetReviewRevisionHash,
                 reusePolicyVectorHash: proof.reusePolicyVectorHash,
+                sourceOperationReceiptIdsHash:
+                  proof.sourceOperationReceiptIdsHash,
               },
             ],
           },
@@ -294,6 +287,105 @@ export class PrismaContextAttestationStore implements ContextAttestationStorePor
   }
 }
 
+async function persistGatewaySessionOpening(
+  transaction: Prisma.TransactionClient,
+  session: GatewaySession,
+): Promise<ContextAttestationPersistenceResult<GatewaySession>> {
+  await lockContextGatewayOpening(transaction, session.attemptId);
+  const existing = await transaction.reviewContextGatewaySession.findMany({
+    where: {
+      OR: [
+        { sessionId: session.sessionId },
+        {
+          attemptId: session.attemptId,
+          openingIntentHash: {
+            in: [
+              session.openingIntentHash,
+              legacyContextGatewayOpeningIntentHash,
+            ],
+          },
+        },
+      ],
+    },
+    orderBy: { sessionId: "asc" },
+  });
+  const sessionIdMatch = existing.find(
+    (record) => record.sessionId === session.sessionId,
+  );
+  if (sessionIdMatch) {
+    return reconcileGatewaySessionOpening(transaction, sessionIdMatch, session);
+  }
+  const naturalIdentityMatch = existing.find(
+    (record) =>
+      record.attemptId === session.attemptId &&
+      record.openingIntentHash === session.openingIntentHash,
+  );
+  if (naturalIdentityMatch) {
+    const domain = toGatewaySession(naturalIdentityMatch);
+    return sameOpening(domain, session)
+      ? persisted(ContextAttestationPersistenceStatus.Idempotent, domain)
+      : conflict();
+  }
+  const legacyMatch = existing.find(
+    (record) =>
+      record.attemptId === session.attemptId &&
+      record.openingIntentHash === legacyContextGatewayOpeningIntentHash,
+  );
+  if (legacyMatch) {
+    const domain = toGatewaySession(legacyMatch);
+    if (sameLegacyOpening(domain, session)) {
+      return adoptLegacyGatewaySessionOpening(
+        transaction,
+        legacyMatch.sessionId,
+        session.openingIntentHash,
+      );
+    }
+  }
+  const record = await transaction.reviewContextGatewaySession.create({
+    data: toSessionCreateInput(session),
+  });
+  return persisted(
+    ContextAttestationPersistenceStatus.Created,
+    toGatewaySession(record),
+  );
+}
+
+async function reconcileGatewaySessionOpening(
+  transaction: Prisma.TransactionClient,
+  record: Prisma.ReviewContextGatewaySessionGetPayload<object>,
+  session: GatewaySession,
+): Promise<ContextAttestationPersistenceResult<GatewaySession>> {
+  const domain = toGatewaySession(record);
+  if (
+    record.openingIntentHash === legacyContextGatewayOpeningIntentHash &&
+    sameLegacyOpening(domain, session)
+  ) {
+    return adoptLegacyGatewaySessionOpening(
+      transaction,
+      record.sessionId,
+      session.openingIntentHash,
+    );
+  }
+  return sameOpening(domain, session)
+    ? persisted(ContextAttestationPersistenceStatus.Idempotent, domain)
+    : conflict();
+}
+
+async function adoptLegacyGatewaySessionOpening(
+  transaction: Prisma.TransactionClient,
+  sessionId: string,
+  openingIntentHash: string,
+): Promise<ContextAttestationPersistenceResult<GatewaySession>> {
+  const adopted = await transaction.reviewContextGatewaySession.update({
+    where: { sessionId },
+    data: { openingIntentHash },
+  });
+  return persisted(
+    ContextAttestationPersistenceStatus.Idempotent,
+    toGatewaySession(adopted),
+  );
+}
+
 function sameReplayProof(
   left: TargetReplayProof,
   right: TargetReplayProof,
@@ -301,6 +393,8 @@ function sameReplayProof(
   return (
     left.sourceAttestationId === right.sourceAttestationId &&
     left.sourceAttestationHash === right.sourceAttestationHash &&
+    left.sourceOperationReceiptIdsHash ===
+      right.sourceOperationReceiptIdsHash &&
     left.targetExecutionId === right.targetExecutionId &&
     left.targetWorkSlotId === right.targetWorkSlotId &&
     left.targetReviewRevisionHash === right.targetReviewRevisionHash &&
@@ -328,6 +422,7 @@ function toSessionCreateInput(
     sourceExecutionId: session.sourceExecutionId,
     sourceWorkSlotId: session.sourceWorkSlotId,
     attemptId: session.attemptId,
+    openingIntentHash: session.openingIntentHash,
     sourceLeaseId: session.sourceLeaseId,
     sourceFencingToken: BigInt(session.sourceFencingToken),
     providerKind: toPrismaProviderKind(session.providerKind),
@@ -359,7 +454,7 @@ function toAttestationCreateInput(
     attestationHash: attestation.attestationHash,
     manifestVersion: attestation.manifest.manifestVersion,
     authenticatedChainHash: attestation.manifest.authenticatedChainHash,
-    dependencyCount: attestation.manifest.dependencies.length,
+    dependencyCount: contextAttestationManifestEventCount(attestation.manifest),
     operationManifestJson: toJson(attestation.manifest),
     actualModel: attestation.actualModel,
     terminalOutcomeHash: attestation.terminalOutcomeHash,
@@ -397,6 +492,7 @@ function toReplayProofCreateInput(
     replayProofId: proof.replayProofId,
     sourceAttestationId: proof.sourceAttestationId,
     sourceAttestationHash: proof.sourceAttestationHash,
+    sourceOperationReceiptIdsHash: proof.sourceOperationReceiptIdsHash,
     targetExecutionId: proof.targetExecutionId,
     targetWorkSlotId: proof.targetWorkSlotId,
     targetReviewRevisionHash: proof.targetReviewRevisionHash,
@@ -418,6 +514,7 @@ function replayProofTargetWhere(
     targetWorkSlotId: proof.targetWorkSlotId,
     targetReviewRevisionHash: proof.targetReviewRevisionHash,
     reusePolicyVectorHash: proof.reusePolicyVectorHash,
+    sourceOperationReceiptIdsHash: proof.sourceOperationReceiptIdsHash,
   };
 }
 
@@ -427,6 +524,15 @@ async function lockContextAttestationSession(
 ): Promise<void> {
   await transaction.$executeRaw(
     Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`review-context-session:${sessionId}`}, 0))`,
+  );
+}
+
+async function lockContextGatewayOpening(
+  transaction: Prisma.TransactionClient,
+  attemptId: string,
+): Promise<void> {
+  await transaction.$executeRaw(
+    Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`review-context-opening:${attemptId}`}, 0))`,
   );
 }
 
@@ -440,6 +546,7 @@ async function lockContextReplayTarget(
     proof.targetWorkSlotId,
     proof.targetReviewRevisionHash,
     proof.reusePolicyVectorHash,
+    proof.sourceOperationReceiptIdsHash ?? "legacy_full_attestation",
   ]);
   await transaction.$executeRaw(
     Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`review-context-replay:${identity}`}, 0))`,
@@ -467,6 +574,7 @@ function toGatewaySession(
     sourceExecutionId: record.sourceExecutionId,
     sourceWorkSlotId: record.sourceWorkSlotId,
     attemptId: record.attemptId,
+    openingIntentHash: record.openingIntentHash,
     sourceLeaseId: record.sourceLeaseId,
     sourceFencingToken: record.sourceFencingToken.toString(),
     providerKind: fromPrismaProviderKind(record.providerKind),
@@ -542,6 +650,7 @@ function toReplayProof(
       replayProofId: record.replayProofId,
       sourceAttestationId: record.sourceAttestationId,
       sourceAttestationHash: record.sourceAttestationHash,
+      sourceOperationReceiptIdsHash: record.sourceOperationReceiptIdsHash,
       targetExecutionId: record.targetExecutionId,
       targetWorkSlotId: record.targetWorkSlotId,
       targetReviewRevisionHash: record.targetReviewRevisionHash,
@@ -560,9 +669,9 @@ function toReplayProof(
   );
 }
 
-function decodeManifest(value: Prisma.JsonValue): ContextDependencyManifest {
-  return createContextDependencyManifest(
-    value as unknown as ContextDependencyManifest,
+function decodeManifest(value: Prisma.JsonValue): ContextAttestationManifest {
+  return createContextAttestationManifest(
+    value as unknown as ContextAttestationManifest,
   );
 }
 
@@ -661,6 +770,16 @@ function sameOpening(left: GatewaySession, right: GatewaySession): boolean {
   );
 }
 
+function sameLegacyOpening(
+  left: GatewaySession,
+  right: GatewaySession,
+): boolean {
+  return sameOpening(
+    { ...left, openingIntentHash: right.openingIntentHash },
+    right,
+  );
+}
+
 function sameAttestationIntent(
   left: AcceptedDependencyAttestation,
   right: AcceptedDependencyAttestation,
@@ -674,8 +793,8 @@ function sameAttestationIntent(
     left.sourceFencingToken === right.sourceFencingToken &&
     left.sourceReviewRevisionHash === right.sourceReviewRevisionHash &&
     left.trustedCapabilityProfile === right.trustedCapabilityProfile &&
-    canonicalContextDependencyManifest(left.manifest) ===
-      canonicalContextDependencyManifest(right.manifest) &&
+    canonicalContextAttestationManifest(left.manifest) ===
+      canonicalContextAttestationManifest(right.manifest) &&
     left.actualModel === right.actualModel &&
     left.terminalOutcomeHash === right.terminalOutcomeHash
   );
@@ -694,7 +813,7 @@ function validAcceptanceAggregate(input: {
     input.acceptedSession.sessionId === sessionId &&
     sameOpening(input.expectedSession, input.acceptedSession) &&
     input.expectedSession.eventCount ===
-      input.attestation.manifest.dependencies.length &&
+      contextAttestationManifestEventCount(input.attestation.manifest) &&
     input.acceptedSession.eventCount === input.expectedSession.eventCount &&
     input.acceptedSession.sealedAtMs === input.expectedSession.sealedAtMs &&
     input.attestation.sessionId === sessionId &&

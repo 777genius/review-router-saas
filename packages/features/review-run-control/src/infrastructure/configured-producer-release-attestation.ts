@@ -16,6 +16,7 @@ import {
 import {
   createProducerRelease,
   producerReleaseImmutableKey,
+  reviewInvestigationCapabilityV1,
 } from "../domain/producer-release";
 
 export const reviewRunProducerReleaseAttestationsEnv =
@@ -78,6 +79,8 @@ export class ConfiguredProducerReleaseAttestationRegistry implements ProducerRel
             contextGatewayPolicyVersion: configured.contextGatewayPolicyVersion,
             contextGatewayEntrypointDigest:
               configured.contextGatewayEntrypointDigest,
+            reviewInvestigationProfile:
+              configured.reviewInvestigationProfile ?? null,
             schemaDigest: configured.schemaDigest,
             capabilityProfile: configured.capabilityProfile,
             protocolLimitsProfileId: configured.protocolLimitsProfileId,
@@ -138,12 +141,37 @@ function parseAttestation(value: unknown): TrustedProducerReleaseAttestation {
     "contextGatewayPolicyVersion",
     "contextGatewayEntrypointDigest",
   ].sort();
+  const investigationKeys = [
+    ...expectedKeys,
+    "reviewInvestigationCapability",
+    "reviewInvestigationCoverageProfileHash",
+    "reviewInvestigationPolicyHash",
+  ].sort();
   const actualKeys = Object.keys(value).sort();
   if (
     canonicalJson(actualKeys) !== canonicalJson(expectedKeys) &&
-    canonicalJson(actualKeys) !== canonicalJson(legacyKeys)
+    canonicalJson(actualKeys) !== canonicalJson(legacyKeys) &&
+    canonicalJson(actualKeys) !== canonicalJson(investigationKeys)
   ) {
     throw new Error("producer_release_attestation_shape_invalid");
+  }
+  const investigationValues = [
+    value.reviewInvestigationCapability,
+    value.reviewInvestigationCoverageProfileHash,
+    value.reviewInvestigationPolicyHash,
+  ];
+  const investigationFieldPresence = investigationValues.map(
+    (field) => field !== undefined && field !== null,
+  );
+  const hasReviewInvestigationProfile =
+    investigationFieldPresence.every(Boolean);
+  if (
+    investigationFieldPresence.some(Boolean) &&
+    !hasReviewInvestigationProfile
+  ) {
+    throw new Error(
+      "producer_release_attestation_investigation_profile_incomplete",
+    );
   }
   return {
     producerReleaseId: requiredString(value.producerReleaseId),
@@ -165,6 +193,17 @@ function parseAttestation(value: unknown): TrustedProducerReleaseAttestation {
       value.contextGatewayEntrypointDigest === null
         ? null
         : requiredString(value.contextGatewayEntrypointDigest),
+    reviewInvestigationProfile: hasReviewInvestigationProfile
+      ? {
+          capability: parseReviewInvestigationCapability(
+            value.reviewInvestigationCapability,
+          ),
+          coverageProfileHash: requiredString(
+            value.reviewInvestigationCoverageProfileHash,
+          ),
+          policyHash: requiredString(value.reviewInvestigationPolicyHash),
+        }
+      : null,
     schemaDigest: requiredString(value.schemaDigest),
     canonicalizerDigest: requiredString(value.canonicalizerDigest),
     capabilityProfile: parseCapabilityProfile(value.capabilityProfile),
@@ -186,6 +225,23 @@ function assertAttestation(value: TrustedProducerReleaseAttestation): void {
     (value.contextGatewayEntrypointDigest === null)
   ) {
     throw new Error("producer_release_context_gateway_artifact_incomplete");
+  }
+  const investigation = value.reviewInvestigationProfile ?? null;
+  if (investigation !== null) {
+    if (investigation.capability !== reviewInvestigationCapabilityV1) {
+      throw new Error("producer_release_investigation_capability_invalid");
+    }
+    assertSha256(
+      investigation.coverageProfileHash,
+      "review_investigation_coverage_profile_hash",
+    );
+    assertSha256(investigation.policyHash, "review_investigation_policy_hash");
+    if (
+      value.contextGatewayPolicyVersion === null ||
+      value.contextGatewayEntrypointDigest === null
+    ) {
+      throw new Error("producer_release_investigation_gateway_required");
+    }
   }
   if (
     value.contextGatewayPolicyVersion !== null &&
@@ -217,11 +273,26 @@ function configuredReleaseKey(
     runtimeEntrypointDigest: configured.runtimeEntrypointDigest,
     contextGatewayPolicyVersion: configured.contextGatewayPolicyVersion,
     contextGatewayEntrypointDigest: configured.contextGatewayEntrypointDigest,
+    reviewInvestigationCapability:
+      configured.reviewInvestigationProfile?.capability ?? null,
+    reviewInvestigationCoverageProfileHash:
+      configured.reviewInvestigationProfile?.coverageProfileHash ?? null,
+    reviewInvestigationPolicyHash:
+      configured.reviewInvestigationProfile?.policyHash ?? null,
     schemaDigest: configured.schemaDigest,
     capabilityProfile: configured.capabilityProfile,
     protocolLimitsProfileId: configured.protocolLimitsProfileId,
     operationalSloProfileId: configured.operationalSloProfileId,
   });
+}
+
+function parseReviewInvestigationCapability(
+  value: unknown,
+): typeof reviewInvestigationCapabilityV1 {
+  if (value !== reviewInvestigationCapabilityV1) {
+    throw new Error("producer_release_investigation_capability_invalid");
+  }
+  return value;
 }
 
 function requiredString(value: unknown): string {

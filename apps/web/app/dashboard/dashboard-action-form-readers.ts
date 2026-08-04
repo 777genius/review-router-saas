@@ -68,6 +68,38 @@ export function readReviewConfigurationForm(
     },
     reviewLanguage:
       readOptionalFormString(formData, "reviewLanguage") ?? undefined,
+    investigationRollout: {
+      recordingEnabled:
+        readOptionalFormBoolean(
+          formData,
+          "investigationRollout.recordingEnabled",
+        ) ?? false,
+      shadowEnabled:
+        readOptionalFormBoolean(
+          formData,
+          "investigationRollout.shadowEnabled",
+        ) ?? false,
+      contextCriticEnabled:
+        readOptionalFormBoolean(
+          formData,
+          "investigationRollout.contextCriticEnabled",
+        ) ?? false,
+      verifiedCleanEnabled:
+        readOptionalFormBoolean(
+          formData,
+          "investigationRollout.verifiedCleanEnabled",
+        ) ?? false,
+      crossRevisionReplayEnabled:
+        readOptionalFormBoolean(
+          formData,
+          "investigationRollout.crossRevisionReplayEnabled",
+        ) ?? false,
+      productionEffectsEnabled:
+        readOptionalFormBoolean(
+          formData,
+          "investigationRollout.productionEffectsEnabled",
+        ) ?? false,
+    },
   });
 }
 

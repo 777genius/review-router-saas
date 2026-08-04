@@ -65,6 +65,27 @@ const reviewExecutionConfigurationSchema = z
   })
   .default({ providerMaxParallel: 1, inlineMinAgreement: 1 });
 
+export const disabledReviewInvestigationRolloutConfiguration = Object.freeze({
+  recordingEnabled: false,
+  shadowEnabled: false,
+  contextCriticEnabled: false,
+  verifiedCleanEnabled: false,
+  crossRevisionReplayEnabled: false,
+  productionEffectsEnabled: false,
+});
+
+export const reviewInvestigationRolloutConfigurationSchema = z
+  .object({
+    recordingEnabled: z.boolean().default(false),
+    shadowEnabled: z.boolean().default(false),
+    contextCriticEnabled: z.boolean().default(false),
+    verifiedCleanEnabled: z.boolean().default(false),
+    crossRevisionReplayEnabled: z.boolean().default(false),
+    productionEffectsEnabled: z.boolean().default(false),
+  })
+  .strict()
+  .default(disabledReviewInvestigationRolloutConfiguration);
+
 const reviewConfigurationV1Schema = z.object({
   schemaVersion: z.literal(1).default(1),
   provider: reviewProviderConfigurationSchema,
@@ -80,6 +101,7 @@ const reviewConfigurationV2Schema = z.object({
   blockingPolicy: blockingPolicySchema,
   limits: limitsSchema,
   reviewLanguage: reviewLanguageSchema,
+  investigationRollout: reviewInvestigationRolloutConfigurationSchema,
 });
 
 export type ReviewProviderConfiguration = z.infer<
@@ -92,6 +114,10 @@ export type ReviewExecutionConfiguration = {
   readonly inlineMinAgreement: number;
 };
 
+export type ReviewInvestigationRolloutConfiguration = z.infer<
+  typeof reviewInvestigationRolloutConfigurationSchema
+>;
+
 export type ReviewConfiguration = {
   readonly schemaVersion: 2;
   readonly providers: readonly ReviewProviderConfiguration[];
@@ -100,6 +126,7 @@ export type ReviewConfiguration = {
   readonly blockingPolicy: z.infer<typeof blockingPolicySchema>;
   readonly limits: z.infer<typeof limitsSchema>;
   readonly reviewLanguage?: string;
+  readonly investigationRollout: ReviewInvestigationRolloutConfiguration;
 };
 
 const reviewConfigurationInputSchema = z.union([
@@ -186,6 +213,11 @@ function normalizeReviewConfiguration(
     },
     blockingPolicy: input.blockingPolicy,
     limits: input.limits,
+    investigationRollout: {
+      ...(input.schemaVersion === 2
+        ? input.investigationRollout
+        : disabledReviewInvestigationRolloutConfiguration),
+    },
     ...(input.schemaVersion === 2 && input.reviewLanguage !== undefined
       ? { reviewLanguage: input.reviewLanguage }
       : {}),

@@ -108,6 +108,7 @@ export const providerInvocationManifestV1CanonicalizerDescriptor =
           ProviderExecutionProfile.PromptOnlyEnvelopeV1,
           ProviderExecutionProfile.AgenticUnboundedV1,
           ProviderExecutionProfile.ContextGatewayV1,
+          ProviderExecutionProfile.InvestigationGatewayV1,
         ]),
         unknownValue: ProviderExecutionProfile.Unknown,
         unknownErrorCode: "provider_execution_profile_unknown",

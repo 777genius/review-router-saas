@@ -41,6 +41,43 @@ describe("dashboard action form readers", () => {
       providerMaxParallel: 2,
       inlineMinAgreement: 2,
     });
+    expect(config.investigationRollout).toEqual({
+      recordingEnabled: false,
+      shadowEnabled: false,
+      contextCriticEnabled: false,
+      verifiedCleanEnabled: false,
+      crossRevisionReplayEnabled: false,
+      productionEffectsEnabled: false,
+    });
+  });
+
+  it("preserves explicitly enabled investigation rollout flags", () => {
+    const formData = reviewConfigFormData([
+      {
+        authMode: "openrouter_api_key",
+        model: "openai/gpt-5.3-codex",
+        reasoningEffort: "medium",
+      },
+    ]);
+    for (const flag of [
+      "recordingEnabled",
+      "shadowEnabled",
+      "contextCriticEnabled",
+      "verifiedCleanEnabled",
+      "crossRevisionReplayEnabled",
+      "productionEffectsEnabled",
+    ]) {
+      formData.set(`investigationRollout.${flag}`, "true");
+    }
+
+    expect(readReviewConfigurationForm(formData).investigationRollout).toEqual({
+      recordingEnabled: true,
+      shadowEnabled: true,
+      contextCriticEnabled: true,
+      verifiedCleanEnabled: true,
+      crossRevisionReplayEnabled: true,
+      productionEffectsEnabled: true,
+    });
   });
 
   it.each(["codex_subscription_oauth", "codex_openai_api_key"] as const)(

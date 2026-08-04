@@ -31,6 +31,7 @@ import {
   canonicalJson,
   canonicalReviewOperationalSloProfile,
   canonicalReviewProtocolLimits,
+  reviewInvestigationCapabilityV1,
   type ReviewOperationalSloThresholds,
   type ReviewProtocolLimits,
 } from "../../../packages/features/review-run-control/src/index.js";
@@ -71,6 +72,10 @@ import {
   reviewActionV2CapabilityKeysEnv,
   reviewActionV2ProjectionPolicyVersionEnv,
   reviewActionV2ProviderVoteLanesEnv,
+  reviewInvestigationContextCriticEnabledEnv,
+  reviewInvestigationMaintenanceEnabledEnv,
+  reviewInvestigationRecordingEnabledEnv,
+  reviewInvestigationShadowEnabledEnv,
 } from "../../../apps/api/src/review-action-v2-production-composition.js";
 import { reviewActionV2ProjectionPolicyVersion } from "../../../apps/api/src/review-action-v2-projection-policy.js";
 import { createProductionReviewV2WorkerRuntime } from "../../../apps/worker/src/review-v2-production-runtime.js";
@@ -118,6 +123,25 @@ export type ReviewActionV2E2EFlow = Readonly<{
   findingCount: number;
   streamVersion: string;
   executionVersion: string;
+}>;
+
+export type ReviewActionV2E2EAuthorization = Readonly<{
+  authorizationId: string;
+  authorizationToken: string;
+  reviewRevisionHash: string;
+  selectedProtocolVersion: string;
+}>;
+
+export type ReviewActionV2E2EInvestigationProfile = Readonly<{
+  coverageProfileHash: string;
+  policyHash: string;
+  gatewayPolicyVersion: string;
+}>;
+
+export type ReviewActionV2E2EHarnessOptions = Readonly<{
+  investigationProfile?: ReviewActionV2E2EInvestigationProfile;
+  environmentOverrides?: Readonly<Record<string, string>>;
+  protocolMaxAttemptsPerSlot?: number;
 }>;
 
 export class ReviewActionV2E2EHarness {
@@ -168,7 +192,10 @@ export class ReviewActionV2E2EHarness {
     this.originalFetch = input.originalFetch;
   }
 
-  static async create(databaseUrl: string): Promise<ReviewActionV2E2EHarness> {
+  static async create(
+    databaseUrl: string,
+    options: ReviewActionV2E2EHarnessOptions = {},
+  ): Promise<ReviewActionV2E2EHarness> {
     assertDisposableDatabaseUrl(databaseUrl);
     const prisma = createPrismaClient({ databaseUrl, poolMax: 12 });
     const prefix = `review-v2-e2e-${randomUUID()}`;
@@ -199,13 +226,19 @@ export class ReviewActionV2E2EHarness {
     });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = fakeGitHub.fetch;
-    const env = productionEnv({
-      appPrivateKey: appKeys.privateKey
-        .export({ type: "pkcs8", format: "pem" })
-        .toString(),
-      producerReleaseId,
-      protocolLimitsProfileId,
-      operationalSloProfileId,
+    const env = Object.freeze({
+      ...productionEnv({
+        appPrivateKey: appKeys.privateKey
+          .export({ type: "pkcs8", format: "pem" })
+          .toString(),
+        producerReleaseId,
+        protocolLimitsProfileId,
+        operationalSloProfileId,
+        ...(options.investigationProfile
+          ? { investigationProfile: options.investigationProfile }
+          : {}),
+      }),
+      ...(options.environmentOverrides ?? {}),
     });
 
     try {
@@ -217,6 +250,14 @@ export class ReviewActionV2E2EHarness {
         producerReleaseId,
         protocolLimitsProfileId,
         operationalSloProfileId,
+        ...(options.investigationProfile
+          ? { investigationProfile: options.investigationProfile }
+          : {}),
+        ...(options.protocolMaxAttemptsPerSlot === undefined
+          ? {}
+          : {
+              protocolMaxAttemptsPerSlot: options.protocolMaxAttemptsPerSlot,
+            }),
       });
       const routes = composeReviewActionV2ProductionRoutes({
         enabled: true,
@@ -265,12 +306,7 @@ export class ReviewActionV2E2EHarness {
     await this.prisma.$disconnect();
   }
 
-  async authorize(): Promise<{
-    readonly authorizationId: string;
-    readonly authorizationToken: string;
-    readonly reviewRevisionHash: string;
-    readonly selectedProtocolVersion: string;
-  }> {
+  async authorize(): Promise<ReviewActionV2E2EAuthorization> {
     const oidcToken = await this.signOidcToken();
     const request: ReviewRunAuthorizeRequest = {
       ...envelope(`${this.prefix}-authorize`),
@@ -307,9 +343,11 @@ export class ReviewActionV2E2EHarness {
     input: {
       readonly slotCount?: number;
       readonly attachSlotCount?: number;
+      readonly attemptBudget?: number;
+      readonly authorization?: ReviewActionV2E2EAuthorization;
     } = {},
   ): Promise<ReviewActionV2E2EFlow> {
-    const authorized = await this.authorize();
+    const authorized = input.authorization ?? (await this.authorize());
     const executionId = `${this.prefix}-execution-${randomUUID()}`;
     const workSlotId = `${executionId}-slot-0`;
     const ownerIdHash = sha256(`${executionId}-owner`);
@@ -317,7 +355,7 @@ export class ReviewActionV2E2EHarness {
     const slotCount = input.slotCount ?? 1;
     const attachSlotCount = input.attachSlotCount ?? 1;
     const workSlots = Array.from({ length: slotCount }, (_, index) => ({
-      attemptBudget: 2,
+      attemptBudget: input.attemptBudget ?? 2,
       providerKind: ReviewExecutionProviderKind.Codex,
       providerVoteIdentityHash,
       required: true,
@@ -430,6 +468,8 @@ export class ReviewActionV2E2EHarness {
         actualModel: "gpt-5-codex",
         contextDependencyAttestationId: null,
         contextDependencyAttestationHash: null,
+        investigationCertificateId: null,
+        investigationCertificateHash: null,
         payloadCanonicalJson,
         payloadHash,
         qualityFlags: [],
@@ -653,6 +693,8 @@ export class ReviewActionV2E2EHarness {
           observation.contextDependencyAttestationId,
         contextDependencyAttestationHash:
           observation.contextDependencyAttestationHash,
+        investigationCertificateId: observation.investigationCertificateId,
+        investigationCertificateHash: observation.investigationCertificateHash,
         payloadCanonicalJson: canonicalJson(observation.payloadJson),
         payloadHash: observation.payloadHash,
         qualityFlags: [],
@@ -1010,8 +1052,9 @@ const oidcSigningKeys = new Map<
 
 export async function createReviewActionV2E2EHarness(
   databaseUrl: string,
+  options: ReviewActionV2E2EHarnessOptions = {},
 ): Promise<ReviewActionV2E2EHarness> {
-  return ReviewActionV2E2EHarness.create(databaseUrl);
+  return ReviewActionV2E2EHarness.create(databaseUrl, options);
 }
 
 export async function resetReviewActionV2E2EDatabase(
@@ -1102,12 +1145,14 @@ async function seedProductionControlPlane(
     producerReleaseId: string;
     protocolLimitsProfileId: string;
     operationalSloProfileId: string;
+    investigationProfile?: ReviewActionV2E2EInvestigationProfile;
+    protocolMaxAttemptsPerSlot?: number;
   }>,
 ): Promise<void> {
   const now = new Date();
   const limits: ReviewProtocolLimits = {
     maxWorkSlots: 20,
-    maxAttemptsPerSlot: 4,
+    maxAttemptsPerSlot: ids.protocolMaxAttemptsPerSlot ?? 4,
     maxObservationBytes: 1_000_000,
     maxObservationFindings: 1_000,
     maxProjectionBytes: 1_000_000,
@@ -1164,12 +1209,22 @@ async function seedProductionControlPlane(
       runtimeCommitSha,
       wrapperEntrypointDigest: null,
       runtimeEntrypointDigest: sha256("runtime-entrypoint"),
-      contextGatewayPolicyVersion: "e2e-gateway-policy-v1",
+      contextGatewayPolicyVersion:
+        ids.investigationProfile?.gatewayPolicyVersion ??
+        "e2e-gateway-policy-v1",
       contextGatewayEntrypointDigest: "f".repeat(64),
       schemaDigest: reviewActionV2PublishedSchemaDigest,
       capabilityProfile: "exact_revision_v2",
       protocolLimitsProfileId: ids.protocolLimitsProfileId,
       operationalSloProfileId: ids.operationalSloProfileId,
+      ...(ids.investigationProfile
+        ? {
+            reviewInvestigationCapability: reviewInvestigationCapabilityV1,
+            reviewInvestigationCoverageProfileHash:
+              ids.investigationProfile.coverageProfileHash,
+            reviewInvestigationPolicyHash: ids.investigationProfile.policyHash,
+          }
+        : {}),
       registeredAt: now,
     },
   });
@@ -1281,6 +1336,7 @@ function productionEnv(input: {
   readonly producerReleaseId: string;
   readonly protocolLimitsProfileId: string;
   readonly operationalSloProfileId: string;
+  readonly investigationProfile?: ReviewActionV2E2EInvestigationProfile;
 }): Readonly<Record<string, string>> {
   const contextReplayKeyId = "review-v2-e2e-context-key";
   const signingKeys = JSON.stringify([
@@ -1306,13 +1362,24 @@ function productionEnv(input: {
         runtimeCommitSha,
         wrapperEntrypointDigest: null,
         runtimeEntrypointDigest: sha256("runtime-entrypoint"),
-        contextGatewayPolicyVersion: "e2e-gateway-policy-v1",
+        contextGatewayPolicyVersion:
+          input.investigationProfile?.gatewayPolicyVersion ??
+          "e2e-gateway-policy-v1",
         contextGatewayEntrypointDigest: "f".repeat(64),
         schemaDigest: reviewActionV2PublishedSchemaDigest,
         canonicalizerDigest: reviewActionV2CanonicalizerDigest,
         capabilityProfile: "exact_revision_v2",
         protocolLimitsProfileId: input.protocolLimitsProfileId,
         operationalSloProfileId: input.operationalSloProfileId,
+        ...(input.investigationProfile
+          ? {
+              reviewInvestigationCapability: reviewInvestigationCapabilityV1,
+              reviewInvestigationCoverageProfileHash:
+                input.investigationProfile.coverageProfileHash,
+              reviewInvestigationPolicyHash:
+                input.investigationProfile.policyHash,
+            }
+          : {}),
       },
     ]),
     [reviewActionV2ProviderVoteLanesEnv]: JSON.stringify([
@@ -1332,6 +1399,14 @@ function productionEnv(input: {
         secretBase64: Buffer.from("r".repeat(32)).toString("base64"),
       },
     ]),
+    ...(input.investigationProfile
+      ? {
+          [reviewInvestigationRecordingEnabledEnv]: "1",
+          [reviewInvestigationShadowEnabledEnv]: "1",
+          [reviewInvestigationContextCriticEnabledEnv]: "1",
+          [reviewInvestigationMaintenanceEnabledEnv]: "1",
+        }
+      : {}),
     [reviewV2WorkerEnabledEnv]: "1",
     REVIEW_ROUTER_REVIEW_V2_COMPLETION_CLAIM_MS: "1000",
     REVIEW_ROUTER_REVIEW_V2_PUBLICATION_CLAIM_MS: "1000",

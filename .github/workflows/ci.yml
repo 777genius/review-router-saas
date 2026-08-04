@@ -28,6 +28,7 @@ env:
   REVIEW_ROUTER_ACTION_VERSION: main
   REVIEW_ROUTER_DEFAULT_MODEL: gpt-5.5
   REVIEW_ROUTER_DEFAULT_EFFORT: xhigh
+  REVIEW_ROUTER_PAIRED_ACTION_REF: 295e76f7777a995b8fd0b0bb0a36788429c89b83
   REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS: "0"
   REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0"
   REVIEW_ROUTER_PG_DUMP: /usr/lib/postgresql/17/bin/pg_dump
@@ -130,8 +131,42 @@ jobs:
       - name: Review v2 migration rehearsal
         run: pnpm review-v2:migration-rehearsal
 
+      - name: Review investigation migration rehearsal
+        run: pnpm review-investigation:migration-rehearsal
+
       - name: Review Action v2 production DB E2E
         run: pnpm review-v2:e2e
+
+      - name: Review investigation production DB E2E
+        run: pnpm review-investigation:e2e
+
+      - name: Validate paired Action release pin
+        run: |
+          if ! printf '%s' "$REVIEW_ROUTER_PAIRED_ACTION_REF" | grep -Eq '^[a-f0-9]{40}$'; then
+            echo "REVIEW_ROUTER_PAIRED_ACTION_REF must be replaced with the immutable Action commit SHA"
+            exit 1
+          fi
+
+      - name: Checkout pinned paired Review Action
+        uses: actions/checkout@v6
+        with:
+          repository: 777genius/review-router
+          ref: ${{ env.REVIEW_ROUTER_PAIRED_ACTION_REF }}
+          path: .paired/review-router-action
+          persist-credentials: false
+
+      - name: Install paired Review Action dependencies
+        run: npm ci --ignore-scripts --prefix .paired/review-router-action
+
+      - name: Paired Review Action to SaaS investigation E2E
+        env:
+          REVIEW_ROUTER_ACTION_SOURCE_DIR: ${{ github.workspace }}/.paired/review-router-action
+        run: pnpm review-investigation:paired-e2e
+
+      - name: Remove paired Review Action checkout
+        if: always()
+        run: |
+          node -e "require('node:fs').rmSync('.paired', { recursive: true, force: true })"
 
       - name: Backup restore smoke test
         run: pnpm db:restore:smoke

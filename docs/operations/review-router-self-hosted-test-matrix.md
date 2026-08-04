@@ -34,7 +34,24 @@ for live validation.
 | Existing repository after v7                                       | Direct initialization is blocked by the conservative `v1_open` authority fence    |
 | New repository legacy/direct race                                  | Exactly one authority mode wins under the shared repository lock                  |
 
-## E2E Gates
+## E2E Layers
+
+These layers prove different boundaries and are not interchangeable:
+
+1. `pnpm self-hosted:e2e` is a Compose readiness and fake-control-plane E2E. It
+   proves boot, migrations, service health, deterministic local review paths,
+   and log redaction without contacting a provider or customer repository.
+2. `pnpm review-investigation:paired-e2e` binds the exact Action commit,
+   `dist/index.js` digest, Context Gateway digest, and SaaS release registration.
+   It creates a private detached checkout of the configured Action SHA, then
+   fails closed unless that checkout exactly matches the immutable commit and
+   its release-relevant files are clean. Local edits in the source Action
+   worktree cannot enter the paired run. A separate artifact smoke executes
+   committed `dist/index.js` with real production wiring under a no-network fake
+   boundary.
+3. A live sandbox GitHub E2E proves reusable-workflow, GitHub App, OIDC, and
+   publication integration. It is an operational release gate and must use a
+   disposable repository with explicit authorization.
 
 | Scenario                          | Required evidence                                                                                  |
 | --------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -58,7 +75,7 @@ A self-hosted release is not complete until the final report contains:
 - real repository run URL only if explicitly authorized
 - confirmation that logs do not contain provider credentials or raw source
 
-The reproducible local Compose and review harness evidence is produced by:
+The reproducible local Compose/fake-control-plane evidence is produced by:
 
 ```bash
 pnpm self-hosted:e2e

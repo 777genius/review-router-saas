@@ -1,4 +1,5 @@
 export * from "./domain/review-execution";
+export * from "./domain/review-projection-authority";
 export * from "./domain/review-execution-transitions";
 export * from "./domain/invocation-flight";
 export * from "./domain/review-requested-intent";

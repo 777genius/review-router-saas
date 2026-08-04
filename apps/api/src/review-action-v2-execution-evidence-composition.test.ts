@@ -1808,6 +1808,8 @@ async function commitRequest(
     actualModel: observation.actualModel,
     contextDependencyAttestationId: null,
     contextDependencyAttestationHash: null,
+    investigationCertificateId: null,
+    investigationCertificateHash: null,
     payloadCanonicalJson,
     payloadHash: observation.payloadHash,
     qualityFlags: observation.qualityFlags,

@@ -1,0 +1,339 @@
+import { canonicalJson } from "../../domain/canonicalization";
+import type { ReviewInvestigation } from "../../domain/review-investigation";
+import {
+  VersionedCoverageExpansionPolicy,
+  type CoverageExpansionPolicy,
+} from "../../domain/coverage-policies";
+import type { InvestigationFinding } from "../../domain/investigation-turn";
+import {
+  InvestigationFileContentKind,
+  InvestigationOperationKind,
+  InvestigationOperationRevision,
+  type InvestigationFileReadEvidence,
+} from "../../domain/investigation-operation-evidence";
+import {
+  VersionedObligationClosurePolicy,
+  type ObligationClosurePolicy,
+} from "../../domain/obligation-closure-policy";
+import {
+  canonicalInvestigationTerminalObservation,
+  canonicalInvestigationTurnObservation,
+  type InvestigationTurnObservation,
+} from "../../domain/investigation-turn-observation";
+import { AttestedTurnClosurePreparation } from "../attested-turn-closure-preparation";
+import { AttestedTurnDiscoveryPreparation } from "../attested-turn-discovery-preparation";
+import { AttestedTurnProposalPreparation } from "../attested-turn-proposal-preparation";
+import { AttestedTurnUnresolvablePreparation } from "../attested-turn-unresolvable-preparation";
+import type { InvestigationDigestPort } from "../ports/digest-port";
+import type { InvestigationStorePort } from "../ports/investigation-store-port";
+import type { InvestigationTurnEvidencePort } from "../ports/investigation-turn-evidence-port";
+import type { ReviewInvestigationReadModel } from "../investigation-read-model";
+import { toInvestigationReadModel } from "../investigation-read-model";
+import {
+  createVerifiedOperationEvidenceIndex,
+  type VerifiedOperationEvidenceIndex,
+} from "../verified-operation-evidence-index";
+import {
+  CommitInvestigationTurn,
+  type CommitInvestigationTurnCommand,
+} from "./commit-investigation-turn";
+import {
+  digestCanonical,
+  restoreCommandOrThrow,
+} from "./investigation-use-case-support";
+
+export type CommitAttestedInvestigationTurnCommand = Readonly<{
+  commandId: string;
+  investigationId: string;
+  expectedVersion: number;
+  turnId: string;
+  sourceAttemptId: string;
+  sourceLeaseId: string;
+  sourceFencingToken: string;
+  acceptedAttestationId: string;
+  acceptedAttestationHash: string;
+  turnObservationHash: string;
+  observation: InvestigationTurnObservation;
+}>;
+
+export class CommitAttestedInvestigationTurn {
+  private readonly closurePreparation: AttestedTurnClosurePreparation;
+  private readonly discoveryPreparation: AttestedTurnDiscoveryPreparation;
+  private readonly unresolvablePreparation =
+    new AttestedTurnUnresolvablePreparation();
+  private readonly proposalPreparation: AttestedTurnProposalPreparation;
+
+  constructor(
+    private readonly store: InvestigationStorePort,
+    private readonly evidence: InvestigationTurnEvidencePort,
+    private readonly digest: InvestigationDigestPort,
+    private readonly commit: CommitInvestigationTurn,
+    closurePolicy: ObligationClosurePolicy = new VersionedObligationClosurePolicy(),
+    private readonly expansionPolicy: CoverageExpansionPolicy = new VersionedCoverageExpansionPolicy(),
+  ) {
+    this.closurePreparation = new AttestedTurnClosurePreparation(
+      digest,
+      closurePolicy,
+    );
+    this.discoveryPreparation = new AttestedTurnDiscoveryPreparation(digest);
+    this.proposalPreparation = new AttestedTurnProposalPreparation(digest);
+  }
+
+  async execute(
+    command: CommitAttestedInvestigationTurnCommand,
+  ): Promise<ReviewInvestigationReadModel> {
+    const idempotencyHash = await this.digest.digestUtf8(
+      canonicalJson({
+        operation: "commit_attested_investigation_turn",
+        command,
+      }),
+    );
+    const restored = await restoreCommandOrThrow({
+      store: this.store,
+      commandId: command.commandId,
+      commandHash: idempotencyHash,
+    });
+    if (restored) return toInvestigationReadModel(restored);
+    const current = await this.store.findById(command.investigationId);
+    if (
+      current === null ||
+      current.version !== command.expectedVersion ||
+      current.activeTurn === null
+    ) {
+      throw new Error("investigation_concurrency_conflict");
+    }
+    assertObservationBinding(current, command);
+    if (
+      (await this.digest.digestUtf8(
+        canonicalInvestigationTurnObservation(command.observation),
+      )) !== command.turnObservationHash
+    ) {
+      throw new Error("investigation_turn_observation_hash_mismatch");
+    }
+    const terminalOutcomeHash = await this.digest.digestUtf8(
+      canonicalInvestigationTerminalObservation(command.observation),
+    );
+    const verified = await this.evidence.verify({
+      acceptedAttestationId: command.acceptedAttestationId,
+      acceptedAttestationHash: command.acceptedAttestationHash,
+      sourceExecutionId: current.executionId,
+      sourceWorkSlotId: current.workSlotId,
+      sourceReviewRevisionHash: current.revision.reviewRevisionHash,
+      attemptId: command.sourceAttemptId,
+      sourceLeaseId: command.sourceLeaseId,
+      sourceFencingToken: command.sourceFencingToken,
+      actualModel: command.observation.actualModel,
+      terminalOutcomeHash,
+    });
+    if (
+      verified === null ||
+      verified.gatewayPolicyVersion !== current.contract.gatewayPolicyVersion ||
+      verified.acceptedAttestationId !== command.acceptedAttestationId ||
+      verified.acceptedAttestationHash !== command.acceptedAttestationHash ||
+      verified.terminalOutcomeHash !== terminalOutcomeHash ||
+      verified.actualProviderKind !== command.observation.actualProviderKind
+    ) {
+      throw new Error("investigation_turn_attestation_invalid");
+    }
+    const operationEvidence = createVerifiedOperationEvidenceIndex(
+      verified.operations,
+    );
+    const preparedClosures = await this.closurePreparation.prepare({
+      investigation: current,
+      closureClaims: command.observation.closureClaims,
+      operationEvidence,
+      acceptedAttestationId: command.acceptedAttestationId,
+      acceptedAttestationHash: command.acceptedAttestationHash,
+    });
+    const discoveryClaims = await this.discoveryPreparation.prepare({
+      closureClaims: command.observation.closureClaims,
+      providerClaims: command.observation.operationBackedDiscoveryClaims,
+      investigation: current,
+      operationEvidence,
+    });
+    const deterministicExpansions = this.expansionPolicy.expand({
+      contract: current.contract,
+      currentObligations: current.obligations,
+      discoveryClaims,
+    });
+    assertEvidenceReferences(
+      command.observation.findings.flatMap(
+        (finding) => finding.evidenceOperationReceiptIds,
+      ),
+      operationEvidence,
+      "finding",
+    );
+    await assertFindingEvidenceBindings(
+      command.observation.findings,
+      operationEvidence,
+      this.digest,
+    );
+    assertEvidenceReferences(
+      command.observation.unresolvableClaims.flatMap(
+        (claim) => claim.evidenceOperationReceiptIds,
+      ),
+      operationEvidence,
+      "unresolvable",
+    );
+    const unresolvableDecisions = this.unresolvablePreparation.prepare({
+      investigation: current,
+      providerClaims: command.observation.unresolvableClaims,
+      operationEvidence,
+    });
+    const proposals = await this.proposalPreparation.prepare(
+      command.observation.obligationProposals,
+    );
+    const findings: InvestigationFinding[] = await Promise.all(
+      command.observation.findings.map(async (finding) => ({
+        fingerprint: await digestCanonical(this.digest, {
+          severity: finding.severity,
+          title: finding.title,
+          body: finding.body,
+          path: finding.path,
+          line: finding.line,
+          evidenceReceiptIds: [...finding.evidenceOperationReceiptIds].sort(),
+        }),
+        severity: finding.severity,
+        title: finding.title,
+        body: finding.body,
+        path: finding.path,
+        line: finding.line,
+        evidenceReceiptIds: [...finding.evidenceOperationReceiptIds],
+      })),
+    );
+    const commitCommand: CommitInvestigationTurnCommand = {
+      commandId: command.commandId,
+      investigationId: command.investigationId,
+      expectedVersion: command.expectedVersion,
+      turnId: command.turnId,
+      closureClaims: preparedClosures.closureClaims,
+      // Provider output is only a suggestion; deterministic policy owns the decision.
+      unresolvableDecisions,
+      proposals,
+      deterministicExpansions,
+      findings,
+      acceptedEvidenceReceiptIds: [...operationEvidence.operationReceiptIds],
+      criticDecision: command.observation.criticDecision,
+      usageTokens: command.observation.usage.totalTokens,
+      durationMs: command.observation.durationMs,
+      acceptedAttestationId: command.acceptedAttestationId,
+      sanitizedOutcomeHash: command.turnObservationHash,
+      provenance: {
+        turnId: command.turnId,
+        purpose: command.observation.purpose,
+        actualProviderKind: verified.actualProviderKind,
+        actualModel: command.observation.actualModel,
+        runtimeProfile: command.observation.runtimeProfile,
+        inputTokens: command.observation.usage.inputTokens,
+        cachedInputTokens: command.observation.usage.cachedInputTokens,
+        outputTokens: command.observation.usage.outputTokens,
+        reasoningOutputTokens: command.observation.usage.reasoningOutputTokens,
+        totalTokens: command.observation.usage.totalTokens,
+        durationMs: command.observation.durationMs,
+        acceptedAttestationId: command.acceptedAttestationId,
+        acceptedAttestationHash: command.acceptedAttestationHash,
+        terminalOutcomeHash,
+      },
+      idempotencyHash,
+    };
+    return this.commit.execute(commitCommand);
+  }
+}
+
+function assertObservationBinding(
+  current: ReviewInvestigation,
+  command: CommitAttestedInvestigationTurnCommand,
+): void {
+  const turn = current.activeTurn;
+  if (
+    turn === null ||
+    command.observation.turnId !== command.turnId ||
+    command.observation.turnId !== turn.turnId ||
+    command.observation.dossierVersion !== command.expectedVersion ||
+    command.observation.purpose !== turn.purpose ||
+    command.observation.runtimeProfile !== current.runtimeProfile ||
+    command.observation.contextAttestationReference !==
+      command.acceptedAttestationId
+  ) {
+    throw new Error("investigation_turn_observation_binding_invalid");
+  }
+}
+
+function assertEvidenceReferences(
+  receiptIds: readonly string[],
+  evidence: VerifiedOperationEvidenceIndex,
+  kind: string,
+): void {
+  if (receiptIds.some((receiptId) => !evidence.has(receiptId))) {
+    throw new Error(`investigation_${kind}_evidence_invalid`);
+  }
+}
+
+async function assertFindingEvidenceBindings(
+  findings: InvestigationTurnObservation["findings"],
+  evidence: VerifiedOperationEvidenceIndex,
+  digest: InvestigationDigestPort,
+): Promise<void> {
+  for (const finding of findings) {
+    const pathHash = await digest.digestUtf8(finding.path);
+    const referencedFileReads = finding.evidenceOperationReceiptIds
+      .map((receiptId) => evidence.get(receiptId))
+      .filter(
+        (operation): operation is InvestigationFileReadEvidence =>
+          operation?.operationKind === InvestigationOperationKind.FileRead &&
+          operation.revision === InvestigationOperationRevision.Head &&
+          operation.pathHash === pathHash,
+      );
+    const completeGroups = groupFileReads(referencedFileReads).filter(
+      isCompleteFileReadGroup,
+    );
+    if (completeGroups.length === 0) {
+      throw new Error("investigation_finding_evidence_path_invalid");
+    }
+    const findingLine = finding.line;
+    if (
+      findingLine !== null &&
+      !completeGroups.some(
+        (group) =>
+          group.every(
+            (operation) =>
+              operation.contentKind === InvestigationFileContentKind.Text &&
+              operation.lineCount !== null &&
+              operation.lineCount === group[0]!.lineCount,
+          ) && findingLine <= group[0]!.lineCount!,
+      )
+    ) {
+      throw new Error("investigation_finding_evidence_line_invalid");
+    }
+  }
+}
+
+function groupFileReads(
+  reads: readonly InvestigationFileReadEvidence[],
+): readonly (readonly InvestigationFileReadEvidence[])[] {
+  const groups = new Map<string, InvestigationFileReadEvidence[]>();
+  for (const read of reads) {
+    const key = [read.treeOid, read.pathHash, read.blobOid, read.mode].join(
+      ":",
+    );
+    const group = groups.get(key) ?? [];
+    group.push(read);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) =>
+    [...group].sort((left, right) => left.startByte - right.startByte),
+  );
+}
+
+function isCompleteFileReadGroup(
+  reads: readonly InvestigationFileReadEvidence[],
+): boolean {
+  if (reads.length === 0 || reads[0]!.startByte !== 0) return false;
+  let nextByte = 0;
+  for (const read of reads) {
+    if (read.startByte !== nextByte || read.byteCount < 0) return false;
+    nextByte += read.byteCount;
+  }
+  const terminal = reads.at(-1)!;
+  return terminal.eof && terminal.complete;
+}

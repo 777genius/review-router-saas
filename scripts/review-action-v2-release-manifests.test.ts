@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertFullCommitSha,
   buildHandoffManifest,
+  buildReleaseRegistrationCandidateFields,
   buildReleaseManifest,
   canonicalJson,
   parseContextGatewayReleaseMetadata,
@@ -11,6 +12,10 @@ import {
   parseHandoffManifest,
   parseProtocolGenerationManifest,
   parseReleaseManifest,
+  RELEASE_MANIFEST_VERSION,
+  REVIEW_INVESTIGATION_RELEASE_CAPABILITY,
+  REVIEW_INVESTIGATION_RELEASE_COVERAGE_PROFILE_HASH,
+  REVIEW_INVESTIGATION_RELEASE_POLICY_HASH,
   sha256Digest,
   validateContractExportDescriptor,
 } from "./lib/review-action-v2-release-manifests.mjs";
@@ -19,6 +24,15 @@ const fixtureRoot = join(
   process.cwd(),
   "scripts/fixtures/review-action-v2-release",
 );
+const capabilityGolden = JSON.parse(
+  readFileSync(
+    join(fixtureRoot, "review-investigation-capability-v1.golden.json"),
+    "utf8",
+  ),
+) as {
+  coverageProfile: { sha256: string };
+  policy: { sha256: string };
+};
 
 describe("review Action v2 release manifests", () => {
   it("generates byte-stable handoff and release fixtures", () => {
@@ -83,6 +97,51 @@ describe("review Action v2 release manifests", () => {
     expect(parseContextGatewayReleaseMetadata(metadata)).toMatchObject({
       contextGatewayPolicyVersion: "context-gateway-v3",
     });
+    const legacyWithAuthenticatedSupport = canonicalJson({
+      ...JSON.parse(metadata),
+      supportedContextGatewayPolicyVersions: [
+        "context-gateway-v3",
+        "context-gateway-v4",
+      ],
+    });
+    expect(
+      parseContextGatewayReleaseMetadata(legacyWithAuthenticatedSupport),
+    ).toMatchObject({
+      supportedContextGatewayPolicyVersions: [
+        "context-gateway-v3",
+        "context-gateway-v4",
+      ],
+    });
+
+    const investigation = investigationGatewayMetadata();
+    expect(
+      parseContextGatewayReleaseMetadata(canonicalJson(investigation)),
+    ).toEqual(investigation);
+    expect(() =>
+      parseContextGatewayReleaseMetadata(
+        canonicalJson({
+          ...investigation,
+          supportedContextGatewayPolicyVersions: ["context-gateway-v4"],
+        }),
+      ),
+    ).toThrow("authenticated canonical policy set");
+    expect(() =>
+      parseContextGatewayReleaseMetadata(
+        canonicalJson({
+          ...investigation,
+          reviewInvestigationCoverageProfileHash: "e".repeat(64),
+        }),
+      ),
+    ).toThrow("does not match the authoritative fixture");
+    expect(() =>
+      parseContextGatewayReleaseMetadata(
+        canonicalJson({
+          ...JSON.parse(metadata),
+          reviewInvestigationCapability:
+            REVIEW_INVESTIGATION_RELEASE_CAPABILITY,
+        }),
+      ),
+    ).toThrow("fields must be exactly");
     expect(() =>
       parseContextGatewayReleaseMetadata(`${metadata}${" ".repeat(4_096)}`),
     ).toThrow("oversized");
@@ -94,6 +153,103 @@ describe("review Action v2 release manifests", () => {
         }),
       ),
     ).toThrow("normalized relative POSIX path");
+  });
+
+  it("binds the authenticated v4 investigation profile into manifest v3", () => {
+    const handoff = parseHandoffManifest(fixture("expected-handoff.json"));
+    const release = buildReleaseManifest({
+      handoffManifest: handoff,
+      handoffManifestDigest: sha256Digest(canonicalJson(handoff)),
+      actionCommitSha: "d".repeat(40),
+      runtimeEntrypointPath: "dist/index.js",
+      runtimeEntrypointDigest: "e".repeat(64),
+      contextGatewayReleaseMetadata: investigationGatewayMetadata(),
+    });
+
+    expect(release).toMatchObject({
+      releaseManifestVersion: RELEASE_MANIFEST_VERSION,
+      contextGatewayPolicyVersion: "context-gateway-v4",
+      supportedContextGatewayPolicyVersions: [
+        "context-gateway-v3",
+        "context-gateway-v4",
+      ],
+      reviewInvestigationCapability: REVIEW_INVESTIGATION_RELEASE_CAPABILITY,
+      reviewInvestigationCoverageProfileHash:
+        capabilityGolden.coverageProfile.sha256,
+      reviewInvestigationPolicyHash: capabilityGolden.policy.sha256,
+    });
+    expect(parseReleaseManifest(canonicalJson(release))).toEqual(release);
+    expect(buildReleaseRegistrationCandidateFields(release)).toMatchObject({
+      contextGatewayPolicyVersion: "context-gateway-v4",
+      reviewInvestigationProfile: {
+        capability: REVIEW_INVESTIGATION_RELEASE_CAPABILITY,
+        coverageProfileHash: capabilityGolden.coverageProfile.sha256,
+        policyHash: capabilityGolden.policy.sha256,
+      },
+    });
+
+    const tamperedHash = {
+      ...release,
+      reviewInvestigationPolicyHash: "f".repeat(64),
+    };
+    expect(() => parseReleaseManifest(canonicalJson(tamperedHash))).toThrow(
+      "investigation hashes do not match the authoritative fixture",
+    );
+    const reorderedPolicies = {
+      ...release,
+      supportedContextGatewayPolicyVersions: [
+        "context-gateway-v4",
+        "context-gateway-v3",
+      ],
+    };
+    expect(() =>
+      parseReleaseManifest(canonicalJson(reorderedPolicies)),
+    ).toThrow("authenticated canonical policy set");
+  });
+
+  it("keeps v2 manifests legacy-only and rejects manual v4 claims", () => {
+    const legacy = JSON.parse(fixture("expected-release.json"));
+    expect(parseReleaseManifest(canonicalJson(legacy))).toEqual(legacy);
+    expect(buildReleaseRegistrationCandidateFields(legacy)).toMatchObject({
+      contextGatewayPolicyVersion: "context-gateway-v3",
+      reviewInvestigationProfile: null,
+    });
+    expect(() =>
+      parseReleaseManifest(
+        canonicalJson({
+          ...legacy,
+          reviewInvestigationCapability:
+            REVIEW_INVESTIGATION_RELEASE_CAPABILITY,
+          reviewInvestigationCoverageProfileHash:
+            REVIEW_INVESTIGATION_RELEASE_COVERAGE_PROFILE_HASH,
+          reviewInvestigationPolicyHash:
+            REVIEW_INVESTIGATION_RELEASE_POLICY_HASH,
+          supportedContextGatewayPolicyVersions: [
+            "context-gateway-v3",
+            "context-gateway-v4",
+          ],
+        }),
+      ),
+    ).toThrow("fields must be exactly");
+
+    legacy.contextGatewayPolicyVersion = "context-gateway-v4";
+    expect(() => parseReleaseManifest(canonicalJson(legacy))).toThrow(
+      "cannot claim investigation capability",
+    );
+
+    const handoff = parseHandoffManifest(fixture("expected-handoff.json"));
+    expect(() =>
+      buildReleaseManifest({
+        handoffManifest: handoff,
+        handoffManifestDigest: sha256Digest(canonicalJson(handoff)),
+        actionCommitSha: "d".repeat(40),
+        runtimeEntrypointPath: "dist/index.js",
+        runtimeEntrypointDigest: "e".repeat(64),
+        contextGatewayPolicyVersion: "context-gateway-v4",
+        contextGatewayEntrypointPath: "dist/context-gateway.js",
+        contextGatewayEntrypointDigest: "f".repeat(64),
+      }),
+    ).toThrow("require authenticated contextGatewayReleaseMetadata");
   });
 
   it("requires lowercase full commit SHAs and safe generated paths", () => {
@@ -139,4 +295,22 @@ describe("review Action v2 release manifests", () => {
 
 function fixture(relativePath: string): string {
   return readFileSync(join(fixtureRoot, relativePath), "utf8");
+}
+
+function investigationGatewayMetadata() {
+  return {
+    artifactKind: "reviewrouter-context-gateway",
+    contextGatewayEntrypointDigest: "f".repeat(64),
+    contextGatewayEntrypointPath: "dist/context-gateway.js",
+    contextGatewayPolicyVersion: "context-gateway-v4",
+    metadataVersion: 2,
+    reviewInvestigationCapability: REVIEW_INVESTIGATION_RELEASE_CAPABILITY,
+    reviewInvestigationCoverageProfileHash:
+      REVIEW_INVESTIGATION_RELEASE_COVERAGE_PROFILE_HASH,
+    reviewInvestigationPolicyHash: REVIEW_INVESTIGATION_RELEASE_POLICY_HASH,
+    supportedContextGatewayPolicyVersions: [
+      "context-gateway-v3",
+      "context-gateway-v4",
+    ],
+  };
 }

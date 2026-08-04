@@ -119,6 +119,7 @@ export interface ReviewActionV2FinalizationFactsPort {
   resolve(input: {
     readonly authorization: ReviewRunAuthorization;
     readonly execution: ReviewExecution;
+    readonly observationRefs: readonly ReviewExecutionObservationRef[];
     readonly artifactId: string;
     readonly projectionEnvelopeVersion: number;
     readonly projectionEnvelope: unknown;
@@ -1126,6 +1127,7 @@ async function finalizeExecution(
   const facts = await d.finalizationFacts.resolve({
     authorization,
     execution: snapshot.execution,
+    observationRefs: snapshot.observationRefs,
     artifactId: request.artifactId,
     projectionEnvelopeVersion: request.projectionEnvelopeVersion,
     projectionEnvelope: projection,
@@ -1468,6 +1470,8 @@ async function commitEvidence(
     transportAttemptCount: request.transportAttemptCount,
     contextDependencyAttestationId: request.contextDependencyAttestationId,
     contextDependencyAttestationHash: request.contextDependencyAttestationHash,
+    investigationCertificateId: request.investigationCertificateId,
+    investigationCertificateHash: request.investigationCertificateHash,
   });
   return {
     statusCode:

@@ -29,7 +29,10 @@ import {
   ProducerReleaseState,
   ReviewCapabilityProfile,
 } from "../domain/review-run-control-types";
-import { createProducerRelease } from "../domain/producer-release";
+import {
+  createProducerRelease,
+  reviewInvestigationCapabilityV1,
+} from "../domain/producer-release";
 import { createReviewRunControlTestKit } from "../testing/review-run-control-test-kit";
 import {
   hashA,
@@ -219,7 +222,7 @@ describe("production run-authorization prerequisites", () => {
     ).toThrow("context_gateway_release_artifact_incomplete");
   });
 
-  it("parses a legacy attestation as a release without reusable gateway evidence", () => {
+  it("parses a legacy attestation with an explicit null investigation profile", () => {
     const legacy = { ...attestation() } as Record<string, unknown>;
     delete legacy.contextGatewayPolicyVersion;
     delete legacy.contextGatewayEntrypointDigest;
@@ -232,8 +235,71 @@ describe("production run-authorization prerequisites", () => {
       expect.objectContaining({
         contextGatewayPolicyVersion: null,
         contextGatewayEntrypointDigest: null,
+        reviewInvestigationProfile: null,
       }),
     ]);
+  });
+
+  it("preserves an exact complete configured investigation profile", () => {
+    const configured = {
+      ...attestation(),
+      contextGatewayPolicyVersion: "review-context-gateway.v1",
+      contextGatewayEntrypointDigest: hashA,
+      reviewInvestigationCapability: reviewInvestigationCapabilityV1,
+      reviewInvestigationCoverageProfileHash: hashB,
+      reviewInvestigationPolicyHash: hashC,
+    };
+
+    expect(
+      readConfiguredProducerReleaseAttestations({
+        [reviewRunProducerReleaseAttestationsEnv]: JSON.stringify([configured]),
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        reviewInvestigationProfile: {
+          capability: reviewInvestigationCapabilityV1,
+          coverageProfileHash: hashB,
+          policyHash: hashC,
+        },
+      }),
+    ]);
+  });
+
+  it.each([
+    {
+      name: "missing capability",
+      reviewInvestigationCapability: null,
+      reviewInvestigationCoverageProfileHash: hashB,
+      reviewInvestigationPolicyHash: hashC,
+    },
+    {
+      name: "missing coverage hash",
+      reviewInvestigationCapability: reviewInvestigationCapabilityV1,
+      reviewInvestigationCoverageProfileHash: null,
+      reviewInvestigationPolicyHash: hashC,
+    },
+    {
+      name: "missing policy hash",
+      reviewInvestigationCapability: reviewInvestigationCapabilityV1,
+      reviewInvestigationCoverageProfileHash: hashB,
+      reviewInvestigationPolicyHash: null,
+    },
+  ])("rejects a partial configured investigation profile: $name", (partial) => {
+    const configured = {
+      ...attestation(),
+      contextGatewayPolicyVersion: "review-context-gateway.v1",
+      contextGatewayEntrypointDigest: hashA,
+      reviewInvestigationCapability: partial.reviewInvestigationCapability,
+      reviewInvestigationCoverageProfileHash:
+        partial.reviewInvestigationCoverageProfileHash,
+      reviewInvestigationPolicyHash: partial.reviewInvestigationPolicyHash,
+    };
+
+    expect(() =>
+      readConfiguredProducerReleaseAttestations({
+        [reviewRunProducerReleaseAttestationsEnv]: JSON.stringify([configured]),
+      }),
+    ).toThrow("producer_release_attestation_investigation_profile_incomplete");
   });
 
   it("keeps a bounded old verification key through active-key rotation", async () => {
