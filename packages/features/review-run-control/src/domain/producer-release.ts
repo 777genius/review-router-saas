@@ -266,10 +266,19 @@ export function createProducerRelease(
     invalid("hosted_composite_wrapper_digest_required");
   }
   return {
-    ...candidate,
+    producerReleaseId: candidate.producerReleaseId,
+    distributionKind: candidate.distributionKind,
+    actionCommitSha: candidate.actionCommitSha,
+    runtimeCommitSha: candidate.runtimeCommitSha,
+    wrapperEntrypointDigest: candidate.wrapperEntrypointDigest,
+    runtimeEntrypointDigest: candidate.runtimeEntrypointDigest,
     contextGatewayPolicyVersion,
     contextGatewayEntrypointDigest,
     reviewInvestigationProfile,
+    schemaDigest: candidate.schemaDigest,
+    capabilityProfile: candidate.capabilityProfile,
+    protocolLimitsProfileId: candidate.protocolLimitsProfileId,
+    operationalSloProfileId: candidate.operationalSloProfileId,
     state: ProducerReleaseState.Registered,
     registeredAt: cloneDate(registeredAt),
     revokedAt: null,

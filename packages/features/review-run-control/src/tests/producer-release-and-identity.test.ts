@@ -120,6 +120,20 @@ describe("immutable release registries", () => {
     expect(release.reviewInvestigationProfile).toBeNull();
   });
 
+  it("drops transport-only fields at the producer release domain boundary", () => {
+    const candidateWithTransportMetadata = {
+      ...releaseCandidate,
+      canonicalizerDigest: hashA,
+    } as typeof releaseCandidate;
+
+    const release = createProducerRelease(
+      candidateWithTransportMetadata,
+      new Date("2026-07-22T12:00:00.000Z"),
+    );
+
+    expect(release).not.toHaveProperty("canonicalizerDigest");
+  });
+
   it("preserves the complete investigation profile in the immutable release tuple", async () => {
     const kit = createReviewRunControlTestKit();
     await kit.control.producerReleases.registerProtocolLimitsProfile({
