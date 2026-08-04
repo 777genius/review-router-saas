@@ -23,6 +23,7 @@ import {
   renderReviewRouterWorkflowFiles,
   renderCodexRotatingAdvisoryWorkflow,
   renderCanonicalCodexRotatingInteractionWorkflowV1,
+  renderCanonicalCodexRotatingInteractionWorkflowV2,
   renderCodexRotatingInteractionWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 } from "../domain/workflow-template";
@@ -322,7 +323,22 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("issue_comment:");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("runs-on: ubuntu-24.04");
+    expect(workflow).toContain("permissions: {}\n\njobs:");
+    expect(workflow).toContain(
+      "    permissions:\n      contents: read\n      issues: read\n      pull-requests: read\n      id-token: write",
+    );
+    expect(workflow).not.toContain("actions: write");
+    expect(workflow).not.toContain("pull-requests: write");
+    expect(workflow).not.toContain("issues: write");
     expect(workflow).toContain("repository: 777genius/review-router");
+    expect(workflow).toContain(
+      "uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+    );
+    expect(workflow).toContain(
+      "uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+    );
+    expect(workflow).not.toContain("actions/checkout@v6");
+    expect(workflow).not.toContain("actions/setup-node@v6");
     expect(workflow).toContain("run: node .reviewrouter-runtime/dist/index.js");
     expect(workflow).toContain(
       "CODEX_AUTH_JSON_PRESENT: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON != '' && '1' || '0' }}",
@@ -340,6 +356,16 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).not.toContain("auth-json:");
     expect(workflow).not.toContain("secrets.CODEX_AUTH_JSON");
     expect(workflow).not.toContain("OPENAI_API_KEY");
+    expect(
+      workflowDocumentSemanticSha256(
+        renderCanonicalCodexRotatingInteractionWorkflowV2({
+          actionRef:
+            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+          apiUrl: "https://reviewrouter.site",
+          runtimeConfigMode: "oidc",
+        }),
+      ),
+    ).toBe("ce04f5c0022cdd029142c8c9b1def33f54208a96e58dc68b8b8e6fca5ffc9d5d");
     expect(
       workflowDocumentSemanticSha256(
         renderCanonicalCodexRotatingInteractionWorkflowV1({
