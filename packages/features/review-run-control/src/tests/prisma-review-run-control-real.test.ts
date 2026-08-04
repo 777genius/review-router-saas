@@ -90,7 +90,11 @@ describeWithDatabase("review-run-control Prisma adapters", () => {
         ),
       ).resolves.toMatchObject({
         status: ReviewRunAuthorizationCreateStatus.Restored,
-        authorization: { authorizationId: seeded.candidate.authorizationId },
+        authorization: {
+          authorizationId: seeded.candidate.authorizationId,
+          reviewInvestigationAuthorizationDescriptorCanonicalJson:
+            '{"authorizationDescriptorVersion":2}',
+        },
       });
       await expect(
         repositories.authorizations.createOrRestoreReviewRunAuthorizationAtomically(
@@ -555,6 +559,8 @@ describeWithDatabase("review-run-control Prisma adapters", () => {
           providerVoteIdentityHash: fixtureDigest(id, "provider-vote"),
         },
       ],
+      reviewInvestigationAuthorizationDescriptorCanonicalJson:
+        '{"authorizationDescriptorVersion":2}',
       authorizationSafetyDecisionHash: safetySnapshot.safetyDecisionHash,
       protocolOfferHash: fixtureDigest(id, "protocol-offer"),
       oidcReplayKeyHash: fixtureDigest(id, "oidc-replay"),
@@ -579,6 +585,7 @@ describeWithDatabase("review-run-control Prisma adapters", () => {
           runtimeEntrypointDigest,
           contextGatewayPolicyVersion: null,
           contextGatewayEntrypointDigest: null,
+          reviewInvestigationProfile: null,
           schemaDigest,
           capabilityProfile: ReviewCapabilityProfile.ExactRevisionV2,
           protocolLimitsProfileId: limitsId,

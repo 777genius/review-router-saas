@@ -15,6 +15,24 @@ import {
   type ReviewConfigurationRepositoryPort,
 } from "../index";
 
+const enabledInvestigationRollout = {
+  recordingEnabled: true,
+  shadowEnabled: true,
+  contextCriticEnabled: true,
+  verifiedCleanEnabled: true,
+  crossRevisionReplayEnabled: true,
+  productionEffectsEnabled: true,
+} as const;
+
+const disabledInvestigationRuntimeEnv = {
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "0",
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED: "0",
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED: "0",
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "0",
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED: "0",
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "0",
+} as const;
+
 class InMemoryReviewConfigurationRepository implements ReviewConfigurationRepositoryPort {
   private readonly versions = new Map<string, PersistedReviewConfiguration[]>();
 
@@ -63,9 +81,40 @@ describe("review configuration", () => {
       INLINE_MIN_AGREEMENT: "1",
       FAIL_ON_SEVERITY: "critical",
       INLINE_MAX_COMMENTS: "5",
+      ...disabledInvestigationRuntimeEnv,
+    });
+    expect(safeDefaultReviewConfiguration.investigationRollout).toEqual({
+      recordingEnabled: false,
+      shadowEnabled: false,
+      contextCriticEnabled: false,
+      verifiedCleanEnabled: false,
+      crossRevisionReplayEnabled: false,
+      productionEffectsEnabled: false,
     });
     expect(Object.keys(env).join("\n")).not.toContain("SECRET");
     expect(Object.keys(env).join("\n")).not.toContain("KEY");
+  });
+
+  it("maps only explicitly enabled investigation rollout flags to canonical 1 values", () => {
+    const config = parseReviewConfiguration({
+      ...safeDefaultReviewConfiguration,
+      investigationRollout: enabledInvestigationRollout,
+    });
+
+    expect(mapConfigToRuntimeEnv(config)).toMatchObject({
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "1",
+    });
+    expect(() =>
+      parseReviewConfiguration({
+        ...safeDefaultReviewConfiguration,
+        investigationRollout: { recordingEnabled: "1" },
+      }),
+    ).toThrow();
   });
 
   it("maps OpenRouter API-key config to fully-qualified runtime models", () => {
@@ -416,6 +465,12 @@ describe("review configuration", () => {
       inlineMinAgreement: number;
       targetTokensPerBatch: number;
       reviewLanguage: string | null;
+      investigationRecordingEnabled: boolean;
+      investigationShadowEnabled: boolean;
+      investigationContextCriticEnabled: boolean;
+      investigationVerifiedCleanEnabled: boolean;
+      investigationCrossRevisionReplayEnabled: boolean;
+      investigationProductionEffectsEnabled: boolean;
       providers: ProviderRow[];
     };
     type PrismaStub = {
@@ -482,6 +537,16 @@ describe("review configuration", () => {
             inlineMinAgreement: data.inlineMinAgreement,
             targetTokensPerBatch: data.targetTokensPerBatch,
             reviewLanguage: data.reviewLanguage ?? null,
+            investigationRecordingEnabled: data.investigationRecordingEnabled,
+            investigationShadowEnabled: data.investigationShadowEnabled,
+            investigationContextCriticEnabled:
+              data.investigationContextCriticEnabled,
+            investigationVerifiedCleanEnabled:
+              data.investigationVerifiedCleanEnabled,
+            investigationCrossRevisionReplayEnabled:
+              data.investigationCrossRevisionReplayEnabled,
+            investigationProductionEffectsEnabled:
+              data.investigationProductionEffectsEnabled,
             providers: data.providers.create,
           };
           versions.push(record);
@@ -515,6 +580,7 @@ describe("review configuration", () => {
         providerMaxParallel: 2,
         inlineMinAgreement: 2,
       },
+      investigationRollout: enabledInvestigationRollout,
     });
 
     const saved = await repository.saveNextVersion({
@@ -539,6 +605,10 @@ describe("review configuration", () => {
     expect(
       versions[0]?.providers.map((provider) => provider.requiredHealthy),
     ).toEqual([true, false]);
+    expect(latest?.config.investigationRollout).toEqual(
+      enabledInvestigationRollout,
+    );
+    expect(versions[0]?.investigationProductionEffectsEnabled).toBe(true);
     expect(transactionAttempts).toBe(2);
   });
 

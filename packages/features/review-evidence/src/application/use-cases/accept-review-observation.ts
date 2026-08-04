@@ -342,6 +342,7 @@ async function verifyInvestigationCertificate(
     certificateHash: command.investigationCertificateHash,
     scope: facts.scope,
     revision: facts.revision,
+    providerKind: facts.providerKind,
     providerVoteIdentityHash: facts.providerVoteIdentityHash,
     terminalOutcomeHash,
     expectedConclusion,

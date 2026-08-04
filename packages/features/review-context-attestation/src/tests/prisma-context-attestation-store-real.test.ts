@@ -68,6 +68,7 @@ describeDatabase("PrismaContextAttestationStore PostgreSQL invariants", () => {
         sourceExecutionId: `execution-${randomUUID()}`,
         sourceWorkSlotId: "slot-1",
         attemptId: `attempt-${randomUUID()}`,
+        openingIntentHash: digest("opening-intent"),
         sourceLeaseId: `lease-${randomUUID()}`,
         sourceFencingToken: "1",
         providerKind: ContextProviderKind.Codex,

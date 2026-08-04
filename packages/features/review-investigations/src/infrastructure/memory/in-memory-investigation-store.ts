@@ -3,6 +3,18 @@ import {
   type InvestigationStoreCommitResult,
   type InvestigationStorePort,
 } from "../../application/ports/investigation-store-port";
+import {
+  InvestigationPrivateMaterialPersistenceStatus,
+  type InvestigationPrivateMaterialStorePort,
+} from "../../application/ports/investigation-private-material-ports";
+import {
+  assertPersistedInvestigationRequirementsSanitized,
+  validateInvestigationPrivateMaterialCommit,
+} from "../../application/investigation-private-material-commit-policy";
+import {
+  createEncryptedInvestigationPrivateMaterial,
+  type EncryptedInvestigationPrivateMaterial,
+} from "../../domain/investigation-private-material";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
 
 type StoredCommand = Readonly<{
@@ -10,10 +22,17 @@ type StoredCommand = Readonly<{
   investigationId: string;
 }>;
 
-export class InMemoryInvestigationStore implements InvestigationStorePort {
+export class InMemoryInvestigationStore
+  implements InvestigationStorePort, InvestigationPrivateMaterialStorePort
+{
   private readonly investigations = new Map<string, ReviewInvestigation>();
   private readonly naturalIdentityIndex = new Map<string, string>();
   private readonly commands = new Map<string, StoredCommand>();
+  private readonly privateMaterials = new Map<
+    string,
+    EncryptedInvestigationPrivateMaterial
+  >();
+  private readonly privateMaterialObligationIndex = new Map<string, string>();
   private transactionTail: Promise<void> = Promise.resolve();
 
   async restoreCommand(input: {
@@ -98,6 +117,7 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
     readonly commandId: string;
     readonly commandHash: string;
     readonly transition: import("../../application/ports/investigation-store-port").InvestigationStoreTransition;
+    readonly privateMaterials?: readonly EncryptedInvestigationPrivateMaterial[];
   }): Promise<InvestigationStoreCommitResult> {
     return this.atomic(() => {
       const previousCommand = this.commands.get(input.commandId);
@@ -115,6 +135,12 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
           ),
         };
       }
+      const privateMaterials = validateInvestigationPrivateMaterialCommit({
+        investigation: input.investigation,
+        expectedVersion: input.expectedVersion,
+        transition: input.transition,
+        privateMaterials: input.privateMaterials ?? [],
+      });
       const existing = this.investigations.get(
         input.investigation.investigationId,
       );
@@ -131,6 +157,19 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
           investigation: existing ? clone(existing) : null,
         };
       }
+      for (const material of privateMaterials) {
+        if (
+          this.privateMaterials.has(material.privateMaterialId) ||
+          this.privateMaterialObligationIndex.has(
+            privateMaterialObligationKey(
+              material.investigationId,
+              material.obligationId,
+            ),
+          )
+        ) {
+          throw new Error("investigation_private_material_conflict");
+        }
+      }
       const stored = clone(input.investigation)!;
       this.investigations.set(stored.investigationId, stored);
       this.naturalIdentityIndex.set(
@@ -141,11 +180,81 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
         commandHash: input.commandHash,
         investigationId: stored.investigationId,
       });
+      for (const material of privateMaterials) {
+        const storedMaterial = clone(material)!;
+        this.privateMaterials.set(
+          storedMaterial.privateMaterialId,
+          storedMaterial,
+        );
+        this.privateMaterialObligationIndex.set(
+          privateMaterialObligationKey(
+            storedMaterial.investigationId,
+            storedMaterial.obligationId,
+          ),
+          storedMaterial.privateMaterialId,
+        );
+      }
       return {
         status: InvestigationStoreCommitStatus.Committed,
         investigation: clone(stored),
       };
     });
+  }
+
+  async savePrivateMaterial(
+    materialInput: EncryptedInvestigationPrivateMaterial,
+  ): Promise<InvestigationPrivateMaterialPersistenceStatus> {
+    const material = createEncryptedInvestigationPrivateMaterial(materialInput);
+    return this.atomic(() => {
+      const investigation = this.investigations.get(material.investigationId);
+      if (
+        !investigation ||
+        (material.obligationId !== null &&
+          !investigation.obligations.some(
+            (obligation) => obligation.obligationId === material.obligationId,
+          ))
+      ) {
+        throw new Error("investigation_private_material_parent_missing");
+      }
+      const obligationKey = privateMaterialObligationKey(
+        material.investigationId,
+        material.obligationId,
+      );
+      const existingId =
+        this.privateMaterials.get(material.privateMaterialId) ??
+        this.privateMaterials.get(
+          this.privateMaterialObligationIndex.get(obligationKey) ?? "",
+        );
+      if (existingId) {
+        return JSON.stringify(existingId) === JSON.stringify(material)
+          ? InvestigationPrivateMaterialPersistenceStatus.Idempotent
+          : InvestigationPrivateMaterialPersistenceStatus.Conflict;
+      }
+      const stored = clone(material)!;
+      this.privateMaterials.set(stored.privateMaterialId, stored);
+      this.privateMaterialObligationIndex.set(
+        obligationKey,
+        stored.privateMaterialId,
+      );
+      return InvestigationPrivateMaterialPersistenceStatus.Created;
+    });
+  }
+
+  async findActivePrivateMaterial(input: {
+    readonly investigationId: string;
+    readonly obligationId: string | null;
+    readonly activeAfter: string;
+  }): Promise<EncryptedInvestigationPrivateMaterial | null> {
+    await this.transactionTail;
+    const privateMaterialId = this.privateMaterialObligationIndex.get(
+      privateMaterialObligationKey(input.investigationId, input.obligationId),
+    );
+    const material = privateMaterialId
+      ? this.privateMaterials.get(privateMaterialId)
+      : undefined;
+    return material && material.expiresAt > input.activeAfter
+      ? clone(material)
+      : null;
   }
 
   exportSnapshot(): string {
@@ -159,6 +268,9 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
       commands: [...this.commands.entries()].sort(([left], [right]) =>
         left.localeCompare(right),
       ),
+      privateMaterials: [...this.privateMaterials.entries()].sort(
+        ([left], [right]) => left.localeCompare(right),
+      ),
     });
   }
 
@@ -167,9 +279,11 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
       investigations: [string, ReviewInvestigation][];
       naturalIdentityIndex: [string, string][];
       commands: [string, StoredCommand][];
+      privateMaterials?: [string, EncryptedInvestigationPrivateMaterial][];
     };
     const store = new InMemoryInvestigationStore();
     for (const [key, value] of parsed.investigations) {
+      assertPersistedInvestigationRequirementsSanitized(value);
       store.investigations.set(key, clone(value)!);
     }
     for (const [key, value] of parsed.naturalIdentityIndex) {
@@ -177,6 +291,17 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
     }
     for (const [key, value] of parsed.commands) {
       store.commands.set(key, { ...value });
+    }
+    for (const [key, value] of parsed.privateMaterials ?? []) {
+      const material = createEncryptedInvestigationPrivateMaterial(value);
+      store.privateMaterials.set(key, clone(material)!);
+      store.privateMaterialObligationIndex.set(
+        privateMaterialObligationKey(
+          material.investigationId,
+          material.obligationId,
+        ),
+        key,
+      );
     }
     return store;
   }
@@ -194,6 +319,13 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
       release();
     }
   }
+}
+
+function privateMaterialObligationKey(
+  investigationId: string,
+  obligationId: string | null,
+): string {
+  return `${investigationId}\0${obligationId ?? "__global__"}`;
 }
 
 function clone<T>(value: T): T {

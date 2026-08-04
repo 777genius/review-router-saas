@@ -135,6 +135,7 @@ const configuredRelease: ProducerRelease = {
   runtimeEntrypointDigest: "2".repeat(64),
   contextGatewayPolicyVersion: "review-context-gateway.v1",
   contextGatewayEntrypointDigest: "3".repeat(64),
+  reviewInvestigationProfile: null,
   schemaDigest: "4".repeat(64),
   capabilityProfile: ReviewCapabilityProfile.ExactRevisionV2,
   protocolLimitsProfileId: "limits-v2",

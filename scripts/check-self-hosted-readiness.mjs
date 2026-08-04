@@ -49,6 +49,7 @@ forbidProviderSecretsInControlPlane();
 requireGitHubAppPrivateKey();
 requireActionRef();
 requireT0RuntimeContract();
+requireInvestigationRetentionMaintenance();
 warnMissingGitHubClientAliases();
 
 if (errors.length > 0) {
@@ -175,6 +176,17 @@ function requireT0RuntimeContract() {
   ) {
     errors.push(
       "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON must contain REVIEW_ROUTER_ACTION_REF's commit SHA.",
+    );
+  }
+}
+
+function requireInvestigationRetentionMaintenance() {
+  if (
+    read("REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED") === "1" &&
+    read("REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED") !== "1"
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED must be 1 when investigation recording is enabled.",
     );
   }
 }
@@ -334,12 +346,28 @@ function isProducerReleaseAttestation(value) {
     "contextGatewayPolicyVersion",
     "contextGatewayEntrypointDigest",
   ];
-  if (!isExactRecord(value, legacyKeys) && !isExactRecord(value, currentKeys)) {
+  const investigationKeys = [
+    ...currentKeys,
+    "reviewInvestigationCapability",
+    "reviewInvestigationCoverageProfileHash",
+    "reviewInvestigationPolicyHash",
+  ];
+  const legacy = isExactRecord(value, legacyKeys);
+  const current = isExactRecord(value, currentKeys);
+  const investigation = isExactRecord(value, investigationKeys);
+  if (!legacy && !current && !investigation) {
     return false;
   }
   const contextGatewayPolicyVersion = value.contextGatewayPolicyVersion ?? null;
   const contextGatewayEntrypointDigest =
     value.contextGatewayEntrypointDigest ?? null;
+  const investigationProfileValid =
+    !investigation ||
+    (value.reviewInvestigationCapability === "review_investigation_v1" &&
+      isSha256(value.reviewInvestigationCoverageProfileHash) &&
+      isSha256(value.reviewInvestigationPolicyHash) &&
+      isIdentifier(contextGatewayPolicyVersion) &&
+      isSha256(contextGatewayEntrypointDigest));
   return (
     isIdentifier(value.producerReleaseId) &&
     ["hosted_composite", "public_reusable"].includes(value.distributionKind) &&
@@ -352,6 +380,7 @@ function isProducerReleaseAttestation(value) {
       contextGatewayEntrypointDigest === null) ||
       (isIdentifier(contextGatewayPolicyVersion) &&
         isSha256(contextGatewayEntrypointDigest))) &&
+    investigationProfileValid &&
     isSha256(value.schemaDigest) &&
     isSha256(value.canonicalizerDigest) &&
     value.capabilityProfile === "exact_revision_v2" &&

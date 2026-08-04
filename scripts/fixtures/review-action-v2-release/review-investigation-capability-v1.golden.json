@@ -1,0 +1,32 @@
+{
+  "coverageProfile": {
+    "value": {
+      "coverageContractVersion": "review-investigation-coverage.v1",
+      "criticPolicyVersion": "review-investigation-critic.v1",
+      "expansionRulesVersion": "review-investigation-expansion.v2",
+      "gatewayPolicyVersion": "context-gateway-v4",
+      "probePolicyVersion": "review-investigation-probe-policy.v1",
+      "runtimeProfileVersion": "gateway-attested-agent.v1",
+      "searchPolicyVersion": "review-investigation-fixed-string-search.v1"
+    },
+    "canonicalJson": "{\"coverageContractVersion\":\"review-investigation-coverage.v1\",\"criticPolicyVersion\":\"review-investigation-critic.v1\",\"expansionRulesVersion\":\"review-investigation-expansion.v2\",\"gatewayPolicyVersion\":\"context-gateway-v4\",\"probePolicyVersion\":\"review-investigation-probe-policy.v1\",\"runtimeProfileVersion\":\"gateway-attested-agent.v1\",\"searchPolicyVersion\":\"review-investigation-fixed-string-search.v1\"}",
+    "sha256": "4462900f2e610b2649101987f1131158312b2ad8d453e1fb5f048174f9fbfdc9"
+  },
+  "policy": {
+    "value": {
+      "maxCriticCycles": 3,
+      "maxExpansionDepth": 8,
+      "maxFindings": 256,
+      "maxObligations": 1024,
+      "maxOperationalAttempts": 24,
+      "maxProposalsPerTurn": 128,
+      "maxReceiptsPerTurn": 256,
+      "maxSeedProbesOverall": 384,
+      "maxSeedProbesPerFile": 48,
+      "maxSemanticTurns": 12,
+      "policyId": "review-investigation-shadow.v1"
+    },
+    "canonicalJson": "{\"maxCriticCycles\":3,\"maxExpansionDepth\":8,\"maxFindings\":256,\"maxObligations\":1024,\"maxOperationalAttempts\":24,\"maxProposalsPerTurn\":128,\"maxReceiptsPerTurn\":256,\"maxSeedProbesOverall\":384,\"maxSeedProbesPerFile\":48,\"maxSemanticTurns\":12,\"policyId\":\"review-investigation-shadow.v1\"}",
+    "sha256": "6af1a3ecea3cb01f8a0e1cea614c8578c6bc7e4010db13603c114757291af698"
+  }
+}

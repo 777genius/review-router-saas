@@ -110,6 +110,20 @@ export function assembleReviewActionV2Contract(input) {
     enums.map((descriptor) => [descriptor.typeName, descriptor]),
   );
 
+  const publishedContracts = input.publishedContracts ?? [];
+  if (!Array.isArray(publishedContracts)) {
+    throw new Error("protocol_assembly_published_contracts_invalid");
+  }
+  for (const descriptor of publishedContracts) {
+    assertRecord(descriptor, "published_contract");
+    assertIdentifier(descriptor.exportName, "published_contract_export_name");
+    assertJsonValue(descriptor.value, "published_contract_value");
+  }
+  assertUniqueStrings(
+    publishedContracts.map((descriptor) => descriptor.exportName),
+    "published_contract_export_name",
+  );
+
   const canonicalizers = semanticFragments.flatMap((fragment) => [
     ...(fragment.publishedCanonicalizers ?? []),
   ]);
@@ -212,6 +226,9 @@ export function assembleReviewActionV2Contract(input) {
       enums.map((descriptor) => Object.freeze({ ...descriptor })),
     ),
     canonicalizers: Object.freeze([...canonicalizers]),
+    publishedContracts: Object.freeze(
+      publishedContracts.map((descriptor) => Object.freeze({ ...descriptor })),
+    ),
     operations: Object.freeze(joined),
   });
 }
@@ -230,6 +247,7 @@ export function createPublishedProtocolArtifacts(contract, canonicalJson) {
     canonicalJson({
       operations: fixtures,
       canonicalizers: canonicalizerFixtures,
+      publishedContracts: contract.publishedContracts,
     }),
   );
   const canonicalizerDescriptor = {
@@ -423,6 +441,12 @@ export function generatedPublishedContractSource(contract, artifacts) {
   const typeSource = contract.operations
     .map((operation) => generatedOperationTypes(operation))
     .join("\n\n");
+  const publishedContractSource = contract.publishedContracts
+    .map(
+      (descriptor) =>
+        `export const ${descriptor.exportName} = ${JSON.stringify(descriptor.value, null, 2)} as const;`,
+    )
+    .join("\n\n");
   const requestMap = contract.operations
     .map(
       (operation) =>
@@ -459,6 +483,8 @@ ${contract.errors.map((error) => `  ${enumMember(error.errorCode)} = ${JSON.stri
 }
 
 ${enumSource}
+
+${publishedContractSource}
 
 export type ReviewActionV2RequestEnvelope = {
   readonly protocolVersion: typeof reviewActionV2PublishedProtocolVersion;
@@ -1664,6 +1690,32 @@ function assertIdentifier(value, label) {
   if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_]*$/.test(value)) {
     throw new Error(`protocol_assembly_${label}_invalid`);
   }
+}
+
+function assertJsonValue(value, label, visited = new Set()) {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    return;
+  }
+  if (typeof value !== "object") {
+    throw new Error(`protocol_assembly_${label}_invalid`);
+  }
+  if (visited.has(value)) {
+    throw new Error(`protocol_assembly_${label}_cyclic`);
+  }
+  visited.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) assertJsonValue(item, label, visited);
+  } else {
+    for (const item of Object.values(value)) {
+      assertJsonValue(item, label, visited);
+    }
+  }
+  visited.delete(value);
 }
 
 function assertUniqueStrings(values, label) {

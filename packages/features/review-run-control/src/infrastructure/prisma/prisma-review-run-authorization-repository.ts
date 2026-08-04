@@ -472,42 +472,39 @@ async function admissionFenceMatches(
   ) {
     return false;
   }
-  const [identity, authority, releaseRow, limits, slo, policies, controls] =
-    await Promise.all([
-      transaction.scmRepositoryIdentity.findUnique({
-        where: { scmRepositoryIdentityId: candidate.scmRepositoryIdentityId },
-      }),
-      transaction.reviewMutationAuthority.findUnique({
-        where: {
-          scmRepositoryIdentityId_laneKind: {
-            scmRepositoryIdentityId: candidate.scmRepositoryIdentityId,
-            laneKind: "hosted_reviewrouter_app",
-          },
-        },
-      }),
-      transaction.producerRelease.findUnique({
-        where: { producerReleaseId: candidate.producerReleaseId },
-      }),
-      transaction.reviewProtocolLimitsV2.findUnique({
-        where: {
-          protocolLimitsProfileId: candidate.protocolLimitsProfileId,
-        },
-      }),
-      transaction.reviewOperationalSloProfileV2.findUnique({
-        where: {
-          operationalSloProfileId: candidate.operationalSloProfileId,
-        },
-      }),
-      transaction.reviewSafetyPolicy.findMany({
-        where: {
-          capability: "run_authorization_v2",
-          OR: safetyScopePredicates(fence.safetyTarget),
-        },
-      }),
-      transaction.reviewSafetyEmergencyControl.findMany({
-        where: { OR: safetyScopePredicates(fence.safetyTarget) },
-      }),
-    ]);
+  const identity = await transaction.scmRepositoryIdentity.findUnique({
+    where: { scmRepositoryIdentityId: candidate.scmRepositoryIdentityId },
+  });
+  const authority = await transaction.reviewMutationAuthority.findUnique({
+    where: {
+      scmRepositoryIdentityId_laneKind: {
+        scmRepositoryIdentityId: candidate.scmRepositoryIdentityId,
+        laneKind: "hosted_reviewrouter_app",
+      },
+    },
+  });
+  const releaseRow = await transaction.producerRelease.findUnique({
+    where: { producerReleaseId: candidate.producerReleaseId },
+  });
+  const limits = await transaction.reviewProtocolLimitsV2.findUnique({
+    where: {
+      protocolLimitsProfileId: candidate.protocolLimitsProfileId,
+    },
+  });
+  const slo = await transaction.reviewOperationalSloProfileV2.findUnique({
+    where: {
+      operationalSloProfileId: candidate.operationalSloProfileId,
+    },
+  });
+  const policies = await transaction.reviewSafetyPolicy.findMany({
+    where: {
+      capability: "run_authorization_v2",
+      OR: safetyScopePredicates(fence.safetyTarget),
+    },
+  });
+  const controls = await transaction.reviewSafetyEmergencyControl.findMany({
+    where: { OR: safetyScopePredicates(fence.safetyTarget) },
+  });
   if (!identity || !authority || !releaseRow || !limits || !slo) return false;
   const release = producerReleaseToDomain(releaseRow);
   return (

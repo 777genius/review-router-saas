@@ -44,18 +44,22 @@ pnpm review-v2:admin env-preflight
 
 ## Release bundle
 
-Generate and validate release manifest v2 from the exact committed Action
-revision. The verifier hashes both committed entrypoints; a missing or modified
-context gateway bundle fails the release:
+Generate and validate a release manifest from the exact committed Action
+revision. Legacy Context Gateway v3 metadata produces manifest v2 and cannot
+claim investigation capability. Investigation metadata v2 produces manifest v3
+only when Context Gateway v4 is primary, v3/v4 support is explicitly
+authenticated, and the `review_investigation_v1` coverage-profile and policy
+hashes match the checked golden fixture. The verifier hashes both committed
+entrypoints; a missing or modified context gateway bundle fails the release:
 
 ```bash
-pnpm protocol:release-manifest -- \
+pnpm protocol:release-manifest \
   --action-repo /path/to/review-router \
   --target-branch RELEASE_BRANCH \
   --expected-head ACTION_COMMIT_SHA \
   --output /secure/path/review-action-v2-release-manifest.json
 
-pnpm protocol:release-manifest:check -- \
+pnpm protocol:release-manifest:check \
   --manifest /secure/path/review-action-v2-release-manifest.json \
   --action-repo /path/to/review-router
 ```
@@ -64,8 +68,12 @@ pnpm protocol:release-manifest:check -- \
 `protocolLimitsProfileId`, `limits`, `operationalSloProfileId`, `thresholds`,
 `ownerRefs`, `runbookRefs`, and `candidate`. The candidate comes from the
 validated public release manifest, including its context gateway policy and
-entrypoint digest, and must use the same profile IDs. Legacy releases without
-both gateway fields remain readable but cannot open or reuse context evidence.
+entrypoint digest, and must use the same profile IDs. The validation output also
+records the authenticated supported-policy list. An investigation candidate
+carries a nested capability identifier, coverage-profile hash, and policy hash;
+legacy candidates use a null investigation profile and cannot open or reuse
+investigation context evidence. Do not enter investigation hashes manually;
+they are derived from the committed Action metadata and checked golden fixture.
 
 Projection policy compatibility is versioned independently from the current
 deployment default. Finalization accepts only policy versions supported by the

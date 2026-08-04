@@ -255,6 +255,12 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
             inlineMinAgreement: true,
             targetTokensPerBatch: true,
             reviewLanguage: true,
+            investigationRecordingEnabled: true,
+            investigationShadowEnabled: true,
+            investigationContextCriticEnabled: true,
+            investigationVerifiedCleanEnabled: true,
+            investigationCrossRevisionReplayEnabled: true,
+            investigationProductionEffectsEnabled: true,
             providers: {
               orderBy: { order: "asc" },
               select: {
@@ -302,6 +308,18 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
             safeDefaultReviewConfiguration.limits.targetTokensPerBatch,
         },
         reviewLanguage: version.reviewLanguage ?? undefined,
+        investigationRollout: {
+          recordingEnabled: version.investigationRecordingEnabled ?? false,
+          shadowEnabled: version.investigationShadowEnabled ?? false,
+          contextCriticEnabled:
+            version.investigationContextCriticEnabled ?? false,
+          verifiedCleanEnabled:
+            version.investigationVerifiedCleanEnabled ?? false,
+          crossRevisionReplayEnabled:
+            version.investigationCrossRevisionReplayEnabled ?? false,
+          productionEffectsEnabled:
+            version.investigationProductionEffectsEnabled ?? false,
+        },
       }),
     };
   }

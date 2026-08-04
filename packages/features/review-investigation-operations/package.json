@@ -4,13 +4,19 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@prisma/client": "7.8.0"
+    "@prisma/client": "7.8.0",
+    "@reviewrouter/platform-db": "workspace:*"
   },
   "exports": {
     ".": {
       "types": "./src/index.ts",
       "production": "./dist/index.js",
       "default": "./src/index.ts"
+    },
+    "./composition": {
+      "types": "./src/composition/index.ts",
+      "production": "./dist/composition/index.js",
+      "default": "./src/composition/index.ts"
     },
     "./testing": {
       "types": "./src/testing/index.ts",
@@ -20,6 +26,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:contract-source": "tsc -p tsconfig.contract-source.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --root ../../.. packages/features/review-investigation-operations/src/tests"
   }

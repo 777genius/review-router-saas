@@ -1617,7 +1617,47 @@ describe("action control plane", () => {
         REVIEW_AUTH_MODE: "openrouter-api",
         CODEX_FAST_MODE: "false",
         REQUIRED_HEALTHY_PROVIDERS: "openrouter/poolside/laguna-m.1:free",
+        REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "0",
+        REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED: "0",
+        REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED: "0",
+        REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "0",
+        REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED: "0",
+        REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "0",
       },
+    });
+    expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
+  });
+
+  it("returns explicitly enabled investigation rollout flags in OIDC runtime config", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfig = parseReviewConfiguration({
+      ...defaultOpenRouterRuntimeConfig,
+      investigationRollout: {
+        recordingEnabled: true,
+        shadowEnabled: true,
+        contextCriticEnabled: true,
+        verifiedCleanEnabled: true,
+        crossRevisionReplayEnabled: true,
+        productionEffectsEnabled: true,
+      },
+    });
+
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session" },
+      {
+        repositories,
+        sessions: new StaticSessionTokenService(),
+        clock,
+      },
+    );
+
+    expect(config.runtimeEnv).toMatchObject({
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "1",
     });
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
   });

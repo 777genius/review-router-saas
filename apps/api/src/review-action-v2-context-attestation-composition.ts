@@ -43,6 +43,7 @@ import {
   decideReviewReuseEligibility,
   normalizeProviderInvocationManifest,
   reviewReuseEligibilityPolicyVersion,
+  serializeProviderInvocationManifestCanonicalWireJson,
   stableJson,
   type CurrentReviewReusePolicyPort,
   type ProviderInvocationManifest,
@@ -389,6 +390,7 @@ async function openGateway(
     canonicalJson({
       domain: gatewaySeedDomain,
       attemptId: facts.attemptId,
+      openingIntentHash: facts.openingIntentHash,
       sourceLeaseId: facts.sourceLeaseId,
       sourceFencingToken: facts.sourceFencingToken,
     }),
@@ -874,6 +876,15 @@ async function commitReceiptReplay(
     request.targetCheckoutTreeOid,
   );
   if (
+    !(await verifyInvestigationReceiptReplayPlanBinding({
+      authority,
+      replayedManifest,
+      dependencies: d,
+    }))
+  ) {
+    return receiptReplayDenied();
+  }
+  if (
     !(await verifyInvestigationReceiptReplayAuthorityCurrent({
       authorization,
       authority,
@@ -1041,6 +1052,135 @@ async function verifyInvestigationReceiptReplayAuthorityCurrent(input: {
     }),
   );
   return currentVector === authority.reusePolicyVectorHash;
+}
+
+async function verifyInvestigationReceiptReplayPlanBinding(input: {
+  readonly authority: ReviewActionV2InvestigationReceiptReplayAuthority;
+  readonly replayedManifest: ContextGatewayV4Manifest;
+  readonly dependencies: ReviewActionV2ContextAttestationHandlerDependencies;
+}): Promise<boolean> {
+  const { authority, replayedManifest, dependencies: d } = input;
+  try {
+    const [attestation, material] = await Promise.all([
+      d.store.findAcceptedAttestation(authority.attestationId),
+      d.store.findReplayMaterialByAttestationId(authority.attestationId),
+    ]);
+    if (
+      !attestation ||
+      !material ||
+      attestation.attestationHash !== authority.attestationHash ||
+      attestation.manifest.manifestVersion !== 3
+    ) {
+      return false;
+    }
+    const session = await d.store.findSession(attestation.sessionId);
+    if (!session) return false;
+    const plaintext = await d.cipher.decrypt({
+      material,
+      associatedDataCanonicalJson: replayMaterialAssociatedData(session),
+    });
+    const replayMaterial = parseReplayMaterial(
+      plaintext,
+      attestation.manifest,
+      session,
+      deriveGatewaySessionSecret(
+        d.sessionSecretKey,
+        gatewaySecretIdentity(session),
+      ),
+    );
+    if (!("entries" in replayMaterial)) return false;
+    const sourceOperationReceiptIds = [
+      ...new Set(authority.sourceOperationReceiptIds),
+    ].sort();
+    if (
+      sourceOperationReceiptIds.length !==
+        authority.sourceOperationReceiptIds.length ||
+      sourceOperationReceiptIds.some(
+        (value, index) => value !== authority.sourceOperationReceiptIds[index],
+      )
+    ) {
+      return false;
+    }
+    const sourceOperationReceiptIdsHash = await d.digest.digestUtf8(
+      canonicalJson({ operationReceiptIds: sourceOperationReceiptIds }),
+    );
+    if (
+      sourceOperationReceiptIdsHash !== authority.sourceOperationReceiptIdsHash
+    ) {
+      return false;
+    }
+    const operations = selectGatewayV4ReplayOperations(
+      attestation.manifest,
+      replayMaterial,
+      sourceOperationReceiptIds,
+    );
+    if (!operations || operations.length === 0) return false;
+    const plan = Object.freeze({
+      planVersion: 2 as const,
+      attestationId: authority.attestationId,
+      attestationHash: authority.attestationHash,
+      gatewayPolicyVersion: authority.gatewayPolicyVersion,
+      gatewayBinaryHash: authority.gatewayBinaryHash,
+      sourceOperationReceiptIds,
+      sourceOperationReceiptIdsHash,
+      operations,
+    });
+    if (
+      (await d.digest.digestUtf8(stableJson(plan as never))) !==
+      authority.contextReplayPlanHash
+    ) {
+      return false;
+    }
+    return targetManifestMatchesGatewayV4Plan(replayedManifest, operations);
+  } catch {
+    return false;
+  }
+}
+
+function targetManifestMatchesGatewayV4Plan(
+  manifest: ContextGatewayV4Manifest,
+  operations: readonly Readonly<{
+    operationKind: ContextGatewayV4OperationKind;
+    replayInput: Readonly<Record<string, unknown>>;
+  }>[],
+): boolean {
+  const successful = manifest.events.filter(
+    (event) => event.outcome === ContextGatewayV4OutcomeKind.Succeeded,
+  );
+  const targetOperations: Array<
+    Readonly<{
+      operationKind: ContextGatewayV4OperationKind;
+      operationKey: string;
+    }>
+  > = [];
+  const seenPageGroups = new Set<string>();
+  for (const event of successful) {
+    if (
+      event.operationKind === ContextGatewayV4OperationKind.DirectoryList ||
+      event.operationKind === ContextGatewayV4OperationKind.TextSearch ||
+      event.operationKind === ContextGatewayV4OperationKind.CanonicalInventory
+    ) {
+      const group = gatewayV4ReplayGroupKey(event);
+      if (seenPageGroups.has(group)) continue;
+      seenPageGroups.add(group);
+      if (event.result?.pageOrdinal !== 0) return false;
+    }
+    targetOperations.push(
+      Object.freeze({
+        operationKind: event.operationKind,
+        operationKey: event.operationKey,
+      }),
+    );
+  }
+  if (targetOperations.length !== operations.length) return false;
+  return operations.every((operation, index) => {
+    const target = targetOperations[index];
+    return (
+      target?.operationKind === operation.operationKind &&
+      target.operationKey ===
+        gatewayV4OperationKey(operation.operationKind, operation.replayInput)
+    );
+  });
 }
 
 async function verifyReplayAuthorityCurrent(input: {
@@ -1797,6 +1937,12 @@ async function resolveOpeningFacts(input: {
     manifest = normalizeProviderInvocationManifest(
       JSON.parse(lease.preparedManifestCanonicalJson),
     );
+    if (
+      serializeProviderInvocationManifestCanonicalWireJson(manifest) !==
+      lease.preparedManifestCanonicalJson
+    ) {
+      throw new Error("context_manifest_not_canonical");
+    }
   } catch {
     throw failure(
       422,
@@ -1804,7 +1950,11 @@ async function resolveOpeningFacts(input: {
       "context_manifest_invalid",
     );
   }
-  if (manifest.executionProfile !== ProviderExecutionProfile.ContextGatewayV1) {
+  if (
+    manifest.executionProfile !== ProviderExecutionProfile.ContextGatewayV1 &&
+    manifest.executionProfile !==
+      ProviderExecutionProfile.InvestigationGatewayV1
+  ) {
     throw failure(
       403,
       ReviewActionV2ProtocolErrorCode.Forbidden,
@@ -1883,6 +2033,12 @@ async function resolveOpeningFacts(input: {
     request.confinementEvidenceHash,
     "context_confinement_evidence_mismatch",
   );
+  const openingIntentHash = await d.digest.digestUtf8(
+    canonicalJson({
+      domain: "rr.context-gateway-opening-intent.v1",
+      idempotencyKey: request.idempotencyKey,
+    }),
+  );
   return Object.freeze({
     scope: {
       workspaceId: authorization.workspaceId,
@@ -1900,6 +2056,7 @@ async function resolveOpeningFacts(input: {
     sourceExecutionId: request.sourceExecutionId,
     sourceWorkSlotId: request.sourceWorkSlotId,
     attemptId: request.attemptId,
+    openingIntentHash,
     sourceLeaseId: request.sourceLeaseId,
     sourceFencingToken: request.fencingToken,
     providerKind: contextProviderKind(manifest.providerKind),
@@ -2290,6 +2447,7 @@ function normalizeGatewayV4ReplayInput(
       requireReplayString(input.query);
       if (
         input.paths !== undefined &&
+        !isCanonicalUndefined(input.paths) &&
         (!Array.isArray(input.paths) ||
           input.paths.some((path) => typeof path !== "string"))
       ) {
@@ -2310,7 +2468,12 @@ function normalizeGatewayV4ReplayInput(
     case ContextGatewayV4OperationKind.UnsupportedTool:
       throw invalidReplayMaterial();
   }
-  if (input.cursor !== undefined && typeof input.cursor !== "string") {
+  if (
+    input.cursor !== undefined &&
+    input.cursor !== null &&
+    !isCanonicalUndefined(input.cursor) &&
+    typeof input.cursor !== "string"
+  ) {
     throw invalidReplayMaterial();
   }
   return Object.freeze({ ...input });
@@ -2398,6 +2561,16 @@ function requireReplayString(value: unknown): void {
   if (typeof value !== "string" || value.length === 0) {
     throw invalidReplayMaterial();
   }
+}
+
+function isCanonicalUndefined(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 1 &&
+    (value as Record<string, unknown>).$undefined === true
+  );
 }
 
 function isRecordWithKeys(value: unknown, keys: readonly string[]): boolean {
@@ -2646,6 +2819,7 @@ function gatewaySecretIdentity(
   facts: Pick<
     GatewaySession,
     | "attemptId"
+    | "openingIntentHash"
     | "sourceLeaseId"
     | "sourceFencingToken"
     | "sourceExecutionId"
@@ -2658,6 +2832,7 @@ function gatewaySecretIdentity(
 ) {
   return canonicalJson({
     attemptId: facts.attemptId,
+    openingIntentHash: facts.openingIntentHash,
     sourceLeaseId: facts.sourceLeaseId,
     sourceFencingToken: facts.sourceFencingToken,
     sourceExecutionId: facts.sourceExecutionId,

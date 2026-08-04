@@ -19,12 +19,15 @@ describe("ContextAttestationInvestigationReceiptReplayAdapter", () => {
         attestationId: "attestation-1",
         attestationHash: hash("attestation"),
         reuseExpiresAtMs: 2_000,
+        sessionId: "session-1",
       }),
+      findSession: vi.fn().mockResolvedValue({ sessionId: "session-1" }),
     };
     const adapter = new ContextAttestationInvestigationReceiptReplayAdapter(
       store as never,
       { nowMs: () => 1_000 },
       new NodeSha256InvestigationDigest(),
+      currentFacts(),
     );
 
     const result = await adapter.replay(replayInput);
@@ -50,10 +53,37 @@ describe("ContextAttestationInvestigationReceiptReplayAdapter", () => {
           attestationId: "attestation-1",
           attestationHash: hash("attestation"),
           reuseExpiresAtMs: 2_000,
+          sessionId: "session-1",
         }),
+        findSession: vi.fn().mockResolvedValue({ sessionId: "session-1" }),
       } as never,
       { nowMs: () => 1_000 },
       new NodeSha256InvestigationDigest(),
+      currentFacts(),
+    );
+
+    await expect(adapter.replay(replayInput)).resolves.toEqual({
+      verdict: InvestigationReceiptReplayVerdict.Mismatched,
+      targetReceipt: null,
+    });
+  });
+
+  it("fails closed when the live reuse-policy vector changed", async () => {
+    const store = {
+      findReplayProof: vi.fn().mockResolvedValue(proof),
+      findAcceptedAttestation: vi.fn().mockResolvedValue({
+        attestationId: "attestation-1",
+        attestationHash: hash("attestation"),
+        reuseExpiresAtMs: 2_000,
+        sessionId: "session-1",
+      }),
+      findSession: vi.fn().mockResolvedValue({ sessionId: "session-1" }),
+    };
+    const adapter = new ContextAttestationInvestigationReceiptReplayAdapter(
+      store as never,
+      { nowMs: () => 1_000 },
+      new NodeSha256InvestigationDigest(),
+      currentFacts({ reusePolicyVectorHash: hash("changed-reuse") }),
     );
 
     await expect(adapter.replay(replayInput)).resolves.toEqual({
@@ -87,6 +117,8 @@ const replayInput = {
   replayProofId: "proof-1",
   targetExecutionId: "execution-target",
   targetWorkSlotId: "slot-target",
+  targetProviderVoteLaneId: hash("provider-lane"),
+  producerReleaseId: "release-1",
   obligation: {
     obligationId: hash("obligation"),
     coverageContractVersion: "coverage-v1",
@@ -124,6 +156,25 @@ const replayInput = {
   },
   gatewayPolicyVersion: "gateway-v4",
 } as const;
+
+function currentFacts(
+  overrides: Partial<{
+    targetCheckoutTreeOid: string;
+    replayBinaryHash: string;
+    replayPolicyVersion: string;
+    reusePolicyVectorHash: string;
+  }> = {},
+) {
+  return {
+    resolve: vi.fn().mockResolvedValue({
+      targetCheckoutTreeOid: proof.targetCheckoutTreeOid,
+      replayBinaryHash: proof.replayBinaryHash,
+      replayPolicyVersion: proof.replayPolicyVersion,
+      reusePolicyVectorHash: proof.reusePolicyVectorHash,
+      ...overrides,
+    }),
+  };
+}
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");

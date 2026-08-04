@@ -1,34 +1,37 @@
 import { canonicalJson, type CanonicalValue } from "./canonicalization";
+import type { SeedInvestigationObligation } from "./coverage-contract";
+import { parseProviderInvestigationObligationProposals } from "./investigation-turn-obligation-proposal";
 import {
   ContextCriticDecision,
+  InvestigationFindingSeverity,
   InvestigationTurnProviderKind,
-  InvestigationObligationKind,
   ReviewInvestigationRuntimeProfile,
   ReviewInvestigationTurnPurpose,
 } from "./review-investigation-types";
 
-export const investigationTurnObservationVersion = 1 as const;
+export const investigationTurnObservationVersion = 2 as const;
+export const investigationTurnOutputVersion = 2 as const;
 
 export { InvestigationTurnProviderKind } from "./review-investigation-types";
 
 export type InvestigationTurnObservation = Readonly<{
-  outputVersion: 1;
+  outputVersion: typeof investigationTurnOutputVersion;
   findings: readonly Readonly<{
-    severity: string;
+    severity: InvestigationFindingSeverity;
     title: string;
     body: string;
     path: string;
     line: number | null;
     evidenceOperationReceiptIds: readonly string[];
   }>[];
-  obligationProposals: readonly Readonly<{
-    kind: InvestigationObligationKind;
-    canonicalSubject: string;
-    canonicalRequirement: string;
-    riskPriority: number;
-  }>[];
+  obligationProposals: readonly SeedInvestigationObligation[];
   closureClaims: readonly Readonly<{
     obligationId: string;
+    operationReceiptIds: readonly string[];
+  }>[];
+  operationBackedDiscoveryClaims: readonly Readonly<{
+    sourceObligationId: string;
+    query: string;
     operationReceiptIds: readonly string[];
   }>[];
   unresolvableClaims: readonly Readonly<{
@@ -67,6 +70,7 @@ export function parseInvestigationTurnObservation(
     "findings",
     "obligationProposals",
     "closureClaims",
+    "operationBackedDiscoveryClaims",
     "unresolvableClaims",
     "criticDecision",
     "observationVersion",
@@ -84,7 +88,7 @@ export function parseInvestigationTurnObservation(
     "contextAttestationReference",
   ]);
   if (
-    root.outputVersion !== 1 ||
+    root.outputVersion !== investigationTurnOutputVersion ||
     root.observationVersion !== investigationTurnObservationVersion ||
     root.schemaComplete !== true ||
     root.streamComplete !== true
@@ -121,67 +125,39 @@ export function parseInvestigationTurnObservation(
     throw new Error("investigation_turn_usage_invalid");
   }
   return Object.freeze({
-    outputVersion: 1,
-    findings: boundedArray(root.findings, "findings").map((item) => {
-      const finding = record(item, "finding");
-      exactKeys(finding, [
-        "severity",
-        "title",
-        "body",
-        "path",
-        "line",
-        "evidenceOperationReceiptIds",
-      ]);
-      return Object.freeze({
-        severity: text(finding.severity, "finding_severity", 32),
-        title: text(finding.title, "finding_title", 240),
-        body: text(finding.body, "finding_body", 16_000),
-        path: text(finding.path, "finding_path", 2_000),
-        line:
-          finding.line === null
-            ? null
-            : positiveInteger(finding.line, "finding_line"),
-        evidenceOperationReceiptIds: digestArray(
-          finding.evidenceOperationReceiptIds,
-          "finding_receipts",
-        ),
-      });
-    }),
-    obligationProposals: boundedArray(
+    outputVersion: investigationTurnOutputVersion,
+    findings: Object.freeze(
+      boundedArray(root.findings, "findings").map((item) => {
+        const finding = record(item, "finding");
+        exactKeys(finding, [
+          "severity",
+          "title",
+          "body",
+          "path",
+          "line",
+          "evidenceOperationReceiptIds",
+        ]);
+        return Object.freeze({
+          severity: findingSeverity(finding.severity),
+          title: text(finding.title, "finding_title", 240),
+          body: text(finding.body, "finding_body", 16_000),
+          path: text(finding.path, "finding_path", 2_000),
+          line:
+            finding.line === null
+              ? null
+              : positiveInteger(finding.line, "finding_line"),
+          evidenceOperationReceiptIds: digestArray(
+            finding.evidenceOperationReceiptIds,
+            "finding_receipts",
+          ),
+        });
+      }),
+    ),
+    obligationProposals: parseProviderInvestigationObligationProposals(
       root.obligationProposals,
-      "obligation_proposals",
-    ).map((item) => {
-      const proposal = record(item, "obligation_proposal");
-      exactKeys(proposal, [
-        "kind",
-        "canonicalSubject",
-        "canonicalRequirement",
-        "riskPriority",
-      ]);
-      return Object.freeze({
-        kind: enumValue(
-          proposal.kind,
-          InvestigationObligationKind,
-          "obligation_kind",
-        ),
-        canonicalSubject: text(
-          proposal.canonicalSubject,
-          "canonical_subject",
-          4_000,
-        ),
-        canonicalRequirement: text(
-          proposal.canonicalRequirement,
-          "canonical_requirement",
-          4_000,
-        ),
-        riskPriority: nonNegativeInteger(
-          proposal.riskPriority,
-          "risk_priority",
-        ),
-      });
-    }),
-    closureClaims: boundedArray(root.closureClaims, "closure_claims").map(
-      (item) => {
+    ),
+    closureClaims: Object.freeze(
+      boundedArray(root.closureClaims, "closure_claims").map((item) => {
         const claim = record(item, "closure_claim");
         exactKeys(claim, ["obligationId", "operationReceiptIds"]);
         const operationReceiptIds = digestArray(
@@ -195,27 +171,62 @@ export function parseInvestigationTurnObservation(
           obligationId: digest(claim.obligationId, "obligation_id"),
           operationReceiptIds,
         });
-      },
+      }),
     ),
-    unresolvableClaims: boundedArray(
-      root.unresolvableClaims,
-      "unresolvable_claims",
-    ).map((item) => {
-      const claim = record(item, "unresolvable_claim");
-      exactKeys(claim, [
-        "obligationId",
-        "reason",
-        "evidenceOperationReceiptIds",
-      ]);
-      return Object.freeze({
-        obligationId: digest(claim.obligationId, "obligation_id"),
-        reason: text(claim.reason, "unresolvable_reason", 2_000),
-        evidenceOperationReceiptIds: digestArray(
-          claim.evidenceOperationReceiptIds,
-          "unresolvable_receipts",
-        ),
-      });
-    }),
+    operationBackedDiscoveryClaims: Object.freeze(
+      boundedArray(
+        root.operationBackedDiscoveryClaims,
+        "operation_backed_discovery_claims",
+      ).map((item) => {
+        const claim = record(item, "operation_backed_discovery_claim");
+        exactKeys(claim, [
+          "sourceObligationId",
+          "query",
+          "operationReceiptIds",
+        ]);
+        const operationReceiptIds = digestArray(
+          claim.operationReceiptIds,
+          "operation_backed_discovery_receipts",
+        );
+        if (operationReceiptIds.length === 0) {
+          throw new Error(
+            "investigation_operation_backed_discovery_receipts_required",
+          );
+        }
+        return Object.freeze({
+          sourceObligationId: digest(
+            claim.sourceObligationId,
+            "source_obligation_id",
+          ),
+          query: strictText(
+            claim.query,
+            "operation_backed_discovery_query",
+            1_024,
+          ),
+          operationReceiptIds,
+        });
+      }),
+    ),
+    unresolvableClaims: Object.freeze(
+      boundedArray(root.unresolvableClaims, "unresolvable_claims").map(
+        (item) => {
+          const claim = record(item, "unresolvable_claim");
+          exactKeys(claim, [
+            "obligationId",
+            "reason",
+            "evidenceOperationReceiptIds",
+          ]);
+          return Object.freeze({
+            obligationId: digest(claim.obligationId, "obligation_id"),
+            reason: text(claim.reason, "unresolvable_reason", 2_000),
+            evidenceOperationReceiptIds: digestArray(
+              claim.evidenceOperationReceiptIds,
+              "unresolvable_receipts",
+            ),
+          });
+        },
+      ),
+    ),
     criticDecision:
       root.criticDecision === null
         ? null
@@ -254,6 +265,19 @@ export function parseInvestigationTurnObservation(
       256,
     ),
   });
+}
+
+function findingSeverity(value: unknown): InvestigationFindingSeverity {
+  switch (value) {
+    case InvestigationFindingSeverity.Critical:
+      return InvestigationFindingSeverity.Critical;
+    case InvestigationFindingSeverity.Major:
+      return InvestigationFindingSeverity.Major;
+    case InvestigationFindingSeverity.Minor:
+      return InvestigationFindingSeverity.Minor;
+    default:
+      throw new Error("investigation_finding_severity_invalid");
+  }
 }
 
 export function canonicalInvestigationTurnObservation(
@@ -323,6 +347,14 @@ function text(value: unknown, field: string, max: number): string {
     throw new Error(`${field}_invalid`);
   }
   return value;
+}
+
+function strictText(value: unknown, field: string, max: number): string {
+  const parsed = text(value, field, max);
+  if (parsed.trim() !== parsed || /[\r\n]/u.test(parsed)) {
+    throw new Error(`${field}_invalid`);
+  }
+  return parsed;
 }
 
 function nonNegativeInteger(value: unknown, field: string): number {

@@ -102,9 +102,7 @@ export function generateReleaseManifest(input) {
     actionCommitSha,
     runtimeEntrypointPath: verified.runtimeEntrypointPath,
     runtimeEntrypointDigest: verified.runtimeEntrypointDigest,
-    contextGatewayPolicyVersion: verified.contextGatewayPolicyVersion,
-    contextGatewayEntrypointPath: verified.contextGatewayEntrypointPath,
-    contextGatewayEntrypointDigest: verified.contextGatewayEntrypointDigest,
+    contextGatewayReleaseMetadata: verified.contextGatewayReleaseMetadata,
   });
   const bytes = canonicalJson(manifest);
   if (input.output) writeImmutable(input.output, bytes);

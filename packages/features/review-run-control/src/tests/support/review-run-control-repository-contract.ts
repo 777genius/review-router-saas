@@ -47,6 +47,7 @@ import type {
   ReviewOperationalSloProfileV2,
   ReviewProtocolLimitsV2,
 } from "../../domain/producer-release";
+import { reviewInvestigationCapabilityV1 } from "../../domain/producer-release";
 import type { ReviewMutationAuthority } from "../../domain/review-mutation-authority";
 import type { ReviewRunAuthorizationCandidate } from "../../domain/review-run-authorization";
 import type {
@@ -184,6 +185,29 @@ export function reviewRunControlRepositoryContract(
         }),
       ).resolves.toMatchObject({
         status: ImmutableRegistryWriteStatus.Created,
+      });
+      const investigationReleaseId = next("release-investigation");
+      const investigationProfile = {
+        capability: reviewInvestigationCapabilityV1,
+        coverageProfileHash: digest("investigation", "coverage"),
+        policyHash: digest("investigation", "policy"),
+      } as const;
+      await expect(
+        harness.releases.registerProducerRelease({
+          ...release,
+          producerReleaseId: investigationReleaseId,
+          contextGatewayPolicyVersion: "context-gateway-v4",
+          contextGatewayEntrypointDigest: digest("gateway", "v4-entrypoint"),
+          reviewInvestigationProfile: investigationProfile,
+        }),
+      ).resolves.toMatchObject({
+        status: ImmutableRegistryWriteStatus.Created,
+        value: { reviewInvestigationProfile: investigationProfile },
+      });
+      await expect(
+        harness.releases.findProducerReleaseById(investigationReleaseId),
+      ).resolves.toMatchObject({
+        reviewInvestigationProfile: investigationProfile,
       });
       const revoked = await harness.releases.revokeProducerRelease({
         producerReleaseId: owner.producerReleaseId,
@@ -735,6 +759,7 @@ function producerRelease(
     runtimeEntrypointDigest: digest(id, "runtime-entrypoint"),
     contextGatewayPolicyVersion: null,
     contextGatewayEntrypointDigest: null,
+    reviewInvestigationProfile: null,
     schemaDigest: digest(id, "schema"),
     capabilityProfile: ReviewCapabilityProfile.ExactRevisionV2,
     protocolLimitsProfileId: limits.protocolLimitsProfileId,

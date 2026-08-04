@@ -63,6 +63,12 @@ describe("PrismaActionControlPlaneRepository helpers", () => {
               inlineMinAgreement: 1,
               targetTokensPerBatch: 50000,
               reviewLanguage: "Russian",
+              investigationRecordingEnabled: true,
+              investigationShadowEnabled: true,
+              investigationContextCriticEnabled: true,
+              investigationVerifiedCleanEnabled: true,
+              investigationCrossRevisionReplayEnabled: true,
+              investigationProductionEffectsEnabled: true,
               providers: [
                 {
                   providerKind: "claude",
@@ -94,6 +100,14 @@ describe("PrismaActionControlPlaneRepository helpers", () => {
     expect(record?.config.reviewLanguage).toBe("Russian");
     expect(record?.config.providers).toHaveLength(1);
     expect(record?.config.providers[0]?.requiredHealthy).toBe(true);
+    expect(record?.config.investigationRollout).toEqual({
+      recordingEnabled: true,
+      shadowEnabled: true,
+      contextCriticEnabled: true,
+      verifiedCleanEnabled: true,
+      crossRevisionReplayEnabled: true,
+      productionEffectsEnabled: true,
+    });
   });
 });
 

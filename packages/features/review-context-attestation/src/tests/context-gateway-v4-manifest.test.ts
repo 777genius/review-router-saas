@@ -12,6 +12,7 @@ import {
   type ContextGatewayV4Event,
 } from "../domain/context-gateway-v4-manifest";
 import {
+  ContextDependencyReplayDenialReason,
   ContextDependencyReplayStatus,
   decideContextGatewayV4Replay,
 } from "../domain/context-replay-decision";
@@ -36,6 +37,36 @@ describe("ContextGatewayV4Manifest", () => {
     expect(() => createContextGatewayV4Manifest(candidate(reordered))).toThrow(
       "context_gateway_v4_page_chain_invalid",
     );
+  });
+
+  it("rejects a page that is not bound to the previous authenticated cursor", () => {
+    const events = validEvents();
+    const secondPage = events[2]!;
+    events[2] = Object.freeze({
+      ...secondPage,
+      result: Object.freeze({
+        ...secondPage.result,
+        cursorInputHash: hash("wrong-cursor"),
+      }),
+    });
+
+    expect(() => createContextGatewayV4Manifest(candidate(events))).toThrow(
+      "context_gateway_v4_page_chain_invalid",
+    );
+  });
+
+  it("accepts repeated complete pagination sequences for the same query", () => {
+    const events = rechain(
+      [
+        successPage(1, 0, true, hash("seed")),
+        successPage(2, 0, true, hash("unused")),
+      ],
+      hash("seed"),
+    );
+
+    expect(
+      createContextGatewayV4Manifest(candidate(events)).events,
+    ).toHaveLength(2);
   });
 
   it("rejects confinement and infrastructure events even when the envelope lies", () => {
@@ -65,10 +96,11 @@ describe("ContextGatewayV4Manifest", () => {
   it("replays only the selected receipt group and ignores revision tree identity", () => {
     const source = createContextGatewayV4Manifest(candidate(validEvents()));
     const targetEvents = rechain(
-      [
-        successPage(1, 0, false, hash("target-seed")),
-        successPage(2, 1, true, hash("unused")),
-      ],
+      source.events.filter(
+        (event) =>
+          event.operationKind === ContextGatewayV4OperationKind.TextSearch &&
+          event.outcome === ContextGatewayV4OutcomeKind.Succeeded,
+      ),
       hash("target-seed"),
     );
     const target = createContextGatewayV4Manifest({
@@ -102,6 +134,39 @@ describe("ContextGatewayV4Manifest", () => {
     expect(
       decideContextGatewayV4Replay(source, changedTarget, [hash("receipt-1")]),
     ).toMatchObject({ status: ContextDependencyReplayStatus.Denied });
+
+    const substitutedQuery = rechain(
+      targetEvents.map((entry) =>
+        entry.operationKind === ContextGatewayV4OperationKind.TextSearch
+          ? Object.freeze({
+              ...entry,
+              operationKey:
+                entry.result?.pageOrdinal === 0
+                  ? hash("substituted-query-operation")
+                  : entry.operationKey,
+              result: Object.freeze({
+                ...entry.result!,
+                queryDigest: hash("substituted-query"),
+              }),
+            })
+          : entry,
+      ),
+      hash("target-seed"),
+    );
+    const substitutedQueryTarget = createContextGatewayV4Manifest({
+      ...candidate(substitutedQuery),
+      checkoutTreeOid: "c".repeat(40),
+      eventChainSeedHash: hash("target-seed"),
+      authenticatedChainHash: substitutedQuery.at(-1)!.eventHash,
+    });
+    expect(
+      decideContextGatewayV4Replay(source, substitutedQueryTarget, [
+        hash("receipt-1"),
+      ]),
+    ).toMatchObject({
+      status: ContextDependencyReplayStatus.Denied,
+      reason: ContextDependencyReplayDenialReason.OperationMismatch,
+    });
   });
 });
 
@@ -163,9 +228,13 @@ function successPage(
     result: {
       treeOid: "a".repeat(40),
       queryDigest: hash("query"),
+      cursorInputHash: pageOrdinal === 0 ? null : hash("cursor"),
       pageOrdinal,
       pageItemCount: pageOrdinal === 0 ? 2 : 1,
       pageItemsHash: hash(`page-${pageOrdinal}`),
+      pagePathHashes: [hash(`path-${pageOrdinal}`)],
+      aggregatePathCount: pageOrdinal + 1,
+      aggregatePathSetHash: hash(`path-set-${pageOrdinal}`),
       aggregateItemCount: pageOrdinal === 0 ? 2 : 3,
       aggregateHash: hash(`aggregate-${pageOrdinal}`),
       complete,

@@ -2,6 +2,7 @@ import { canonicalJson } from "../../domain/canonicalization";
 import type { SeedInvestigationObligation } from "../../domain/coverage-contract";
 import {
   createInvestigationObligation,
+  InvestigationObligationOrigin,
   obligationIdentity,
   type InvestigationEvidenceReceipt,
 } from "../../domain/investigation-obligation";
@@ -48,6 +49,7 @@ export type CommitInvestigationTurnCommand = Readonly<{
     deterministicPolicy: boolean;
   }>[];
   proposals: readonly SeedInvestigationObligation[];
+  deterministicExpansions?: readonly SeedInvestigationObligation[];
   findings: readonly InvestigationFinding[];
   acceptedEvidenceReceiptIds?: readonly string[];
   criticDecision: ContextCriticDecision | null;
@@ -56,6 +58,7 @@ export type CommitInvestigationTurnCommand = Readonly<{
   acceptedAttestationId?: string | null;
   sanitizedOutcomeHash?: string | null;
   provenance?: InvestigationTurnProvenance | null;
+  idempotencyHash?: string;
 }>;
 
 export class CommitInvestigationTurn {
@@ -69,9 +72,15 @@ export class CommitInvestigationTurn {
   async execute(
     command: CommitInvestigationTurnCommand,
   ): Promise<ReviewInvestigationReadModel> {
-    const commandHash = await this.digest.digestUtf8(
-      canonicalJson({ operation: "commit_investigation_turn", command }),
-    );
+    const { idempotencyHash, ...commandForHash } = command;
+    const commandHash =
+      idempotencyHash ??
+      (await this.digest.digestUtf8(
+        canonicalJson({
+          operation: "commit_investigation_turn",
+          command: commandForHash,
+        }),
+      ));
     const restored = await restoreCommandOrThrow({
       store: this.store,
       commandId: command.commandId,
@@ -108,13 +117,33 @@ export class CommitInvestigationTurn {
         });
       }),
     );
+    const deterministicObligations = await Promise.all(
+      (command.deterministicExpansions ?? []).map(async (proposal) => {
+        const identity = obligationIdentity({
+          coverageContractVersion: current.contract.coverageContractVersion,
+          stableReviewUnitKey: current.stableReviewUnitKey,
+          kind: proposal.kind,
+          canonicalSubject: proposal.canonicalSubject,
+          canonicalRequirement: proposal.canonicalRequirement,
+        });
+        return createInvestigationObligation({
+          obligationId: await digestCanonical(this.digest, { ...identity }),
+          identity,
+          riskPriority: proposal.riskPriority,
+          origin: InvestigationObligationOrigin.DeterministicExpansion,
+        });
+      }),
+    );
     let next = commitInvestigationTurn({
       investigation: current,
       commit: {
         turnId: command.turnId,
         closureClaims: command.closureClaims,
         unresolvableDecisions: command.unresolvableDecisions,
-        proposedObligations,
+        proposedObligations: [
+          ...deterministicObligations,
+          ...proposedObligations,
+        ],
         findings: command.findings,
         acceptedEvidenceReceiptIds: command.acceptedEvidenceReceiptIds ?? [],
         criticDecision: command.criticDecision,

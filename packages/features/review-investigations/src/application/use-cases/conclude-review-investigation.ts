@@ -1,4 +1,5 @@
 import { canonicalJson } from "../../domain/canonicalization";
+import { canonicalInvestigationScope } from "../../domain/coverage-contract";
 import {
   certificateCandidateCanonicalValue,
   type ReviewInvestigationCertificate,
@@ -6,18 +7,23 @@ import {
 } from "../../domain/investigation-certificate";
 import {
   concludeReviewInvestigation,
+  enforceCriticPolicyForConclusion,
   type ReviewInvestigation,
 } from "../../domain/review-investigation";
 import {
   ReviewInvestigationConclusion,
   ReviewInvestigationState,
-  ReviewInvestigationTurnPurpose,
 } from "../../domain/review-investigation-types";
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
 import type { InvestigationTerminalProjectionPort } from "../ports/investigation-terminal-projection-port";
-import { summarizeTerminalDiscoveryProvenance } from "../../domain/investigation-turn";
+import {
+  canonicalContextAttestationSet,
+  canonicalTurnProvenanceSet,
+  latestCriticTurnProvenance,
+  summarizeTerminalDiscoveryProvenance,
+} from "../../domain/investigation-turn";
 import {
   InvestigationStoreTransitionKind,
   type InvestigationStorePort,
@@ -62,15 +68,19 @@ export class ConcludeReviewInvestigation {
       commandHash,
     });
     if (restored) return toInvestigationReadModel(restored);
-    const current = await this.store.findById(command.investigationId);
-    if (current === null) throw new Error("investigation_missing");
-    if (current.version !== command.expectedVersion) {
+    const restoredCurrent = await this.store.findById(command.investigationId);
+    if (restoredCurrent === null) throw new Error("investigation_missing");
+    if (restoredCurrent.version !== command.expectedVersion) {
       throw new Error("investigation_concurrency_conflict");
     }
     await requireCurrentExecution({
       authority: this.authority,
-      investigation: current,
+      investigation: restoredCurrent,
     });
+    const current = await withCurrentDossierDigest(
+      this.digest,
+      enforceCriticPolicyForConclusion(restoredCurrent),
+    );
     if (
       !Number.isSafeInteger(command.certificateTtlMs) ||
       command.certificateTtlMs <= 0
@@ -94,9 +104,7 @@ export class ConcludeReviewInvestigation {
     ) {
       throw new Error("investigation_turn_provenance_incomplete");
     }
-    const criticProvenance = [...current.turnProvenance]
-      .reverse()
-      .find((item) => item.purpose === ReviewInvestigationTurnPurpose.Critic);
+    const criticProvenance = latestCriticTurnProvenance(current.turnProvenance);
     const terminalProvenance = summarizeTerminalDiscoveryProvenance(
       current.turnProvenance,
     );
@@ -130,7 +138,9 @@ export class ConcludeReviewInvestigation {
           .filter((item): item is string => item !== null)
           .sort(),
       ),
-      scopeHash: await digestCanonical(this.digest, current.scope),
+      scopeHash: await this.digest.digestUtf8(
+        canonicalInvestigationScope(current.scope),
+      ),
       coverageStateHash: await digestCanonical(
         this.digest,
         current.obligations.map((item) => ({
@@ -138,18 +148,11 @@ export class ConcludeReviewInvestigation {
           state: item.state,
         })),
       ),
-      contextAttestationSetHash: await digestCanonical(
-        this.digest,
-        current.turnProvenance
-          .map((item) => ({
-            id: item.acceptedAttestationId,
-            hash: item.acceptedAttestationHash,
-          }))
-          .sort((left, right) => left.id.localeCompare(right.id)),
+      contextAttestationSetHash: await this.digest.digestUtf8(
+        canonicalContextAttestationSet(current.turnProvenance),
       ),
-      turnProvenanceHash: await digestCanonical(
-        this.digest,
-        current.turnProvenance,
+      turnProvenanceHash: await this.digest.digestUtf8(
+        canonicalTurnProvenanceSet(current.turnProvenance),
       ),
       terminalProviderKind: terminalProvenance.providerKind,
       terminalActualModel: terminalProvenance.actualModel,

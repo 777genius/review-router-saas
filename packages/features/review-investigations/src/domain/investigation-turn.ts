@@ -2,9 +2,10 @@ import type {
   InvestigationEvidenceReceipt,
   InvestigationObligation,
 } from "./investigation-obligation";
-import type { CanonicalValue } from "./canonicalization";
+import { canonicalJson, type CanonicalValue } from "./canonicalization";
 import {
   ContextCriticDecision,
+  InvestigationFindingSeverity,
   InvestigationTurnProviderKind,
   ReviewInvestigationAbortReason,
   ReviewInvestigationRuntimeProfile,
@@ -13,7 +14,7 @@ import {
 
 export type InvestigationFinding = Readonly<{
   fingerprint: string;
-  severity: string;
+  severity: InvestigationFindingSeverity;
   title: string;
   body: string;
   path: string;
@@ -74,6 +75,36 @@ export function turnProvenanceCanonicalValue(
   provenance: InvestigationTurnProvenance,
 ): CanonicalValue {
   return { ...provenance };
+}
+
+export function canonicalTurnProvenanceSet(
+  provenance: readonly InvestigationTurnProvenance[],
+): string {
+  return canonicalJson(provenance.map(turnProvenanceCanonicalValue));
+}
+
+export function canonicalContextAttestationSet(
+  provenance: readonly InvestigationTurnProvenance[],
+): string {
+  return canonicalJson(
+    provenance
+      .map((item) => ({
+        id: item.acceptedAttestationId,
+        hash: item.acceptedAttestationHash,
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+  );
+}
+
+export function latestCriticTurnProvenance(
+  provenance: readonly InvestigationTurnProvenance[],
+): InvestigationTurnProvenance | null {
+  return (
+    [...provenance]
+      .reverse()
+      .find((item) => item.purpose === ReviewInvestigationTurnPurpose.Critic) ??
+    null
+  );
 }
 
 export function summarizeTerminalDiscoveryProvenance(

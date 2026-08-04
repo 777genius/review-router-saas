@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ReviewReasoningEffort } from "@reviewrouter/features-review-config/review-reasoning-effort";
 import { isScmProvider, type ScmProvider } from "@reviewrouter/shared/scm";
+import { ReviewInvestigationPromotionRequestVersion } from "./review-investigation-operator-routes.js";
 
 type OperatorCliEnvironment = Readonly<Record<string, string | undefined>>;
 type OperatorCliFetch = typeof fetch;
@@ -37,43 +38,70 @@ export async function executeReviewRouterOperatorCli(
   if (parsed.options.help === true || command.length === 0) {
     return { usage: usageText() };
   }
-  if (command !== "config get" && command !== "config set") {
+  if (
+    command !== "config get" &&
+    command !== "config set" &&
+    command !== "investigation status" &&
+    command !== "investigation promotion-report"
+  ) {
     throw new Error("reviewrouter_operator_command_unknown");
   }
-  assertAllowedOptions(
+  assertAllowedOptions(parsed, allowedOptions(command));
+
+  const { apiUrl, credential } = await readOperatorProfile(
     parsed,
-    command === "config get"
-      ? [
-          "repo",
-          "workspace",
-          "provider",
-          "source-base-url",
-          "api-url",
-          "profile",
-        ]
-      : [
-          "repo",
-          "effort",
-          "reason",
-          "workspace",
-          "provider",
-          "source-base-url",
-          "api-url",
-          "profile",
-        ],
+    env,
+    dependencies,
+    command,
   );
+  const fetchImpl = dependencies.fetchImpl ?? fetch;
+
+  if (command === "investigation status") {
+    const investigationId = requireOption(parsed, "investigation-id");
+    return requestJson(
+      new URL(
+        `/api/operator/v1/review-investigations/${encodeURIComponent(investigationId)}/status`,
+        apiUrl,
+      ),
+      {
+        method: "GET",
+        headers: operatorHeaders(credential),
+        redirect: "error",
+      },
+      fetchImpl,
+    );
+  }
+
+  if (command === "investigation promotion-report") {
+    return requestJson(
+      new URL(
+        "/api/operator/v1/review-investigation-promotion-reports",
+        apiUrl,
+      ),
+      {
+        method: "POST",
+        headers: {
+          ...operatorHeaders(credential),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          requestVersion: ReviewInvestigationPromotionRequestVersion.V3,
+          producerReleaseId: requireOption(parsed, "producer-release"),
+          profile: {
+            id: requireOption(parsed, "promotion-profile-id"),
+            version: requireOption(parsed, "promotion-profile-version"),
+          },
+        }),
+        redirect: "error",
+      },
+      fetchImpl,
+    );
+  }
 
   const repository = requireOption(parsed, "repo");
   const provider = parseProvider(readOption(parsed, "provider") ?? "github");
   const workspace = readOption(parsed, "workspace");
   const sourceBaseUrl = readOption(parsed, "source-base-url");
-  const { apiUrl, credential } = await readOperatorProfile(
-    parsed,
-    env,
-    dependencies,
-  );
-  const fetchImpl = dependencies.fetchImpl ?? fetch;
-
   if (command === "config get") {
     const query = new URLSearchParams({ repo: repository, provider });
     if (workspace) query.set("workspace", workspace);
@@ -113,6 +141,43 @@ export async function executeReviewRouterOperatorCli(
   );
 }
 
+function allowedOptions(command: string): readonly string[] {
+  switch (command) {
+    case "config get":
+      return [
+        "repo",
+        "workspace",
+        "provider",
+        "source-base-url",
+        "api-url",
+        "profile",
+      ];
+    case "config set":
+      return [
+        "repo",
+        "effort",
+        "reason",
+        "workspace",
+        "provider",
+        "source-base-url",
+        "api-url",
+        "profile",
+      ];
+    case "investigation status":
+      return ["investigation-id", "api-url", "profile"];
+    case "investigation promotion-report":
+      return [
+        "producer-release",
+        "promotion-profile-id",
+        "promotion-profile-version",
+        "api-url",
+        "profile",
+      ];
+    default:
+      throw new Error("reviewrouter_operator_command_unknown");
+  }
+}
+
 export function parseArguments(argv: readonly string[]): ParsedArguments {
   const positionals: string[] = [];
   const options: Record<string, string | true> = {};
@@ -141,9 +206,12 @@ async function readOperatorProfile(
   parsed: ParsedArguments,
   env: OperatorCliEnvironment,
   dependencies: ReviewRouterOperatorCliDependencies,
+  command: string,
 ): Promise<OperatorProfile> {
   const environmentCredential =
-    env.REVIEW_ROUTER_REVIEW_CONFIG_OPERATOR_CREDENTIAL;
+    (command === "investigation promotion-report"
+      ? env.REVIEW_ROUTER_INVESTIGATION_PROMOTION_CREDENTIAL
+      : undefined) ?? env.REVIEW_ROUTER_REVIEW_CONFIG_OPERATOR_CREDENTIAL;
   const explicitApiUrl =
     readOption(parsed, "api-url") ?? env.REVIEW_ROUTER_API_URL?.trim();
   if (environmentCredential?.trim()) {
@@ -314,6 +382,8 @@ function usageText(): string {
     "",
     "  reviewrouter config get --repo OWNER/REPO [--workspace SLUG] [--provider github|gitlab] [--source-base-url URL] [--profile PATH]",
     "  reviewrouter config set --repo OWNER/REPO --effort low|medium|high|xhigh [--reason TEXT] [--workspace SLUG] [--provider github|gitlab] [--source-base-url URL] [--profile PATH]",
+    "  reviewrouter investigation status --investigation-id ID [--profile PATH]",
+    "  reviewrouter investigation promotion-report --producer-release ID --promotion-profile-id ID --promotion-profile-version VERSION [--profile PATH]",
   ].join("\n");
 }
 

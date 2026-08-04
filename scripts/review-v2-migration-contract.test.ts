@@ -65,6 +65,13 @@ describe("Review v2 migration contract", () => {
     expect(migrateScript).toContain(
       "review_v2_release_immutable_index_invalid",
     );
+    for (const investigationIdentityColumn of [
+      "reviewInvestigationCapability",
+      "reviewInvestigationCoverageProfileHash",
+      "reviewInvestigationPolicyHash",
+    ]) {
+      expect(migrateScript).toContain(`'${investigationIdentityColumn}'`);
+    }
   });
 });
 

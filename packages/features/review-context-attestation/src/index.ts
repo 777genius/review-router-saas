@@ -13,5 +13,3 @@ export * from "./application/use-cases/open-context-gateway-session";
 export * from "./application/use-cases/replay-context-attestation";
 export * from "./application/use-cases/verify-target-replay-proof";
 export * from "./application/use-cases/verify-accepted-context-attestation";
-
-export * from "./infrastructure/memory/in-memory-context-attestation-store";

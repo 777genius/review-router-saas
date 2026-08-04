@@ -113,7 +113,10 @@ export function decideContextGatewayV4Replay(
   for (let index = 0; index < sourceEvents.length; index += 1) {
     const sourceEvent = sourceEvents[index]!;
     const targetEvent = targetEvents[index]!;
-    if (sourceEvent.operationKind !== targetEvent.operationKind) {
+    if (
+      sourceEvent.operationKind !== targetEvent.operationKind ||
+      !v4OperationInputMatches(sourceEvent, targetEvent)
+    ) {
       return denied(
         ContextDependencyReplayDenialReason.OperationMismatch,
         sourceEvent.operationKey,
@@ -211,9 +214,10 @@ function v4ComparableResult(
     case ContextGatewayV4OperationKind.DirectoryList:
     case ContextGatewayV4OperationKind.TextSearch:
     case ContextGatewayV4OperationKind.CanonicalInventory: {
-      const { treeOid, queryDigest, nextCursorHash, ...comparable } = result;
+      const { treeOid, cursorInputHash, nextCursorHash, ...comparable } =
+        result;
       void treeOid;
-      void queryDigest;
+      void cursorInputHash;
       void nextCursorHash;
       return comparable;
     }
@@ -221,6 +225,28 @@ function v4ComparableResult(
       return result;
     case ContextGatewayV4OperationKind.UnsupportedTool:
       return null;
+  }
+}
+
+function v4OperationInputMatches(
+  source: ContextGatewayV4Event,
+  target: ContextGatewayV4Event,
+): boolean {
+  if (source.operationKind !== target.operationKind) return false;
+  switch (source.operationKind) {
+    case ContextGatewayV4OperationKind.FileRead:
+    case ContextGatewayV4OperationKind.GitFact:
+      return source.operationKey === target.operationKey;
+    case ContextGatewayV4OperationKind.DirectoryList:
+    case ContextGatewayV4OperationKind.TextSearch:
+    case ContextGatewayV4OperationKind.CanonicalInventory:
+      return (
+        source.result?.queryDigest === target.result?.queryDigest &&
+        (source.result?.pageOrdinal !== 0 ||
+          source.operationKey === target.operationKey)
+      );
+    case ContextGatewayV4OperationKind.UnsupportedTool:
+      return false;
   }
 }
 

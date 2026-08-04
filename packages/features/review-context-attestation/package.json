@@ -13,6 +13,16 @@
       "types": "./src/composition/index.ts",
       "production": "./dist/composition/index.js",
       "default": "./src/composition/index.ts"
+    },
+    "./contract-source": {
+      "types": "./src/contract-source/index.ts",
+      "production": "./dist/contract-source/index.js",
+      "default": "./src/contract-source/index.ts"
+    },
+    "./testing": {
+      "types": "./src/testing/index.ts",
+      "production": "./dist/testing/index.js",
+      "default": "./src/testing/index.ts"
     }
   },
   "dependencies": {

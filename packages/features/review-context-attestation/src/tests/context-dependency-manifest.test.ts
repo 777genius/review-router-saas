@@ -246,6 +246,7 @@ describe("AcceptedDependencyAttestation", () => {
       sourceExecutionId: "execution-1",
       sourceWorkSlotId: "slot-1",
       attemptId: "attempt-1",
+      openingIntentHash: hash("1"),
       sourceLeaseId: "lease-1",
       sourceFencingToken: "1",
       providerKind: ContextProviderKind.Codex,

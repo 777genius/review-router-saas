@@ -1,17 +1,14 @@
-import type { InvestigationReceiptKind } from "../../domain/investigation-obligation";
+import type { VerifiedInvestigationOperationEvidence } from "../../domain/investigation-operation-evidence";
+import type { InvestigationTurnProviderKind } from "../../domain/review-investigation-types";
 
-export type VerifiedInvestigationOperationEvidence = Readonly<{
-  operationReceiptId: string;
-  operationKey: string;
-  kind: InvestigationReceiptKind;
-  evidenceDigest: string;
-}>;
+export type { VerifiedInvestigationOperationEvidence } from "../../domain/investigation-operation-evidence";
 
 export type VerifiedInvestigationTurnEvidence = Readonly<{
   acceptedAttestationId: string;
   acceptedAttestationHash: string;
   terminalOutcomeHash: string;
   gatewayPolicyVersion: string;
+  actualProviderKind: InvestigationTurnProviderKind;
   operations: readonly VerifiedInvestigationOperationEvidence[];
 }>;
 

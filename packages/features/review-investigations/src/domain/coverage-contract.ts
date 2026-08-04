@@ -1,4 +1,9 @@
-import { assertDigest, assertIdentifier } from "./canonicalization";
+import {
+  assertDigest,
+  assertIdentifier,
+  canonicalJson,
+} from "./canonicalization";
+import { reviewInvestigationCriticPolicyV1 } from "./investigation-critic-policy";
 import type { InvestigationObligationKind } from "./review-investigation-types";
 
 export type ReviewInvestigationScope = Readonly<{
@@ -22,9 +27,52 @@ export type ReviewInvestigationContract = Readonly<{
   expansionRulesVersion: string;
   criticPolicyVersion: string;
   gatewayPolicyVersion: string;
+  probePolicyVersion: string;
   producerReleaseId: string;
   runtimeProfileVersion: string;
+  searchPolicyVersion: string;
 }>;
+
+export const reviewInvestigationProbePolicyV1 =
+  "review-investigation-probe-policy.v1" as const;
+export const reviewInvestigationSearchPolicyV1 =
+  "review-investigation-fixed-string-search.v1" as const;
+
+export const reviewInvestigationCoverageProfileV2 = Object.freeze({
+  coverageContractVersion: "review-investigation-coverage.v1",
+  expansionRulesVersion: "review-investigation-expansion.v2",
+  criticPolicyVersion: reviewInvestigationCriticPolicyV1,
+  gatewayPolicyVersion: "context-gateway-v4",
+  probePolicyVersion: reviewInvestigationProbePolicyV1,
+  runtimeProfileVersion: "gateway-attested-agent.v1",
+  searchPolicyVersion: reviewInvestigationSearchPolicyV1,
+} as const);
+
+export function assertSupportedReviewInvestigationCoverageProfile(
+  contract: ReviewInvestigationContract,
+): void {
+  const expectedKeys = [
+    ...Object.keys(reviewInvestigationCoverageProfileV2),
+    "producerReleaseId",
+  ].sort();
+  const actualKeys = Object.keys(contract).sort();
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key, index) => key !== expectedKeys[index])
+  ) {
+    throw new Error("investigation_coverage_profile_unsupported");
+  }
+  for (const [field, expected] of Object.entries(
+    reviewInvestigationCoverageProfileV2,
+  )) {
+    if (
+      contract[field as keyof typeof reviewInvestigationCoverageProfileV2] !==
+      expected
+    ) {
+      throw new Error("investigation_coverage_profile_unsupported");
+    }
+  }
+}
 
 export type SeedInvestigationObligation = Readonly<{
   kind: InvestigationObligationKind;
@@ -49,6 +97,13 @@ export function assertInvestigationScope(
   }
 }
 
+export function canonicalInvestigationScope(
+  scope: ReviewInvestigationScope,
+): string {
+  assertInvestigationScope(scope);
+  return canonicalJson(scope);
+}
+
 export function assertInvestigationRevision(
   revision: ReviewInvestigationRevision,
 ): void {
@@ -61,6 +116,23 @@ export function assertInvestigationRevision(
 export function assertInvestigationContract(
   contract: ReviewInvestigationContract,
 ): void {
+  const expected = [
+    "coverageContractVersion",
+    "expansionRulesVersion",
+    "criticPolicyVersion",
+    "gatewayPolicyVersion",
+    "probePolicyVersion",
+    "producerReleaseId",
+    "runtimeProfileVersion",
+    "searchPolicyVersion",
+  ].sort();
+  const actual = Object.keys(contract).sort();
+  if (
+    actual.length !== expected.length ||
+    actual.some((field, index) => field !== expected[index])
+  ) {
+    throw new Error("investigation_contract_shape_invalid");
+  }
   for (const [field, value] of Object.entries(contract)) {
     assertIdentifier(value, field);
   }

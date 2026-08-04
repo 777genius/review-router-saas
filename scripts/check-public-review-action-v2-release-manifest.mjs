@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  buildReleaseRegistrationCandidateFields,
   buildHandoffManifest,
   buildReleaseManifest,
   canonicalJson,
@@ -94,10 +95,7 @@ export function checkReleaseManifest(input) {
     actionCommitSha: manifest.actionCommitSha,
     runtimeEntrypointPath: verifiedAction.runtimeEntrypointPath,
     runtimeEntrypointDigest: verifiedAction.runtimeEntrypointDigest,
-    contextGatewayPolicyVersion: verifiedAction.contextGatewayPolicyVersion,
-    contextGatewayEntrypointPath: verifiedAction.contextGatewayEntrypointPath,
-    contextGatewayEntrypointDigest:
-      verifiedAction.contextGatewayEntrypointDigest,
+    contextGatewayReleaseMetadata: verifiedAction.contextGatewayReleaseMetadata,
   });
   if (canonicalJson(expectedRelease) !== manifestBytes) {
     throw new Error(
@@ -106,11 +104,11 @@ export function checkReleaseManifest(input) {
   }
   return Object.freeze({
     saasSourceCommit: manifest.saasSourceCommit,
-    actionCommitSha: manifest.actionCommitSha,
-    schemaDigest: manifest.schemaDigest,
-    runtimeEntrypointDigest: manifest.runtimeEntrypointDigest,
-    contextGatewayPolicyVersion: manifest.contextGatewayPolicyVersion,
-    contextGatewayEntrypointDigest: manifest.contextGatewayEntrypointDigest,
+    ...buildReleaseRegistrationCandidateFields(manifest),
+    supportedContextGatewayPolicyVersions:
+      manifest.supportedContextGatewayPolicyVersions ?? [
+        manifest.contextGatewayPolicyVersion,
+      ],
   });
 }
 

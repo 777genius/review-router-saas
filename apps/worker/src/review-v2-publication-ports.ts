@@ -207,6 +207,20 @@ export interface ReviewV2PublicationCapabilityIdentityPort {
   activeSigningKeyId(): Promise<string>;
 }
 
+export enum ReviewV2PublicationEffectGateDecision {
+  Allowed = "allowed",
+  Disabled = "disabled",
+  Unavailable = "unavailable",
+}
+
+export interface ReviewV2PublicationEffectGatePort {
+  authorize(input: {
+    readonly provider: ReviewV2ScmProvider;
+    readonly permit: ReviewPublicationPermitIdentity;
+    readonly operation: ReviewPublicationOperation;
+  }): Promise<ReviewV2PublicationEffectGateDecision>;
+}
+
 export interface ReviewV2PublicationClockPort {
   now(): Date;
 }
@@ -219,6 +233,7 @@ export type ReviewV2PublicationExecutorDependencies = {
   readonly operationCapabilities: ReviewV2OperationCapabilityIssuerPort;
   readonly credentials: ReviewV2ScmCredentialAcquisitionPort;
   readonly capabilityIdentity: ReviewV2PublicationCapabilityIdentityPort;
+  readonly effectGate: ReviewV2PublicationEffectGatePort;
   readonly clock: ReviewV2PublicationClockPort;
 };
 

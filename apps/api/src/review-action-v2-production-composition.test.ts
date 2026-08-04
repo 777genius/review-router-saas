@@ -4,7 +4,7 @@ import {
   reviewActionV2CanonicalizerDigest,
   reviewActionV2PublishedSchemaDigest,
 } from "@reviewrouter/protocol-review-action-v2";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApiApp } from "./app.js";
 import {
   reviewActionV2ContextReplayActiveKeyIdEnv,
@@ -14,6 +14,7 @@ import {
 import {
   assertReviewIntentRolloutConfiguration,
   composeReviewActionV2ProductionRoutes,
+  ProductionReviewInvestigationAuthorizationCapability,
   readInvestigationRolloutPolicy,
   reviewActionV2CapabilityActiveKeyIdEnv,
   reviewActionV2CapabilityKeysEnv,
@@ -21,6 +22,10 @@ import {
   reviewActionV2ProviderVoteLanesEnv,
   reviewInvestigationContextCriticEnabledEnv,
   reviewInvestigationEmergencyDisabledEnv,
+  reviewInvestigationPrivateMaterialActiveKeyIdEnv,
+  reviewInvestigationPrivateMaterialKeysEnv,
+  reviewInvestigationPrivateMaterialTtlEnv,
+  reviewInvestigationMaintenanceEnabledEnv,
   reviewInvestigationProductionEffectsEnabledEnv,
   reviewInvestigationRecordingEnabledEnv,
   reviewInvestigationShadowEnabledEnv,
@@ -32,6 +37,7 @@ import {
   InvestigationRolloutProvider,
   evaluateInvestigationRollout,
 } from "@reviewrouter/features-review-investigation-operations";
+import { investigationRolloutSelectorsEnv } from "@reviewrouter/features-review-investigation-operations/composition";
 import { reviewActionV2ProjectionPolicyVersion } from "./review-action-v2-projection-policy.js";
 
 const runtime = {
@@ -102,6 +108,22 @@ describe("Review Action v2 production composition", () => {
   });
 
   it("constructs Prisma-backed enabled handlers only with complete production config", () => {
+    expect(() =>
+      composeReviewActionV2ProductionRoutes({
+        enabled: true,
+        env: {
+          ...productionEnv(),
+          [reviewInvestigationRecordingEnabledEnv]: "1",
+          [reviewInvestigationPrivateMaterialActiveKeyIdEnv]: "private-v1",
+          [reviewInvestigationPrivateMaterialKeysEnv]: JSON.stringify({
+            "private-v1": Buffer.alloc(32, 7).toString("base64url"),
+          }),
+        },
+        runtime,
+        prisma: inertPrisma(),
+      }),
+    ).toThrow("investigation_retention_maintenance_required");
+
     const routes = composeReviewActionV2ProductionRoutes({
       enabled: true,
       env: productionEnv(),
@@ -126,6 +148,49 @@ describe("Review Action v2 production composition", () => {
     expect(routes.publication.request?.capabilityEnabled).toBe(true);
     expect(routes.publication.status?.capabilityEnabled).toBe(true);
     expect(routes.runControl.readServerTime).toBe(runtime.readServerTime);
+  });
+
+  it("requires private-material keys only while investigation recording is enabled", () => {
+    expect(() =>
+      composeReviewActionV2ProductionRoutes({
+        enabled: true,
+        env: {
+          ...productionEnv(),
+          [reviewInvestigationPrivateMaterialActiveKeyIdEnv]: "unused-key",
+        },
+        runtime,
+        prisma: inertPrisma(),
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      composeReviewActionV2ProductionRoutes({
+        enabled: true,
+        env: {
+          ...productionEnv(),
+          [reviewInvestigationRecordingEnabledEnv]: "1",
+        },
+        runtime,
+        prisma: inertPrisma(),
+      }),
+    ).toThrow("investigation_private_material_configuration_required");
+
+    const routes = composeReviewActionV2ProductionRoutes({
+      enabled: true,
+      env: {
+        ...productionEnv(),
+        [reviewInvestigationRecordingEnabledEnv]: "1",
+        [reviewInvestigationPrivateMaterialActiveKeyIdEnv]: "private-v1",
+        [reviewInvestigationPrivateMaterialKeysEnv]: JSON.stringify({
+          "private-v1": Buffer.alloc(32, 7).toString("base64url"),
+        }),
+        [reviewInvestigationPrivateMaterialTtlEnv]: "300000",
+        [reviewInvestigationMaintenanceEnabledEnv]: "1",
+      },
+      runtime,
+      prisma: inertPrisma(),
+    });
+    expect(routes.investigation.open?.capabilityEnabled).toBe(true);
   });
 
   it("rejects a projection policy version that the producer cannot emit", () => {
@@ -193,6 +258,14 @@ describe("Review Action v2 production composition", () => {
       [reviewInvestigationProductionEffectsEnabledEnv]: "1",
       [reviewInvestigationVerifiedCleanEnabledEnv]: "1",
       [reviewInvestigationEmergencyDisabledEnv]: "1",
+      [investigationRolloutSelectorsEnv]: JSON.stringify({
+        [InvestigationRolloutCapability.ProductionEffects]: [
+          { repositoryConnectionIds: ["repository-1"] },
+        ],
+        [InvestigationRolloutCapability.VerifiedClean]: [
+          { repositoryConnectionIds: ["repository-1"] },
+        ],
+      }),
     });
     expect(
       evaluateInvestigationRollout(
@@ -201,12 +274,156 @@ describe("Review Action v2 production composition", () => {
         {
           workspaceId: "workspace-1",
           repositoryConnectionId: "repository-1",
+          scmRepositoryIdentityId: "scm-repository-1",
           provider: InvestigationRolloutProvider.Codex,
           trustDomain: "trusted",
           producerReleaseId: "release-1",
         },
       ),
     ).toBe(InvestigationRolloutDecision.EmergencyDisabled);
+
+    const scoped = readInvestigationRolloutPolicy({
+      [reviewInvestigationRecordingEnabledEnv]: "1",
+      [reviewInvestigationShadowEnabledEnv]: "1",
+      [reviewInvestigationContextCriticEnabledEnv]: "1",
+      [reviewInvestigationProductionEffectsEnabledEnv]: "1",
+      [investigationRolloutSelectorsEnv]: JSON.stringify({
+        [InvestigationRolloutCapability.ProductionEffects]: [
+          { repositoryConnectionIds: ["repository-allowed"] },
+        ],
+      }),
+    });
+    expect(
+      evaluateInvestigationRollout(
+        scoped,
+        InvestigationRolloutCapability.ProductionEffects,
+        {
+          workspaceId: "workspace-1",
+          repositoryConnectionId: "repository-denied",
+          scmRepositoryIdentityId: "scm-repository-1",
+          provider: InvestigationRolloutProvider.Codex,
+          trustDomain: "trusted",
+          producerReleaseId: "release-1",
+        },
+      ),
+    ).toBe(InvestigationRolloutDecision.OutsideCohort);
+  });
+
+  it("advertises a recording-only target with an explicit V2 grant", async () => {
+    const resolveAllowedCapabilitiesForTargets = vi
+      .fn()
+      .mockResolvedValue([[InvestigationRolloutCapability.Recording]]);
+    const capability = new ProductionReviewInvestigationAuthorizationCapability(
+      {
+        resolveAllowedCapabilitiesForTargets,
+      },
+    );
+
+    await expect(
+      capability.resolve({
+        target: {
+          workspaceId: "workspace-1",
+          repositoryConnectionId: "repository-1",
+          scmRepositoryIdentityId: "scm-repository-1",
+          trustDomain: "trusted",
+          producerReleaseId: "release-1",
+          providerVoteLanes: [{ providerKind: "codex" }],
+        } as never,
+        producerRelease: {
+          reviewInvestigationProfile: {
+            capability: "review_investigation_v1",
+            coverageProfileHash: "a".repeat(64),
+            policyHash: "b".repeat(64),
+          },
+        } as never,
+      }),
+    ).resolves.toEqual({
+      authorizationDescriptorVersion: 2,
+      capability: "review_investigation_v1",
+      coverageProfileHash: "a".repeat(64),
+      policyHash: "b".repeat(64),
+      providerCapabilities: [
+        {
+          providerKind: "codex",
+          capabilities: [InvestigationRolloutCapability.Recording],
+        },
+      ],
+    });
+    expect(resolveAllowedCapabilitiesForTargets).toHaveBeenCalledOnce();
+    expect(resolveAllowedCapabilitiesForTargets).toHaveBeenCalledWith({
+      targets: [
+        expect.objectContaining({
+          provider: InvestigationRolloutProvider.Codex,
+        }),
+      ],
+    });
+  });
+
+  it("emits sorted provider-specific capability rows and omits denied providers", async () => {
+    const resolveAllowedCapabilitiesForTargets = vi.fn(
+      async ({
+        targets,
+      }: {
+        targets: readonly { provider: InvestigationRolloutProvider }[];
+      }) =>
+        targets.map((target) =>
+          target.provider === InvestigationRolloutProvider.Codex
+            ? [
+                InvestigationRolloutCapability.ContextCritic,
+                InvestigationRolloutCapability.Recording,
+                InvestigationRolloutCapability.Shadow,
+              ]
+            : [],
+        ),
+    );
+    const capability = new ProductionReviewInvestigationAuthorizationCapability(
+      { resolveAllowedCapabilitiesForTargets },
+    );
+
+    await expect(
+      capability.resolve({
+        target: {
+          workspaceId: "workspace-1",
+          repositoryConnectionId: "repository-1",
+          scmRepositoryIdentityId: "scm-repository-1",
+          trustDomain: "trusted",
+          producerReleaseId: "release-1",
+          providerVoteLanes: [
+            { providerKind: "codex" },
+            { providerKind: "claude_code" },
+          ],
+        } as never,
+        producerRelease: {
+          reviewInvestigationProfile: {
+            capability: "review_investigation_v1",
+            coverageProfileHash: "a".repeat(64),
+            policyHash: "b".repeat(64),
+          },
+        } as never,
+      }),
+    ).resolves.toMatchObject({
+      providerCapabilities: [
+        {
+          providerKind: "codex",
+          capabilities: [
+            InvestigationRolloutCapability.ContextCritic,
+            InvestigationRolloutCapability.Recording,
+            InvestigationRolloutCapability.Shadow,
+          ],
+        },
+      ],
+    });
+    expect(resolveAllowedCapabilitiesForTargets).toHaveBeenCalledOnce();
+    expect(resolveAllowedCapabilitiesForTargets).toHaveBeenCalledWith({
+      targets: [
+        expect.objectContaining({
+          provider: InvestigationRolloutProvider.Claude,
+        }),
+        expect.objectContaining({
+          provider: InvestigationRolloutProvider.Codex,
+        }),
+      ],
+    });
   });
 });
 

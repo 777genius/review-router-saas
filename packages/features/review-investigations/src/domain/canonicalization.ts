@@ -34,9 +34,19 @@ export function canonicalJson(value: unknown): string {
 }
 
 export function assertIdentifier(value: string, field: string): void {
+  assertBoundedText(value, field, 512);
+}
+
+export function assertBoundedText(
+  value: string,
+  field: string,
+  maximumLength: number,
+): void {
   if (
+    !Number.isSafeInteger(maximumLength) ||
+    maximumLength < 1 ||
     value.length < 1 ||
-    value.length > 512 ||
+    value.length > maximumLength ||
     value.trim() !== value ||
     containsControlCharacter(value)
   ) {

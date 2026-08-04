@@ -101,6 +101,12 @@ export enum InvestigationTurnProviderKind {
   ClaudeCode = "claude_code",
 }
 
+export enum InvestigationFindingSeverity {
+  Critical = "critical",
+  Major = "major",
+  Minor = "minor",
+}
+
 export enum ReviewInvestigationNextActionKind {
   RunTurn = "run_turn",
   RunCritic = "run_critic",

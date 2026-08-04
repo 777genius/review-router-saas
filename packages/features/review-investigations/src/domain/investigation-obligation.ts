@@ -3,11 +3,17 @@ import {
   InvestigationObligationState,
 } from "./review-investigation-types";
 import {
+  assertBoundedText,
   assertDigest,
   assertIdentifier,
   ReviewInvestigationDomainError,
   type CanonicalValue,
 } from "./canonicalization";
+import { investigationRiskPriorityMaximum } from "./investigation-critic-policy";
+
+export const investigationCanonicalSubjectMaximumLength = 4_096;
+export const investigationCanonicalRequirementMaximumLength = 64_000;
+export const investigationUnresolvableReasonMaximumLength = 2_000;
 
 export enum InvestigationObligationOrigin {
   CoverageContract = "coverage_contract",
@@ -71,8 +77,16 @@ export function obligationIdentity(
 ): InvestigationObligationIdentity {
   assertIdentifier(input.coverageContractVersion, "coverage_contract_version");
   assertIdentifier(input.stableReviewUnitKey, "stable_review_unit_key");
-  assertIdentifier(input.canonicalSubject, "canonical_subject");
-  assertIdentifier(input.canonicalRequirement, "canonical_requirement");
+  assertBoundedText(
+    input.canonicalSubject,
+    "canonical_subject",
+    investigationCanonicalSubjectMaximumLength,
+  );
+  assertBoundedText(
+    input.canonicalRequirement,
+    "canonical_requirement",
+    investigationCanonicalRequirementMaximumLength,
+  );
   return { ...input };
 }
 
@@ -83,7 +97,11 @@ export function createInvestigationObligation(input: {
   readonly origin: InvestigationObligationOrigin;
 }): InvestigationObligation {
   assertDigest(input.obligationId, "obligation_id");
-  if (!Number.isSafeInteger(input.riskPriority) || input.riskPriority < 0) {
+  if (
+    !Number.isSafeInteger(input.riskPriority) ||
+    input.riskPriority < 0 ||
+    input.riskPriority > investigationRiskPriorityMaximum
+  ) {
     throw new ReviewInvestigationDomainError("risk_priority_invalid");
   }
   return {
@@ -193,7 +211,11 @@ export function markInvestigationObligationUnresolvable(input: {
       "unresolvable_policy_decision_invalid",
     );
   }
-  assertIdentifier(input.reason, "unresolvable_reason");
+  assertBoundedText(
+    input.reason,
+    "unresolvable_reason",
+    investigationUnresolvableReasonMaximumLength,
+  );
   return {
     ...input.obligation,
     state: InvestigationObligationState.Unresolvable,
@@ -239,7 +261,11 @@ export function sortObligations(
 function assertReceipt(receipt: InvestigationEvidenceReceipt): void {
   assertIdentifier(receipt.receiptId, "receipt_id");
   assertIdentifier(receipt.operationKey, "operation_key");
-  assertIdentifier(receipt.canonicalSubject, "receipt_subject");
+  assertBoundedText(
+    receipt.canonicalSubject,
+    "receipt_subject",
+    investigationCanonicalSubjectMaximumLength,
+  );
   assertDigest(receipt.reviewRevisionHash, "receipt_revision_hash");
   assertIdentifier(
     receipt.gatewayPolicyVersion,

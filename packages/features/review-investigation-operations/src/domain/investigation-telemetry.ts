@@ -7,7 +7,13 @@ export enum InvestigationTelemetrySource {
 export enum InvestigationTelemetryProvider {
   Codex = "codex",
   Claude = "claude",
+  ClaudeCode = "claude_code",
   Unknown = "unknown",
+}
+
+export enum InvestigationTelemetryEvidenceCompleteness {
+  TerminalOperational = "terminal_operational",
+  FullyEvaluated = "fully_evaluated",
 }
 
 export enum InvestigationTelemetryConclusion {
@@ -29,6 +35,7 @@ export enum InvestigationReplayOutcome {
   CrossRevisionHit = "cross_revision_hit",
   Miss = "miss",
   NotAttempted = "not_attempted",
+  Unknown = "unknown",
 }
 
 export enum InvestigationOperationalFailure {
@@ -41,41 +48,64 @@ export enum InvestigationOperationalFailure {
   Unknown = "unknown",
 }
 
-export type InvestigationTelemetrySample = Readonly<{
+type InvestigationTelemetrySampleBase = Readonly<{
   sampleId: string;
   collectedAt: string;
   source: InvestigationTelemetrySource;
+  evidenceCompleteness: InvestigationTelemetryEvidenceCompleteness;
   repositoryScopeHash: string;
   reviewRevisionHash: string;
   stableReviewUnitHash: string;
   producerReleaseId: string;
   provider: InvestigationTelemetryProvider;
-  actualModel: string;
+  actualModel: string | null;
   conclusion: InvestigationTelemetryConclusion;
-  expectedDefectCount: number;
-  detectedDefectCount: number;
-  falseClean: boolean;
+  findingCount: number;
   legacyComparison: InvestigationLegacyComparison;
   replayOutcome: InvestigationReplayOutcome;
   failure: InvestigationOperationalFailure;
   semanticTurns: number;
   criticCycles: number;
-  gatewayOperations: number;
-  promptTokens: number;
-  completionTokens: number;
+  gatewayOperations: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
   totalTokens: number;
   durationMs: number;
   timeToFirstFindingMs: number | null;
-  capacityWaitMs: number;
-  protocolBytes: number;
-  retainedBytes: number;
-  securityViolationCount: number;
+  capacityWaitMs: number | null;
+  protocolBytes: number | null;
+  retainedBytes: number | null;
 }>;
+
+export type InvestigationTerminalOperationalTelemetrySample =
+  InvestigationTelemetrySampleBase &
+    Readonly<{
+      evidenceCompleteness: InvestigationTelemetryEvidenceCompleteness.TerminalOperational;
+      expectedDefectCount: null;
+      detectedDefectCount: null;
+      falseClean: null;
+      securityViolationCount: null;
+    }>;
+
+export type InvestigationFullyEvaluatedTelemetrySample =
+  InvestigationTelemetrySampleBase &
+    Readonly<{
+      evidenceCompleteness: InvestigationTelemetryEvidenceCompleteness.FullyEvaluated;
+      expectedDefectCount: number;
+      detectedDefectCount: number;
+      falseClean: boolean;
+      securityViolationCount: number;
+    }>;
+
+export type InvestigationTelemetrySample =
+  | InvestigationTerminalOperationalTelemetrySample
+  | InvestigationFullyEvaluatedTelemetrySample;
 
 const telemetryFields = Object.freeze([
   "sampleId",
   "collectedAt",
   "source",
+  "evidenceCompleteness",
   "repositoryScopeHash",
   "reviewRevisionHash",
   "stableReviewUnitHash",
@@ -83,6 +113,7 @@ const telemetryFields = Object.freeze([
   "provider",
   "actualModel",
   "conclusion",
+  "findingCount",
   "expectedDefectCount",
   "detectedDefectCount",
   "falseClean",
@@ -115,6 +146,11 @@ export function validateTelemetrySample(
     throw new Error("telemetry_fields_invalid");
   }
   enumValue(InvestigationTelemetrySource, sample.source, "telemetry_source");
+  enumValue(
+    InvestigationTelemetryEvidenceCompleteness,
+    sample.evidenceCompleteness,
+    "evidence_completeness",
+  );
   enumValue(InvestigationTelemetryProvider, sample.provider, "provider");
   enumValue(InvestigationTelemetryConclusion, sample.conclusion, "conclusion");
   enumValue(
@@ -130,14 +166,37 @@ export function validateTelemetrySample(
   digest(sample.reviewRevisionHash, "review_revision_hash");
   digest(sample.stableReviewUnitHash, "stable_review_unit_hash");
   identifier(sample.producerReleaseId, "producer_release_id");
-  identifier(sample.actualModel, "actual_model");
-  for (const [field, value] of Object.entries(sample)) {
-    if (typeof value === "number") nonNegative(value, field);
+  if (sample.actualModel !== null) {
+    identifier(sample.actualModel, "actual_model");
   }
-  if (sample.detectedDefectCount > sample.expectedDefectCount) {
-    throw new Error("detected_defect_count_exceeds_expected");
+  for (const [field, value] of [
+    ["finding_count", sample.findingCount],
+    ["semantic_turns", sample.semanticTurns],
+    ["critic_cycles", sample.criticCycles],
+    ["total_tokens", sample.totalTokens],
+    ["duration_ms", sample.durationMs],
+  ] as const) {
+    nonNegative(value, field);
   }
-  if (sample.totalTokens !== sample.promptTokens + sample.completionTokens) {
+  for (const [field, value] of [
+    ["gateway_operations", sample.gatewayOperations],
+    ["prompt_tokens", sample.promptTokens],
+    ["completion_tokens", sample.completionTokens],
+    ["time_to_first_finding_ms", sample.timeToFirstFindingMs],
+    ["capacity_wait_ms", sample.capacityWaitMs],
+    ["protocol_bytes", sample.protocolBytes],
+    ["retained_bytes", sample.retainedBytes],
+  ] as const) {
+    nullableNonNegative(value, field);
+  }
+  if ((sample.promptTokens === null) !== (sample.completionTokens === null)) {
+    throw new Error("token_breakdown_completeness_mismatch");
+  }
+  if (
+    sample.promptTokens !== null &&
+    sample.completionTokens !== null &&
+    sample.totalTokens !== sample.promptTokens + sample.completionTokens
+  ) {
     throw new Error("total_tokens_mismatch");
   }
   if (
@@ -153,6 +212,57 @@ export function validateTelemetrySample(
   ) {
     throw new Error("false_clean_semantics_invalid");
   }
+  if (
+    sample.conclusion === InvestigationTelemetryConclusion.VerifiedClean &&
+    sample.findingCount !== 0
+  ) {
+    throw new Error("verified_clean_finding_count_invalid");
+  }
+  if (
+    sample.evidenceCompleteness ===
+    InvestigationTelemetryEvidenceCompleteness.TerminalOperational
+  ) {
+    if (
+      sample.expectedDefectCount !== null ||
+      sample.detectedDefectCount !== null ||
+      sample.falseClean !== null ||
+      sample.securityViolationCount !== null ||
+      sample.capacityWaitMs !== null ||
+      sample.legacyComparison !== InvestigationLegacyComparison.NotCompared ||
+      sample.failure !== InvestigationOperationalFailure.None
+    ) {
+      throw new Error("terminal_operational_evidence_semantics_invalid");
+    }
+    return;
+  }
+  nonNegative(sample.expectedDefectCount, "expected_defect_count");
+  nonNegative(sample.detectedDefectCount, "detected_defect_count");
+  nonNegative(sample.securityViolationCount, "security_violation_count");
+  if (sample.detectedDefectCount > sample.expectedDefectCount) {
+    throw new Error("detected_defect_count_exceeds_expected");
+  }
+  if (
+    sample.falseClean !==
+    (sample.conclusion === InvestigationTelemetryConclusion.VerifiedClean &&
+      sample.expectedDefectCount > 0)
+  ) {
+    throw new Error("false_clean_semantics_invalid");
+  }
+  if (
+    sample.source !== InvestigationTelemetrySource.DisposableFixture &&
+    sample.legacyComparison === InvestigationLegacyComparison.NotCompared
+  ) {
+    throw new Error("fully_evaluated_comparison_missing");
+  }
+}
+
+export function isFullyEvaluatedTelemetrySample(
+  sample: InvestigationTelemetrySample,
+): sample is InvestigationFullyEvaluatedTelemetrySample {
+  return (
+    sample.evidenceCompleteness ===
+    InvestigationTelemetryEvidenceCompleteness.FullyEvaluated
+  );
 }
 
 function enumValue<T extends string>(
@@ -185,4 +295,8 @@ function nonNegative(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${field}_invalid`);
   }
+}
+
+function nullableNonNegative(value: number | null, field: string): void {
+  if (value !== null) nonNegative(value, field);
 }

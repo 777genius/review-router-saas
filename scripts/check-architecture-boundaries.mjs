@@ -273,6 +273,8 @@ async function collectAllSourceFiles(directory) {
 
 async function checkRevisionAwareReviewRatchet(violations) {
   const contexts = [
+    strictContext("review-context-attestation", true),
+    strictContext("review-investigation-operations", false),
     strictContext("review-investigations", true),
     strictContext("review-run-control", true),
     strictContext("review-evidence", true),

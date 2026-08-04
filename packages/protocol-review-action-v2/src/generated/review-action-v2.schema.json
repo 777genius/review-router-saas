@@ -12468,6 +12468,18 @@
         "sourceCertificateHash",
         "targetExecutionId",
         "targetWorkSlotId",
+        "stableReviewUnitKey",
+        "providerVoteLaneId",
+        "providerStrategyId",
+        "runtimeProfile",
+        "coverageContractCanonicalJson",
+        "coverageContractHash",
+        "investigationPolicyCanonicalJson",
+        "investigationPolicyHash",
+        "seedObligationsCanonicalJson",
+        "seedObligationsHash",
+        "initialReceiptsCanonicalJson",
+        "initialReceiptsHash",
         "targetScopeCanonicalJson",
         "targetScopeHash",
         "targetRevisionCanonicalJson",
@@ -12532,6 +12544,65 @@
           "minLength": 1,
           "maxLength": 256,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        },
+        "stableReviewUnitKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        },
+        "providerVoteLaneId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        },
+        "providerStrategyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        },
+        "runtimeProfile": {
+          "enum": [
+            "gateway_attested_agent_v1",
+            "orchestrated_tool_loop_v1",
+            "preassembled_context_v1",
+            "prompt_only_v1",
+            "agentic_unbounded_v1"
+          ]
+        },
+        "coverageContractCanonicalJson": {
+          "type": "string",
+          "minLength": 2
+        },
+        "coverageContractHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "investigationPolicyCanonicalJson": {
+          "type": "string",
+          "minLength": 2
+        },
+        "investigationPolicyHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seedObligationsCanonicalJson": {
+          "type": "string",
+          "minLength": 2
+        },
+        "seedObligationsHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "initialReceiptsCanonicalJson": {
+          "type": "string",
+          "minLength": 2
+        },
+        "initialReceiptsHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
         },
         "targetScopeCanonicalJson": {
           "type": "string",

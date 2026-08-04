@@ -109,6 +109,92 @@ describe("ReviewRouter operator CLI", () => {
     });
   });
 
+  it("reads investigation status through the authenticated operator route", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        result: {
+          investigationId: "investigation-1",
+          state: "awaiting_critic",
+          nextAction: "run_critic",
+        },
+      }),
+    );
+
+    const result = await executeReviewRouterOperatorCli(
+      ["investigation", "status", "--investigation-id", "investigation-1"],
+      {
+        REVIEW_ROUTER_REVIEW_CONFIG_OPERATOR_CREDENTIAL: credential,
+        REVIEW_ROUTER_API_URL: "https://api.reviewrouter.site",
+      },
+      { fetchImpl },
+    );
+
+    expect(result).toMatchObject({
+      investigationId: "investigation-1",
+      nextAction: "run_critic",
+    });
+    expect(fetchImpl.mock.calls[0]?.[0].toString()).toBe(
+      "https://api.reviewrouter.site/api/operator/v1/review-investigations/investigation-1/status",
+    );
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ method: "GET" });
+    expect(JSON.stringify(result)).not.toContain(credential);
+  });
+
+  it("generates a promotion report using only a configured profile identity", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        result: {
+          reportHash: "a".repeat(64),
+          body: { decision: "blocked" },
+        },
+      }),
+    );
+    const argumentsList = [
+      "investigation",
+      "promotion-report",
+      "--producer-release",
+      "release-1",
+      "--promotion-profile-id",
+      "production",
+      "--promotion-profile-version",
+      "2026-08.v1",
+    ];
+
+    await executeReviewRouterOperatorCli(
+      argumentsList,
+      {
+        REVIEW_ROUTER_INVESTIGATION_PROMOTION_CREDENTIAL: credential,
+        REVIEW_ROUTER_API_URL: "https://api.reviewrouter.site",
+      },
+      { fetchImpl },
+    );
+
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url.toString()).toBe(
+      "https://api.reviewrouter.site/api/operator/v1/review-investigation-promotion-reports",
+    );
+    expect(init).toMatchObject({ method: "POST" });
+    expect(JSON.parse(String(init?.body))).toEqual({
+      requestVersion: "review-investigation-promotion-request.v3",
+      producerReleaseId: "release-1",
+      profile: {
+        id: "production",
+        version: "2026-08.v1",
+      },
+    });
+
+    await expect(
+      executeReviewRouterOperatorCli(
+        [...argumentsList, "--min-seeded-samples", "1"],
+        {
+          REVIEW_ROUTER_INVESTIGATION_PROMOTION_CREDENTIAL: credential,
+          REVIEW_ROUTER_API_URL: "https://api.reviewrouter.site",
+        },
+        { fetchImpl },
+      ),
+    ).rejects.toThrow("reviewrouter_operator_option_unknown");
+  });
+
   it("rejects duplicate, unknown, insecure, and invalid options locally", async () => {
     expect(() =>
       parseArguments(["config", "get", "--repo", "a/b", "--repo", "c/d"]),

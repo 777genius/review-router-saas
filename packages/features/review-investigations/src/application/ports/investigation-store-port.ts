@@ -1,6 +1,7 @@
 import type { ReviewInvestigation } from "../../domain/review-investigation";
 import type { ReviewInvestigationScope } from "../../domain/coverage-contract";
 import type { ReviewInvestigationAbortReason } from "../../domain/review-investigation-types";
+import type { EncryptedInvestigationPrivateMaterial } from "../../domain/investigation-private-material";
 
 export enum InvestigationStoreCommitStatus {
   Committed = "committed",
@@ -19,6 +20,7 @@ export enum InvestigationStoreTransitionKind {
   TurnPlanned = "turn_planned",
   TurnCommitted = "turn_committed",
   TurnAborted = "turn_aborted",
+  PrivateMaterialExpired = "private_material_expired",
   Concluded = "concluded",
 }
 
@@ -38,6 +40,11 @@ export type InvestigationStoreTransition =
       kind: InvestigationStoreTransitionKind.TurnAborted;
       turnId: string;
       reason: ReviewInvestigationAbortReason;
+    }>
+  | Readonly<{
+      kind: InvestigationStoreTransitionKind.PrivateMaterialExpired;
+      affectedObligationIds: readonly string[];
+      expiredTurnId: string | null;
     }>
   | Readonly<{ kind: InvestigationStoreTransitionKind.Concluded }>;
 
@@ -67,5 +74,6 @@ export interface InvestigationStorePort {
     readonly commandId: string;
     readonly commandHash: string;
     readonly transition: InvestigationStoreTransition;
+    readonly privateMaterials?: readonly EncryptedInvestigationPrivateMaterial[];
   }): Promise<InvestigationStoreCommitResult>;
 }

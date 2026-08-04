@@ -51,7 +51,7 @@ describe("AesGcmInvestigationPrivateMaterialCipher", () => {
       createdAt: "2026-08-02T10:00:00.000Z",
       expiresAt: "2026-08-02T10:05:00.000Z",
     });
-    expect(repeated.plaintextHash).toBe(material.plaintextHash);
+    expect(repeated.plaintextHash).not.toBe(material.plaintextHash);
     expect(repeated.ciphertextBase64Url).not.toBe(material.ciphertextBase64Url);
   });
 

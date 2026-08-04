@@ -1,9 +1,9 @@
 {
   "contractSourceVersion": 1,
   "protocolVersion": "2",
-  "schemaDigest": "60049e46b2c91f93bd012a244c109ca5363e38c7bd9969ff7b4ae0b99a828d45",
-  "goldenFixtureDigest": "a00ddff4ccdd64adcb060f3a22a6d51daff843bb94bde5d079b6e0a5ce3e1be0",
-  "canonicalizerDigest": "0e8e308c509826c113a98a6a9e93194087b01664bda2986d7b54c1a53f8c58cd",
+  "schemaDigest": "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+  "goldenFixtureDigest": "d9c4f405ae00c0632e7afde8db4846b406c8367d2079c1283af36d95723ecaec",
+  "canonicalizerDigest": "865b2cd347d1e5bade8aa921c3384b0c7cd388d275f535919ffb403286d66271",
   "canonicalizerGoldenFixtureDigest": "9f638db73ec3696da7f3aa842ed10b7cf7c466986dfbd45b1a602e3b08d75c57",
   "negotiationBridge": {
     "operationId": "review_run_authorize",
@@ -1116,6 +1116,11 @@
         "target_execution_id",
         "target_work_slot_id",
         "target_revision_hash",
+        "provider_strategy_id",
+        "coverage_contract_hash",
+        "investigation_policy_hash",
+        "seed_obligations_hash",
+        "initial_receipts_hash",
         "replay_proofs_hash"
       ],
       "semanticRetryClass": "same_request",
@@ -2183,6 +2188,31 @@
           "httpStatus": 503
         }
       ]
+    }
+  ],
+  "publishedContracts": [
+    {
+      "exportName": "reviewInvestigationRolloutAuthorizationV2Contract",
+      "value": {
+        "authorizationDescriptorVersion": 2,
+        "capability": "review_investigation_v1",
+        "capabilities": [
+          "context_critic",
+          "cross_revision_replay",
+          "production_effects",
+          "recording",
+          "shadow",
+          "verified_clean"
+        ],
+        "dependencies": {
+          "context_critic": ["shadow"],
+          "cross_revision_replay": ["shadow"],
+          "production_effects": ["context_critic", "shadow"],
+          "recording": [],
+          "shadow": ["recording"],
+          "verified_clean": ["context_critic", "production_effects"]
+        }
+      }
     }
   ]
 }

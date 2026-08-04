@@ -1,4 +1,7 @@
-import type { ProducerRelease } from "../../domain/producer-release";
+import type {
+  ProducerRelease,
+  ProducerReviewInvestigationProfile,
+} from "../../domain/producer-release";
 import type {
   ProducerDistributionKind,
   ReviewCapabilityProfile,
@@ -13,6 +16,7 @@ export type TrustedProducerReleaseAttestation = {
   readonly runtimeEntrypointDigest: string;
   readonly contextGatewayPolicyVersion: string | null;
   readonly contextGatewayEntrypointDigest: string | null;
+  readonly reviewInvestigationProfile?: ProducerReviewInvestigationProfile | null;
   readonly schemaDigest: string;
   readonly canonicalizerDigest: string;
   readonly capabilityProfile: ReviewCapabilityProfile;

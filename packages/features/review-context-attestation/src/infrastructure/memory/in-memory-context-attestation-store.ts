@@ -17,7 +17,7 @@ import type { TargetReplayProof } from "../../domain/target-replay-proof";
 
 export class InMemoryContextAttestationStore implements ContextAttestationStorePort {
   private readonly sessions = new Map<string, GatewaySession>();
-  private readonly sessionIdsByAttempt = new Map<string, string>();
+  private readonly sessionIdsByOpening = new Map<string, string>();
   private readonly attestations = new Map<
     string,
     AcceptedDependencyAttestation
@@ -33,7 +33,8 @@ export class InMemoryContextAttestationStore implements ContextAttestationStoreP
   async openSession(
     session: GatewaySession,
   ): Promise<ContextAttestationPersistenceResult<GatewaySession>> {
-    const existingId = this.sessionIdsByAttempt.get(session.attemptId);
+    const openingKey = sessionOpeningKey(session);
+    const existingId = this.sessionIdsByOpening.get(openingKey);
     if (existingId) {
       const existing = this.sessions.get(existingId);
       if (!existing) throw new Error("gateway_session_index_corrupt");
@@ -43,7 +44,7 @@ export class InMemoryContextAttestationStore implements ContextAttestationStoreP
     }
     if (this.sessions.has(session.sessionId)) return conflict();
     this.sessions.set(session.sessionId, session);
-    this.sessionIdsByAttempt.set(session.attemptId, session.sessionId);
+    this.sessionIdsByOpening.set(openingKey, session.sessionId);
     return persisted(ContextAttestationPersistenceStatus.Created, session);
   }
 
@@ -171,6 +172,7 @@ function sameOpening(left: GatewaySession, right: GatewaySession): boolean {
       left.sourceExecutionId,
       left.sourceWorkSlotId,
       left.attemptId,
+      left.openingIntentHash,
       left.sourceLeaseId,
       left.sourceFencingToken,
       left.providerKind,
@@ -190,6 +192,7 @@ function sameOpening(left: GatewaySession, right: GatewaySession): boolean {
       right.sourceExecutionId,
       right.sourceWorkSlotId,
       right.attemptId,
+      right.openingIntentHash,
       right.sourceLeaseId,
       right.sourceFencingToken,
       right.providerKind,
@@ -204,6 +207,10 @@ function sameOpening(left: GatewaySession, right: GatewaySession): boolean {
       right.expiresAtMs - right.openedAtMs,
     ])
   );
+}
+
+function sessionOpeningKey(session: GatewaySession): string {
+  return `${session.attemptId}:${session.openingIntentHash}`;
 }
 
 function replayTargetKey(proof: TargetReplayProof): string {

@@ -15,6 +15,7 @@ export type TrustedGatewaySessionOpeningFacts = Readonly<{
   sourceExecutionId: string;
   sourceWorkSlotId: string;
   attemptId: string;
+  openingIntentHash: string;
   sourceLeaseId: string;
   sourceFencingToken: string;
   providerKind: ContextProviderKind;

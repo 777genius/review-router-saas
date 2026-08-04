@@ -10,7 +10,6 @@ import {
   ContextGatewayV4OperationKind,
   ContextGatewayV4OutcomeKind,
   ContextProviderKind,
-  InMemoryContextAttestationStore,
   OpenContextGatewaySession,
   OpenContextGatewaySessionStatus,
   ReplayContextAttestation,
@@ -27,6 +26,7 @@ import {
   type ContextDependencyManifest,
   type ContextAttestationIdentityPort,
 } from "../index";
+import { InMemoryContextAttestationStore } from "../testing";
 
 const hash = (value: string) => value.repeat(64);
 const oid = (value: string) => value.repeat(40);
@@ -49,6 +49,7 @@ describe("context attestation application flow", () => {
       sourceExecutionId: "execution-source",
       sourceWorkSlotId: "slot-source",
       attemptId: "attempt-1",
+      openingIntentHash: hash("1"),
       sourceLeaseId: "lease-1",
       sourceFencingToken: "1",
       providerKind: ContextProviderKind.Codex,
@@ -258,6 +259,7 @@ describe("context attestation application flow", () => {
       sourceExecutionId: "execution-v4",
       sourceWorkSlotId: "slot-v4",
       attemptId: "attempt-v4",
+      openingIntentHash: hash("1"),
       sourceLeaseId: "lease-v4",
       sourceFencingToken: "2",
       providerKind: ContextProviderKind.Codex,
@@ -396,6 +398,7 @@ describe("context attestation application flow", () => {
           sourceExecutionId: "execution-source",
           sourceWorkSlotId: "slot-source",
           attemptId: "attempt-1",
+          openingIntentHash: hash("1"),
           sourceLeaseId: "lease-1",
           sourceFencingToken: "1",
           providerKind: ContextProviderKind.Codex,

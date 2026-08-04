@@ -178,8 +178,10 @@ export function createInvestigationStoreContractSeed(
       expansionRulesVersion: "expansion-v1",
       criticPolicyVersion: "critic-v1",
       gatewayPolicyVersion: "gateway-v4",
+      probePolicyVersion: "probe-v1",
       producerReleaseId: "producer-test",
       runtimeProfileVersion: "runtime-v1",
+      searchPolicyVersion: "search-v1",
     },
     policy: {
       policyId: "contract-v1",

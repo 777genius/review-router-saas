@@ -6,12 +6,10 @@ import type {
   SeedInvestigationObligation,
 } from "../../domain/coverage-contract";
 import {
-  createInvestigationObligation,
-  InvestigationObligationOrigin,
-  obligationIdentity,
-  satisfyInvestigationObligation,
-  type InvestigationEvidenceReceipt,
-} from "../../domain/investigation-obligation";
+  VersionedCoverageSeedPolicy,
+  type CoverageSeedPolicy,
+} from "../../domain/coverage-policies";
+import type { InvestigationEvidenceReceipt } from "../../domain/investigation-obligation";
 import type { ReviewInvestigationPolicy } from "../../domain/investigation-policy";
 import { createReviewInvestigation } from "../../domain/review-investigation";
 import type { ReviewInvestigationRuntimeProfile } from "../../domain/review-investigation-types";
@@ -33,6 +31,11 @@ import {
   restoreCommandOrThrow,
   withCurrentDossierDigest,
 } from "./investigation-use-case-support";
+import {
+  prepareInvestigationSeed,
+  prepareInvestigationSeedPrivateMaterials,
+} from "./investigation-seed-support";
+import { PrepareInvestigationSearchQueryPrivateMaterial } from "./prepare-investigation-search-query-private-material";
 
 export type OpenReviewInvestigationCommand = Readonly<{
   commandId: string;
@@ -56,6 +59,8 @@ export class OpenReviewInvestigation {
     private readonly authority: InvestigationExecutionAuthorityPort,
     private readonly digest: InvestigationDigestPort,
     private readonly clock: InvestigationClockPort,
+    private readonly coverageSeedPolicy: CoverageSeedPolicy = new VersionedCoverageSeedPolicy(),
+    private readonly privateMaterial?: PrepareInvestigationSearchQueryPrivateMaterial,
   ) {}
 
   async execute(
@@ -91,39 +96,15 @@ export class OpenReviewInvestigation {
       coverageContractVersion: command.contract.coverageContractVersion,
       runtimeProfileVersion: command.contract.runtimeProfileVersion,
     });
-    const receipts = new Map(
-      command.initialReceipts.map((receipt) => [
-        receipt.canonicalSubject,
-        receipt,
-      ]),
-    );
-    const obligations = await Promise.all(
-      command.seedObligations.map(async (seed) => {
-        const identity = obligationIdentity({
-          coverageContractVersion: command.contract.coverageContractVersion,
-          stableReviewUnitKey: command.stableReviewUnitKey,
-          kind: seed.kind,
-          canonicalSubject: seed.canonicalSubject,
-          canonicalRequirement: seed.canonicalRequirement,
-        });
-        let obligation = createInvestigationObligation({
-          obligationId: await digestCanonical(this.digest, { ...identity }),
-          identity,
-          riskPriority: seed.riskPriority,
-          origin: InvestigationObligationOrigin.CoverageContract,
-        });
-        const receipt = receipts.get(seed.canonicalSubject);
-        if (receipt) {
-          obligation = satisfyInvestigationObligation({
-            obligation,
-            receipt,
-            reviewRevisionHash: command.revision.reviewRevisionHash,
-            gatewayPolicyVersion: command.contract.gatewayPolicyVersion,
-          });
-        }
-        return obligation;
-      }),
-    );
+    const seed = await prepareInvestigationSeed({
+      contract: command.contract,
+      revision: command.revision,
+      stableReviewUnitKey: command.stableReviewUnitKey,
+      seedObligations: command.seedObligations,
+      initialReceipts: command.initialReceipts,
+      coverageSeedPolicy: this.coverageSeedPolicy,
+      digest: this.digest,
+    });
     const now = this.clock.now().toISOString();
     let investigation = createReviewInvestigation({
       investigationId: `investigation-${naturalIdentityHash.slice(0, 32)}`,
@@ -138,12 +119,17 @@ export class OpenReviewInvestigation {
       runtimeProfile: command.runtimeProfile,
       contract: { ...command.contract },
       policy: { ...command.policy },
-      obligations,
+      obligations: seed.obligations,
       dossierDigest: "0".repeat(64),
       createdAt: now,
       updatedAt: now,
     });
     investigation = await withCurrentDossierDigest(this.digest, investigation);
+    const privateMaterials = await prepareInvestigationSeedPrivateMaterials({
+      investigation,
+      privateQueries: seed.privateQueries,
+      preparer: this.privateMaterial,
+    });
     const committed = await commitOrThrow({
       store: this.store,
       investigation,
@@ -151,6 +137,7 @@ export class OpenReviewInvestigation {
       commandId: command.commandId,
       commandHash,
       transition: { kind: InvestigationStoreTransitionKind.Opened },
+      privateMaterials,
     });
     return toInvestigationReadModel(committed);
   }

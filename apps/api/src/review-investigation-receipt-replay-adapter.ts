@@ -7,19 +7,33 @@ import type {
   ContextAttestationClockPort,
   ContextAttestationStorePort,
 } from "@reviewrouter/features-review-context-attestation";
+import {
+  TargetReplayProofVerificationStatus,
+  VerifyTargetReplayProof,
+  type AcceptedDependencyAttestation,
+  type GatewaySession,
+} from "@reviewrouter/features-review-context-attestation";
 import { canonicalJson } from "@reviewrouter/features-review-run-control";
 
 export class ContextAttestationInvestigationReceiptReplayAdapter implements InvestigationReceiptReplayPort {
+  private readonly verifier: VerifyTargetReplayProof;
+
   constructor(
     private readonly store: ContextAttestationStorePort,
     private readonly clock: ContextAttestationClockPort,
     private readonly digest: InvestigationDigestPort,
-  ) {}
+    private readonly currentFacts: InvestigationReplayProofCurrentFactsPort,
+  ) {
+    this.verifier = new VerifyTargetReplayProof({ store, clock });
+  }
 
   async replay(input: Parameters<InvestigationReceiptReplayPort["replay"]>[0]) {
     const proof = await this.store.findReplayProof(input.replayProofId);
     const source = proof
       ? await this.store.findAcceptedAttestation(proof.sourceAttestationId)
+      : null;
+    const session = source
+      ? await this.store.findSession(source.sessionId)
       : null;
     const now = this.clock.nowMs();
     const sourceOperationReceiptIdsHash = await this.digest.digestUtf8(
@@ -49,6 +63,32 @@ export class ContextAttestationInvestigationReceiptReplayAdapter implements Inve
         verdict: InvestigationReceiptReplayVerdict.Mismatched,
         targetReceipt: null,
       });
+    }
+    const facts = await this.currentFacts.resolve({
+      targetExecutionId: input.targetExecutionId,
+      targetWorkSlotId: input.targetWorkSlotId,
+      targetProviderVoteLaneId: input.targetProviderVoteLaneId,
+      targetRevision: input.targetRevision,
+      producerReleaseId: input.producerReleaseId,
+      gatewayPolicyVersion: input.gatewayPolicyVersion,
+      sourceAttestation: source,
+      sourceSession: session,
+    });
+    if (!facts) return mismatched();
+    const verification = await this.verifier.execute({
+      replayProofId: input.replayProofId,
+      sourceAttestationId: source.attestationId,
+      sourceAttestationHash: source.attestationHash,
+      targetExecutionId: input.targetExecutionId,
+      targetWorkSlotId: input.targetWorkSlotId,
+      targetReviewRevisionHash: input.targetRevision.reviewRevisionHash,
+      targetCheckoutTreeOid: facts.targetCheckoutTreeOid,
+      replayBinaryHash: facts.replayBinaryHash,
+      replayPolicyVersion: facts.replayPolicyVersion,
+      reusePolicyVectorHash: facts.reusePolicyVectorHash,
+    });
+    if (verification.status !== TargetReplayProofVerificationStatus.Accepted) {
+      return mismatched();
     }
     const receiptId = await this.digest.digestUtf8(
       canonicalJson({
@@ -80,4 +120,31 @@ export class ContextAttestationInvestigationReceiptReplayAdapter implements Inve
       }),
     });
   }
+}
+
+export interface InvestigationReplayProofCurrentFactsPort {
+  resolve(input: {
+    readonly targetExecutionId: string;
+    readonly targetWorkSlotId: string;
+    readonly targetProviderVoteLaneId: string;
+    readonly targetRevision: Parameters<
+      InvestigationReceiptReplayPort["replay"]
+    >[0]["targetRevision"];
+    readonly producerReleaseId: string;
+    readonly gatewayPolicyVersion: string;
+    readonly sourceAttestation: AcceptedDependencyAttestation;
+    readonly sourceSession: GatewaySession | null;
+  }): Promise<Readonly<{
+    targetCheckoutTreeOid: string;
+    replayBinaryHash: string;
+    replayPolicyVersion: string;
+    reusePolicyVectorHash: string;
+  }> | null>;
+}
+
+function mismatched() {
+  return Object.freeze({
+    verdict: InvestigationReceiptReplayVerdict.Mismatched,
+    targetReceipt: null,
+  } as const);
 }

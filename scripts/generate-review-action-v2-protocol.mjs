@@ -34,6 +34,7 @@ export async function generateReviewActionV2Protocol(input = {}) {
   const publishedContract = assembleReviewActionV2Contract({
     transportContract: sources.transportContract,
     semanticFragments: sources.semanticFragments,
+    publishedContracts: sources.publishedContracts,
   });
   const published = createPublishedProtocolArtifacts(
     publishedContract,
@@ -441,6 +442,7 @@ function createManifest(
         };
       }),
     })),
+    publishedContracts: publishedContract.publishedContracts,
   };
 }
 
@@ -714,6 +716,9 @@ export async function loadCompiledContractSources() {
     "../packages/features/review-investigations/package.json",
     "@reviewrouter/features-review-investigations/contract-source",
   );
+  const investigationOperations = await importCompiledContractSourceFile(
+    "../packages/features/review-investigation-operations/dist/contract-source/index.js",
+  );
   const executions = await importCompiledContractSource(
     "../packages/features/review-executions/package.json",
     "@reviewrouter/features-review-executions/contract-source",
@@ -729,6 +734,9 @@ export async function loadCompiledContractSources() {
   return {
     negotiationContract: actionControlPlane.reviewActionV2NegotiationContract,
     transportContract: actionControlPlane.reviewActionV2TransportContract,
+    publishedContracts: [
+      investigationOperations.reviewInvestigationRolloutAuthorizationPublishedContract,
+    ],
     semanticFragments: [
       runControl.reviewRunControlActionContractFragment,
       executions.reviewExecutionsActionContractFragment,

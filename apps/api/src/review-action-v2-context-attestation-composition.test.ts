@@ -6,7 +6,6 @@ import {
   ContextFileKind,
   ContextGatewayV4OperationKind,
   ContextGatewayV4OutcomeKind,
-  InMemoryContextAttestationStore,
   canonicalContextGatewayV4Manifest,
   canonicalContextDependencyManifest,
   canonicalContextDependencyOperation,
@@ -16,6 +15,7 @@ import {
   createContextDependencyManifest,
 } from "@reviewrouter/features-review-context-attestation";
 import { AesGcmContextReplayMaterialCipher } from "@reviewrouter/features-review-context-attestation/composition";
+import { InMemoryContextAttestationStore } from "@reviewrouter/features-review-context-attestation/testing";
 import {
   ActualModelCompatibilityMode,
   ProviderExecutionProfile,
@@ -90,6 +90,72 @@ const sourceRevision = revision("a", "b", "c", "source-revision");
 const targetRevision = revision("a", "b", "d", "target-revision");
 
 describe("Review Action v2 context attestation composition", () => {
+  it("opens a gateway session for the investigation gateway profile", async () => {
+    const fixture = await createFixture({
+      executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
+    });
+
+    const opened = await fixture.routes.openGateway!.execute(
+      fixture.openRequest,
+    );
+
+    expect(opened.result.status).toBe(
+      ReviewContextGatewayOpenResultStatus.Opened,
+    );
+  });
+
+  it.each([
+    {
+      id: "provider",
+      name: "critic provider override",
+      providerKind: ReviewProviderKind.ClaudeCode,
+      requestedModel,
+    },
+    {
+      id: "model",
+      name: "critic model override",
+      providerKind: ReviewProviderKind.Codex,
+      requestedModel: "gpt-independent-critic",
+    },
+  ])("rejects a $name outside the prepared manifest", async (override) => {
+    const fixture = await createFixture({
+      executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
+    });
+    const confinementEvidenceHash = sha(
+      canonicalizeReviewContextConfinementEvidence({
+        attemptId: required(fixture.lease.attemptId),
+        sourceLeaseId: fixture.lease.leaseId,
+        sourceFencingToken: fixture.lease.fencingToken.toString(10),
+        sourceExecutionId: fixture.lease.executionId,
+        sourceWorkSlotId: fixture.lease.workSlotId,
+        sourceReviewRevisionHash: sourceRevision.reviewRevisionHash,
+        checkoutTreeOid: sourceTree,
+        providerKind: override.providerKind,
+        requestedModel: override.requestedModel,
+        executionProfile: fixture.manifest.executionProfile,
+        providerInvocationKey: fixture.lease.providerInvocationKey,
+        toolPolicyHash: fixture.manifest.toolPolicyHash,
+        gatewayPolicyVersion,
+        gatewayBinaryHash,
+      }),
+    );
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewContextGatewayOpen,
+      {
+        ...fixture.openRequest,
+        requestId: `request-${override.id}`,
+        idempotencyKey: `gateway-open-${override.id}`,
+        confinementEvidenceHash,
+      },
+    );
+
+    await expect(
+      fixture.routes.openGateway!.execute(request),
+    ).rejects.toMatchObject({
+      issues: ["context_confinement_evidence_mismatch"],
+    });
+  });
+
   it("accepts an authenticated gateway v4 manifest without enabling replay", async () => {
     const fixture = await createFixture({
       gatewayPolicyVersion: "context-gateway-v4",
@@ -449,6 +515,7 @@ async function createFixture(
   options: {
     now?: () => Date;
     gatewayPolicyVersion?: string;
+    executionProfile?: ProviderExecutionProfile;
     release?: {
       readonly contextGatewayPolicyVersion?: string | null;
       readonly contextGatewayEntrypointDigest?: string | null;
@@ -465,7 +532,10 @@ async function createFixture(
       pullRequestNumber: 42,
     }),
   );
-  const manifest = invocationManifest(scopeHash);
+  const manifest = invocationManifest(
+    scopeHash,
+    options.executionProfile ?? ProviderExecutionProfile.ContextGatewayV1,
+  );
   const identity = await buildProviderInvocationIdentity(digest, {
     manifest,
     providerVoteIdentityHash,
@@ -928,7 +998,10 @@ function sourceObservation(input: {
   });
 }
 
-function invocationManifest(scopeHash: string): ProviderInvocationManifest {
+function invocationManifest(
+  scopeHash: string,
+  executionProfile: ProviderExecutionProfile,
+): ProviderInvocationManifest {
   return {
     manifestVersion: 1,
     scopeHash,
@@ -950,7 +1023,7 @@ function invocationManifest(scopeHash: string): ProviderInvocationManifest {
     lifecycleTargetSetHash: null,
     liveLifecycleStateHash: null,
     toolPolicyHash: sha("tool-policy"),
-    executionProfile: ProviderExecutionProfile.ContextGatewayV1,
+    executionProfile,
     baseTreeHash: null,
     environmentContractHash: sha("environment"),
   };

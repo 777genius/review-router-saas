@@ -1,9 +1,22 @@
 import {
   InvestigationLegacyComparison,
+  InvestigationTelemetryEvidenceCompleteness,
   InvestigationTelemetrySource,
+  isFullyEvaluatedTelemetrySample,
+  type InvestigationFullyEvaluatedTelemetrySample,
   type InvestigationTelemetrySample,
   validateTelemetrySample,
 } from "./investigation-telemetry";
+import {
+  normalizeInvestigationPromotionPolicyProfile,
+  type InvestigationPromotionPolicyProfile,
+  type InvestigationPromotionProfileIdentity,
+  type InvestigationPromotionThresholds,
+} from "./promotion-policy";
+
+export enum InvestigationPromotionReportVersion {
+  V3 = "review-investigation-promotion.v3",
+}
 
 export enum InvestigationPromotionDecision {
   Eligible = "eligible",
@@ -21,36 +34,34 @@ export enum InvestigationPromotionBlocker {
   LatencyBudgetExceeded = "latency_budget_exceeded",
 }
 
-export type InvestigationPromotionThresholds = Readonly<{
-  minSeededSamples: number;
-  minShadowSamples: number;
-  maxUnexplainedDisagreements: number;
-  maxP95TotalTokens: number;
-  maxP95DurationMs: number;
-}>;
-
 export type InvestigationPromotionMetrics = Readonly<{
   totalSamples: number;
+  fullyEvaluatedSamples: number;
+  terminalOperationalSamples: number;
+  incompleteSamples: number;
   seededSamples: number;
   shadowSamples: number;
   allowlistedSamples: number;
+  observedFindingCount: number;
   expectedDefects: number;
   detectedDefects: number;
   falseCleanCount: number;
   unexplainedDisagreementCount: number;
   securityViolationCount: number;
   replayHitCount: number;
-  p50TotalTokens: number;
-  p95TotalTokens: number;
-  p50DurationMs: number;
-  p95DurationMs: number;
-  p95CapacityWaitMs: number;
+  p50TotalTokens: number | null;
+  p95TotalTokens: number | null;
+  p50DurationMs: number | null;
+  p95DurationMs: number | null;
+  p95CapacityWaitMs: number | null;
 }>;
 
 export type InvestigationPromotionReportBody = Readonly<{
-  reportVersion: "review-investigation-promotion.v1";
+  reportVersion: InvestigationPromotionReportVersion.V3;
   generatedAt: string;
   producerReleaseId: string;
+  profile: InvestigationPromotionProfileIdentity;
+  trustProfile: InvestigationPromotionPolicyProfile["trustProfile"];
   sampleSetHash: string;
   thresholds: InvestigationPromotionThresholds;
   metrics: InvestigationPromotionMetrics;
@@ -61,8 +72,8 @@ export type InvestigationPromotionReportBody = Readonly<{
 export function evaluatePromotion(input: {
   readonly generatedAt: string;
   readonly producerReleaseId: string;
+  readonly policy: InvestigationPromotionPolicyProfile;
   readonly sampleSetHash: string;
-  readonly thresholds: InvestigationPromotionThresholds;
   readonly samples: readonly InvestigationTelemetrySample[];
 }): InvestigationPromotionReportBody {
   if (
@@ -78,7 +89,7 @@ export function evaluatePromotion(input: {
     throw new Error("promotion_producer_release_invalid");
   }
   input.samples.forEach(validateTelemetrySample);
-  validateThresholds(input.thresholds);
+  const policy = normalizeInvestigationPromotionPolicyProfile(input.policy);
   const samples = [...input.samples].sort((a, b) =>
     a.sampleId.localeCompare(b.sampleId, "en"),
   );
@@ -90,29 +101,51 @@ export function evaluatePromotion(input: {
   ) {
     throw new Error("promotion_producer_release_mismatch");
   }
-  const values = (select: (sample: InvestigationTelemetrySample) => number) =>
-    samples.map(select).sort((a, b) => a - b);
+  const fullyEvaluated = samples.filter(isFullyEvaluatedTelemetrySample);
+  const values = (
+    select: (
+      sample: InvestigationFullyEvaluatedTelemetrySample,
+    ) => number | null,
+  ) =>
+    fullyEvaluated
+      .map(select)
+      .filter((value): value is number => value !== null)
+      .sort((a, b) => a - b);
   const metrics: InvestigationPromotionMetrics = Object.freeze({
     totalSamples: samples.length,
+    fullyEvaluatedSamples: fullyEvaluated.length,
+    terminalOperationalSamples: samples.filter(
+      (item) =>
+        item.evidenceCompleteness ===
+        InvestigationTelemetryEvidenceCompleteness.TerminalOperational,
+    ).length,
+    incompleteSamples: samples.length - fullyEvaluated.length,
     seededSamples: countSource(
-      samples,
+      fullyEvaluated,
       InvestigationTelemetrySource.DisposableFixture,
     ),
-    shadowSamples: countSource(samples, InvestigationTelemetrySource.Shadow),
+    shadowSamples: countSource(
+      fullyEvaluated,
+      InvestigationTelemetrySource.Shadow,
+    ),
     allowlistedSamples: countSource(
-      samples,
+      fullyEvaluated,
       InvestigationTelemetrySource.Allowlisted,
     ),
-    expectedDefects: sum(samples, (item) => item.expectedDefectCount),
-    detectedDefects: sum(samples, (item) => item.detectedDefectCount),
-    falseCleanCount: samples.filter((item) => item.falseClean).length,
-    unexplainedDisagreementCount: samples.filter(
+    observedFindingCount: sum(samples, (item) => item.findingCount),
+    expectedDefects: sum(fullyEvaluated, (item) => item.expectedDefectCount),
+    detectedDefects: sum(fullyEvaluated, (item) => item.detectedDefectCount),
+    falseCleanCount: fullyEvaluated.filter((item) => item.falseClean).length,
+    unexplainedDisagreementCount: fullyEvaluated.filter(
       (item) =>
         item.legacyComparison ===
         InvestigationLegacyComparison.UnexplainedDisagreement,
     ).length,
-    securityViolationCount: sum(samples, (item) => item.securityViolationCount),
-    replayHitCount: samples.filter((item) =>
+    securityViolationCount: sum(
+      fullyEvaluated,
+      (item) => item.securityViolationCount,
+    ),
+    replayHitCount: fullyEvaluated.filter((item) =>
       item.replayOutcome.endsWith("_hit"),
     ).length,
     p50TotalTokens: percentile(
@@ -136,13 +169,15 @@ export function evaluatePromotion(input: {
       0.95,
     ),
   });
-  const blockers = blockersFor(metrics, input.thresholds);
+  const blockers = blockersFor(metrics, policy.thresholds);
   return Object.freeze({
-    reportVersion: "review-investigation-promotion.v1",
+    reportVersion: InvestigationPromotionReportVersion.V3,
     generatedAt: input.generatedAt,
     producerReleaseId: input.producerReleaseId,
+    profile: policy.identity,
+    trustProfile: policy.trustProfile,
     sampleSetHash: input.sampleSetHash,
-    thresholds: Object.freeze({ ...input.thresholds }),
+    thresholds: policy.thresholds,
     metrics,
     decision:
       blockers.length === 0
@@ -174,39 +209,31 @@ function blockersFor(
     );
   if (metrics.securityViolationCount > 0)
     blockers.push(InvestigationPromotionBlocker.SecurityViolationDetected);
-  if (metrics.p95TotalTokens > thresholds.maxP95TotalTokens)
+  if (
+    metrics.p95TotalTokens !== null &&
+    metrics.p95TotalTokens > thresholds.maxP95TotalTokens
+  )
     blockers.push(InvestigationPromotionBlocker.TokenBudgetExceeded);
-  if (metrics.p95DurationMs > thresholds.maxP95DurationMs)
+  if (
+    metrics.p95DurationMs !== null &&
+    metrics.p95DurationMs > thresholds.maxP95DurationMs
+  )
     blockers.push(InvestigationPromotionBlocker.LatencyBudgetExceeded);
   return blockers;
 }
 
-function validateThresholds(value: InvestigationPromotionThresholds): void {
-  for (const [field, number] of Object.entries(value)) {
-    if (!Number.isSafeInteger(number) || number < 0) {
-      throw new Error(`${field}_invalid`);
-    }
-  }
-  if (value.minSeededSamples === 0 || value.minShadowSamples === 0) {
-    throw new Error("promotion_evidence_threshold_zero");
-  }
-}
-
-function countSource(
-  samples: readonly InvestigationTelemetrySample[],
+function countSource<T extends InvestigationTelemetrySample>(
+  samples: readonly T[],
   source: InvestigationTelemetrySource,
 ): number {
   return samples.filter((item) => item.source === source).length;
 }
 
-function sum(
-  samples: readonly InvestigationTelemetrySample[],
-  select: (sample: InvestigationTelemetrySample) => number,
-): number {
+function sum<T>(samples: readonly T[], select: (sample: T) => number): number {
   return samples.reduce((total, item) => total + select(item), 0);
 }
 
-function percentile(values: readonly number[], ratio: number): number {
-  if (values.length === 0) return 0;
-  return values[Math.ceil(values.length * ratio) - 1] ?? 0;
+function percentile(values: readonly number[], ratio: number): number | null {
+  if (values.length === 0) return null;
+  return values[Math.ceil(values.length * ratio) - 1] ?? null;
 }

@@ -21,6 +21,7 @@ import {
   canonicalJson,
   canonicalReviewOperationalSloProfile,
   canonicalReviewProtocolLimits,
+  reviewInvestigationCapabilityV1,
   type ReviewOperationalSloThresholds,
   type ReviewProtocolLimits,
 } from "@reviewrouter/features-review-run-control";
@@ -36,6 +37,7 @@ import {
   ReviewRequestedTriggerKind,
   type ReviewRequestedIntent,
 } from "@reviewrouter/features-review-executions";
+import { InvestigationRolloutCapability } from "@reviewrouter/features-review-investigation-operations";
 import {
   canonicalizeReviewActionV2Request,
   reviewActionV2GoldenFixtures,
@@ -580,7 +582,254 @@ describe("Review Action v2 run-control composition", () => {
       ReviewRunAuthorizationResultStatus.Restored,
     );
     expect(replay.result.authorizationId).toBe(first.result.authorizationId);
+    expect(replay.result.authorizationFactsCanonicalJson).toBe(
+      first.result.authorizationFactsCanonicalJson,
+    );
+    expect(
+      JSON.parse(first.result.authorizationFactsCanonicalJson!),
+    ).not.toHaveProperty("reviewInvestigation");
+    expect(
+      await kit.digest.digestUtf8(
+        first.result.authorizationFactsCanonicalJson!,
+      ),
+    ).toBe(
+      await kit.digest.digestUtf8(
+        replay.result.authorizationFactsCanonicalJson!,
+      ),
+    );
   });
+
+  it("includes a compatible investigation capability in deterministic authorization facts", async () => {
+    const investigationActionSha = "f".repeat(40);
+    const protocolLimits =
+      await kit.store.findProtocolLimitsProfileById("limits_v2");
+    const operationalSlo =
+      await kit.store.findOperationalSloProfileById("slo_v2");
+    if (!protocolLimits || !operationalSlo) {
+      throw new Error("test_release_profiles_missing");
+    }
+    const reviewInvestigationProfile = {
+      capability: reviewInvestigationCapabilityV1,
+      coverageProfileHash: hash("5"),
+      policyHash: hash("6"),
+    } as const;
+    await kit.control.producerReleases.registerProducerRelease({
+      candidate: {
+        producerReleaseId: "release_investigation_v1",
+        distributionKind: ProducerDistributionKind.PublicReusable,
+        actionCommitSha: investigationActionSha,
+        runtimeCommitSha: runtimeSha,
+        wrapperEntrypointDigest: null,
+        runtimeEntrypointDigest: hash("7"),
+        contextGatewayPolicyVersion: "review-context-gateway.v1",
+        contextGatewayEntrypointDigest: hash("8"),
+        reviewInvestigationProfile,
+        schemaDigest: reviewActionV2PublishedSchemaDigest,
+        capabilityProfile: ReviewCapabilityProfile.ExactRevisionV2,
+        protocolLimitsProfileId: "limits_v2",
+        operationalSloProfileId: "slo_v2",
+      },
+      expectedProtocolLimitsDigest: protocolLimits.limitsDigest,
+      expectedOperationalSloDigest: operationalSlo.sloDigest,
+    });
+    const producerRelease = await kit.store.findProducerReleaseById(
+      "release_investigation_v1",
+    );
+    if (!producerRelease) throw new Error("test_investigation_release_missing");
+    facts = {
+      ...facts,
+      producerReleaseId: producerRelease.producerReleaseId,
+      producerActionCommitSha: investigationActionSha,
+    };
+    const descriptor = {
+      ...reviewInvestigationProfile,
+      authorizationDescriptorVersion: 2 as const,
+      providerCapabilities: [
+        {
+          providerKind: "codex" as const,
+          capabilities: [InvestigationRolloutCapability.Recording],
+        },
+      ],
+    };
+    let capabilityResolutionCount = 0;
+    const handlers = createReviewActionV2RunControlHandlers({
+      ...dependencies,
+      admissionFacts: {
+        resolve: async () => ({ revision: facts, producerRelease }),
+      },
+      reviewInvestigationCapability: {
+        resolve: async ({ producerRelease: resolvedRelease }) => {
+          expect(resolvedRelease.reviewInvestigationProfile).toEqual(
+            reviewInvestigationProfile,
+          );
+          capabilityResolutionCount += 1;
+          return capabilityResolutionCount === 1
+            ? descriptor
+            : {
+                ...descriptor,
+                providerCapabilities: [
+                  {
+                    providerKind: "codex" as const,
+                    capabilities: [
+                      InvestigationRolloutCapability.Recording,
+                      InvestigationRolloutCapability.Shadow,
+                    ],
+                  },
+                ],
+              };
+        },
+      },
+    });
+
+    const first = await handlers.authorize!.execute(authorizeRequest());
+    const replay = await handlers.authorize!.execute(authorizeRequest());
+    const canonicalFacts = first.result.authorizationFactsCanonicalJson!;
+
+    expect(JSON.parse(canonicalFacts)).toMatchObject({
+      producerReleaseId: "release_investigation_v1",
+      reviewInvestigation: descriptor,
+    });
+    expect(canonicalFacts).toBe(canonicalJson(JSON.parse(canonicalFacts)));
+    expect(replay.result.authorizationFactsCanonicalJson).toBe(canonicalFacts);
+    expect(capabilityResolutionCount).toBe(2);
+    expect(
+      JSON.parse(replay.result.authorizationFactsCanonicalJson!)
+        .reviewInvestigation,
+    ).toEqual(descriptor);
+    expect(await kit.digest.digestUtf8(canonicalFacts)).toBe(
+      await kit.digest.digestUtf8(
+        replay.result.authorizationFactsCanonicalJson!,
+      ),
+    );
+  });
+
+  it("omits investigation capability when the resolver returns null", async () => {
+    const handlers = createReviewActionV2RunControlHandlers({
+      ...dependencies,
+      reviewInvestigationCapability: { resolve: async () => null },
+    });
+
+    const result = await handlers.authorize!.execute(authorizeRequest());
+
+    expect(
+      JSON.parse(result.result.authorizationFactsCanonicalJson!),
+    ).not.toHaveProperty("reviewInvestigation");
+  });
+
+  it("does not advertise investigation providers outside authorized vote lanes", async () => {
+    const handlers = createReviewActionV2RunControlHandlers({
+      ...dependencies,
+      reviewInvestigationCapability: {
+        resolve: async () => ({
+          authorizationDescriptorVersion: 2,
+          capability: reviewInvestigationCapabilityV1,
+          coverageProfileHash: hash("5"),
+          policyHash: hash("6"),
+          providerCapabilities: [
+            {
+              providerKind: "codex",
+              capabilities: [InvestigationRolloutCapability.Recording],
+            },
+            {
+              providerKind: "claude_code",
+              capabilities: [InvestigationRolloutCapability.Recording],
+            },
+          ],
+        }),
+      },
+    });
+
+    const result = await handlers.authorize!.execute(authorizeRequest());
+
+    expect(
+      JSON.parse(result.result.authorizationFactsCanonicalJson!),
+    ).not.toHaveProperty("reviewInvestigation");
+  });
+
+  it.each([
+    {
+      name: "unsorted capabilities",
+      providerCapabilities: [
+        {
+          providerKind: "codex",
+          capabilities: [
+            InvestigationRolloutCapability.Recording,
+            InvestigationRolloutCapability.ContextCritic,
+            InvestigationRolloutCapability.Shadow,
+          ],
+        },
+      ],
+    },
+    {
+      name: "duplicate capabilities",
+      providerCapabilities: [
+        {
+          providerKind: "codex",
+          capabilities: [
+            InvestigationRolloutCapability.Recording,
+            InvestigationRolloutCapability.Recording,
+          ],
+        },
+      ],
+    },
+    {
+      name: "unknown capability",
+      providerCapabilities: [
+        {
+          providerKind: "codex",
+          capabilities: [InvestigationRolloutCapability.Recording, "future"],
+        },
+      ],
+    },
+    {
+      name: "dependency gap",
+      providerCapabilities: [
+        {
+          providerKind: "codex",
+          capabilities: [
+            InvestigationRolloutCapability.ContextCritic,
+            InvestigationRolloutCapability.Recording,
+          ],
+        },
+      ],
+    },
+    {
+      name: "duplicate provider rows",
+      providerCapabilities: [
+        {
+          providerKind: "codex",
+          capabilities: [InvestigationRolloutCapability.Recording],
+        },
+        {
+          providerKind: "codex",
+          capabilities: [InvestigationRolloutCapability.Recording],
+        },
+      ],
+    },
+  ])(
+    "omits a non-canonical V2 descriptor with $name",
+    async ({ providerCapabilities }) => {
+      const handlers = createReviewActionV2RunControlHandlers({
+        ...dependencies,
+        reviewInvestigationCapability: {
+          resolve: async () =>
+            ({
+              authorizationDescriptorVersion: 2,
+              capability: reviewInvestigationCapabilityV1,
+              coverageProfileHash: hash("5"),
+              policyHash: hash("6"),
+              providerCapabilities,
+            }) as never,
+        },
+      });
+
+      const result = await handlers.authorize!.execute(authorizeRequest());
+
+      expect(
+        JSON.parse(result.result.authorizationFactsCanonicalJson!),
+      ).not.toHaveProperty("reviewInvestigation");
+    },
+  );
 
   it("renews with a fresh same-run OIDC proof and canonical request hash", async () => {
     const handlers = createReviewActionV2RunControlHandlers(dependencies);

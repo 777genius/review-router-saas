@@ -1,26 +1,46 @@
+import { canonicalJson } from "../../domain/canonicalization";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
 import {
-  InvestigationReceiptKind,
-  type InvestigationEvidenceReceipt,
-} from "../../domain/investigation-obligation";
+  VersionedCoverageExpansionPolicy,
+  type CoverageExpansionPolicy,
+} from "../../domain/coverage-policies";
 import type { InvestigationFinding } from "../../domain/investigation-turn";
+import {
+  InvestigationFileContentKind,
+  InvestigationOperationKind,
+  InvestigationOperationRevision,
+  type InvestigationFileReadEvidence,
+} from "../../domain/investigation-operation-evidence";
+import {
+  VersionedObligationClosurePolicy,
+  type ObligationClosurePolicy,
+} from "../../domain/obligation-closure-policy";
 import {
   canonicalInvestigationTerminalObservation,
   canonicalInvestigationTurnObservation,
   type InvestigationTurnObservation,
 } from "../../domain/investigation-turn-observation";
+import { AttestedTurnClosurePreparation } from "../attested-turn-closure-preparation";
+import { AttestedTurnDiscoveryPreparation } from "../attested-turn-discovery-preparation";
+import { AttestedTurnProposalPreparation } from "../attested-turn-proposal-preparation";
+import { AttestedTurnUnresolvablePreparation } from "../attested-turn-unresolvable-preparation";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationStorePort } from "../ports/investigation-store-port";
-import type {
-  InvestigationTurnEvidencePort,
-  VerifiedInvestigationOperationEvidence,
-} from "../ports/investigation-turn-evidence-port";
+import type { InvestigationTurnEvidencePort } from "../ports/investigation-turn-evidence-port";
 import type { ReviewInvestigationReadModel } from "../investigation-read-model";
+import { toInvestigationReadModel } from "../investigation-read-model";
+import {
+  createVerifiedOperationEvidenceIndex,
+  type VerifiedOperationEvidenceIndex,
+} from "../verified-operation-evidence-index";
 import {
   CommitInvestigationTurn,
   type CommitInvestigationTurnCommand,
 } from "./commit-investigation-turn";
-import { digestCanonical } from "./investigation-use-case-support";
+import {
+  digestCanonical,
+  restoreCommandOrThrow,
+} from "./investigation-use-case-support";
 
 export type CommitAttestedInvestigationTurnCommand = Readonly<{
   commandId: string;
@@ -37,16 +57,43 @@ export type CommitAttestedInvestigationTurnCommand = Readonly<{
 }>;
 
 export class CommitAttestedInvestigationTurn {
+  private readonly closurePreparation: AttestedTurnClosurePreparation;
+  private readonly discoveryPreparation: AttestedTurnDiscoveryPreparation;
+  private readonly unresolvablePreparation =
+    new AttestedTurnUnresolvablePreparation();
+  private readonly proposalPreparation: AttestedTurnProposalPreparation;
+
   constructor(
     private readonly store: InvestigationStorePort,
     private readonly evidence: InvestigationTurnEvidencePort,
     private readonly digest: InvestigationDigestPort,
     private readonly commit: CommitInvestigationTurn,
-  ) {}
+    closurePolicy: ObligationClosurePolicy = new VersionedObligationClosurePolicy(),
+    private readonly expansionPolicy: CoverageExpansionPolicy = new VersionedCoverageExpansionPolicy(),
+  ) {
+    this.closurePreparation = new AttestedTurnClosurePreparation(
+      digest,
+      closurePolicy,
+    );
+    this.discoveryPreparation = new AttestedTurnDiscoveryPreparation(digest);
+    this.proposalPreparation = new AttestedTurnProposalPreparation(digest);
+  }
 
   async execute(
     command: CommitAttestedInvestigationTurnCommand,
   ): Promise<ReviewInvestigationReadModel> {
+    const idempotencyHash = await this.digest.digestUtf8(
+      canonicalJson({
+        operation: "commit_attested_investigation_turn",
+        command,
+      }),
+    );
+    const restored = await restoreCommandOrThrow({
+      store: this.store,
+      commandId: command.commandId,
+      commandHash: idempotencyHash,
+    });
+    if (restored) return toInvestigationReadModel(restored);
     const current = await this.store.findById(command.investigationId);
     if (
       current === null ||
@@ -83,26 +130,32 @@ export class CommitAttestedInvestigationTurn {
       verified.gatewayPolicyVersion !== current.contract.gatewayPolicyVersion ||
       verified.acceptedAttestationId !== command.acceptedAttestationId ||
       verified.acceptedAttestationHash !== command.acceptedAttestationHash ||
-      verified.terminalOutcomeHash !== terminalOutcomeHash
+      verified.terminalOutcomeHash !== terminalOutcomeHash ||
+      verified.actualProviderKind !== command.observation.actualProviderKind
     ) {
       throw new Error("investigation_turn_attestation_invalid");
     }
-    const operationEvidence = new Map(
-      verified.operations.map((item) => [item.operationReceiptId, item]),
+    const operationEvidence = createVerifiedOperationEvidenceIndex(
+      verified.operations,
     );
-    const closureClaims = await Promise.all(
-      command.observation.closureClaims.map(async (claim) => ({
-        obligationId: claim.obligationId,
-        receipt: await closureReceipt({
-          claim,
-          investigation: current,
-          operationEvidence,
-          digest: this.digest,
-          acceptedAttestationId: command.acceptedAttestationId,
-          acceptedAttestationHash: command.acceptedAttestationHash,
-        }),
-      })),
-    );
+    const preparedClosures = await this.closurePreparation.prepare({
+      investigation: current,
+      closureClaims: command.observation.closureClaims,
+      operationEvidence,
+      acceptedAttestationId: command.acceptedAttestationId,
+      acceptedAttestationHash: command.acceptedAttestationHash,
+    });
+    const discoveryClaims = await this.discoveryPreparation.prepare({
+      closureClaims: command.observation.closureClaims,
+      providerClaims: command.observation.operationBackedDiscoveryClaims,
+      investigation: current,
+      operationEvidence,
+    });
+    const deterministicExpansions = this.expansionPolicy.expand({
+      contract: current.contract,
+      currentObligations: current.obligations,
+      discoveryClaims,
+    });
     assertEvidenceReferences(
       command.observation.findings.flatMap(
         (finding) => finding.evidenceOperationReceiptIds,
@@ -110,12 +163,25 @@ export class CommitAttestedInvestigationTurn {
       operationEvidence,
       "finding",
     );
+    await assertFindingEvidenceBindings(
+      command.observation.findings,
+      operationEvidence,
+      this.digest,
+    );
     assertEvidenceReferences(
       command.observation.unresolvableClaims.flatMap(
         (claim) => claim.evidenceOperationReceiptIds,
       ),
       operationEvidence,
       "unresolvable",
+    );
+    const unresolvableDecisions = this.unresolvablePreparation.prepare({
+      investigation: current,
+      providerClaims: command.observation.unresolvableClaims,
+      operationEvidence,
+    });
+    const proposals = await this.proposalPreparation.prepare(
+      command.observation.obligationProposals,
     );
     const findings: InvestigationFinding[] = await Promise.all(
       command.observation.findings.map(async (finding) => ({
@@ -140,12 +206,13 @@ export class CommitAttestedInvestigationTurn {
       investigationId: command.investigationId,
       expectedVersion: command.expectedVersion,
       turnId: command.turnId,
-      closureClaims,
-      // Provider output is evidence, not deterministic policy authority.
-      unresolvableDecisions: [],
-      proposals: command.observation.obligationProposals,
+      closureClaims: preparedClosures.closureClaims,
+      // Provider output is only a suggestion; deterministic policy owns the decision.
+      unresolvableDecisions,
+      proposals,
+      deterministicExpansions,
       findings,
-      acceptedEvidenceReceiptIds: [...operationEvidence.keys()],
+      acceptedEvidenceReceiptIds: [...operationEvidence.operationReceiptIds],
       criticDecision: command.observation.criticDecision,
       usageTokens: command.observation.usage.totalTokens,
       durationMs: command.observation.durationMs,
@@ -154,7 +221,7 @@ export class CommitAttestedInvestigationTurn {
       provenance: {
         turnId: command.turnId,
         purpose: command.observation.purpose,
-        actualProviderKind: command.observation.actualProviderKind,
+        actualProviderKind: verified.actualProviderKind,
         actualModel: command.observation.actualModel,
         runtimeProfile: command.observation.runtimeProfile,
         inputTokens: command.observation.usage.inputTokens,
@@ -167,6 +234,7 @@ export class CommitAttestedInvestigationTurn {
         acceptedAttestationHash: command.acceptedAttestationHash,
         terminalOutcomeHash,
       },
+      idempotencyHash,
     };
     return this.commit.execute(commitCommand);
   }
@@ -191,63 +259,81 @@ function assertObservationBinding(
   }
 }
 
-async function closureReceipt(input: {
-  readonly claim: InvestigationTurnObservation["closureClaims"][number];
-  readonly investigation: ReviewInvestigation;
-  readonly operationEvidence: ReadonlyMap<
-    string,
-    VerifiedInvestigationOperationEvidence
-  >;
-  readonly digest: InvestigationDigestPort;
-  readonly acceptedAttestationId: string;
-  readonly acceptedAttestationHash: string;
-}): Promise<InvestigationEvidenceReceipt> {
-  const obligation = input.investigation.obligations.find(
-    (item) => item.obligationId === input.claim.obligationId,
-  );
-  if (!obligation) throw new Error("investigation_obligation_missing");
-  const operations = input.claim.operationReceiptIds.map((receiptId) => {
-    const evidence = input.operationEvidence.get(receiptId);
-    if (!evidence) throw new Error("investigation_operation_receipt_missing");
-    return evidence;
-  });
-  const kinds = new Set(operations.map((item) => item.kind));
-  return Object.freeze({
-    receiptId: await digestCanonical(input.digest, {
-      operationReceiptIds: [...input.claim.operationReceiptIds].sort(),
-      obligationId: obligation.obligationId,
-    }),
-    operationKey: await digestCanonical(
-      input.digest,
-      operations.map((item) => item.operationKey).sort(),
-    ),
-    kind:
-      kinds.size === 1
-        ? operations[0]!.kind
-        : InvestigationReceiptKind.Relation,
-    canonicalSubject: obligation.canonicalSubject,
-    reviewRevisionHash: input.investigation.revision.reviewRevisionHash,
-    gatewayPolicyVersion: input.investigation.contract.gatewayPolicyVersion,
-    evidenceDigest: await digestCanonical(
-      input.digest,
-      operations.map((item) => item.evidenceDigest).sort(),
-    ),
-    operationReceiptIds: [...input.claim.operationReceiptIds].sort(),
-    acceptedAttestationId: input.acceptedAttestationId,
-    acceptedAttestationHash: input.acceptedAttestationHash,
-    replayProofId: null,
-    complete: true,
-    truncated: false,
-    failed: false,
-  });
-}
-
 function assertEvidenceReferences(
   receiptIds: readonly string[],
-  evidence: ReadonlyMap<string, VerifiedInvestigationOperationEvidence>,
+  evidence: VerifiedOperationEvidenceIndex,
   kind: string,
 ): void {
   if (receiptIds.some((receiptId) => !evidence.has(receiptId))) {
     throw new Error(`investigation_${kind}_evidence_invalid`);
   }
+}
+
+async function assertFindingEvidenceBindings(
+  findings: InvestigationTurnObservation["findings"],
+  evidence: VerifiedOperationEvidenceIndex,
+  digest: InvestigationDigestPort,
+): Promise<void> {
+  for (const finding of findings) {
+    const pathHash = await digest.digestUtf8(finding.path);
+    const referencedFileReads = finding.evidenceOperationReceiptIds
+      .map((receiptId) => evidence.get(receiptId))
+      .filter(
+        (operation): operation is InvestigationFileReadEvidence =>
+          operation?.operationKind === InvestigationOperationKind.FileRead &&
+          operation.revision === InvestigationOperationRevision.Head &&
+          operation.pathHash === pathHash,
+      );
+    const completeGroups = groupFileReads(referencedFileReads).filter(
+      isCompleteFileReadGroup,
+    );
+    if (completeGroups.length === 0) {
+      throw new Error("investigation_finding_evidence_path_invalid");
+    }
+    const findingLine = finding.line;
+    if (
+      findingLine !== null &&
+      !completeGroups.some(
+        (group) =>
+          group.every(
+            (operation) =>
+              operation.contentKind === InvestigationFileContentKind.Text &&
+              operation.lineCount !== null &&
+              operation.lineCount === group[0]!.lineCount,
+          ) && findingLine <= group[0]!.lineCount!,
+      )
+    ) {
+      throw new Error("investigation_finding_evidence_line_invalid");
+    }
+  }
+}
+
+function groupFileReads(
+  reads: readonly InvestigationFileReadEvidence[],
+): readonly (readonly InvestigationFileReadEvidence[])[] {
+  const groups = new Map<string, InvestigationFileReadEvidence[]>();
+  for (const read of reads) {
+    const key = [read.treeOid, read.pathHash, read.blobOid, read.mode].join(
+      ":",
+    );
+    const group = groups.get(key) ?? [];
+    group.push(read);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) =>
+    [...group].sort((left, right) => left.startByte - right.startByte),
+  );
+}
+
+function isCompleteFileReadGroup(
+  reads: readonly InvestigationFileReadEvidence[],
+): boolean {
+  if (reads.length === 0 || reads[0]!.startByte !== 0) return false;
+  let nextByte = 0;
+  for (const read of reads) {
+    if (read.startByte !== nextByte || read.byteCount < 0) return false;
+    nextByte += read.byteCount;
+  }
+  const terminal = reads.at(-1)!;
+  return terminal.eof && terminal.complete;
 }

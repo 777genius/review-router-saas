@@ -60,7 +60,10 @@ export function toInvestigationReadModel(
     nextEligibleAt: investigation.nextEligibleAt,
     nextAction:
       investigation.nextEligibleAt !== null &&
-      investigation.state === ReviewInvestigationState.AwaitingTurn
+      [
+        ReviewInvestigationState.AwaitingTurn,
+        ReviewInvestigationState.AwaitingCritic,
+      ].includes(investigation.state)
         ? ReviewInvestigationNextActionKind.AwaitCapacity
         : nextAction(investigation),
     turn: investigation.activeTurn ? { ...investigation.activeTurn } : null,

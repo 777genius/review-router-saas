@@ -696,6 +696,7 @@ const producerRelease = {
   runtimeEntrypointDigest: hash("7"),
   contextGatewayPolicyVersion: null,
   contextGatewayEntrypointDigest: null,
+  reviewInvestigationProfile: null,
   schemaDigest: reviewActionV2PublishedSchemaDigest,
   capabilityProfile: ReviewCapabilityProfile.ExactRevisionV2,
   protocolLimitsProfileId: authorization.protocolLimitsProfileId,

@@ -257,15 +257,18 @@ function normalizeResult(
   const result = event.result;
   if (result === null) throw new Error("context_gateway_v4_result_missing");
   switch (event.operationKind) {
-    case ContextGatewayV4OperationKind.FileRead:
+    case ContextGatewayV4OperationKind.FileRead: {
+      const extendedFileEvidence = Object.hasOwn(result, "contentKind");
       assertExactKeys(
         result,
         [
           "blobOid",
           "byteCount",
           "complete",
+          ...(extendedFileEvidence ? ["contentKind"] : []),
           "contentHash",
           "eof",
+          ...(extendedFileEvidence ? ["lineCount"] : []),
           "mode",
           "pathHash",
           "revision",
@@ -280,10 +283,23 @@ function normalizeResult(
       assertSha256(result.contentHash, "file_content_hash");
       assertNonNegativeInteger(result.startByte, "file_start_byte");
       assertNonNegativeInteger(result.byteCount, "file_byte_count");
+      if (extendedFileEvidence) {
+        if (result.contentKind !== "text" && result.contentKind !== "binary") {
+          throw new Error("context_gateway_v4_file_content_kind_invalid");
+        }
+        if (result.contentKind === "text") {
+          assertNonNegativeInteger(result.lineCount, "file_line_count");
+        } else if (result.lineCount !== null) {
+          throw new Error("context_gateway_v4_file_line_count_invalid");
+        }
+      } else if (Object.hasOwn(result, "lineCount")) {
+        throw new Error("context_gateway_v4_file_content_metadata_incomplete");
+      }
       if (typeof result.eof !== "boolean" || result.complete !== result.eof) {
         throw new Error("context_gateway_v4_file_completion_invalid");
       }
       break;
+    }
     case ContextGatewayV4OperationKind.DirectoryList:
     case ContextGatewayV4OperationKind.TextSearch:
     case ContextGatewayV4OperationKind.CanonicalInventory:
@@ -292,10 +308,14 @@ function normalizeResult(
         [
           "aggregateHash",
           "aggregateItemCount",
+          "aggregatePathCount",
+          "aggregatePathSetHash",
           "complete",
+          "cursorInputHash",
           "nextCursorHash",
           "pageItemCount",
           "pageItemsHash",
+          "pagePathHashes",
           "pageOrdinal",
           "queryDigest",
           "treeOid",
@@ -306,11 +326,20 @@ function normalizeResult(
       assertSha256(result.queryDigest, "page_query_digest");
       assertSha256(result.pageItemsHash, "page_items_hash");
       assertSha256(result.aggregateHash, "page_aggregate_hash");
+      assertSha256(result.aggregatePathSetHash, "page_aggregate_path_set_hash");
+      if (result.cursorInputHash !== null) {
+        assertSha256(result.cursorInputHash, "page_cursor_input_hash");
+      }
+      assertSha256Array(result.pagePathHashes, "page_path_hashes", 2_000);
       assertNonNegativeInteger(result.pageOrdinal, "page_ordinal");
       assertNonNegativeInteger(result.pageItemCount, "page_item_count");
       assertNonNegativeInteger(
         result.aggregateItemCount,
         "page_aggregate_item_count",
+      );
+      assertNonNegativeInteger(
+        result.aggregatePathCount,
+        "page_aggregate_path_count",
       );
       if (
         typeof result.complete !== "boolean" ||
@@ -374,8 +403,22 @@ function assertSuccessfulEvidenceCompleteness(
       files.set(key, ranges);
     }
   }
-  for (const chain of pages.values()) assertCompletePageChain(chain);
+  for (const chain of pages.values()) assertCompletePageSequences(chain);
   for (const ranges of files.values()) assertCompleteFileRanges(ranges);
+}
+
+function assertCompletePageSequences(
+  events: readonly ContextGatewayV4Event[],
+): void {
+  let sequence: ContextGatewayV4Event[] = [];
+  for (const event of events) {
+    if (Number(event.result?.pageOrdinal) === 0 && sequence.length > 0) {
+      assertCompletePageChain(sequence);
+      sequence = [];
+    }
+    sequence.push(event);
+  }
+  assertCompletePageChain(sequence);
 }
 
 function assertCompletePageChain(
@@ -383,19 +426,33 @@ function assertCompletePageChain(
 ): void {
   let aggregateCount = 0;
   let terminal = false;
+  let expectedCursorInputHash: string | null = null;
+  const aggregatePathHashes = new Set<string>();
   for (let index = 0; index < chain.length; index += 1) {
     const result = chain[index]!.result;
     if (
       result === null ||
       terminal ||
       result.pageOrdinal !== index ||
+      result.cursorInputHash !== expectedCursorInputHash ||
       result.aggregateItemCount !==
         aggregateCount + Number(result.pageItemCount)
     ) {
       throw new Error("context_gateway_v4_page_chain_invalid");
     }
+    for (const pathHash of result.pagePathHashes as readonly string[]) {
+      if (aggregatePathHashes.has(pathHash)) {
+        throw new Error("context_gateway_v4_page_path_chain_invalid");
+      }
+      aggregatePathHashes.add(pathHash);
+    }
+    if (result.aggregatePathCount !== aggregatePathHashes.size) {
+      throw new Error("context_gateway_v4_page_path_chain_invalid");
+    }
     aggregateCount = Number(result.aggregateItemCount);
     terminal = result.complete === true;
+    expectedCursorInputHash =
+      typeof result.nextCursorHash === "string" ? result.nextCursorHash : null;
   }
   if (!terminal) throw new Error("context_gateway_v4_page_chain_incomplete");
 }
@@ -478,6 +535,22 @@ function assertNonNegativeInteger(value: unknown, field: string): void {
 
 function assertSha256(value: unknown, field: string): asserts value is string {
   if (!isSha256(value)) throw new Error(`${field}_invalid`);
+}
+
+function assertSha256Array(
+  value: unknown,
+  field: string,
+  maximumLength: number,
+): asserts value is readonly string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > maximumLength ||
+    value.some((item) => !isSha256(item)) ||
+    new Set(value).size !== value.length ||
+    value.some((item, index) => index > 0 && String(value[index - 1]) > item)
+  ) {
+    throw new Error(`${field}_invalid`);
+  }
 }
 
 function isSha256(value: unknown): value is string {

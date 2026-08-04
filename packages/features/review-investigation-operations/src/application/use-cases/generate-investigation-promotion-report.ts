@@ -1,12 +1,23 @@
 import {
   evaluatePromotion,
   type InvestigationPromotionReportBody,
-  type InvestigationPromotionThresholds,
 } from "../../domain/promotion-report";
-import type {
-  InvestigationOperationsDigestPort,
-  InvestigationPromotionReportRepositoryPort,
-  InvestigationTelemetryRepositoryPort,
+import { canonicalInvestigationOperationsJson } from "../../domain/canonical-json";
+import { assertInvestigationPromotionTrustProfileValidAt } from "../../domain/promotion-trust-profile";
+import {
+  InvestigationPromotionPolicyError,
+  InvestigationPromotionPolicyErrorCode,
+  investigationPromotionProfileIdentityKey,
+  normalizeInvestigationPromotionPolicyProfile,
+  normalizeInvestigationPromotionProfileIdentity,
+  type InvestigationPromotionProfileIdentity,
+} from "../../domain/promotion-policy";
+import {
+  InvestigationPromotionTelemetryReadStatus,
+  maximumInvestigationPromotionTelemetrySamples,
+  type InvestigationOperationsDigestPort,
+  type InvestigationPromotionPolicyQueryPort,
+  type InvestigationPromotionReportUnitOfWorkPort,
 } from "../ports/operations-ports";
 
 export type ImmutableInvestigationPromotionReport = Readonly<{
@@ -17,43 +28,82 @@ export type ImmutableInvestigationPromotionReport = Readonly<{
 
 export class GenerateInvestigationPromotionReport {
   constructor(
-    private readonly telemetry: InvestigationTelemetryRepositoryPort,
+    private readonly policies: InvestigationPromotionPolicyQueryPort,
+    private readonly reports: InvestigationPromotionReportUnitOfWorkPort,
     private readonly digest: InvestigationOperationsDigestPort,
-    private readonly reports: InvestigationPromotionReportRepositoryPort,
   ) {}
 
   async execute(input: {
     readonly generatedAt: string;
     readonly producerReleaseId: string;
-    readonly thresholds: InvestigationPromotionThresholds;
+    readonly profile: InvestigationPromotionProfileIdentity;
   }): Promise<ImmutableInvestigationPromotionReport> {
-    const samples = await this.telemetry.listByProducerRelease(
-      input.producerReleaseId,
+    const identity = normalizeInvestigationPromotionProfileIdentity(
+      input.profile,
     );
-    const sampleSetCanonicalJson = canonicalJson(
-      [...samples].sort((a, b) => a.sampleId.localeCompare(b.sampleId, "en")),
+    const configured = await this.policies.find(identity);
+    if (configured === null) {
+      throw new InvestigationPromotionPolicyError(
+        InvestigationPromotionPolicyErrorCode.ProfileNotConfigured,
+      );
+    }
+    const policy = normalizeInvestigationPromotionPolicyProfile(configured);
+    if (
+      investigationPromotionProfileIdentityKey(policy.identity) !==
+      investigationPromotionProfileIdentityKey(identity)
+    ) {
+      throw new InvestigationPromotionPolicyError(
+        InvestigationPromotionPolicyErrorCode.ProfileNotConfigured,
+      );
+    }
+    assertInvestigationPromotionTrustProfileValidAt({
+      profile: policy.trustProfile,
+      validAt: input.generatedAt,
+    });
+    return this.reports.withPromotionSnapshot(
+      {
+        producerReleaseId: input.producerReleaseId,
+        trustProfile: policy.trustProfile,
+        validAt: input.generatedAt,
+      },
+      async (telemetry) => {
+        if (
+          telemetry.status ===
+            InvestigationPromotionTelemetryReadStatus.TooLarge ||
+          telemetry.samples.length >
+            maximumInvestigationPromotionTelemetrySamples
+        ) {
+          throw new Error("promotion_telemetry_sample_set_too_large");
+        }
+        const samples = telemetry.samples;
+        const sampleSetCanonicalJson = canonicalInvestigationOperationsJson(
+          [...samples].sort((a, b) =>
+            a.sampleId.localeCompare(b.sampleId, "en"),
+          ),
+        );
+        const sampleSetHash = await this.digest.digestUtf8(
+          sampleSetCanonicalJson,
+        );
+        const body = evaluatePromotion({
+          generatedAt: input.generatedAt,
+          producerReleaseId: input.producerReleaseId,
+          policy,
+          sampleSetHash,
+          samples,
+        });
+        const canonicalJson = canonicalInvestigationOperationsJson(body);
+        const reportHash = await this.digest.digestUtf8(canonicalJson);
+        const result = Object.freeze({
+          body,
+          canonicalJson,
+          reportHash,
+        });
+        return Object.freeze({
+          result,
+          reportCanonicalJson: canonicalJson,
+          reportHash,
+        });
+      },
     );
-    const sampleSetHash = await this.digest.digestUtf8(sampleSetCanonicalJson);
-    const body = evaluatePromotion({ ...input, sampleSetHash, samples });
-    const canonical = canonicalJson(body);
-    const reportHash = await this.digest.digestUtf8(canonical);
-    await this.reports.save({ reportCanonicalJson: canonical, reportHash });
-    return Object.freeze({ body, canonicalJson: canonical, reportHash });
   }
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "string")
-    return JSON.stringify(value);
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("canonical_number_invalid");
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value !== "object") throw new Error("canonical_value_invalid");
-  const record = value as Readonly<Record<string, unknown>>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
 }

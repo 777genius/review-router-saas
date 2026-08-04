@@ -1,0 +1,23 @@
+{
+  "contextGateway": {
+    "entrypointDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "policyVersion": "context-gateway-v4",
+    "supportedPolicyVersions": ["context-gateway-v3", "context-gateway-v4"]
+  },
+  "reviewInvestigation": {
+    "capability": "review_investigation_v1",
+    "coverageProfileHash": "4462900f2e610b2649101987f1131158312b2ad8d453e1fb5f048174f9fbfdc9",
+    "policy": {
+      "maxCriticCycles": 2,
+      "maxExpansionDepth": 4,
+      "maxFindings": 32,
+      "maxObligations": 64,
+      "maxOperationalAttempts": 8,
+      "maxProposalsPerTurn": 16,
+      "maxReceiptsPerTurn": 64,
+      "maxSemanticTurns": 8,
+      "policyId": "production-shaped-disposable-e2e.v1"
+    },
+    "policyHash": "232a049e3a801e11d8270ada630244090918962c639e23d6c3ff2ececebbcc8c"
+  }
+}

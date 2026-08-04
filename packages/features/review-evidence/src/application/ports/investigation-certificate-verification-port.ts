@@ -1,5 +1,6 @@
 import type {
   ReviewEvidenceScope,
+  ReviewProviderKind,
   ReviewRevision,
 } from "../../domain/review-evidence-primitives";
 
@@ -34,6 +35,7 @@ export type VerifyInvestigationCertificateQuery = Readonly<{
   certificateHash: string;
   scope: ReviewEvidenceScope;
   revision: ReviewRevision;
+  providerKind: ReviewProviderKind;
   providerVoteIdentityHash: string;
   terminalOutcomeHash: string;
   expectedConclusion: InvestigationCertificateConclusion;

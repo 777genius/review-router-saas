@@ -125,6 +125,7 @@ export function verifyPublicActionReleaseCommit(input) {
       contextGatewayReleaseMetadata.contextGatewayEntrypointDigest,
     contextGatewayPolicyVersion:
       contextGatewayReleaseMetadata.contextGatewayPolicyVersion,
+    contextGatewayReleaseMetadata,
     contextGatewayReleaseMetadataPath,
   });
 }

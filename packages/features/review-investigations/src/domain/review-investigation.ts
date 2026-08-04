@@ -13,6 +13,10 @@ import {
 } from "./coverage-contract";
 import type { ReviewInvestigationCertificate } from "./investigation-certificate";
 import {
+  hasIndependentCriticProvenance,
+  requiresIndependentCritic,
+} from "./investigation-critic-policy";
+import {
   InvestigationObligationOrigin,
   markInvestigationObligationUnresolvable,
   mergeInvestigationObligations,
@@ -47,6 +51,10 @@ import {
   ReviewInvestigationState,
   ReviewInvestigationTurnPurpose,
 } from "./review-investigation-types";
+import {
+  InvestigationPrivateMaterialExpiryDisposition,
+  InvestigationPrivateMaterialExpiryReason,
+} from "./investigation-private-material";
 
 export type ReviewInvestigation = Readonly<{
   investigationId: string;
@@ -80,6 +88,13 @@ export type ReviewInvestigation = Readonly<{
   nextEligibleAt: string | null;
   createdAt: string;
   updatedAt: string;
+}>;
+
+export type InvestigationPrivateMaterialExpiryReconciliation = Readonly<{
+  disposition: InvestigationPrivateMaterialExpiryDisposition;
+  investigation: ReviewInvestigation;
+  affectedObligationIds: readonly string[];
+  expiredTurnId: string | null;
 }>;
 
 export function createReviewInvestigation(
@@ -153,16 +168,10 @@ export function createReplayedReviewInvestigation(
   if (inventory.state !== InvestigationObligationState.Satisfied) {
     return investigation;
   }
-  const hasOpenDiscoveryWork = investigation.obligations.some(
-    (item) =>
-      item.kind !== InvestigationObligationKind.ContextCritic &&
-      item.state === InvestigationObligationState.Open,
-  );
+  // Replayed receipts do not authenticate provider/model provenance on target.
   return {
     ...investigation,
-    state: hasOpenDiscoveryWork
-      ? ReviewInvestigationState.AwaitingTurn
-      : ReviewInvestigationState.AwaitingCritic,
+    state: ReviewInvestigationState.AwaitingTurn,
   };
 }
 
@@ -290,7 +299,7 @@ export function commitInvestigationTurn(input: {
     input.commit.acceptedEvidenceReceiptIds ?? [],
   );
   const findings = mergeFindings(current.findings, input.commit.findings);
-  const next: ReviewInvestigation = {
+  let next: ReviewInvestigation = {
     ...current,
     version: current.version + 1,
     obligations,
@@ -320,11 +329,15 @@ export function commitInvestigationTurn(input: {
     state: current.state,
     updatedAt: input.committedAt,
   };
-  return decideStateAfterCommit(
+  const effectiveCriticDecision = effectiveCriticDecisionForCommit(
     next,
-    turn.purpose,
+    turn,
     input.commit.criticDecision,
   );
+  if (effectiveCriticDecision !== input.commit.criticDecision) {
+    next = { ...next, criticDecision: effectiveCriticDecision };
+  }
+  return decideStateAfterCommit(next, turn.purpose, effectiveCriticDecision);
 }
 
 export function abortInvestigationTurn(input: {
@@ -385,12 +398,101 @@ export function abortInvestigationTurn(input: {
   };
 }
 
+export function reconcileInvestigationPrivateMaterialExpiry(input: {
+  readonly investigation: ReviewInvestigation;
+  readonly obligationIds: readonly string[];
+  readonly expiredAt: string;
+}): InvestigationPrivateMaterialExpiryReconciliation {
+  const current = input.investigation;
+  const expiredAtMs = canonicalTimestampMs(
+    input.expiredAt,
+    "private_material_expired_at_invalid",
+  );
+  const terminalStates = new Set<ReviewInvestigationState>([
+    ReviewInvestigationState.Concluded,
+    ReviewInvestigationState.Inconclusive,
+    ReviewInvestigationState.Superseded,
+    ReviewInvestigationState.Expired,
+  ]);
+  if (terminalStates.has(current.state)) {
+    return privateMaterialExpiryResult(
+      InvestigationPrivateMaterialExpiryDisposition.Unchanged,
+      current,
+    );
+  }
+  if (current.activeTurn !== null) {
+    const turnExpiresAtMs = canonicalTimestampMs(
+      current.activeTurn.expiresAt,
+      "investigation_turn_expiry_invalid",
+    );
+    if (turnExpiresAtMs > expiredAtMs) {
+      return privateMaterialExpiryResult(
+        InvestigationPrivateMaterialExpiryDisposition.DeferredActiveTurn,
+        current,
+      );
+    }
+  }
+
+  const candidateIds = new Set(input.obligationIds);
+  const affectedObligationIds = current.obligations
+    .filter(
+      (obligation) =>
+        candidateIds.has(obligation.obligationId) &&
+        obligation.state === InvestigationObligationState.Open,
+    )
+    .map((obligation) => obligation.obligationId)
+    .sort();
+  if (affectedObligationIds.length === 0) {
+    return privateMaterialExpiryResult(
+      InvestigationPrivateMaterialExpiryDisposition.Unchanged,
+      current,
+    );
+  }
+
+  const affected = new Set(affectedObligationIds);
+  const updatedAt = new Date(
+    Math.max(
+      expiredAtMs,
+      canonicalTimestampMs(
+        current.updatedAt,
+        "investigation_updated_at_invalid",
+      ),
+    ),
+  ).toISOString();
+  const expiredTurnId = current.activeTurn?.turnId ?? null;
+  const investigation: ReviewInvestigation = {
+    ...current,
+    version: current.version + 1,
+    state: ReviewInvestigationState.Inconclusive,
+    obligations: current.obligations.map((obligation) =>
+      affected.has(obligation.obligationId)
+        ? markInvestigationObligationUnresolvable({
+            obligation,
+            reason:
+              InvestigationPrivateMaterialExpiryReason.RegenerationUnavailable,
+            deterministicPolicy: true,
+          })
+        : obligation,
+    ),
+    activeTurn: null,
+    conclusion: ReviewInvestigationConclusion.Inconclusive,
+    nextEligibleAt: null,
+    updatedAt,
+  };
+  return {
+    disposition: InvestigationPrivateMaterialExpiryDisposition.Inconclusive,
+    investigation,
+    affectedObligationIds,
+    expiredTurnId,
+  };
+}
+
 export function concludeReviewInvestigation(input: {
   readonly investigation: ReviewInvestigation;
   readonly certificate: ReviewInvestigationCertificate;
   readonly concludedAt: string;
 }): ReviewInvestigation {
-  const current = input.investigation;
+  const current = enforceCriticPolicyForConclusion(input.investigation);
   if (
     ![
       ReviewInvestigationState.ReadyToConclude,
@@ -443,6 +545,25 @@ export function concludeReviewInvestigation(input: {
     certificate: { ...input.certificate },
     updatedAt: input.concludedAt,
   };
+}
+
+export function enforceCriticPolicyForConclusion(
+  investigation: ReviewInvestigation,
+): ReviewInvestigation {
+  if (
+    investigation.state === ReviewInvestigationState.ReadyToConclude &&
+    investigation.findings.length === 0 &&
+    requiresIndependentCritic({
+      criticPolicyVersion: investigation.contract.criticPolicyVersion,
+      obligations: investigation.obligations,
+    }) &&
+    (investigation.turnProvenance.length !==
+      investigation.semanticTurns + investigation.criticCycles ||
+      !hasIndependentCriticProvenance(investigation.turnProvenance))
+  ) {
+    return transitionToInconclusive(investigation, investigation.updatedAt);
+  }
+  return investigation;
 }
 
 export function investigationDossierCanonicalValue(
@@ -559,6 +680,26 @@ function decideStateAfterCommit(
   return { ...investigation, state: ReviewInvestigationState.AwaitingTurn };
 }
 
+function effectiveCriticDecisionForCommit(
+  investigation: ReviewInvestigation,
+  turn: InvestigationTurn,
+  decision: ContextCriticDecision | null,
+): ContextCriticDecision | null {
+  if (
+    turn.purpose !== ReviewInvestigationTurnPurpose.Critic ||
+    decision !== ContextCriticDecision.Accept ||
+    investigation.findings.length > 0 ||
+    !requiresIndependentCritic({
+      criticPolicyVersion: investigation.contract.criticPolicyVersion,
+      obligations: investigation.obligations,
+    }) ||
+    hasIndependentCriticProvenance(investigation.turnProvenance, turn.turnId)
+  ) {
+    return decision;
+  }
+  return ContextCriticDecision.Abstain;
+}
+
 function transitionToInconclusive(
   investigation: ReviewInvestigation,
   at: string,
@@ -570,6 +711,29 @@ function transitionToInconclusive(
     activeTurn: null,
     updatedAt: at,
   };
+}
+
+function privateMaterialExpiryResult(
+  disposition: Exclude<
+    InvestigationPrivateMaterialExpiryDisposition,
+    InvestigationPrivateMaterialExpiryDisposition.Inconclusive
+  >,
+  investigation: ReviewInvestigation,
+): InvestigationPrivateMaterialExpiryReconciliation {
+  return {
+    disposition,
+    investigation,
+    affectedObligationIds: Object.freeze([]),
+    expiredTurnId: null,
+  };
+}
+
+function canonicalTimestampMs(value: string, code: string): number {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) {
+    throw new ReviewInvestigationDomainError(code);
+  }
+  return parsed;
 }
 
 function validateTurnBounds(

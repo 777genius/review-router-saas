@@ -4,13 +4,21 @@ import {
   type PrismaClient,
   type ReviewInvestigation,
 } from "@prisma/client";
-import type {
-  InvestigationOperatorStatusRepositoryPort,
-  InvestigationPromotionReportRepositoryPort,
-  InvestigationTelemetryRepositoryPort,
+import {
+  InvestigationPromotionTelemetryReadStatus,
+  maximumInvestigationPromotionTelemetrySamples,
+  type InvestigationEvaluationSignatureVerifierPort,
+  type InvestigationOperatorStatusRepositoryPort,
+  type InvestigationPromotionReportCommit,
+  type InvestigationPromotionReportUnitOfWorkPort,
+  type InvestigationPromotionTelemetryReadResult,
+  type InvestigationTelemetryRepositoryPort,
 } from "../../application/ports/operations-ports";
 import {
+  InvestigationTelemetryEvidenceCompleteness,
+  isFullyEvaluatedTelemetrySample,
   type InvestigationTelemetrySample,
+  type InvestigationTerminalOperationalTelemetrySample,
   validateTelemetrySample,
 } from "../../domain/investigation-telemetry";
 import {
@@ -20,12 +28,29 @@ import {
   InvestigationOperatorState,
   type InvestigationOperatorStatus,
 } from "../../domain/operator-status";
+import { canonicalInvestigationOperationsJson } from "../../domain/canonical-json";
+import {
+  InvestigationPromotionTrustError,
+  InvestigationPromotionTrustErrorCode,
+  assertInvestigationPromotionEvaluationEvidenceTrusted,
+  assertInvestigationPromotionTrustProfileValidAt,
+  normalizeInvestigationPromotionTrustProfile,
+  parseStoredInvestigationPromotionEvaluationAttestation,
+} from "../../domain/promotion-trust-profile";
+import { withInvestigationPromotionReleaseLock } from "./prisma-investigation-promotion-lock";
+
+type PromotionPersistence = Pick<
+  Prisma.TransactionClient,
+  | "reviewInvestigationTelemetrySample"
+  | "reviewInvestigationEvaluationAttestation"
+  | "reviewInvestigationPromotionReport"
+>;
 
 export class PrismaInvestigationOperations
   implements
     InvestigationTelemetryRepositoryPort,
     InvestigationOperatorStatusRepositoryPort,
-    InvestigationPromotionReportRepositoryPort
+    InvestigationPromotionReportUnitOfWorkPort
 {
   constructor(
     private readonly prisma: PrismaClient,
@@ -34,36 +59,54 @@ export class PrismaInvestigationOperations
       readonly supportedGatewayPolicyVersions: ReadonlySet<string>;
       readonly acceptedProducerReleaseIds: ReadonlySet<string>;
     },
+    private readonly promotionSignatures?: InvestigationEvaluationSignatureVerifierPort,
   ) {}
 
-  async append(sample: InvestigationTelemetrySample): Promise<void> {
+  async append(
+    sample: InvestigationTerminalOperationalTelemetrySample,
+  ): Promise<void> {
     validateTelemetrySample(sample);
-    const payloadCanonicalJson = canonicalJson(sample);
-    const payloadHash = sha256(payloadCanonicalJson);
-    const existing =
-      await this.prisma.reviewInvestigationTelemetrySample.findUnique({
-        where: { sampleId: sample.sampleId },
-        select: { payloadHash: true },
-      });
-    if (existing) {
-      if (existing.payloadHash !== payloadHash)
-        throw new Error("telemetry_sample_id_conflict");
-      return;
+    if (
+      sample.evidenceCompleteness !==
+      InvestigationTelemetryEvidenceCompleteness.TerminalOperational
+    ) {
+      throw new Error("telemetry_trusted_evaluation_required");
     }
+    const payloadCanonicalJson = canonicalInvestigationOperationsJson(sample);
+    const payloadHash = sha256(payloadCanonicalJson);
     try {
-      await this.prisma.reviewInvestigationTelemetrySample.create({
-        data: {
-          sampleId: sample.sampleId,
-          producerReleaseId: sample.producerReleaseId,
-          source: sample.source,
-          repositoryScopeHash: sample.repositoryScopeHash,
-          reviewRevisionHash: sample.reviewRevisionHash,
-          stableReviewUnitHash: sample.stableReviewUnitHash,
-          payload: JSON.parse(payloadCanonicalJson) as Prisma.InputJsonValue,
-          payloadHash,
-          collectedAt: new Date(sample.collectedAt),
+      await withInvestigationPromotionReleaseLock(
+        this.prisma,
+        sample.producerReleaseId,
+        async (transaction) => {
+          const existing =
+            await transaction.reviewInvestigationTelemetrySample.findUnique({
+              where: { sampleId: sample.sampleId },
+              select: { payloadHash: true },
+            });
+          if (existing) {
+            if (existing.payloadHash !== payloadHash) {
+              throw new Error("telemetry_sample_id_conflict");
+            }
+            return;
+          }
+          await transaction.reviewInvestigationTelemetrySample.create({
+            data: {
+              sampleId: sample.sampleId,
+              producerReleaseId: sample.producerReleaseId,
+              source: sample.source,
+              repositoryScopeHash: sample.repositoryScopeHash,
+              reviewRevisionHash: sample.reviewRevisionHash,
+              stableReviewUnitHash: sample.stableReviewUnitHash,
+              payload: JSON.parse(
+                payloadCanonicalJson,
+              ) as Prisma.InputJsonValue,
+              payloadHash,
+              collectedAt: new Date(sample.collectedAt),
+            },
+          });
         },
-      });
+      );
     } catch (error) {
       if (
         !(error instanceof Prisma.PrismaClientKnownRequestError) ||
@@ -80,45 +123,36 @@ export class PrismaInvestigationOperations
     }
   }
 
-  async listByProducerRelease(
-    producerReleaseId: string,
-  ): Promise<readonly InvestigationTelemetrySample[]> {
-    const rows = await this.prisma.reviewInvestigationTelemetrySample.findMany({
-      where: { producerReleaseId },
-      orderBy: { sampleId: "asc" },
-      select: { payload: true, payloadHash: true },
-    });
-    return rows.map((row) => {
-      const canonical = canonicalJson(row.payload);
-      if (sha256(canonical) !== row.payloadHash)
-        throw new Error("telemetry_payload_hash_mismatch");
-      const sample = row.payload as unknown as InvestigationTelemetrySample;
-      validateTelemetrySample(sample);
-      return Object.freeze({ ...sample });
-    });
+  async readPromotionSampleSet(
+    input: Parameters<
+      InvestigationTelemetryRepositoryPort["readPromotionSampleSet"]
+    >[0],
+  ): Promise<InvestigationPromotionTelemetryReadResult> {
+    return readPromotionSampleSet(this.prisma, this.promotionSignatures, input);
   }
 
-  async save(input: {
-    readonly reportCanonicalJson: string;
-    readonly reportHash: string;
-  }): Promise<void> {
-    if (sha256(input.reportCanonicalJson) !== input.reportHash)
-      throw new Error("promotion_report_hash_mismatch");
-    const body = JSON.parse(input.reportCanonicalJson) as {
-      producerReleaseId: string;
-      generatedAt: string;
-    };
-    await this.prisma.reviewInvestigationPromotionReport.upsert({
-      where: { reportHash: input.reportHash },
-      create: {
-        reportHash: input.reportHash,
-        producerReleaseId: body.producerReleaseId,
-        generatedAt: new Date(body.generatedAt),
-        canonicalJson: input.reportCanonicalJson,
-        body: body as Prisma.InputJsonValue,
+  async withPromotionSnapshot<Result>(
+    input: Parameters<
+      InvestigationTelemetryRepositoryPort["readPromotionSampleSet"]
+    >[0],
+    build: (
+      telemetry: InvestigationPromotionTelemetryReadResult,
+    ) => Promise<InvestigationPromotionReportCommit<Result>>,
+  ): Promise<Result> {
+    return withInvestigationPromotionReleaseLock(
+      this.prisma,
+      input.producerReleaseId,
+      async (transaction) => {
+        const telemetry = await readPromotionSampleSet(
+          transaction,
+          this.promotionSignatures,
+          input,
+        );
+        const commit = await build(telemetry);
+        await savePromotionReport(transaction, commit, input.producerReleaseId);
+        return commit.result;
       },
-      update: {},
-    });
+    );
   }
 
   async find(
@@ -153,7 +187,7 @@ export class PrismaInvestigationOperations
       repositoryScopeHash:
         investigation.authorizationScopeHash ??
         sha256(
-          canonicalJson({
+          canonicalInvestigationOperationsJson({
             workspaceId: investigation.workspaceId,
             repositoryConnectionId: investigation.repositoryConnectionId,
             scmRepositoryIdentityId: investigation.scmRepositoryIdentityId,
@@ -177,6 +211,187 @@ export class PrismaInvestigationOperations
       updatedAt: investigation.updatedAt.toISOString(),
     });
   }
+}
+
+async function readPromotionSampleSet(
+  persistence: PromotionPersistence,
+  signatures: InvestigationEvaluationSignatureVerifierPort | undefined,
+  input: Parameters<
+    InvestigationTelemetryRepositoryPort["readPromotionSampleSet"]
+  >[0],
+): Promise<InvestigationPromotionTelemetryReadResult> {
+  const trustProfile = normalizeInvestigationPromotionTrustProfile(
+    input.trustProfile,
+  );
+  assertInvestigationPromotionTrustProfileValidAt({
+    profile: trustProfile,
+    validAt: input.validAt,
+  });
+  const rows = await persistence.reviewInvestigationTelemetrySample.findMany({
+    where: { producerReleaseId: input.producerReleaseId },
+    orderBy: { sampleId: "asc" },
+    take: maximumInvestigationPromotionTelemetrySamples + 1,
+    select: {
+      sampleId: true,
+      producerReleaseId: true,
+      payload: true,
+      payloadHash: true,
+    },
+  });
+  if (rows.length > maximumInvestigationPromotionTelemetrySamples) {
+    return { status: InvestigationPromotionTelemetryReadStatus.TooLarge };
+  }
+  const samples = rows.map((row) => {
+    const canonical = canonicalInvestigationOperationsJson(row.payload);
+    if (sha256(canonical) !== row.payloadHash) {
+      throw new Error("telemetry_payload_hash_mismatch");
+    }
+    const sample = row.payload as unknown as InvestigationTelemetrySample;
+    validateTelemetrySample(sample);
+    if (
+      sample.sampleId !== row.sampleId ||
+      row.producerReleaseId !== input.producerReleaseId ||
+      sample.producerReleaseId !== row.producerReleaseId
+    ) {
+      throw new Error("telemetry_sample_identity_mismatch");
+    }
+    return Object.freeze({ ...sample });
+  });
+  const fullyEvaluated = samples.filter(isFullyEvaluatedTelemetrySample);
+  if (fullyEvaluated.length > 0) {
+    if (signatures === undefined) {
+      throw promotionAttestationInvalid();
+    }
+    const attestations =
+      await persistence.reviewInvestigationEvaluationAttestation.findMany({
+        where: {
+          derivedSampleId: {
+            in: fullyEvaluated.map((sample) => sample.sampleId),
+          },
+        },
+        orderBy: { derivedSampleId: "asc" },
+        take: fullyEvaluated.length + 1,
+        select: {
+          attestationId: true,
+          attestationVersion: true,
+          derivedSampleId: true,
+          attestationHash: true,
+          envelopeHash: true,
+          signingKeyId: true,
+          signatureAlgorithm: true,
+          signatureValue: true,
+          terminalSampleId: true,
+          terminalSamplePayloadHash: true,
+          investigationId: true,
+          certificateId: true,
+          certificateHash: true,
+          producerReleaseId: true,
+          corpusVersion: true,
+          evaluationPolicyVersion: true,
+          payloadCanonicalJson: true,
+          payload: true,
+        },
+      });
+    if (attestations.length !== fullyEvaluated.length) {
+      throw promotionAttestationInvalid();
+    }
+    const bySampleId = new Map(
+      attestations.map((attestation) => [
+        attestation.derivedSampleId,
+        attestation,
+      ]),
+    );
+    if (bySampleId.size !== attestations.length) {
+      throw promotionAttestationInvalid();
+    }
+    for (const sample of fullyEvaluated) {
+      const attestation = bySampleId.get(sample.sampleId);
+      if (attestation === undefined) {
+        throw promotionAttestationInvalid();
+      }
+      const parsed =
+        parseStoredInvestigationPromotionEvaluationAttestation(attestation);
+      if (
+        canonicalInvestigationOperationsJson(attestation.payload) !==
+          parsed.payloadCanonicalJson ||
+        sha256(parsed.payloadCanonicalJson) !== attestation.attestationHash ||
+        sha256(parsed.envelopeCanonicalJson) !== attestation.envelopeHash
+      ) {
+        throw promotionAttestationInvalid();
+      }
+      let signatureVerified: boolean;
+      try {
+        signatureVerified = await signatures.verify({
+          algorithm: parsed.evidence.signatureAlgorithm,
+          keyId: parsed.evidence.signingKeyId,
+          payloadCanonicalJson: parsed.payloadCanonicalJson,
+          signature: attestation.signatureValue,
+          issuedAt: parsed.evidence.issuedAt,
+          now: new Date(input.validAt),
+        });
+      } catch {
+        signatureVerified = false;
+      }
+      if (!signatureVerified) {
+        throw promotionAttestationInvalid();
+      }
+      assertInvestigationPromotionEvaluationEvidenceTrusted({
+        sample,
+        evidence: parsed.evidence,
+        trustProfile,
+        validAt: input.validAt,
+      });
+    }
+  }
+  return {
+    status: InvestigationPromotionTelemetryReadStatus.Complete,
+    samples: Object.freeze(samples),
+  };
+}
+
+async function savePromotionReport(
+  persistence: PromotionPersistence,
+  input: {
+    readonly reportCanonicalJson: string;
+    readonly reportHash: string;
+  },
+  expectedProducerReleaseId?: string,
+): Promise<void> {
+  if (sha256(input.reportCanonicalJson) !== input.reportHash) {
+    throw new Error("promotion_report_hash_mismatch");
+  }
+  const body = JSON.parse(input.reportCanonicalJson) as {
+    producerReleaseId?: unknown;
+    generatedAt?: unknown;
+  };
+  if (
+    typeof body.producerReleaseId !== "string" ||
+    (expectedProducerReleaseId !== undefined &&
+      body.producerReleaseId !== expectedProducerReleaseId) ||
+    typeof body.generatedAt !== "string" ||
+    !body.generatedAt.endsWith("Z") ||
+    !Number.isFinite(Date.parse(body.generatedAt)) ||
+    new Date(body.generatedAt).toISOString() !== body.generatedAt
+  ) {
+    throw new Error("promotion_report_identity_invalid");
+  }
+  await persistence.reviewInvestigationPromotionReport.upsert({
+    where: { reportHash: input.reportHash },
+    create: {
+      reportHash: input.reportHash,
+      producerReleaseId: body.producerReleaseId,
+      generatedAt: new Date(body.generatedAt),
+      canonicalJson: input.reportCanonicalJson,
+      body: body as Prisma.InputJsonValue,
+    },
+    update: {},
+  });
+}
+
+function promotionAttestationInvalid(): InvestigationPromotionTrustError {
+  return new InvestigationPromotionTrustError(
+    InvestigationPromotionTrustErrorCode.EvaluationAttestationInvalid,
+  );
 }
 
 function operatorState(value: string): InvestigationOperatorState {
@@ -254,17 +469,4 @@ function safeNumber(value: bigint, field: string): number {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "string")
-    return JSON.stringify(value);
-  if (typeof value === "number") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value !== "object") throw new Error("canonical_value_invalid");
-  const record = value as Readonly<Record<string, unknown>>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
 }

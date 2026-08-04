@@ -4,20 +4,27 @@ import {
   assertInvestigationScope,
   type ReviewInvestigationRevision,
   type ReviewInvestigationScope,
+  type SeedInvestigationObligation,
 } from "../../domain/coverage-contract";
 import {
-  createInvestigationObligation,
+  VersionedCoverageSeedPolicy,
+  type CoverageSeedPolicy,
+} from "../../domain/coverage-policies";
+import {
   satisfyInvestigationObligation,
+  type InvestigationEvidenceReceipt,
   type InvestigationObligation,
 } from "../../domain/investigation-obligation";
+import type { ReviewInvestigationPolicy } from "../../domain/investigation-policy";
 import {
   createReplayedReviewInvestigation,
   type ReviewInvestigation,
 } from "../../domain/review-investigation";
+import { isVerifiedCleanReplaySource } from "../../domain/review-investigation-replay-policy";
 import {
   InvestigationObligationKind,
   InvestigationObligationState,
-  ReviewInvestigationState,
+  type ReviewInvestigationRuntimeProfile,
 } from "../../domain/review-investigation-types";
 import {
   toInvestigationReadModel,
@@ -41,6 +48,11 @@ import {
   restoreCommandOrThrow,
   withCurrentDossierDigest,
 } from "./investigation-use-case-support";
+import {
+  prepareInvestigationSeed,
+  prepareInvestigationSeedPrivateMaterials,
+} from "./investigation-seed-support";
+import type { PrepareInvestigationSearchQueryPrivateMaterial } from "./prepare-investigation-search-query-private-material";
 
 export type ReplayReviewInvestigationCommand = Readonly<{
   commandId: string;
@@ -50,6 +62,14 @@ export type ReplayReviewInvestigationCommand = Readonly<{
   targetRevision: ReviewInvestigationRevision;
   targetExecutionId: string;
   targetWorkSlotId: string;
+  targetStableReviewUnitKey: string;
+  targetProviderVoteLaneId: string;
+  targetProviderStrategyId: string;
+  targetRuntimeProfile: ReviewInvestigationRuntimeProfile;
+  targetContract: ReviewInvestigation["contract"];
+  targetPolicy: ReviewInvestigationPolicy;
+  targetSeedObligations: readonly SeedInvestigationObligation[];
+  targetInitialReceipts: readonly InvestigationEvidenceReceipt[];
   replayProofs: readonly Readonly<{
     obligationId: string;
     replayProofId: string;
@@ -63,6 +83,8 @@ export class ReplayReviewInvestigation {
     private readonly replay: InvestigationReceiptReplayPort,
     private readonly digest: InvestigationDigestPort,
     private readonly clock: InvestigationClockPort,
+    private readonly coverageSeedPolicy: CoverageSeedPolicy = new VersionedCoverageSeedPolicy(),
+    private readonly privateMaterial?: PrepareInvestigationSearchQueryPrivateMaterial,
   ) {}
 
   async execute(
@@ -81,7 +103,6 @@ export class ReplayReviewInvestigation {
     assertInvestigationScope(command.targetScope);
     assertInvestigationRevision(command.targetRevision);
 
-    const source = await this.requireReplayableSource(command);
     await requireCurrentExecution({
       authority: this.authority,
       investigation: {
@@ -89,19 +110,33 @@ export class ReplayReviewInvestigation {
         revision: command.targetRevision,
         executionId: command.targetExecutionId,
         workSlotId: command.targetWorkSlotId,
-        providerVoteLaneId: source.providerVoteLaneId,
+        providerVoteLaneId: command.targetProviderVoteLaneId,
       },
     });
-    const obligations = await this.replayObligations(source, command);
+    const source = await this.requireReplayableSource(command);
+    const seed = await prepareInvestigationSeed({
+      contract: command.targetContract,
+      revision: command.targetRevision,
+      stableReviewUnitKey: command.targetStableReviewUnitKey,
+      seedObligations: command.targetSeedObligations,
+      initialReceipts: command.targetInitialReceipts,
+      coverageSeedPolicy: this.coverageSeedPolicy,
+      digest: this.digest,
+    });
+    const obligations = await this.replayObligations(
+      source,
+      command,
+      seed.obligations,
+    );
     const naturalIdentityHash = await digestCanonical(this.digest, {
       scope: { ...command.targetScope },
       revision: { ...command.targetRevision },
       executionId: command.targetExecutionId,
       workSlotId: command.targetWorkSlotId,
-      stableReviewUnitKey: source.stableReviewUnitKey,
-      providerVoteLaneId: source.providerVoteLaneId,
-      coverageContractVersion: source.contract.coverageContractVersion,
-      runtimeProfileVersion: source.contract.runtimeProfileVersion,
+      stableReviewUnitKey: command.targetStableReviewUnitKey,
+      providerVoteLaneId: command.targetProviderVoteLaneId,
+      coverageContractVersion: command.targetContract.coverageContractVersion,
+      runtimeProfileVersion: command.targetContract.runtimeProfileVersion,
     });
     const now = this.clock.now().toISOString();
     let target = createReplayedReviewInvestigation({
@@ -111,18 +146,23 @@ export class ReplayReviewInvestigation {
       revision: { ...command.targetRevision },
       executionId: command.targetExecutionId,
       workSlotId: command.targetWorkSlotId,
-      stableReviewUnitKey: source.stableReviewUnitKey,
-      providerVoteLaneId: source.providerVoteLaneId,
-      providerStrategyId: source.providerStrategyId,
-      runtimeProfile: source.runtimeProfile,
-      contract: { ...source.contract },
-      policy: { ...source.policy },
+      stableReviewUnitKey: command.targetStableReviewUnitKey,
+      providerVoteLaneId: command.targetProviderVoteLaneId,
+      providerStrategyId: command.targetProviderStrategyId,
+      runtimeProfile: command.targetRuntimeProfile,
+      contract: { ...command.targetContract },
+      policy: { ...command.targetPolicy },
       obligations,
       dossierDigest: "0".repeat(64),
       createdAt: now,
       updatedAt: now,
     });
     target = await withCurrentDossierDigest(this.digest, target);
+    const privateMaterials = await prepareInvestigationSeedPrivateMaterials({
+      investigation: target,
+      privateQueries: seed.privateQueries,
+      preparer: this.privateMaterial,
+    });
     const committed = await commitOrThrow({
       store: this.store,
       investigation: target,
@@ -130,6 +170,7 @@ export class ReplayReviewInvestigation {
       commandId: command.commandId,
       commandHash,
       transition: { kind: InvestigationStoreTransitionKind.Opened },
+      privateMaterials,
     });
     return toInvestigationReadModel(committed);
   }
@@ -141,14 +182,16 @@ export class ReplayReviewInvestigation {
     if (
       source === null ||
       source.certificate === null ||
+      !isVerifiedCleanReplaySource(source, this.clock.now().getTime()) ||
       source.certificate.certificateHash !== command.sourceCertificateHash ||
-      Date.parse(source.certificate.expiresAt) <= this.clock.now().getTime() ||
-      ![
-        ReviewInvestigationState.Concluded,
-        ReviewInvestigationState.Inconclusive,
-      ].includes(source.state) ||
       source.revision.reviewRevisionHash ===
         command.targetRevision.reviewRevisionHash ||
+      source.stableReviewUnitKey !== command.targetStableReviewUnitKey ||
+      source.providerVoteLaneId !== command.targetProviderVoteLaneId ||
+      source.runtimeProfile !== command.targetRuntimeProfile ||
+      canonicalJson(source.contract) !==
+        canonicalJson(command.targetContract) ||
+      canonicalJson(source.policy) !== canonicalJson(command.targetPolicy) ||
       source.scope.workspaceId !== command.targetScope.workspaceId ||
       source.scope.repositoryConnectionId !==
         command.targetScope.repositoryConnectionId ||
@@ -158,7 +201,23 @@ export class ReplayReviewInvestigation {
         command.targetScope.pullRequestNumber ||
       source.scope.trustDomain !== command.targetScope.trustDomain ||
       source.scope.authorizationScopeHash !==
-        command.targetScope.authorizationScopeHash
+        command.targetScope.authorizationScopeHash ||
+      source.certificate.reviewRevisionHash !==
+        source.revision.reviewRevisionHash ||
+      source.certificate.stableReviewUnitKey !== source.stableReviewUnitKey ||
+      source.certificate.providerVoteLaneId !== source.providerVoteLaneId ||
+      source.certificate.producerReleaseId !==
+        command.targetContract.producerReleaseId ||
+      source.certificate.coverageContractVersion !==
+        command.targetContract.coverageContractVersion ||
+      source.certificate.expansionRulesVersion !==
+        command.targetContract.expansionRulesVersion ||
+      source.certificate.criticPolicyVersion !==
+        command.targetContract.criticPolicyVersion ||
+      source.certificate.gatewayPolicyVersion !==
+        command.targetContract.gatewayPolicyVersion ||
+      source.certificate.runtimeProfileVersion !==
+        command.targetContract.runtimeProfileVersion
     ) {
       throw new Error("investigation_replay_source_invalid");
     }
@@ -168,54 +227,59 @@ export class ReplayReviewInvestigation {
   private async replayObligations(
     source: ReviewInvestigation,
     command: ReplayReviewInvestigationCommand,
+    targetObligations: readonly InvestigationObligation[],
   ): Promise<readonly InvestigationObligation[]> {
-    const replayed: InvestigationObligation[] = [];
+    const sourceByObligationId = new Map(
+      source.obligations.map((obligation) => [
+        obligation.obligationId,
+        obligation,
+      ]),
+    );
     const proofByObligationId = new Map<string, string>();
     for (const proof of command.replayProofs) {
       if (proofByObligationId.has(proof.obligationId)) {
         throw new Error("investigation_replay_proof_duplicate");
       }
+      const sourceObligation = sourceByObligationId.get(proof.obligationId);
+      if (!sourceObligation || !isReceiptReplayable(sourceObligation)) {
+        throw new Error("investigation_replay_proof_obligation_invalid");
+      }
       proofByObligationId.set(proof.obligationId, proof.replayProofId);
     }
-    for (const obligation of source.obligations) {
-      let target = createInvestigationObligation({
-        obligationId: obligation.obligationId,
-        identity: {
-          coverageContractVersion: obligation.coverageContractVersion,
-          stableReviewUnitKey: obligation.stableReviewUnitKey,
-          kind: obligation.kind,
-          canonicalSubject: obligation.canonicalSubject,
-          canonicalRequirement: obligation.canonicalRequirement,
-        },
-        riskPriority: obligation.riskPriority,
-        origin: obligation.origin,
-      });
+    const replayed: InvestigationObligation[] = [];
+    for (let target of targetObligations) {
+      const sourceObligation = sourceByObligationId.get(target.obligationId);
       if (
-        obligation.kind !== InvestigationObligationKind.ContextCritic &&
-        obligation.state === InvestigationObligationState.Satisfied &&
-        obligation.receipt !== null &&
-        obligation.receipt.acceptedAttestationId !== null &&
-        obligation.receipt.acceptedAttestationHash !== null &&
-        obligation.receipt.operationReceiptIds.length > 0 &&
-        proofByObligationId.has(obligation.obligationId)
+        sourceObligation &&
+        !hasSameStableIdentity(sourceObligation, target)
+      ) {
+        throw new Error("investigation_replay_obligation_identity_mismatch");
+      }
+      if (
+        target.state === InvestigationObligationState.Open &&
+        sourceObligation &&
+        isReceiptReplayable(sourceObligation) &&
+        proofByObligationId.has(target.obligationId)
       ) {
         const result = await this.replay.replay({
           sourceInvestigationId: source.investigationId,
           sourceCertificateHash: command.sourceCertificateHash,
-          replayProofId: proofByObligationId.get(obligation.obligationId)!,
+          replayProofId: proofByObligationId.get(target.obligationId)!,
           targetExecutionId: command.targetExecutionId,
           targetWorkSlotId: command.targetWorkSlotId,
-          obligation,
-          sourceReceipt: obligation.receipt,
+          targetProviderVoteLaneId: command.targetProviderVoteLaneId,
+          producerReleaseId: command.targetContract.producerReleaseId,
+          obligation: target,
+          sourceReceipt: sourceObligation.receipt,
           targetRevision: command.targetRevision,
-          gatewayPolicyVersion: source.contract.gatewayPolicyVersion,
+          gatewayPolicyVersion: command.targetContract.gatewayPolicyVersion,
         });
         if (result.verdict === InvestigationReceiptReplayVerdict.Matched) {
           target = satisfyInvestigationObligation({
             obligation: target,
             receipt: result.targetReceipt,
             reviewRevisionHash: command.targetRevision.reviewRevisionHash,
-            gatewayPolicyVersion: source.contract.gatewayPolicyVersion,
+            gatewayPolicyVersion: command.targetContract.gatewayPolicyVersion,
           });
         }
       }
@@ -223,4 +287,32 @@ export class ReplayReviewInvestigation {
     }
     return replayed;
   }
+}
+
+function isReceiptReplayable(
+  obligation: InvestigationObligation,
+): obligation is InvestigationObligation & {
+  readonly receipt: InvestigationEvidenceReceipt;
+} {
+  return (
+    obligation.kind !== InvestigationObligationKind.ContextCritic &&
+    obligation.state === InvestigationObligationState.Satisfied &&
+    obligation.receipt !== null &&
+    obligation.receipt.acceptedAttestationId !== null &&
+    obligation.receipt.acceptedAttestationHash !== null &&
+    obligation.receipt.operationReceiptIds.length > 0
+  );
+}
+
+function hasSameStableIdentity(
+  source: InvestigationObligation,
+  target: InvestigationObligation,
+): boolean {
+  return (
+    source.coverageContractVersion === target.coverageContractVersion &&
+    source.stableReviewUnitKey === target.stableReviewUnitKey &&
+    source.kind === target.kind &&
+    source.canonicalSubject === target.canonicalSubject &&
+    source.canonicalRequirement === target.canonicalRequirement
+  );
 }

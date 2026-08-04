@@ -34,7 +34,7 @@ export interface InvestigationPrivateMaterialStorePort {
 }
 
 export interface InvestigationPrunerPort {
-  pruneExpiredPrivateMaterial(input: {
+  reconcileExpiredPrivateMaterial(input: {
     readonly expiresAtOrBefore: string;
     readonly limit: number;
   }): Promise<number>;

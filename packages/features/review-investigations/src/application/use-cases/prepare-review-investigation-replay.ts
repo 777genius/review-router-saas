@@ -5,10 +5,10 @@ import type {
 } from "../../domain/coverage-contract";
 import { canonicalJson } from "../../domain/canonicalization";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
+import { isVerifiedCleanReplaySource } from "../../domain/review-investigation-replay-policy";
 import {
   InvestigationObligationKind,
   InvestigationObligationState,
-  ReviewInvestigationState,
 } from "../../domain/review-investigation-types";
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
@@ -101,20 +101,16 @@ export class PrepareReviewInvestigationReplay {
       readonly targetContract: ReviewInvestigationContract;
     },
   ): boolean {
+    const certificate = candidate.certificate;
     return (
-      candidate.certificate !== null &&
-      Date.parse(candidate.certificate.expiresAt) >
-        this.clock.now().getTime() &&
-      candidate.certificate.producerReleaseId === command.producerReleaseId &&
+      certificate !== null &&
+      isVerifiedCleanReplaySource(candidate, this.clock.now().getTime()) &&
+      certificate.producerReleaseId === command.producerReleaseId &&
       candidate.contract.producerReleaseId === command.producerReleaseId &&
       canonicalJson(candidate.contract) ===
         canonicalJson(command.targetContract) &&
       candidate.revision.reviewRevisionHash !==
-        command.targetRevision.reviewRevisionHash &&
-      [
-        ReviewInvestigationState.Concluded,
-        ReviewInvestigationState.Inconclusive,
-      ].includes(candidate.state)
+        command.targetRevision.reviewRevisionHash
     );
   }
 

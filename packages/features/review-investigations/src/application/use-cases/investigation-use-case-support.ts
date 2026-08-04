@@ -6,6 +6,7 @@ import {
   investigationDossierCanonicalValue,
   type ReviewInvestigation,
 } from "../../domain/review-investigation";
+import type { EncryptedInvestigationPrivateMaterial } from "../../domain/investigation-private-material";
 import {
   InvestigationExecutionAuthorityVerdict,
   type InvestigationExecutionAuthorityPort,
@@ -57,6 +58,7 @@ export async function commitOrThrow(input: {
   readonly commandId: string;
   readonly commandHash: string;
   readonly transition: InvestigationStoreTransition;
+  readonly privateMaterials?: readonly EncryptedInvestigationPrivateMaterial[];
 }): Promise<ReviewInvestigation> {
   const result = await input.store.commit(input);
   switch (result.status) {

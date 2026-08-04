@@ -26,6 +26,9 @@ import {
   parseHandoffManifest,
   PUBLIC_CONTEXT_GATEWAY_RELEASE_METADATA,
   PUBLIC_GENERATED_DIRECTORY,
+  REVIEW_INVESTIGATION_RELEASE_CAPABILITY,
+  REVIEW_INVESTIGATION_RELEASE_COVERAGE_PROFILE_HASH,
+  REVIEW_INVESTIGATION_RELEASE_POLICY_HASH,
   sha256Digest,
 } from "./lib/review-action-v2-release-manifests.mjs";
 
@@ -118,9 +121,7 @@ describe("public Review Action v2 contract handoff", () => {
         actionRepo: fixture.actionRepo,
         sourceDirectory,
       }),
-    ).toThrow(
-      "release manifest does not match committed source, handoff, or runtime bundle",
-    );
+    ).toThrow("cannot claim investigation capability");
 
     expect(
       generateReleaseManifest({
@@ -143,6 +144,67 @@ describe("public Review Action v2 contract handoff", () => {
         output: releasePath,
       }),
     ).toThrow("refusing to overwrite a different release manifest");
+  });
+
+  it("generates and verifies an immutable investigation registration candidate", async () => {
+    const fixture = createRepositories();
+    await exportFixture(fixture, { write: true });
+    write(join(fixture.actionRepo, "dist/index.js"), "fresh bundle\n");
+    write(
+      join(fixture.actionRepo, "dist/context-gateway.js"),
+      "fresh context gateway\n",
+    );
+    writeContextGatewayReleaseMetadata(fixture.actionRepo, true);
+    git(fixture.actionRepo, [
+      "add",
+      PUBLIC_GENERATED_DIRECTORY,
+      "dist/index.js",
+      "dist/context-gateway.js",
+      PUBLIC_CONTEXT_GATEWAY_RELEASE_METADATA,
+    ]);
+    git(fixture.actionRepo, [
+      "commit",
+      "-m",
+      "feat: add investigation release",
+    ]);
+    const actionCommit = head(fixture.actionRepo);
+    const releasePath = join(fixture.root, "investigation-release.json");
+
+    const release = generateReleaseManifest({
+      actionRepo: fixture.actionRepo,
+      targetBranch,
+      expectedHead: actionCommit,
+      runtimeEntrypointPath: "dist/index.js",
+      contextGatewayEntrypointPath: "dist/context-gateway.js",
+      output: releasePath,
+    });
+    expect(release.manifest).toMatchObject({
+      releaseManifestVersion: 3,
+      contextGatewayPolicyVersion: "context-gateway-v4",
+      supportedContextGatewayPolicyVersions: [
+        "context-gateway-v3",
+        "context-gateway-v4",
+      ],
+      reviewInvestigationCapability: REVIEW_INVESTIGATION_RELEASE_CAPABILITY,
+      reviewInvestigationCoverageProfileHash:
+        REVIEW_INVESTIGATION_RELEASE_COVERAGE_PROFILE_HASH,
+      reviewInvestigationPolicyHash: REVIEW_INVESTIGATION_RELEASE_POLICY_HASH,
+    });
+    expect(
+      checkReleaseManifest({
+        manifest: releasePath,
+        saasRepo: fixture.saasRepo,
+        actionRepo: fixture.actionRepo,
+        sourceDirectory,
+      }),
+    ).toMatchObject({
+      actionCommitSha: actionCommit,
+      reviewInvestigationProfile: {
+        capability: REVIEW_INVESTIGATION_RELEASE_CAPABILITY,
+        coverageProfileHash: REVIEW_INVESTIGATION_RELEASE_COVERAGE_PROFILE_HASH,
+        policyHash: REVIEW_INVESTIGATION_RELEASE_POLICY_HASH,
+      },
+    });
   });
 
   it("refuses main and stale or abbreviated commit fences", async () => {
@@ -315,7 +377,10 @@ function createRepositories(): Repositories {
   };
 }
 
-function writeContextGatewayReleaseMetadata(actionRepo: string): void {
+function writeContextGatewayReleaseMetadata(
+  actionRepo: string,
+  investigation = false,
+): void {
   const entrypointPath = "dist/context-gateway.js";
   write(
     join(actionRepo, PUBLIC_CONTEXT_GATEWAY_RELEASE_METADATA),
@@ -325,8 +390,24 @@ function writeContextGatewayReleaseMetadata(actionRepo: string): void {
         readFileSync(join(actionRepo, entrypointPath)),
       ),
       contextGatewayEntrypointPath: entrypointPath,
-      contextGatewayPolicyVersion: "context-gateway-v3",
-      metadataVersion: 1,
+      contextGatewayPolicyVersion: investigation
+        ? "context-gateway-v4"
+        : "context-gateway-v3",
+      metadataVersion: investigation ? 2 : 1,
+      ...(investigation
+        ? {
+            reviewInvestigationCapability:
+              REVIEW_INVESTIGATION_RELEASE_CAPABILITY,
+            reviewInvestigationCoverageProfileHash:
+              REVIEW_INVESTIGATION_RELEASE_COVERAGE_PROFILE_HASH,
+            reviewInvestigationPolicyHash:
+              REVIEW_INVESTIGATION_RELEASE_POLICY_HASH,
+            supportedContextGatewayPolicyVersions: [
+              "context-gateway-v3",
+              "context-gateway-v4",
+            ],
+          }
+        : {}),
     }),
   );
 }

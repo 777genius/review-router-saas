@@ -36,6 +36,13 @@ metadata, hashes, typed obligations, encrypted private replay material,
 findings, usage, and attestation references. Raw repository contents and
 credentials do not enter immutable control-plane payloads.
 
+The runner host, pinned Action release, and selected provider CLI executable
+are the trusted computing base for local execution. The model and repository
+content are untrusted. Gateway authentication prevents model-originated
+transcript forgery, but it is not a sandbox against a malicious provider binary
+that owns its process environment. A future credential-isolated broker is a
+separate security boundary and ADR, not an implicit property of this design.
+
 ## Published Language
 
 The initial Published Language freezes explicit enums for:
@@ -58,9 +65,13 @@ dependency graph, cohort selectors, emergency override, sanitized telemetry,
 operator read model, and immutable promotion report. All flags default to
 disabled.
 
-Emergency disable wins before authorization, turn planning, certificate
-issuance, evidence acceptance, finalization, and SCM mutation. Rollback disables
-behavior without destructively reverting additive protocol or database state.
+Emergency disable wins before investigation admission, turn capability
+issuance, certificate issuance, evidence acceptance, finalization, and SCM
+mutation. It is read from shared Review Run Control state at each boundary, so
+already-running API and worker processes observe it without a deploy. Generic
+review authorization stays independent so rollback cannot disable the legacy
+reviewer. Rollback disables behavior without destructively reverting additive
+protocol or database state.
 
 ## Consequences
 
@@ -90,3 +101,18 @@ Tradeoffs:
 5. Production effects require an allowlisted cohort, promotion report, tested
    kill switch, and no unresolved severity-1 rollout finding.
 6. Agent execution and smoke tests use only disposable sandbox repositories.
+
+## Paired implementation record
+
+Recorded 2026-08-03:
+
+- SaaS/control plane: `777genius/review-router-saas`, branch
+  `feat/review-investigation-foundation`, baseline `f2283b4a`;
+- public Action: `777genius/review-router`, branch
+  `feat/review-investigation-protocol`, baseline `fb92cf4`.
+
+These SHAs identify the reviewed development pair, not an approved release.
+Neither branch may advertise or enable production investigation effects until a
+registered Action release, matching server deployment, disposable hosted and
+self-hosted E2E, promotion report, and owner approval satisfy the rollout
+runbook. Server capability must merge dormant before the Action advertises it.

@@ -3,10 +3,18 @@ import {
   CommitAttestedInvestigationTurn,
   CommitInvestigationTurn,
   ConcludeReviewInvestigation,
+  ContextCriticDecision,
   InvestigationExecutionAuthorityVerdict,
-  InvestigationReceiptKind,
+  InvestigationOperationKind,
+  InvestigationOperationRevision,
+  InvestigationFileContentKind,
+  InvestigationEvidenceRequirementKind,
+  InvestigationFindingSeverity,
+  InvestigationTurnProviderKind,
+  HydrateInvestigationTurnObligations,
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
+  PrepareInvestigationSearchQueryPrivateMaterial,
   PrepareReviewInvestigationReplay,
   ReplayReviewInvestigation,
   RestoreReviewInvestigation,
@@ -14,10 +22,20 @@ import {
   ReviewInvestigationConclusion,
   ReviewInvestigationNextActionKind,
   ReviewInvestigationRuntimeProfile,
+  ReviewInvestigationDomainError,
+  ReviewInvestigationState,
+  ReviewInvestigationTurnPurpose,
+  assertSupportedReviewInvestigationCoverageProfile,
   canonicalInvestigationTurnObservation,
+  maximumSemanticRiskPriority,
+  obligationEvidenceRequirementVersionV2,
+  parseInvestigationEvidenceRequirement,
+  reviewInvestigationCoverageProfileV2,
   parseInvestigationTurnObservation,
   type InvestigationClockPort,
   type InvestigationExecutionAuthorityPort,
+  type InvestigationPrivateMaterialCipherPort,
+  type InvestigationPrivateMaterialStorePort,
   type InvestigationStorePort,
   type InvestigationReceiptReplayPort,
   type InvestigationReplayPreparationPort,
@@ -29,30 +47,47 @@ import {
   type ReviewInvestigationContract,
   type ReviewInvestigationPolicy,
   type ReviewInvestigationReadModel,
-  type SeedInvestigationObligation,
   type InvestigationEvidenceReceipt,
 } from "@reviewrouter/features-review-investigations";
 import {
+  InvestigationShadowEvidenceConclusion,
+  InvestigationShadowEvidenceCriticDecision,
   ProviderExecutionProfile,
   ReviewFindingSeverity,
+  ReviewProviderKind as EvidenceProviderKind,
+  ReviewTaskKind as EvidenceTaskKind,
+  ReviewTrustDomain as EvidenceTrustDomain,
   normalizeProviderInvocationManifest,
+  serializeProviderInvocationManifestCanonicalWireJson,
   reviewEvidencePayloadVersion,
   prepareReviewObservationPayload,
+  type InvestigationShadowEvidenceProjectionSource,
+  type ProjectInvestigationShadowEvidence,
 } from "@reviewrouter/features-review-evidence";
 import { NodeSha256InvestigationDigest } from "@reviewrouter/features-review-investigations/composition";
 import {
   ContextGatewayV4OperationKind,
   ContextGatewayV4OutcomeKind,
+  ContextProviderKind,
+  GatewaySessionState,
   contextGatewayV4PolicyVersion,
   type ContextGatewayV4Manifest,
 } from "@reviewrouter/features-review-context-attestation";
 import type { ContextAttestationStorePort } from "@reviewrouter/features-review-context-attestation";
 import {
+  ReviewExecutionProviderKind,
   ReviewExecutionState,
+  ReviewInvocationLeasePurpose,
   ReviewInvocationLeaseState,
+  ReviewTaskKind as ExecutionTaskKind,
+  ReviewWorkSlotState,
   type ReviewExecutionQueryPort,
   type ReviewExecutionSnapshot,
 } from "@reviewrouter/features-review-executions";
+import {
+  InvestigationRolloutCapability,
+  InvestigationRolloutProvider,
+} from "@reviewrouter/features-review-investigation-operations";
 import {
   ReviewRunAuthorizationState,
   ReviewRunAuthorizationTokenResolutionStatus,
@@ -60,6 +95,9 @@ import {
   type ReviewRunAuthorization,
   type ReviewRunAuthorizationQueryPort,
   type ReviewRunAuthorizationTokenResolution,
+  type ProducerReleaseQueryPort,
+  ProducerReleaseState,
+  reviewInvestigationCapabilityV1,
 } from "@reviewrouter/features-review-run-control";
 import {
   ReviewActionV2RouteFailure,
@@ -97,6 +135,11 @@ import type {
   VerifiedReviewActionV2InvestigationTurnCapability,
   VerifiedReviewActionV2LeaseCapability,
 } from "./review-action-v2-execution-evidence-capabilities.js";
+import type { ReviewInvestigationRolloutGuardPort } from "./review-investigation-rollout-guard.js";
+import {
+  parseReviewInvestigationSeedEnvelope,
+  type ReviewInvestigationSeedEnvelope,
+} from "./review-investigation-seed-envelope.js";
 
 export type ReviewInvestigationUseCases = Readonly<{
   open: OpenReviewInvestigation;
@@ -109,16 +152,25 @@ export type ReviewInvestigationUseCases = Readonly<{
   prepareReplay: (
     preparation: InvestigationReplayPreparationPort,
   ) => PrepareReviewInvestigationReplay;
+  hydrateTurnObligations: HydrateInvestigationTurnObligations | null;
 }>;
+
+export interface ReviewInvestigationTerminalTelemetryPort {
+  recordConcluded(input: { readonly investigationId: string }): Promise<void>;
+}
 
 export type ReviewActionV2InvestigationHandlerDependencies = Readonly<{
   authorizations: ReviewActionV2AuthorizationResolverPort;
   authorizationQueries: ReviewRunAuthorizationQueryPort;
   executionQueries: ReviewExecutionQueryPort;
+  producerReleases?: ProducerReleaseQueryPort;
   investigations: ReviewInvestigationUseCases;
   capabilities: ReviewActionV2ExecutionEvidenceCapabilityAdapter;
   digest: ReviewActionV2DigestPort;
   now: () => Date;
+  rollout: ReviewInvestigationRolloutGuardPort;
+  terminalShadowEvidence: Pick<ProjectInvestigationShadowEvidence, "execute">;
+  terminalTelemetry?: ReviewInvestigationTerminalTelemetryPort;
   crossRevisionReplayEnabled: boolean;
   replayPreparation: (input: {
     readonly authorization: ReviewRunAuthorization;
@@ -136,8 +188,28 @@ export function composeReviewInvestigationUseCases(input: {
   readonly clock: InvestigationClockPort;
   readonly terminalProjection: InvestigationTerminalProjectionPort;
   readonly receiptReplay: InvestigationReceiptReplayPort;
+  readonly privateMaterial?: Readonly<{
+    store: InvestigationPrivateMaterialStorePort;
+    cipher: InvestigationPrivateMaterialCipherPort;
+    ttlMs: number;
+  }>;
 }): ReviewInvestigationUseCases {
   const digest = new NodeSha256InvestigationDigest();
+  const privateMaterialPreparer = input.privateMaterial
+    ? new PrepareInvestigationSearchQueryPrivateMaterial(
+        input.privateMaterial.cipher,
+        digest,
+        input.privateMaterial.ttlMs,
+      )
+    : undefined;
+  const hydrateTurnObligations = input.privateMaterial
+    ? new HydrateInvestigationTurnObligations(
+        input.privateMaterial.store,
+        input.privateMaterial.cipher,
+        digest,
+        input.clock,
+      )
+    : null;
   const commit = new CommitInvestigationTurn(
     input.store,
     input.authority,
@@ -150,6 +222,8 @@ export function composeReviewInvestigationUseCases(input: {
       input.authority,
       digest,
       input.clock,
+      undefined,
+      privateMaterialPreparer,
     ),
     restore: new RestoreReviewInvestigation(input.store, digest),
     planTurn: new PlanNextInvestigationTurn(
@@ -178,6 +252,8 @@ export function composeReviewInvestigationUseCases(input: {
       input.receiptReplay,
       digest,
       input.clock,
+      undefined,
+      privateMaterialPreparer,
     ),
     prepareReplay: (preparation) =>
       new PrepareReviewInvestigationReplay(
@@ -186,6 +262,7 @@ export function composeReviewInvestigationUseCases(input: {
         preparation,
         input.clock,
       ),
+    hydrateTurnObligations,
   });
 }
 
@@ -229,16 +306,16 @@ export class ReviewEvidenceInvestigationTerminalProjection implements Investigat
   }
 }
 
-function findingSeverity(value: string): ReviewFindingSeverity {
+function findingSeverity(
+  value: InvestigationFindingSeverity,
+): ReviewFindingSeverity {
   switch (value) {
-    case ReviewFindingSeverity.Critical:
+    case InvestigationFindingSeverity.Critical:
       return ReviewFindingSeverity.Critical;
-    case ReviewFindingSeverity.Major:
+    case InvestigationFindingSeverity.Major:
       return ReviewFindingSeverity.Major;
-    case ReviewFindingSeverity.Minor:
+    case InvestigationFindingSeverity.Minor:
       return ReviewFindingSeverity.Minor;
-    default:
-      throw new Error("investigation_finding_severity_unsupported");
   }
 }
 
@@ -345,8 +422,23 @@ export class ProductionInvestigationTurnEvidence implements InvestigationTurnEvi
     const attestation = await this.store.findAcceptedAttestation(
       input.acceptedAttestationId,
     );
+    if (!attestation) return null;
+    const session = await this.store.findSession(attestation.sessionId);
+    const actualProviderKind = trustedInvestigationProviderKind(
+      session?.providerKind ?? null,
+    );
     if (
-      !attestation ||
+      !session ||
+      session.state !== GatewaySessionState.Accepted ||
+      actualProviderKind === null ||
+      session.sessionId !== attestation.sessionId ||
+      session.sourceExecutionId !== attestation.sourceExecutionId ||
+      session.sourceWorkSlotId !== attestation.sourceWorkSlotId ||
+      session.sourceRevision.reviewRevisionHash !==
+        attestation.sourceReviewRevisionHash ||
+      session.attemptId !== attestation.attemptId ||
+      session.sourceLeaseId !== attestation.sourceLeaseId ||
+      session.sourceFencingToken !== attestation.sourceFencingToken ||
       attestation.attestationHash !== input.acceptedAttestationHash ||
       attestation.reuseExpiresAtMs <= this.now().getTime() ||
       attestation.sourceExecutionId !== input.sourceExecutionId ||
@@ -370,21 +462,29 @@ export class ProductionInvestigationTurnEvidence implements InvestigationTurnEvi
           event.outcome === ContextGatewayV4OutcomeKind.Succeeded &&
           event.operationReceiptId !== null,
       )
-      .map((event) =>
-        Object.freeze({
-          operationReceiptId: event.operationReceiptId!,
-          operationKey: event.operationKey,
-          kind: receiptKind(event.operationKind),
-          evidenceDigest: event.eventHash,
-        }),
-      );
+      .map(verifiedOperationEvidence);
     return Object.freeze({
       acceptedAttestationId: attestation.attestationId,
       acceptedAttestationHash: attestation.attestationHash,
       terminalOutcomeHash: attestation.terminalOutcomeHash,
       gatewayPolicyVersion: manifest.gatewayPolicyVersion,
+      actualProviderKind,
       operations: Object.freeze(operations),
     });
+  }
+}
+
+function trustedInvestigationProviderKind(
+  providerKind: ContextProviderKind | null,
+): InvestigationTurnProviderKind | null {
+  switch (providerKind) {
+    case ContextProviderKind.Codex:
+      return InvestigationTurnProviderKind.Codex;
+    case ContextProviderKind.ClaudeCode:
+      return InvestigationTurnProviderKind.ClaudeCode;
+    case ContextProviderKind.OpenRouter:
+    case null:
+      return null;
   }
 }
 
@@ -435,6 +535,10 @@ async function open(
     request.providerVoteLaneId,
     "provider_vote_lane_mismatch",
   );
+  await d.rollout.assertAllowed({
+    capability: InvestigationRolloutCapability.Recording,
+    target: rolloutTarget(authorization, slot.providerKind),
+  });
   const contract = await canonicalDocument<ReviewInvestigationContract>(
     request.coverageContractCanonicalJson,
     request.coverageContractHash,
@@ -445,9 +549,27 @@ async function open(
     request.investigationPolicyHash,
     d,
   );
-  const seedObligations = await canonicalDocument<
-    readonly SeedInvestigationObligation[]
-  >(request.seedObligationsCanonicalJson, request.seedObligationsHash, d);
+  await assertRegisteredInvestigationReleaseProfile({
+    authorization,
+    contract,
+    policyHash: request.investigationPolicyHash,
+    dependencies: d,
+  });
+  const seedEnvelope = await trustedSeedEnvelope({
+    target: {
+      executionId: request.executionId,
+      workSlotId: request.workSlotId,
+      providerVoteLaneId: request.providerVoteLaneId,
+      providerStrategyId: request.providerStrategyId,
+      seedObligationsCanonicalJson: request.seedObligationsCanonicalJson,
+      seedObligationsHash: request.seedObligationsHash,
+    },
+    authorization,
+    execution,
+    slot,
+    policy,
+    dependencies: d,
+  });
   const initialReceipts = await canonicalDocument<
     readonly InvestigationEvidenceReceipt[]
   >(request.initialReceiptsCanonicalJson, request.initialReceiptsHash, d);
@@ -482,13 +604,217 @@ async function open(
     runtimeProfile: runtimeProfile(request.runtimeProfile),
     contract,
     policy,
-    seedObligations,
+    seedObligations: seedEnvelope.obligations,
     initialReceipts,
   });
   return {
     statusCode: 201 as const,
     result: present(result, ReviewInvestigationOpenResultStatus.Opened),
   };
+}
+
+async function trustedSeedEnvelope(input: {
+  readonly target: Readonly<{
+    executionId: string;
+    workSlotId: string;
+    providerVoteLaneId: string;
+    providerStrategyId: string;
+    seedObligationsCanonicalJson: string;
+    seedObligationsHash: string;
+  }>;
+  readonly authorization: ReviewRunAuthorization;
+  readonly execution: ReviewExecutionSnapshot;
+  readonly slot: ReviewExecutionSnapshot["execution"]["workSlots"][number];
+  readonly policy: ReviewInvestigationPolicy;
+  readonly dependencies: ReviewActionV2InvestigationHandlerDependencies;
+}): Promise<ReviewInvestigationSeedEnvelope> {
+  const { target, authorization, execution, slot, dependencies: d } = input;
+  const document = await canonicalDocument<unknown>(
+    target.seedObligationsCanonicalJson,
+    target.seedObligationsHash,
+    d,
+  );
+  let envelope: ReviewInvestigationSeedEnvelope;
+  try {
+    envelope = parseReviewInvestigationSeedEnvelope(
+      document,
+      input.policy.maxObligations,
+    );
+  } catch {
+    throw failure(
+      400,
+      ReviewActionV2ProtocolErrorCode.InvalidRequest,
+      "investigation_seed_envelope_invalid",
+    );
+  }
+
+  const activeLeases = execution.activeLeases.filter(
+    (lease) =>
+      lease.executionId === target.executionId &&
+      lease.workSlotId === target.workSlotId &&
+      lease.purpose === ReviewInvocationLeasePurpose.ProviderExecution &&
+      lease.state === ReviewInvocationLeaseState.Active,
+  );
+  if (activeLeases.length !== 1) {
+    throw failure(
+      412,
+      ReviewActionV2ProtocolErrorCode.StalePrecondition,
+      activeLeases.length === 0
+        ? "investigation_seed_active_lease_missing"
+        : "investigation_seed_active_lease_ambiguous",
+    );
+  }
+  const lease = activeLeases[0]!;
+  if (
+    execution.execution.state !== ReviewExecutionState.Running ||
+    slot.state !== ReviewWorkSlotState.Leased ||
+    slot.activeLeaseId !== lease.leaseId ||
+    slot.taskKind !== ExecutionTaskKind.FindingDiscovery ||
+    lease.expiresAt <= d.now() ||
+    lease.attemptId === null ||
+    lease.preparedManifestCanonicalJson === null ||
+    lease.preparedManifestKey === null ||
+    lease.authorizationId !== authorization.authorizationId ||
+    lease.producerReleaseId !== authorization.producerReleaseId ||
+    lease.reviewRevisionHash !== authorization.reviewRevisionHash ||
+    lease.providerVoteIdentityHash !== target.providerVoteLaneId ||
+    lease.providerInvocationKey !== target.providerStrategyId
+  ) {
+    throw failure(
+      412,
+      ReviewActionV2ProtocolErrorCode.StalePrecondition,
+      "investigation_seed_active_lease_stale",
+    );
+  }
+
+  let manifest;
+  try {
+    manifest = normalizeProviderInvocationManifest(
+      JSON.parse(lease.preparedManifestCanonicalJson),
+    );
+    if (
+      serializeProviderInvocationManifestCanonicalWireJson(manifest) !==
+      lease.preparedManifestCanonicalJson
+    ) {
+      throw new Error("prepared_manifest_not_canonical");
+    }
+  } catch {
+    throw failure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "investigation_seed_prepared_manifest_invalid",
+    );
+  }
+  const expectedProvider = evidenceProviderForInvestigation(slot.providerKind);
+  const expectedScopeHash = await d.digest.digestUtf8(
+    canonicalJson({
+      workspaceId: authorization.workspaceId,
+      repositoryConnectionId: authorization.repositoryConnectionId,
+      scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+      pullRequestNumber: authorization.pullRequestNumber,
+    }),
+  );
+  if (
+    expectedProvider === null ||
+    manifest.executionProfile !==
+      ProviderExecutionProfile.InvestigationGatewayV1 ||
+    manifest.scopeHash !== expectedScopeHash ||
+    manifest.producerReleaseId !== authorization.producerReleaseId ||
+    manifest.selectedProtocolVersion !==
+      authorization.selectedProtocolVersion ||
+    manifest.providerKind !== expectedProvider ||
+    manifest.requestedModel !== envelope.requestedModel ||
+    manifest.providerRequestEnvelopeHash !== target.seedObligationsHash ||
+    manifest.taskKindSet.length !== 1 ||
+    manifest.taskKindSet[0] !== EvidenceTaskKind.FindingDiscovery
+  ) {
+    throw failure(
+      412,
+      ReviewActionV2ProtocolErrorCode.StalePrecondition,
+      "investigation_seed_prepared_manifest_mismatch",
+    );
+  }
+  return envelope;
+}
+
+function evidenceProviderForInvestigation(
+  provider: ReviewExecutionProviderKind,
+): EvidenceProviderKind | null {
+  switch (provider) {
+    case ReviewExecutionProviderKind.Codex:
+      return EvidenceProviderKind.Codex;
+    case ReviewExecutionProviderKind.ClaudeCode:
+      return EvidenceProviderKind.ClaudeCode;
+    case ReviewExecutionProviderKind.OpenRouter:
+      return null;
+  }
+}
+
+async function assertRegisteredInvestigationReleaseProfile(input: {
+  readonly authorization: ReviewRunAuthorization;
+  readonly contract: ReviewInvestigationContract;
+  readonly policyHash: string;
+  readonly dependencies: ReviewActionV2InvestigationHandlerDependencies;
+}): Promise<void> {
+  try {
+    assertSupportedReviewInvestigationCoverageProfile(input.contract);
+  } catch {
+    throw failure(
+      403,
+      ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
+      "investigation_coverage_profile_unsupported",
+    );
+  }
+  let release;
+  try {
+    release =
+      await input.dependencies.producerReleases?.findProducerReleaseById(
+        input.authorization.producerReleaseId,
+      );
+  } catch {
+    throw failure(
+      503,
+      ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
+      "investigation_release_profile_unavailable",
+    );
+  }
+  const profile = release?.reviewInvestigationProfile ?? null;
+  if (
+    !release ||
+    release.state !== ProducerReleaseState.Registered ||
+    profile === null ||
+    profile.capability !== reviewInvestigationCapabilityV1 ||
+    input.contract.producerReleaseId !==
+      input.authorization.producerReleaseId ||
+    input.policyHash !== profile.policyHash
+  ) {
+    throw failure(
+      403,
+      ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
+      "investigation_release_profile_mismatch",
+    );
+  }
+  const coverageProfileHash = await input.dependencies.digest.digestUtf8(
+    canonicalJson({
+      coverageContractVersion: input.contract.coverageContractVersion,
+      expansionRulesVersion: input.contract.expansionRulesVersion,
+      criticPolicyVersion: input.contract.criticPolicyVersion,
+      gatewayPolicyVersion: input.contract.gatewayPolicyVersion,
+      probePolicyVersion: input.contract.probePolicyVersion,
+      runtimeProfileVersion: input.contract.runtimeProfileVersion,
+      searchPolicyVersion: input.contract.searchPolicyVersion,
+    }),
+  );
+  if (
+    coverageProfileHash !== profile.coverageProfileHash ||
+    input.contract.gatewayPolicyVersion !== release.contextGatewayPolicyVersion
+  ) {
+    throw failure(
+      403,
+      ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
+      "investigation_release_profile_mismatch",
+    );
+  }
 }
 
 async function restore(
@@ -551,6 +877,15 @@ async function planTurn(
     authorization,
     d,
   );
+  await assertAggregateRollout(
+    aggregate.activeTurn?.purpose === ReviewInvestigationTurnPurpose.Critic ||
+      aggregate.state === ReviewInvestigationState.AwaitingCritic
+      ? InvestigationRolloutCapability.ContextCritic
+      : InvestigationRolloutCapability.Recording,
+    aggregate,
+    authorization,
+    d,
+  );
   requireEqual(
     aggregate.dossierDigest,
     request.dossierDigest,
@@ -566,6 +901,15 @@ async function planTurn(
         leaseDurationMs: request.leaseDurationMs,
         maxObligationsForTurn: request.maxObligationsForTurn,
       });
+  const plannedAggregate = await d.investigations.restore.snapshot(
+    aggregate.investigationId,
+  );
+  const turnBriefCanonicalJson = await canonicalTurnBrief(
+    plannedAggregate,
+    result,
+    d.investigations.hydrateTurnObligations,
+  );
+  const turnBriefHash = await d.digest.digestUtf8(turnBriefCanonicalJson);
   const turnCapability = result.turn
     ? await d.capabilities.issueInvestigationTurn(
         {
@@ -582,11 +926,6 @@ async function planTurn(
         d.now(),
       )
     : null;
-  const plannedAggregate = await d.investigations.restore.snapshot(
-    aggregate.investigationId,
-  );
-  const turnBriefCanonicalJson = canonicalTurnBrief(plannedAggregate, result);
-  const turnBriefHash = await d.digest.digestUtf8(turnBriefCanonicalJson);
   return {
     statusCode:
       result.nextAction === ReviewInvestigationNextActionKind.AwaitCapacity
@@ -610,7 +949,7 @@ async function restoreActiveTurn(
 ): Promise<ReviewInvestigationReadModel> {
   if (aggregate.version !== expectedVersion) {
     throw failure(
-      409,
+      412,
       ReviewActionV2ProtocolErrorCode.StalePrecondition,
       "investigation_version_mismatch",
     );
@@ -636,24 +975,44 @@ async function commitTurn(
     authorization,
     d,
   );
+  await assertAggregateRollout(
+    aggregate.activeTurn?.purpose === ReviewInvestigationTurnPurpose.Critic
+      ? InvestigationRolloutCapability.ContextCritic
+      : InvestigationRolloutCapability.Recording,
+    aggregate,
+    authorization,
+    d,
+  );
   const leaseAuthority = await verifyLease(request.leaseCapability, d);
   const lease = await requireLease(leaseAuthority, request, aggregate, d);
   const turnAuthority = await verifyTurnCapability(request.turnCapability, d);
   requireTurnAuthority(turnAuthority, request, aggregate, authorization);
   const observation = await parseCanonicalObservation(request, d);
-  const result = await d.investigations.commitTurn.execute({
-    commandId: request.idempotencyKey,
-    investigationId: request.investigationId,
-    expectedVersion: decimal(request.expectedVersion, "expected_version"),
-    turnId: request.turnId,
-    sourceAttemptId: lease.attemptId!,
-    sourceLeaseId: request.sourceLeaseId,
-    sourceFencingToken: request.fencingToken,
-    acceptedAttestationId: request.acceptedAttestationId,
-    acceptedAttestationHash: request.acceptedAttestationHash,
-    turnObservationHash: request.turnObservationHash,
-    observation,
-  });
+  let result: ReviewInvestigationReadModel;
+  try {
+    result = await d.investigations.commitTurn.execute({
+      commandId: request.idempotencyKey,
+      investigationId: request.investigationId,
+      expectedVersion: decimal(request.expectedVersion, "expected_version"),
+      turnId: request.turnId,
+      sourceAttemptId: lease.attemptId!,
+      sourceLeaseId: request.sourceLeaseId,
+      sourceFencingToken: request.fencingToken,
+      acceptedAttestationId: request.acceptedAttestationId,
+      acceptedAttestationHash: request.acceptedAttestationHash,
+      turnObservationHash: request.turnObservationHash,
+      observation,
+    });
+  } catch (error) {
+    if (error instanceof ReviewInvestigationDomainError) {
+      throw failure(
+        422,
+        ReviewActionV2ProtocolErrorCode.InvariantViolation,
+        error.code,
+      );
+    }
+    throw error;
+  }
   return {
     statusCode: 201 as const,
     result: present(result, ReviewInvestigationMutationResultStatus.Applied),
@@ -675,6 +1034,14 @@ async function abortTurn(
   );
   const aggregate = await requireAggregate(
     request.investigationId,
+    authorization,
+    d,
+  );
+  await assertAggregateRollout(
+    aggregate.activeTurn?.purpose === ReviewInvestigationTurnPurpose.Critic
+      ? InvestigationRolloutCapability.ContextCritic
+      : InvestigationRolloutCapability.Recording,
+    aggregate,
     authorization,
     d,
   );
@@ -717,21 +1084,188 @@ async function conclude(
     authorization,
     d,
   );
-  requireEqual(
-    aggregate.dossierDigest,
-    request.dossierDigest,
-    "dossier_digest_mismatch",
-  );
+  const expectedVersion = decimal(request.expectedVersion, "expected_version");
+  if (!isTerminalShadowProjectionRetry(aggregate, request, expectedVersion)) {
+    await assertAggregateRollout(
+      InvestigationRolloutCapability.ContextCritic,
+      aggregate,
+      authorization,
+      d,
+    );
+    requireEqual(
+      aggregate.dossierDigest,
+      request.dossierDigest,
+      "dossier_digest_mismatch",
+    );
+  }
   const result = await d.investigations.conclude.execute({
     commandId: request.idempotencyKey,
     investigationId: request.investigationId,
-    expectedVersion: decimal(request.expectedVersion, "expected_version"),
+    expectedVersion,
     certificateTtlMs: request.certificateTtlMs,
+  });
+  const concludedAggregate = await requireAggregate(
+    request.investigationId,
+    authorization,
+    d,
+  );
+  try {
+    await d.terminalShadowEvidence.execute(
+      toInvestigationShadowEvidenceProjectionSource(concludedAggregate),
+    );
+  } catch {
+    throw failure(
+      503,
+      ReviewActionV2ProtocolErrorCode.AmbiguousOutcome,
+      "investigation_shadow_evidence_projection_pending",
+    );
+  }
+  await d.terminalTelemetry?.recordConcluded({
+    investigationId: request.investigationId,
   });
   return {
     statusCode: 201 as const,
     result: present(result, ReviewInvestigationMutationResultStatus.Applied),
   };
+}
+
+function isTerminalShadowProjectionRetry(
+  aggregate: ReviewInvestigation,
+  request: ReviewInvestigationConcludeRequest,
+  expectedVersion: number,
+): boolean {
+  const certificate = aggregate.certificate;
+  return (
+    certificate !== null &&
+    aggregate.conclusion !== null &&
+    certificate.investigationId === aggregate.investigationId &&
+    certificate.investigationVersion === expectedVersion &&
+    certificate.investigationVersion + 1 === aggregate.version &&
+    certificate.dossierDigest === request.dossierDigest
+  );
+}
+
+function toInvestigationShadowEvidenceProjectionSource(
+  investigation: ReviewInvestigation,
+): InvestigationShadowEvidenceProjectionSource {
+  const certificate = investigation.certificate;
+  const conclusion = investigation.conclusion;
+  if (certificate === null || conclusion === null) {
+    throw new Error("investigation_shadow_terminal_certificate_missing");
+  }
+  return {
+    investigationId: investigation.investigationId,
+    investigationVersion: investigation.version,
+    certifiedDossierDigest: certificate.dossierDigest,
+    scope: {
+      workspaceId: investigation.scope.workspaceId,
+      repositoryConnectionId: investigation.scope.repositoryConnectionId,
+      scmRepositoryIdentityId: investigation.scope.scmRepositoryIdentityId,
+      pullRequestNumber: investigation.scope.pullRequestNumber,
+      trustDomain: evidenceTrustDomain(investigation.scope.trustDomain),
+      authorizationScopeHash: investigation.scope.authorizationScopeHash,
+    },
+    revision: { ...investigation.revision },
+    executionId: investigation.executionId,
+    workSlotId: investigation.workSlotId,
+    stableReviewUnitKey: investigation.stableReviewUnitKey,
+    providerVoteLaneId: investigation.providerVoteLaneId,
+    coverageContractVersion: investigation.contract.coverageContractVersion,
+    expansionRulesVersion: investigation.contract.expansionRulesVersion,
+    gatewayPolicyVersion: investigation.contract.gatewayPolicyVersion,
+    criticPolicyVersion: investigation.contract.criticPolicyVersion,
+    runtimeProfileVersion: investigation.contract.runtimeProfileVersion,
+    producerReleaseId: investigation.contract.producerReleaseId,
+    conclusion: shadowConclusion(conclusion),
+    certificate: {
+      certificateId: certificate.certificateId,
+      certificateHash: certificate.certificateHash,
+      investigationId: certificate.investigationId,
+      investigationVersion: certificate.investigationVersion,
+      dossierDigest: certificate.dossierDigest,
+      reviewRevisionHash: certificate.reviewRevisionHash,
+      stableReviewUnitKey: certificate.stableReviewUnitKey,
+      providerVoteLaneId: certificate.providerVoteLaneId,
+      coverageContractVersion: certificate.coverageContractVersion,
+      expansionRulesVersion: certificate.expansionRulesVersion,
+      gatewayPolicyVersion: certificate.gatewayPolicyVersion,
+      criticPolicyVersion: certificate.criticPolicyVersion,
+      runtimeProfileVersion: certificate.runtimeProfileVersion,
+      producerReleaseId: certificate.producerReleaseId,
+      conclusion: shadowConclusion(certificate.conclusion),
+      findingSetHash: certificate.findingSetHash,
+      obligationSetHash: certificate.obligationSetHash,
+      receiptSetHash: certificate.receiptSetHash,
+      scopeHash: certificate.scopeHash,
+      coverageStateHash: certificate.coverageStateHash,
+      contextAttestationSetHash: certificate.contextAttestationSetHash,
+      turnProvenanceHash: certificate.turnProvenanceHash,
+      terminalProviderKind: shadowProvider(certificate.terminalProviderKind),
+      terminalActualModel: certificate.terminalActualModel,
+      terminalOutcomeHash: certificate.terminalOutcomeHash,
+      terminalObservationCanonicalJson:
+        certificate.terminalObservationCanonicalJson,
+      criticAttestationId: certificate.criticAttestationId,
+      criticAttestationHash: certificate.criticAttestationHash,
+      criticDecision: shadowCriticDecision(certificate.criticDecision),
+      issuedAt: certificate.issuedAt,
+      expiresAt: certificate.expiresAt,
+    },
+  };
+}
+
+function shadowConclusion(
+  conclusion: ReviewInvestigationConclusion,
+): InvestigationShadowEvidenceConclusion {
+  switch (conclusion) {
+    case ReviewInvestigationConclusion.VerifiedClean:
+      return InvestigationShadowEvidenceConclusion.VerifiedClean;
+    case ReviewInvestigationConclusion.Findings:
+      return InvestigationShadowEvidenceConclusion.Findings;
+    case ReviewInvestigationConclusion.Inconclusive:
+      return InvestigationShadowEvidenceConclusion.Inconclusive;
+  }
+}
+
+function shadowProvider(
+  provider: InvestigationTurnProviderKind | null,
+): EvidenceProviderKind | null {
+  switch (provider) {
+    case InvestigationTurnProviderKind.Codex:
+      return EvidenceProviderKind.Codex;
+    case InvestigationTurnProviderKind.ClaudeCode:
+      return EvidenceProviderKind.ClaudeCode;
+    case null:
+      return null;
+  }
+}
+
+function shadowCriticDecision(
+  decision: ContextCriticDecision | null,
+): InvestigationShadowEvidenceCriticDecision | null {
+  switch (decision) {
+    case ContextCriticDecision.Accept:
+      return InvestigationShadowEvidenceCriticDecision.Accept;
+    case ContextCriticDecision.Veto:
+      return InvestigationShadowEvidenceCriticDecision.Veto;
+    case ContextCriticDecision.Abstain:
+      return InvestigationShadowEvidenceCriticDecision.Abstain;
+    case null:
+      return null;
+  }
+}
+
+function evidenceTrustDomain(value: string): EvidenceTrustDomain {
+  switch (value) {
+    case EvidenceTrustDomain.TrustedManaged:
+      return EvidenceTrustDomain.TrustedManaged;
+    case EvidenceTrustDomain.TrustedLocal:
+      return EvidenceTrustDomain.TrustedLocal;
+    case EvidenceTrustDomain.UntrustedContribution:
+      return EvidenceTrustDomain.UntrustedContribution;
+    default:
+      throw new Error("investigation_shadow_trust_domain_unsupported");
+  }
 }
 
 async function prepareReplay(
@@ -795,6 +1329,10 @@ async function prepareReplay(
     request.providerVoteLaneId,
     "provider_vote_lane_mismatch",
   );
+  await d.rollout.assertAllowed({
+    capability: InvestigationRolloutCapability.CrossRevisionReplay,
+    target: rolloutTarget(authorization, slot.providerKind),
+  });
   requireEqual(
     await d.digest.digestUtf8(request.providerManifestCanonicalJson),
     request.providerManifestHash,
@@ -923,7 +1461,35 @@ async function replay(
     request.authorizationId,
     "authorization_id_mismatch",
   );
-  await requireExecution(request.targetExecutionId, authorization, d);
+  const targetExecution = await requireExecution(
+    request.targetExecutionId,
+    authorization,
+    d,
+  );
+  const targetSlot = targetExecution.execution.workSlots.find(
+    (candidate) => candidate.workSlotId === request.targetWorkSlotId,
+  );
+  if (!targetSlot) {
+    throw failure(
+      404,
+      ReviewActionV2ProtocolErrorCode.NotFound,
+      "work_slot_missing",
+    );
+  }
+  requireEqual(
+    targetSlot.shardKey,
+    request.stableReviewUnitKey,
+    "stable_review_unit_mismatch",
+  );
+  requireEqual(
+    targetSlot.providerVoteIdentityHash,
+    request.providerVoteLaneId,
+    "provider_vote_lane_mismatch",
+  );
+  await d.rollout.assertAllowed({
+    capability: InvestigationRolloutCapability.CrossRevisionReplay,
+    target: rolloutTarget(authorization, targetSlot.providerKind),
+  });
   const targetScope = await canonicalDocument<ReviewInvestigationScope>(
     request.targetScopeCanonicalJson,
     request.targetScopeHash,
@@ -937,6 +1503,40 @@ async function replay(
   const replayProofs = await canonicalDocument<
     readonly Readonly<{ obligationId: string; replayProofId: string }>[]
   >(request.replayProofsCanonicalJson, request.replayProofsHash, d);
+  const targetContract = await canonicalDocument<ReviewInvestigationContract>(
+    request.coverageContractCanonicalJson,
+    request.coverageContractHash,
+    d,
+  );
+  const targetPolicy = await canonicalDocument<ReviewInvestigationPolicy>(
+    request.investigationPolicyCanonicalJson,
+    request.investigationPolicyHash,
+    d,
+  );
+  await assertRegisteredInvestigationReleaseProfile({
+    authorization,
+    contract: targetContract,
+    policyHash: request.investigationPolicyHash,
+    dependencies: d,
+  });
+  const seedEnvelope = await trustedSeedEnvelope({
+    target: {
+      executionId: request.targetExecutionId,
+      workSlotId: request.targetWorkSlotId,
+      providerVoteLaneId: request.providerVoteLaneId,
+      providerStrategyId: request.providerStrategyId,
+      seedObligationsCanonicalJson: request.seedObligationsCanonicalJson,
+      seedObligationsHash: request.seedObligationsHash,
+    },
+    authorization,
+    execution: targetExecution,
+    slot: targetSlot,
+    policy: targetPolicy,
+    dependencies: d,
+  });
+  const targetInitialReceipts = await canonicalDocument<
+    readonly InvestigationEvidenceReceipt[]
+  >(request.initialReceiptsCanonicalJson, request.initialReceiptsHash, d);
   const expectedScope: ReviewInvestigationScope = {
     workspaceId: authorization.workspaceId,
     repositoryConnectionId: authorization.repositoryConnectionId,
@@ -995,6 +1595,14 @@ async function replay(
     targetRevision,
     targetExecutionId: request.targetExecutionId,
     targetWorkSlotId: request.targetWorkSlotId,
+    targetStableReviewUnitKey: request.stableReviewUnitKey,
+    targetProviderVoteLaneId: request.providerVoteLaneId,
+    targetProviderStrategyId: request.providerStrategyId,
+    targetRuntimeProfile: runtimeProfile(request.runtimeProfile),
+    targetContract,
+    targetPolicy,
+    targetSeedObligations: seedEnvelope.obligations,
+    targetInitialReceipts,
     replayProofs,
   });
   return {
@@ -1007,6 +1615,60 @@ function enabled<Request, Outcome>(
   execute: (request: Request) => Promise<Outcome>,
 ) {
   return { capabilityEnabled: true as const, execute };
+}
+
+async function assertAggregateRollout(
+  capability: InvestigationRolloutCapability,
+  aggregate: ReviewInvestigation,
+  authorization: ReviewRunAuthorization,
+  d: ReviewActionV2InvestigationHandlerDependencies,
+): Promise<void> {
+  const snapshot = await requireExecution(
+    aggregate.executionId,
+    authorization,
+    d,
+  );
+  const slot = snapshot.execution.workSlots.find(
+    (candidate) => candidate.workSlotId === aggregate.workSlotId,
+  );
+  if (!slot) {
+    throw failure(
+      404,
+      ReviewActionV2ProtocolErrorCode.NotFound,
+      "work_slot_missing",
+    );
+  }
+  await d.rollout.assertAllowed({
+    capability,
+    target: rolloutTarget(authorization, slot.providerKind),
+  });
+}
+
+function rolloutTarget(
+  authorization: ReviewRunAuthorization,
+  provider: ReviewExecutionProviderKind,
+) {
+  return Object.freeze({
+    workspaceId: authorization.workspaceId,
+    repositoryConnectionId: authorization.repositoryConnectionId,
+    scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+    provider: rolloutProvider(provider),
+    trustDomain: authorization.trustDomain,
+    producerReleaseId: authorization.producerReleaseId,
+  });
+}
+
+function rolloutProvider(
+  provider: ReviewExecutionProviderKind,
+): InvestigationRolloutProvider {
+  switch (provider) {
+    case ReviewExecutionProviderKind.Codex:
+      return InvestigationRolloutProvider.Codex;
+    case ReviewExecutionProviderKind.ClaudeCode:
+      return InvestigationRolloutProvider.Claude;
+    case ReviewExecutionProviderKind.OpenRouter:
+      return InvestigationRolloutProvider.Unknown;
+  }
 }
 
 function present<
@@ -1045,17 +1707,54 @@ function mutationStatus(
     : ReviewInvestigationMutationResultStatus.Applied;
 }
 
-function canonicalTurnBrief(
+async function canonicalTurnBrief(
   aggregate: ReviewInvestigation,
   readModel: ReviewInvestigationReadModel,
-): string {
+  hydrator: HydrateInvestigationTurnObligations | null,
+): Promise<string> {
   if (!aggregate.activeTurn || !readModel.turn) return canonicalJson(null);
-  const obligations = new Map(
-    aggregate.obligations.map((obligation) => [
-      obligation.obligationId,
-      obligation,
-    ]),
-  );
+  if (
+    !hydrator &&
+    aggregate.contract.expansionRulesVersion ===
+      reviewInvestigationCoverageProfileV2.expansionRulesVersion &&
+    readModel.turn.obligationIds.some((obligationId) => {
+      const obligation = aggregate.obligations.find(
+        (candidate) => candidate.obligationId === obligationId,
+      );
+      if (!obligation) throw new Error("investigation_turn_obligation_missing");
+      const requirement = parseInvestigationEvidenceRequirement(
+        obligation.canonicalRequirement,
+      );
+      return (
+        requirement.kind ===
+          InvestigationEvidenceRequirementKind.CompletePageChain &&
+        requirement.requirementVersion ===
+          obligationEvidenceRequirementVersionV2
+      );
+    })
+  ) {
+    throw new Error("investigation_private_material_unavailable");
+  }
+  const obligations = hydrator
+    ? await hydrator.execute({
+        investigation: aggregate,
+        obligationIds: readModel.turn.obligationIds,
+      })
+    : readModel.turn.obligationIds.map((obligationId) => {
+        const obligation = aggregate.obligations.find(
+          (candidate) => candidate.obligationId === obligationId,
+        );
+        if (!obligation)
+          throw new Error("investigation_turn_obligation_missing");
+        return {
+          obligationId: obligation.obligationId,
+          kind: obligation.kind,
+          canonicalSubject: obligation.canonicalSubject,
+          canonicalRequirement: obligation.canonicalRequirement,
+          riskPriority: obligation.riskPriority,
+          origin: obligation.origin,
+        };
+      });
   return canonicalJson({
     briefVersion: 1,
     investigationId: readModel.investigationId,
@@ -1063,18 +1762,10 @@ function canonicalTurnBrief(
     dossierDigest: readModel.dossierDigest,
     turnId: readModel.turn.turnId,
     purpose: readModel.turn.purpose,
-    obligations: readModel.turn.obligationIds.map((obligationId) => {
-      const obligation = obligations.get(obligationId);
-      if (!obligation) throw new Error("investigation_turn_obligation_missing");
-      return {
-        obligationId: obligation.obligationId,
-        kind: obligation.kind,
-        canonicalSubject: obligation.canonicalSubject,
-        canonicalRequirement: obligation.canonicalRequirement,
-        riskPriority: obligation.riskPriority,
-        origin: obligation.origin,
-      };
-    }),
+    maximumSemanticRiskPriority: maximumSemanticRiskPriority(
+      aggregate.obligations,
+    ),
+    obligations,
   });
 }
 
@@ -1224,7 +1915,7 @@ async function requireLease(
     lease.resultReportUntil <= d.now()
   ) {
     throw failure(
-      409,
+      412,
       ReviewActionV2ProtocolErrorCode.StalePrecondition,
       "investigation_lease_stale",
     );
@@ -1256,20 +1947,26 @@ function requireTurnAuthority(
   aggregate: ReviewInvestigation,
   authorization: ReviewRunAuthorization,
 ): void {
+  const expectedVersion = decimal(request.expectedVersion, "expected_version");
+  const activeTurnAuthorized =
+    authority.dossierDigest === aggregate.dossierDigest &&
+    aggregate.activeTurn?.turnId === request.turnId;
+  const completedTurnReplay =
+    aggregate.version > expectedVersion &&
+    aggregate.activeTurn?.turnId !== request.turnId &&
+    aggregate.turnProvenance.some((turn) => turn.turnId === request.turnId);
   if (
     authority.authorizationId !== authorization.authorizationId ||
     authority.executionId !== aggregate.executionId ||
     authority.workSlotId !== aggregate.workSlotId ||
     authority.reviewRevisionHash !== aggregate.revision.reviewRevisionHash ||
     authority.investigationId !== request.investigationId ||
-    authority.investigationVersion !==
-      decimal(request.expectedVersion, "expected_version") ||
-    authority.dossierDigest !== aggregate.dossierDigest ||
+    authority.investigationVersion !== expectedVersion ||
     authority.turnId !== request.turnId ||
-    aggregate.activeTurn?.turnId !== request.turnId
+    (!activeTurnAuthorized && !completedTurnReplay)
   ) {
     throw failure(
-      409,
+      412,
       ReviewActionV2ProtocolErrorCode.StalePrecondition,
       "turn_capability_stale",
     );
@@ -1382,22 +2079,167 @@ function abortReason(value: string): ReviewInvestigationAbortReason {
   return value as ReviewInvestigationAbortReason;
 }
 
-function receiptKind(
-  kind: ContextGatewayV4OperationKind,
-): InvestigationReceiptKind {
-  switch (kind) {
+function verifiedOperationEvidence(
+  event: ContextGatewayV4Manifest["events"][number],
+) {
+  if (
+    event.outcome !== ContextGatewayV4OutcomeKind.Succeeded ||
+    event.operationReceiptId === null ||
+    event.result === null
+  ) {
+    throw new Error("unsuccessful_operation_cannot_produce_evidence");
+  }
+  const base = {
+    operationReceiptId: event.operationReceiptId,
+    operationKey: event.operationKey,
+    sequence: event.sequence,
+    evidenceDigest: event.eventHash,
+  } as const;
+  const result = event.result;
+  switch (event.operationKind) {
     case ContextGatewayV4OperationKind.FileRead:
-      return InvestigationReceiptKind.Blob;
+      return Object.freeze({
+        ...base,
+        operationKind: InvestigationOperationKind.FileRead,
+        operationInputHash: manifestString(event.operation.inputHash),
+        revision: operationRevision(result.revision),
+        treeOid: manifestString(result.treeOid),
+        pathHash: manifestString(result.pathHash),
+        blobOid: manifestString(result.blobOid),
+        mode: manifestString(result.mode),
+        startByte: manifestNumber(result.startByte),
+        byteCount: manifestNumber(result.byteCount),
+        contentHash: manifestString(result.contentHash),
+        contentKind: manifestFileContentKind(result.contentKind),
+        lineCount:
+          result.lineCount === undefined || result.lineCount === null
+            ? null
+            : manifestNumber(result.lineCount),
+        eof: manifestBoolean(result.eof),
+        complete: manifestBoolean(result.complete),
+      });
     case ContextGatewayV4OperationKind.DirectoryList:
-    case ContextGatewayV4OperationKind.CanonicalInventory:
-      return InvestigationReceiptKind.Tree;
     case ContextGatewayV4OperationKind.TextSearch:
-      return InvestigationReceiptKind.Search;
+    case ContextGatewayV4OperationKind.CanonicalInventory:
+      return Object.freeze({
+        ...base,
+        operationKind: pageOperationKind(event.operationKind),
+        operationInputHash: manifestString(event.operation.inputHash),
+        treeOid: manifestString(result.treeOid),
+        queryDigest: manifestString(result.queryDigest),
+        cursorInputHash: manifestNullableString(result.cursorInputHash),
+        pageOrdinal: manifestNumber(result.pageOrdinal),
+        pageItemCount: manifestNumber(result.pageItemCount),
+        pageItemsHash: manifestString(result.pageItemsHash),
+        pagePathHashes: manifestStringArray(result.pagePathHashes),
+        aggregatePathCount: manifestNumber(result.aggregatePathCount),
+        aggregatePathSetHash: manifestString(result.aggregatePathSetHash),
+        aggregateItemCount: manifestNumber(result.aggregateItemCount),
+        aggregateHash: manifestString(result.aggregateHash),
+        complete: manifestBoolean(result.complete),
+        nextCursorHash:
+          result.nextCursorHash === null
+            ? null
+            : manifestString(result.nextCursorHash),
+      });
     case ContextGatewayV4OperationKind.GitFact:
-      return InvestigationReceiptKind.GitFact;
+      return Object.freeze({
+        ...base,
+        operationKind: InvestigationOperationKind.GitFact,
+        fact: manifestGitFact(result.fact),
+        resultHash: manifestString(result.resultHash),
+        itemCount: manifestNumber(result.itemCount),
+        complete: true as const,
+      });
     case ContextGatewayV4OperationKind.UnsupportedTool:
       throw new Error("unsupported_tool_cannot_produce_evidence");
   }
+}
+
+function manifestFileContentKind(
+  value: unknown,
+): InvestigationFileContentKind | null {
+  switch (value) {
+    case undefined:
+      return null;
+    case InvestigationFileContentKind.Text:
+      return InvestigationFileContentKind.Text;
+    case InvestigationFileContentKind.Binary:
+      return InvestigationFileContentKind.Binary;
+    default:
+      throw new Error("context_gateway_v4_file_content_kind_invalid");
+  }
+}
+
+function pageOperationKind(
+  value:
+    | ContextGatewayV4OperationKind.DirectoryList
+    | ContextGatewayV4OperationKind.TextSearch
+    | ContextGatewayV4OperationKind.CanonicalInventory,
+) {
+  switch (value) {
+    case ContextGatewayV4OperationKind.DirectoryList:
+      return InvestigationOperationKind.DirectoryList;
+    case ContextGatewayV4OperationKind.TextSearch:
+      return InvestigationOperationKind.TextSearch;
+    case ContextGatewayV4OperationKind.CanonicalInventory:
+      return InvestigationOperationKind.CanonicalInventory;
+  }
+}
+
+function operationRevision(value: unknown): InvestigationOperationRevision {
+  if (value === InvestigationOperationRevision.Head) {
+    return InvestigationOperationRevision.Head;
+  }
+  if (value === InvestigationOperationRevision.MergeBase) {
+    return InvestigationOperationRevision.MergeBase;
+  }
+  throw new Error("context_operation_revision_invalid");
+}
+
+function manifestGitFact(
+  value: unknown,
+): "merge_base" | "changed_paths" | "diff_stat" {
+  if (
+    value === "merge_base" ||
+    value === "changed_paths" ||
+    value === "diff_stat"
+  ) {
+    return value;
+  }
+  throw new Error("context_operation_git_fact_invalid");
+}
+
+function manifestString(value: unknown): string {
+  if (typeof value !== "string")
+    throw new Error("context_operation_shape_invalid");
+  return value;
+}
+
+function manifestNullableString(value: unknown): string | null {
+  if (value === null) return null;
+  return manifestString(value);
+}
+
+function manifestStringArray(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error("context_operation_shape_invalid");
+  }
+  return Object.freeze(value.map((item) => String(item)));
+}
+
+function manifestNumber(value: unknown): number {
+  if (!Number.isSafeInteger(value)) {
+    throw new Error("context_operation_shape_invalid");
+  }
+  return Number(value);
+}
+
+function manifestBoolean(value: unknown): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error("context_operation_shape_invalid");
+  }
+  return value;
 }
 
 async function investigationScope(
@@ -1454,7 +2296,7 @@ function decimal(value: string, field: string): number {
 function requireEqual(left: string, right: string, issue: string): void {
   if (left !== right) {
     throw failure(
-      409,
+      412,
       ReviewActionV2ProtocolErrorCode.StalePrecondition,
       issue,
     );

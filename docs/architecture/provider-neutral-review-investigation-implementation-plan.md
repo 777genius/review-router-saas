@@ -1,8 +1,10 @@
 # Provider-neutral review investigation: end-to-end implementation plan
 
-Status: proposed implementation contract. Do not enable production behavior by
-merging an intermediate phase. The first production cohort starts only after
-the shadow exit criteria in this document are met.
+Status: implementation contract active. Local code and disposable quality gates
+are tracked separately from live sandbox and production promotion evidence.
+Production behavior must not be enabled by merging code alone. Current evidence
+and remaining gates are tracked in
+`review-investigation-implementation-status.md`.
 
 ## 1. Objective
 
@@ -602,6 +604,17 @@ accepted evidence attestation.
 
 ### 7.6 Security and privacy
 
+The customer runner, the pinned Review Action release, and the selected
+provider CLI executable are part of the trusted computing base. Repository
+content and model output are untrusted. Transcript HMACs protect the gateway
+protocol from model/tool-output forgery and accidental cross-session mixing;
+they do not claim to withstand a malicious provider executable or a compromised
+runner that can read another process environment. Provider binaries therefore
+come only from an operator-approved distribution and release policy. Removing
+the provider CLI from the TCB requires a separately reviewed broker process
+with isolated credentials and constrained IPC; it is not implied by this
+release.
+
 - Immutable Git objects are authoritative, not mutable worktree files/index.
 - Global/system Git config, replacement objects, textconv, external diff, and
   unsafe attributes are isolated or bound into policy hashes.
@@ -942,7 +955,8 @@ Provider execution and gateway calls never occur inside a database transaction.
 Add a backward-compatible capability `review_investigation_v1`. Old actions and
 control planes keep the legacy path. New actions enable the flow only when:
 
-- authorization advertises the capability;
+- investigation admission advertises the capability without coupling generic
+  legacy-review authorization to investigation rollout;
 - producer release registers compatible investigation/gateway policy hashes;
 - workspace/repository/provider/trust-domain safety policy enables it;
 - emergency disable is not active.
@@ -1178,8 +1192,10 @@ Separate flags:
 6. `review_investigation_production_effects_enabled`.
 
 Selectors support workspace, repository, provider, trust domain, and producer
-release. Emergency disable wins at authorization, turn planning, certificate
-issuance, evidence acceptance, finalization, and immediately before SCM mutation.
+release. Emergency disable wins at investigation admission, turn-capability
+issuance, certificate issuance, evidence acceptance, finalization, and
+immediately before SCM mutation. Generic review authorization remains available
+so rollback cannot disable the legacy reviewer.
 
 Rollback is flag-first. Additive tables/protocol remain dormant; do not perform a
 destructive schema rollback during incident containment. Legacy review path

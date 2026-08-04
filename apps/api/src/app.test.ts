@@ -174,6 +174,15 @@ type RuntimeReviewConfiguration = NonNullable<
   >
 >["config"];
 
+const disabledInvestigationRollout = {
+  recordingEnabled: false,
+  shadowEnabled: false,
+  contextCriticEnabled: false,
+  verifiedCleanEnabled: false,
+  crossRevisionReplayEnabled: false,
+  productionEffectsEnabled: false,
+} as const;
+
 function openRouterRuntimeReviewConfiguration(): RuntimeReviewConfiguration {
   const provider = {
     kind: "openrouter" as const,
@@ -195,6 +204,7 @@ function openRouterRuntimeReviewConfiguration(): RuntimeReviewConfiguration {
     },
     blockingPolicy: { failOnSeverity: "critical" },
     limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+    investigationRollout: disabledInvestigationRollout,
   };
 }
 
@@ -3001,6 +3011,7 @@ describe("API app", () => {
       },
       blockingPolicy: { failOnSeverity: "critical" },
       limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+      investigationRollout: disabledInvestigationRollout,
     };
     const app = await createApiApp({
       actionControlPlaneDependencies: {

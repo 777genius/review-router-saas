@@ -261,6 +261,12 @@ model ReviewConfigurationVersion {
   inlineMinAgreement   Int      @default(1)
   targetTokensPerBatch Int
   reviewLanguage       String?
+  investigationRecordingEnabled           Boolean  @default(false)
+  investigationShadowEnabled              Boolean  @default(false)
+  investigationContextCriticEnabled       Boolean  @default(false)
+  investigationVerifiedCleanEnabled       Boolean  @default(false)
+  investigationCrossRevisionReplayEnabled Boolean  @default(false)
+  investigationProductionEffectsEnabled   Boolean  @default(false)
   createdAt            DateTime @default(now())
 
   configuration ReviewConfiguration                  @relation(fields: [configurationId], references: [id], onDelete: Cascade)
@@ -572,23 +578,26 @@ model ReviewOperationalSloProfileV2 {
 }
 
 model ProducerRelease {
-  producerReleaseId              String                     @id
-  distributionKind               ProducerDistributionKindV2
-  actionCommitSha                String
-  runtimeCommitSha               String
-  wrapperEntrypointDigest        String?
-  runtimeEntrypointDigest        String
-  contextGatewayPolicyVersion    String?
-  contextGatewayEntrypointDigest String?
-  schemaDigest                   String
-  capabilityProfile              String
-  protocolLimitsProfileId        String
-  operationalSloProfileId        String
-  state                          ProducerReleaseStateV2     @default(registered)
-  registeredAt                   DateTime
-  revokedAt                      DateTime?
+  producerReleaseId                      String                     @id
+  distributionKind                       ProducerDistributionKindV2
+  actionCommitSha                        String
+  runtimeCommitSha                       String
+  wrapperEntrypointDigest                String?
+  runtimeEntrypointDigest                String
+  contextGatewayPolicyVersion            String?
+  contextGatewayEntrypointDigest         String?
+  reviewInvestigationCapability          String?
+  reviewInvestigationCoverageProfileHash String?
+  reviewInvestigationPolicyHash          String?
+  schemaDigest                           String
+  capabilityProfile                      String
+  protocolLimitsProfileId                String
+  operationalSloProfileId                String
+  state                                  ProducerReleaseStateV2     @default(registered)
+  registeredAt                           DateTime
+  revokedAt                              DateTime?
 
-  @@unique([distributionKind, actionCommitSha, runtimeCommitSha, wrapperEntrypointDigest, runtimeEntrypointDigest, contextGatewayPolicyVersion, contextGatewayEntrypointDigest, schemaDigest, capabilityProfile, protocolLimitsProfileId, operationalSloProfileId])
+  @@unique([distributionKind, actionCommitSha, runtimeCommitSha, wrapperEntrypointDigest, runtimeEntrypointDigest, contextGatewayPolicyVersion, contextGatewayEntrypointDigest, reviewInvestigationCapability, reviewInvestigationCoverageProfileHash, reviewInvestigationPolicyHash, schemaDigest, capabilityProfile, protocolLimitsProfileId, operationalSloProfileId])
   @@index([state, registeredAt])
 }
 
@@ -693,6 +702,7 @@ model ReviewRunAuthorization {
   operationalSloProfileId         String
   mutationEpoch                   BigInt
   providerVoteLanes               Json
+  reviewInvestigationAuthorizationDescriptorCanonicalJson String?
   authorizationSafetyDecisionHash String
   protocolOfferHash               String
   oidcReplayKeyHash               String                        @unique
@@ -783,6 +793,50 @@ model ReviewEvidenceObservation {
   @@index([investigationCertificateId])
 }
 
+model ReviewInvestigationShadowEvidence {
+  shadowEvidenceId                 String                                  @id
+  evidenceVersion                  Int
+  authority                        InvestigationShadowEvidenceAuthorityV1
+  sourceKind                       InvestigationShadowEvidenceSourceKindV1
+  retentionPolicyVersion           String
+  investigationId                  String                                  @unique(map: "ReviewInvestigationShadowEvidence_investigation_key")
+  investigationVersion             BigInt
+  workspaceId                      String
+  repositoryConnectionId           String
+  scmRepositoryIdentityId          String
+  pullRequestNumber                Int
+  trustDomain                      ReviewTrustDomainV2
+  authorizationScopeHash           String
+  sourceBaseSha                    String
+  sourceMergeBaseSha               String
+  sourceHeadSha                    String
+  sourceReviewRevisionHash         String
+  executionId                      String
+  workSlotId                       String
+  stableReviewUnitKey              String
+  providerVoteLaneId               String
+  producerReleaseId                String
+  conclusion                       ReviewInvestigationConclusionV1
+  certificateId                    String                                  @unique(map: "ReviewInvestigationShadowEvidence_certificate_key")
+  certificateHash                  String                                  @unique(map: "ReviewInvestigationShadowEvidence_certificate_hash_key")
+  certificateCanonicalJson         String
+  terminalProviderKind             ReviewProviderKindV2?
+  terminalActualModel              String?
+  terminalOutcomeHash              String
+  terminalObservationCanonicalJson String
+  terminalPayloadHash              String
+  terminalPayloadByteCount         Int
+  findingCount                     Int
+  recordHash                       String                                  @unique(map: "ReviewInvestigationShadowEvidence_record_hash_key")
+  issuedAt                         DateTime
+  retainUntil                      DateTime
+  createdAt                        DateTime                                @default(now())
+
+  @@index([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, sourceReviewRevisionHash, issuedAt], map: "ReviewInvestigationShadowEvidence_scope_revision_idx")
+  @@index([producerReleaseId, issuedAt, shadowEvidenceId], map: "ReviewInvestigationShadowEvidence_release_idx")
+  @@index([retainUntil, shadowEvidenceId], map: "ReviewInvestigationShadowEvidence_retention_idx")
+}
+
 model ReviewContextGatewaySession {
   sessionId                String                              @id
   workspaceId              String
@@ -796,7 +850,8 @@ model ReviewContextGatewaySession {
   checkoutTreeOid          String
   sourceExecutionId        String
   sourceWorkSlotId         String
-  attemptId                String                              @unique
+  attemptId                String
+  openingIntentHash        String                              @default("4d29442a15edaf0c8d2a044f12e695b0a514842ab5d4a566c2a26e451a55c19b")
   sourceLeaseId            String
   sourceFencingToken       BigInt
   providerKind             ReviewProviderKindV2
@@ -820,6 +875,7 @@ model ReviewContextGatewaySession {
 
   @@index([workspaceId, repositoryConnectionId, pullRequestNumber, state, expiresAt])
   @@index([sourceExecutionId, sourceWorkSlotId])
+  @@unique([attemptId, openingIntentHash])
 }
 
 model ReviewContextDependencyAttestation {
@@ -863,20 +919,20 @@ model ReviewContextReplayMaterial {
 }
 
 model ReviewContextTargetReplayProof {
-  replayProofId            String                             @id
-  sourceAttestationId      String
-  sourceAttestationHash    String
+  replayProofId                 String                             @id
+  sourceAttestationId           String
+  sourceAttestationHash         String
   sourceOperationReceiptIdsHash String?
-  targetExecutionId        String
-  targetWorkSlotId         String
-  targetReviewRevisionHash String
-  targetCheckoutTreeOid    String
-  replayBinaryHash         String
-  replayPolicyVersion      String
-  reusePolicyVectorHash    String
-  createdAt                DateTime
-  expiresAt                DateTime
-  sourceAttestation        ReviewContextDependencyAttestation @relation(fields: [sourceAttestationId], references: [attestationId], onDelete: Restrict)
+  targetExecutionId             String
+  targetWorkSlotId              String
+  targetReviewRevisionHash      String
+  targetCheckoutTreeOid         String
+  replayBinaryHash              String
+  replayPolicyVersion           String
+  reusePolicyVectorHash         String
+  createdAt                     DateTime
+  expiresAt                     DateTime
+  sourceAttestation             ReviewContextDependencyAttestation @relation(fields: [sourceAttestationId], references: [attestationId], onDelete: Restrict)
 
   @@unique([sourceAttestationId, targetExecutionId, targetWorkSlotId, targetReviewRevisionHash, reusePolicyVectorHash, sourceOperationReceiptIdsHash])
   @@index([targetExecutionId, targetWorkSlotId, expiresAt])
@@ -1103,7 +1159,7 @@ model ReviewInvestigation {
   scmRepositoryIdentityId     String
   pullRequestNumber           Int
   trustDomain                 String
-  authorizationScopeHash     String?
+  authorizationScopeHash      String?
   baseSha                     String
   mergeBaseSha                String
   headSha                     String
@@ -1118,8 +1174,10 @@ model ReviewInvestigation {
   expansionRulesVersion       String
   criticPolicyVersion         String
   gatewayPolicyVersion        String
+  probePolicyVersion          String                               @default("review-investigation-probe-policy.v1")
   producerReleaseId           String
   runtimeProfileVersion       String
+  searchPolicyVersion         String                               @default("review-investigation-fixed-string-search.v1")
   policy                      Json
   state                       ReviewInvestigationStateV1
   findings                    Json
@@ -1194,25 +1252,25 @@ model ReviewInvestigationTurn {
 }
 
 model ReviewInvestigationReceipt {
-  receiptId             String                           @id
-  investigationId       String
-  obligationId          String
-  turnId                String?
-  operationKey          String
-  kind                  ReviewInvestigationReceiptKindV1
-  canonicalSubject      String
-  reviewRevisionHash    String
-  gatewayPolicyVersion  String
-  evidenceDigest        String
-  operationReceiptIds   Json
-  complete              Boolean
-  truncated             Boolean
-  failed                Boolean
-  acceptedAttestationId String?
+  receiptId               String                           @id
+  investigationId         String
+  obligationId            String
+  turnId                  String?
+  operationKey            String
+  kind                    ReviewInvestigationReceiptKindV1
+  canonicalSubject        String
+  reviewRevisionHash      String
+  gatewayPolicyVersion    String
+  evidenceDigest          String
+  operationReceiptIds     Json
+  complete                Boolean
+  truncated               Boolean
+  failed                  Boolean
+  acceptedAttestationId   String?
   acceptedAttestationHash String?
-  replayProofId          String?
-  acceptedAt            DateTime
-  retainUntil           DateTime
+  replayProofId           String?
+  acceptedAt              DateTime
+  retainUntil             DateTime
 
   @@unique([investigationId, obligationId], map: "ReviewInvestigationReceipt_obligation_key")
   @@index([reviewRevisionHash, canonicalSubject], map: "ReviewInvestigationReceipt_revision_subject_idx")
@@ -1242,37 +1300,37 @@ model ReviewInvestigationPrivateMaterial {
 }
 
 model ReviewInvestigationCertificate {
-  certificateId           String                          @id
-  certificateHash         String                          @unique(map: "ReviewInvestigationCertificate_hash_key")
-  investigationId         String
-  terminalVersion         BigInt
-  dossierDigest           String
-  reviewRevisionHash      String
-  stableReviewUnitKey     String
-  providerVoteLaneId      String
-  coverageContractVersion String
-  expansionRulesVersion   String
-  gatewayPolicyVersion    String
-  criticPolicyVersion     String
-  runtimeProfileVersion   String
-  producerReleaseId       String
-  conclusion              ReviewInvestigationConclusionV1
-  findingSetHash          String
-  obligationSetHash       String
-  receiptSetHash          String
-  scopeHash               String?
-  coverageStateHash       String?
-  contextAttestationSetHash String?
-  turnProvenanceHash      String?
-  terminalProviderKind    String?
-  terminalActualModel     String?
-  terminalOutcomeHash     String?
+  certificateId                    String                               @id
+  certificateHash                  String                               @unique(map: "ReviewInvestigationCertificate_hash_key")
+  investigationId                  String
+  terminalVersion                  BigInt
+  dossierDigest                    String
+  reviewRevisionHash               String
+  stableReviewUnitKey              String
+  providerVoteLaneId               String
+  coverageContractVersion          String
+  expansionRulesVersion            String
+  gatewayPolicyVersion             String
+  criticPolicyVersion              String
+  runtimeProfileVersion            String
+  producerReleaseId                String
+  conclusion                       ReviewInvestigationConclusionV1
+  findingSetHash                   String
+  obligationSetHash                String
+  receiptSetHash                   String
+  scopeHash                        String?
+  coverageStateHash                String?
+  contextAttestationSetHash        String?
+  turnProvenanceHash               String?
+  terminalProviderKind             String?
+  terminalActualModel              String?
+  terminalOutcomeHash              String?
   terminalObservationCanonicalJson String?
-  criticAttestationId     String?
-  criticAttestationHash   String?
-  criticDecision          ReviewInvestigationCriticDecisionV1?
-  issuedAt                DateTime
-  expiresAt               DateTime
+  criticAttestationId              String?
+  criticAttestationHash            String?
+  criticDecision                   ReviewInvestigationCriticDecisionV1?
+  issuedAt                         DateTime
+  expiresAt                        DateTime
 
   @@unique([investigationId, terminalVersion], map: "ReviewInvestigationCertificate_terminal_key")
   @@index([reviewRevisionHash, stableReviewUnitKey], map: "ReviewInvestigationCertificate_revision_unit_idx")
@@ -1292,18 +1350,19 @@ model ReviewInvestigationCommandReceipt {
 }
 
 model ReviewInvestigationTelemetrySample {
-  sampleId              String                               @id
-  producerReleaseId     String
-  source                ReviewInvestigationTelemetrySourceV1
-  repositoryScopeHash   String
-  reviewRevisionHash    String
-  stableReviewUnitHash  String
-  payload               Json
-  payloadHash           String
-  collectedAt           DateTime
-  createdAt             DateTime                             @default(now())
+  sampleId             String                               @id
+  producerReleaseId    String
+  source               ReviewInvestigationTelemetrySourceV1
+  repositoryScopeHash  String
+  reviewRevisionHash   String
+  stableReviewUnitHash String
+  payload              Json
+  payloadHash          String
+  collectedAt          DateTime
+  createdAt            DateTime                             @default(now())
 
   @@index([producerReleaseId, collectedAt, sampleId], map: "ReviewInvestigationTelemetry_release_idx")
+  @@index([producerReleaseId, sampleId], map: "ReviewInvestigationTelemetry_promotion_set_idx")
   @@index([repositoryScopeHash, collectedAt], map: "ReviewInvestigationTelemetry_scope_idx")
 }
 
@@ -1316,6 +1375,32 @@ model ReviewInvestigationPromotionReport {
   createdAt         DateTime @default(now())
 
   @@index([producerReleaseId, generatedAt, reportHash], map: "ReviewInvestigationPromotion_release_idx")
+}
+
+model ReviewInvestigationEvaluationAttestation {
+  attestationId              String   @id
+  attestationVersion         String
+  attestationHash            String   @unique(map: "ReviewInvestigationEvaluationAttestation_hash_key")
+  envelopeHash               String   @unique(map: "ReviewInvestigationEvaluationAttestation_envelope_hash_key")
+  signingKeyId               String
+  signatureAlgorithm         String
+  signatureValue             String
+  terminalSampleId           String   @unique(map: "ReviewInvestigationEvaluationAttestation_terminal_sample_key")
+  terminalSamplePayloadHash  String
+  derivedSampleId            String   @unique(map: "ReviewInvestigationEvaluationAttestation_derived_sample_key")
+  investigationId            String
+  certificateId              String
+  certificateHash            String
+  producerReleaseId          String
+  corpusVersion              String
+  evaluationPolicyVersion    String
+  payloadCanonicalJson       String
+  payload                    Json
+  importedAt                 DateTime
+  createdAt                  DateTime @default(now())
+
+  @@index([producerReleaseId, corpusVersion, evaluationPolicyVersion, importedAt], map: "ReviewInvestigationEvaluationAttestation_release_corpus_idx")
+  @@index([investigationId, certificateId], map: "ReviewInvestigationEvaluationAttestation_investigation_idx")
 }
 
 model FinalizedReviewProjectionArtifactV2 {
@@ -2034,6 +2119,14 @@ enum ReviewInvestigationTelemetrySourceV1 {
   disposable_fixture
   shadow
   allowlisted
+}
+
+enum InvestigationShadowEvidenceAuthorityV1 {
+  non_authoritative
+}
+
+enum InvestigationShadowEvidenceSourceKindV1 {
+  terminal_certificate
 }
 
 enum ReviewInvestigationObligationStateV1 {

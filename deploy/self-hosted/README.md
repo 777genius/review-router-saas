@@ -251,6 +251,23 @@ Build producer attestations and provider vote lanes from the validated release
 bundle. Do not invent release digests. The attestation `actionCommitSha` must
 match `REVIEW_ROUTER_ACTION_REF`.
 
+An Action release may advertise `review_investigation_v1` only when its
+attestation also contains the exact generated compatibility profile:
+
+```json
+{
+  "reviewInvestigationCapability": "review_investigation_v1",
+  "reviewInvestigationCoverageProfileHash": "<generated SHA-256>",
+  "reviewInvestigationPolicyHash": "<generated SHA-256>"
+}
+```
+
+All three fields are optional as a group and mandatory as a group. A partial
+profile, an unregistered hash, or a release without the matching Context Gateway
+artifact fails closed and keeps the Action on the legacy review path. Copy these
+hashes from the validated Action release artifact; do not calculate or edit them
+by hand.
+
 Store only the SHA-256 of the Review v2 operator credential in the shared env:
 
 ```bash
@@ -301,7 +318,12 @@ The E2E command generates an isolated complete T0 env, builds and boots a fresh
 Compose project on free localhost ports, verifies both migration layers and
 exact health responses, runs the Review v2 and action OIDC harnesses inside the
 container, checks logs for credential material, and removes its database and
-volumes.
+volumes. It also runs legacy Review Action v2 and the deterministic fake-gateway
+investigation flow against one investigation-capable producer release, verifies
+the exact coverage/policy hashes, and proves that a changed release profile
+fails before investigation state is written. Recording, shadow, and context
+critic are enabled only inside this disposable run; production effects,
+verified clean, and cross-revision replay remain disabled.
 
 ## 5. Start
 

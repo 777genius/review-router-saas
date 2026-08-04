@@ -149,6 +149,9 @@ export class ManageReviewRunAuthorizations {
     readonly protocolOfferHash: string;
     readonly oidcReplayKeyHash: string;
     readonly providerVoteLanes: readonly ProviderVoteLane[];
+    readonly reviewInvestigationAuthorizationDescriptorCanonicalJson?:
+      | string
+      | null;
     readonly authorizationTtlMs: number;
     readonly maxAuthorizationLifetimeMs: number;
   }): Promise<ReviewRunAuthorizationUseCaseResult> {
@@ -193,6 +196,9 @@ export class ManageReviewRunAuthorizations {
               eligibility.release.operationalSloProfileId,
             mutationEpoch: eligibility.authority.epoch,
             providerVoteLanes: input.providerVoteLanes,
+            reviewInvestigationAuthorizationDescriptorCanonicalJson:
+              input.reviewInvestigationAuthorizationDescriptorCanonicalJson ??
+              null,
             authorizationSafetyDecisionHash:
               eligibility.safety.safetyDecisionHash,
             protocolOfferHash: input.protocolOfferHash,

@@ -72,7 +72,7 @@ export class AesGcmInvestigationPrivateMaterialCipher implements InvestigationPr
       authTagBase64Url: cipher.getAuthTag().toString("base64url"),
       ciphertextBase64Url: ciphertext.toString("base64url"),
       associatedDataHash: sha256(associatedData),
-      plaintextHash: plaintextMac(key, plaintext),
+      plaintextHash: plaintextMac(key, nonce, plaintext),
       byteCount: plaintext.byteLength,
       createdAt: input.createdAt,
       expiresAt: input.expiresAt,
@@ -112,7 +112,14 @@ export class AesGcmInvestigationPrivateMaterialCipher implements InvestigationPr
     ]);
     if (
       plaintext.byteLength !== material.byteCount ||
-      !sameHash(plaintextMac(key, plaintext), material.plaintextHash)
+      !sameHash(
+        plaintextMac(
+          key,
+          Buffer.from(material.nonceBase64Url, "base64url"),
+          plaintext,
+        ),
+        material.plaintextHash,
+      )
     ) {
       throw new Error("investigation_private_material_integrity_mismatch");
     }
@@ -145,8 +152,16 @@ function sha256(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function plaintextMac(key: Uint8Array, value: Uint8Array): string {
-  return createHmac("sha256", key)
+function plaintextMac(
+  key: Uint8Array,
+  nonce: Uint8Array,
+  value: Uint8Array,
+): string {
+  const recordKey = createHmac("sha256", key)
+    .update("reviewrouter.investigation-private-material.mac-key.v1\0", "utf8")
+    .update(nonce)
+    .digest();
+  return createHmac("sha256", recordKey)
     .update("reviewrouter.investigation-private-material.v1\0", "utf8")
     .update(value)
     .digest("hex");

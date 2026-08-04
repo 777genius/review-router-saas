@@ -14,21 +14,43 @@ import type {
   RegisterReviewRunControlV2RoutesDependencies,
   RegisterReviewSnapshotReadV2RoutesDependencies,
 } from "@reviewrouter/features-action-control-plane/v2";
+import { InvestigationTurnProviderKind } from "@reviewrouter/features-review-investigations";
 import {
+  investigationPrivateMaterialActiveKeyIdEnvironmentVariable,
+  investigationPrivateMaterialKeysEnvironmentVariable,
+  investigationPrivateMaterialTtlEnvironmentVariable,
+  investigationRetentionMaintenanceEnabledEnvironmentVariable,
+  loadConfiguredInvestigationPrivateMaterial,
   NodeSha256InvestigationDigest,
   PrismaInvestigationStore,
 } from "@reviewrouter/features-review-investigations/composition";
 import {
-  createInvestigationRolloutPolicy,
   InvestigationRolloutCapability,
+  InvestigationRolloutProvider,
+  InvestigationTelemetrySource,
+  ResolveInvestigationRollout,
   type InvestigationRolloutPolicy,
 } from "@reviewrouter/features-review-investigation-operations";
+import {
+  EnvironmentInvestigationRolloutPolicyQuery,
+  RunControlInvestigationEmergencyStopQuery,
+  investigationContextCriticEnabledEnv,
+  investigationCrossRevisionReplayEnabledEnv,
+  investigationEmergencyDisabledEnv,
+  investigationProductionEffectsEnabledEnv,
+  investigationRecordingEnabledEnv,
+  investigationShadowEnabledEnv,
+  investigationVerifiedCleanEnabledEnv,
+  readEnvironmentInvestigationRolloutPolicy,
+} from "@reviewrouter/features-review-investigation-operations/composition";
 import { ReviewActionV2RouteFailure } from "@reviewrouter/features-action-control-plane/v2";
 import {
   ActualModelCompatibilityMode,
   ReviewProviderKind as EvidenceProviderKind,
   ReviewExecutionAttemptReportState,
   ReviewReuseEffectMode,
+  canonicalizeReviewContextReusePolicyVector,
+  reviewReuseEligibilityPolicyVersion,
   ReviewTaskKind as EvidenceTaskKind,
   ReviewTrustDomain as EvidenceTrustDomain,
   buildProviderInvocationIdentity,
@@ -41,7 +63,9 @@ import {
 import { VerifyAcceptedContextAttestation } from "@reviewrouter/features-review-context-attestation";
 import { PrismaContextAttestationStore } from "@reviewrouter/features-review-context-attestation/composition";
 import {
+  PrismaInvestigationShadowEvidenceStore,
   PrismaReviewObservationStore,
+  createInvestigationShadowEvidenceUseCases,
   createReviewEvidenceUseCases,
 } from "@reviewrouter/features-review-evidence/composition";
 import {
@@ -76,12 +100,14 @@ import {
   ReviewProviderKind,
   ReviewRunAuthorizationState as RunAuthorizationState,
   ReviewSafetyDecisionKind,
+  ReviewSafetyPolicyScope,
   ResolveReviewSafetyPolicy,
   ReviewTaskKind,
   canonicalJson,
   canonicalReviewOperationalSloProfile,
   canonicalReviewProtocolLimits,
   producerReleaseImmutableKey,
+  reviewInvestigationCapabilityV1,
   type CanonicalReviewRevisionResolverPort,
   type ProducerRelease,
   type ReviewProtocolLimits,
@@ -135,6 +161,7 @@ import {
   composeReviewActionV2RunControlRoutes,
   createServerOwnedReviewActionV2AdmissionFacts,
   type ReviewActionV2RevisionHashPort,
+  type ReviewInvestigationAuthorizationCapabilityPort,
   type TrustedProducerReleaseMaterializerPort,
 } from "./review-action-v2-run-control-composition.js";
 import { composeReviewActionV2SnapshotPublicationRoutes } from "./review-action-v2-production-composition-snapshot-publication.js";
@@ -149,6 +176,20 @@ import { OctokitCodexRotatingGitHubSecretGateway } from "./github/octokit-codex-
 import { ProductionReviewMutationAuthorityProofFacts } from "./review-action-v2-mutation-proof-facts.js";
 import { OctokitReviewV2DispatchCapabilityInspector } from "./github/octokit-review-v2-dispatch-capability-inspector.js";
 import { ReviewInvestigationCertificateVerificationAdapter } from "./review-investigation-certificate-verification-adapter.js";
+import {
+  ProductionReviewInvestigationFinalizationRolloutGuard,
+  type ReviewInvestigationFinalizationRolloutGuardPort,
+} from "./review-investigation-finalization-rollout-guard.js";
+import {
+  ReviewInvestigationRolloutGuard,
+  type ReviewInvestigationRolloutCapabilityResolutionPort,
+} from "./review-investigation-rollout-guard.js";
+import {
+  composePrismaReviewInvestigationTerminalTelemetry,
+  type ReviewInvestigationOperationsDiagnosticCode,
+  type ReviewInvestigationTerminalTelemetrySourcePort,
+  type ReviewInvestigationTerminalTelemetrySamplePort,
+} from "./review-investigation-operations-composition.js";
 
 export const reviewActionV2CapabilityActiveKeyIdEnv =
   "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID";
@@ -165,19 +206,27 @@ export const reviewActionV2IntentIngressEnabledEnv =
 export const reviewActionV2WorkflowDispatchReadyEnv =
   "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY";
 export const reviewInvestigationRecordingEnabledEnv =
-  "REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED";
+  investigationRecordingEnabledEnv;
 export const reviewInvestigationShadowEnabledEnv =
-  "REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED";
+  investigationShadowEnabledEnv;
 export const reviewInvestigationCrossRevisionReplayEnabledEnv =
-  "REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED";
+  investigationCrossRevisionReplayEnabledEnv;
 export const reviewInvestigationContextCriticEnabledEnv =
-  "REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED";
+  investigationContextCriticEnabledEnv;
 export const reviewInvestigationVerifiedCleanEnabledEnv =
-  "REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED";
+  investigationVerifiedCleanEnabledEnv;
 export const reviewInvestigationProductionEffectsEnabledEnv =
-  "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED";
+  investigationProductionEffectsEnabledEnv;
 export const reviewInvestigationEmergencyDisabledEnv =
-  "REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED";
+  investigationEmergencyDisabledEnv;
+export const reviewInvestigationPrivateMaterialActiveKeyIdEnv =
+  investigationPrivateMaterialActiveKeyIdEnvironmentVariable;
+export const reviewInvestigationPrivateMaterialKeysEnv =
+  investigationPrivateMaterialKeysEnvironmentVariable;
+export const reviewInvestigationPrivateMaterialTtlEnv =
+  investigationPrivateMaterialTtlEnvironmentVariable;
+export const reviewInvestigationMaintenanceEnabledEnv =
+  investigationRetentionMaintenanceEnabledEnvironmentVariable;
 
 type ReviewActionV2RouteRuntime = Pick<
   RegisterReviewRunControlV2RoutesDependencies,
@@ -308,6 +357,12 @@ export function composeReviewActionV2ProductionRoutes(input: {
   readonly runtime: ReviewActionV2RouteRuntime;
   readonly prisma?: PrismaClient | undefined;
   readonly oidcAudience?: string | undefined;
+  readonly investigationTelemetrySamples?:
+    | ReviewInvestigationTerminalTelemetrySamplePort
+    | undefined;
+  readonly recordInvestigationOperationsDiagnostic?:
+    | ((code: ReviewInvestigationOperationsDiagnosticCode) => void)
+    | undefined;
 }): ReviewActionV2ProductionRoutes {
   if (!input.enabled) {
     return Object.freeze({
@@ -331,7 +386,23 @@ export function composeReviewActionV2ProductionRoutes(input: {
   }
   assertReviewIntentRolloutConfiguration(input.env);
   const investigationRollout = readInvestigationRolloutPolicy(input.env);
-
+  const investigationRecordingEnabled = investigationCapabilityEnabled(
+    investigationRollout,
+    InvestigationRolloutCapability.Recording,
+  );
+  const investigationPrivateMaterial = investigationRecordingEnabled
+    ? loadConfiguredInvestigationPrivateMaterial(input.env)
+    : null;
+  if (investigationRecordingEnabled && !investigationPrivateMaterial) {
+    throw new Error("investigation_private_material_configuration_required");
+  }
+  if (
+    investigationRecordingEnabled &&
+    input.env[investigationRetentionMaintenanceEnabledEnvironmentVariable] !==
+      "1"
+  ) {
+    throw new Error("investigation_retention_maintenance_required");
+  }
   const {
     clock,
     digest,
@@ -348,6 +419,26 @@ export function composeReviewActionV2ProductionRoutes(input: {
       ? {}
       : { oidcAudience: input.oidcAudience }),
   });
+  const investigationRolloutGuard = new ReviewInvestigationRolloutGuard(
+    new ResolveInvestigationRollout(
+      new EnvironmentInvestigationRolloutPolicyQuery(input.env),
+      new RunControlInvestigationEmergencyStopQuery({
+        findApplicable: async (target) =>
+          (
+            await repositories.safetyControls.findApplicableReviewSafetyEmergencyControls(
+              {
+                workspaceId: target.workspaceId,
+                repositoryConnectionId: target.repositoryConnectionId,
+                scmRepositoryIdentityId: target.scmRepositoryIdentityId,
+              },
+            )
+          ).map((control) => ({
+            global: control.scope.scope === ReviewSafetyPolicyScope.Global,
+            stopped: control.stopped,
+          })),
+      }),
+    ),
+  );
 
   const requestedIntentStore = new PrismaReviewRequestedIntentStore(
     input.prisma,
@@ -384,6 +475,10 @@ export function composeReviewActionV2ProductionRoutes(input: {
     absoluteProtocolMaxima,
     authorizationTtlMs: productionTiming.authorizationTtlMs,
     maxAuthorizationLifetimeMs: productionTiming.maxAuthorizationLifetimeMs,
+    reviewInvestigationCapability:
+      new ProductionReviewInvestigationAuthorizationCapability(
+        investigationRolloutGuard,
+      ),
   } as const;
 
   const executionStore = new PrismaReviewExecutionStore(input.prisma);
@@ -414,12 +509,37 @@ export function composeReviewActionV2ProductionRoutes(input: {
   });
 
   const observationStore = new PrismaReviewObservationStore(input.prisma);
+  const investigationShadowEvidenceStore =
+    new PrismaInvestigationShadowEvidenceStore(input.prisma);
+  const investigationShadowEvidence = createInvestigationShadowEvidenceUseCases(
+    {
+      commands: investigationShadowEvidenceStore,
+      queries: investigationShadowEvidenceStore,
+      pruner: investigationShadowEvidenceStore,
+      digest,
+      clock: { nowMs: () => clock.now().getTime() },
+    },
+  );
   const contextAttestationStore = new PrismaContextAttestationStore(
     input.prisma,
   );
   const investigationStore = new PrismaInvestigationStore(input.prisma, {
     operationalRetentionMs: productionTiming.retentionDurationMs,
   });
+  const investigationTerminalTelemetry =
+    composePrismaReviewInvestigationTerminalTelemetry({
+      prisma: input.prisma,
+      investigations: investigationStore,
+      sources: new RolloutReviewInvestigationTerminalTelemetrySource(
+        investigationRolloutGuard,
+      ),
+      ...(input.investigationTelemetrySamples
+        ? { samples: input.investigationTelemetrySamples }
+        : {}),
+      diagnostics: {
+        record: (code) => input.recordInvestigationOperationsDiagnostic?.(code),
+      },
+    });
   const contextAttestationVerifier = new VerifyAcceptedContextAttestation({
     store: contextAttestationStore,
     clock: { nowMs: () => clock.now().getTime() },
@@ -453,6 +573,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
       new ReviewInvestigationCertificateVerificationAdapter(
         investigationStore,
         new NodeSha256InvestigationDigest(),
+        investigationRolloutGuard,
       ),
     investigationCertificateAcceptanceEnabled:
       input.env[reviewInvestigationShadowEnabledEnv] === "1",
@@ -581,15 +702,13 @@ export function composeReviewActionV2ProductionRoutes(input: {
     now: () => clock.now(),
   });
   const investigation = composeReviewActionV2InvestigationRoutes({
-    enabled: investigationCapabilityEnabled(
-      investigationRollout,
-      InvestigationRolloutCapability.Recording,
-    ),
+    enabled: investigationRecordingEnabled,
     runtime: input.runtime,
     handlers: {
       authorizations: runControl.authorizations,
       authorizationQueries: repositories.authorizations,
       executionQueries: executionStore,
+      producerReleases: repositories.producerReleases,
       investigations: composeReviewInvestigationUseCases({
         store: investigationStore,
         authority: new ProductionInvestigationExecutionAuthority(
@@ -608,11 +727,123 @@ export function composeReviewActionV2ProductionRoutes(input: {
           contextAttestationStore,
           { nowMs: () => clock.now().getTime() },
           new NodeSha256InvestigationDigest(),
+          {
+            async resolve(current) {
+              const snapshot = await executionStore.findExecution(
+                current.targetExecutionId,
+              );
+              const slot = snapshot?.execution.workSlots.find(
+                (candidate) =>
+                  candidate.workSlotId === current.targetWorkSlotId,
+              );
+              const authorization = snapshot
+                ? await repositories.authorizations.findReviewRunAuthorizationById(
+                    snapshot.execution.authorizationId,
+                  )
+                : null;
+              if (
+                !snapshot ||
+                !slot ||
+                !authorization ||
+                !current.sourceSession ||
+                slot.providerVoteIdentityHash !==
+                  current.targetProviderVoteLaneId ||
+                snapshot.execution.revision.reviewRevisionHash !==
+                  current.targetRevision.reviewRevisionHash ||
+                authorization.reviewRevisionHash !==
+                  current.targetRevision.reviewRevisionHash ||
+                authorization.producerReleaseId !== current.producerReleaseId
+              ) {
+                return null;
+              }
+              const [targetCheckoutTreeOid, release, policy] =
+                await Promise.all([
+                  contextAttestationHandlers.checkoutTrees.resolveCheckoutTreeOid(
+                    authorization,
+                  ),
+                  contextAttestationHandlers.producerReleases.resolve({
+                    producerReleaseId: current.producerReleaseId,
+                  }),
+                  reusePolicy.resolveReviewReusePolicy({
+                    scope: {
+                      workspaceId: authorization.workspaceId,
+                      repositoryConnectionId:
+                        authorization.repositoryConnectionId,
+                      scmRepositoryIdentityId:
+                        authorization.scmRepositoryIdentityId,
+                      pullRequestNumber: authorization.pullRequestNumber,
+                      authorizationScopeHash: await digest.digestUtf8(
+                        canonicalJson({
+                          workspaceId: authorization.workspaceId,
+                          repositoryConnectionId:
+                            authorization.repositoryConnectionId,
+                          scmRepositoryIdentityId:
+                            authorization.scmRepositoryIdentityId,
+                          pullRequestNumber: authorization.pullRequestNumber,
+                        }),
+                      ),
+                    },
+                    revision: { ...current.targetRevision },
+                    providerKind: executionEvidenceProvider(slot.providerKind),
+                    taskKindSet: [executionEvidenceTask(slot.taskKind)],
+                    trustDomain: evidenceTrustDomain(authorization.trustDomain),
+                    producerReleaseId: current.producerReleaseId,
+                  }),
+                ]);
+              if (
+                !targetCheckoutTreeOid ||
+                !release ||
+                !policy ||
+                !release.contextGatewayPolicyVersion ||
+                !release.contextGatewayEntrypointDigest ||
+                release.contextGatewayPolicyVersion !==
+                  current.gatewayPolicyVersion ||
+                policy.safetyDecision.contextGatewayReuseMode !==
+                  ReviewReuseEffectMode.Enabled
+              ) {
+                return null;
+              }
+              const providerKind = executionEvidenceProvider(slot.providerKind);
+              return Object.freeze({
+                targetCheckoutTreeOid,
+                replayBinaryHash: release.contextGatewayEntrypointDigest,
+                replayPolicyVersion: release.contextGatewayPolicyVersion,
+                reusePolicyVectorHash: await digest.digestUtf8(
+                  canonicalizeReviewContextReusePolicyVector({
+                    safetyDecision: policy.safetyDecision,
+                    compatibility: policy.compatibility,
+                    eligibilityPolicyVersion:
+                      reviewReuseEligibilityPolicyVersion,
+                    gatewayPolicyVersion: release.contextGatewayPolicyVersion,
+                    gatewayBinaryHash: release.contextGatewayEntrypointDigest,
+                    trustedCapabilityProfile: release.capabilityProfile,
+                    producerReleaseId: current.producerReleaseId,
+                    providerKind,
+                    requestedModel: current.sourceAttestation.actualModel,
+                    actualModel: current.sourceAttestation.actualModel,
+                  }),
+                ),
+              });
+            },
+          },
         ),
+        ...(investigationPrivateMaterial
+          ? {
+              privateMaterial: {
+                store: investigationStore,
+                cipher: investigationPrivateMaterial.cipher,
+                ttlMs: investigationPrivateMaterial.ttlMs,
+              },
+            }
+          : {}),
       }),
       capabilities,
       digest,
       now: () => clock.now(),
+      rollout: investigationRolloutGuard,
+      terminalShadowEvidence:
+        investigationShadowEvidence.projectInvestigationShadowEvidence,
+      terminalTelemetry: investigationTerminalTelemetry,
       crossRevisionReplayEnabled: investigationCapabilityEnabled(
         investigationRollout,
         InvestigationRolloutCapability.CrossRevisionReplay,
@@ -645,6 +876,12 @@ export function composeReviewActionV2ProductionRoutes(input: {
           safety: runControl.safetyResolver,
           releases: repositories.producerReleases,
           digest,
+          investigationRollout:
+            new ProductionReviewInvestigationFinalizationRolloutGuard({
+              observations: observationStore,
+              investigations: investigationStore,
+              rollout: investigationRolloutGuard,
+            }),
         }),
       },
     }),
@@ -665,43 +902,149 @@ export function composeReviewActionV2ProductionRoutes(input: {
   });
 }
 
+export class ProductionReviewInvestigationAuthorizationCapability implements ReviewInvestigationAuthorizationCapabilityPort {
+  constructor(
+    private readonly rollout: Pick<
+      ReviewInvestigationRolloutCapabilityResolutionPort,
+      "resolveAllowedCapabilitiesForTargets"
+    >,
+  ) {}
+
+  async resolve(
+    input: Parameters<
+      ReviewInvestigationAuthorizationCapabilityPort["resolve"]
+    >[0],
+  ) {
+    const profile = input.producerRelease.reviewInvestigationProfile;
+    if (
+      profile === null ||
+      profile.capability !== reviewInvestigationCapabilityV1
+    ) {
+      return null;
+    }
+    const providerCapabilities: {
+      providerKind: "codex" | "claude_code";
+      capabilities: readonly InvestigationRolloutCapability[];
+    }[] = [];
+    const providerKinds = [
+      ...new Set(
+        input.target.providerVoteLanes.map((lane) => lane.providerKind),
+      ),
+    ].sort();
+    const providers = providerKinds
+      .map(investigationAuthorizationProvider)
+      .filter((provider) => provider !== null);
+    const targets = providers.map((provider) => ({
+      workspaceId: input.target.workspaceId,
+      repositoryConnectionId: input.target.repositoryConnectionId,
+      scmRepositoryIdentityId: input.target.scmRepositoryIdentityId,
+      provider: provider.rollout,
+      trustDomain: input.target.trustDomain,
+      producerReleaseId: input.target.producerReleaseId,
+    }));
+    let resolvedCapabilities: readonly (readonly InvestigationRolloutCapability[])[];
+    try {
+      resolvedCapabilities =
+        await this.rollout.resolveAllowedCapabilitiesForTargets({ targets });
+    } catch {
+      return null;
+    }
+    for (const [index, provider] of providers.entries()) {
+      const capabilities = resolvedCapabilities[index];
+      if (
+        capabilities === undefined ||
+        !capabilities.includes(InvestigationRolloutCapability.Recording)
+      ) {
+        continue;
+      }
+      providerCapabilities.push(
+        Object.freeze({
+          providerKind: provider.authorization,
+          capabilities: Object.freeze([...capabilities]),
+        }),
+      );
+    }
+    if (providerCapabilities.length === 0) return null;
+    return Object.freeze({
+      authorizationDescriptorVersion: 2,
+      capability: reviewInvestigationCapabilityV1,
+      coverageProfileHash: profile.coverageProfileHash,
+      policyHash: profile.policyHash,
+      providerCapabilities: Object.freeze(providerCapabilities),
+    });
+  }
+}
+
+class RolloutReviewInvestigationTerminalTelemetrySource implements ReviewInvestigationTerminalTelemetrySourcePort {
+  constructor(private readonly rollout: ReviewInvestigationRolloutGuard) {}
+
+  async resolveSource(
+    investigation: Parameters<
+      ReviewInvestigationTerminalTelemetrySourcePort["resolveSource"]
+    >[0],
+  ): Promise<InvestigationTelemetrySource> {
+    const provider = terminalTelemetryRolloutProvider(
+      investigation.certificate?.terminalProviderKind ?? null,
+    );
+    if (provider === null) return InvestigationTelemetrySource.Shadow;
+    try {
+      await this.rollout.assertAllowed({
+        capability: InvestigationRolloutCapability.ProductionEffects,
+        target: {
+          workspaceId: investigation.scope.workspaceId,
+          repositoryConnectionId: investigation.scope.repositoryConnectionId,
+          scmRepositoryIdentityId: investigation.scope.scmRepositoryIdentityId,
+          provider,
+          trustDomain: investigation.scope.trustDomain,
+          producerReleaseId: investigation.contract.producerReleaseId,
+        },
+      });
+      return InvestigationTelemetrySource.Allowlisted;
+    } catch {
+      return InvestigationTelemetrySource.Shadow;
+    }
+  }
+}
+
+function terminalTelemetryRolloutProvider(
+  provider: InvestigationTurnProviderKind | null,
+): InvestigationRolloutProvider | null {
+  switch (provider) {
+    case InvestigationTurnProviderKind.Codex:
+      return InvestigationRolloutProvider.Codex;
+    case InvestigationTurnProviderKind.ClaudeCode:
+      return InvestigationRolloutProvider.Claude;
+    case null:
+      return null;
+  }
+}
+
+function investigationAuthorizationProvider(
+  provider: ReviewProviderKind,
+): Readonly<{
+  rollout: InvestigationRolloutProvider;
+  authorization: "codex" | "claude_code";
+}> | null {
+  switch (provider) {
+    case ReviewProviderKind.Codex:
+      return {
+        rollout: InvestigationRolloutProvider.Codex,
+        authorization: "codex",
+      };
+    case ReviewProviderKind.ClaudeCode:
+      return {
+        rollout: InvestigationRolloutProvider.Claude,
+        authorization: "claude_code",
+      };
+    case ReviewProviderKind.OpenRouter:
+      return null;
+  }
+}
+
 export function readInvestigationRolloutPolicy(
   env: Readonly<Record<string, string | undefined>>,
 ): InvestigationRolloutPolicy {
-  const enabled = (
-    [
-      [
-        reviewInvestigationRecordingEnabledEnv,
-        InvestigationRolloutCapability.Recording,
-      ],
-      [
-        reviewInvestigationShadowEnabledEnv,
-        InvestigationRolloutCapability.Shadow,
-      ],
-      [
-        reviewInvestigationContextCriticEnabledEnv,
-        InvestigationRolloutCapability.ContextCritic,
-      ],
-      [
-        reviewInvestigationVerifiedCleanEnabledEnv,
-        InvestigationRolloutCapability.VerifiedClean,
-      ],
-      [
-        reviewInvestigationCrossRevisionReplayEnabledEnv,
-        InvestigationRolloutCapability.CrossRevisionReplay,
-      ],
-      [
-        reviewInvestigationProductionEffectsEnabledEnv,
-        InvestigationRolloutCapability.ProductionEffects,
-      ],
-    ] as const
-  )
-    .filter(([name]) => env[name] === "1")
-    .map(([, capability]) => capability);
-  return createInvestigationRolloutPolicy({
-    emergencyDisabled: env[reviewInvestigationEmergencyDisabledEnv] === "1",
-    enabledCapabilities: enabled,
-  });
+  return readEnvironmentInvestigationRolloutPolicy(env);
 }
 
 function investigationCapabilityEnabled(
@@ -1273,6 +1616,7 @@ class ProductionFinalizationFactsAdapter implements ReviewActionV2FinalizationFa
       safety: ReviewSafetyDecisionResolverPort;
       releases: ProducerReleaseQueryPort;
       digest: ProductionReviewActionV2Digest;
+      investigationRollout: ReviewInvestigationFinalizationRolloutGuardPort;
     }>,
   ) {}
 
@@ -1300,6 +1644,7 @@ class ProductionFinalizationFactsAdapter implements ReviewActionV2FinalizationFa
         "snapshot",
       ],
       "projection_envelope_shape_invalid",
+      ["authoritativeObservationIds"],
     );
     const scope = finalizationRecord(
       envelope.scope,
@@ -1367,6 +1712,11 @@ class ProductionFinalizationFactsAdapter implements ReviewActionV2FinalizationFa
         ["finalization_authority_inactive"],
       );
     }
+    await this.dependencies.investigationRollout.assertAllowed({
+      authorization: input.authorization,
+      observationRefs: input.observationRefs,
+      projectionEnvelope: input.projectionEnvelope,
+    });
     const target = safetyTarget(
       input.authorization,
       input.execution.workSlots.map((slot) =>
@@ -1756,14 +2106,20 @@ function exactRecord(
 
 function finalizationRecord(
   value: unknown,
-  keys: readonly string[],
+  requiredKeys: readonly string[],
   issue: string,
+  optionalKeys: readonly string[] = [],
 ): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw finalizationFailure(issue);
   }
   const row = value as Record<string, unknown>;
-  if (Object.keys(row).sort().join(",") !== [...keys].sort().join(",")) {
+  const actualKeys = Object.keys(row);
+  const allowedKeys = new Set([...requiredKeys, ...optionalKeys]);
+  if (
+    requiredKeys.some((key) => !Object.hasOwn(row, key)) ||
+    actualKeys.some((key) => !allowedKeys.has(key))
+  ) {
     throw finalizationFailure(issue);
   }
   return row;
