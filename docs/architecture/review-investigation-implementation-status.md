@@ -2,7 +2,7 @@
 
 Updated: 2026-08-04
 
-## Implemented locally
+## Implemented and merged
 
 - Phases 0-8: bounded context, persistence/recovery, additive protocol, Context
   Gateway v4, provider-neutral Codex/Claude adapters, durable multi-turn
@@ -20,7 +20,7 @@ Updated: 2026-08-04
   projection lineage, separate verified-clean effects gate, bounded fenced
   retention maintenance, migration smoke, and rollout/rollback documentation.
 
-## Locally proven
+## Verification evidence
 
 - The production-shaped disposable Git/API/Prisma/fake-agent lifecycle passes
   through restart, idempotent replay, relation expansion, signed evaluation,
@@ -36,22 +36,40 @@ Updated: 2026-08-04
   source-level Action/SaaS harness binds the same artifact digests. Repository
   contents and provider credentials are not used by these disposable gates.
 
+## Dormant production deployment
+
+- Public Action PR `777genius/review-router#86` is merged. Immutable release
+  commit `295e76f7777a995b8fd0b0bb0a36788429c89b83` is an ancestor of Action
+  `main` merge commit `cde842c08ba0c58ca1d606beb8da86fd2eb089c2`.
+- SaaS PR `777genius/review-router-saas#103` is merged at
+  `126d0d13e38ba31112be85879e5b3429f4e5870d`. Its CI passed Quality Gates,
+  paired Action/SaaS production-shaped E2E, hosted readiness, and disposable
+  self-hosted E2E.
+- Render web, API, and worker services are live on SaaS commit
+  `126d0d13e38ba31112be85879e5b3429f4e5870d`. The production Action override is
+  pinned to the immutable Action release commit above; the prior release remains
+  in the bounded rollback allowlist.
+- All six investigation rollout environment flags are unset, which is the
+  fail-closed disabled state. No investigation comments, checks, merge signals,
+  or cross-revision reuse are enabled by this deployment.
+
 ## Deliberately not enabled
 
 All investigation capabilities remain disabled by default. This implementation
 does not claim production promotion because no approved real shadow cohort was
-run during local development.
+run during release validation.
 
-The following Definition of Done items remain operational release gates:
+The merge and dormant deployment gate is complete. The following Definition of
+Done items remain operational activation gates:
 
-1. collect approved shadow samples with trusted usage/model attribution and
+1. register the exact paired producer release and capability manifest for an
+   explicitly approved test cohort;
+2. archive a live sandbox GitHub E2E for hosted and self-hosted deployments
+   against those same paired release IDs;
+3. collect approved shadow samples with trusted usage/model attribution and
    externally evaluated ground truth;
-2. archive an immutable promotion report that meets production thresholds;
-3. archive a live sandbox GitHub E2E for hosted and self-hosted deployments
-   against the same registered paired release IDs;
-4. obtain owner approval and enable one internal/test cohort;
-5. merge, release, and deploy the paired SaaS and public Action changes in the
-   documented order.
+4. archive an immutable promotion report that meets production thresholds;
+5. obtain owner approval and enable one internal/test cohort.
 
 Until those gates are complete, findings effects, verified clean, and
 cross-revision replay must remain off in production.
