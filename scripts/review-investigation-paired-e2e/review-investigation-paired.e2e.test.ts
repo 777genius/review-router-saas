@@ -124,16 +124,6 @@ describeWithDatabase.sequential(
         (item) => item.origin === "deterministic_expansion",
       );
       expect(related.length).toBeGreaterThan(0);
-      expect(obligations).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            kind: "direct_caller",
-            origin: "agent_proposal",
-            state: "satisfied",
-            riskPriority: 800_000,
-          }),
-        ]),
-      );
       const relationObligations = related.filter((obligation) => {
         const requirement = JSON.parse(
           obligation.canonicalRequirement,
@@ -168,6 +158,48 @@ describeWithDatabase.sequential(
       ).toBe(true);
       expect(sessions.length).toBeGreaterThanOrEqual(turns.length);
       expect(attestations.length).toBeGreaterThanOrEqual(turns.length);
+      expect(fixture.diagnostics).toEqual([]);
+    }, 180_000);
+
+    it("normalizes high-risk proposals and stays inconclusive without an independent critic", async () => {
+      const fixture = requireHarness(harness);
+      const action = await fixture.run(PairedActionScenario.HighRiskProposal);
+
+      expect(action).toMatchObject({
+        ok: true,
+        scenario: PairedActionScenario.HighRiskProposal,
+        releaseManifestHash: fixture.releaseManifestHash,
+        observation: {
+          qualityFlags: expect.arrayContaining(["investigation_inconclusive"]),
+        },
+      });
+      await expect(
+        fixture.prisma.reviewInvestigation.findFirstOrThrow({
+          select: {
+            state: true,
+            conclusion: true,
+            criticDecision: true,
+          },
+        }),
+      ).resolves.toEqual({
+        state: "inconclusive",
+        conclusion: "inconclusive",
+        criticDecision: "abstain",
+      });
+      await expect(
+        fixture.prisma.reviewInvestigationObligation.findFirstOrThrow({
+          where: { origin: "agent_proposal" },
+          select: {
+            kind: true,
+            state: true,
+            riskPriority: true,
+          },
+        }),
+      ).resolves.toEqual({
+        kind: "direct_caller",
+        state: "satisfied",
+        riskPriority: 800_000,
+      });
       expect(fixture.diagnostics).toEqual([]);
     }, 180_000);
 

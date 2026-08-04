@@ -89,6 +89,7 @@ const actionReleaseRelevantPaths = Object.freeze([
 
 export enum PairedActionScenario {
   Success = "success",
+  HighRiskProposal = "high_risk_proposal",
   TamperedSeedManifest = "tampered_seed_manifest",
   StaleRevision = "stale_revision",
   IncompletePathChain = "incomplete_path_chain",

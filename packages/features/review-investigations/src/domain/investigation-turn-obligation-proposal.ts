@@ -1,9 +1,6 @@
 import { canonicalJson } from "./canonicalization";
 import type { SeedInvestigationObligation } from "./coverage-contract";
-import {
-  independentCriticRiskPriorityV1,
-  investigationRiskPriorityMaximum,
-} from "./investigation-critic-policy";
+import { investigationRiskPriorityMaximum } from "./investigation-critic-policy";
 import {
   investigationCanonicalRequirementMaximumLength,
   investigationCanonicalSubjectMaximumLength,
@@ -49,10 +46,7 @@ export function parseProviderInvestigationObligationProposals(
     if (canonicalSubject !== expectedSubject) {
       throw new Error("investigation_obligation_proposal_subject_mismatch");
     }
-    const riskPriority = Math.max(
-      boundedRiskPriority(proposal.riskPriority),
-      independentCriticRiskPriorityV1,
-    );
+    const riskPriority = boundedRiskPriority(proposal.riskPriority);
     const normalized = Object.freeze({
       kind,
       canonicalSubject: expectedSubject,

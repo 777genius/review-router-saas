@@ -9,6 +9,7 @@ import { build } from "esbuild";
 
 type Scenario =
   | "success"
+  | "high_risk_proposal"
   | "tampered_seed_manifest"
   | "stale_revision"
   | "incomplete_path_chain";
@@ -49,12 +50,17 @@ type RunnerConfig = Readonly<{
 
 type RecordingInputShape = Readonly<{
   invocation: Readonly<{
+    requestedModel: string;
     manifestFacts: Readonly<{
       executionProfile: string;
+      providerKind: string;
       toolPolicyHash: string;
     }>;
   }>;
-  manifest: Readonly<{ providerInvocationKey: string }>;
+  manifest: Readonly<{
+    manifestKey: string;
+    providerInvocationKey: string;
+  }>;
 }>;
 
 const execFileAsync = promisify(execFile);
@@ -197,8 +203,9 @@ async function executeScenario(
   const reviewPrompt = [
     "Review the disposable contract change and its repository relationships.",
     `REVIEWROUTER_PAIRED_E2E_SCENARIO:${
-      config.scenario === "incomplete_path_chain"
-        ? "incomplete_path_chain"
+      config.scenario === "incomplete_path_chain" ||
+      config.scenario === "high_risk_proposal"
+        ? config.scenario
         : "success"
     }`,
   ].join("\n");
@@ -223,6 +230,11 @@ async function executeScenario(
   });
   const requestedModel = "gpt-paired-e2e";
   const preparedSeed = modules.seed.buildReviewInvestigationSeedEnvelope({
+    canonicalInventory: await modules.inventory.buildCanonicalGitInventory({
+      root: config.checkoutRoot,
+      mergeBaseSha: config.revision.mergeBaseSha,
+      headSha: config.revision.headSha,
+    }),
     coverageManifest,
     probePlan,
     reviewPrompt,
@@ -319,27 +331,49 @@ async function executeScenario(
         },
         new modules.gatewaySession.SubprocessRequiredContextWitnessRunner(),
       );
-    const codex = new modules.codex.CodexReviewAgentAdapter(
-      new modules.processRunner.NodeReviewAgentProcessRunner(),
-      { binary: fakeCodexPath, reasoningEffort: "xhigh" },
-    );
-    const selector = new modules.selector.DeterministicReviewAgentSelector(
-      [
-        {
-          providerKind: modules.runtimeProfile.ReviewAgentProviderKind.Codex,
-          agent: codex,
-          providerCredentialEnvironment: () => ({}),
-        },
-      ],
-      {
-        allowedProviderKinds: [
-          modules.runtimeProfile.ReviewAgentProviderKind.Codex,
-        ],
-      },
-    );
     const recording = new modules.recording.ReviewInvestigationRecordingAdapter(
-      (recordingInput: RecordingInputShape) =>
-        new modules.workSlot.RunInvestigationWorkSlot({
+      (recordingInput: RecordingInputShape) => {
+        const gateway =
+          new modules.gateway.ContextGatewayV4InvestigationAdapter(
+            gatewayFactory,
+            {
+              revision: config.revision,
+              preparedManifestKey: recordingInput.manifest.manifestKey,
+              providerKind:
+                recordingInput.invocation.manifestFacts.providerKind,
+              requestedModel: recordingInput.invocation.requestedModel,
+              executionProfile:
+                recordingInput.invocation.manifestFacts.executionProfile,
+              providerInvocationKey:
+                recordingInput.manifest.providerInvocationKey,
+              toolPolicyHash:
+                recordingInput.invocation.manifestFacts.toolPolicyHash,
+            },
+          );
+        const codex = new modules.codex.CodexReviewAgentAdapter(
+          new modules.processRunner.NodeReviewAgentProcessRunner(),
+          {
+            binary: fakeCodexPath,
+            reasoningEffort: "xhigh",
+            executionSessions: gateway,
+          },
+        );
+        const selector = new modules.selector.DeterministicReviewAgentSelector(
+          [
+            {
+              providerKind:
+                modules.runtimeProfile.ReviewAgentProviderKind.Codex,
+              agent: codex,
+              providerCredentialEnvironment: () => ({}),
+            },
+          ],
+          {
+            allowedProviderKinds: [
+              modules.runtimeProfile.ReviewAgentProviderKind.Codex,
+            ],
+          },
+        );
+        return new modules.workSlot.RunInvestigationWorkSlot({
           controlPlane: investigationControlPlane,
           leases: new modules.recording.ManagedOnlyInvestigationLeaseAdapter(),
           turnRunner: new modules.turn.RunInvestigationTurn({
@@ -348,22 +382,12 @@ async function executeScenario(
               check: async () =>
                 modules.investigationPort.ReviewInvestigationCurrency.Current,
             },
-            gateway: new modules.gateway.ContextGatewayV4InvestigationAdapter(
-              gatewayFactory,
-              {
-                revision: config.revision,
-                executionProfile:
-                  recordingInput.invocation.manifestFacts.executionProfile,
-                providerInvocationKey:
-                  recordingInput.manifest.providerInvocationKey,
-                toolPolicyHash:
-                  recordingInput.invocation.manifestFacts.toolPolicyHash,
-              },
-            ),
+            gateway,
             agents: selector,
             now: () => new Date(),
           }),
-        }),
+        });
+      },
       {
         workingDirectory: config.checkoutRoot,
         leaseDurationMs: 5 * 60_000,
@@ -457,6 +481,7 @@ async function loadActionModules(actionSourceDir: string) {
     coverage,
     probes,
     seed,
+    inventory,
     canonical,
     gatewaySession,
     gateway,
@@ -488,6 +513,7 @@ async function loadActionModules(actionSourceDir: string) {
     load(
       "src/review-investigation/domain/review-investigation-seed-envelope.ts",
     ),
+    load("src/context-gateway/canonical-git-inventory.ts"),
     load("src/review-investigation/domain/canonical-json.ts"),
     load(
       "src/review-orchestration/infrastructure/context-gateway-invocation-session.ts",
@@ -522,6 +548,7 @@ async function loadActionModules(actionSourceDir: string) {
     coverage,
     probes,
     seed,
+    inventory,
     canonical,
     gatewaySession,
     gateway,
@@ -622,6 +649,7 @@ async function readConfig(value: string | undefined): Promise<RunnerConfig> {
     !parsed ||
     ![
       "success",
+      "high_risk_proposal",
       "tampered_seed_manifest",
       "stale_revision",
       "incomplete_path_chain",

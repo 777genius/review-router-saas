@@ -12,7 +12,7 @@ type TurnBrief = Readonly<{
   }>[];
 }>;
 
-type Scenario = "success" | "incomplete_path_chain";
+type Scenario = "success" | "high_risk_proposal" | "incomplete_path_chain";
 
 type ClosureClaim = Readonly<{
   obligationId: string;
@@ -60,7 +60,9 @@ async function main(): Promise<void> {
     outputVersion: 2,
     findings: [],
     obligationProposals:
-      brief.purpose === "discovery" ? proposalForMissingCaller(brief) : [],
+      brief.purpose === "discovery"
+        ? proposalForMissingCaller(brief, scenario)
+        : [],
     closureClaims,
     operationBackedDiscoveryClaims: [],
     unresolvableClaims: [],
@@ -83,7 +85,8 @@ async function main(): Promise<void> {
   );
 }
 
-function proposalForMissingCaller(brief: TurnBrief) {
+function proposalForMissingCaller(brief: TurnBrief, scenario: Scenario) {
+  if (scenario !== "high_risk_proposal") return [];
   const path = "src/caller-a.ts";
   if (
     brief.obligations.some((obligation) => {
@@ -291,7 +294,13 @@ function decodeScenario(prompt: string): Scenario {
     .split(/\r?\n/u)
     .find((line) => line.startsWith(scenarioMarker))
     ?.slice(scenarioMarker.length);
-  if (value === "success" || value === "incomplete_path_chain") return value;
+  if (
+    value === "success" ||
+    value === "high_risk_proposal" ||
+    value === "incomplete_path_chain"
+  ) {
+    return value;
+  }
   throw new Error("paired_fake_scenario_missing");
 }
 

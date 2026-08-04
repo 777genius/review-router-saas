@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { AttestedTurnProposalPreparation } from "../application/attested-turn-proposal-preparation";
+import { NodeSha256InvestigationDigest } from "../infrastructure/node/node-sha256-digest";
 import {
   ContextCriticDecision,
   InvestigationEvidenceRequirementKind,
@@ -26,12 +28,17 @@ describe("provider investigation obligation proposals", () => {
     expect(Object.isFrozen(parsed.obligationProposals[0])).toBe(true);
   });
 
-  it("applies a server-owned critic risk floor", () => {
+  it("preserves attested advisory risk and applies the server-owned floor before mutation", async () => {
     const parsed = parseInvestigationTurnObservation(
       observation([{ ...completeFileProposal(), riskPriority: 0 }]),
     );
 
-    expect(parsed.obligationProposals[0]?.riskPriority).toBe(800_000);
+    expect(parsed.obligationProposals[0]?.riskPriority).toBe(0);
+    await expect(
+      new AttestedTurnProposalPreparation(
+        new NodeSha256InvestigationDigest(),
+      ).prepare(parsed.obligationProposals),
+    ).resolves.toEqual([expect.objectContaining({ riskPriority: 800_000 })]);
   });
 
   it("rejects unknown finding severity before aggregate mutation", () => {
