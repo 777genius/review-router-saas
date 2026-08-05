@@ -181,10 +181,14 @@ function requireT0RuntimeContract() {
 }
 
 function requireInvestigationRetentionMaintenance() {
-  if (
-    read("REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED") === "1" &&
-    read("REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED") !== "1"
-  ) {
+  if (read("REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED") !== "1") {
+    return;
+  }
+  requireRotatingKeyRing(
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON",
+  );
+  if (read("REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED") !== "1") {
     errors.push(
       "REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED must be 1 when investigation recording is enabled.",
     );

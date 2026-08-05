@@ -100,7 +100,7 @@ export enum PairedActionScenario {
   TamperedSeedManifest = "tampered_seed_manifest",
   StaleRevision = "stale_revision",
   IncompletePathChain = "incomplete_path_chain",
-  ReplayManifestIdentity = "replay_manifest_identity",
+  ReplayPrepared = "replay_prepared",
 }
 
 export type PairedProtocolDiagnostic = Readonly<{
@@ -116,6 +116,9 @@ export type PairedActionProcessResult = Readonly<{
   scenario: PairedActionScenario;
   releaseManifestHash: string;
   replayPreparationMissing?: boolean;
+  preparedObligationCount?: number;
+  sourceInvestigationId?: string;
+  replayedInvestigationId?: string;
   observation?: Readonly<{
     investigationCertificateId: string;
     investigationCertificateHash: string;
@@ -166,7 +169,7 @@ export class PairedActionSaasE2EHarness {
   readonly releaseManifest: PairedActionReleaseManifest;
   readonly releaseManifestCanonicalJson: string;
   readonly releaseManifestHash: string;
-  readonly repository: DisposableRepository;
+  repository: DisposableRepository;
   readonly actionSourceDir: string;
   readonly actionRef: string;
   readonly producerReleaseId: string;
@@ -177,6 +180,7 @@ export class PairedActionSaasE2EHarness {
   private readonly apiUrl: string;
   private readonly oidcPrivateKey: KeyObject;
   private readonly oidcKeyId: string;
+  private readonly fakeGitHub: FakeGitHubTransport;
   private readonly originalFetch: typeof globalThis.fetch;
   private readonly temporaryRoot: string;
   private oidcOrdinal = 0;
@@ -198,6 +202,7 @@ export class PairedActionSaasE2EHarness {
     apiUrl: string;
     oidcPrivateKey: KeyObject;
     oidcKeyId: string;
+    fakeGitHub: FakeGitHubTransport;
     originalFetch: typeof globalThis.fetch;
     temporaryRoot: string;
   }) {
@@ -218,6 +223,7 @@ export class PairedActionSaasE2EHarness {
     this.apiUrl = input.apiUrl;
     this.oidcPrivateKey = input.oidcPrivateKey;
     this.oidcKeyId = input.oidcKeyId;
+    this.fakeGitHub = input.fakeGitHub;
     this.originalFetch = input.originalFetch;
     this.temporaryRoot = input.temporaryRoot;
   }
@@ -351,6 +357,7 @@ export class PairedActionSaasE2EHarness {
         apiUrl,
         oidcPrivateKey: oidcKeys.privateKey,
         oidcKeyId,
+        fakeGitHub,
         originalFetch,
         temporaryRoot,
       });
@@ -468,6 +475,24 @@ export class PairedActionSaasE2EHarness {
     }
   }
 
+  async advanceReviewRevision(): Promise<DisposableRepository> {
+    this.repository = await advanceDisposableRepository(this.repository, {
+      workspaceId: this.workspaceId,
+      repositoryConnectionId: this.repositoryConnectionId,
+      scmRepositoryIdentityId: this.scmRepositoryIdentityId,
+    });
+    this.fakeGitHub.revision = {
+      baseSha: this.repository.baseSha,
+      mergeBaseSha: this.repository.mergeBaseSha,
+      headSha: this.repository.headSha,
+      headTreeSha: this.repository.headTreeSha,
+    };
+    this.fakeGitHub.sourceRunId = String(
+      Number(this.fakeGitHub.sourceRunId) + 1,
+    );
+    return this.repository;
+  }
+
   async close(): Promise<void> {
     await this.app.close();
     globalThis.fetch = this.originalFetch;
@@ -484,7 +509,7 @@ export class PairedActionSaasE2EHarness {
       repository_owner: owner,
       event_name: "pull_request",
       ref: `refs/pull/${pullRequestNumber}/merge`,
-      run_id: sourceRunId,
+      run_id: this.fakeGitHub.sourceRunId,
       run_attempt: "1",
       workflow_ref: `${owner}/${repo}/.github/workflows/reviewrouter.yml@refs/pull/${pullRequestNumber}/merge`,
       workflow_sha: this.repository.headSha,
@@ -978,15 +1003,59 @@ async function createDisposableRepository(
   );
   await git(root, ["add", "-A"]);
   await git(root, ["commit", "-qm", "test: paired head"]);
+  return disposableRepositoryRevision(temporaryRoot, root, baseSha, scope);
+}
+
+async function advanceDisposableRepository(
+  repository: DisposableRepository,
+  scope: Readonly<{
+    workspaceId: string;
+    repositoryConnectionId: string;
+    scmRepositoryIdentityId: string;
+  }>,
+): Promise<DisposableRepository> {
+  await writeFile(
+    path.join(repository.root, "src/independent.ts"),
+    "export const independentValue = 1;\n",
+  );
+  await git(repository.root, ["add", "-A"]);
+  await git(repository.root, ["commit", "-qm", "test: paired replay target"]);
+  return disposableRepositoryRevision(
+    repository.parent,
+    repository.root,
+    repository.baseSha,
+    scope,
+  );
+}
+
+async function disposableRepositoryRevision(
+  parent: string,
+  root: string,
+  baseSha: string,
+  scope: Readonly<{
+    workspaceId: string;
+    repositoryConnectionId: string;
+    scmRepositoryIdentityId: string;
+  }>,
+): Promise<DisposableRepository> {
   const headSha = await gitText(root, ["rev-parse", "HEAD"]);
   const headTreeSha = await gitText(root, ["rev-parse", "HEAD^{tree}"]);
   const fullDiff = await gitText(
     root,
-    ["diff", "--no-ext-diff", "--no-textconv", "--binary", baseSha, headSha],
+    [
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--binary",
+      baseSha,
+      headSha,
+      "--",
+      "src/contract.ts",
+    ],
     false,
   );
   return Object.freeze({
-    parent: temporaryRoot,
+    parent,
     root,
     baseSha,
     mergeBaseSha: baseSha,

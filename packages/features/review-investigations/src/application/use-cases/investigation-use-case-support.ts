@@ -42,20 +42,29 @@ export async function admitInvestigationManifest(input: {
       "investigation_manifest_not_canonical",
     );
   }
-  let computedHash: string;
-  try {
-    computedHash = await input.identity.computeManifestKey(normalized);
-  } catch {
-    throw new ReviewInvestigationDomainError(
-      "investigation_manifest_identity_failed",
-    );
-  }
+  const computedHash = await computeInvestigationManifestKey(
+    input.identity,
+    normalized,
+  );
   if (normalized !== input.canonicalJson || computedHash !== input.hash) {
     throw new ReviewInvestigationDomainError(
       "investigation_manifest_hash_mismatch",
     );
   }
   return Object.freeze({ canonicalJson: normalized, hash: input.hash });
+}
+
+export async function computeInvestigationManifestKey(
+  identity: InvestigationManifestIdentityPort,
+  canonicalManifest: string,
+): Promise<string> {
+  try {
+    return await identity.computeManifestKey(canonicalManifest);
+  } catch {
+    throw new ReviewInvestigationDomainError(
+      "investigation_manifest_identity_failed",
+    );
+  }
 }
 
 export async function withCurrentDossierDigest(

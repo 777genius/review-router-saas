@@ -362,6 +362,8 @@ function command(commandId: string): OpenReviewInvestigationCommand {
       maxFindings: 20,
       maxProposalsPerTurn: 20,
       maxReceiptsPerTurn: 50,
+      maxSeedProbesPerFile: 48,
+      maxSeedProbesOverall: 384,
     },
     seedObligations: [
       {

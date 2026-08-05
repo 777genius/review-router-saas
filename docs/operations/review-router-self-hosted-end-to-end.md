@@ -185,7 +185,8 @@ REVIEW_ROUTER_ACTION_REF=777genius/review-router@<40-character-commit>
 
 A tag or branch is not accepted for Direct V2. The control plane also requires:
 
-- independent authorization and capability signing key rings
+- independent authorization, Review V2 capability, and investigation lease
+  capability signing key rings
 - context session and replay keys
 - a producer release attestation for the same Action commit
 - a provider vote lane

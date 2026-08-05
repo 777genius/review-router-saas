@@ -29,10 +29,20 @@ const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const privateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" });
 const actionCommitSha = "0123456789abcdef0123456789abcdef01234567";
 const signingKey = Buffer.from("s".repeat(32)).toString("base64");
+const investigationLeaseSigningKey = Buffer.from("i".repeat(32)).toString(
+  "base64",
+);
 const contextSessionKey = Buffer.from("c".repeat(32)).toString("base64");
 const contextReplayKey = Buffer.from("r".repeat(32)).toString("base64");
 const signingKeys = JSON.stringify([
   { keyId: "self-hosted-t0", secretBase64: signingKey, verifyUntil: null },
+]);
+const investigationLeaseSigningKeys = JSON.stringify([
+  {
+    keyId: "self-hosted-investigation",
+    secretBase64: investigationLeaseSigningKey,
+    verifyUntil: null,
+  },
 ]);
 const producerReleaseAttestations = JSON.stringify([
   {
@@ -116,6 +126,10 @@ const baseEnv = {
     { keyId: "context-self-hosted", secretBase64: contextReplayKey },
   ]),
   REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: "7".repeat(64),
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID:
+    "self-hosted-investigation",
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON:
+    investigationLeaseSigningKeys,
   REVIEW_ROUTER_SELF_HOSTED_ENV_FILE:
     "/tmp/reviewrouter-self-hosted-smoke-env-does-not-exist",
 };
@@ -301,6 +315,21 @@ const cases = [
       REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
       REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
       REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "1",
+    },
+  },
+  {
+    name: "investigation recording requires its independent lease key ring",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID is required.",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID: "",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON: "",
     },
   },
   {

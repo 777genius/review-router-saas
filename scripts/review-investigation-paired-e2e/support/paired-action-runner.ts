@@ -13,7 +13,7 @@ type Scenario =
   | "tampered_seed_manifest"
   | "stale_revision"
   | "incomplete_path_chain"
-  | "replay_manifest_identity";
+  | "replay_prepared";
 
 type RunnerConfig = Readonly<{
   scenario: Scenario;
@@ -306,27 +306,68 @@ async function executeScenario(
   }
   const lease = leaseOutcome.lease;
   try {
-    if (config.scenario === "replay_manifest_identity") {
+    if (config.scenario === "replay_prepared") {
+      const open = investigationOpenInput({
+        authorization,
+        execution,
+        assignment,
+        invocation,
+        manifest,
+        modules,
+      });
       const prepared = await investigationControlPlane.prepareReplay({
-        open: investigationOpenInput({
-          authorization,
-          execution,
-          assignment,
-          invocation,
-          manifest,
-          modules,
-        }),
+        open,
         providerManifestCanonicalJson: manifest.manifestCanonicalJson,
         providerManifestHash: manifest.manifestKey,
       });
-      if (prepared !== null) {
-        throw new Error("paired_replay_prepare_expected_missing");
+      if (!prepared || prepared.obligations.length === 0) {
+        throw new Error("paired_replay_prepare_expected_prepared");
+      }
+      const scope = Object.freeze({
+        workspaceId: authorization.facts.workspaceId,
+        repositoryConnectionId: authorization.facts.repositoryConnectionId,
+        scmRepositoryIdentityId: authorization.facts.scmRepositoryIdentityId,
+        pullRequestNumber: authorization.facts.pullRequestNumber,
+        trustDomain: authorization.facts.trustDomain,
+        authorizationScopeHash: sha256(
+          canonicalJson({
+            workspaceId: authorization.facts.workspaceId,
+            repositoryConnectionId: authorization.facts.repositoryConnectionId,
+            scmRepositoryIdentityId:
+              authorization.facts.scmRepositoryIdentityId,
+            pullRequestNumber: authorization.facts.pullRequestNumber,
+          }),
+        ),
+      });
+      const replayed =
+        await new modules.replayInvestigation.ReplayInvestigationOnRevision({
+          controlPlane: investigationControlPlane,
+          receipts: new modules.contextReplay.ContextAttestationReplayRunner({
+            checkoutRoot: config.checkoutRoot,
+            gatewayBundlePath: config.gatewayBundlePath,
+          }),
+          currency: {
+            check: async () =>
+              modules.investigationPort.ReviewInvestigationCurrency.Current,
+          },
+        }).execute({
+          open,
+          scope,
+          revision: config.revision,
+          providerManifestCanonicalJson: manifest.manifestCanonicalJson,
+          providerManifestHash: manifest.manifestKey,
+        });
+      if (!replayed) {
+        throw new Error("paired_replay_expected_applied");
       }
       return Object.freeze({
         ok: true,
         scenario: config.scenario,
         releaseManifestHash: config.releaseManifestHash,
-        replayPreparationMissing: true,
+        replayPreparationMissing: false,
+        preparedObligationCount: prepared.obligations.length,
+        sourceInvestigationId: prepared.sourceInvestigationId,
+        replayedInvestigationId: replayed.investigationId,
       });
     }
     if (
@@ -550,6 +591,8 @@ async function loadActionModules(actionSourceDir: string) {
     turn,
     runtimeProfile,
     investigationPort,
+    replayInvestigation,
+    contextReplay,
   ] = await Promise.all([
     load("src/control-plane/review-action-v2-client.ts"),
     load(
@@ -603,6 +646,12 @@ async function loadActionModules(actionSourceDir: string) {
     load(
       "src/review-investigation/application/investigation-control-plane-port.ts",
     ),
+    load(
+      "src/review-investigation/application/replay-investigation-on-revision.ts",
+    ),
+    load(
+      "src/review-orchestration/infrastructure/context-attestation-replay-runner.ts",
+    ),
   ]);
   return {
     client,
@@ -629,6 +678,8 @@ async function loadActionModules(actionSourceDir: string) {
     turn,
     runtimeProfile,
     investigationPort,
+    replayInvestigation,
+    contextReplay,
   };
 }
 
@@ -723,7 +774,7 @@ async function readConfig(value: string | undefined): Promise<RunnerConfig> {
       "tampered_seed_manifest",
       "stale_revision",
       "incomplete_path_chain",
-      "replay_manifest_identity",
+      "replay_prepared",
     ].includes(parsed.scenario) ||
     !/^[a-f0-9]{40}$/u.test(parsed.actionRef) ||
     !/^[a-f0-9]{64}$/u.test(parsed.releaseManifestHash)

@@ -226,10 +226,11 @@ reusable workflow to the full Action commit. Direct initialization rejects any
 other executable workflow inventory.
 
 Pin `REVIEW_ROUTER_ACTION_REF` to the exact 40-character Action commit. Populate
-the authorization and capability key rings, producer release attestations,
-provider vote lanes, context keys, and operator credential hash declared in
-`.env.example`. Generate independent 32-byte base64 secrets for each signing or
-context key:
+the authorization, Review V2 capability, and investigation lease capability key
+rings, producer release attestations, provider vote lanes, context keys, and
+operator credential hash declared in `.env.example`. Generate independent
+32-byte base64 secrets for each signing or context key. Never reuse the general
+Review V2 capability key for investigation leases:
 
 ```bash
 openssl rand -base64 32

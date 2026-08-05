@@ -67,6 +67,54 @@ describe("review investigation in-memory vertical slice", () => {
     );
   });
 
+  it("normalizes manifest identity failures while acquiring a lease", async () => {
+    const harness = createHarness();
+    const command = openCommand("lease-identity-open");
+    const opened = await harness.open.execute(command);
+    const planned = await harness.plan.execute({
+      commandId: "lease-identity-plan",
+      investigationId: opened.investigationId,
+      expectedVersion: opened.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+    const acquire = new AcquireInvestigationLease(
+      harness.store,
+      harness.store,
+      harness.authority,
+      harness.digest,
+      {
+        computeManifestKey: async () => {
+          throw new Error("provider-specific identity failure");
+        },
+      },
+      harness.clock,
+    );
+
+    await expect(
+      acquire.execute({
+        investigationId: opened.investigationId,
+        expectedVersion: planned.version,
+        turnId: planned.turn!.turnId,
+        authorizationId: "authorization-test",
+        mutationEpoch: 1n,
+        providerStrategyId: command.providerStrategyId,
+        investigationManifestCanonicalJson:
+          command.investigationManifestCanonicalJson!,
+        investigationManifestHash: command.investigationManifestHash!,
+        acquireRequestId: "lease-identity-acquire",
+        acquireRequestHash: "1".repeat(64),
+        ownerIdHash: "2".repeat(64),
+        leaseId: "lease-identity-failure",
+        attemptId: "attempt-identity-failure",
+        leaseCapabilityId: "capability-identity-failure",
+        capabilitySigningKeyId: "signing-key-1",
+        initialLeaseDurationMs: 30_000,
+        retentionDurationMs: 3_600_000,
+      }),
+    ).rejects.toThrow("investigation_manifest_identity_failed");
+  });
+
   it("fails closed when discovery turns report mixed terminal models", () => {
     const base = {
       turnId: "turn-1",
@@ -1292,4 +1340,6 @@ const policy: ReviewInvestigationPolicy = {
   maxFindings: 20,
   maxProposalsPerTurn: 20,
   maxReceiptsPerTurn: 50,
+  maxSeedProbesPerFile: 48,
+  maxSeedProbesOverall: 384,
 };

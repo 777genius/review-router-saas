@@ -1314,7 +1314,7 @@ async function renewInvestigationLease(
     leaseId: request.leaseId,
     ownerIdHash: request.ownerIdHash,
     fencingToken: request.fencingToken,
-    requireOwnership: false,
+    requireOwnership: true,
     dependencies: d,
   });
   const renewed = await d.investigations.renewLease.execute({
@@ -1360,7 +1360,7 @@ async function releaseInvestigationLease(
     request.leaseCapability,
     d,
   );
-  await requireInvestigationLeaseCapability({
+  const lease = await requireInvestigationLeaseCapability({
     authority,
     leaseId: request.leaseId,
     ownerIdHash: request.ownerIdHash,
@@ -1368,6 +1368,17 @@ async function releaseInvestigationLease(
     requireOwnership: false,
     dependencies: d,
   });
+  if (!investigationLeaseOwnershipIsCurrent(lease, authority, d.now())) {
+    return {
+      statusCode: 200 as const,
+      result: {
+        status: ReviewInvestigationLeaseResultStatus.Expired,
+        leaseId: lease.leaseId,
+        fencingToken: lease.fencingToken.toString(10),
+        expiresAt: lease.expiresAt,
+      },
+    };
+  }
   const released = await d.investigations.releaseLease.execute({
     leaseId: request.leaseId,
     ownerIdHash: request.ownerIdHash,
@@ -1402,6 +1413,41 @@ async function commitTurn(
     request.authorizationToken,
     d,
   );
+  const leaseAuthority = await verifyInvestigationLeaseCapability(
+    request.leaseCapability,
+    d,
+  );
+  await requireRestorableInvestigationLeaseCapability({
+    authority: leaseAuthority,
+    authorization,
+    request,
+    dependencies: d,
+  });
+  const observation = await parseCanonicalObservation(request, d);
+  const command = {
+    commandId: request.idempotencyKey,
+    investigationId: request.investigationId,
+    expectedVersion: decimal(request.expectedVersion, "expected_version"),
+    turnId: request.turnId,
+    sourceAttemptId: leaseAuthority.attemptId,
+    sourceLeaseId: request.sourceLeaseId,
+    sourceFencingToken: request.fencingToken,
+    acceptedAttestationId: request.acceptedAttestationId,
+    acceptedAttestationHash: request.acceptedAttestationHash,
+    turnObservationHash: request.turnObservationHash,
+    observation,
+  } as const;
+  const restored =
+    await d.investigations.commitTurn.restoreCommittedCommand(command);
+  if (restored !== null) {
+    return {
+      statusCode: 200 as const,
+      result: present(
+        restored,
+        ReviewInvestigationMutationResultStatus.Applied,
+      ),
+    };
+  }
   const aggregate = await requireAggregate(
     request.investigationId,
     authorization,
@@ -1413,10 +1459,6 @@ async function commitTurn(
       : InvestigationRolloutCapability.Recording,
     aggregate,
     authorization,
-    d,
-  );
-  const leaseAuthority = await verifyInvestigationLeaseCapability(
-    request.leaseCapability,
     d,
   );
   const lease = await requireInvestigationLeaseCapability({
@@ -1431,22 +1473,16 @@ async function commitTurn(
   });
   const turnAuthority = await verifyTurnCapability(request.turnCapability, d);
   requireTurnAuthority(turnAuthority, request, aggregate, authorization);
-  const observation = await parseCanonicalObservation(request, d);
   let result: ReviewInvestigationReadModel;
   try {
-    result = await d.investigations.commitTurn.execute({
-      commandId: request.idempotencyKey,
-      investigationId: request.investigationId,
-      expectedVersion: decimal(request.expectedVersion, "expected_version"),
-      turnId: request.turnId,
-      sourceAttemptId: lease.attemptId,
-      sourceLeaseId: request.sourceLeaseId,
-      sourceFencingToken: request.fencingToken,
-      acceptedAttestationId: request.acceptedAttestationId,
-      acceptedAttestationHash: request.acceptedAttestationHash,
-      turnObservationHash: request.turnObservationHash,
-      observation,
-    });
+    if (lease.attemptId !== leaseAuthority.attemptId) {
+      throw failure(
+        412,
+        ReviewActionV2ProtocolErrorCode.StalePrecondition,
+        "investigation_lease_attempt_stale",
+      );
+    }
+    result = await d.investigations.commitTurn.execute(command);
   } catch (error) {
     if (error instanceof ReviewInvestigationDomainError) {
       throw failure(
@@ -1499,7 +1535,7 @@ async function abortTurn(
     ownerIdHash: leaseAuthority.ownerIdHash,
     fencingToken: request.fencingToken,
     operation: ReviewInvestigationLeaseProtectedOperation.TurnAbort,
-    requireOwnership: false,
+    requireOwnership: true,
     aggregate,
     dependencies: d,
   });
@@ -2463,9 +2499,7 @@ async function requireInvestigationLeaseCapability(input: {
     (input.aggregate !== undefined &&
       !reviewInvestigationLeaseBindingIsCurrent(lease, input.aggregate)) ||
     (input.requireOwnership
-      ? lease.state !== ReviewInvestigationLeaseState.Active ||
-        new Date(lease.expiresAt) <= now ||
-        authority.ownershipExpiresAt <= now
+      ? !investigationLeaseOwnershipIsCurrent(lease, authority, now)
       : input.operation !== undefined &&
         (lease.state !== ReviewInvestigationLeaseState.Active ||
           new Date(lease.resultReportUntil) <= now ||
@@ -2489,6 +2523,46 @@ async function requireInvestigationLeaseCapability(input: {
     }
   }
   return lease;
+}
+
+function investigationLeaseOwnershipIsCurrent(
+  lease: ReviewInvestigationLease,
+  authority: VerifiedReviewActionV2InvestigationLeaseCapability,
+  now: Date,
+): boolean {
+  return (
+    lease.state === ReviewInvestigationLeaseState.Active &&
+    new Date(lease.expiresAt) > now &&
+    authority.ownershipExpiresAt > now
+  );
+}
+
+async function requireRestorableInvestigationLeaseCapability(input: {
+  readonly authority: VerifiedReviewActionV2InvestigationLeaseCapability;
+  readonly authorization: ReviewRunAuthorization;
+  readonly request: ReviewInvestigationTurnCommitRequest;
+  readonly dependencies: ReviewActionV2InvestigationHandlerDependencies;
+}): Promise<void> {
+  const { authority, authorization, request, dependencies: d } = input;
+  if (
+    authority.authorizationId !== authorization.authorizationId ||
+    authority.mutationEpoch !== authorization.mutationEpoch ||
+    authority.scopeHash !==
+      (await investigationAuthorizationScopeHash(authorization, d.digest)) ||
+    authority.reviewRevisionHash !== authorization.reviewRevisionHash ||
+    authority.investigationId !== request.investigationId ||
+    authority.investigationVersion !==
+      decimal(request.expectedVersion, "expected_version") ||
+    authority.turnId !== request.turnId ||
+    authority.leaseId !== request.sourceLeaseId ||
+    authority.fencingToken.toString(10) !== request.fencingToken
+  ) {
+    throw failure(
+      412,
+      ReviewActionV2ProtocolErrorCode.StalePrecondition,
+      "investigation_lease_restore_binding_stale",
+    );
+  }
 }
 
 function investigationLeaseAcquireStatus(

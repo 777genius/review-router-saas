@@ -302,21 +302,56 @@ describeWithDatabase.sequential(
       ).resolves.toBe(0);
     }, 180_000);
 
-    it("accepts the Action domain-separated manifest key in replay preparation", async () => {
+    it("replays prepared evidence from a certified source into a new revision", async () => {
       const fixture = requireHarness(harness);
-      const action = await fixture.run(
-        PairedActionScenario.ReplayManifestIdentity,
-      );
-
-      expect(action).toMatchObject({
+      const sourceAction = await fixture.run(PairedActionScenario.Success);
+      expect(sourceAction).toMatchObject({
         ok: true,
-        scenario: PairedActionScenario.ReplayManifestIdentity,
-        releaseManifestHash: fixture.releaseManifestHash,
-        replayPreparationMissing: true,
+        scenario: PairedActionScenario.Success,
       });
-      await expect(fixture.prisma.reviewInvestigation.count()).resolves.toBe(0);
+      const sourceInvestigation =
+        await fixture.prisma.reviewInvestigation.findFirstOrThrow({
+          where: {
+            reviewRevisionHash: fixture.repository.reviewRevisionHash,
+          },
+          select: { investigationId: true, state: true },
+        });
+      expect(sourceInvestigation.state).toBe("concluded");
+
+      const targetRevision = await fixture.advanceReviewRevision();
+      const action = await fixture.run(PairedActionScenario.ReplayPrepared);
+      const persistedState = await investigationFailureState(fixture);
+
+      expect(
+        action,
+        actionFailureMessage(action, fixture, persistedState),
+      ).toMatchObject({
+        ok: true,
+        scenario: PairedActionScenario.ReplayPrepared,
+        releaseManifestHash: fixture.releaseManifestHash,
+        replayPreparationMissing: false,
+        sourceInvestigationId: sourceInvestigation.investigationId,
+      });
+      expect(action.preparedObligationCount).toBeGreaterThan(0);
+      const replayed =
+        await fixture.prisma.reviewInvestigation.findFirstOrThrow({
+          where: { reviewRevisionHash: targetRevision.reviewRevisionHash },
+          select: { investigationId: true, state: true },
+        });
+      expect(action.replayedInvestigationId).toBe(replayed.investigationId);
+      await expect(
+        fixture.prisma.reviewInvestigationReceipt.count({
+          where: {
+            investigationId: replayed.investigationId,
+            replayProofId: { not: null },
+          },
+        }),
+      ).resolves.toBeGreaterThan(0);
+      await expect(
+        fixture.prisma.reviewContextTargetReplayProof.count(),
+      ).resolves.toBeGreaterThan(0);
       expect(fixture.diagnostics).toEqual([]);
-    }, 120_000);
+    }, 240_000);
   },
 );
 

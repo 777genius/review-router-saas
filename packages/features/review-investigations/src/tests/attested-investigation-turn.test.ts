@@ -129,6 +129,8 @@ describe("CommitAttestedInvestigationTurn", () => {
         maxFindings: 32,
         maxProposalsPerTurn: 16,
         maxReceiptsPerTurn: 32,
+        maxSeedProbesPerFile: 48,
+        maxSeedProbesOverall: 384,
       },
       seedObligations: [
         {
@@ -1045,6 +1047,8 @@ describe("CommitAttestedInvestigationTurn", () => {
         maxFindings: 32,
         maxProposalsPerTurn: 16,
         maxReceiptsPerTurn: 32,
+        maxSeedProbesPerFile: 48,
+        maxSeedProbesOverall: 384,
       },
       seedObligations: [
         inventorySeedV2({ reviewRevisionHash: revisionHash }),
@@ -1183,6 +1187,13 @@ describe("CommitAttestedInvestigationTurn", () => {
         }),
       ]),
     );
+    expect(await commit.restoreCommittedCommand(command)).toEqual(firstResult);
+    await expect(
+      commit.restoreCommittedCommand({
+        ...command,
+        sourceFencingToken: "2",
+      }),
+    ).rejects.toThrow("investigation_idempotency_conflict");
     expect(await commit.execute(command)).toEqual(firstResult);
     expect(evidence.verify).toHaveBeenCalledTimes(1);
   });
@@ -1242,6 +1253,8 @@ describe("CommitAttestedInvestigationTurn", () => {
         maxFindings: 32,
         maxProposalsPerTurn: 16,
         maxReceiptsPerTurn: 32,
+        maxSeedProbesPerFile: 48,
+        maxSeedProbesOverall: 384,
       },
       seedObligations: [
         inventorySeedV2({
@@ -1423,6 +1436,8 @@ async function createFixture() {
       maxFindings: 32,
       maxProposalsPerTurn: 16,
       maxReceiptsPerTurn: 32,
+      maxSeedProbesPerFile: 48,
+      maxSeedProbesOverall: 384,
     },
     seedObligations: [
       {

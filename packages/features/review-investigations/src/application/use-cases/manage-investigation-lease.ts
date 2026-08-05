@@ -19,7 +19,10 @@ import type {
   InvestigationLeaseStorePort,
 } from "../ports/investigation-lease-store-port";
 import type { InvestigationStorePort } from "../ports/investigation-store-port";
-import { requireCurrentExecution } from "./investigation-use-case-support";
+import {
+  computeInvestigationManifestKey,
+  requireCurrentExecution,
+} from "./investigation-use-case-support";
 
 export type AcquireInvestigationLeaseCommand = Readonly<{
   investigationId: string;
@@ -74,7 +77,8 @@ export class AcquireInvestigationLease {
     }
     await requireCurrentExecution({ authority: this.authority, investigation });
     if (
-      (await this.manifestIdentity.computeManifestKey(
+      (await computeInvestigationManifestKey(
+        this.manifestIdentity,
         command.investigationManifestCanonicalJson,
       )) !== command.investigationManifestHash
     ) {

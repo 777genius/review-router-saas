@@ -4,6 +4,8 @@ import {
   ContextCriticDecision,
   InvestigationTurnProviderKind,
   InvestigationLeaseAcquireStatus,
+  ReviewInvestigationLeasePurpose,
+  ReviewInvestigationLeaseState,
   InvestigationObligationKind,
   InvestigationObligationOrigin,
   InvestigationObligationState,
@@ -15,12 +17,14 @@ import {
   canonicalInvestigationCertificateCandidate,
   reviewInvestigationCoverageProfileV2,
   type ReviewInvestigation,
+  type ReviewInvestigationLease,
   type ReviewInvestigationReadModel,
 } from "@reviewrouter/features-review-investigations";
 import {
   ReviewActionV2ProtocolErrorCode,
   ReviewInvestigationMutationResultStatus,
   ReviewInvestigationLeaseResultStatus,
+  ReviewInvestigationPublishedAbortReason,
   ReviewActionV2OperationId,
   ReviewInvestigationPublishedRuntimeProfile,
   canonicalizeReviewActionV2Request,
@@ -30,8 +34,11 @@ import {
   type ReviewActionV2RequestMap,
   type ReviewInvestigationConcludeRequest,
   type ReviewInvestigationLeaseAcquireRequest,
+  type ReviewInvestigationLeaseReleaseRequest,
+  type ReviewInvestigationLeaseRenewRequest,
   type ReviewInvestigationOpenV2Request,
   type ReviewInvestigationTurnPlanRequest,
+  type ReviewInvestigationTurnAbortRequest,
   type ReviewInvestigationReplayV2Request,
 } from "@reviewrouter/protocol-review-action-v2";
 import {
@@ -300,6 +307,142 @@ describe("Review Action v2 investigation composition", () => {
       }),
     );
     expect(issue).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an expired lease generation for renew, release, and turn abort", async () => {
+    const ownerIdHash = sha("investigation-owner");
+    const aggregate = activeInvestigation();
+    const lease = investigationLeaseFixture(aggregate, ownerIdHash);
+    const authority = {
+      capabilityId: lease.leaseCapabilityId,
+      authorizationId: lease.authorizationId,
+      mutationEpoch: lease.mutationEpoch,
+      scopeHash: await authorizationScopeHash(),
+      executionId: lease.executionId,
+      workSlotId: lease.workSlotId,
+      reviewRevisionHash: lease.revision.reviewRevisionHash,
+      investigationId: lease.investigationId,
+      investigationVersion: lease.investigationVersion,
+      turnId: lease.turnId,
+      turnPurpose: lease.turnPurpose,
+      providerVoteLaneId: lease.providerVoteLaneId,
+      providerStrategyId: lease.providerStrategyId,
+      investigationManifestHash: lease.investigationManifestHash,
+      ownerIdHash: lease.ownerIdHash,
+      leaseId: lease.leaseId,
+      attemptId: lease.attemptId,
+      fencingToken: lease.fencingToken,
+      ownershipExpiresAt: new Date(now.getTime() - 1),
+      resultReportUntil: new Date(lease.resultReportUntil),
+    };
+    const renewExecute = vi.fn();
+    const releaseExecute = vi.fn();
+    const abortExecute = vi.fn();
+    const routes = composeReviewActionV2InvestigationRoutes({
+      enabled: true,
+      runtime: {
+        readServerTime: async () => now,
+        createRequestId: () => "request-generated",
+      },
+      handlers: {
+        ...investigationLeaseHandlerStubs,
+        authorizations: authorizationResolver(),
+        authorizationQueries: {} as never,
+        executionQueries: {
+          findExecution: vi.fn().mockResolvedValue(executionSnapshot()),
+        } as never,
+        investigations: {
+          restore: { snapshot: vi.fn().mockResolvedValue(aggregate) },
+          renewLease: { execute: renewExecute },
+          releaseLease: { execute: releaseExecute },
+          abortTurn: { execute: abortExecute },
+        } as never,
+        capabilities: {} as never,
+        investigationLeaseQueries: {
+          findLease: vi.fn().mockResolvedValue(lease),
+        } as never,
+        investigationLeaseCapabilities: {
+          verify: vi.fn().mockResolvedValue(authority),
+        } as never,
+        digest,
+        now: () => now,
+        rollout: allowingRollout,
+        terminalShadowEvidence: { execute: vi.fn() } as never,
+        crossRevisionReplayEnabled: false,
+        replayPreparation: vi.fn() as never,
+      },
+    });
+
+    const renewRequest = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvestigationLeaseRenew,
+      {
+        ...envelope("investigation-lease-renew-expired-generation"),
+        leaseCapability: "expired-generation-capability",
+        idempotencyKey: "investigation-lease-renew-expired-generation",
+        requestBodyHash: sha("placeholder"),
+        leaseId: lease.leaseId,
+        ownerIdHash,
+        fencingToken: lease.fencingToken.toString(10),
+        renewRequestId: "renew-expired-generation",
+      } satisfies ReviewInvestigationLeaseRenewRequest,
+    );
+    const releaseRequest = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvestigationLeaseRelease,
+      {
+        ...envelope("investigation-lease-release-expired-generation"),
+        leaseCapability: "expired-generation-capability",
+        idempotencyKey: "investigation-lease-release-expired-generation",
+        requestBodyHash: sha("placeholder"),
+        leaseId: lease.leaseId,
+        ownerIdHash,
+        fencingToken: lease.fencingToken.toString(10),
+        releaseRequestId: "release-expired-generation",
+      } satisfies ReviewInvestigationLeaseReleaseRequest,
+    );
+    const abortRequest = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvestigationTurnAbort,
+      {
+        ...envelope("investigation-turn-abort-expired-generation"),
+        authorizationToken: "authorization-token",
+        leaseCapability: "expired-generation-capability",
+        idempotencyKey: "investigation-turn-abort-expired-generation",
+        requestBodyHash: sha("placeholder"),
+        investigationId: aggregate.investigationId,
+        expectedVersion: aggregate.version.toString(10),
+        turnId: aggregate.activeTurn!.turnId,
+        turnCapability: "turn-capability",
+        sourceLeaseId: lease.leaseId,
+        fencingToken: lease.fencingToken.toString(10),
+        abortReason:
+          ReviewInvestigationPublishedAbortReason.CapacityUnavailable,
+        nextEligibleAt: new Date(now.getTime() + 60_000).toISOString(),
+      } satisfies ReviewInvestigationTurnAbortRequest,
+    );
+
+    for (const operation of [
+      routes.renewLease!.execute(renewRequest),
+      routes.abortTurn!.execute(abortRequest),
+    ]) {
+      await expect(operation).rejects.toMatchObject({
+        statusCode: 412,
+        errorCode: ReviewActionV2ProtocolErrorCode.StalePrecondition,
+        issues: ["investigation_lease_stale"],
+      });
+    }
+    await expect(routes.releaseLease!.execute(releaseRequest)).resolves.toEqual(
+      {
+        statusCode: 200,
+        result: {
+          status: ReviewInvestigationLeaseResultStatus.Expired,
+          leaseId: lease.leaseId,
+          fencingToken: lease.fencingToken.toString(10),
+          expiresAt: lease.expiresAt,
+        },
+      },
+    );
+    expect(renewExecute).not.toHaveBeenCalled();
+    expect(releaseExecute).not.toHaveBeenCalled();
+    expect(abortExecute).not.toHaveBeenCalled();
   });
 
   it("projects terminal shadow evidence after conclude and heals on idempotent retry", async () => {
@@ -955,6 +1098,8 @@ function activeInvestigation(): ReviewInvestigation {
       maxFindings: 128,
       maxProposalsPerTurn: 16,
       maxReceiptsPerTurn: 128,
+      maxSeedProbesPerFile: 48,
+      maxSeedProbesOverall: 384,
     },
     obligations: [
       {
@@ -993,6 +1138,50 @@ function activeInvestigation(): ReviewInvestigation {
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
   } as unknown as ReviewInvestigation;
+}
+
+function investigationLeaseFixture(
+  aggregate: ReviewInvestigation,
+  ownerIdHash: string,
+): ReviewInvestigationLease {
+  return {
+    leaseId: "investigation-lease-1",
+    purpose: ReviewInvestigationLeasePurpose.ShadowTurn,
+    workspaceId: aggregate.scope.workspaceId,
+    repositoryConnectionId: aggregate.scope.repositoryConnectionId,
+    scmRepositoryIdentityId: aggregate.scope.scmRepositoryIdentityId,
+    pullRequestNumber: aggregate.scope.pullRequestNumber,
+    authorizationId: authorization.authorizationId,
+    mutationEpoch: authorization.mutationEpoch,
+    executionId: aggregate.executionId,
+    workSlotId: aggregate.workSlotId,
+    revision: aggregate.revision,
+    investigationId: aggregate.investigationId,
+    investigationVersion: aggregate.version,
+    turnId: aggregate.activeTurn!.turnId,
+    turnPurpose: aggregate.activeTurn!.purpose,
+    providerVoteLaneId: aggregate.providerVoteLaneId,
+    providerStrategyId: aggregate.providerStrategyId,
+    investigationManifestCanonicalJson: canonicalJson({ manifestVersion: 1 }),
+    investigationManifestHash: sha("investigation-manifest"),
+    attemptId: "investigation-attempt-1",
+    acquireRequestIdHash: sha("investigation-acquire-request"),
+    acquireRequestHash: sha("investigation-acquire-body"),
+    lastRenewRequestIdHash: sha("previous-renew-request"),
+    lastRenewRequestHash: sha("previous-renew-body"),
+    lastReleaseRequestIdHash: null,
+    lastReleaseRequestHash: null,
+    ownerIdHash,
+    leaseCapabilityId: "investigation-capability-1",
+    capabilitySigningKeyId: "investigation-signing-key-1",
+    fencingToken: 7n,
+    state: ReviewInvestigationLeaseState.Active,
+    acquiredAt: new Date(now.getTime() - 120_000).toISOString(),
+    renewedAt: new Date(now.getTime() - 30_000).toISOString(),
+    expiresAt: new Date(now.getTime() + 30_000).toISOString(),
+    resultReportUntil: aggregate.activeTurn!.expiresAt,
+    retainUntil: new Date(now.getTime() + 3_600_000).toISOString(),
+  };
 }
 
 function activeReadModel(): ReviewInvestigationReadModel {

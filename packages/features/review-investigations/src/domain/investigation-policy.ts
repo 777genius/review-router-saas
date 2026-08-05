@@ -10,6 +10,8 @@ export type ReviewInvestigationPolicy = Readonly<{
   maxFindings: number;
   maxProposalsPerTurn: number;
   maxReceiptsPerTurn: number;
+  maxSeedProbesPerFile: number;
+  maxSeedProbesOverall: number;
 }>;
 
 export function assertInvestigationPolicy(
@@ -39,5 +41,7 @@ export function policyCanonicalValue(
     maxFindings: policy.maxFindings,
     maxProposalsPerTurn: policy.maxProposalsPerTurn,
     maxReceiptsPerTurn: policy.maxReceiptsPerTurn,
+    maxSeedProbesPerFile: policy.maxSeedProbesPerFile,
+    maxSeedProbesOverall: policy.maxSeedProbesOverall,
   };
 }

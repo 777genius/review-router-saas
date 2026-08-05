@@ -62,6 +62,8 @@ const policy = Object.freeze({
   maxFindings: 256,
   maxProposalsPerTurn: 128,
   maxReceiptsPerTurn: 256,
+  maxSeedProbesPerFile: 48,
+  maxSeedProbesOverall: 384,
 });
 const authorization = Object.freeze({
   authorizationId: "authorization-1",

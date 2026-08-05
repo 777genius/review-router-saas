@@ -1236,6 +1236,15 @@ async function persistObligations(
         throw new Error("investigation_receipt_mutation_forbidden");
       }
     } else if (obligation.receipt) {
+      if (
+        transition.kind === InvestigationStoreTransitionKind.TurnCommitted &&
+        obligation.receipt.acceptedAttestationId !==
+          transition.acceptedAttestationId
+      ) {
+        throw new Error(
+          "investigation_receipt_attestation_transition_mismatch",
+        );
+      }
       await transaction.reviewInvestigationReceipt.create({
         data: {
           receiptId: obligation.receipt.receiptId,
@@ -1254,10 +1263,7 @@ async function persistObligations(
           complete: obligation.receipt.complete,
           truncated: obligation.receipt.truncated,
           failed: obligation.receipt.failed,
-          acceptedAttestationId:
-            transition.kind === InvestigationStoreTransitionKind.TurnCommitted
-              ? transition.acceptedAttestationId
-              : null,
+          acceptedAttestationId: obligation.receipt.acceptedAttestationId,
           acceptedAt: new Date(next.updatedAt),
           retainUntil,
         },
@@ -1891,6 +1897,8 @@ function toPolicy(value: Prisma.JsonValue): ReviewInvestigationPolicy {
     maxFindings: numberField(value, "maxFindings"),
     maxProposalsPerTurn: numberField(value, "maxProposalsPerTurn"),
     maxReceiptsPerTurn: numberField(value, "maxReceiptsPerTurn"),
+    maxSeedProbesPerFile: numberField(value, "maxSeedProbesPerFile"),
+    maxSeedProbesOverall: numberField(value, "maxSeedProbesOverall"),
   };
   assertInvestigationPolicy(policy);
   return policy;

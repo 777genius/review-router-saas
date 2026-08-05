@@ -322,6 +322,8 @@ function investigationFixture(
       maxFindings: 32,
       maxProposalsPerTurn: 16,
       maxReceiptsPerTurn: 32,
+      maxSeedProbesPerFile: 48,
+      maxSeedProbesOverall: 384,
     },
     obligations,
     dossierDigest: hash("d"),

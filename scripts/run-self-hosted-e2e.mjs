@@ -135,6 +135,7 @@ function createTestSecrets() {
     reviewV2Capability: randomBytes(32).toString("base64"),
     reviewV2ContextSession: randomBytes(32).toString("base64"),
     reviewV2ContextReplay: randomBytes(32).toString("base64"),
+    investigationLeaseCapability: randomBytes(32).toString("base64"),
     investigationPrivateMaterial: randomBytes(32).toString("base64url"),
     reviewV2Operator: randomSecret(),
     privateKey: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
@@ -251,6 +252,16 @@ function createTestEnvironment() {
       .update(secrets.reviewV2Operator, "utf8")
       .digest("hex"),
     REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID:
+      "self-hosted-e2e-investigation-lease",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON:
+      JSON.stringify([
+        {
+          keyId: "self-hosted-e2e-investigation-lease",
+          secretBase64: secrets.investigationLeaseCapability,
+          verifyUntil: null,
+        },
+      ]),
     REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED: "1",
     REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED: "1",
     REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "1",
@@ -346,6 +357,8 @@ function writeEnvFile(env) {
     "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON",
     "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256",
     "REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON",
     "REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED",
     "REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED",
     "REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED",
