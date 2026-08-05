@@ -126,10 +126,21 @@ export async function generateReviewActionV2Protocol(input = {}) {
     );
   }
   for (const operationDescriptor of publishedContract.operations) {
+    const operationSchemaSource =
+      published.extensionSchema.$defs[
+        `${operationDescriptor.operationId}_request`
+      ] === undefined
+        ? published.schema
+        : published.extensionSchema;
     const requestDefinition =
-      published.schema.$defs[`${operationDescriptor.operationId}_request`];
+      operationSchemaSource.$defs[`${operationDescriptor.operationId}_request`];
     const responseDefinition =
-      published.schema.$defs[`${operationDescriptor.operationId}_response`];
+      operationSchemaSource.$defs[`${operationDescriptor.operationId}_response`];
+    if (requestDefinition === undefined || responseDefinition === undefined) {
+      throw new Error(
+        `protocol_operation_schema_missing:${operationDescriptor.operationId}`,
+      );
+    }
     const operationSchema = {
       $schema: published.schema.$schema,
       $id: `${publishedContract.schemaId}/${operationDescriptor.operationId}`,

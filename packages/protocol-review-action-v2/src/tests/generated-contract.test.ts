@@ -47,6 +47,20 @@ import {
 } from "../../../../scripts/generate-review-action-v2-protocol.mjs";
 
 describe("generated Review Action v2 negotiation contract", () => {
+  it("publishes concrete request and response schemas for extension operations", async () => {
+    for (const operationId of reviewInvestigationExtensionV1.operationIds) {
+      const schema = JSON.parse(
+        await readFile(
+          new URL(`../generated/schemas/${operationId}.schema.json`, import.meta.url),
+          "utf8",
+        ),
+      ) as { readonly oneOf?: readonly unknown[] };
+
+      expect(schema.oneOf).toHaveLength(2);
+      expect(schema.oneOf?.every((definition) => definition !== null)).toBe(true);
+    }
+  });
+
   it("keeps the generated schema digest and golden fixtures byte-consistent", async () => {
     const schema = JSON.parse(
       await readFile(
