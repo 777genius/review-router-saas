@@ -2,6 +2,7 @@ import {
   AcceptedContextAttestationVerificationReason,
   AcceptedContextAttestationVerificationStatus,
   VerifyAcceptedContextAttestation,
+  ContextLeaseAuthorityKind,
 } from "@reviewrouter/features-review-context-attestation";
 import {
   ContextAttestationVerificationDenialReason,
@@ -29,6 +30,7 @@ export class ReviewContextAttestationEvidenceAdapter implements AcceptedContextA
       sourceExecutionId: query.sourceExecutionId,
       sourceWorkSlotId: query.sourceWorkSlotId,
       attemptId: query.attemptId,
+      sourceLeaseAuthorityKind: ContextLeaseAuthorityKind.StandardExecution,
       sourceLeaseId: query.sourceLeaseId,
       sourceFencingToken: query.sourceFencingToken,
       sourceReviewRevisionHash: query.sourceRevision.reviewRevisionHash,

@@ -51,6 +51,7 @@ import {
   reviewActionV2CanonicalizerDigest,
   reviewActionV2PublishedProtocolVersion,
   reviewActionV2PublishedSchemaDigest,
+  reviewInvestigationExtensionV1,
   ReviewActionV2OperationId,
   ReviewActionV2ProtocolErrorCode,
   ReviewRunAuthorizationResultStatus,
@@ -83,12 +84,27 @@ export type ReviewInvestigationAuthorizationProviderCapabilities = Readonly<{
 }>;
 
 export type ReviewInvestigationAuthorizationCapability = Readonly<{
+  readonly authorizationDescriptorVersion: 3;
+  readonly capability: "review_investigation_v1";
+  readonly coverageProfileHash: string;
+  readonly extensionCanonicalizerDigest: string;
+  readonly extensionId: string;
+  readonly extensionSchemaDigest: string;
+  readonly policyHash: string;
+  readonly providerCapabilities: readonly ReviewInvestigationAuthorizationProviderCapabilities[];
+}>;
+
+type LegacyReviewInvestigationAuthorizationCapability = Readonly<{
   readonly authorizationDescriptorVersion: 2;
   readonly capability: "review_investigation_v1";
   readonly coverageProfileHash: string;
   readonly policyHash: string;
   readonly providerCapabilities: readonly ReviewInvestigationAuthorizationProviderCapabilities[];
 }>;
+
+type ReviewInvestigationAuthorizationSnapshot =
+  | LegacyReviewInvestigationAuthorizationCapability
+  | ReviewInvestigationAuthorizationCapability;
 
 export type ReviewInvestigationAuthorizationTarget = Pick<
   ReviewRunAuthorization,
@@ -573,28 +589,95 @@ function bindInvestigationCapabilityToAuthorization(
       "authorizationDescriptorVersion",
       "capability",
       "coverageProfileHash",
+      "extensionCanonicalizerDigest",
+      "extensionId",
+      "extensionSchemaDigest",
       "policyHash",
       "providerCapabilities",
     ])
   ) {
     return null;
   }
-  const providerCapabilities = capability.providerCapabilities;
-  const authorizedProviderKinds = new Set<string>(
-    providerVoteLanes.map((lane) => lane.providerKind),
-  );
   if (
+    capability.authorizationDescriptorVersion !== 3 ||
+    capability.capability !== "review_investigation_v1" ||
+    !isSha256(capability.coverageProfileHash) ||
+    capability.extensionId !== reviewInvestigationExtensionV1.extensionId ||
+    capability.extensionSchemaDigest !==
+      reviewInvestigationExtensionV1.schemaDigest ||
+    capability.extensionCanonicalizerDigest !==
+      reviewInvestigationExtensionV1.canonicalizerDigest ||
+    !isSha256(capability.policyHash)
+  ) {
+    return null;
+  }
+  const boundRows = bindInvestigationProviderCapabilities(
+    capability.providerCapabilities,
+    providerVoteLanes,
+  );
+  if (boundRows === null) return null;
+
+  // This is participation eligibility only. Independent critic activation
+  // still requires its own fenced Review Executions prepared manifest.
+  return Object.freeze({
+    authorizationDescriptorVersion: 3,
+    capability: capability.capability,
+    coverageProfileHash: capability.coverageProfileHash,
+    extensionCanonicalizerDigest: capability.extensionCanonicalizerDigest,
+    extensionId: capability.extensionId,
+    extensionSchemaDigest: capability.extensionSchemaDigest,
+    policyHash: capability.policyHash,
+    providerCapabilities: Object.freeze(boundRows),
+  });
+}
+
+function bindLegacyInvestigationCapabilitySnapshot(
+  capability: LegacyReviewInvestigationAuthorizationCapability,
+  providerVoteLanes: readonly ProviderVoteLane[],
+): LegacyReviewInvestigationAuthorizationCapability | null {
+  if (
+    !hasExactKeys(capability, [
+      "authorizationDescriptorVersion",
+      "capability",
+      "coverageProfileHash",
+      "policyHash",
+      "providerCapabilities",
+    ]) ||
     capability.authorizationDescriptorVersion !== 2 ||
     capability.capability !== "review_investigation_v1" ||
     !isSha256(capability.coverageProfileHash) ||
-    !isSha256(capability.policyHash) ||
+    !isSha256(capability.policyHash)
+  ) {
+    return null;
+  }
+  const providerCapabilities = bindInvestigationProviderCapabilities(
+    capability.providerCapabilities,
+    providerVoteLanes,
+  );
+  if (providerCapabilities === null) return null;
+  return Object.freeze({
+    authorizationDescriptorVersion: 2,
+    capability: capability.capability,
+    coverageProfileHash: capability.coverageProfileHash,
+    policyHash: capability.policyHash,
+    providerCapabilities,
+  });
+}
+
+function bindInvestigationProviderCapabilities(
+  providerCapabilities: unknown,
+  providerVoteLanes: readonly ProviderVoteLane[],
+): readonly ReviewInvestigationAuthorizationProviderCapabilities[] | null {
+  if (
     !Array.isArray(providerCapabilities) ||
     providerCapabilities.length === 0 ||
     providerCapabilities.length > 2
   ) {
     return null;
   }
-
+  const authorizedProviderKinds = new Set<string>(
+    providerVoteLanes.map((lane) => lane.providerKind),
+  );
   const providerKinds: ("codex" | "claude_code")[] = [];
   const boundRows: ReviewInvestigationAuthorizationProviderCapabilities[] = [];
   for (const row of providerCapabilities) {
@@ -633,22 +716,13 @@ function bindInvestigationCapabilityToAuthorization(
   ) {
     return null;
   }
-
-  // This is participation eligibility only. Independent critic activation
-  // still requires its own fenced Review Executions prepared manifest.
-  return Object.freeze({
-    authorizationDescriptorVersion: 2,
-    capability: capability.capability,
-    coverageProfileHash: capability.coverageProfileHash,
-    policyHash: capability.policyHash,
-    providerCapabilities: Object.freeze(boundRows),
-  });
+  return Object.freeze(boundRows);
 }
 
 function restoreInvestigationCapabilitySnapshot(
   canonicalSnapshot: string | null,
   providerVoteLanes: readonly ProviderVoteLane[],
-): ReviewInvestigationAuthorizationCapability | null {
+): ReviewInvestigationAuthorizationSnapshot | null {
   if (canonicalSnapshot === null) return null;
   let parsed: unknown;
   try {
@@ -660,12 +734,17 @@ function restoreInvestigationCapabilitySnapshot(
       "review_investigation_authorization_snapshot_invalid",
     );
   }
-  const bound = isRecord(parsed)
-    ? bindInvestigationCapabilityToAuthorization(
-        parsed as ReviewInvestigationAuthorizationCapability,
-        providerVoteLanes,
-      )
-    : null;
+  const bound = !isRecord(parsed)
+    ? null
+    : parsed.authorizationDescriptorVersion === 2
+      ? bindLegacyInvestigationCapabilitySnapshot(
+          parsed as LegacyReviewInvestigationAuthorizationCapability,
+          providerVoteLanes,
+        )
+      : bindInvestigationCapabilityToAuthorization(
+          parsed as ReviewInvestigationAuthorizationCapability,
+          providerVoteLanes,
+        );
   if (canonicalJson(parsed) !== canonicalSnapshot || bound === null) {
     throw routeFailure(
       422,

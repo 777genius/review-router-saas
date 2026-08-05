@@ -5,6 +5,7 @@ import {
   ContextDependencyKind,
   ContextGatewayV4OperationKind,
   ContextGatewayV4OutcomeKind,
+  ContextLeaseAuthorityKind,
   ContextProviderKind,
   OpenContextGatewaySession,
   OpenContextGatewaySessionStatus,
@@ -27,10 +28,20 @@ import {
   type TargetReplayProof,
 } from "@reviewrouter/features-review-context-attestation";
 import type {
+  InvestigationLeaseQueryPort,
   InvestigationReplayPreparationPort,
+  InvestigationStorePort,
   PreparedInvestigationReceiptReplay,
+  ReviewInvestigationLease,
 } from "@reviewrouter/features-review-investigations";
-import { InvestigationTurnProviderKind } from "@reviewrouter/features-review-investigations";
+import {
+  InvestigationTurnProviderKind,
+  ReviewInvestigationLeaseProtectedOperation,
+  ReviewInvestigationLeaseState,
+  ReviewInvestigationTurnPurpose,
+  assertReviewInvestigationLeaseAllows,
+  reviewInvestigationLeaseBindingIsCurrent,
+} from "@reviewrouter/features-review-investigations";
 import { AesGcmContextReplayMaterialCipher } from "@reviewrouter/features-review-context-attestation/composition";
 import {
   ProviderExecutionProfile,
@@ -52,6 +63,11 @@ import {
   type ReviewTrustDomain,
 } from "@reviewrouter/features-review-evidence";
 import {
+  InvestigationRolloutCapability,
+  InvestigationRolloutProvider,
+} from "@reviewrouter/features-review-investigation-operations";
+import {
+  ReviewExecutionProviderKind,
   ReviewInvocationLeasePurpose,
   ReviewInvocationLeaseState,
   ReviewObservationAttachmentKind,
@@ -78,6 +94,7 @@ import {
   ReviewContextReceiptReplayCommitResultStatus,
   ReviewContextReplayCommitResultStatus,
   canonicalizeReviewContextConfinementEvidence,
+  canonicalizeReviewInvestigationContextConfinementEvidence,
   canonicalizeReviewContextGatewayEvent,
   canonicalizeReviewContextReplayChainSeed,
   canonicalizeReviewContextReplayEvent,
@@ -87,6 +104,8 @@ import {
   type ReviewActionV2RequestMap,
   type ReviewContextGatewayOpenRequest,
   type ReviewContextGatewaySealRequest,
+  type ReviewInvestigationContextGatewayOpenRequest,
+  type ReviewInvestigationContextGatewaySealRequest,
   type ReviewContextReceiptReplayCommitRequest,
   type ReviewContextReplayCommitRequest,
 } from "@reviewrouter/protocol-review-action-v2";
@@ -94,9 +113,20 @@ import {
   type ReviewActionV2ContextReplayAuthority,
   type ReviewActionV2InvestigationReceiptReplayAuthority,
   type ReviewActionV2ExecutionEvidenceCapabilityAdapter,
+  type ReviewActionV2ContextGatewaySealAuthority,
+  type ReviewActionV2InvestigationContextGatewaySealAuthority,
   type ReviewActionV2ReusableAttachmentAuthority,
   type VerifiedReviewActionV2LeaseCapability,
 } from "./review-action-v2-execution-evidence-capabilities.js";
+import {
+  hasAuthorizedReviewInvestigationExtension,
+  type ReviewInvestigationAuthorizedProviderKind,
+} from "./review-action-v2-investigation-extension-admission.js";
+import type { ReviewInvestigationRolloutGuardPort } from "./review-investigation-rollout-guard.js";
+import type {
+  ReviewActionV2InvestigationLeaseCapabilityPort,
+  VerifiedReviewActionV2InvestigationLeaseCapability,
+} from "./review-action-v2-investigation-lease-capabilities.js";
 
 const gatewaySeedDomain = "rr.context-gateway-seed.v1";
 const gatewaySecretDomain = "rr.context-gateway-session-secret.v1";
@@ -210,6 +240,10 @@ export type ReviewActionV2ContextAttestationHandlerDependencies = Readonly<{
   store: ContextAttestationStorePort;
   cipher: ContextReplayMaterialCipherPort;
   capabilities: ReviewActionV2ExecutionEvidenceCapabilityAdapter;
+  investigationLeaseQueries: InvestigationLeaseQueryPort;
+  investigationQueries: Pick<InvestigationStorePort, "findById">;
+  investigationLeaseCapabilities: ReviewActionV2InvestigationLeaseCapabilityPort;
+  investigationRollout: ReviewInvestigationRolloutGuardPort;
   digest: ReviewActionV2ContextDigestPort;
   checkoutTrees: ReviewActionV2CheckoutTreeResolverPort;
   producerReleases: ReviewActionV2ProducerReleaseProfilePort;
@@ -217,6 +251,22 @@ export type ReviewActionV2ContextAttestationHandlerDependencies = Readonly<{
   nextId: (kind: "gateway_session" | "attestation" | "replay_proof") => string;
   sessionSecretKey: Uint8Array;
   config: ReviewActionV2ContextAttestationConfig;
+}>;
+
+type BoundContextGatewayLease = Readonly<{
+  authorityKind: ContextLeaseAuthorityKind;
+  capabilityId: string;
+  authorizationId: string;
+  mutationEpoch: bigint;
+  scopeHash: string;
+  executionId: string;
+  workSlotId: string;
+  leaseId: string;
+  attemptId: string;
+  providerInvocationKey: string;
+  providerVoteIdentityHash: string;
+  preparedManifestCanonicalJson: string;
+  investigationRolloutCapability: InvestigationRolloutCapability | null;
 }>;
 
 export function readReviewActionV2ContextCrypto(
@@ -281,10 +331,38 @@ export function composeReviewActionV2ContextAttestationRoutes(input: {
   return {
     ...input.runtime,
     openGateway: enabled((request: ReviewContextGatewayOpenRequest) =>
-      openGateway(request, handlers),
+      openGateway(
+        request,
+        ContextLeaseAuthorityKind.StandardExecution,
+        ReviewActionV2OperationId.ReviewContextGatewayOpen,
+        handlers,
+      ),
     ),
     sealGateway: enabled((request: ReviewContextGatewaySealRequest) =>
-      sealGateway(request, handlers),
+      sealGateway(
+        request,
+        ContextLeaseAuthorityKind.StandardExecution,
+        ReviewActionV2OperationId.ReviewContextGatewaySeal,
+        handlers,
+      ),
+    ),
+    openInvestigationGateway: enabled(
+      (request: ReviewInvestigationContextGatewayOpenRequest) =>
+        openGateway(
+          request,
+          ContextLeaseAuthorityKind.InvestigationShadow,
+          ReviewActionV2OperationId.ReviewInvestigationContextGatewayOpen,
+          handlers,
+        ),
+    ),
+    sealInvestigationGateway: enabled(
+      (request: ReviewInvestigationContextGatewaySealRequest) =>
+        sealGateway(
+          request,
+          ContextLeaseAuthorityKind.InvestigationShadow,
+          ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal,
+          handlers,
+        ),
     ),
     commitReplay: enabled((request: ReviewContextReplayCommitRequest) =>
       commitReplay(request, handlers),
@@ -333,40 +411,83 @@ function enabled<Request, Result>(
   return { capabilityEnabled: true as const, execute };
 }
 
+async function issueContextGatewaySeal(
+  authorityKind: ContextLeaseAuthorityKind,
+  capabilities: ReviewActionV2ExecutionEvidenceCapabilityAdapter,
+  authority: ReviewActionV2ContextGatewaySealAuthority,
+  issuedAt: Date,
+): Promise<string> {
+  switch (authorityKind) {
+    case ContextLeaseAuthorityKind.StandardExecution:
+      return capabilities.issueContextGatewaySeal(authority, issuedAt);
+    case ContextLeaseAuthorityKind.InvestigationShadow:
+      return capabilities.issueInvestigationContextGatewaySeal(
+        { ...authority, sourceLeaseAuthorityKind: "investigation_shadow" },
+        issuedAt,
+      );
+  }
+}
+
+async function verifyContextGatewaySeal(
+  authorityKind: ContextLeaseAuthorityKind,
+  capabilities: ReviewActionV2ExecutionEvidenceCapabilityAdapter,
+  token: string,
+  now: Date,
+): Promise<
+  | ReviewActionV2ContextGatewaySealAuthority
+  | ReviewActionV2InvestigationContextGatewaySealAuthority
+> {
+  switch (authorityKind) {
+    case ContextLeaseAuthorityKind.StandardExecution:
+      return capabilities.verifyContextGatewaySeal(token, now);
+    case ContextLeaseAuthorityKind.InvestigationShadow:
+      return capabilities.verifyInvestigationContextGatewaySeal(token, now);
+  }
+}
+
 async function openGateway(
-  request: ReviewContextGatewayOpenRequest,
+  request:
+    | ReviewContextGatewayOpenRequest
+    | ReviewInvestigationContextGatewayOpenRequest,
+  authorityKind: ContextLeaseAuthorityKind,
+  operationId:
+    | ReviewActionV2OperationId.ReviewContextGatewayOpen
+    | ReviewActionV2OperationId.ReviewInvestigationContextGatewayOpen,
   d: ReviewActionV2ContextAttestationHandlerDependencies,
 ) {
-  await assertBodyHash(
-    ReviewActionV2OperationId.ReviewContextGatewayOpen,
-    request,
-    d.digest,
-  );
+  await assertBodyHash(operationId, request, d.digest);
   const now = d.now();
   const authorization = await requireAuthorization(
     request.authorizationToken,
     d,
   );
-  const snapshot = await requireExecution(
-    request.sourceExecutionId,
+  if (
+    authorityKind === ContextLeaseAuthorityKind.InvestigationShadow &&
+    !hasAuthorizedReviewInvestigationExtension(authorization)
+  ) {
+    throw failure(
+      403,
+      ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
+      "review_investigation_extension_not_authorized",
+    );
+  }
+  const bound = await resolveBoundContextGatewayLease({
+    authorityKind,
+    leaseCapability: request.leaseCapability,
     authorization,
-    d.executionQueries,
-  );
-  const authority = await verifyLeaseCapability(
-    request.leaseCapability,
-    now,
-    d,
-  );
-  const lease = await requireBoundLease({
-    authority,
-    authorization,
-    snapshot,
     leaseId: request.sourceLeaseId,
     workSlotId: request.sourceWorkSlotId,
     attemptId: request.attemptId,
     fencingToken: request.fencingToken,
+    sourceExecutionId: request.sourceExecutionId,
     requireOwnership: true,
+    operation: ReviewInvestigationLeaseProtectedOperation.ContextGatewayOpen,
     now,
+    dependencies: d,
+  });
+  await assertInvestigationShadowGatewayAllowed({
+    authorization,
+    bound,
     dependencies: d,
   });
   requireEqual(
@@ -377,29 +498,20 @@ async function openGateway(
   const facts = await resolveOpeningFacts({
     request,
     authorization,
-    snapshot,
-    lease,
+    snapshot: bound.snapshot,
+    lease: bound.lease,
     dependencies: d,
   });
   const sessionSecret = deriveGatewaySessionSecret(
     d.sessionSecretKey,
     gatewaySecretIdentity(facts),
   );
-  const eventChainSeedHash = hmacHex(
-    sessionSecret,
-    canonicalJson({
-      domain: gatewaySeedDomain,
-      attemptId: facts.attemptId,
-      openingIntentHash: facts.openingIntentHash,
-      sourceLeaseId: facts.sourceLeaseId,
-      sourceFencingToken: facts.sourceFencingToken,
-    }),
-  );
+  const eventChainSeedHash = hmacHex(sessionSecret, gatewaySeedIdentity(facts));
   const open = new OpenContextGatewaySession({
     openingFacts: {
       resolveOpeningFacts: async (command) =>
         command.attemptId === facts.attemptId &&
-        command.leaseCapabilityId === authority.capabilityId &&
+        command.leaseCapabilityId === bound.lease.capabilityId &&
         command.confinementEvidenceId === facts.confinementProofHash
           ? { ...facts, eventChainSeedHash }
           : null,
@@ -410,7 +522,7 @@ async function openGateway(
   });
   const outcome = await open.execute({
     attemptId: request.attemptId,
-    leaseCapabilityId: authority.capabilityId,
+    leaseCapabilityId: bound.lease.capabilityId,
     confinementEvidenceId: request.confinementEvidenceHash,
   });
   if (!outcome.session) {
@@ -426,7 +538,9 @@ async function openGateway(
       },
     };
   }
-  const sealCapability = await d.capabilities.issueContextGatewaySeal(
+  const sealCapability = await issueContextGatewaySeal(
+    authorityKind,
+    d.capabilities,
     {
       authorizationId: authorization.authorizationId,
       mutationEpoch: authorization.mutationEpoch,
@@ -464,44 +578,55 @@ async function openGateway(
 }
 
 async function sealGateway(
-  request: ReviewContextGatewaySealRequest,
+  request:
+    | ReviewContextGatewaySealRequest
+    | ReviewInvestigationContextGatewaySealRequest,
+  authorityKind: ContextLeaseAuthorityKind,
+  operationId:
+    | ReviewActionV2OperationId.ReviewContextGatewaySeal
+    | ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal,
   d: ReviewActionV2ContextAttestationHandlerDependencies,
 ) {
-  await assertBodyHash(
-    ReviewActionV2OperationId.ReviewContextGatewaySeal,
-    request,
-    d.digest,
-  );
+  await assertBodyHash(operationId, request, d.digest);
   const now = d.now();
   const authorization = await requireAuthorization(
     request.authorizationToken,
     d,
   );
-  const leaseAuthority = await verifyLeaseCapability(
-    request.leaseCapability,
-    now,
-    d,
-  );
-  const snapshot = await requireExecution(
-    leaseAuthority.executionId,
+  if (
+    authorityKind === ContextLeaseAuthorityKind.InvestigationShadow &&
+    !hasAuthorizedReviewInvestigationExtension(authorization)
+  ) {
+    throw failure(
+      403,
+      ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
+      "review_investigation_extension_not_authorized",
+    );
+  }
+  const bound = await resolveBoundContextGatewayLease({
+    authorityKind,
+    leaseCapability: request.leaseCapability,
     authorization,
-    d.executionQueries,
-  );
-  await requireBoundLease({
-    authority: leaseAuthority,
-    authorization,
-    snapshot,
     leaseId: request.sourceLeaseId,
-    workSlotId: leaseAuthority.workSlotId,
+    workSlotId: null,
     attemptId: request.attemptId,
     fencingToken: request.fencingToken,
+    sourceExecutionId: null,
     requireOwnership: false,
+    operation: ReviewInvestigationLeaseProtectedOperation.ContextGatewaySeal,
     now,
+    dependencies: d,
+  });
+  await assertInvestigationShadowGatewayAllowed({
+    authorization,
+    bound,
     dependencies: d,
   });
   let sealAuthority;
   try {
-    sealAuthority = await d.capabilities.verifyContextGatewaySeal(
+    sealAuthority = await verifyContextGatewaySeal(
+      authorityKind,
+      d.capabilities,
       request.sealCapability,
       now,
     );
@@ -523,7 +648,7 @@ async function sealGateway(
   await assertSealAuthority({
     request,
     authorization,
-    leaseAuthority,
+    leaseAuthority: bound.lease,
     sealAuthority,
     session,
     dependencies: d,
@@ -1918,10 +2043,12 @@ async function resolveCurrentCandidate(
 }
 
 async function resolveOpeningFacts(input: {
-  readonly request: ReviewContextGatewayOpenRequest;
+  readonly request:
+    | ReviewContextGatewayOpenRequest
+    | ReviewInvestigationContextGatewayOpenRequest;
   readonly authorization: ReviewRunAuthorization;
   readonly snapshot: ReviewExecutionSnapshot;
-  readonly lease: ReviewInvocationLease;
+  readonly lease: BoundContextGatewayLease;
   readonly dependencies: ReviewActionV2ContextAttestationHandlerDependencies;
 }) {
   const { request, authorization, snapshot, lease, dependencies: d } = input;
@@ -2011,7 +2138,9 @@ async function resolveOpeningFacts(input: {
     "context_gateway_binary_mismatch",
   );
   const confinementProofHash = await d.digest.digestUtf8(
-    canonicalizeReviewContextConfinementEvidence({
+    (lease.authorityKind === ContextLeaseAuthorityKind.StandardExecution
+      ? canonicalizeReviewContextConfinementEvidence
+      : canonicalizeReviewInvestigationContextConfinementEvidence)({
       attemptId: request.attemptId,
       sourceLeaseId: request.sourceLeaseId,
       sourceFencingToken: request.fencingToken,
@@ -2034,10 +2163,7 @@ async function resolveOpeningFacts(input: {
     "context_confinement_evidence_mismatch",
   );
   const openingIntentHash = await d.digest.digestUtf8(
-    canonicalJson({
-      domain: "rr.context-gateway-opening-intent.v1",
-      idempotencyKey: request.idempotencyKey,
-    }),
+    openingIntentIdentity(lease.authorityKind, request.idempotencyKey),
   );
   return Object.freeze({
     scope: {
@@ -2057,6 +2183,7 @@ async function resolveOpeningFacts(input: {
     sourceWorkSlotId: request.sourceWorkSlotId,
     attemptId: request.attemptId,
     openingIntentHash,
+    sourceLeaseAuthorityKind: lease.authorityKind,
     sourceLeaseId: request.sourceLeaseId,
     sourceFencingToken: request.fencingToken,
     providerKind: contextProviderKind(manifest.providerKind),
@@ -2155,15 +2282,299 @@ async function requireBoundLease(input: {
   return lease;
 }
 
-async function assertSealAuthority(input: {
-  readonly request: ReviewContextGatewaySealRequest;
+async function resolveBoundContextGatewayLease(input: {
+  readonly authorityKind: ContextLeaseAuthorityKind;
+  readonly leaseCapability: string;
   readonly authorization: ReviewRunAuthorization;
-  readonly leaseAuthority: VerifiedReviewActionV2LeaseCapability;
-  readonly sealAuthority: Awaited<
-    ReturnType<
-      ReviewActionV2ExecutionEvidenceCapabilityAdapter["verifyContextGatewaySeal"]
-    >
-  >;
+  readonly leaseId: string;
+  readonly workSlotId: string | null;
+  readonly attemptId: string;
+  readonly fencingToken: string;
+  readonly sourceExecutionId: string | null;
+  readonly requireOwnership: boolean;
+  readonly operation: ReviewInvestigationLeaseProtectedOperation;
+  readonly now: Date;
+  readonly dependencies: ReviewActionV2ContextAttestationHandlerDependencies;
+}): Promise<
+  Readonly<{
+    snapshot: ReviewExecutionSnapshot;
+    lease: BoundContextGatewayLease;
+  }>
+> {
+  const { authorization, dependencies: d } = input;
+  switch (input.authorityKind) {
+    case ContextLeaseAuthorityKind.StandardExecution: {
+      const authority = await verifyLeaseCapability(
+        input.leaseCapability,
+        input.now,
+        d,
+      );
+      const snapshot = await requireExecution(
+        authority.executionId,
+        authorization,
+        d.executionQueries,
+      );
+      if (
+        (input.sourceExecutionId !== null &&
+          input.sourceExecutionId !== authority.executionId) ||
+        (input.workSlotId !== null && input.workSlotId !== authority.workSlotId)
+      ) {
+        throw failure(
+          412,
+          ReviewActionV2ProtocolErrorCode.StalePrecondition,
+          "context_lease_request_binding_mismatch",
+        );
+      }
+      const lease = await requireBoundLease({
+        authority,
+        authorization,
+        snapshot,
+        leaseId: input.leaseId,
+        workSlotId: authority.workSlotId,
+        attemptId: input.attemptId,
+        fencingToken: input.fencingToken,
+        requireOwnership: input.requireOwnership,
+        now: input.now,
+        dependencies: d,
+      });
+      if (!lease.preparedManifestCanonicalJson) {
+        throw failure(
+          412,
+          ReviewActionV2ProtocolErrorCode.StalePrecondition,
+          "context_manifest_not_prepared",
+        );
+      }
+      return Object.freeze({
+        snapshot,
+        lease: Object.freeze({
+          authorityKind: ContextLeaseAuthorityKind.StandardExecution,
+          capabilityId: authority.capabilityId,
+          authorizationId: authority.authorizationId,
+          mutationEpoch: authority.mutationEpoch,
+          scopeHash: authority.scopeHash,
+          executionId: authority.executionId,
+          workSlotId: authority.workSlotId,
+          leaseId: authority.leaseId,
+          attemptId: input.attemptId,
+          providerInvocationKey: lease.providerInvocationKey,
+          providerVoteIdentityHash: lease.providerVoteIdentityHash,
+          preparedManifestCanonicalJson: lease.preparedManifestCanonicalJson,
+          investigationRolloutCapability: null,
+        }),
+      });
+    }
+    case ContextLeaseAuthorityKind.InvestigationShadow:
+      return resolveBoundInvestigationContextGatewayLease(input);
+  }
+}
+
+async function resolveBoundInvestigationContextGatewayLease(input: {
+  readonly leaseCapability: string;
+  readonly authorization: ReviewRunAuthorization;
+  readonly leaseId: string;
+  readonly workSlotId: string | null;
+  readonly attemptId: string;
+  readonly fencingToken: string;
+  readonly sourceExecutionId: string | null;
+  readonly requireOwnership: boolean;
+  readonly operation: ReviewInvestigationLeaseProtectedOperation;
+  readonly now: Date;
+  readonly dependencies: ReviewActionV2ContextAttestationHandlerDependencies;
+}): Promise<
+  Readonly<{
+    snapshot: ReviewExecutionSnapshot;
+    lease: BoundContextGatewayLease;
+  }>
+> {
+  const d = input.dependencies;
+  let authority: VerifiedReviewActionV2InvestigationLeaseCapability;
+  try {
+    authority = await d.investigationLeaseCapabilities.verify(
+      input.leaseCapability,
+      input.now,
+    );
+  } catch {
+    throw failure(
+      401,
+      ReviewActionV2ProtocolErrorCode.InvalidAuthentication,
+      "context_investigation_lease_capability_invalid",
+    );
+  }
+  const snapshot = await requireExecution(
+    authority.executionId,
+    input.authorization,
+    d.executionQueries,
+  );
+  const lease = await d.investigationLeaseQueries.findLease(input.leaseId);
+  const aggregate = lease
+    ? await d.investigationQueries.findById(lease.investigationId)
+    : null;
+  if (
+    !lease ||
+    !aggregate ||
+    authority.authorizationId !== input.authorization.authorizationId ||
+    authority.scopeHash !==
+      (await authorizationScopeHash(input.authorization, d.digest)) ||
+    authority.mutationEpoch !== input.authorization.mutationEpoch ||
+    authority.reviewRevisionHash !== input.authorization.reviewRevisionHash ||
+    authority.capabilityId !== lease.leaseCapabilityId ||
+    authority.authorizationId !== lease.authorizationId ||
+    authority.mutationEpoch !== lease.mutationEpoch ||
+    authority.executionId !== lease.executionId ||
+    authority.workSlotId !== lease.workSlotId ||
+    authority.leaseId !== lease.leaseId ||
+    authority.attemptId !== lease.attemptId ||
+    authority.fencingToken !== lease.fencingToken ||
+    authority.investigationId !== lease.investigationId ||
+    authority.investigationVersion !== lease.investigationVersion ||
+    authority.turnId !== lease.turnId ||
+    authority.turnPurpose !== lease.turnPurpose ||
+    authority.providerVoteLaneId !== lease.providerVoteLaneId ||
+    authority.providerStrategyId !== lease.providerStrategyId ||
+    authority.investigationManifestHash !== lease.investigationManifestHash ||
+    authority.ownerIdHash !== lease.ownerIdHash ||
+    lease.leaseId !== input.leaseId ||
+    lease.attemptId !== input.attemptId ||
+    lease.fencingToken.toString(10) !== input.fencingToken ||
+    (input.sourceExecutionId !== null &&
+      lease.executionId !== input.sourceExecutionId) ||
+    (input.workSlotId !== null && lease.workSlotId !== input.workSlotId) ||
+    lease.state !== ReviewInvestigationLeaseState.Active ||
+    (input.requireOwnership
+      ? new Date(lease.expiresAt) <= input.now ||
+        authority.ownershipExpiresAt <= input.now
+      : new Date(lease.resultReportUntil) <= input.now ||
+        authority.resultReportUntil <= input.now) ||
+    !reviewInvestigationLeaseBindingIsCurrent(lease, aggregate)
+  ) {
+    throw failure(
+      412,
+      ReviewActionV2ProtocolErrorCode.StalePrecondition,
+      "context_investigation_lease_stale",
+    );
+  }
+  try {
+    assertReviewInvestigationLeaseAllows(lease, input.operation);
+  } catch {
+    throw failure(
+      403,
+      ReviewActionV2ProtocolErrorCode.Forbidden,
+      "context_investigation_lease_operation_forbidden",
+    );
+  }
+  return Object.freeze({
+    snapshot,
+    lease: investigationContextGatewayLease(authority, lease),
+  });
+}
+
+function investigationContextGatewayLease(
+  authority: VerifiedReviewActionV2InvestigationLeaseCapability,
+  lease: ReviewInvestigationLease,
+): BoundContextGatewayLease {
+  return Object.freeze({
+    authorityKind: ContextLeaseAuthorityKind.InvestigationShadow,
+    capabilityId: authority.capabilityId,
+    authorizationId: authority.authorizationId,
+    mutationEpoch: authority.mutationEpoch,
+    scopeHash: authority.scopeHash,
+    executionId: authority.executionId,
+    workSlotId: authority.workSlotId,
+    leaseId: authority.leaseId,
+    attemptId: authority.attemptId,
+    providerInvocationKey: lease.providerStrategyId,
+    providerVoteIdentityHash: lease.providerVoteLaneId,
+    preparedManifestCanonicalJson: lease.investigationManifestCanonicalJson,
+    investigationRolloutCapability:
+      lease.turnPurpose === ReviewInvestigationTurnPurpose.Critic
+        ? InvestigationRolloutCapability.ContextCritic
+        : InvestigationRolloutCapability.Recording,
+  });
+}
+
+async function assertInvestigationShadowGatewayAllowed(input: {
+  readonly authorization: ReviewRunAuthorization;
+  readonly bound: Readonly<{
+    snapshot: ReviewExecutionSnapshot;
+    lease: BoundContextGatewayLease;
+  }>;
+  readonly dependencies: ReviewActionV2ContextAttestationHandlerDependencies;
+}): Promise<void> {
+  const { authorization, bound, dependencies: d } = input;
+  if (
+    bound.lease.authorityKind !== ContextLeaseAuthorityKind.InvestigationShadow
+  ) {
+    return;
+  }
+  const capability = bound.lease.investigationRolloutCapability;
+  const slot = bound.snapshot.execution.workSlots.find(
+    (candidate) => candidate.workSlotId === bound.lease.workSlotId,
+  );
+  const providerKind = slot ? extensionProvider(slot.providerKind) : null;
+  if (
+    capability === null ||
+    providerKind === null ||
+    !slot ||
+    slot.providerVoteIdentityHash !== bound.lease.providerVoteIdentityHash ||
+    !hasAuthorizedReviewInvestigationExtension(authorization, {
+      providerKind,
+      capability,
+    })
+  ) {
+    throw failure(
+      403,
+      ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
+      "review_investigation_extension_not_authorized",
+    );
+  }
+  await d.investigationRollout.assertAllowed({
+    capability,
+    target: {
+      workspaceId: authorization.workspaceId,
+      repositoryConnectionId: authorization.repositoryConnectionId,
+      scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+      provider: rolloutProvider(slot.providerKind),
+      trustDomain: authorization.trustDomain,
+      producerReleaseId: authorization.producerReleaseId,
+    },
+  });
+}
+
+function extensionProvider(
+  provider: ReviewExecutionProviderKind,
+): ReviewInvestigationAuthorizedProviderKind | null {
+  switch (provider) {
+    case ReviewExecutionProviderKind.Codex:
+      return "codex";
+    case ReviewExecutionProviderKind.ClaudeCode:
+      return "claude_code";
+    case ReviewExecutionProviderKind.OpenRouter:
+      return null;
+  }
+}
+
+function rolloutProvider(
+  provider: ReviewExecutionProviderKind,
+): InvestigationRolloutProvider {
+  switch (provider) {
+    case ReviewExecutionProviderKind.Codex:
+      return InvestigationRolloutProvider.Codex;
+    case ReviewExecutionProviderKind.ClaudeCode:
+      return InvestigationRolloutProvider.Claude;
+    case ReviewExecutionProviderKind.OpenRouter:
+      return InvestigationRolloutProvider.Unknown;
+  }
+}
+
+async function assertSealAuthority(input: {
+  readonly request:
+    | ReviewContextGatewaySealRequest
+    | ReviewInvestigationContextGatewaySealRequest;
+  readonly authorization: ReviewRunAuthorization;
+  readonly leaseAuthority: BoundContextGatewayLease;
+  readonly sealAuthority:
+    | ReviewActionV2ContextGatewaySealAuthority
+    | ReviewActionV2InvestigationContextGatewaySealAuthority;
   readonly session: GatewaySession;
   readonly dependencies: ReviewActionV2ContextAttestationHandlerDependencies;
 }) {
@@ -2197,6 +2608,29 @@ async function assertSealAuthority(input: {
       `context_seal_${key}_mismatch`,
     );
   }
+  if (
+    session.sourceLeaseAuthorityKind ===
+    ContextLeaseAuthorityKind.InvestigationShadow
+  ) {
+    requireEqual(
+      "sourceLeaseAuthorityKind" in sealAuthority
+        ? sealAuthority.sourceLeaseAuthorityKind
+        : null,
+      "investigation_shadow",
+      "context_seal_authority_kind_mismatch",
+    );
+  } else if ("sourceLeaseAuthorityKind" in sealAuthority) {
+    throw failure(
+      403,
+      ReviewActionV2ProtocolErrorCode.Forbidden,
+      "context_seal_authority_kind_mismatch",
+    );
+  }
+  requireEqual(
+    leaseAuthority.authorityKind,
+    session.sourceLeaseAuthorityKind,
+    "context_seal_lease_authority_kind_mismatch",
+  );
   requireEqual(
     leaseAuthority.executionId,
     session.sourceExecutionId,
@@ -2820,6 +3254,7 @@ function gatewaySecretIdentity(
     GatewaySession,
     | "attemptId"
     | "openingIntentHash"
+    | "sourceLeaseAuthorityKind"
     | "sourceLeaseId"
     | "sourceFencingToken"
     | "sourceExecutionId"
@@ -2830,9 +3265,29 @@ function gatewaySecretIdentity(
     | "confinementProofHash"
   >,
 ) {
+  if (
+    facts.sourceLeaseAuthorityKind ===
+    ContextLeaseAuthorityKind.StandardExecution
+  ) {
+    return canonicalJson({
+      attemptId: facts.attemptId,
+      openingIntentHash: facts.openingIntentHash,
+      sourceLeaseId: facts.sourceLeaseId,
+      sourceFencingToken: facts.sourceFencingToken,
+      sourceExecutionId: facts.sourceExecutionId,
+      sourceWorkSlotId: facts.sourceWorkSlotId,
+      sourceReviewRevisionHash: facts.sourceRevision.reviewRevisionHash,
+      checkoutTreeOid: facts.sourceRevision.checkoutTreeOid,
+      gatewayPolicyVersion: facts.gatewayPolicyVersion,
+      gatewayBinaryHash: facts.gatewayBinaryHash,
+      confinementProofHash: facts.confinementProofHash,
+    });
+  }
   return canonicalJson({
+    identityVersion: 2,
     attemptId: facts.attemptId,
     openingIntentHash: facts.openingIntentHash,
+    sourceLeaseAuthorityKind: facts.sourceLeaseAuthorityKind,
     sourceLeaseId: facts.sourceLeaseId,
     sourceFencingToken: facts.sourceFencingToken,
     sourceExecutionId: facts.sourceExecutionId,
@@ -2842,6 +3297,55 @@ function gatewaySecretIdentity(
     gatewayPolicyVersion: facts.gatewayPolicyVersion,
     gatewayBinaryHash: facts.gatewayBinaryHash,
     confinementProofHash: facts.confinementProofHash,
+  });
+}
+
+function gatewaySeedIdentity(
+  facts: Pick<
+    GatewaySession,
+    | "attemptId"
+    | "openingIntentHash"
+    | "sourceLeaseAuthorityKind"
+    | "sourceLeaseId"
+    | "sourceFencingToken"
+  >,
+): string {
+  if (
+    facts.sourceLeaseAuthorityKind ===
+    ContextLeaseAuthorityKind.StandardExecution
+  ) {
+    return canonicalJson({
+      domain: gatewaySeedDomain,
+      attemptId: facts.attemptId,
+      openingIntentHash: facts.openingIntentHash,
+      sourceLeaseId: facts.sourceLeaseId,
+      sourceFencingToken: facts.sourceFencingToken,
+    });
+  }
+  return canonicalJson({
+    domain: "rr.investigation-context-gateway-seed.v1",
+    sourceLeaseAuthorityKind: facts.sourceLeaseAuthorityKind,
+    attemptId: facts.attemptId,
+    openingIntentHash: facts.openingIntentHash,
+    sourceLeaseId: facts.sourceLeaseId,
+    sourceFencingToken: facts.sourceFencingToken,
+  });
+}
+
+function openingIntentIdentity(
+  authorityKind: ContextLeaseAuthorityKind,
+  idempotencyKey: string,
+): string {
+  if (authorityKind === ContextLeaseAuthorityKind.StandardExecution) {
+    return canonicalJson({
+      domain: "rr.context-gateway-opening-intent.v1",
+      idempotencyKey,
+    });
+  }
+  return canonicalJson({
+    domain: "rr.investigation-context-gateway-opening-intent.v1",
+    sourceLeaseAuthorityKind: authorityKind,
+    idempotencyKey,
   });
 }
 
@@ -2857,10 +3361,27 @@ function deriveGatewaySessionSecret(
 }
 
 function replayMaterialAssociatedData(session: GatewaySession): string {
+  if (
+    session.sourceLeaseAuthorityKind ===
+    ContextLeaseAuthorityKind.StandardExecution
+  ) {
+    return canonicalJson({
+      associatedDataVersion: 1,
+      sessionId: session.sessionId,
+      sourceExecutionId: session.sourceExecutionId,
+      sourceWorkSlotId: session.sourceWorkSlotId,
+      sourceReviewRevisionHash: session.sourceRevision.reviewRevisionHash,
+      checkoutTreeOid: session.sourceRevision.checkoutTreeOid,
+      gatewayPolicyVersion: session.gatewayPolicyVersion,
+      gatewayBinaryHash: session.gatewayBinaryHash,
+      confinementProofHash: session.confinementProofHash,
+    });
+  }
   return canonicalJson({
-    associatedDataVersion: 1,
+    associatedDataVersion: 2,
     sessionId: session.sessionId,
     sourceExecutionId: session.sourceExecutionId,
+    sourceLeaseAuthorityKind: session.sourceLeaseAuthorityKind,
     sourceWorkSlotId: session.sourceWorkSlotId,
     sourceReviewRevisionHash: session.sourceRevision.reviewRevisionHash,
     checkoutTreeOid: session.sourceRevision.checkoutTreeOid,

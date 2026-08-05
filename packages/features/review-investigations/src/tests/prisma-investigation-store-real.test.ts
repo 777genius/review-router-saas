@@ -34,6 +34,11 @@ import { AesGcmInvestigationPrivateMaterialCipher } from "../infrastructure/cryp
 import { PrismaInvestigationStore } from "../infrastructure/prisma/prisma-investigation-store";
 import { NodeSha256InvestigationDigest } from "../infrastructure/node/node-sha256-digest";
 import {
+  createInvestigationLeaseBindingSeed,
+  defineInvestigationLeaseStoreContract,
+  type InvestigationLeaseStoreContractHarness,
+} from "../testing/investigation-lease-store-contract";
+import {
   createInvestigationStoreContractSeed,
   defineInvestigationStoreContract,
   type InvestigationStoreContractHarness,
@@ -64,10 +69,63 @@ if (databaseUrl) {
   defineInvestigationStoreContract("PrismaInvestigationStore", async (seed) =>
     createHarness(seed),
   );
+  defineInvestigationLeaseStoreContract(
+    "PrismaInvestigationStore",
+    createLeaseHarness,
+  );
 } else {
   describe.skip("PrismaInvestigationStore InvestigationStorePort contract", () => {
     it("requires REVIEW_ROUTER_TEST_DATABASE_URL", () => undefined);
   });
+}
+
+async function createLeaseHarness(): Promise<InvestigationLeaseStoreContractHarness> {
+  const prisma = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 6 });
+  const operationalRetentionMs = 86_400_000;
+  const store = new PrismaInvestigationStore(prisma, {
+    operationalRetentionMs,
+  });
+  const seeds: ReviewInvestigation[] = [];
+  return {
+    store,
+    async seedBinding(candidate) {
+      const { base, planned } = createInvestigationLeaseBindingSeed(candidate);
+      seeds.push(base);
+      await seedExecution(prisma, base);
+      await store.commit({
+        investigation: base,
+        expectedVersion: null,
+        commandId: `lease-open-${candidate.leaseId}`,
+        commandHash: createHash("sha256")
+          .update(`lease-open-${candidate.leaseId}`)
+          .digest("hex"),
+        transition: { kind: InvestigationStoreTransitionKind.Opened },
+      });
+      await store.commit({
+        investigation: planned,
+        expectedVersion: base.version,
+        commandId: `lease-plan-${candidate.leaseId}`,
+        commandHash: createHash("sha256")
+          .update(`lease-plan-${candidate.leaseId}`)
+          .digest("hex"),
+        transition: {
+          kind: InvestigationStoreTransitionKind.TurnPlanned,
+          turnId: candidate.turnId,
+        },
+      });
+    },
+    async restart() {
+      return new PrismaInvestigationStore(prisma, {
+        operationalRetentionMs,
+      });
+    },
+    async dispose() {
+      for (const seed of seeds.reverse()) {
+        await cleanup(prisma, seed);
+      }
+      await prisma.$disconnect();
+    },
+  };
 }
 
 describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
@@ -994,6 +1052,9 @@ async function cleanup(
     data: { receiptId: null, state: "open", unresolvableReason: null },
   });
   await prisma.reviewInvestigationReceipt.deleteMany({
+    where: { investigationId: seed.investigationId },
+  });
+  await prisma.reviewInvestigationLease.deleteMany({
     where: { investigationId: seed.investigationId },
   });
   await prisma.reviewInvestigationTurn.deleteMany({

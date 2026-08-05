@@ -6,6 +6,8 @@ import {
   ReviewInvestigationObligationOriginV1 as PrismaObligationOrigin,
   ReviewInvestigationObligationStateV1 as PrismaObligationState,
   ReviewInvestigationReceiptKindV1 as PrismaReceiptKind,
+  ReviewInvestigationLeasePurposeV1 as PrismaLeasePurpose,
+  ReviewInvestigationLeaseStateV1 as PrismaLeaseState,
   ReviewInvestigationRuntimeProfileV1 as PrismaRuntimeProfile,
   ReviewInvestigationStateV1 as PrismaInvestigationState,
   ReviewInvestigationTurnPurposeV1 as PrismaTurnPurpose,
@@ -14,6 +16,7 @@ import {
   type ReviewInvestigationCertificate as PrismaCertificateRecord,
   type ReviewInvestigationObligation as PrismaObligationRecord,
   type ReviewInvestigationPrivateMaterial as PrismaPrivateMaterialRecord,
+  type ReviewInvestigationLease as PrismaLeaseRecord,
   type ReviewInvestigationReceipt as PrismaReceiptRecord,
   type ReviewInvestigationTurn as PrismaTurnRecord,
 } from "@prisma/client";
@@ -75,12 +78,33 @@ import {
   ReviewInvestigationTurnPurpose,
 } from "../../domain/review-investigation-types";
 import { NodeSha256InvestigationDigest } from "../node/node-sha256-digest";
+import {
+  assertReviewInvestigationLease,
+  decideReviewInvestigationLeaseReplay,
+  expireReviewInvestigationLease,
+  reviewInvestigationLeaseBindingIsCurrent,
+  releaseReviewInvestigationLease,
+  revokeReviewInvestigationLease,
+  renewReviewInvestigationLease,
+  ReviewInvestigationLeasePurpose,
+  ReviewInvestigationLeaseReplayStatus,
+  ReviewInvestigationLeaseState,
+  ReviewInvestigationLeaseTransitionStatus,
+  type CreateReviewInvestigationLeaseInput,
+  type ReviewInvestigationLease,
+} from "../../domain/investigation-lease";
+import {
+  InvestigationLeaseAcquireStatus,
+  type InvestigationLeaseAcquireResult,
+  type InvestigationLeaseStorePort,
+} from "../../application/ports/investigation-lease-store-port";
 
 type InvestigationDb = Pick<
   PrismaClient,
   | "reviewInvestigation"
   | "reviewInvestigationObligation"
   | "reviewInvestigationTurn"
+  | "reviewInvestigationLease"
   | "reviewInvestigationReceipt"
   | "reviewInvestigationPrivateMaterial"
   | "reviewInvestigationCertificate"
@@ -105,7 +129,8 @@ export class PrismaInvestigationStore
   implements
     InvestigationStorePort,
     InvestigationPrivateMaterialStorePort,
-    InvestigationPrunerPort
+    InvestigationPrunerPort,
+    InvestigationLeaseStorePort
 {
   private readonly options: PrismaInvestigationStoreOptions;
   private readonly privateMaterialExpiry =
@@ -209,6 +234,192 @@ export class PrismaInvestigationStore
       );
   }
 
+  async findLease(leaseId: string): Promise<ReviewInvestigationLease | null> {
+    const record = await this.prisma.reviewInvestigationLease.findUnique({
+      where: { leaseId },
+    });
+    return record ? investigationLeaseFromRecord(record) : null;
+  }
+
+  async acquireLease(
+    candidate: Omit<CreateReviewInvestigationLeaseInput, "fencingToken">,
+  ): Promise<InvestigationLeaseAcquireResult> {
+    return this.prisma.$transaction(
+      async (transaction) => {
+        await transaction.$queryRaw(Prisma.sql`
+          SELECT "investigationId"
+          FROM "ReviewInvestigation"
+          WHERE "investigationId" = ${candidate.investigationId}
+          FOR UPDATE
+        `);
+        const investigation = await loadAggregate(
+          transaction,
+          candidate.investigationId,
+        );
+        if (
+          !investigation ||
+          !reviewInvestigationLeaseBindingIsCurrent(candidate, investigation)
+        ) {
+          await transaction.reviewInvestigationLease.updateMany({
+            where: {
+              investigationId: candidate.investigationId,
+              state: PrismaLeaseState.active,
+            },
+            data: { state: PrismaLeaseState.revoked },
+          });
+          return investigationLeaseAcquireResult(
+            InvestigationLeaseAcquireStatus.BindingStale,
+            null,
+          );
+        }
+        const existingRecord =
+          await transaction.reviewInvestigationLease.findUnique({
+            where: {
+              investigationId_turnId_acquireRequestIdHash: {
+                investigationId: candidate.investigationId,
+                turnId: candidate.turnId,
+                acquireRequestIdHash: candidate.acquireRequestIdHash,
+              },
+            },
+          });
+        const existing = existingRecord
+          ? investigationLeaseFromRecord(existingRecord)
+          : null;
+        const replay = decideReviewInvestigationLeaseReplay({
+          existing,
+          candidate,
+        });
+        if (replay === ReviewInvestigationLeaseReplayStatus.Restored) {
+          return investigationLeaseAcquireResult(
+            InvestigationLeaseAcquireStatus.Restored,
+            existing,
+          );
+        }
+        if (
+          replay === ReviewInvestigationLeaseReplayStatus.IdempotencyConflict
+        ) {
+          return investigationLeaseAcquireResult(
+            InvestigationLeaseAcquireStatus.IdempotencyConflict,
+            null,
+          );
+        }
+        const activeRecord =
+          await transaction.reviewInvestigationLease.findFirst({
+            where: {
+              investigationId: candidate.investigationId,
+              turnId: candidate.turnId,
+              state: PrismaLeaseState.active,
+            },
+            orderBy: { fencingToken: "desc" },
+          });
+        if (
+          activeRecord &&
+          activeRecord.expiresAt > new Date(candidate.acquiredAt)
+        ) {
+          return investigationLeaseAcquireResult(
+            InvestigationLeaseAcquireStatus.Busy,
+            null,
+          );
+        }
+        if (activeRecord) {
+          const expired = expireReviewInvestigationLease(
+            investigationLeaseFromRecord(activeRecord),
+          );
+          await transaction.reviewInvestigationLease.update({
+            where: { leaseId: expired.leaseId },
+            data: { state: toPrismaLeaseState(expired.state) },
+          });
+        }
+        const created = await transaction.reviewInvestigationLease.create({
+          data: toInvestigationLeaseCreate(candidate),
+        });
+        return investigationLeaseAcquireResult(
+          InvestigationLeaseAcquireStatus.Acquired,
+          investigationLeaseFromRecord(created),
+        );
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+  }
+
+  async renewLease(
+    input: Parameters<InvestigationLeaseStorePort["renewLease"]>[0],
+  ) {
+    return this.transitionLease(input.leaseId, (lease) =>
+      renewReviewInvestigationLease({ lease, ...input }),
+    );
+  }
+
+  async releaseLease(
+    input: Parameters<InvestigationLeaseStorePort["releaseLease"]>[0],
+  ) {
+    return this.transitionLease(input.leaseId, (lease) =>
+      releaseReviewInvestigationLease({ lease, ...input }),
+    );
+  }
+
+  private async transitionLease(
+    leaseId: string,
+    transition: (
+      lease: ReviewInvestigationLease,
+    ) => import("../../domain/investigation-lease").ReviewInvestigationLeaseTransitionResult,
+  ) {
+    return this.prisma.$transaction(
+      async (transaction) => {
+        const initial = await transaction.reviewInvestigationLease.findUnique({
+          where: { leaseId },
+          select: { investigationId: true },
+        });
+        if (!initial) return null;
+        await transaction.$queryRaw(Prisma.sql`
+          SELECT "investigationId"
+          FROM "ReviewInvestigation"
+          WHERE "investigationId" = ${initial.investigationId}
+          FOR UPDATE
+        `);
+        await transaction.$queryRaw(Prisma.sql`
+          SELECT "leaseId"
+          FROM "ReviewInvestigationLease"
+          WHERE "leaseId" = ${leaseId}
+          FOR UPDATE
+        `);
+        const record = await transaction.reviewInvestigationLease.findUnique({
+          where: { leaseId },
+        });
+        if (!record) return null;
+        const lease = investigationLeaseFromRecord(record);
+        const investigation = await loadAggregate(
+          transaction,
+          lease.investigationId,
+        );
+        if (
+          !investigation ||
+          !reviewInvestigationLeaseBindingIsCurrent(lease, investigation)
+        ) {
+          const revoked = revokeReviewInvestigationLease(lease);
+          const updated = await transaction.reviewInvestigationLease.update({
+            where: { leaseId },
+            data: toInvestigationLeaseTransitionUpdate(revoked),
+          });
+          return {
+            status: ReviewInvestigationLeaseTransitionStatus.BindingStale,
+            lease: investigationLeaseFromRecord(updated),
+          };
+        }
+        const result = transition(lease);
+        if (result.lease !== lease) {
+          const updated = await transaction.reviewInvestigationLease.update({
+            where: { leaseId },
+            data: toInvestigationLeaseTransitionUpdate(result.lease),
+          });
+          return { ...result, lease: investigationLeaseFromRecord(updated) };
+        }
+        return result;
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+  }
+
   async commit(input: {
     readonly investigation: ReviewInvestigation;
     readonly expectedVersion: number | null;
@@ -304,6 +515,10 @@ export class PrismaInvestigationStore
           if (updated.count !== 1) {
             throw new InvestigationWriteRaceError();
           }
+          await revokeStaleInvestigationLeases(
+            transaction,
+            input.investigation,
+          );
           if (input.investigation.certificate) {
             await transaction.reviewInvestigationReceipt.updateMany({
               where: {
@@ -500,6 +715,7 @@ export class PrismaInvestigationStore
               data: toMainUpdate(next, retainUntil),
             });
             if (updated.count !== 1) throw new InvestigationWriteRaceError();
+            await revokeStaleInvestigationLeases(transaction, next);
             await transaction.reviewInvestigationCommandReceipt.create({
               data: {
                 commandId: reconciled.command.commandId,
@@ -574,6 +790,11 @@ export class PrismaInvestigationStore
                 AND turn."retainUntil" > ${cutoff}
             )
             AND NOT EXISTS (
+              SELECT 1 FROM "ReviewInvestigationLease" AS lease
+              WHERE lease."investigationId" = investigation."investigationId"
+                AND lease."retainUntil" > ${cutoff}
+            )
+            AND NOT EXISTS (
               SELECT 1 FROM "ReviewInvestigationCommandReceipt" AS command
               WHERE command."investigationId" = investigation."investigationId"
                 AND command."retainUntil" > ${cutoff}
@@ -623,6 +844,12 @@ export class PrismaInvestigationStore
           where: {
             investigationId: { in: ids },
             expiresAt: { lte: cutoff },
+          },
+        });
+        await transaction.reviewInvestigationLease.deleteMany({
+          where: {
+            investigationId: { in: ids },
+            retainUntil: { lte: cutoff },
           },
         });
         await transaction.reviewInvestigationTurn.deleteMany({
@@ -787,6 +1014,9 @@ async function loadAggregate(
     stableReviewUnitKey: record.stableReviewUnitKey,
     providerVoteLaneId: record.providerVoteLaneId,
     providerStrategyId: record.providerStrategyId,
+    investigationManifestCanonicalJson:
+      record.investigationManifestCanonicalJson,
+    investigationManifestHash: record.investigationManifestHash,
     runtimeProfile: fromPrismaRuntimeProfile(record.runtimeProfile),
     contract: {
       coverageContractVersion: record.coverageContractVersion,
@@ -1145,6 +1375,9 @@ function toMainCreate(
     stableReviewUnitKey: investigation.stableReviewUnitKey,
     providerVoteLaneId: investigation.providerVoteLaneId,
     providerStrategyId: investigation.providerStrategyId,
+    investigationManifestCanonicalJson:
+      investigation.investigationManifestCanonicalJson,
+    investigationManifestHash: investigation.investigationManifestHash,
     runtimeProfile: toPrismaRuntimeProfile(investigation.runtimeProfile),
     coverageContractVersion: investigation.contract.coverageContractVersion,
     expansionRulesVersion: investigation.contract.expansionRulesVersion,
@@ -1246,6 +1479,10 @@ function assertUpdate(
     next.revision.reviewRevisionHash !== current.revision.reviewRevisionHash ||
     next.stableReviewUnitKey !== current.stableReviewUnitKey ||
     next.providerVoteLaneId !== current.providerVoteLaneId ||
+    next.providerStrategyId !== current.providerStrategyId ||
+    next.investigationManifestCanonicalJson !==
+      current.investigationManifestCanonicalJson ||
+    next.investigationManifestHash !== current.investigationManifestHash ||
     next.contract.coverageContractVersion !==
       current.contract.coverageContractVersion ||
     next.contract.probePolicyVersion !== current.contract.probePolicyVersion ||
@@ -1901,6 +2138,147 @@ function isRetryablePersistenceConflict(error: unknown): boolean {
 
 class InvestigationWriteRaceError extends Error {}
 
+async function revokeStaleInvestigationLeases(
+  transaction: Prisma.TransactionClient,
+  investigation: ReviewInvestigation,
+): Promise<void> {
+  const active = await transaction.reviewInvestigationLease.findMany({
+    where: {
+      investigationId: investigation.investigationId,
+      state: PrismaLeaseState.active,
+    },
+  });
+  const staleLeaseIds = active
+    .map(investigationLeaseFromRecord)
+    .filter(
+      (lease) =>
+        !reviewInvestigationLeaseBindingIsCurrent(lease, investigation),
+    )
+    .map((lease) => lease.leaseId);
+  if (staleLeaseIds.length === 0) return;
+  await transaction.reviewInvestigationLease.updateMany({
+    where: {
+      leaseId: { in: staleLeaseIds },
+      state: PrismaLeaseState.active,
+    },
+    data: { state: PrismaLeaseState.revoked },
+  });
+}
+
+function investigationLeaseFromRecord(
+  record: PrismaLeaseRecord,
+): ReviewInvestigationLease {
+  const lease: ReviewInvestigationLease = Object.freeze({
+    leaseId: record.leaseId,
+    purpose: fromPrismaLeasePurpose(record.purpose),
+    workspaceId: record.workspaceId,
+    repositoryConnectionId: record.repositoryConnectionId,
+    scmRepositoryIdentityId: record.scmRepositoryIdentityId,
+    pullRequestNumber: record.pullRequestNumber,
+    authorizationId: record.authorizationId,
+    mutationEpoch: record.mutationEpoch,
+    executionId: record.executionId,
+    workSlotId: record.workSlotId,
+    revision: {
+      baseSha: record.baseSha,
+      mergeBaseSha: record.mergeBaseSha,
+      headSha: record.headSha,
+      reviewRevisionHash: record.reviewRevisionHash,
+    },
+    investigationId: record.investigationId,
+    investigationVersion: safeNumber(
+      record.investigationVersion,
+      "investigation_lease_version",
+    ),
+    turnId: record.turnId,
+    turnPurpose: fromPrismaTurnPurpose(record.turnPurpose),
+    providerVoteLaneId: record.providerVoteLaneId,
+    providerStrategyId: record.providerStrategyId,
+    investigationManifestCanonicalJson:
+      record.investigationManifestCanonicalJson,
+    investigationManifestHash: record.investigationManifestHash,
+    attemptId: record.attemptId,
+    acquireRequestIdHash: record.acquireRequestIdHash,
+    acquireRequestHash: record.acquireRequestHash,
+    lastRenewRequestIdHash: record.lastRenewRequestIdHash,
+    lastRenewRequestHash: record.lastRenewRequestHash,
+    lastReleaseRequestIdHash: record.lastReleaseRequestIdHash,
+    lastReleaseRequestHash: record.lastReleaseRequestHash,
+    ownerIdHash: record.ownerIdHash,
+    leaseCapabilityId: record.leaseCapabilityId,
+    capabilitySigningKeyId: record.capabilitySigningKeyId,
+    fencingToken: record.fencingToken,
+    state: fromPrismaLeaseState(record.state),
+    acquiredAt: record.acquiredAt.toISOString(),
+    renewedAt: record.renewedAt.toISOString(),
+    expiresAt: record.expiresAt.toISOString(),
+    resultReportUntil: record.resultReportUntil.toISOString(),
+    retainUntil: record.retainUntil.toISOString(),
+  });
+  assertReviewInvestigationLease(lease);
+  return lease;
+}
+
+function toInvestigationLeaseCreate(
+  lease: Omit<CreateReviewInvestigationLeaseInput, "fencingToken">,
+) {
+  return {
+    leaseId: lease.leaseId,
+    purpose: PrismaLeasePurpose.shadow_turn,
+    workspaceId: lease.workspaceId,
+    repositoryConnectionId: lease.repositoryConnectionId,
+    scmRepositoryIdentityId: lease.scmRepositoryIdentityId,
+    pullRequestNumber: lease.pullRequestNumber,
+    authorizationId: lease.authorizationId,
+    mutationEpoch: lease.mutationEpoch,
+    executionId: lease.executionId,
+    workSlotId: lease.workSlotId,
+    baseSha: lease.revision.baseSha,
+    mergeBaseSha: lease.revision.mergeBaseSha,
+    headSha: lease.revision.headSha,
+    reviewRevisionHash: lease.revision.reviewRevisionHash,
+    investigationId: lease.investigationId,
+    investigationVersion: BigInt(lease.investigationVersion),
+    turnId: lease.turnId,
+    turnPurpose: toPrismaTurnPurpose(lease.turnPurpose),
+    providerVoteLaneId: lease.providerVoteLaneId,
+    providerStrategyId: lease.providerStrategyId,
+    investigationManifestCanonicalJson:
+      lease.investigationManifestCanonicalJson,
+    investigationManifestHash: lease.investigationManifestHash,
+    attemptId: lease.attemptId,
+    acquireRequestIdHash: lease.acquireRequestIdHash,
+    acquireRequestHash: lease.acquireRequestHash,
+    ownerIdHash: lease.ownerIdHash,
+    leaseCapabilityId: lease.leaseCapabilityId,
+    capabilitySigningKeyId: lease.capabilitySigningKeyId,
+    acquiredAt: new Date(lease.acquiredAt),
+    renewedAt: new Date(lease.acquiredAt),
+    expiresAt: new Date(lease.expiresAt),
+    resultReportUntil: new Date(lease.resultReportUntil),
+    retainUntil: new Date(lease.retainUntil),
+  };
+}
+
+function toInvestigationLeaseTransitionUpdate(lease: ReviewInvestigationLease) {
+  return {
+    state: toPrismaLeaseState(lease.state),
+    lastRenewRequestIdHash: lease.lastRenewRequestIdHash,
+    lastRenewRequestHash: lease.lastRenewRequestHash,
+    lastReleaseRequestIdHash: lease.lastReleaseRequestIdHash,
+    lastReleaseRequestHash: lease.lastReleaseRequestHash,
+    renewedAt: new Date(lease.renewedAt),
+    expiresAt: new Date(lease.expiresAt),
+  };
+}
+
+function investigationLeaseAcquireResult(
+  status: InvestigationLeaseAcquireStatus,
+  lease: ReviewInvestigationLease | null,
+): InvestigationLeaseAcquireResult {
+  return Object.freeze({ status, lease });
+}
+
 const runtimeProfileToPrisma: Readonly<
   Record<ReviewInvestigationRuntimeProfile, PrismaRuntimeProfile>
 > = {
@@ -2005,6 +2383,19 @@ const turnPurposeToPrisma: Readonly<
   [ReviewInvestigationTurnPurpose.Discovery]: PrismaTurnPurpose.discovery,
   [ReviewInvestigationTurnPurpose.Critic]: PrismaTurnPurpose.critic,
 };
+const leasePurposeToPrisma: Readonly<
+  Record<ReviewInvestigationLeasePurpose, PrismaLeasePurpose>
+> = {
+  [ReviewInvestigationLeasePurpose.ShadowTurn]: PrismaLeasePurpose.shadow_turn,
+};
+const leaseStateToPrisma: Readonly<
+  Record<ReviewInvestigationLeaseState, PrismaLeaseState>
+> = {
+  [ReviewInvestigationLeaseState.Active]: PrismaLeaseState.active,
+  [ReviewInvestigationLeaseState.Released]: PrismaLeaseState.released,
+  [ReviewInvestigationLeaseState.Expired]: PrismaLeaseState.expired,
+  [ReviewInvestigationLeaseState.Revoked]: PrismaLeaseState.revoked,
+};
 const criticDecisionToPrisma: Readonly<
   Record<ContextCriticDecision, PrismaCriticDecision>
 > = {
@@ -2028,6 +2419,8 @@ const obligationKindFromPrisma = invertEnumMap(obligationKindToPrisma);
 const obligationOriginFromPrisma = invertEnumMap(obligationOriginToPrisma);
 const receiptKindFromPrisma = invertEnumMap(receiptKindToPrisma);
 const turnPurposeFromPrisma = invertEnumMap(turnPurposeToPrisma);
+const leasePurposeFromPrisma = invertEnumMap(leasePurposeToPrisma);
+const leaseStateFromPrisma = invertEnumMap(leaseStateToPrisma);
 const criticDecisionFromPrisma = invertEnumMap(criticDecisionToPrisma);
 const conclusionFromPrisma = invertEnumMap(conclusionToPrisma);
 
@@ -2059,6 +2452,12 @@ const toPrismaTurnPurpose = (value: ReviewInvestigationTurnPurpose) =>
   turnPurposeToPrisma[value];
 const fromPrismaTurnPurpose = (value: PrismaTurnPurpose) =>
   turnPurposeFromPrisma[value];
+const toPrismaLeaseState = (value: ReviewInvestigationLeaseState) =>
+  leaseStateToPrisma[value];
+const fromPrismaLeaseState = (value: PrismaLeaseState) =>
+  leaseStateFromPrisma[value];
+const fromPrismaLeasePurpose = (value: PrismaLeasePurpose) =>
+  leasePurposeFromPrisma[value];
 const toPrismaCriticDecision = (value: ContextCriticDecision) =>
   criticDecisionToPrisma[value];
 const fromPrismaCriticDecision = (value: PrismaCriticDecision) =>

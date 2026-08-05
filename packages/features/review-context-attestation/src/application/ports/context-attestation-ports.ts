@@ -4,6 +4,7 @@ import type { EncryptedContextReplayMaterial } from "../../domain/encrypted-cont
 import type {
   ContextAttestationRevision,
   ContextAttestationScope,
+  ContextLeaseAuthorityKind,
   ContextProviderKind,
   GatewaySession,
 } from "../../domain/gateway-session";
@@ -16,6 +17,7 @@ export type TrustedGatewaySessionOpeningFacts = Readonly<{
   sourceWorkSlotId: string;
   attemptId: string;
   openingIntentHash: string;
+  sourceLeaseAuthorityKind: ContextLeaseAuthorityKind;
   sourceLeaseId: string;
   sourceFencingToken: string;
   providerKind: ContextProviderKind;

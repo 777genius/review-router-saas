@@ -2,6 +2,7 @@ import type {
   ContextAttestationClockPort,
   ContextAttestationStorePort,
 } from "../ports/context-attestation-ports";
+import type { ContextLeaseAuthorityKind } from "../../domain/gateway-session";
 
 export enum AcceptedContextAttestationVerificationStatus {
   Accepted = "accepted",
@@ -25,6 +26,7 @@ export type VerifyAcceptedContextAttestationQuery = Readonly<{
   sourceExecutionId: string;
   sourceWorkSlotId: string;
   attemptId: string;
+  sourceLeaseAuthorityKind: ContextLeaseAuthorityKind;
   sourceLeaseId: string;
   sourceFencingToken: string;
   sourceReviewRevisionHash: string;
@@ -66,6 +68,7 @@ export class VerifyAcceptedContextAttestation {
       attestation.sourceExecutionId !== query.sourceExecutionId ||
       attestation.sourceWorkSlotId !== query.sourceWorkSlotId ||
       attestation.attemptId !== query.attemptId ||
+      attestation.sourceLeaseAuthorityKind !== query.sourceLeaseAuthorityKind ||
       attestation.sourceLeaseId !== query.sourceLeaseId ||
       attestation.sourceFencingToken !== query.sourceFencingToken ||
       attestation.sourceReviewRevisionHash !== query.sourceReviewRevisionHash

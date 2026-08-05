@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reviewrouter.site/schemas/action/v2/review-action.json/review_investigation_replay_v2",
+  "title": "review_investigation_replay_v2 request and response",
+  "oneOf": [null, null]
+}

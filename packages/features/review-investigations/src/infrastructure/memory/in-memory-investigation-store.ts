@@ -16,6 +16,26 @@ import {
   type EncryptedInvestigationPrivateMaterial,
 } from "../../domain/investigation-private-material";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
+import {
+  assertReviewInvestigationLease,
+  createReviewInvestigationLease,
+  decideReviewInvestigationLeaseReplay,
+  expireReviewInvestigationLease,
+  reviewInvestigationLeaseBindingIsCurrent,
+  releaseReviewInvestigationLease,
+  revokeReviewInvestigationLease,
+  renewReviewInvestigationLease,
+  ReviewInvestigationLeaseReplayStatus,
+  ReviewInvestigationLeaseState,
+  ReviewInvestigationLeaseTransitionStatus,
+  type CreateReviewInvestigationLeaseInput,
+  type ReviewInvestigationLease,
+} from "../../domain/investigation-lease";
+import {
+  InvestigationLeaseAcquireStatus,
+  type InvestigationLeaseAcquireResult,
+  type InvestigationLeaseStorePort,
+} from "../../application/ports/investigation-lease-store-port";
 
 type StoredCommand = Readonly<{
   commandHash: string;
@@ -23,7 +43,10 @@ type StoredCommand = Readonly<{
 }>;
 
 export class InMemoryInvestigationStore
-  implements InvestigationStorePort, InvestigationPrivateMaterialStorePort
+  implements
+    InvestigationStorePort,
+    InvestigationPrivateMaterialStorePort,
+    InvestigationLeaseStorePort
 {
   private readonly investigations = new Map<string, ReviewInvestigation>();
   private readonly naturalIdentityIndex = new Map<string, string>();
@@ -33,6 +56,8 @@ export class InMemoryInvestigationStore
     EncryptedInvestigationPrivateMaterial
   >();
   private readonly privateMaterialObligationIndex = new Map<string, string>();
+  private readonly leases = new Map<string, ReviewInvestigationLease>();
+  private nextLeaseFencingToken = 1n;
   private transactionTail: Promise<void> = Promise.resolve();
 
   async restoreCommand(input: {
@@ -111,6 +136,122 @@ export class InMemoryInvestigationStore
       .map((item) => clone(item));
   }
 
+  async findLease(leaseId: string): Promise<ReviewInvestigationLease | null> {
+    await this.transactionTail;
+    return cloneLease(this.leases.get(leaseId) ?? null);
+  }
+
+  async acquireLease(
+    candidate: Omit<CreateReviewInvestigationLeaseInput, "fencingToken">,
+  ): Promise<InvestigationLeaseAcquireResult> {
+    return this.atomic(() => {
+      const investigation = this.investigations.get(candidate.investigationId);
+      if (
+        !investigation ||
+        !reviewInvestigationLeaseBindingIsCurrent(candidate, investigation)
+      ) {
+        this.revokeActiveLeasesForInvestigation(candidate.investigationId);
+        return leaseAcquireResult(
+          InvestigationLeaseAcquireStatus.BindingStale,
+          null,
+        );
+      }
+      const existing = [...this.leases.values()].find(
+        (lease) =>
+          lease.investigationId === candidate.investigationId &&
+          lease.turnId === candidate.turnId &&
+          lease.acquireRequestIdHash === candidate.acquireRequestIdHash,
+      );
+      const replay = decideReviewInvestigationLeaseReplay({
+        existing: existing ?? null,
+        candidate,
+      });
+      if (replay === ReviewInvestigationLeaseReplayStatus.Restored) {
+        return leaseAcquireResult(
+          InvestigationLeaseAcquireStatus.Restored,
+          existing!,
+        );
+      }
+      if (replay === ReviewInvestigationLeaseReplayStatus.IdempotencyConflict) {
+        return leaseAcquireResult(
+          InvestigationLeaseAcquireStatus.IdempotencyConflict,
+          null,
+        );
+      }
+      const now = new Date(candidate.acquiredAt);
+      const active = [...this.leases.values()].find(
+        (lease) =>
+          lease.investigationId === candidate.investigationId &&
+          lease.turnId === candidate.turnId &&
+          lease.state === ReviewInvestigationLeaseState.Active,
+      );
+      if (active && new Date(active.expiresAt) > now) {
+        return leaseAcquireResult(InvestigationLeaseAcquireStatus.Busy, null);
+      }
+      if (active) {
+        this.leases.set(active.leaseId, expireReviewInvestigationLease(active));
+      }
+      const lease = createReviewInvestigationLease({
+        ...candidate,
+        fencingToken: this.nextLeaseFencingToken,
+      });
+      this.nextLeaseFencingToken += 1n;
+      this.leases.set(lease.leaseId, lease);
+      return leaseAcquireResult(
+        InvestigationLeaseAcquireStatus.Acquired,
+        lease,
+      );
+    });
+  }
+
+  async renewLease(
+    input: Parameters<InvestigationLeaseStorePort["renewLease"]>[0],
+  ) {
+    return this.atomic(() => {
+      const lease = this.leases.get(input.leaseId);
+      if (!lease) return null;
+      const investigation = this.investigations.get(lease.investigationId);
+      if (
+        !investigation ||
+        !reviewInvestigationLeaseBindingIsCurrent(lease, investigation)
+      ) {
+        const revoked = revokeReviewInvestigationLease(lease);
+        this.leases.set(lease.leaseId, revoked);
+        return {
+          status: ReviewInvestigationLeaseTransitionStatus.BindingStale,
+          lease: cloneLease(revoked)!,
+        };
+      }
+      const result = renewReviewInvestigationLease({ lease, ...input });
+      this.leases.set(lease.leaseId, result.lease);
+      return { ...result, lease: cloneLease(result.lease)! };
+    });
+  }
+
+  async releaseLease(
+    input: Parameters<InvestigationLeaseStorePort["releaseLease"]>[0],
+  ) {
+    return this.atomic(() => {
+      const lease = this.leases.get(input.leaseId);
+      if (!lease) return null;
+      const investigation = this.investigations.get(lease.investigationId);
+      if (
+        !investigation ||
+        !reviewInvestigationLeaseBindingIsCurrent(lease, investigation)
+      ) {
+        const revoked = revokeReviewInvestigationLease(lease);
+        this.leases.set(lease.leaseId, revoked);
+        return {
+          status: ReviewInvestigationLeaseTransitionStatus.BindingStale,
+          lease: cloneLease(revoked)!,
+        };
+      }
+      const result = releaseReviewInvestigationLease({ lease, ...input });
+      this.leases.set(lease.leaseId, result.lease);
+      return { ...result, lease: cloneLease(result.lease)! };
+    });
+  }
+
   async commit(input: {
     readonly investigation: ReviewInvestigation;
     readonly expectedVersion: number | null;
@@ -172,6 +313,7 @@ export class InMemoryInvestigationStore
       }
       const stored = clone(input.investigation)!;
       this.investigations.set(stored.investigationId, stored);
+      this.revokeStaleActiveLeases(stored);
       this.naturalIdentityIndex.set(
         stored.naturalIdentityHash,
         stored.investigationId,
@@ -199,6 +341,29 @@ export class InMemoryInvestigationStore
         investigation: clone(stored),
       };
     });
+  }
+
+  private revokeActiveLeasesForInvestigation(investigationId: string): void {
+    for (const lease of this.leases.values()) {
+      if (
+        lease.investigationId === investigationId &&
+        lease.state === ReviewInvestigationLeaseState.Active
+      ) {
+        this.leases.set(lease.leaseId, revokeReviewInvestigationLease(lease));
+      }
+    }
+  }
+
+  private revokeStaleActiveLeases(investigation: ReviewInvestigation): void {
+    for (const lease of this.leases.values()) {
+      if (
+        lease.investigationId === investigation.investigationId &&
+        lease.state === ReviewInvestigationLeaseState.Active &&
+        !reviewInvestigationLeaseBindingIsCurrent(lease, investigation)
+      ) {
+        this.leases.set(lease.leaseId, revokeReviewInvestigationLease(lease));
+      }
+    }
   }
 
   async savePrivateMaterial(
@@ -271,6 +436,10 @@ export class InMemoryInvestigationStore
       privateMaterials: [...this.privateMaterials.entries()].sort(
         ([left], [right]) => left.localeCompare(right),
       ),
+      leases: [...this.leases.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, lease]) => [key, serializeLease(lease)]),
+      nextLeaseFencingToken: this.nextLeaseFencingToken.toString(10),
     });
   }
 
@@ -280,6 +449,8 @@ export class InMemoryInvestigationStore
       naturalIdentityIndex: [string, string][];
       commands: [string, StoredCommand][];
       privateMaterials?: [string, EncryptedInvestigationPrivateMaterial][];
+      leases?: [string, SerializedInvestigationLease][];
+      nextLeaseFencingToken?: string;
     };
     const store = new InMemoryInvestigationStore();
     for (const [key, value] of parsed.investigations) {
@@ -303,6 +474,10 @@ export class InMemoryInvestigationStore
         key,
       );
     }
+    for (const [key, value] of parsed.leases ?? []) {
+      store.leases.set(key, deserializeLease(value));
+    }
+    store.nextLeaseFencingToken = BigInt(parsed.nextLeaseFencingToken ?? "1");
     return store;
   }
 
@@ -319,6 +494,49 @@ export class InMemoryInvestigationStore
       release();
     }
   }
+}
+
+type SerializedInvestigationLease = Omit<
+  ReviewInvestigationLease,
+  "mutationEpoch" | "fencingToken"
+> & {
+  mutationEpoch: string;
+  fencingToken: string;
+};
+
+function serializeLease(
+  lease: ReviewInvestigationLease,
+): SerializedInvestigationLease {
+  return {
+    ...lease,
+    mutationEpoch: lease.mutationEpoch.toString(10),
+    fencingToken: lease.fencingToken.toString(10),
+  };
+}
+
+function deserializeLease(
+  lease: SerializedInvestigationLease,
+): ReviewInvestigationLease {
+  const deserialized: ReviewInvestigationLease = Object.freeze({
+    ...lease,
+    mutationEpoch: BigInt(lease.mutationEpoch),
+    fencingToken: BigInt(lease.fencingToken),
+  });
+  assertReviewInvestigationLease(deserialized);
+  return deserialized;
+}
+
+function cloneLease<T extends ReviewInvestigationLease | null>(lease: T): T {
+  return lease === null
+    ? lease
+    : (deserializeLease(serializeLease(lease)) as T);
+}
+
+function leaseAcquireResult(
+  status: InvestigationLeaseAcquireStatus,
+  lease: ReviewInvestigationLease | null,
+): InvestigationLeaseAcquireResult {
+  return Object.freeze({ status, lease: cloneLease(lease) });
 }
 
 function privateMaterialObligationKey(

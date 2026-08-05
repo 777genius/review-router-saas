@@ -9,12 +9,17 @@ import {
 export type RegisterReviewInvestigationV2RoutesDependencies =
   ReviewActionV2RouteRuntimeDependencies & {
     readonly open?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationOpen>;
+    readonly openV2?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationOpenV2>;
     readonly restore?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationRestore>;
     readonly planTurn?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationTurnPlan>;
+    readonly acquireLease?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationLeaseAcquire>;
+    readonly renewLease?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationLeaseRenew>;
+    readonly releaseLease?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationLeaseRelease>;
     readonly commitTurn?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationTurnCommit>;
     readonly abortTurn?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationTurnAbort>;
     readonly conclude?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationConclude>;
     readonly replay?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationReplay>;
+    readonly replayV2?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationReplayV2>;
     readonly prepareReplay?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationReplayPrepare>;
   };
 
@@ -36,9 +41,21 @@ export async function registerReviewInvestigationV2Routes(
   );
   registerReviewActionV2Operation(
     app,
+    ReviewActionV2OperationId.ReviewInvestigationReplayV2,
+    dependencies,
+    dependencies.replayV2,
+  );
+  registerReviewActionV2Operation(
+    app,
     ReviewActionV2OperationId.ReviewInvestigationOpen,
     dependencies,
     dependencies.open,
+  );
+  registerReviewActionV2Operation(
+    app,
+    ReviewActionV2OperationId.ReviewInvestigationOpenV2,
+    dependencies,
+    dependencies.openV2,
   );
   registerReviewActionV2Operation(
     app,
@@ -51,6 +68,24 @@ export async function registerReviewInvestigationV2Routes(
     ReviewActionV2OperationId.ReviewInvestigationTurnPlan,
     dependencies,
     dependencies.planTurn,
+  );
+  registerReviewActionV2Operation(
+    app,
+    ReviewActionV2OperationId.ReviewInvestigationLeaseAcquire,
+    dependencies,
+    dependencies.acquireLease,
+  );
+  registerReviewActionV2Operation(
+    app,
+    ReviewActionV2OperationId.ReviewInvestigationLeaseRenew,
+    dependencies,
+    dependencies.renewLease,
+  );
+  registerReviewActionV2Operation(
+    app,
+    ReviewActionV2OperationId.ReviewInvestigationLeaseRelease,
+    dependencies,
+    dependencies.releaseLease,
   );
   registerReviewActionV2Operation(
     app,

@@ -67,6 +67,8 @@ export type ReviewInvestigation = Readonly<{
   stableReviewUnitKey: string;
   providerVoteLaneId: string;
   providerStrategyId: string;
+  investigationManifestCanonicalJson: string | null;
+  investigationManifestHash: string | null;
   runtimeProfile: ReviewInvestigationRuntimeProfile;
   contract: ReviewInvestigationContract;
   policy: ReviewInvestigationPolicy;
@@ -115,7 +117,13 @@ export function createReviewInvestigation(
     | "conclusion"
     | "certificate"
     | "nextEligibleAt"
+    | "investigationManifestCanonicalJson"
+    | "investigationManifestHash"
   > & { readonly obligations: readonly InvestigationObligation[] },
+  admittedManifest: Readonly<{
+    canonicalJson: string;
+    hash: string;
+  }> | null = null,
 ): ReviewInvestigation {
   assertInvestigationScope(input.scope);
   assertInvestigationRevision(input.revision);
@@ -136,6 +144,8 @@ export function createReviewInvestigation(
   }
   return {
     ...input,
+    investigationManifestCanonicalJson: admittedManifest?.canonicalJson ?? null,
+    investigationManifestHash: admittedManifest?.hash ?? null,
     version: 1,
     state:
       inventory[0]!.state === InvestigationObligationState.Satisfied
@@ -160,8 +170,9 @@ export function createReviewInvestigation(
 
 export function createReplayedReviewInvestigation(
   input: Parameters<typeof createReviewInvestigation>[0],
+  admittedManifest: Parameters<typeof createReviewInvestigation>[1],
 ): ReviewInvestigation {
-  const investigation = createReviewInvestigation(input);
+  const investigation = createReviewInvestigation(input, admittedManifest);
   const inventory = investigation.obligations.find(
     (item) => item.kind === InvestigationObligationKind.InventoryWitness,
   )!;
@@ -580,6 +591,9 @@ export function investigationDossierCanonicalValue(
     stableReviewUnitKey: investigation.stableReviewUnitKey,
     providerVoteLaneId: investigation.providerVoteLaneId,
     providerStrategyId: investigation.providerStrategyId,
+    ...(investigation.investigationManifestHash === null
+      ? {}
+      : { investigationManifestHash: investigation.investigationManifestHash }),
     runtimeProfile: investigation.runtimeProfile,
     contract: { ...investigation.contract },
     policy: policyCanonicalValue(investigation.policy),

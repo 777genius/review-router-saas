@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ContextLeaseAuthorityKind,
   ContextGatewayV4OperationKind,
   ContextGatewayV4OutcomeKind,
   ContextProviderKind,
@@ -101,6 +102,7 @@ function acceptedAttestation(operationManifest: ContextGatewayV4Manifest) {
     sourceReviewRevisionHash: hash("b"),
     attemptId: "attempt-1",
     sourceLeaseId: "lease-1",
+    sourceLeaseAuthorityKind: ContextLeaseAuthorityKind.InvestigationShadow,
     sourceFencingToken: "1",
     actualModel: "gpt-test",
     terminalOutcomeHash: hash("c"),
@@ -117,6 +119,7 @@ function acceptedSession() {
     sourceRevision: { reviewRevisionHash: hash("b") },
     attemptId: "attempt-1",
     sourceLeaseId: "lease-1",
+    sourceLeaseAuthorityKind: ContextLeaseAuthorityKind.InvestigationShadow,
     sourceFencingToken: "1",
     providerKind: ContextProviderKind.Codex,
     state: GatewaySessionState.Accepted,

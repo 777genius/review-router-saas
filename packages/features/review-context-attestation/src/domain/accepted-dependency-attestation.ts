@@ -5,6 +5,7 @@ import {
   type ContextAttestationManifest,
 } from "./context-attestation-manifest";
 import {
+  ContextLeaseAuthorityKind,
   GatewaySessionState,
   acceptGatewaySession,
   type GatewaySession,
@@ -20,6 +21,7 @@ export type AcceptedDependencyAttestation = Readonly<{
   sourceExecutionId: string;
   sourceWorkSlotId: string;
   attemptId: string;
+  sourceLeaseAuthorityKind: ContextLeaseAuthorityKind;
   sourceLeaseId: string;
   sourceFencingToken: string;
   sourceReviewRevisionHash: string;
@@ -101,6 +103,7 @@ export function createAcceptedDependencyAttestation(
       sourceExecutionId: candidate.session.sourceExecutionId,
       sourceWorkSlotId: candidate.session.sourceWorkSlotId,
       attemptId: candidate.session.attemptId,
+      sourceLeaseAuthorityKind: candidate.session.sourceLeaseAuthorityKind,
       sourceLeaseId: candidate.session.sourceLeaseId,
       sourceFencingToken: candidate.session.sourceFencingToken,
       sourceReviewRevisionHash:
@@ -122,7 +125,31 @@ export function canonicalAcceptedDependencyAttestationBytes(
   const manifestBytes = canonicalContextAttestationManifestBytes(
     candidate.manifest,
   );
+  if (
+    candidate.sourceLeaseAuthorityKind ===
+    ContextLeaseAuthorityKind.StandardExecution
+  ) {
+    return new TextEncoder().encode(
+      JSON.stringify({
+        acceptedAtMs: candidate.acceptedAtMs,
+        actualModel: candidate.actualModel,
+        attestationId: candidate.attestationId,
+        manifest: new TextDecoder().decode(manifestBytes),
+        reuseExpiresAtMs: candidate.reuseExpiresAtMs,
+        replayMaterialHash: candidate.replayMaterialHash,
+        sessionId: candidate.sessionId,
+        sourceExecutionId: candidate.sourceExecutionId,
+        sourceFencingToken: candidate.sourceFencingToken,
+        sourceLeaseId: candidate.sourceLeaseId,
+        sourceReviewRevisionHash: candidate.sourceReviewRevisionHash,
+        sourceWorkSlotId: candidate.sourceWorkSlotId,
+        terminalOutcomeHash: candidate.terminalOutcomeHash,
+        trustedCapabilityProfile: candidate.trustedCapabilityProfile,
+      }),
+    );
+  }
   const envelope = JSON.stringify({
+    attestationBindingVersion: 2,
     acceptedAtMs: candidate.acceptedAtMs,
     actualModel: candidate.actualModel,
     attestationId: candidate.attestationId,
@@ -131,6 +158,7 @@ export function canonicalAcceptedDependencyAttestationBytes(
     replayMaterialHash: candidate.replayMaterialHash,
     sessionId: candidate.sessionId,
     sourceExecutionId: candidate.sourceExecutionId,
+    sourceLeaseAuthorityKind: candidate.sourceLeaseAuthorityKind,
     sourceFencingToken: candidate.sourceFencingToken,
     sourceLeaseId: candidate.sourceLeaseId,
     sourceReviewRevisionHash: candidate.sourceReviewRevisionHash,

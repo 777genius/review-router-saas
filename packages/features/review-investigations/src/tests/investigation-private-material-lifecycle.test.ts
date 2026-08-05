@@ -341,6 +341,8 @@ function command(commandId: string): OpenReviewInvestigationCommand {
     stableReviewUnitKey: "stable-private-material",
     providerVoteLaneId: "lane-private-material",
     providerStrategyId: "strategy-private-material",
+    investigationManifestCanonicalJson: "{}",
+    investigationManifestHash: sha256("{}"),
     runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
     contract: {
       ...reviewInvestigationCoverageProfileV2,

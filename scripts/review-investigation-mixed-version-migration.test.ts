@@ -16,6 +16,7 @@ import {
 } from "../packages/platform/db/src/index.js";
 import { ContextAttestationPersistenceStatus } from "../packages/features/review-context-attestation/src/application/ports/context-attestation-ports";
 import {
+  ContextLeaseAuthorityKind,
   ContextProviderKind,
   activateGatewaySession,
   openGatewaySession,
@@ -100,6 +101,7 @@ describeRehearsal("review investigation mixed-version migrations", () => {
     applyMigration("000052_context_gateway_multi_turn_opening");
     applyMigration("000053_review_run_authorization_investigation_snapshot");
     applyMigration("000054_review_config_investigation_rollout");
+    applyMigration("000055_review_investigation_shadow_leases");
 
     prisma = createPrismaClient({
       databaseUrl: rehearsalDatabaseUrl,
@@ -404,6 +406,7 @@ function activeSession(input: {
       sourceWorkSlotId: legacySession.sourceWorkSlotId,
       attemptId: input.attemptId,
       openingIntentHash: input.openingIntentHash,
+      sourceLeaseAuthorityKind: ContextLeaseAuthorityKind.StandardExecution,
       sourceLeaseId: legacySession.sourceLeaseId,
       sourceFencingToken: legacySession.sourceFencingToken,
       providerKind: ContextProviderKind.Codex,

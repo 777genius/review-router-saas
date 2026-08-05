@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ContextCriticDecision,
   InvestigationTurnProviderKind,
+  InvestigationLeaseAcquireStatus,
   InvestigationObligationKind,
   InvestigationObligationOrigin,
   InvestigationObligationState,
@@ -19,16 +20,19 @@ import {
 import {
   ReviewActionV2ProtocolErrorCode,
   ReviewInvestigationMutationResultStatus,
+  ReviewInvestigationLeaseResultStatus,
   ReviewActionV2OperationId,
   ReviewInvestigationPublishedRuntimeProfile,
   canonicalizeReviewActionV2Request,
   reviewActionV2PublishedProtocolVersion,
   reviewActionV2PublishedSchemaDigest,
+  reviewInvestigationExtensionV1,
   type ReviewActionV2RequestMap,
   type ReviewInvestigationConcludeRequest,
-  type ReviewInvestigationOpenRequest,
+  type ReviewInvestigationLeaseAcquireRequest,
+  type ReviewInvestigationOpenV2Request,
   type ReviewInvestigationTurnPlanRequest,
-  type ReviewInvestigationReplayRequest,
+  type ReviewInvestigationReplayV2Request,
 } from "@reviewrouter/protocol-review-action-v2";
 import {
   InvestigationShadowEvidenceConclusion,
@@ -36,6 +40,7 @@ import {
   ProviderExecutionProfile,
   ReviewProviderKind as EvidenceProviderKind,
   ReviewTaskKind as EvidenceTaskKind,
+  buildProviderInvocationIdentity,
   canonicalInvestigationShadowCertificate,
   serializeProviderInvocationManifestCanonicalWireJson,
 } from "@reviewrouter/features-review-evidence";
@@ -55,6 +60,18 @@ import {
   ReviewWorkSlotState,
 } from "@reviewrouter/features-review-executions";
 import { composeReviewActionV2InvestigationRoutes } from "./review-action-v2-investigation-composition.js";
+
+const investigationLeaseHandlerStubs = {
+  investigationLeaseQueries: {} as never,
+  investigationLeaseCapabilities: {} as never,
+  nextInvestigationLeaseId: () => "investigation-lease-1",
+  nextInvestigationAttemptId: () => "investigation-attempt-1",
+  investigationLeaseTiming: {
+    initialLeaseDurationMs: 60_000,
+    renewLeaseDurationMs: 60_000,
+    retentionDurationMs: 3_600_000,
+  },
+} as const;
 
 describe("Review Action v2 investigation composition", () => {
   it("keeps the shadow certificate digest preimage identical to the investigation issuer", () => {
@@ -84,6 +101,7 @@ describe("Review Action v2 investigation composition", () => {
         createRequestId: () => "request-generated",
       },
       handlers: {
+        ...investigationLeaseHandlerStubs,
         authorizations: authorizationResolver(),
         authorizationQueries: {} as never,
         executionQueries: {
@@ -108,6 +126,9 @@ describe("Review Action v2 investigation composition", () => {
           open: { execute: openExecute } as never,
           restore: {} as never,
           planTurn: {} as never,
+          acquireLease: {} as never,
+          renewLease: {} as never,
+          releaseLease: {} as never,
           commitTurn: {} as never,
           abortTurn: {} as never,
           conclude: {} as never,
@@ -133,7 +154,7 @@ describe("Review Action v2 investigation composition", () => {
     const seedObligations: readonly unknown[] = [];
     const initialReceipts: readonly unknown[] = [];
     const request = await withBodyHash(
-      ReviewActionV2OperationId.ReviewInvestigationOpen,
+      ReviewActionV2OperationId.ReviewInvestigationOpenV2,
       {
         ...envelope("open-unsupported-profile"),
         authorizationToken: "authorization-token",
@@ -156,16 +177,129 @@ describe("Review Action v2 investigation composition", () => {
         seedObligationsHash: sha(canonicalJson(seedObligations)),
         initialReceiptsCanonicalJson: canonicalJson(initialReceipts),
         initialReceiptsHash: sha(canonicalJson(initialReceipts)),
-      } satisfies ReviewInvestigationOpenRequest,
+        investigationManifestCanonicalJson: "{}",
+        investigationManifestHash: sha("{}"),
+      } satisfies ReviewInvestigationOpenV2Request,
     );
 
-    await expect(routes.open!.execute(request)).rejects.toMatchObject({
+    await expect(routes.openV2!.execute(request)).rejects.toMatchObject({
       statusCode: 403,
       errorCode: ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
       issues: ["investigation_coverage_profile_unsupported"],
     });
     expect(releaseLookup).not.toHaveBeenCalled();
     expect(openExecute).not.toHaveBeenCalled();
+  });
+
+  it("acquires a dedicated shadow lease bound to the planned turn and manifest", async () => {
+    const manifestCanonicalJson = canonicalJson({ manifestVersion: 1 });
+    const manifestHash = sha("investigation-manifest");
+    const aggregate = {
+      ...activeInvestigation(),
+      providerStrategyId: sha("provider-strategy"),
+      investigationManifestCanonicalJson: manifestCanonicalJson,
+      investigationManifestHash: manifestHash,
+    } as ReviewInvestigation;
+    const lease = {
+      leaseId: "investigation-lease-1",
+      attemptId: "investigation-attempt-1",
+      fencingToken: 7n,
+      expiresAt: "2026-08-02T10:10:00.000Z",
+      resultReportUntil: "2026-08-02T10:20:00.000Z",
+    };
+    const acquire = vi.fn().mockResolvedValue({
+      status: InvestigationLeaseAcquireStatus.Acquired,
+      lease,
+    });
+    const issue = vi.fn().mockResolvedValue("shadow-lease-capability");
+    const routes = composeReviewActionV2InvestigationRoutes({
+      enabled: true,
+      runtime: {
+        readServerTime: async () => now,
+        createRequestId: () => "request-generated",
+      },
+      handlers: {
+        ...investigationLeaseHandlerStubs,
+        authorizations: authorizationResolver(),
+        authorizationQueries: {} as never,
+        executionQueries: {
+          findExecution: vi.fn().mockResolvedValue(executionSnapshot()),
+        } as never,
+        investigations: {
+          restore: { snapshot: vi.fn().mockResolvedValue(aggregate) },
+          acquireLease: { execute: acquire },
+        } as never,
+        capabilities: {
+          verifyInvestigationTurn: vi.fn().mockResolvedValue({
+            authorizationId: authorization.authorizationId,
+            executionId: aggregate.executionId,
+            workSlotId: aggregate.workSlotId,
+            reviewRevisionHash: aggregate.revision.reviewRevisionHash,
+            investigationId: aggregate.investigationId,
+            investigationVersion: aggregate.version,
+            dossierDigest: aggregate.dossierDigest,
+            turnId: aggregate.activeTurn!.turnId,
+          }),
+        } as never,
+        investigationLeaseCapabilities: {
+          prepareIdentity: vi.fn().mockResolvedValue({
+            capabilityId: "investigation-capability-1",
+            signingKeyId: "shadow-key-1",
+          }),
+          issue,
+        } as never,
+        digest,
+        now: () => now,
+        rollout: allowingRollout,
+        terminalShadowEvidence: { execute: vi.fn() } as never,
+        crossRevisionReplayEnabled: false,
+        replayPreparation: vi.fn() as never,
+      },
+    });
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvestigationLeaseAcquire,
+      {
+        ...envelope("investigation-lease-acquire"),
+        authorizationToken: "authorization-token",
+        idempotencyKey: "investigation-lease-acquire-1",
+        requestBodyHash: sha("placeholder"),
+        investigationId: aggregate.investigationId,
+        expectedVersion: aggregate.version.toString(10),
+        turnId: aggregate.activeTurn!.turnId,
+        turnCapability: "turn-capability",
+        providerStrategyId: aggregate.providerStrategyId,
+        investigationManifestCanonicalJson: manifestCanonicalJson,
+        investigationManifestHash: manifestHash,
+        acquireRequestId: "investigation-acquire-request-1",
+        ownerIdHash: sha("investigation-owner"),
+      } satisfies ReviewInvestigationLeaseAcquireRequest,
+    );
+
+    await expect(routes.acquireLease!.execute(request)).resolves.toMatchObject({
+      statusCode: 201,
+      result: {
+        status: ReviewInvestigationLeaseResultStatus.Acquired,
+        leaseId: lease.leaseId,
+        attemptId: lease.attemptId,
+        fencingToken: "7",
+        leaseCapability: "shadow-lease-capability",
+      },
+    });
+    expect(acquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        investigationId: aggregate.investigationId,
+        turnId: aggregate.activeTurn!.turnId,
+        authorizationId: authorization.authorizationId,
+        mutationEpoch: authorization.mutationEpoch,
+        providerStrategyId: aggregate.providerStrategyId,
+        investigationManifestHash: manifestHash,
+        leaseId: "investigation-lease-1",
+        attemptId: "investigation-attempt-1",
+        leaseCapabilityId: "investigation-capability-1",
+        capabilitySigningKeyId: "shadow-key-1",
+      }),
+    );
+    expect(issue).toHaveBeenCalledOnce();
   });
 
   it("projects terminal shadow evidence after conclude and heals on idempotent retry", async () => {
@@ -254,6 +388,7 @@ describe("Review Action v2 investigation composition", () => {
         createRequestId: () => "request-generated",
       },
       handlers: {
+        ...investigationLeaseHandlerStubs,
         authorizations: {
           async resolveReviewRunAuthorizationToken() {
             return {
@@ -273,6 +408,9 @@ describe("Review Action v2 investigation composition", () => {
             execute: vi.fn().mockResolvedValue(readModel),
           } as never,
           planTurn: { execute: vi.fn() } as never,
+          acquireLease: {} as never,
+          renewLease: {} as never,
+          releaseLease: {} as never,
           commitTurn: {} as never,
           abortTurn: {} as never,
           conclude: {} as never,
@@ -393,6 +531,7 @@ describe("Review Action v2 investigation composition", () => {
         createRequestId: () => "request-generated",
       },
       handlers: {
+        ...investigationLeaseHandlerStubs,
         authorizations: authorizationResolver(),
         authorizationQueries: {} as never,
         executionQueries: {
@@ -405,6 +544,9 @@ describe("Review Action v2 investigation composition", () => {
             execute: vi.fn().mockResolvedValue(readModel),
           } as never,
           planTurn: { execute: vi.fn() } as never,
+          acquireLease: {} as never,
+          renewLease: {} as never,
+          releaseLease: {} as never,
           commitTurn: {} as never,
           abortTurn: {} as never,
           conclude: {} as never,
@@ -471,34 +613,39 @@ describe("Review Action v2 investigation composition", () => {
     };
     const targetSeedCanonicalJson = canonicalJson(targetSeedEnvelope);
     const targetSeedHash = sha(targetSeedCanonicalJson);
-    const targetProviderStrategyId = sha("target-provider-invocation");
     const targetProviderVoteLaneId = sha("target-lane");
+    const targetManifest = {
+      manifestVersion: 1,
+      scopeHash: await authorizationScopeHash(),
+      taskKindSet: [EvidenceTaskKind.FindingDiscovery],
+      providerKind: EvidenceProviderKind.Codex,
+      providerCapabilityHash: sha("target-capability"),
+      requestedModel: targetSeedEnvelope.requestedModel,
+      providerPolicyVersion: "codex-provider-policy.v2-t0",
+      producerReleaseId: authorization.producerReleaseId,
+      selectedProtocolVersion: authorization.selectedProtocolVersion,
+      providerRequestEnvelopeHash: targetSeedHash,
+      outputSchemaHash: sha("target-schema"),
+      reviewConfigHash: sha("target-config"),
+      runtimeCompatibilityKey: sha("target-runtime"),
+      filePatchManifestHash: sha("target-patch"),
+      contextManifestHash: sha("target-context"),
+      memoryBundleHash: null,
+      codeGraphProjectionHash: null,
+      lifecycleTargetSetHash: null,
+      liveLifecycleStateHash: null,
+      toolPolicyHash: sha("target-tools"),
+      executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
+      baseTreeHash: sha("target-base-tree"),
+      environmentContractHash: sha("target-environment"),
+    } as const;
     const targetManifestCanonicalJson =
-      serializeProviderInvocationManifestCanonicalWireJson({
-        manifestVersion: 1,
-        scopeHash: await authorizationScopeHash(),
-        taskKindSet: [EvidenceTaskKind.FindingDiscovery],
-        providerKind: EvidenceProviderKind.Codex,
-        providerCapabilityHash: sha("target-capability"),
-        requestedModel: targetSeedEnvelope.requestedModel,
-        providerPolicyVersion: "codex-provider-policy.v2-t0",
-        producerReleaseId: authorization.producerReleaseId,
-        selectedProtocolVersion: authorization.selectedProtocolVersion,
-        providerRequestEnvelopeHash: targetSeedHash,
-        outputSchemaHash: sha("target-schema"),
-        reviewConfigHash: sha("target-config"),
-        runtimeCompatibilityKey: sha("target-runtime"),
-        filePatchManifestHash: sha("target-patch"),
-        contextManifestHash: sha("target-context"),
-        memoryBundleHash: null,
-        codeGraphProjectionHash: null,
-        lifecycleTargetSetHash: null,
-        liveLifecycleStateHash: null,
-        toolPolicyHash: sha("target-tools"),
-        executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
-        baseTreeHash: sha("target-base-tree"),
-        environmentContractHash: sha("target-environment"),
-      });
+      serializeProviderInvocationManifestCanonicalWireJson(targetManifest);
+    const targetIdentity = await buildProviderInvocationIdentity(digest, {
+      manifest: targetManifest,
+      providerVoteIdentityHash: targetProviderVoteLaneId,
+    });
+    const targetProviderStrategyId = targetIdentity.providerInvocationKey;
     const source = {
       ...activeInvestigation(),
       state: ReviewInvestigationState.Concluded,
@@ -521,6 +668,7 @@ describe("Review Action v2 investigation composition", () => {
         createRequestId: () => "request-generated",
       },
       handlers: {
+        ...investigationLeaseHandlerStubs,
         authorizations: {
           async resolveReviewRunAuthorizationToken() {
             return {
@@ -554,6 +702,12 @@ describe("Review Action v2 investigation composition", () => {
                   activeLeaseId: "lease-target",
                 },
               ],
+            },
+            stream: {
+              activeExecutionId: "execution-target",
+              currentRevision: {
+                reviewRevisionHash: authorization.reviewRevisionHash,
+              },
             },
             activeLeases: [
               {
@@ -593,6 +747,9 @@ describe("Review Action v2 investigation composition", () => {
           open: {} as never,
           restore: { snapshot: vi.fn().mockResolvedValue(source) } as never,
           planTurn: {} as never,
+          acquireLease: {} as never,
+          renewLease: {} as never,
+          releaseLease: {} as never,
           commitTurn: {} as never,
           abortTurn: {} as never,
           conclude: {} as never,
@@ -627,7 +784,7 @@ describe("Review Action v2 investigation composition", () => {
       { obligationId: sha("obligation"), replayProofId: "proof-1" },
     ];
     const request = await withBodyHash(
-      ReviewActionV2OperationId.ReviewInvestigationReplay,
+      ReviewActionV2OperationId.ReviewInvestigationReplayV2,
       {
         ...envelope("replay-investigation"),
         authorizationToken: "authorization-token",
@@ -641,6 +798,8 @@ describe("Review Action v2 investigation composition", () => {
         stableReviewUnitKey: "unit-target",
         providerVoteLaneId: targetProviderVoteLaneId,
         providerStrategyId: targetProviderStrategyId,
+        investigationManifestCanonicalJson: targetManifestCanonicalJson,
+        investigationManifestHash: targetIdentity.manifestKey,
         runtimeProfile:
           ReviewInvestigationPublishedRuntimeProfile.GatewayAttestedAgentV1,
         coverageContractCanonicalJson: canonicalJson(targetContract),
@@ -657,10 +816,10 @@ describe("Review Action v2 investigation composition", () => {
         targetRevisionHash: sha(canonicalJson(targetRevision)),
         replayProofsCanonicalJson: canonicalJson(replayProofs),
         replayProofsHash: sha(canonicalJson(replayProofs)),
-      } satisfies ReviewInvestigationReplayRequest,
+      } satisfies ReviewInvestigationReplayV2Request,
     );
 
-    await expect(routes.replay!.execute(request)).resolves.toMatchObject({
+    await expect(routes.replayV2!.execute(request)).resolves.toMatchObject({
       statusCode: 201,
       result: { status: ReviewInvestigationMutationResultStatus.Applied },
     });
@@ -671,6 +830,8 @@ describe("Review Action v2 investigation composition", () => {
         targetRevision,
         targetStableReviewUnitKey: "unit-target",
         targetProviderStrategyId,
+        targetInvestigationManifestCanonicalJson: targetManifestCanonicalJson,
+        targetInvestigationManifestHash: targetIdentity.manifestKey,
         targetSeedObligations: targetSeedEnvelope.obligations,
         targetInitialReceipts: [],
         replayProofs,
@@ -687,6 +848,7 @@ const now = new Date("2026-08-02T10:00:00.000Z");
 const revisionHash = sha("revision");
 const authorization = {
   authorizationId: "authorization-1",
+  mutationEpoch: 1n,
   state: ReviewRunAuthorizationState.Active,
   expiresAt: new Date("2026-08-02T11:00:00.000Z"),
   workspaceId: "workspace-1",
@@ -700,6 +862,22 @@ const authorization = {
   reviewRevisionHash: revisionHash,
   producerReleaseId: "release-1",
   selectedProtocolVersion: "review_action_v2",
+  reviewInvestigationAuthorizationDescriptorCanonicalJson: canonicalJson({
+    authorizationDescriptorVersion: 3,
+    capability: "review_investigation_v1",
+    coverageProfileHash: sha("coverage-profile"),
+    extensionCanonicalizerDigest:
+      reviewInvestigationExtensionV1.canonicalizerDigest,
+    extensionId: reviewInvestigationExtensionV1.extensionId,
+    extensionSchemaDigest: reviewInvestigationExtensionV1.schemaDigest,
+    policyHash: sha("policy"),
+    providerCapabilities: [
+      {
+        capabilities: ["cross_revision_replay", "recording", "shadow"],
+        providerKind: "codex",
+      },
+    ],
+  }),
 } as const;
 
 function executionSnapshot() {
@@ -876,6 +1054,7 @@ function concludeHarness(input: {
       createRequestId: () => "request-generated",
     },
     handlers: {
+      ...investigationLeaseHandlerStubs,
       authorizations: authorizationResolver(),
       authorizationQueries: {} as never,
       executionQueries: {
@@ -890,6 +1069,9 @@ function concludeHarness(input: {
           }),
         } as never,
         planTurn: {} as never,
+        acquireLease: {} as never,
+        renewLease: {} as never,
+        releaseLease: {} as never,
         commitTurn: {} as never,
         abortTurn: {} as never,
         conclude: { execute: concludeExecute } as never,

@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   AbortInvestigationTurn,
+  AcquireInvestigationLease,
   CommitInvestigationTurn,
   ConcludeReviewInvestigation,
   ContextCriticDecision,
   enforceCriticPolicyForConclusion,
   InvestigationFindingSeverity,
+  InvestigationLeaseAcquireStatus,
+  InvestigationStoreTransitionKind,
   InvestigationObligationKind,
   InvestigationReceiptReplayVerdict,
   InvestigationReceiptKind,
   InvestigationTurnProviderKind,
+  investigationDossierCanonicalValue,
+  canonicalJson,
   independentCriticRiskPriorityV1,
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
@@ -351,6 +356,9 @@ describe("review investigation in-memory vertical slice", () => {
       targetStableReviewUnitKey: targetOpen.stableReviewUnitKey,
       targetProviderVoteLaneId: targetOpen.providerVoteLaneId,
       targetProviderStrategyId: "strategy-target",
+      targetInvestigationManifestCanonicalJson:
+        targetOpen.investigationManifestCanonicalJson!,
+      targetInvestigationManifestHash: targetOpen.investigationManifestHash!,
       targetRuntimeProfile: targetOpen.runtimeProfile,
       targetContract: targetOpen.contract,
       targetPolicy: targetOpen.policy,
@@ -381,6 +389,11 @@ describe("review investigation in-memory vertical slice", () => {
     const replayedTarget = await harness.store.findById(
       replayed.investigationId,
     );
+    expect(replayedTarget).toMatchObject({
+      investigationManifestCanonicalJson:
+        targetOpen.investigationManifestCanonicalJson!,
+      investigationManifestHash: targetOpen.investigationManifestHash!,
+    });
     expect(
       replayedTarget?.obligations.map((item) => item.canonicalSubject),
     ).toEqual(expect.arrayContaining([inventorySubject, targetOnlySubject]));
@@ -389,6 +402,42 @@ describe("review investigation in-memory vertical slice", () => {
         (item) => item.canonicalSubject === changedSubject,
       ),
     ).toBe(false);
+    const replayedPlan = await harness.plan.execute({
+      commandId: "plan-selective-replay",
+      investigationId: replayed.investigationId,
+      expectedVersion: replayed.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+    const acquiredReplayLease = await new AcquireInvestigationLease(
+      harness.store,
+      harness.store,
+      harness.authority,
+      harness.digest,
+      harness.clock,
+    ).execute({
+      investigationId: replayed.investigationId,
+      expectedVersion: replayedPlan.version,
+      turnId: replayedPlan.turn!.turnId,
+      authorizationId: "authorization-target",
+      mutationEpoch: 1n,
+      providerStrategyId: "strategy-target",
+      investigationManifestCanonicalJson:
+        targetOpen.investigationManifestCanonicalJson!,
+      investigationManifestHash: targetOpen.investigationManifestHash!,
+      acquireRequestId: "acquire-selective-replay",
+      acquireRequestHash: "1".repeat(64),
+      ownerIdHash: "2".repeat(64),
+      leaseId: "lease-selective-replay",
+      attemptId: "attempt-selective-replay",
+      leaseCapabilityId: "capability-selective-replay",
+      capabilitySigningKeyId: "signing-key-1",
+      initialLeaseDurationMs: 30_000,
+      retentionDurationMs: 3_600_000,
+    });
+    expect(acquiredReplayLease.status).toBe(
+      InvestigationLeaseAcquireStatus.Acquired,
+    );
     expect(await harness.store.findById(opened.investigationId)).toEqual(
       sourceBeforeReplay,
     );
@@ -434,6 +483,9 @@ describe("review investigation in-memory vertical slice", () => {
       targetStableReviewUnitKey: targetOpen.stableReviewUnitKey,
       targetProviderVoteLaneId: targetOpen.providerVoteLaneId,
       targetProviderStrategyId: "strategy-target-all",
+      targetInvestigationManifestCanonicalJson:
+        targetOpen.investigationManifestCanonicalJson!,
+      targetInvestigationManifestHash: targetOpen.investigationManifestHash!,
       targetRuntimeProfile: targetOpen.runtimeProfile,
       targetContract: targetOpen.contract,
       targetPolicy: targetOpen.policy,
@@ -878,6 +930,48 @@ describe("review investigation in-memory vertical slice", () => {
     );
   });
 
+  it("preserves the legacy dossier preimage when no manifest was admitted", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(
+      openCommand("open-legacy-dossier"),
+    );
+    const stored = (await harness.store.findById(opened.investigationId))!;
+    const legacyWithoutDigest = {
+      ...stored,
+      investigationManifestCanonicalJson: null,
+      investigationManifestHash: null,
+    };
+    const legacy = {
+      ...legacyWithoutDigest,
+      dossierDigest: await harness.digest.digestUtf8(
+        canonicalJson(investigationDossierCanonicalValue(legacyWithoutDigest)),
+      ),
+    };
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        investigationDossierCanonicalValue(legacy),
+        "investigationManifestHash",
+      ),
+    ).toBe(false);
+    const migratedStore = new InMemoryInvestigationStore();
+    await migratedStore.commit({
+      investigation: legacy,
+      expectedVersion: null,
+      commandId: "legacy-open-command",
+      commandHash: "3".repeat(64),
+      transition: { kind: InvestigationStoreTransitionKind.Opened },
+    });
+    await expect(
+      new RestoreReviewInvestigation(migratedStore, harness.digest).snapshot(
+        legacy.investigationId,
+      ),
+    ).resolves.toMatchObject({
+      investigationManifestCanonicalJson: null,
+      investigationManifestHash: null,
+      dossierDigest: legacy.dossierDigest,
+    });
+  });
+
   it("is order-independent and rejects conflicting command replay", async () => {
     for (let seed = 1; seed <= 50; seed += 1) {
       const left = createHarness();
@@ -1018,6 +1112,9 @@ function openCommand(
     stableReviewUnitKey: "stable-unit-test",
     providerVoteLaneId: "lane-codex",
     providerStrategyId: "strategy-single-provider",
+    investigationManifestCanonicalJson: "{}",
+    investigationManifestHash:
+      "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
     contract: {
       coverageContractVersion: "coverage-v1",

@@ -135,9 +135,16 @@ import {
   JoseRotatingCapabilityCodec,
   type ConfiguredCapabilityVerificationKey,
 } from "@reviewrouter/platform-signed-capabilities";
-import { ReviewActionV2ProtocolErrorCode } from "@reviewrouter/protocol-review-action-v2";
+import {
+  ReviewActionV2ProtocolErrorCode,
+  reviewInvestigationExtensionV1,
+} from "@reviewrouter/protocol-review-action-v2";
 import { SystemClock } from "@reviewrouter/shared";
 import { ReviewActionV2ExecutionEvidenceCapabilityAdapter } from "./review-action-v2-execution-evidence-capabilities.js";
+import {
+  DisabledReviewActionV2InvestigationLeaseCapabilityAdapter,
+  ReviewActionV2InvestigationLeaseCapabilityAdapter,
+} from "./review-action-v2-investigation-lease-capabilities.js";
 import {
   resolveReviewActionV2ProjectionPolicyVersion,
   reviewActionV2ProjectionPolicyVersion,
@@ -195,6 +202,10 @@ export const reviewActionV2CapabilityActiveKeyIdEnv =
   "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID";
 export const reviewActionV2CapabilityKeysEnv =
   "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON";
+export const reviewInvestigationLeaseCapabilityActiveKeyIdEnv =
+  "REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID";
+export const reviewInvestigationLeaseCapabilityKeysEnv =
+  "REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON";
 export const reviewActionV2ProviderVoteLanesEnv =
   "REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON";
 export const reviewActionV2ProjectionPolicyVersionEnv =
@@ -590,6 +601,9 @@ export function composeReviewActionV2ProductionRoutes(input: {
     "reviewrouter-review-action-v2",
     randomUUID,
   );
+  const investigationLeaseCapabilities = investigationRecordingEnabled
+    ? createInvestigationLeaseCapabilityAdapter(input.env)
+    : new DisabledReviewActionV2InvestigationLeaseCapabilityAdapter();
   const contextCrypto = readReviewActionV2ContextCrypto(input.env);
   const contextAttestationHandlers = {
     authorizations: runControl.authorizations,
@@ -599,6 +613,10 @@ export function composeReviewActionV2ProductionRoutes(input: {
     store: contextAttestationStore,
     cipher: contextCrypto.cipher,
     capabilities,
+    investigationLeaseQueries: investigationStore,
+    investigationQueries: investigationStore,
+    investigationLeaseCapabilities,
+    investigationRollout: investigationRolloutGuard,
     digest,
     checkoutTrees: new ProductionReviewActionV2CheckoutTreeResolver({
       prisma,
@@ -711,6 +729,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
       producerReleases: repositories.producerReleases,
       investigations: composeReviewInvestigationUseCases({
         store: investigationStore,
+        leases: investigationStore,
         authority: new ProductionInvestigationExecutionAuthority(
           executionStore,
           repositories.authorizations,
@@ -837,7 +856,9 @@ export function composeReviewActionV2ProductionRoutes(input: {
             }
           : {}),
       }),
+      investigationLeaseQueries: investigationStore,
       capabilities,
+      investigationLeaseCapabilities,
       digest,
       now: () => clock.now(),
       rollout: investigationRolloutGuard,
@@ -848,6 +869,13 @@ export function composeReviewActionV2ProductionRoutes(input: {
         investigationRollout,
         InvestigationRolloutCapability.CrossRevisionReplay,
       ),
+      nextInvestigationLeaseId: () => `investigation-lease-${randomUUID()}`,
+      nextInvestigationAttemptId: () => `investigation-attempt-${randomUUID()}`,
+      investigationLeaseTiming: {
+        initialLeaseDurationMs: executionTiming.initialLeaseDurationMs,
+        renewLeaseDurationMs: executionTiming.initialLeaseDurationMs,
+        retentionDurationMs: productionTiming.retentionDurationMs,
+      },
       replayPreparation: (target) =>
         createInvestigationReceiptReplayPreparationPort(
           target,
@@ -966,9 +994,13 @@ export class ProductionReviewInvestigationAuthorizationCapability implements Rev
     }
     if (providerCapabilities.length === 0) return null;
     return Object.freeze({
-      authorizationDescriptorVersion: 2,
+      authorizationDescriptorVersion: 3,
       capability: reviewInvestigationCapabilityV1,
       coverageProfileHash: profile.coverageProfileHash,
+      extensionCanonicalizerDigest:
+        reviewInvestigationExtensionV1.canonicalizerDigest,
+      extensionId: reviewInvestigationExtensionV1.extensionId,
+      extensionSchemaDigest: reviewInvestigationExtensionV1.schemaDigest,
       policyHash: profile.policyHash,
       providerCapabilities: Object.freeze(providerCapabilities),
     });
@@ -1091,7 +1123,7 @@ type ProducerReleaseManagement = ReturnType<
   typeof composeReviewRunControl
 >["producerReleases"];
 
-function createTrustedProducerReleaseMaterializer(input: {
+export function createTrustedProducerReleaseMaterializer(input: {
   readonly digest: ProductionReviewActionV2Digest;
   readonly producerReleases: ProducerReleaseManagement;
   readonly releaseQueries: ProducerReleaseQueryPort;
@@ -1171,6 +1203,7 @@ function createTrustedProducerReleaseMaterializer(input: {
             capabilityProfile: release.capabilityProfile,
             protocolLimitsProfileId: release.protocolLimitsProfileId,
             operationalSloProfileId: release.operationalSloProfileId,
+            reviewInvestigationProfile: release.reviewInvestigationProfile,
           },
           expectedProtocolLimitsDigest: limitsDigest,
           expectedOperationalSloDigest: sloDigest,
@@ -1814,13 +1847,44 @@ function readProviderVoteLanes(
 function readCapabilityKeyRing(
   env: Readonly<Record<string, string | undefined>>,
 ): ConfiguredCapabilityKeyRing {
-  const activeKeyId = requiredEnv(env, reviewActionV2CapabilityActiveKeyIdEnv);
+  return readCapabilityKeyRingFromEnv(
+    env,
+    reviewActionV2CapabilityActiveKeyIdEnv,
+    reviewActionV2CapabilityKeysEnv,
+    "review_action_v2_capability",
+  );
+}
+
+function createInvestigationLeaseCapabilityAdapter(
+  env: Readonly<Record<string, string | undefined>>,
+): ReviewActionV2InvestigationLeaseCapabilityAdapter {
+  const keyRing = readCapabilityKeyRingFromEnv(
+    env,
+    reviewInvestigationLeaseCapabilityActiveKeyIdEnv,
+    reviewInvestigationLeaseCapabilityKeysEnv,
+    "review_investigation_lease_capability",
+  );
+  return new ReviewActionV2InvestigationLeaseCapabilityAdapter(
+    new JoseRotatingCapabilityCodec(keyRing),
+    keyRing,
+    "reviewrouter-review-investigation-shadow-lease-v1",
+    randomUUID,
+  );
+}
+
+function readCapabilityKeyRingFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+  activeKeyIdEnv: string,
+  keysEnv: string,
+  errorPrefix: string,
+): ConfiguredCapabilityKeyRing {
+  const activeKeyId = requiredEnv(env, activeKeyIdEnv);
   const values = parseJsonArray(
-    requiredEnv(env, reviewActionV2CapabilityKeysEnv),
-    "review_action_v2_capability_keys_invalid",
+    requiredEnv(env, keysEnv),
+    `${errorPrefix}_keys_invalid`,
   );
   if (values.length === 0 || values.length > 10) {
-    throw new Error("review_action_v2_capability_keys_invalid");
+    throw new Error(`${errorPrefix}_keys_invalid`);
   }
   return new ConfiguredCapabilityKeyRing({
     activeKeyId,

@@ -852,6 +852,7 @@ model ReviewContextGatewaySession {
   sourceWorkSlotId         String
   attemptId                String
   openingIntentHash        String                              @default("4d29442a15edaf0c8d2a044f12e695b0a514842ab5d4a566c2a26e451a55c19b")
+  sourceLeaseAuthorityKind ReviewContextLeaseAuthorityKindV1  @default(standard_execution)
   sourceLeaseId            String
   sourceFencingToken       BigInt
   providerKind             ReviewProviderKindV2
@@ -1169,6 +1170,8 @@ model ReviewInvestigation {
   stableReviewUnitKey         String
   providerVoteLaneId          String
   providerStrategyId          String
+  investigationManifestCanonicalJson String?                      @db.Text
+  investigationManifestHash  String?
   runtimeProfile              ReviewInvestigationRuntimeProfileV1
   coverageContractVersion     String
   expansionRulesVersion       String
@@ -1244,11 +1247,61 @@ model ReviewInvestigationTurn {
   expiresAt             DateTime
   completedAt           DateTime?
   retainUntil           DateTime
+  shadowLeases          ReviewInvestigationLease[] @relation("ReviewInvestigationTurnShadowLeases")
 
   @@unique([investigationId, turnOrdinal], map: "ReviewInvestigationTurn_investigation_ordinal_key")
+  @@unique([investigationId, turnId], map: "ReviewInvestigationTurn_investigation_turn_key")
   @@index([investigationId, state, expiresAt], map: "ReviewInvestigationTurn_active_recovery_idx")
   @@index([expiresAt, turnId], map: "ReviewInvestigationTurn_expiry_idx")
   @@index([retainUntil, turnId], map: "ReviewInvestigationTurn_retention_idx")
+}
+
+model ReviewInvestigationLease {
+  leaseId                            String                            @id
+  purpose                            ReviewInvestigationLeasePurposeV1
+  workspaceId                        String
+  repositoryConnectionId             String
+  scmRepositoryIdentityId            String
+  pullRequestNumber                  Int
+  authorizationId                    String
+  mutationEpoch                      BigInt
+  executionId                        String
+  workSlotId                         String
+  baseSha                            String
+  mergeBaseSha                       String
+  headSha                            String
+  reviewRevisionHash                 String
+  investigationId                    String
+  investigationVersion               BigInt
+  turnId                             String
+  turnPurpose                        ReviewInvestigationTurnPurposeV1
+  providerVoteLaneId                 String
+  providerStrategyId                 String
+  investigationManifestCanonicalJson String                            @db.Text
+  investigationManifestHash          String
+  attemptId                          String                            @unique(map: "ReviewInvestigationLease_attemptId_key")
+  acquireRequestIdHash               String
+  acquireRequestHash                 String
+  lastRenewRequestIdHash             String?
+  lastRenewRequestHash               String?
+  lastReleaseRequestIdHash           String?
+  lastReleaseRequestHash             String?
+  ownerIdHash                        String
+  leaseCapabilityId                  String                            @unique(map: "ReviewInvestigationLease_capability_key")
+  capabilitySigningKeyId             String
+  fencingToken                       BigInt                            @unique(map: "ReviewInvestigationLease_fencing_key") @default(autoincrement())
+  state                              ReviewInvestigationLeaseStateV1   @default(active)
+  acquiredAt                         DateTime
+  renewedAt                          DateTime
+  expiresAt                          DateTime
+  resultReportUntil                  DateTime
+  retainUntil                        DateTime
+  turn                               ReviewInvestigationTurn                @relation("ReviewInvestigationTurnShadowLeases", fields: [investigationId, turnId], references: [investigationId, turnId], onDelete: Restrict)
+
+  @@unique([investigationId, turnId, acquireRequestIdHash], map: "ReviewInvestigationLease_acquire_identity_key")
+  @@index([investigationId, turnId, state, expiresAt], map: "ReviewInvestigationLease_turn_state_idx")
+  @@index([executionId, workSlotId, state], map: "ReviewInvestigationLease_execution_slot_idx")
+  @@index([retainUntil, leaseId], map: "ReviewInvestigationLease_retention_idx")
 }
 
 model ReviewInvestigationReceipt {
@@ -2194,6 +2247,17 @@ enum ReviewInvestigationTurnStateV1 {
   expired
 }
 
+enum ReviewInvestigationLeasePurposeV1 {
+  shadow_turn
+}
+
+enum ReviewInvestigationLeaseStateV1 {
+  active
+  released
+  expired
+  revoked
+}
+
 enum ReviewInvestigationReceiptKindV1 {
   blob
   tree
@@ -2211,6 +2275,11 @@ enum ReviewContextGatewaySessionStateV1 {
   rejected
   revoked
   expired
+}
+
+enum ReviewContextLeaseAuthorityKindV1 {
+  standard_execution
+  investigation_shadow
 }
 
 enum ReviewTrustDomainV2 {

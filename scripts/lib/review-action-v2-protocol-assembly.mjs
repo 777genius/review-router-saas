@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const reviewActionV2OperationOrder = Object.freeze([
+export const reviewActionV2BaseOperationOrder = Object.freeze([
   "review_run_authorize",
   "review_run_renew",
   "review_execution_restore",
@@ -30,6 +30,34 @@ export const reviewActionV2OperationOrder = Object.freeze([
   "review_publication_request",
   "review_publication_status",
 ]);
+
+export const reviewInvestigationExtensionV1OperationOrder = Object.freeze([
+  "review_investigation_open_v2",
+  "review_investigation_lease_acquire",
+  "review_investigation_lease_renew",
+  "review_investigation_lease_release",
+  "review_investigation_replay_v2",
+  "review_investigation_context_gateway_open",
+  "review_investigation_context_gateway_seal",
+]);
+
+export const reviewActionV2OperationOrder = Object.freeze([
+  ...reviewActionV2BaseOperationOrder.slice(0, 9),
+  "review_investigation_open_v2",
+  ...reviewActionV2BaseOperationOrder.slice(9, 11),
+  "review_investigation_lease_acquire",
+  "review_investigation_lease_renew",
+  "review_investigation_lease_release",
+  ...reviewActionV2BaseOperationOrder.slice(11, 15),
+  "review_investigation_replay_v2",
+  ...reviewActionV2BaseOperationOrder.slice(15, 21),
+  "review_investigation_context_gateway_open",
+  "review_investigation_context_gateway_seal",
+  ...reviewActionV2BaseOperationOrder.slice(21),
+]);
+
+export const reviewInvestigationExtensionV1Id =
+  "review-investigation-shadow.v1";
 
 export const reviewActionV2CallerAuthorities = Object.freeze([
   "fresh_scm_oidc",
@@ -234,8 +262,26 @@ export function assembleReviewActionV2Contract(input) {
 }
 
 export function createPublishedProtocolArtifacts(contract, canonicalJson) {
-  const schema = createPublishedSchema(contract);
+  const baseContract = selectProtocolOperations(
+    contract,
+    reviewActionV2BaseOperationOrder,
+    contract.schemaId,
+  );
+  const extensionContract = selectProtocolOperations(
+    contract,
+    reviewInvestigationExtensionV1OperationOrder,
+    `${contract.schemaId}/extensions/${reviewInvestigationExtensionV1Id}`,
+  );
+  const schema = createPublishedSchema(baseContract);
   const schemaDigest = sha256(canonicalJson(schema));
+  const extensionSchema = createPublishedSchema(extensionContract);
+  const extensionSchemaDigest = sha256(
+    canonicalJson({
+      baseSchemaDigest: schemaDigest,
+      extensionId: reviewInvestigationExtensionV1Id,
+      schema: extensionSchema,
+    }),
+  );
   const fixtures = createPublishedFixtures(contract, schemaDigest);
   const canonicalizerFixtures = Object.fromEntries(
     contract.canonicalizers.map((descriptor) => [
@@ -253,26 +299,57 @@ export function createPublishedProtocolArtifacts(contract, canonicalJson) {
   const canonicalizerDescriptor = {
     canonicalizerVersion: 1,
     publishedCanonicalizers: contract.canonicalizers,
-    operations: contract.operations.map((operation) => ({
+    operations: baseContract.operations.map((operation) => ({
       operationId: operation.operationId,
       fields: operation.requestFields.map((field) => field.name),
       naturalIdempotencyPreimage: operation.naturalIdempotencyPreimage,
     })),
   };
   const canonicalizerDigest = sha256(canonicalJson(canonicalizerDescriptor));
+  const extensionCanonicalizerDescriptor = {
+    baseCanonicalizerDigest: canonicalizerDigest,
+    canonicalizerVersion: 1,
+    extensionId: reviewInvestigationExtensionV1Id,
+    operations: extensionContract.operations.map((operation) => ({
+      operationId: operation.operationId,
+      fields: operation.requestFields.map((field) => field.name),
+      naturalIdempotencyPreimage: operation.naturalIdempotencyPreimage,
+    })),
+  };
+  const extensionCanonicalizerDigest = sha256(
+    canonicalJson(extensionCanonicalizerDescriptor),
+  );
   const canonicalizerGoldenFixtureDigest = sha256(
     canonicalJson(canonicalizerFixtures),
   );
   return Object.freeze({
     schema,
     schemaDigest,
+    extensionSchema,
+    extensionSchemaDigest,
     fixtures,
     canonicalizerFixtures,
     goldenFixtureDigest,
     canonicalizerDigest,
+    extensionCanonicalizerDigest,
     canonicalizerGoldenFixtureDigest,
     canonicalizerDescriptor,
+    extensionCanonicalizerDescriptor,
   });
+}
+
+function selectProtocolOperations(contract, operationIds, schemaId) {
+  const operationsById = new Map(
+    contract.operations.map((operation) => [operation.operationId, operation]),
+  );
+  const operations = operationIds.map((operationId) => {
+    const operation = operationsById.get(operationId);
+    if (!operation) {
+      throw new Error(`protocol_partition_operation_missing:${operationId}`);
+    }
+    return operation;
+  });
+  return Object.freeze({ ...contract, schemaId, operations });
 }
 
 export function generatedPublishedCanonicalizerSources(contract, artifacts) {
@@ -469,6 +546,16 @@ import { ReviewActionV2RetryClass } from "./review-action-v2-negotiation.js";
 export const reviewActionV2PublishedProtocolVersion = ${JSON.stringify(contract.protocolVersion)} as const;
 export const reviewActionV2PublishedSchemaDigest = ${JSON.stringify(artifacts.schemaDigest)} as const;
 export const reviewActionV2CanonicalizerDigest = ${JSON.stringify(artifacts.canonicalizerDigest)} as const;
+export const reviewInvestigationExtensionV1 = ${JSON.stringify(
+    {
+      extensionId: reviewInvestigationExtensionV1Id,
+      schemaDigest: artifacts.extensionSchemaDigest,
+      canonicalizerDigest: artifacts.extensionCanonicalizerDigest,
+      operationIds: reviewInvestigationExtensionV1OperationOrder,
+    },
+    null,
+    2,
+  )} as const;
 
 export enum ReviewActionV2OperationId {
 ${contract.operations.map((operation) => `  ${enumMember(operation.operationId)} = ${JSON.stringify(operation.operationId)},`).join("\n")}
@@ -531,6 +618,7 @@ export const reviewContextSearchQueryDomain = "rr.context-search-query.v1" as co
 export const reviewContextReplayHandleDomain = "rr.context-replay-handle.v1" as const;
 export const reviewContextReplayChainSeedDomain = "rr.context-replay-chain-seed.v1" as const;
 export const reviewContextReplayEventDomain = "rr.context-replay-event.v1" as const;
+export const reviewInvestigationContextConfinementEvidenceDomain = "rr.investigation-context-confinement.v1" as const;
 
 export function canonicalizeReviewContextConfinementEvidence(input: {
   readonly attemptId: string;
@@ -549,6 +637,29 @@ export function canonicalizeReviewContextConfinementEvidence(input: {
   readonly gatewayBinaryHash: string;
 }): string {
   return canonicalJson({ evidenceVersion: 1, ...input });
+}
+
+export function canonicalizeReviewInvestigationContextConfinementEvidence(input: {
+  readonly attemptId: string;
+  readonly sourceLeaseId: string;
+  readonly sourceFencingToken: string;
+  readonly sourceExecutionId: string;
+  readonly sourceWorkSlotId: string;
+  readonly sourceReviewRevisionHash: string;
+  readonly checkoutTreeOid: string;
+  readonly providerKind: string;
+  readonly requestedModel: string;
+  readonly executionProfile: string;
+  readonly providerInvocationKey: string;
+  readonly toolPolicyHash: string;
+  readonly gatewayPolicyVersion: string;
+  readonly gatewayBinaryHash: string;
+}): string {
+  return canonicalJson({
+    domain: reviewInvestigationContextConfinementEvidenceDomain,
+    sourceLeaseAuthorityKind: "investigation_shadow",
+    ...input,
+  });
 }
 
 export function canonicalizeReviewContextGatewayEvent(input: {

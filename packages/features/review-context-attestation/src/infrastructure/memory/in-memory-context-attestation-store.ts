@@ -173,6 +173,7 @@ function sameOpening(left: GatewaySession, right: GatewaySession): boolean {
       left.sourceWorkSlotId,
       left.attemptId,
       left.openingIntentHash,
+      left.sourceLeaseAuthorityKind,
       left.sourceLeaseId,
       left.sourceFencingToken,
       left.providerKind,
@@ -193,6 +194,7 @@ function sameOpening(left: GatewaySession, right: GatewaySession): boolean {
       right.sourceWorkSlotId,
       right.attemptId,
       right.openingIntentHash,
+      right.sourceLeaseAuthorityKind,
       right.sourceLeaseId,
       right.sourceFencingToken,
       right.providerKind,
@@ -233,6 +235,7 @@ function sameAttestationIntent(
     left.sourceExecutionId === right.sourceExecutionId &&
     left.sourceWorkSlotId === right.sourceWorkSlotId &&
     left.attemptId === right.attemptId &&
+    left.sourceLeaseAuthorityKind === right.sourceLeaseAuthorityKind &&
     left.sourceLeaseId === right.sourceLeaseId &&
     left.sourceFencingToken === right.sourceFencingToken &&
     left.sourceReviewRevisionHash === right.sourceReviewRevisionHash &&
@@ -269,6 +272,8 @@ function validAcceptanceAggregate(input: {
     input.attestation.sourceWorkSlotId ===
       input.expectedSession.sourceWorkSlotId &&
     input.attestation.attemptId === input.expectedSession.attemptId &&
+    input.attestation.sourceLeaseAuthorityKind ===
+      input.expectedSession.sourceLeaseAuthorityKind &&
     input.attestation.sourceLeaseId === input.expectedSession.sourceLeaseId &&
     input.attestation.sourceFencingToken ===
       input.expectedSession.sourceFencingToken &&

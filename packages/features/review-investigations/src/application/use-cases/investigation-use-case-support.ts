@@ -1,5 +1,7 @@
 import {
+  assertDigest,
   canonicalJson,
+  ReviewInvestigationDomainError,
   type CanonicalValue,
 } from "../../domain/canonicalization";
 import {
@@ -23,6 +25,31 @@ export async function digestCanonical(
   value: CanonicalValue,
 ): Promise<string> {
   return digest.digestUtf8(canonicalJson(value));
+}
+
+export async function admitInvestigationManifest(input: {
+  readonly canonicalJson: string;
+  readonly hash: string;
+  readonly digest: InvestigationDigestPort;
+}): Promise<Readonly<{ canonicalJson: string; hash: string }>> {
+  assertDigest(input.hash, "investigation_manifest_hash");
+  let normalized: string;
+  try {
+    normalized = canonicalJson(JSON.parse(input.canonicalJson));
+  } catch {
+    throw new ReviewInvestigationDomainError(
+      "investigation_manifest_not_canonical",
+    );
+  }
+  if (
+    normalized !== input.canonicalJson ||
+    (await input.digest.digestUtf8(normalized)) !== input.hash
+  ) {
+    throw new ReviewInvestigationDomainError(
+      "investigation_manifest_hash_mismatch",
+    );
+  }
+  return Object.freeze({ canonicalJson: normalized, hash: input.hash });
 }
 
 export async function withCurrentDossierDigest(

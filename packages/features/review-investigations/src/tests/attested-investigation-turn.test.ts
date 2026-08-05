@@ -109,6 +109,9 @@ describe("CommitAttestedInvestigationTurn", () => {
       stableReviewUnitKey: "review-unit-binary",
       providerVoteLaneId: "provider-lane-1",
       providerStrategyId: "codex-primary",
+      investigationManifestCanonicalJson: "{}",
+      investigationManifestHash:
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
       contract: {
         ...reviewInvestigationCoverageProfileV2,
@@ -1021,6 +1024,9 @@ describe("CommitAttestedInvestigationTurn", () => {
       stableReviewUnitKey: "review-unit-1",
       providerVoteLaneId: "provider-lane-1",
       providerStrategyId: "codex-primary",
+      investigationManifestCanonicalJson: "{}",
+      investigationManifestHash:
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
       contract: {
         ...reviewInvestigationCoverageProfileV2,
@@ -1214,6 +1220,9 @@ describe("CommitAttestedInvestigationTurn", () => {
       stableReviewUnitKey: "review-unit-1",
       providerVoteLaneId: "provider-lane-1",
       providerStrategyId: "codex-primary",
+      investigationManifestCanonicalJson: "{}",
+      investigationManifestHash:
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
       contract: {
         ...reviewInvestigationCoverageProfileV2,
@@ -1385,6 +1394,9 @@ async function createFixture() {
     stableReviewUnitKey: "review-unit-1",
     providerVoteLaneId: "provider-lane-1",
     providerStrategyId: "codex-primary",
+    investigationManifestCanonicalJson: "{}",
+    investigationManifestHash:
+      "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
     contract: {
       coverageContractVersion: "coverage-v1",
