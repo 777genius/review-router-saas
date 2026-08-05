@@ -14,6 +14,7 @@ import {
   type InvestigationExecutionAuthorityPort,
 } from "../ports/execution-authority-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
+import type { InvestigationManifestIdentityPort } from "../ports/investigation-manifest-identity-port";
 import {
   InvestigationStoreCommitStatus,
   type InvestigationStoreTransition,
@@ -30,7 +31,7 @@ export async function digestCanonical(
 export async function admitInvestigationManifest(input: {
   readonly canonicalJson: string;
   readonly hash: string;
-  readonly digest: InvestigationDigestPort;
+  readonly identity: InvestigationManifestIdentityPort;
 }): Promise<Readonly<{ canonicalJson: string; hash: string }>> {
   assertDigest(input.hash, "investigation_manifest_hash");
   let normalized: string;
@@ -41,10 +42,15 @@ export async function admitInvestigationManifest(input: {
       "investigation_manifest_not_canonical",
     );
   }
-  if (
-    normalized !== input.canonicalJson ||
-    (await input.digest.digestUtf8(normalized)) !== input.hash
-  ) {
+  let computedHash: string;
+  try {
+    computedHash = await input.identity.computeManifestKey(normalized);
+  } catch {
+    throw new ReviewInvestigationDomainError(
+      "investigation_manifest_identity_failed",
+    );
+  }
+  if (normalized !== input.canonicalJson || computedHash !== input.hash) {
     throw new ReviewInvestigationDomainError(
       "investigation_manifest_hash_mismatch",
     );

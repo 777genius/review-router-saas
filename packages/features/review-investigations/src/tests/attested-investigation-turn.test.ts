@@ -43,6 +43,7 @@ import { PrepareInvestigationSearchQueryPrivateMaterial } from "../application/u
 import {
   CurrentInvestigationExecutionAuthority,
   FixedInvestigationClock,
+  digestBackedInvestigationManifestIdentity,
 } from "../testing";
 
 const hash = (character: string) => character.repeat(64);
@@ -87,6 +88,7 @@ describe("CommitAttestedInvestigationTurn", () => {
       store,
       authority,
       digest,
+      digestBackedInvestigationManifestIdentity(digest),
       clock,
     ).execute({
       commandId: "open-binary-unresolvable",
@@ -1000,6 +1002,7 @@ describe("CommitAttestedInvestigationTurn", () => {
       store,
       authority,
       digest,
+      digestBackedInvestigationManifestIdentity(digest),
       clock,
       undefined,
       privateMaterialPreparer(digest),
@@ -1198,6 +1201,7 @@ describe("CommitAttestedInvestigationTurn", () => {
       store,
       authority,
       digest,
+      digestBackedInvestigationManifestIdentity(digest),
       clock,
     ).execute({
       commandId: "open-inventory-mismatch",
@@ -1372,6 +1376,7 @@ async function createFixture() {
     store,
     authority,
     digest,
+    digestBackedInvestigationManifestIdentity(digest),
     clock,
   ).execute({
     commandId: "open-attested-1",

@@ -39,6 +39,7 @@ import {
   investigationEmergencyDisabledEnv,
   investigationProductionEffectsEnabledEnv,
   investigationRecordingEnabledEnv,
+  investigationRolloutSelectorsEnv,
   investigationShadowEnabledEnv,
   investigationVerifiedCleanEnabledEnv,
   readEnvironmentInvestigationRolloutPolicy,
@@ -230,6 +231,8 @@ export const reviewInvestigationProductionEffectsEnabledEnv =
   investigationProductionEffectsEnabledEnv;
 export const reviewInvestigationEmergencyDisabledEnv =
   investigationEmergencyDisabledEnv;
+export const reviewInvestigationRolloutSelectorsEnv =
+  investigationRolloutSelectorsEnv;
 export const reviewInvestigationPrivateMaterialActiveKeyIdEnv =
   investigationPrivateMaterialActiveKeyIdEnvironmentVariable;
 export const reviewInvestigationPrivateMaterialKeysEnv =

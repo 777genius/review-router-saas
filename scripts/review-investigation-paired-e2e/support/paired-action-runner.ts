@@ -12,7 +12,8 @@ type Scenario =
   | "high_risk_proposal"
   | "tampered_seed_manifest"
   | "stale_revision"
-  | "incomplete_path_chain";
+  | "incomplete_path_chain"
+  | "replay_manifest_identity";
 
 type RunnerConfig = Readonly<{
   scenario: Scenario;
@@ -114,7 +115,6 @@ async function executeScenario(
 ) {
   const {
     ReviewExecutionProviderKind,
-    ReviewInvestigationRecordingMode,
     ReviewInvocationLeaseAcquireOutcomeStatus,
     ReviewTaskKind,
   } = modules.application;
@@ -135,11 +135,28 @@ async function executeScenario(
       client,
     );
 
+  const rollout =
+    modules.productionInvestigation.resolveProductionReviewInvestigationRollout(
+      {
+        flags: {
+          recordingEnabled: true,
+          shadowEnabled: true,
+          contextCriticEnabled: true,
+          verifiedCleanEnabled: true,
+          crossRevisionReplayEnabled: true,
+          productionEffectsEnabled: true,
+        },
+        agenticContext: true,
+        authorization,
+        primaryProviderKind: ReviewExecutionProviderKind.Codex,
+      },
+    );
   if (
-    !modules.recording.matchesReviewInvestigationCapability({
-      facts: authorization.facts,
-      providerKind: ReviewExecutionProviderKind.Codex,
-    })
+    !rollout.recordingEnabled ||
+    !rollout.contextCriticEnabled ||
+    !rollout.verifiedCleanEnabled ||
+    !rollout.crossRevisionReplayEnabled ||
+    !rollout.productionEffectsEnabled
   ) {
     throw new Error("paired_action_investigation_capability_mismatch");
   }
@@ -289,6 +306,29 @@ async function executeScenario(
   }
   const lease = leaseOutcome.lease;
   try {
+    if (config.scenario === "replay_manifest_identity") {
+      const prepared = await investigationControlPlane.prepareReplay({
+        open: investigationOpenInput({
+          authorization,
+          execution,
+          assignment,
+          invocation,
+          manifest,
+          modules,
+        }),
+        providerManifestCanonicalJson: manifest.manifestCanonicalJson,
+        providerManifestHash: manifest.manifestKey,
+      });
+      if (prepared !== null) {
+        throw new Error("paired_replay_prepare_expected_missing");
+      }
+      return Object.freeze({
+        ok: true,
+        scenario: config.scenario,
+        releaseManifestHash: config.releaseManifestHash,
+        replayPreparationMissing: true,
+      });
+    }
     if (
       config.scenario === "tampered_seed_manifest" ||
       config.scenario === "stale_revision"
@@ -323,7 +363,10 @@ async function executeScenario(
 
     const gatewayFactory =
       new modules.gatewaySession.ContextGatewayInvocationSessionFactory(
-        controlPlane,
+        new modules.investigationContextAttestation.ReviewActionV2InvestigationContextAttestationAdapter(
+          client,
+          authorization.authorizationToken,
+        ),
         {
           checkoutRoot: config.checkoutRoot,
           gatewayBundlePath: config.gatewayBundlePath,
@@ -375,7 +418,15 @@ async function executeScenario(
         );
         return new modules.workSlot.RunInvestigationWorkSlot({
           controlPlane: investigationControlPlane,
-          leases: new modules.recording.ManagedOnlyInvestigationLeaseAdapter(),
+          delay: {
+            sleep: async (delayMs: number) =>
+              new Promise((resolve) => setTimeout(resolve, delayMs)),
+          },
+          leases:
+            new modules.investigationLease.ReviewActionV2InvestigationLeaseAdapter(
+              client,
+              requestIdFactory(),
+            ),
           turnRunner: new modules.turn.RunInvestigationTurn({
             controlPlane: investigationControlPlane,
             currency: {
@@ -398,8 +449,10 @@ async function executeScenario(
         maxStateTransitions: 64,
         policy: modules.recording.REVIEW_INVESTIGATION_PRODUCTION_POLICY,
       },
-      ReviewInvestigationRecordingMode.Authoritative,
-      true,
+      modules.productionInvestigation.productionReviewInvestigationRecordingMode(
+        rollout,
+      ),
+      rollout.verifiedCleanEnabled,
     );
     if (!recording.supports({ workSlot: assignment.workSlot, invocation })) {
       throw new Error("paired_recording_adapter_rejected_invocation");
@@ -464,6 +517,8 @@ function investigationOpenInput(input: {
       input.modules.recording.REVIEW_INVESTIGATION_PRODUCTION_POLICY,
     seedEnvelope: input.invocation.investigationSeedEnvelope,
     initialReceipts: [],
+    providerManifestCanonicalJson: input.manifest.manifestCanonicalJson,
+    providerManifestHash: input.manifest.manifestKey,
   });
 }
 
@@ -474,7 +529,10 @@ async function loadActionModules(actionSourceDir: string) {
     client,
     controlPlane,
     investigationControlPlane,
+    investigationLease,
+    investigationContextAttestation,
     recording,
+    productionInvestigation,
     application,
     workPlan,
     invocationManifest,
@@ -501,7 +559,16 @@ async function loadActionModules(actionSourceDir: string) {
       "src/review-investigation/infrastructure/review-action-v2-investigation-adapter.ts",
     ),
     load(
+      "src/review-investigation/infrastructure/review-action-v2-investigation-lease-adapter.ts",
+    ),
+    load(
+      "src/review-orchestration/infrastructure/review-action-v2-investigation-context-attestation-adapter.ts",
+    ),
+    load(
       "src/review-orchestration/infrastructure/review-investigation-recording-adapter.ts",
+    ),
+    load(
+      "src/review-orchestration/infrastructure/production-review-investigation-composition.ts",
     ),
     load("src/review-orchestration/application/index.ts"),
     load("src/review-orchestration/domain/stable-review-work-plan.ts"),
@@ -541,7 +608,10 @@ async function loadActionModules(actionSourceDir: string) {
     client,
     controlPlane,
     investigationControlPlane,
+    investigationLease,
+    investigationContextAttestation,
     recording,
+    productionInvestigation,
     application,
     workPlan,
     invocationManifest,
@@ -653,6 +723,7 @@ async function readConfig(value: string | undefined): Promise<RunnerConfig> {
       "tampered_seed_manifest",
       "stale_revision",
       "incomplete_path_chain",
+      "replay_manifest_identity",
     ].includes(parsed.scenario) ||
     !/^[a-f0-9]{40}$/u.test(parsed.actionRef) ||
     !/^[a-f0-9]{64}$/u.test(parsed.releaseManifestHash)

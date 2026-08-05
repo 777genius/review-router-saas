@@ -51,13 +51,18 @@ describe("generated Review Action v2 negotiation contract", () => {
     for (const operationId of reviewInvestigationExtensionV1.operationIds) {
       const schema = JSON.parse(
         await readFile(
-          new URL(`../generated/schemas/${operationId}.schema.json`, import.meta.url),
+          new URL(
+            `../generated/schemas/${operationId}.schema.json`,
+            import.meta.url,
+          ),
           "utf8",
         ),
       ) as { readonly oneOf?: readonly unknown[] };
 
       expect(schema.oneOf).toHaveLength(2);
-      expect(schema.oneOf?.every((definition) => definition !== null)).toBe(true);
+      expect(schema.oneOf?.every((definition) => definition !== null)).toBe(
+        true,
+      );
     }
   });
 

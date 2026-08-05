@@ -13,6 +13,7 @@ import {
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
+import type { InvestigationManifestIdentityPort } from "../ports/investigation-manifest-identity-port";
 import type {
   InvestigationLeaseAcquireResult,
   InvestigationLeaseStorePort,
@@ -46,6 +47,7 @@ export class AcquireInvestigationLease {
     private readonly leases: InvestigationLeaseStorePort,
     private readonly authority: InvestigationExecutionAuthorityPort,
     private readonly digest: InvestigationDigestPort,
+    private readonly manifestIdentity: InvestigationManifestIdentityPort,
     private readonly clock: InvestigationClockPort,
   ) {}
 
@@ -72,7 +74,7 @@ export class AcquireInvestigationLease {
     }
     await requireCurrentExecution({ authority: this.authority, investigation });
     if (
-      (await this.digest.digestUtf8(
+      (await this.manifestIdentity.computeManifestKey(
         command.investigationManifestCanonicalJson,
       )) !== command.investigationManifestHash
     ) {

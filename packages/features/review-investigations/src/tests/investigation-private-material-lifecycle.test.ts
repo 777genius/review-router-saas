@@ -35,7 +35,8 @@ import { NodeSha256InvestigationDigest } from "../infrastructure/node/node-sha25
 import {
   CurrentInvestigationExecutionAuthority,
   FixedInvestigationClock,
-} from "../testing/investigation-test-kit";
+  digestBackedInvestigationManifestIdentity,
+} from "../testing";
 
 const query = "SensitiveService.call";
 const queryHash = sha256(query);
@@ -93,6 +94,7 @@ describe("investigation search-query private material lifecycle", () => {
       store,
       new CurrentInvestigationExecutionAuthority(),
       digest,
+      digestBackedInvestigationManifestIdentity(digest),
       clock,
     ).execute(command("open-private-material"));
     expect(idempotentRetry).toEqual(opened);
@@ -188,6 +190,7 @@ describe("investigation search-query private material lifecycle", () => {
       store,
       new CurrentInvestigationExecutionAuthority(),
       digest,
+      digestBackedInvestigationManifestIdentity(digest),
       clock,
     );
 
@@ -303,6 +306,7 @@ async function openInvestigation(input: {
     input.store,
     new CurrentInvestigationExecutionAuthority(),
     input.digest,
+    digestBackedInvestigationManifestIdentity(input.digest),
     input.clock,
     undefined,
     preparer,

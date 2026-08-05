@@ -41,14 +41,20 @@ import {
   reviewActionV2CapabilityKeysEnv,
   reviewActionV2ProjectionPolicyVersionEnv,
   reviewActionV2ProviderVoteLanesEnv,
+  reviewInvestigationLeaseCapabilityActiveKeyIdEnv,
+  reviewInvestigationLeaseCapabilityKeysEnv,
   reviewInvestigationContextCriticEnabledEnv,
+  reviewInvestigationCrossRevisionReplayEnabledEnv,
   reviewInvestigationEmergencyDisabledEnv,
   reviewInvestigationMaintenanceEnabledEnv,
   reviewInvestigationPrivateMaterialActiveKeyIdEnv,
   reviewInvestigationPrivateMaterialKeysEnv,
   reviewInvestigationPrivateMaterialTtlEnv,
   reviewInvestigationRecordingEnabledEnv,
+  reviewInvestigationRolloutSelectorsEnv,
+  reviewInvestigationProductionEffectsEnabledEnv,
   reviewInvestigationShadowEnabledEnv,
+  reviewInvestigationVerifiedCleanEnabledEnv,
 } from "../../../apps/api/src/review-action-v2-production-composition.js";
 import {
   reviewActionV2ContextReplayActiveKeyIdEnv,
@@ -74,6 +80,7 @@ const sourceRunId = "770001";
 const providerVoteIdentityHash = sha256("paired-action-saas-provider-vote");
 const capabilityKeyId = "paired-action-saas-capability-key";
 const contextReplayKeyId = "paired-action-saas-context-replay-key";
+const investigationLeaseKeyId = "paired-action-saas-investigation-lease-key";
 const privateMaterialKeyId = "paired-action-saas-private-material-key";
 const actionReleaseRelevantPaths = Object.freeze([
   ".github/workflows",
@@ -93,6 +100,7 @@ export enum PairedActionScenario {
   TamperedSeedManifest = "tampered_seed_manifest",
   StaleRevision = "stale_revision",
   IncompletePathChain = "incomplete_path_chain",
+  ReplayManifestIdentity = "replay_manifest_identity",
 }
 
 export type PairedProtocolDiagnostic = Readonly<{
@@ -107,6 +115,7 @@ export type PairedActionProcessResult = Readonly<{
   ok: boolean;
   scenario: PairedActionScenario;
   releaseManifestHash: string;
+  replayPreparationMissing?: boolean;
   observation?: Readonly<{
     investigationCertificateId: string;
     investigationCertificateHash: string;
@@ -881,6 +890,14 @@ function productionEnvironment(input: {
       reviewActionV2ProjectionPolicyVersion,
     [reviewActionV2CapabilityActiveKeyIdEnv]: capabilityKeyId,
     [reviewActionV2CapabilityKeysEnv]: signingKeys,
+    [reviewInvestigationLeaseCapabilityActiveKeyIdEnv]: investigationLeaseKeyId,
+    [reviewInvestigationLeaseCapabilityKeysEnv]: JSON.stringify([
+      {
+        keyId: investigationLeaseKeyId,
+        secretBase64: Buffer.from("l".repeat(32)).toString("base64"),
+        verifyUntil: null,
+      },
+    ]),
     [reviewActionV2ContextSessionSecretEnv]: Buffer.from(
       "s".repeat(32),
     ).toString("base64"),
@@ -894,6 +911,29 @@ function productionEnvironment(input: {
     [reviewInvestigationRecordingEnabledEnv]: "1",
     [reviewInvestigationShadowEnabledEnv]: "1",
     [reviewInvestigationContextCriticEnabledEnv]: "1",
+    [reviewInvestigationCrossRevisionReplayEnabledEnv]: "1",
+    [reviewInvestigationVerifiedCleanEnabledEnv]: "1",
+    [reviewInvestigationProductionEffectsEnabledEnv]: "1",
+    [reviewInvestigationRolloutSelectorsEnv]: JSON.stringify({
+      verified_clean: [
+        {
+          producerReleaseIds: [input.producerReleaseId],
+          providers: ["codex"],
+        },
+      ],
+      cross_revision_replay: [
+        {
+          producerReleaseIds: [input.producerReleaseId],
+          providers: ["codex"],
+        },
+      ],
+      production_effects: [
+        {
+          producerReleaseIds: [input.producerReleaseId],
+          providers: ["codex"],
+        },
+      ],
+    }),
     [reviewInvestigationMaintenanceEnabledEnv]: "1",
     [reviewInvestigationEmergencyDisabledEnv]: "0",
     [reviewInvestigationPrivateMaterialActiveKeyIdEnv]: privateMaterialKeyId,

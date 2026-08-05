@@ -69,6 +69,7 @@ import {
   ReviewProviderKind as EvidenceProviderKind,
   ReviewTaskKind as EvidenceTaskKind,
   ReviewTrustDomain as EvidenceTrustDomain,
+  canonicalizeProviderInvocationManifest,
   normalizeProviderInvocationManifest,
   buildProviderInvocationIdentity,
   serializeProviderInvocationManifestCanonicalWireJson,
@@ -220,6 +221,19 @@ export type ReviewActionV2InvestigationHandlerDependencies = Readonly<{
   }) => InvestigationReplayPreparationPort;
 }>;
 
+async function computeProviderManifestKey(
+  digest: Pick<ReviewActionV2DigestPort, "digestUtf8">,
+  manifestCanonicalJson: string,
+): Promise<string> {
+  return digest.digestUtf8(
+    Buffer.from(
+      canonicalizeProviderInvocationManifest(
+        normalizeProviderInvocationManifest(JSON.parse(manifestCanonicalJson)),
+      ),
+    ).toString("utf8"),
+  );
+}
+
 export function composeReviewInvestigationUseCases(input: {
   readonly store: InvestigationStorePort;
   readonly leases: InvestigationLeaseStorePort;
@@ -235,6 +249,10 @@ export function composeReviewInvestigationUseCases(input: {
   }>;
 }): ReviewInvestigationUseCases {
   const digest = new NodeSha256InvestigationDigest();
+  const manifestIdentity = Object.freeze({
+    computeManifestKey: async (manifestCanonicalJson: string) =>
+      computeProviderManifestKey(digest, manifestCanonicalJson),
+  });
   const privateMaterialPreparer = input.privateMaterial
     ? new PrepareInvestigationSearchQueryPrivateMaterial(
         input.privateMaterial.cipher,
@@ -261,6 +279,7 @@ export function composeReviewInvestigationUseCases(input: {
       input.store,
       input.authority,
       digest,
+      manifestIdentity,
       input.clock,
       undefined,
       privateMaterialPreparer,
@@ -277,6 +296,7 @@ export function composeReviewInvestigationUseCases(input: {
       input.leases,
       input.authority,
       digest,
+      manifestIdentity,
       input.clock,
     ),
     renewLease: new RenewInvestigationLease(
@@ -310,6 +330,7 @@ export function composeReviewInvestigationUseCases(input: {
       input.authority,
       input.receiptReplay,
       digest,
+      manifestIdentity,
       input.clock,
       undefined,
       privateMaterialPreparer,
@@ -1707,11 +1728,6 @@ async function prepareReplay(
   request: ReviewInvestigationReplayPrepareRequest,
   d: ReviewActionV2InvestigationHandlerDependencies,
 ) {
-  await assertBodyHash(
-    ReviewActionV2OperationId.ReviewInvestigationReplayPrepare,
-    request,
-    d,
-  );
   if (!d.crossRevisionReplayEnabled) {
     return {
       statusCode: 200 as const,
@@ -1768,11 +1784,6 @@ async function prepareReplay(
     capability: InvestigationRolloutCapability.CrossRevisionReplay,
     target: rolloutTarget(authorization, slot.providerKind),
   });
-  requireEqual(
-    await d.digest.digestUtf8(request.providerManifestCanonicalJson),
-    request.providerManifestHash,
-    "provider_manifest_hash_mismatch",
-  );
   const targetContract = await canonicalDocument<ReviewInvestigationContract>(
     request.coverageContractCanonicalJson,
     request.coverageContractHash,
@@ -1794,6 +1805,14 @@ async function prepareReplay(
     canonicalJson(manifest),
     request.providerManifestCanonicalJson,
     "provider_manifest_not_canonical",
+  );
+  requireEqual(
+    await computeProviderManifestKey(
+      d.digest,
+      request.providerManifestCanonicalJson,
+    ),
+    request.providerManifestHash,
+    "provider_manifest_hash_mismatch",
   );
   if (
     manifest.executionProfile !==

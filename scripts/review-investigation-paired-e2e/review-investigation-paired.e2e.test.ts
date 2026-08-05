@@ -35,19 +35,23 @@ describeWithDatabase.sequential(
         actionSourceDir,
         actionRef: await resolveActionRef(actionSourceDir),
       });
-    });
+    }, 60_000);
 
     afterEach(async () => {
       await harness?.close();
       harness = null;
       await resetPairedActionSaasE2EDatabase(databaseUrl!);
-    });
+    }, 60_000);
 
     it("runs the real Action orchestration through attested expansion and critic to a persisted certificate", async () => {
       const fixture = requireHarness(harness);
       const action = await fixture.run(PairedActionScenario.Success);
+      const persistedState = await investigationFailureState(fixture);
 
-      expect(action).toMatchObject({
+      expect(
+        action,
+        actionFailureMessage(action, fixture, persistedState),
+      ).toMatchObject({
         ok: true,
         scenario: PairedActionScenario.Success,
         releaseManifestHash: fixture.releaseManifestHash,
@@ -76,7 +80,7 @@ describeWithDatabase.sequential(
             semanticTurns: true,
           },
         });
-      const [certificate, obligations, turns, sessions, attestations] =
+      const [certificate, obligations, turns, leases, sessions, attestations] =
         await Promise.all([
           fixture.prisma.reviewInvestigationCertificate.findUniqueOrThrow({
             where: { certificateId: investigation.certificateId! },
@@ -88,6 +92,10 @@ describeWithDatabase.sequential(
           fixture.prisma.reviewInvestigationTurn.findMany({
             where: { investigationId: investigation.investigationId },
             orderBy: { turnOrdinal: "asc" },
+          }),
+          fixture.prisma.reviewInvestigationLease.findMany({
+            where: { investigationId: investigation.investigationId },
+            orderBy: { leaseId: "asc" },
           }),
           fixture.prisma.reviewContextGatewaySession.findMany({
             where: { sourceExecutionId: investigation.executionId },
@@ -156,7 +164,15 @@ describeWithDatabase.sequential(
             turn.state === "committed" && turn.acceptedAttestationId !== null,
         ),
       ).toBe(true);
+      expect(leases.length).toBe(turns.length);
+      expect(leases.every((lease) => lease.state !== "active")).toBe(true);
       expect(sessions.length).toBeGreaterThanOrEqual(turns.length);
+      expect(
+        sessions.every(
+          (session) =>
+            session.sourceLeaseAuthorityKind === "investigation_shadow",
+        ),
+      ).toBe(true);
       expect(attestations.length).toBeGreaterThanOrEqual(turns.length);
       expect(fixture.diagnostics).toEqual([]);
     }, 180_000);
@@ -164,8 +180,12 @@ describeWithDatabase.sequential(
     it("normalizes high-risk proposals and stays inconclusive without an independent critic", async () => {
       const fixture = requireHarness(harness);
       const action = await fixture.run(PairedActionScenario.HighRiskProposal);
+      const persistedState = await investigationFailureState(fixture);
 
-      expect(action).toMatchObject({
+      expect(
+        action,
+        actionFailureMessage(action, fixture, persistedState),
+      ).toMatchObject({
         ok: true,
         scenario: PairedActionScenario.HighRiskProposal,
         releaseManifestHash: fixture.releaseManifestHash,
@@ -215,7 +235,7 @@ describeWithDatabase.sequential(
         releaseManifestHash: fixture.releaseManifestHash,
       });
       expectExactDiagnostic(fixture, {
-        operationId: "review_investigation_open",
+        operationId: "review_investigation_open_v2",
         protocolErrorCode: "stale_precondition",
         protocolIssues: ["investigation_seed_prepared_manifest_mismatch"],
         statusCode: 412,
@@ -233,7 +253,7 @@ describeWithDatabase.sequential(
         releaseManifestHash: fixture.releaseManifestHash,
       });
       expectExactDiagnostic(fixture, {
-        operationId: "review_investigation_open",
+        operationId: "review_investigation_open_v2",
         protocolErrorCode: "stale_precondition",
         protocolIssues: ["review_revision_mismatch"],
         statusCode: 412,
@@ -281,6 +301,22 @@ describeWithDatabase.sequential(
         }),
       ).resolves.toBe(0);
     }, 180_000);
+
+    it("accepts the Action domain-separated manifest key in replay preparation", async () => {
+      const fixture = requireHarness(harness);
+      const action = await fixture.run(
+        PairedActionScenario.ReplayManifestIdentity,
+      );
+
+      expect(action).toMatchObject({
+        ok: true,
+        scenario: PairedActionScenario.ReplayManifestIdentity,
+        releaseManifestHash: fixture.releaseManifestHash,
+        replayPreparationMissing: true,
+      });
+      await expect(fixture.prisma.reviewInvestigation.count()).resolves.toBe(0);
+      expect(fixture.diagnostics).toEqual([]);
+    }, 120_000);
   },
 );
 
@@ -289,6 +325,46 @@ function requireHarness(
 ): PairedActionSaasE2EHarness {
   if (!value) throw new Error("paired_action_saas_harness_missing");
   return value;
+}
+
+function actionFailureMessage(
+  action: Readonly<{ failure?: Readonly<{ message: string }> }>,
+  fixture: PairedActionSaasE2EHarness,
+  persistedState: unknown,
+): string {
+  return [
+    action.failure?.message,
+    JSON.stringify(fixture.diagnostics),
+    JSON.stringify(persistedState),
+  ]
+    .filter(Boolean)
+    .join(" diagnostics=");
+}
+
+async function investigationFailureState(fixture: PairedActionSaasE2EHarness) {
+  const [investigations, turns, leases, sessions] = await Promise.all([
+    fixture.prisma.reviewInvestigation.findMany({
+      select: {
+        state: true,
+        semanticTurns: true,
+        operationalAttempts: true,
+        criticCycles: true,
+        nextEligibleAt: true,
+        activeTurnId: true,
+        conclusion: true,
+      },
+    }),
+    fixture.prisma.reviewInvestigationTurn.findMany({
+      select: { state: true, purpose: true, abortReason: true },
+    }),
+    fixture.prisma.reviewInvestigationLease.findMany({
+      select: { state: true, purpose: true },
+    }),
+    fixture.prisma.reviewContextGatewaySession.findMany({
+      select: { state: true, sourceLeaseAuthorityKind: true },
+    }),
+  ]);
+  return { investigations, turns, leases, sessions };
 }
 
 function expectExactDiagnostic(

@@ -33,6 +33,7 @@ import {
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
+import type { InvestigationManifestIdentityPort } from "../ports/investigation-manifest-identity-port";
 import {
   InvestigationReceiptReplayVerdict,
   type InvestigationReceiptReplayPort,
@@ -85,6 +86,7 @@ export class ReplayReviewInvestigation {
     private readonly authority: InvestigationExecutionAuthorityPort,
     private readonly replay: InvestigationReceiptReplayPort,
     private readonly digest: InvestigationDigestPort,
+    private readonly manifestIdentity: InvestigationManifestIdentityPort,
     private readonly clock: InvestigationClockPort,
     private readonly coverageSeedPolicy: CoverageSeedPolicy = new VersionedCoverageSeedPolicy(),
     private readonly privateMaterial?: PrepareInvestigationSearchQueryPrivateMaterial,
@@ -113,7 +115,7 @@ export class ReplayReviewInvestigation {
             canonicalJson:
               command.targetInvestigationManifestCanonicalJson ?? "",
             hash: command.targetInvestigationManifestHash ?? "",
-            digest: this.digest,
+            identity: this.manifestIdentity,
           });
 
     await requireCurrentExecution({

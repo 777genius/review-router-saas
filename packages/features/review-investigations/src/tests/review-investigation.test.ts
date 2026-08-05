@@ -40,13 +40,33 @@ import { NodeSha256InvestigationDigest } from "../infrastructure/node/node-sha25
 import {
   CurrentInvestigationExecutionAuthority,
   FixedInvestigationClock,
-} from "../testing/investigation-test-kit";
+  digestBackedInvestigationManifestIdentity,
+} from "../testing";
 
 const revisionHash = "a".repeat(64);
 const inventorySubject = "inventory:canonical";
 const changedSubject = "src/service.ts@head";
 
 describe("review investigation in-memory vertical slice", () => {
+  it("normalizes manifest identity adapter failures at the application boundary", async () => {
+    const harness = createHarness();
+    const open = new OpenReviewInvestigation(
+      harness.store,
+      harness.authority,
+      harness.digest,
+      {
+        computeManifestKey: async () => {
+          throw new Error("provider-specific identity failure");
+        },
+      },
+      harness.clock,
+    );
+
+    await expect(open.execute(openCommand("identity-failure"))).rejects.toThrow(
+      "investigation_manifest_identity_failed",
+    );
+  });
+
   it("fails closed when discovery turns report mixed terminal models", () => {
     const base = {
       turnId: "turn-1",
@@ -335,6 +355,7 @@ describe("review investigation in-memory vertical slice", () => {
               },
       },
       harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
       harness.clock,
     );
     const targetRevision = {
@@ -414,6 +435,7 @@ describe("review investigation in-memory vertical slice", () => {
       harness.store,
       harness.authority,
       harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
       harness.clock,
     ).execute({
       investigationId: replayed.investigationId,
@@ -466,6 +488,7 @@ describe("review investigation in-memory vertical slice", () => {
         },
       },
       harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
       harness.clock,
     );
     const fullyReplayed = await replayAll.execute({
@@ -1062,7 +1085,13 @@ function createHarness(customPolicy: ReviewInvestigationPolicy = policy) {
     clock,
     authority,
     policy: customPolicy,
-    open: new OpenReviewInvestigation(store, authority, digest, clock),
+    open: new OpenReviewInvestigation(
+      store,
+      authority,
+      digest,
+      digestBackedInvestigationManifestIdentity(digest),
+      clock,
+    ),
     restore: new RestoreReviewInvestigation(store, digest),
     plan: new PlanNextInvestigationTurn(store, authority, digest, clock),
     commit: new CommitInvestigationTurn(store, authority, digest, clock),

@@ -16,6 +16,7 @@ import type { ReviewInvestigationRuntimeProfile } from "../../domain/review-inve
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
+import type { InvestigationManifestIdentityPort } from "../ports/investigation-manifest-identity-port";
 import {
   InvestigationStoreTransitionKind,
   type InvestigationStorePort,
@@ -61,6 +62,7 @@ export class OpenReviewInvestigation {
     private readonly store: InvestigationStorePort,
     private readonly authority: InvestigationExecutionAuthorityPort,
     private readonly digest: InvestigationDigestPort,
+    private readonly manifestIdentity: InvestigationManifestIdentityPort,
     private readonly clock: InvestigationClockPort,
     private readonly coverageSeedPolicy: CoverageSeedPolicy = new VersionedCoverageSeedPolicy(),
     private readonly privateMaterial?: PrepareInvestigationSearchQueryPrivateMaterial,
@@ -92,7 +94,7 @@ export class OpenReviewInvestigation {
         : await admitInvestigationManifest({
             canonicalJson: command.investigationManifestCanonicalJson ?? "",
             hash: command.investigationManifestHash ?? "",
-            digest: this.digest,
+            identity: this.manifestIdentity,
           });
     await requireCurrentExecution({
       authority: this.authority,

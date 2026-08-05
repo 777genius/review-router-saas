@@ -21,6 +21,7 @@ export * from "./application/ports/digest-port";
 export * from "./application/ports/execution-authority-port";
 export * from "./application/ports/investigation-store-port";
 export * from "./application/ports/investigation-lease-store-port";
+export * from "./application/ports/investigation-manifest-identity-port";
 export * from "./application/ports/investigation-private-material-ports";
 export * from "./application/ports/investigation-turn-evidence-port";
 export * from "./application/ports/investigation-receipt-replay-port";

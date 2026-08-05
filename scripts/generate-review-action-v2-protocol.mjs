@@ -135,7 +135,9 @@ export async function generateReviewActionV2Protocol(input = {}) {
     const requestDefinition =
       operationSchemaSource.$defs[`${operationDescriptor.operationId}_request`];
     const responseDefinition =
-      operationSchemaSource.$defs[`${operationDescriptor.operationId}_response`];
+      operationSchemaSource.$defs[
+        `${operationDescriptor.operationId}_response`
+      ];
     if (requestDefinition === undefined || responseDefinition === undefined) {
       throw new Error(
         `protocol_operation_schema_missing:${operationDescriptor.operationId}`,
