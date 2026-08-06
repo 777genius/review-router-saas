@@ -103,6 +103,19 @@ export type InvestigationPrivateMaterialExpiryReconciliation = Readonly<{
   expiredTurnId: string | null;
 }>;
 
+export enum ExpiredActiveTurnReconciliationDisposition {
+  Unchanged = "unchanged",
+  Recovered = "recovered",
+  Inconclusive = "inconclusive",
+  Superseded = "superseded",
+}
+
+export type ExpiredActiveTurnReconciliation = Readonly<{
+  disposition: ExpiredActiveTurnReconciliationDisposition;
+  investigation: ReviewInvestigation;
+  expiredTurnId: string | null;
+}>;
+
 export function createReviewInvestigation(
   input: Omit<
     ReviewInvestigation,
@@ -355,6 +368,93 @@ export function commitInvestigationTurn(input: {
     next = { ...next, criticDecision: effectiveCriticDecision };
   }
   return decideStateAfterCommit(next, turn.purpose, effectiveCriticDecision);
+}
+
+export function commitHistoricalInvestigationTurn(input: {
+  readonly investigation: ReviewInvestigation;
+  readonly commit: InvestigationTurnCommit;
+  readonly committedAt: string;
+}): ReviewInvestigation {
+  const committed = commitInvestigationTurn(input);
+  return {
+    ...committed,
+    state: ReviewInvestigationState.Superseded,
+    conclusion: null,
+    certificate: null,
+    nextEligibleAt: null,
+  };
+}
+
+export function reconcileExpiredActiveTurn(input: {
+  readonly investigation: ReviewInvestigation;
+  readonly reconciledAt: string;
+  readonly superseded: boolean;
+}): ExpiredActiveTurnReconciliation {
+  const current = input.investigation;
+  const turn = current.activeTurn;
+  const reconciledAtMs = canonicalTimestampMs(
+    input.reconciledAt,
+    "investigation_turn_reconciled_at_invalid",
+  );
+  if (
+    current.state !== ReviewInvestigationState.TurnLeased ||
+    turn === null ||
+    canonicalTimestampMs(turn.expiresAt, "investigation_turn_expiry_invalid") >
+      reconciledAtMs
+  ) {
+    return {
+      disposition: ExpiredActiveTurnReconciliationDisposition.Unchanged,
+      investigation: current,
+      expiredTurnId: null,
+    };
+  }
+  if (input.superseded) {
+    return {
+      disposition: ExpiredActiveTurnReconciliationDisposition.Superseded,
+      investigation: {
+        ...current,
+        version: current.version + 1,
+        state: ReviewInvestigationState.Superseded,
+        activeTurn: null,
+        nextEligibleAt: null,
+        updatedAt: input.reconciledAt,
+      },
+      expiredTurnId: turn.turnId,
+    };
+  }
+  const operationalAttempts = current.operationalAttempts + 1;
+  if (operationalAttempts >= current.policy.maxOperationalAttempts) {
+    return {
+      disposition: ExpiredActiveTurnReconciliationDisposition.Inconclusive,
+      investigation: transitionToInconclusive(
+        {
+          ...current,
+          version: current.version + 1,
+          activeTurn: null,
+          operationalAttempts,
+          nextEligibleAt: null,
+        },
+        input.reconciledAt,
+      ),
+      expiredTurnId: turn.turnId,
+    };
+  }
+  return {
+    disposition: ExpiredActiveTurnReconciliationDisposition.Recovered,
+    investigation: {
+      ...current,
+      version: current.version + 1,
+      state:
+        turn.purpose === ReviewInvestigationTurnPurpose.Critic
+          ? ReviewInvestigationState.AwaitingCritic
+          : ReviewInvestigationState.AwaitingTurn,
+      activeTurn: null,
+      operationalAttempts,
+      nextEligibleAt: null,
+      updatedAt: input.reconciledAt,
+    },
+    expiredTurnId: turn.turnId,
+  };
 }
 
 export function abortInvestigationTurn(input: {

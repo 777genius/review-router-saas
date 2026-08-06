@@ -18,6 +18,7 @@ import {
   PrepareInvestigationSearchQueryPrivateMaterial,
   PrepareReviewInvestigationReplay,
   ReplayReviewInvestigation,
+  ReconcileExpiredActiveTurn,
   ReleaseInvestigationLease,
   RenewInvestigationLease,
   RestoreReviewInvestigation,
@@ -274,6 +275,12 @@ export function composeReviewInvestigationUseCases(input: {
     digest,
     input.clock,
   );
+  const expiredTurns = new ReconcileExpiredActiveTurn(
+    input.store,
+    input.authority,
+    digest,
+    input.clock,
+  );
   return Object.freeze({
     open: new OpenReviewInvestigation(
       input.store,
@@ -284,12 +291,13 @@ export function composeReviewInvestigationUseCases(input: {
       undefined,
       privateMaterialPreparer,
     ),
-    restore: new RestoreReviewInvestigation(input.store, digest),
+    restore: new RestoreReviewInvestigation(input.store, digest, expiredTurns),
     planTurn: new PlanNextInvestigationTurn(
       input.store,
       input.authority,
       digest,
       input.clock,
+      expiredTurns,
     ),
     acquireLease: new AcquireInvestigationLease(
       input.store,
@@ -1432,10 +1440,16 @@ async function commitTurn(
     sourceAttemptId: leaseAuthority.attemptId,
     sourceLeaseId: request.sourceLeaseId,
     sourceFencingToken: request.fencingToken,
+    sourceLeaseCapabilityId: leaseAuthority.capabilityId,
+    sourceAuthorizationId: authorization.authorizationId,
+    sourceMutationEpoch: authorization.mutationEpoch.toString(10),
     acceptedAttestationId: request.acceptedAttestationId,
     acceptedAttestationHash: request.acceptedAttestationHash,
     turnObservationHash: request.turnObservationHash,
     observation,
+    authorizationDeadline: authorization.expiresAt.toISOString(),
+    capabilityDeadline: leaseAuthority.resultReportUntil.toISOString(),
+    drainDeadline: leaseAuthority.resultReportUntil.toISOString(),
   } as const;
   const restored =
     await d.investigations.commitTurn.restoreCommittedCommand(command);

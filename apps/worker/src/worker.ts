@@ -5,6 +5,7 @@ import {
   reviewRequestIngressEventType,
   reviewRequestIngressEventVersion,
 } from "@reviewrouter/features-review-executions";
+import { PrismaReviewExecutionStore } from "@reviewrouter/features-review-executions/composition";
 import {
   githubReviewRequestIngressEventType,
   githubReviewRequestIngressEventVersion,
@@ -51,7 +52,12 @@ import {
   PrismaReviewExecutionCheckpointRepository,
   pruneExpiredReviewExecutionCheckpoints,
 } from "@reviewrouter/features-review-execution-checkpoints";
-import { PrismaInvestigationStore } from "@reviewrouter/features-review-investigations/composition";
+import { ReconcileExpiredActiveTurn } from "@reviewrouter/features-review-investigations";
+import {
+  NodeSha256InvestigationDigest,
+  PrismaInvestigationStore,
+} from "@reviewrouter/features-review-investigations/composition";
+import { PrismaReviewRunAuthorizationRepository } from "@reviewrouter/features-review-run-control/composition";
 import { PrismaInvestigationShadowEvidenceStore } from "@reviewrouter/features-review-evidence/composition";
 import {
   OctokitGitHubRepositorySource,
@@ -80,6 +86,7 @@ import {
   sleep,
 } from "./outbox-worker-loop";
 import { InvestigationPrunerMaintenanceAdapter } from "./review-investigation-maintenance-adapter";
+import { WorkerInvestigationExecutionAuthority } from "./review-investigation-execution-authority";
 import {
   createReviewInvestigationMaintenanceFeature,
   createReviewInvestigationMaintenanceRuntime,
@@ -525,6 +532,15 @@ function createReviewInvestigationMaintenanceRunner(
     env: process.env,
     createEnabledRuntime: () => {
       const investigations = new PrismaInvestigationStore(prisma);
+      const expiredTurns = new ReconcileExpiredActiveTurn(
+        investigations,
+        new WorkerInvestigationExecutionAuthority(
+          new PrismaReviewExecutionStore(prisma),
+          new PrismaReviewRunAuthorizationRepository(prisma),
+        ),
+        new NodeSha256InvestigationDigest(),
+        clock,
+      );
       const shadowEvidence = new PrismaInvestigationShadowEvidenceStore(prisma);
       return createReviewInvestigationMaintenanceRuntime(
         {
@@ -553,6 +569,7 @@ function createReviewInvestigationMaintenanceRunner(
           clock,
           lock: new PostgresLeaseLock(prisma),
           prune: new InvestigationPrunerMaintenanceAdapter({
+            expiredTurns,
             privateMaterial: investigations,
             investigations,
             shadowEvidence,

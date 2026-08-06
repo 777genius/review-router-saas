@@ -1,15 +1,20 @@
-import type { InvestigationPrunerPort } from "@reviewrouter/features-review-investigations";
+import type {
+  InvestigationPrunerPort,
+  ReconcileExpiredActiveTurn,
+} from "@reviewrouter/features-review-investigations";
 import type { InvestigationShadowEvidencePrunerPort } from "@reviewrouter/features-review-evidence";
 
 export const reviewInvestigationMaxPruneBatchSize = 1_000;
 
 export enum ReviewInvestigationPruneFailureCode {
+  ActiveTurns = "review_investigation_active_turn_recovery_failed",
   PrivateMaterial = "review_investigation_private_material_prune_failed",
   Investigations = "review_investigation_dossier_prune_failed",
   ShadowEvidence = "review_investigation_shadow_evidence_prune_failed",
 }
 
 export type ReviewInvestigationPruneOutcome = Readonly<{
+  recoveredActiveTurnCount: number;
   expiredPrivateMaterialCount: number;
   prunedInvestigationCount: number;
   prunedShadowEvidenceCount: number;
@@ -42,6 +47,7 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
         InvestigationPrunerPort,
         "reconcileExpiredPrivateMaterial"
       >;
+      expiredTurns: Pick<ReconcileExpiredActiveTurn, "sweep">;
       investigations: Pick<
         InvestigationPrunerPort,
         "pruneRetainedInvestigations"
@@ -62,6 +68,19 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
     assertPruneLimit(input.shadowEvidenceLimit);
     const cutoff = input.asOf.toISOString();
 
+    let recoveredActiveTurnCount: number;
+    try {
+      recoveredActiveTurnCount = await this.dependencies.expiredTurns.sweep({
+        expiresAtOrBefore: cutoff,
+        limit: input.investigationLimit,
+      });
+    } catch {
+      throw new ReviewInvestigationPruneError(
+        ReviewInvestigationPruneFailureCode.ActiveTurns,
+        emptyOutcome(),
+      );
+    }
+
     let expiredPrivateMaterialCount: number;
     try {
       expiredPrivateMaterialCount =
@@ -74,7 +93,7 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
     } catch {
       throw new ReviewInvestigationPruneError(
         ReviewInvestigationPruneFailureCode.PrivateMaterial,
-        emptyOutcome(),
+        { ...emptyOutcome(), recoveredActiveTurnCount },
       );
     }
 
@@ -89,6 +108,7 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
       throw new ReviewInvestigationPruneError(
         ReviewInvestigationPruneFailureCode.Investigations,
         {
+          recoveredActiveTurnCount,
           expiredPrivateMaterialCount,
           prunedInvestigationCount: 0,
           prunedShadowEvidenceCount: 0,
@@ -103,6 +123,7 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
           limit: input.shadowEvidenceLimit,
         });
       return {
+        recoveredActiveTurnCount,
         expiredPrivateMaterialCount,
         prunedInvestigationCount,
         prunedShadowEvidenceCount,
@@ -111,6 +132,7 @@ export class InvestigationPrunerMaintenanceAdapter implements PruneReviewInvesti
       throw new ReviewInvestigationPruneError(
         ReviewInvestigationPruneFailureCode.ShadowEvidence,
         {
+          recoveredActiveTurnCount,
           expiredPrivateMaterialCount,
           prunedInvestigationCount,
           prunedShadowEvidenceCount: 0,
@@ -138,6 +160,7 @@ function assertPruneLimit(value: number): void {
 
 function emptyOutcome(): ReviewInvestigationPruneOutcome {
   return {
+    recoveredActiveTurnCount: 0,
     expiredPrivateMaterialCount: 0,
     prunedInvestigationCount: 0,
     prunedShadowEvidenceCount: 0,

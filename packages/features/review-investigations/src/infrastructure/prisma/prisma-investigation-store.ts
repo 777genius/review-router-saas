@@ -70,6 +70,7 @@ import {
 } from "../../domain/investigation-turn";
 import { isValidInvestigationTokenUsage } from "../../domain/investigation-token-usage";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
+import { TurnResultAdmissionKind } from "../../domain/turn-result-admission";
 import {
   ContextCriticDecision,
   InvestigationFindingSeverity,
@@ -236,6 +237,38 @@ export class PrismaInvestigationStore
             left.certificate!.issuedAt,
           ) || left.investigationId.localeCompare(right.investigationId),
       );
+  }
+
+  async findExpiredActiveTurnIds(input: {
+    readonly expiresAtOrBefore: string;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    assertPruneLimit(input.limit);
+    const cutoff = parseCanonicalCutoff(
+      input.expiresAtOrBefore,
+      "investigation_turn_expiry_cutoff_invalid",
+    );
+    return this.prisma.$transaction(
+      async (transaction) => {
+        const candidates = await transaction.$queryRaw<
+          Array<{ investigationId: string }>
+        >(Prisma.sql`
+          SELECT investigation."investigationId"
+          FROM "ReviewInvestigation" AS investigation
+          INNER JOIN "ReviewInvestigationTurn" AS turn
+            ON turn."investigationId" = investigation."investigationId"
+           AND turn."turnId" = investigation."activeTurnId"
+          WHERE investigation."state" = 'turn_leased'::"ReviewInvestigationStateV1"
+            AND turn."state" = 'leased'::"ReviewInvestigationTurnStateV1"
+            AND turn."expiresAt" <= ${cutoff}
+          ORDER BY turn."expiresAt" ASC, investigation."investigationId" ASC
+          LIMIT ${input.limit}
+          FOR UPDATE OF investigation SKIP LOCKED
+        `);
+        return candidates.map((candidate) => candidate.investigationId);
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
   }
 
   async findLease(leaseId: string): Promise<ReviewInvestigationLease | null> {
@@ -1139,6 +1172,23 @@ async function persistTransition(
       if (updated.count !== 1) throw new InvestigationWriteRaceError();
       return;
     }
+    case InvestigationStoreTransitionKind.ActiveTurnExpired: {
+      const updated = await transaction.reviewInvestigationTurn.updateMany({
+        where: {
+          turnId: transition.turnId,
+          investigationId: next.investigationId,
+          state: PrismaTurnState.leased,
+        },
+        data: {
+          state: PrismaTurnState.expired,
+          abortReason: "expired_active_turn",
+          completedAt: new Date(next.updatedAt),
+          retainUntil,
+        },
+      });
+      if (updated.count !== 1) throw new InvestigationWriteRaceError();
+      return;
+    }
     case InvestigationStoreTransitionKind.TurnAborted: {
       const updated = await transaction.reviewInvestigationTurn.updateMany({
         where: {
@@ -1532,6 +1582,20 @@ function assertUpdate(
         next.activeTurn !== null
       ) {
         throw new Error("investigation_turn_terminal_transition_invalid");
+      }
+      return;
+    case InvestigationStoreTransitionKind.ActiveTurnExpired:
+      if (
+        current.activeTurn?.turnId !== transition.turnId ||
+        next.activeTurn !== null ||
+        ![
+          ReviewInvestigationState.AwaitingTurn,
+          ReviewInvestigationState.AwaitingCritic,
+          ReviewInvestigationState.Inconclusive,
+          ReviewInvestigationState.Superseded,
+        ].includes(next.state)
+      ) {
+        throw new Error("investigation_turn_expiry_transition_invalid");
       }
       return;
     case InvestigationStoreTransitionKind.PrivateMaterialExpired: {
@@ -2197,7 +2261,63 @@ async function commitGuardIsCurrent(
     source.investigationId !== input.investigation.investigationId ||
     source.turnId !== input.guard.turnId ||
     source.attemptId !== input.guard.attemptId ||
-    source.fencingToken.toString(10) !== input.guard.fencingToken
+    source.fencingToken.toString(10) !== input.guard.fencingToken ||
+    (input.guard.leaseCapabilityId !== undefined &&
+      source.leaseCapabilityId !== input.guard.leaseCapabilityId) ||
+    (input.guard.authorizationId !== undefined &&
+      source.authorizationId !== input.guard.authorizationId) ||
+    (input.guard.mutationEpoch !== undefined &&
+      source.mutationEpoch !== input.guard.mutationEpoch)
+  ) {
+    return false;
+  }
+  if (
+    input.guard.authorizationId !== undefined &&
+    input.guard.mutationEpoch !== undefined
+  ) {
+    const authorization = await transaction.reviewRunAuthorization.findUnique({
+      where: { authorizationId: input.guard.authorizationId },
+      select: { state: true, mutationEpoch: true, expiresAt: true },
+    });
+    if (
+      authorization?.state !== "active" ||
+      authorization.mutationEpoch !== input.guard.mutationEpoch ||
+      input.guard.admittedAt === undefined ||
+      authorization.expiresAt <= new Date(input.guard.admittedAt)
+    ) {
+      return false;
+    }
+    const emergencyStops = await transaction.reviewSafetyEmergencyControl.count(
+      {
+        where: {
+          stopped: true,
+          OR: [
+            { policyScope: "global" },
+            {
+              policyScope: "workspace",
+              workspaceId: current.scope.workspaceId,
+            },
+            {
+              policyScope: "repository",
+              workspaceId: current.scope.workspaceId,
+              repositoryConnectionId: current.scope.repositoryConnectionId,
+              scmRepositoryIdentityId: current.scope.scmRepositoryIdentityId,
+            },
+          ],
+        },
+      },
+    );
+    if (emergencyStops > 0) return false;
+  }
+  if (!resultAdmissionDeadlineIsCurrent(input.guard, source, current)) {
+    return false;
+  }
+  if (
+    input.guard.resultAdmission === TurnResultAdmissionKind.Rejected ||
+    (input.guard.resultAdmission === TurnResultAdmissionKind.HistoricalDrain &&
+      input.investigation.state !== ReviewInvestigationState.Superseded) ||
+    (input.guard.resultAdmission === TurnResultAdmissionKind.Current &&
+      input.investigation.state === ReviewInvestigationState.Superseded)
   ) {
     return false;
   }
@@ -2218,6 +2338,30 @@ async function commitGuardIsCurrent(
     select: { fencingToken: true },
   });
   return newest?.fencingToken === source.fencingToken;
+}
+
+function resultAdmissionDeadlineIsCurrent(
+  guard: NonNullable<Parameters<InvestigationStorePort["commit"]>[0]["guard"]>,
+  lease: PrismaLeaseRecord,
+  investigation: ReviewInvestigation,
+): boolean {
+  const values = [
+    guard.resultAdmission,
+    guard.admittedAt,
+    guard.effectiveDeadline,
+  ];
+  if (values.every((value) => value === undefined)) return true;
+  if (values.some((value) => value === undefined)) return false;
+  const admittedAt = new Date(guard.admittedAt!);
+  const effectiveDeadline = new Date(guard.effectiveDeadline!);
+  return (
+    Number.isFinite(admittedAt.getTime()) &&
+    Number.isFinite(effectiveDeadline.getTime()) &&
+    admittedAt < effectiveDeadline &&
+    effectiveDeadline <= lease.resultReportUntil &&
+    investigation.activeTurn !== null &&
+    effectiveDeadline <= new Date(investigation.activeTurn.expiresAt)
+  );
 }
 
 async function revokeStaleInvestigationLeases(

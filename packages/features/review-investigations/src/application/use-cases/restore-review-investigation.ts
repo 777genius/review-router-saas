@@ -9,11 +9,13 @@ import {
   type ReviewInvestigationReadModel,
 } from "../investigation-read-model";
 import { digestCanonical } from "./investigation-use-case-support";
+import type { ReconcileExpiredActiveTurn } from "./reconcile-expired-active-turn";
 
 export class RestoreReviewInvestigation {
   constructor(
     private readonly store: InvestigationStorePort,
     private readonly digest: InvestigationDigestPort,
+    private readonly expiredTurns?: Pick<ReconcileExpiredActiveTurn, "execute">,
   ) {}
 
   async execute(
@@ -35,7 +37,9 @@ export class RestoreReviewInvestigation {
   }
 
   private async require(investigationId: string): Promise<ReviewInvestigation> {
-    const investigation = await this.store.findById(investigationId);
+    const investigation = this.expiredTurns
+      ? await this.expiredTurns.execute(investigationId)
+      : await this.store.findById(investigationId);
     if (investigation === null) throw new Error("investigation_missing");
     return investigation;
   }

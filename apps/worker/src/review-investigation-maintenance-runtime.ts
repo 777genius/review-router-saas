@@ -188,6 +188,7 @@ function maintenanceResult(
   status: ReviewInvestigationMaintenanceStatus,
   failureCode: ReviewInvestigationMaintenanceFailureCode | null = null,
   outcome: ReviewInvestigationPruneOutcome = {
+    recoveredActiveTurnCount: 0,
     expiredPrivateMaterialCount: 0,
     prunedInvestigationCount: 0,
     prunedShadowEvidenceCount: 0,
@@ -202,6 +203,7 @@ function safeLogContext(
   return {
     status: result.status,
     failureCode: result.failureCode,
+    recoveredActiveTurnCount: result.recoveredActiveTurnCount,
     expiredPrivateMaterialCount: result.expiredPrivateMaterialCount,
     prunedInvestigationCount: result.prunedInvestigationCount,
     prunedShadowEvidenceCount: result.prunedShadowEvidenceCount,

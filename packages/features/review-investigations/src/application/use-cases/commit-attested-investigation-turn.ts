@@ -53,10 +53,16 @@ export type CommitAttestedInvestigationTurnCommand = Readonly<{
   sourceAttemptId: string;
   sourceLeaseId: string;
   sourceFencingToken: string;
+  sourceLeaseCapabilityId?: string;
+  sourceAuthorizationId?: string;
+  sourceMutationEpoch?: string;
   acceptedAttestationId: string;
   acceptedAttestationHash: string;
   turnObservationHash: string;
   observation: InvestigationTurnObservation;
+  authorizationDeadline?: string;
+  capabilityDeadline?: string;
+  drainDeadline?: string;
 }>;
 
 export class CommitAttestedInvestigationTurn {
@@ -235,7 +241,27 @@ export class CommitAttestedInvestigationTurn {
         attemptId: command.sourceAttemptId,
         turnId: command.turnId,
         fencingToken: command.sourceFencingToken,
+        ...(command.sourceLeaseCapabilityId === undefined
+          ? {}
+          : { leaseCapabilityId: command.sourceLeaseCapabilityId }),
+        ...(command.sourceAuthorizationId === undefined
+          ? {}
+          : { authorizationId: command.sourceAuthorizationId }),
+        ...(command.sourceMutationEpoch === undefined
+          ? {}
+          : { mutationEpoch: BigInt(command.sourceMutationEpoch) }),
       },
+      ...(command.authorizationDeadline === undefined ||
+      command.capabilityDeadline === undefined ||
+      command.drainDeadline === undefined
+        ? {}
+        : {
+            resultDeadlines: [
+              command.authorizationDeadline,
+              command.capabilityDeadline,
+              command.drainDeadline,
+            ],
+          }),
     };
     return this.commit.execute(commitCommand);
   }

@@ -2,6 +2,7 @@ import type { ReviewInvestigation } from "../../domain/review-investigation";
 import type { ReviewInvestigationScope } from "../../domain/coverage-contract";
 import type { ReviewInvestigationAbortReason } from "../../domain/review-investigation-types";
 import type { EncryptedInvestigationPrivateMaterial } from "../../domain/investigation-private-material";
+import type { TurnResultAdmissionKind } from "../../domain/turn-result-admission";
 
 export enum InvestigationStoreCommitStatus {
   Committed = "committed",
@@ -26,6 +27,12 @@ export type InvestigationStoreCommitGuard = Readonly<{
   attemptId: string;
   turnId: string;
   fencingToken: string;
+  leaseCapabilityId?: string;
+  authorizationId?: string;
+  mutationEpoch?: bigint;
+  resultAdmission?: TurnResultAdmissionKind;
+  admittedAt?: string;
+  effectiveDeadline?: string;
 }>;
 
 export enum InvestigationStoreTransitionKind {
@@ -33,6 +40,7 @@ export enum InvestigationStoreTransitionKind {
   TurnPlanned = "turn_planned",
   TurnCommitted = "turn_committed",
   TurnAborted = "turn_aborted",
+  ActiveTurnExpired = "active_turn_expired",
   PrivateMaterialExpired = "private_material_expired",
   Concluded = "concluded",
 }
@@ -53,6 +61,10 @@ export type InvestigationStoreTransition =
       kind: InvestigationStoreTransitionKind.TurnAborted;
       turnId: string;
       reason: ReviewInvestigationAbortReason;
+    }>
+  | Readonly<{
+      kind: InvestigationStoreTransitionKind.ActiveTurnExpired;
+      turnId: string;
     }>
   | Readonly<{
       kind: InvestigationStoreTransitionKind.PrivateMaterialExpired;
@@ -81,6 +93,10 @@ export interface InvestigationStorePort {
     readonly producerReleaseId: string;
     readonly limit: number;
   }): Promise<readonly ReviewInvestigation[]>;
+  findExpiredActiveTurnIds(input: {
+    readonly expiresAtOrBefore: string;
+    readonly limit: number;
+  }): Promise<readonly string[]>;
   commit(input: {
     readonly investigation: ReviewInvestigation;
     readonly expectedVersion: number | null;

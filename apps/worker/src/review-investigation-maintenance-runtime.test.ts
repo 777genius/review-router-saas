@@ -95,12 +95,14 @@ class ConstantPrune implements PruneReviewInvestigationsPort {
   calls = 0;
 
   async execute(): Promise<{
+    readonly recoveredActiveTurnCount: number;
     readonly expiredPrivateMaterialCount: number;
     readonly prunedInvestigationCount: number;
     readonly prunedShadowEvidenceCount: number;
   }> {
     this.calls += 1;
     return {
+      recoveredActiveTurnCount: 4,
       expiredPrivateMaterialCount: 2,
       prunedInvestigationCount: 1,
       prunedShadowEvidenceCount: 3,
@@ -182,6 +184,7 @@ describe("review investigation maintenance runtime", () => {
         started.resolve();
         await release.promise;
         return {
+          recoveredActiveTurnCount: 1,
           expiredPrivateMaterialCount: 1,
           prunedInvestigationCount: 1,
           prunedShadowEvidenceCount: 1,
@@ -239,6 +242,7 @@ describe("review investigation maintenance runtime", () => {
       clock: new MutableClock(now),
       lock: new ImmediateLock(),
       prune: new InvestigationPrunerMaintenanceAdapter({
+        expiredTurns: { sweep: async () => 2 },
         privateMaterial: pruner,
         investigations: pruner,
         shadowEvidence,
@@ -249,6 +253,7 @@ describe("review investigation maintenance runtime", () => {
     await expect(runtime.runMaintenance()).resolves.toEqual({
       status: ReviewInvestigationMaintenanceStatus.Failed,
       failureCode: ReviewInvestigationPruneFailureCode.Investigations,
+      recoveredActiveTurnCount: 2,
       expiredPrivateMaterialCount: 4,
       prunedInvestigationCount: 0,
       prunedShadowEvidenceCount: 0,
@@ -258,6 +263,7 @@ describe("review investigation maintenance runtime", () => {
     expect(logger.warnEvents[0]?.context).toEqual({
       status: ReviewInvestigationMaintenanceStatus.Failed,
       failureCode: ReviewInvestigationPruneFailureCode.Investigations,
+      recoveredActiveTurnCount: 2,
       expiredPrivateMaterialCount: 4,
       prunedInvestigationCount: 0,
       prunedShadowEvidenceCount: 0,

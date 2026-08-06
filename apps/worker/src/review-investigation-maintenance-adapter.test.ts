@@ -29,9 +29,17 @@ class CapturingPruner
   privateMaterialResults = [2];
   investigationResults = [1];
   shadowEvidenceResults = [3];
+  activeTurnResults = [1];
   privateMaterialError: Error | null = null;
   investigationError: Error | null = null;
   shadowEvidenceError: Error | null = null;
+  activeTurnError: Error | null = null;
+
+  async sweep(): Promise<number> {
+    this.calls.push("active_turns");
+    if (this.activeTurnError) throw this.activeTurnError;
+    return this.activeTurnResults.shift() ?? 0;
+  }
 
   async reconcileExpiredPrivateMaterial(input: {
     readonly expiresAtOrBefore: string;
@@ -80,6 +88,7 @@ describe("review investigation maintenance adapter", () => {
         shadowEvidenceLimit: 50,
       }),
     ).resolves.toEqual({
+      recoveredActiveTurnCount: 1,
       expiredPrivateMaterialCount: 2,
       prunedInvestigationCount: 1,
       prunedShadowEvidenceCount: 3,
@@ -92,15 +101,18 @@ describe("review investigation maintenance adapter", () => {
         shadowEvidenceLimit: 50,
       }),
     ).resolves.toEqual({
+      recoveredActiveTurnCount: 0,
       expiredPrivateMaterialCount: 0,
       prunedInvestigationCount: 0,
       prunedShadowEvidenceCount: 0,
     });
 
     expect(pruner.calls).toEqual([
+      "active_turns",
       "private_material",
       "investigations",
       "shadow_evidence",
+      "active_turns",
       "private_material",
       "investigations",
       "shadow_evidence",
@@ -172,12 +184,16 @@ describe("review investigation maintenance adapter", () => {
     ).rejects.toMatchObject({
       code: ReviewInvestigationPruneFailureCode.PrivateMaterial,
       outcome: {
+        recoveredActiveTurnCount: 1,
         expiredPrivateMaterialCount: 0,
         prunedInvestigationCount: 0,
         prunedShadowEvidenceCount: 0,
       },
     } satisfies Partial<ReviewInvestigationPruneError>);
-    expect(privateMaterialFailure.calls).toEqual(["private_material"]);
+    expect(privateMaterialFailure.calls).toEqual([
+      "active_turns",
+      "private_material",
+    ]);
 
     const investigationFailure = new CapturingPruner();
     investigationFailure.privateMaterialResults = [3];
@@ -194,6 +210,7 @@ describe("review investigation maintenance adapter", () => {
     ).rejects.toMatchObject({
       code: ReviewInvestigationPruneFailureCode.Investigations,
       outcome: {
+        recoveredActiveTurnCount: 1,
         expiredPrivateMaterialCount: 3,
         prunedInvestigationCount: 0,
         prunedShadowEvidenceCount: 0,
@@ -216,6 +233,7 @@ describe("review investigation maintenance adapter", () => {
     ).rejects.toMatchObject({
       code: ReviewInvestigationPruneFailureCode.ShadowEvidence,
       outcome: {
+        recoveredActiveTurnCount: 1,
         expiredPrivateMaterialCount: 4,
         prunedInvestigationCount: 2,
         prunedShadowEvidenceCount: 0,
@@ -225,9 +243,11 @@ describe("review investigation maintenance adapter", () => {
 });
 
 function createAdapter(
-  pruner: InvestigationPrunerPort & InvestigationShadowEvidencePrunerPort,
+  pruner: InvestigationPrunerPort &
+    InvestigationShadowEvidencePrunerPort & { sweep(): Promise<number> },
 ) {
   return new InvestigationPrunerMaintenanceAdapter({
+    expiredTurns: pruner,
     privateMaterial: pruner,
     investigations: pruner,
     shadowEvidence: pruner,
