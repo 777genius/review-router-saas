@@ -188,6 +188,28 @@ Sanitized promotion telemetry and immutable promotion reports are not part of
 this maintenance job. They remain available for rollout diagnosis and promotion
 evidence.
 
+## Publication semantics
+
+Terminal output must describe the safety decision, not merely whether the
+workflow process exited. Use these user-visible outcomes consistently:
+
+| Outcome | Meaning | Publication rule |
+| --- | --- | --- |
+| `completed` | Required coverage and current-revision checks passed | Publish the current projection |
+| `partial` | Some required coverage did not complete | Preserve preliminary findings in the summary; withhold inline comments and lifecycle mutations |
+| `superseded` | A newer pull-request revision exists | Preserve evidence; publish zero findings for the stale revision |
+| `publication_stale` | Revision or lifecycle preconditions changed at the mutation boundary | Preserve evidence; apply no SCM mutation |
+| `lane_busy` | A required provider lane is already occupied | Report a delay; preserve eligible evidence for retry |
+| `provider_capacity` | The provider refused work because capacity is unavailable | Report unavailable capacity; do not describe the review as failed or complete |
+| `failed` | Execution or revision validation failed | Publish no approval and direct the operator to the typed failure |
+| `skipped` | Admission policy intentionally excluded the revision | State the policy reason without implying that review ran |
+
+A partial summary with findings must begin with
+`Review incomplete - N preliminary findings preserved`. It must also state what
+remains uncovered and why inline findings were withheld. Never emit `Review
+complete` for an inconclusive certificate, partial coverage, stale revision,
+provider-capacity outcome, or failed publication attempt.
+
 ## Operator status
 
 The operator projection may expose investigation ID, scope/revision digests,
@@ -209,3 +231,25 @@ replay material, tokens, cookies, provider credentials, or raw model output.
 
 No live cohort may be enabled solely because unit tests or the disposable corpus
 pass.
+
+## Rotating provider authentication
+
+Install or refresh Codex OAuth only through the repository's generation-aware
+reseed workflow:
+
+```bash
+scripts/reseed-codex-rotating-auth.sh --repo OWNER/REPOSITORY
+```
+
+Do not replace `REVIEWROUTER_CODEX_AUTH_JSON` directly with `gh secret set`.
+The reseed flow owns generation ordering, refresh finalization, and protection
+against an older queued run overwriting a newer credential. Direct replacement
+breaks that contract and can make a valid login appear revoked on the next
+writeback. Keep one isolated `CODEX_HOME` per repository/provider identity,
+never print the auth payload, and require the reseed command to report that the
+repository secret was stored before starting a canary.
+
+Authentication success is not a rollout proof. A run that fails during GitHub
+OIDC exchange, release authorization, or runtime configuration has not reached
+the provider and must not trigger another login. Reauthenticate only after a
+typed provider response proves that the current refresh credential is invalid.

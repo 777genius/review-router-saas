@@ -7,6 +7,26 @@ For a self-hosted Compose deployment, run every `review-v2:admin` operation
 through the `rr_admin` container wrapper in the
 [self-hosted end-to-end guide](./review-router-self-hosted-end-to-end.md).
 
+For a hosted deployment, run the CLI in a dedicated one-off maintenance job
+with the exact API runtime environment. Do not launch `pnpm review-v2:admin`
+inside a serving web instance: package-manager and CLI startup can exceed a
+small instance's memory budget, recycle the web process, and briefly return
+502 responses. The maintenance job may invoke the already-built entrypoint
+directly to avoid package-manager overhead:
+
+```bash
+node scripts/run-with-env.mjs \
+  node --conditions=production \
+  apps/api/dist/review-action-v2-operator-cli.js \
+  env-preflight
+```
+
+Keep the plaintext operator credential only in the maintenance process
+environment. Require `env-preflight` to report `ready: true` before a mutating
+command, and remove the job after the operation. Never export production
+database or signing material into a developer shell as a substitute for the
+one-off job.
+
 ## Preconditions
 
 - API and worker contain the same release and migration. A server-dispatched
@@ -64,6 +84,15 @@ pnpm protocol:release-manifest:check \
   --action-repo /path/to/review-router
 ```
 
+Treat the verifier output and the database registration candidate as different
+typed projections of the same release. Remove the verification-only
+`saasSourceCommit`, `supportedContextGatewayPolicyVersions`, and
+`canonicalizerDigest` fields before placing the verifier output under
+`candidate`. Keep `canonicalizerDigest` in the runtime producer attestation:
+authorization validates it there, while the `ProducerRelease` database model
+does not own that field. Never pass the verifier object to `release register`
+unchanged.
+
 `release register` accepts one JSON object containing
 `protocolLimitsProfileId`, `limits`, `operationalSloProfileId`, `thresholds`,
 `ownerRefs`, `runbookRefs`, and `candidate`. The candidate comes from the
@@ -81,6 +110,14 @@ explicit `null` for a legacy release). Raw flattened
 `reviewInvestigationPolicyHash` fields are rejected. `canonicalizerDigest`
 belongs to the producer attestation assembled from the same validated manifest,
 not to the database registration candidate.
+
+Promote all release wiring as one operational change. Database registration by
+itself is insufficient: the exact Action ref must also be trusted by the hosted
+runtime and the exact producer attestation must be present in both API and
+worker configuration. Preserve still-active rollback refs and attestations
+until their runs drain. A canary is allowed only after all three projections
+agree on release ID, Action commit, runtime commit, schema digest, entrypoint
+digests, Context Gateway policy, and investigation capability hashes.
 
 Projection policy compatibility is versioned independently from the current
 deployment default. Finalization accepts only policy versions supported by the
