@@ -170,10 +170,11 @@ async function main() {
     }
     if (command === "release revoke") {
       await authenticateOperator(runtime.digest, process.env);
-      requireConfirmation(parsed, "release");
+      const releaseId = requireOption(parsed, "release");
+      requireConfirmation(parsed, releaseId);
       printJson(
         await runtime.runControl.producerReleases.revokeProducerRelease(
-          requireOption(parsed, "release"),
+          releaseId,
         ),
       );
       return;
@@ -769,7 +770,7 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
   return { positionals, options };
 }
 
-function requireConfirmation(parsed: ParsedArguments, expected: string) {
+export function requireConfirmation(parsed: ParsedArguments, expected: string) {
   if (parsed.options.confirm !== expected) {
     throw new Error(`review_v2_confirmation_required:${expected}`);
   }
@@ -1004,7 +1005,7 @@ function printUsage() {
   process.stdout.write(`  status --repo OWNER/REPO\n`);
   process.stdout.write(`  release register --bundle FILE --confirm release\n`);
   process.stdout.write(
-    `  release revoke --release RELEASE_ID --confirm release\n`,
+    `  release revoke --release RELEASE_ID --confirm RELEASE_ID\n`,
   );
   process.stdout.write(`  emergency global open|stop --confirm global\n`);
   process.stdout.write(

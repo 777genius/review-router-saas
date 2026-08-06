@@ -113,8 +113,12 @@ through the domain command before registering a corrected release ID:
 ```bash
 pnpm review-v2:admin release revoke \
   --release INCORRECT_PRODUCER_RELEASE_ID \
-  --confirm release
+  --confirm INCORRECT_PRODUCER_RELEASE_ID
 ```
+
+Revocation is irreversible. The confirmation must exactly match `--release`;
+the CLI rejects generic confirmation values so a pasted or mistyped target
+cannot be revoked accidentally.
 
 ## Repository cutover
 

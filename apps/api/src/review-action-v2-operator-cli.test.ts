@@ -8,6 +8,7 @@ import {
   inspectEnvironment,
   parseArguments,
   parseReviewV2ReleaseBundleCandidate,
+  requireConfirmation,
   reviewV2CohortEmergencyInitialization,
   reviewV2CohortOperationForCommand,
   reviewV2CohortRolloutModes,
@@ -33,6 +34,24 @@ describe("review action v2 operator CLI", () => {
         confirm: "777genius/agent-teams-ai",
       },
     });
+  });
+
+  it("binds irreversible confirmation to the exact target", () => {
+    const parsed = parseArguments([
+      "release",
+      "revoke",
+      "--release",
+      "review-action-v2-bad",
+      "--confirm",
+      "review-action-v2-bad",
+    ]);
+
+    expect(() =>
+      requireConfirmation(parsed, "review-action-v2-bad"),
+    ).not.toThrow();
+    expect(() =>
+      requireConfirmation(parsed, "review-action-v2-production"),
+    ).toThrow("review_v2_confirmation_required:review-action-v2-production");
   });
 
   it("reports only missing or malformed environment variable names", () => {
