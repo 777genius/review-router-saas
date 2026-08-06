@@ -31,3 +31,13 @@ CREATE INDEX "ReviewInvestigationReplayCheckpoint_expiry_idx" ON "ReviewInvestig
 
 ALTER TABLE "ReviewInvestigation" ADD COLUMN "replayEvidenceCheckpointId" TEXT;
 CREATE UNIQUE INDEX "ReviewInvestigation_replayEvidenceCheckpointId_key" ON "ReviewInvestigation"("replayEvidenceCheckpointId");
+
+ALTER TABLE "ReviewInvestigationReplayEvidenceCheckpoint"
+  ADD CONSTRAINT "ReviewInvestigationReplayCheckpoint_source_fkey"
+  FOREIGN KEY ("sourceInvestigationId") REFERENCES "ReviewInvestigation"("investigationId")
+  ON DELETE CASCADE ON UPDATE CASCADE;
+
+ALTER TABLE "ReviewInvestigation"
+  ADD CONSTRAINT "ReviewInvestigation_replayEvidenceCheckpoint_fkey"
+  FOREIGN KEY ("replayEvidenceCheckpointId") REFERENCES "ReviewInvestigationReplayEvidenceCheckpoint"("checkpointId")
+  ON DELETE RESTRICT ON UPDATE CASCADE;

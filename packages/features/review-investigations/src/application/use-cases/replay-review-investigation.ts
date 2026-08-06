@@ -31,7 +31,6 @@ import {
 import {
   InvestigationObligationKind,
   InvestigationObligationState,
-  ReviewInvestigationConclusion,
   type ReviewInvestigationRuntimeProfile,
 } from "../../domain/review-investigation-types";
 import {
@@ -363,7 +362,7 @@ export class ReplayReviewInvestigation {
     command: ReplayReviewInvestigationCommand,
     obligations: readonly InvestigationObligation[],
   ): Promise<readonly InvestigationObligation[]> {
-    if (source.conclusion !== ReviewInvestigationConclusion.Findings) {
+    if (source.findings.length === 0) {
       return obligations;
     }
     const additions = await Promise.all(

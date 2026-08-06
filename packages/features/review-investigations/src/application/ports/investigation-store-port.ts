@@ -3,6 +3,7 @@ import type { ReviewInvestigationScope } from "../../domain/coverage-contract";
 import type { ReviewInvestigationAbortReason } from "../../domain/review-investigation-types";
 import type { EncryptedInvestigationPrivateMaterial } from "../../domain/investigation-private-material";
 import type { TurnResultAdmissionKind } from "../../domain/turn-result-admission";
+import type { InvestigationExecutionAuthorityVerdict } from "./execution-authority-port";
 
 export enum InvestigationStoreCommitStatus {
   Committed = "committed",
@@ -19,21 +20,30 @@ export type InvestigationStoreCommitResult = Readonly<{
 
 export enum InvestigationStoreCommitGuardKind {
   LeaseFence = "lease_fence",
+  ExecutionAuthority = "execution_authority",
 }
 
-export type InvestigationStoreCommitGuard = Readonly<{
-  kind: InvestigationStoreCommitGuardKind.LeaseFence;
-  leaseId: string;
-  attemptId: string;
-  turnId: string;
-  fencingToken: string;
-  leaseCapabilityId?: string;
-  authorizationId?: string;
-  mutationEpoch?: bigint;
-  resultAdmission?: TurnResultAdmissionKind;
-  admittedAt?: string;
-  effectiveDeadline?: string;
-}>;
+export type InvestigationStoreCommitGuard =
+  | Readonly<{
+      kind: InvestigationStoreCommitGuardKind.LeaseFence;
+      leaseId: string;
+      attemptId: string;
+      turnId: string;
+      fencingToken: string;
+      leaseCapabilityId?: string;
+      authorizationId?: string;
+      mutationEpoch?: bigint;
+      resultAdmission?: TurnResultAdmissionKind;
+      admittedAt?: string;
+      effectiveDeadline?: string;
+    }>
+  | Readonly<{
+      kind: InvestigationStoreCommitGuardKind.ExecutionAuthority;
+      expectedVerdict: InvestigationExecutionAuthorityVerdict;
+      resultAdmission?: TurnResultAdmissionKind;
+      admittedAt?: string;
+      effectiveDeadline?: string;
+    }>;
 
 export enum InvestigationStoreTransitionKind {
   Opened = "opened",

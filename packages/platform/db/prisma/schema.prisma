@@ -244,30 +244,30 @@ model ReviewConfiguration {
 }
 
 model ReviewConfigurationVersion {
-  id                   String   @id @default(cuid())
-  configurationId      String
-  version              Int
-  schemaVersion        Int      @default(1)
-  providerKind         String
-  providerAuthMode     String
-  model                String
-  reasoningEffort      String
-  agenticContext       Boolean  @default(true)
-  fastMode             Boolean  @default(false)
-  failOnSeverity       String
-  inlineMaxComments    Int
-  providerLimit        Int      @default(1)
-  providerMaxParallel  Int      @default(1)
-  inlineMinAgreement   Int      @default(1)
-  targetTokensPerBatch Int
-  reviewLanguage       String?
+  id                                      String   @id @default(cuid())
+  configurationId                         String
+  version                                 Int
+  schemaVersion                           Int      @default(1)
+  providerKind                            String
+  providerAuthMode                        String
+  model                                   String
+  reasoningEffort                         String
+  agenticContext                          Boolean  @default(true)
+  fastMode                                Boolean  @default(false)
+  failOnSeverity                          String
+  inlineMaxComments                       Int
+  providerLimit                           Int      @default(1)
+  providerMaxParallel                     Int      @default(1)
+  inlineMinAgreement                      Int      @default(1)
+  targetTokensPerBatch                    Int
+  reviewLanguage                          String?
   investigationRecordingEnabled           Boolean  @default(false)
   investigationShadowEnabled              Boolean  @default(false)
   investigationContextCriticEnabled       Boolean  @default(false)
   investigationVerifiedCleanEnabled       Boolean  @default(false)
   investigationCrossRevisionReplayEnabled Boolean  @default(false)
   investigationProductionEffectsEnabled   Boolean  @default(false)
-  createdAt            DateTime @default(now())
+  createdAt                               DateTime @default(now())
 
   configuration ReviewConfiguration                  @relation(fields: [configurationId], references: [id], onDelete: Cascade)
   providers     ReviewConfigurationVersionProvider[]
@@ -681,40 +681,40 @@ model ReviewSafetyEmergencyControl {
 }
 
 model ReviewRunAuthorization {
-  authorizationId                 String                        @id
-  version                         Int                           @default(1)
-  workspaceId                     String
-  repositoryConnectionId          String
-  scmRepositoryIdentityId         String
-  pullRequestNumber               Int
-  sourceRunId                     String
-  sourceRunAttempt                String
-  workflowIdentityHash            String
-  baseSha                         String
-  mergeBaseSha                    String
-  headSha                         String
-  reviewRevisionHash              String
-  trustDomain                     ReviewTrustDomainV2
-  producerReleaseId               String
-  selectedProtocolVersion         String
-  schemaDigest                    String
-  protocolLimitsProfileId         String
-  operationalSloProfileId         String
-  mutationEpoch                   BigInt
-  providerVoteLanes               Json
+  authorizationId                                         String                        @id
+  version                                                 Int                           @default(1)
+  workspaceId                                             String
+  repositoryConnectionId                                  String
+  scmRepositoryIdentityId                                 String
+  pullRequestNumber                                       Int
+  sourceRunId                                             String
+  sourceRunAttempt                                        String
+  workflowIdentityHash                                    String
+  baseSha                                                 String
+  mergeBaseSha                                            String
+  headSha                                                 String
+  reviewRevisionHash                                      String
+  trustDomain                                             ReviewTrustDomainV2
+  producerReleaseId                                       String
+  selectedProtocolVersion                                 String
+  schemaDigest                                            String
+  protocolLimitsProfileId                                 String
+  operationalSloProfileId                                 String
+  mutationEpoch                                           BigInt
+  providerVoteLanes                                       Json
   reviewInvestigationAuthorizationDescriptorCanonicalJson String?
-  authorizationSafetyDecisionHash String
-  protocolOfferHash               String
-  oidcReplayKeyHash               String                        @unique
-  tokenSigningKeyId               String
-  tokenIssuer                     String
-  tokenAudience                   String
-  state                           ReviewRunAuthorizationStateV2 @default(active)
-  expiresAt                       DateTime
-  maxExpiresAt                    DateTime
-  createdAt                       DateTime
-  renewedAt                       DateTime?
-  revokedAt                       DateTime?
+  authorizationSafetyDecisionHash                         String
+  protocolOfferHash                                       String
+  oidcReplayKeyHash                                       String                        @unique
+  tokenSigningKeyId                                       String
+  tokenIssuer                                             String
+  tokenAudience                                           String
+  state                                                   ReviewRunAuthorizationStateV2 @default(active)
+  expiresAt                                               DateTime
+  maxExpiresAt                                            DateTime
+  createdAt                                               DateTime
+  renewedAt                                               DateTime?
+  revokedAt                                               DateTime?
 
   @@unique([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, sourceRunId, sourceRunAttempt, protocolOfferHash])
   @@index([repositoryConnectionId, pullRequestNumber, state, expiresAt])
@@ -852,7 +852,7 @@ model ReviewContextGatewaySession {
   sourceWorkSlotId         String
   attemptId                String
   openingIntentHash        String                              @default("4d29442a15edaf0c8d2a044f12e695b0a514842ab5d4a566c2a26e451a55c19b")
-  sourceLeaseAuthorityKind ReviewContextLeaseAuthorityKindV1  @default(standard_execution)
+  sourceLeaseAuthorityKind ReviewContextLeaseAuthorityKindV1   @default(standard_execution)
   sourceLeaseId            String
   sourceFencingToken       BigInt
   providerKind             ReviewProviderKindV2
@@ -874,9 +874,9 @@ model ReviewContextGatewaySession {
   acceptedAttestation      ReviewContextDependencyAttestation?
   replayMaterial           ReviewContextReplayMaterial?
 
+  @@unique([attemptId, openingIntentHash])
   @@index([workspaceId, repositoryConnectionId, pullRequestNumber, state, expiresAt])
   @@index([sourceExecutionId, sourceWorkSlotId])
-  @@unique([attemptId, openingIntentHash])
 }
 
 model ReviewContextDependencyAttestation {
@@ -1152,57 +1152,59 @@ model ReviewExecutionObservationRefV2 {
 }
 
 model ReviewInvestigation {
-  investigationId             String                               @id
-  naturalIdentityHash         String                               @unique(map: "ReviewInvestigation_naturalIdentityHash_key")
-  version                     BigInt                               @default(1)
-  workspaceId                 String
-  repositoryConnectionId      String
-  scmRepositoryIdentityId     String
-  pullRequestNumber           Int
-  trustDomain                 String
-  authorizationScopeHash      String?
-  baseSha                     String
-  mergeBaseSha                String
-  headSha                     String
-  reviewRevisionHash          String
-  executionId                 String
-  workSlotId                  String
-  stableReviewUnitKey         String
-  providerVoteLaneId          String
-  providerStrategyId          String
-  investigationManifestCanonicalJson String?                      @db.Text
-  investigationManifestHash  String?
-  runtimeProfile              ReviewInvestigationRuntimeProfileV1
-  coverageContractVersion     String
-  expansionRulesVersion       String
-  criticPolicyVersion         String
-  gatewayPolicyVersion        String
-  probePolicyVersion          String                               @default("review-investigation-probe-policy.v1")
-  producerReleaseId           String
-  runtimeProfileVersion       String
-  searchPolicyVersion         String                               @default("review-investigation-fixed-string-search.v1")
-  policyCanonicalVersion      String                               @default("review-investigation-policy.v1")
-  policy                      Json
-  state                       ReviewInvestigationStateV1
-  findings                    Json
-  activeTurnId                String?                              @unique(map: "ReviewInvestigation_activeTurnId_key")
-  semanticTurns               Int                                  @default(0)
-  operationalAttempts         Int                                  @default(0)
-  expansionDepth              Int                                  @default(0)
-  criticCycles                Int                                  @default(0)
-  criticDecision              ReviewInvestigationCriticDecisionV1?
-  totalUsageTokens            BigInt                               @default(0)
-  totalDurationMs             BigInt                               @default(0)
-  turnProvenance              Json
-  conclusion                  ReviewInvestigationConclusionV1?
-  certificateId               String?                              @unique(map: "ReviewInvestigation_certificateId_key")
-  replayEvidenceCheckpointId  String?                              @unique(map: "ReviewInvestigation_replayEvidenceCheckpointId_key")
-  dossierDigest               String
-  nextEligibleAt              DateTime?
-  supersededByInvestigationId String?
-  createdAt                   DateTime
-  updatedAt                   DateTime
-  retainUntil                 DateTime
+  investigationId                    String                                        @id
+  naturalIdentityHash                String                                        @unique(map: "ReviewInvestigation_naturalIdentityHash_key")
+  version                            BigInt                                        @default(1)
+  workspaceId                        String
+  repositoryConnectionId             String
+  scmRepositoryIdentityId            String
+  pullRequestNumber                  Int
+  trustDomain                        String
+  authorizationScopeHash             String?
+  baseSha                            String
+  mergeBaseSha                       String
+  headSha                            String
+  reviewRevisionHash                 String
+  executionId                        String
+  workSlotId                         String
+  stableReviewUnitKey                String
+  providerVoteLaneId                 String
+  providerStrategyId                 String
+  investigationManifestCanonicalJson String?                                       @db.Text
+  investigationManifestHash          String?
+  runtimeProfile                     ReviewInvestigationRuntimeProfileV1
+  coverageContractVersion            String
+  expansionRulesVersion              String
+  criticPolicyVersion                String
+  gatewayPolicyVersion               String
+  probePolicyVersion                 String                                        @default("review-investigation-probe-policy.v1")
+  producerReleaseId                  String
+  runtimeProfileVersion              String
+  searchPolicyVersion                String                                        @default("review-investigation-fixed-string-search.v1")
+  policyCanonicalVersion             String                                        @default("review-investigation-policy.v1")
+  policy                             Json
+  state                              ReviewInvestigationStateV1
+  findings                           Json
+  activeTurnId                       String?                                       @unique(map: "ReviewInvestigation_activeTurnId_key")
+  semanticTurns                      Int                                           @default(0)
+  operationalAttempts                Int                                           @default(0)
+  expansionDepth                     Int                                           @default(0)
+  criticCycles                       Int                                           @default(0)
+  criticDecision                     ReviewInvestigationCriticDecisionV1?
+  totalUsageTokens                   BigInt                                        @default(0)
+  totalDurationMs                    BigInt                                        @default(0)
+  turnProvenance                     Json
+  conclusion                         ReviewInvestigationConclusionV1?
+  certificateId                      String?                                       @unique(map: "ReviewInvestigation_certificateId_key")
+  replayEvidenceCheckpointId         String?                                       @unique(map: "ReviewInvestigation_replayEvidenceCheckpointId_key")
+  replayEvidenceCheckpoint           ReviewInvestigationReplayEvidenceCheckpoint?  @relation("AttachedReplayEvidenceCheckpoint", fields: [replayEvidenceCheckpointId], references: [checkpointId], onDelete: Restrict)
+  replayEvidenceCheckpoints          ReviewInvestigationReplayEvidenceCheckpoint[] @relation("SourceReplayEvidenceCheckpoints")
+  dossierDigest                      String
+  nextEligibleAt                     DateTime?
+  supersededByInvestigationId        String?
+  createdAt                          DateTime
+  updatedAt                          DateTime
+  retainUntil                        DateTime
 
   @@unique([executionId, workSlotId, providerVoteLaneId, stableReviewUnitKey, coverageContractVersion, runtimeProfileVersion], map: "ReviewInvestigation_natural_scope_key")
   @@index([executionId, workSlotId, state], map: "ReviewInvestigation_execution_slot_state_idx")
@@ -1249,7 +1251,7 @@ model ReviewInvestigationTurn {
   expiresAt             DateTime
   completedAt           DateTime?
   retainUntil           DateTime
-  shadowLeases          ReviewInvestigationLease[] @relation("ReviewInvestigationTurnShadowLeases")
+  shadowLeases          ReviewInvestigationLease[]       @relation("ReviewInvestigationTurnShadowLeases")
 
   @@unique([investigationId, turnOrdinal], map: "ReviewInvestigationTurn_investigation_ordinal_key")
   @@unique([investigationId, turnId], map: "ReviewInvestigationTurn_investigation_turn_key")
@@ -1298,7 +1300,7 @@ model ReviewInvestigationLease {
   expiresAt                          DateTime
   resultReportUntil                  DateTime
   retainUntil                        DateTime
-  turn                               ReviewInvestigationTurn                @relation("ReviewInvestigationTurnShadowLeases", fields: [investigationId, turnId], references: [investigationId, turnId], onDelete: Restrict)
+  turn                               ReviewInvestigationTurn           @relation("ReviewInvestigationTurnShadowLeases", fields: [investigationId, turnId], references: [investigationId, turnId], onDelete: Restrict)
 
   @@unique([investigationId, turnId, acquireRequestIdHash], map: "ReviewInvestigationLease_acquire_identity_key")
   @@index([investigationId, turnId, state, expiresAt], map: "ReviewInvestigationLease_turn_state_idx")
@@ -1413,6 +1415,8 @@ model ReviewInvestigationReplayEvidenceCheckpoint {
   sourceConclusion           ReviewInvestigationConclusionV1?
   issuedAt                   DateTime
   expiresAt                  DateTime
+  sourceInvestigation        ReviewInvestigation              @relation("SourceReplayEvidenceCheckpoints", fields: [sourceInvestigationId], references: [investigationId], onDelete: Cascade)
+  attachedInvestigation      ReviewInvestigation?             @relation("AttachedReplayEvidenceCheckpoint")
 
   @@unique([sourceInvestigationId, sourceInvestigationVersion], map: "ReviewInvestigationReplayCheckpoint_source_version_key")
   @@index([reviewRevisionHash, stableReviewUnitKey], map: "ReviewInvestigationReplayCheckpoint_revision_unit_idx")
@@ -1460,26 +1464,26 @@ model ReviewInvestigationPromotionReport {
 }
 
 model ReviewInvestigationEvaluationAttestation {
-  attestationId              String   @id
-  attestationVersion         String
-  attestationHash            String   @unique(map: "ReviewInvestigationEvaluationAttestation_hash_key")
-  envelopeHash               String   @unique(map: "ReviewInvestigationEvaluationAttestation_envelope_hash_key")
-  signingKeyId               String
-  signatureAlgorithm         String
-  signatureValue             String
-  terminalSampleId           String   @unique(map: "ReviewInvestigationEvaluationAttestation_terminal_sample_key")
-  terminalSamplePayloadHash  String
-  derivedSampleId            String   @unique(map: "ReviewInvestigationEvaluationAttestation_derived_sample_key")
-  investigationId            String
-  certificateId              String
-  certificateHash            String
-  producerReleaseId          String
-  corpusVersion              String
-  evaluationPolicyVersion    String
-  payloadCanonicalJson       String
-  payload                    Json
-  importedAt                 DateTime
-  createdAt                  DateTime @default(now())
+  attestationId             String   @id
+  attestationVersion        String
+  attestationHash           String   @unique(map: "ReviewInvestigationEvaluationAttestation_hash_key")
+  envelopeHash              String   @unique(map: "ReviewInvestigationEvaluationAttestation_envelope_hash_key")
+  signingKeyId              String
+  signatureAlgorithm        String
+  signatureValue            String
+  terminalSampleId          String   @unique(map: "ReviewInvestigationEvaluationAttestation_terminal_sample_key")
+  terminalSamplePayloadHash String
+  derivedSampleId           String   @unique(map: "ReviewInvestigationEvaluationAttestation_derived_sample_key")
+  investigationId           String
+  certificateId             String
+  certificateHash           String
+  producerReleaseId         String
+  corpusVersion             String
+  evaluationPolicyVersion   String
+  payloadCanonicalJson      String
+  payload                   Json
+  importedAt                DateTime
+  createdAt                 DateTime @default(now())
 
   @@index([producerReleaseId, corpusVersion, evaluationPolicyVersion, importedAt], map: "ReviewInvestigationEvaluationAttestation_release_corpus_idx")
   @@index([investigationId, certificateId], map: "ReviewInvestigationEvaluationAttestation_investigation_idx")

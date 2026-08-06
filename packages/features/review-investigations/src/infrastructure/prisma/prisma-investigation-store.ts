@@ -30,6 +30,7 @@ import {
   type InvestigationPrivateMaterialStorePort,
   type InvestigationPrunerPort,
 } from "../../application/ports/investigation-private-material-ports";
+import { InvestigationExecutionAuthorityVerdict } from "../../application/ports/execution-authority-port";
 import {
   InvestigationStoreCommitGuardKind,
   InvestigationStoreCommitStatus,
@@ -503,6 +504,12 @@ export class PrismaInvestigationStore
               transition: input.transition,
               privateMaterials,
             });
+          }
+          if (input.guard !== undefined) {
+            await lockInvestigationExecutionScope(
+              transaction,
+              input.investigation,
+            );
           }
           await transaction.$queryRaw(Prisma.sql`
             SELECT "investigationId"
@@ -2357,6 +2364,15 @@ async function commitGuardIsCurrent(
   current: ReviewInvestigation,
 ): Promise<boolean> {
   if (input.guard === undefined) return true;
+  const databaseNow = await investigationDatabaseNow(transaction);
+  if (
+    input.guard.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority
+  ) {
+    return (
+      (await executionAuthorityVerdict(transaction, current, databaseNow)) ===
+      input.guard.expectedVerdict
+    );
+  }
   if (input.guard.kind !== InvestigationStoreCommitGuardKind.LeaseFence) {
     return false;
   }
@@ -2396,8 +2412,7 @@ async function commitGuardIsCurrent(
     if (
       authorization?.state !== "active" ||
       authorization.mutationEpoch !== input.guard.mutationEpoch ||
-      input.guard.admittedAt === undefined ||
-      authorization.expiresAt <= new Date(input.guard.admittedAt)
+      authorization.expiresAt <= databaseNow
     ) {
       return false;
     }
@@ -2423,7 +2438,9 @@ async function commitGuardIsCurrent(
     );
     if (emergencyStops > 0) return false;
   }
-  if (!resultAdmissionDeadlineIsCurrent(input.guard, source, current)) {
+  if (
+    !resultAdmissionDeadlineIsCurrent(input.guard, source, current, databaseNow)
+  ) {
     return false;
   }
   if (
@@ -2434,6 +2451,18 @@ async function commitGuardIsCurrent(
       input.investigation.state === ReviewInvestigationState.Superseded)
   ) {
     return false;
+  }
+  if (input.guard.resultAdmission !== undefined) {
+    const expectedVerdict =
+      input.guard.resultAdmission === TurnResultAdmissionKind.Current
+        ? InvestigationExecutionAuthorityVerdict.Current
+        : InvestigationExecutionAuthorityVerdict.Superseded;
+    if (
+      (await executionAuthorityVerdict(transaction, current, databaseNow)) !==
+      expectedVerdict
+    ) {
+      return false;
+    }
   }
   if (
     !reviewInvestigationLeaseBindingIsCurrent(
@@ -2455,9 +2484,13 @@ async function commitGuardIsCurrent(
 }
 
 function resultAdmissionDeadlineIsCurrent(
-  guard: NonNullable<Parameters<InvestigationStorePort["commit"]>[0]["guard"]>,
+  guard: Extract<
+    NonNullable<Parameters<InvestigationStorePort["commit"]>[0]["guard"]>,
+    { kind: InvestigationStoreCommitGuardKind.LeaseFence }
+  >,
   lease: PrismaLeaseRecord,
   investigation: ReviewInvestigation,
+  databaseNow: Date,
 ): boolean {
   const values = [
     guard.resultAdmission,
@@ -2472,10 +2505,116 @@ function resultAdmissionDeadlineIsCurrent(
     Number.isFinite(admittedAt.getTime()) &&
     Number.isFinite(effectiveDeadline.getTime()) &&
     admittedAt < effectiveDeadline &&
+    databaseNow < effectiveDeadline &&
     effectiveDeadline <= lease.resultReportUntil &&
     investigation.activeTurn !== null &&
     effectiveDeadline <= new Date(investigation.activeTurn.expiresAt)
   );
+}
+
+async function executionAuthorityVerdict(
+  transaction: Prisma.TransactionClient,
+  investigation: ReviewInvestigation,
+  databaseNow: Date,
+): Promise<InvestigationExecutionAuthorityVerdict> {
+  const execution = await transaction.reviewExecutionV2.findUnique({
+    where: { executionId: investigation.executionId },
+  });
+  if (execution === null) {
+    return InvestigationExecutionAuthorityVerdict.Missing;
+  }
+  const [authorization, slot, stream] = await Promise.all([
+    transaction.reviewRunAuthorization.findUnique({
+      where: { authorizationId: execution.authorizationId },
+    }),
+    transaction.reviewExecutionWorkSlotV2.findUnique({
+      where: {
+        executionId_workSlotId: {
+          executionId: investigation.executionId,
+          workSlotId: investigation.workSlotId,
+        },
+      },
+    }),
+    transaction.reviewExecutionStreamV2.findUnique({
+      where: {
+        workspaceId_repositoryConnectionId_scmRepositoryIdentityId_pullRequestNumber:
+          {
+            workspaceId: investigation.scope.workspaceId,
+            repositoryConnectionId: investigation.scope.repositoryConnectionId,
+            scmRepositoryIdentityId:
+              investigation.scope.scmRepositoryIdentityId,
+            pullRequestNumber: investigation.scope.pullRequestNumber,
+          },
+      },
+    }),
+  ]);
+  if (
+    authorization === null ||
+    slot === null ||
+    execution.workspaceId !== investigation.scope.workspaceId ||
+    execution.repositoryConnectionId !==
+      investigation.scope.repositoryConnectionId ||
+    execution.scmRepositoryIdentityId !==
+      investigation.scope.scmRepositoryIdentityId ||
+    execution.pullRequestNumber !== investigation.scope.pullRequestNumber ||
+    execution.authorizationId !== authorization.authorizationId ||
+    execution.mutationEpoch !== authorization.mutationEpoch ||
+    authorization.workspaceId !== investigation.scope.workspaceId ||
+    authorization.repositoryConnectionId !==
+      investigation.scope.repositoryConnectionId ||
+    authorization.scmRepositoryIdentityId !==
+      investigation.scope.scmRepositoryIdentityId ||
+    authorization.pullRequestNumber !== investigation.scope.pullRequestNumber ||
+    authorization.trustDomain !== investigation.scope.trustDomain ||
+    authorization.reviewRevisionHash !==
+      investigation.revision.reviewRevisionHash ||
+    authorization.state !== "active" ||
+    authorization.expiresAt <= databaseNow ||
+    slot.providerVoteIdentityHash !== investigation.providerVoteLaneId
+  ) {
+    return InvestigationExecutionAuthorityVerdict.Unauthorized;
+  }
+  if (
+    execution.state !== "running" ||
+    stream?.activeExecutionId !== execution.executionId ||
+    stream.currentReviewRevisionHash !==
+      investigation.revision.reviewRevisionHash ||
+    execution.reviewRevisionHash !==
+      investigation.revision.reviewRevisionHash ||
+    execution.headSha !== investigation.revision.headSha
+  ) {
+    return InvestigationExecutionAuthorityVerdict.Superseded;
+  }
+  return InvestigationExecutionAuthorityVerdict.Current;
+}
+
+async function lockInvestigationExecutionScope(
+  transaction: Prisma.TransactionClient,
+  investigation: ReviewInvestigation,
+): Promise<void> {
+  const key = JSON.stringify([
+    investigation.scope.workspaceId,
+    investigation.scope.repositoryConnectionId,
+    investigation.scope.scmRepositoryIdentityId,
+    investigation.scope.pullRequestNumber,
+  ]);
+  await transaction.$executeRaw(
+    Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+  );
+}
+
+async function investigationDatabaseNow(
+  transaction: Prisma.TransactionClient,
+): Promise<Date> {
+  const [row] = await transaction.$queryRaw<Array<{ epochMs: bigint }>>(
+    Prisma.sql`SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS "epochMs"`,
+  );
+  if (row === undefined) throw new Error("investigation_database_time_missing");
+  const epochMs = Number(row.epochMs);
+  if (!Number.isSafeInteger(epochMs)) {
+    throw new Error("investigation_database_time_invalid");
+  }
+  return new Date(epochMs);
 }
 
 async function revokeStaleInvestigationLeases(

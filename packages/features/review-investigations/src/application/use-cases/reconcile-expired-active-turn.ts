@@ -11,6 +11,7 @@ import {
   type InvestigationExecutionAuthorityPort,
 } from "../ports/execution-authority-port";
 import {
+  InvestigationStoreCommitGuardKind,
   InvestigationStoreTransitionKind,
   type InvestigationStorePort,
 } from "../ports/investigation-store-port";
@@ -37,15 +38,13 @@ export class ReconcileExpiredActiveTurn {
       return current;
     }
     const verdict = await this.authority.check(current);
-    if (verdict === InvestigationExecutionAuthorityVerdict.Unauthorized) {
-      throw new Error("investigation_execution_unauthorized");
-    }
     const reconciled = reconcileExpiredActiveTurn({
       investigation: current,
-      reconciledAt: turn.expiresAt,
+      reconciledAt: this.clock.now().toISOString(),
       superseded:
         verdict === InvestigationExecutionAuthorityVerdict.Superseded ||
-        verdict === InvestigationExecutionAuthorityVerdict.Missing,
+        verdict === InvestigationExecutionAuthorityVerdict.Missing ||
+        verdict === InvestigationExecutionAuthorityVerdict.Unauthorized,
     });
     if (
       reconciled.disposition ===
@@ -65,7 +64,7 @@ export class ReconcileExpiredActiveTurn {
           sourceState: next.state,
           sourceConclusion: next.conclusion,
           sourceVersion: next.version,
-          issuedAt: new Date(turn.expiresAt),
+          issuedAt: this.clock.now(),
           ttlMs: this.replayCheckpointTtlMs,
           digest: this.digest,
         }),
@@ -92,6 +91,10 @@ export class ReconcileExpiredActiveTurn {
         kind: InvestigationStoreTransitionKind.ActiveTurnExpired,
         turnId: turn.turnId,
       },
+      guard: {
+        kind: InvestigationStoreCommitGuardKind.ExecutionAuthority,
+        expectedVerdict: verdict,
+      },
     });
   }
 
@@ -110,7 +113,10 @@ export class ReconcileExpiredActiveTurn {
       } catch (error) {
         if (
           !(error instanceof Error) ||
-          error.message !== "investigation_concurrency_conflict"
+          ![
+            "investigation_concurrency_conflict",
+            "investigation_lease_fencing_stale",
+          ].includes(error.message)
         ) {
           throw error;
         }

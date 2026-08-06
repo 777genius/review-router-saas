@@ -6,12 +6,16 @@ import {
   ReviewExecutionState,
   type ReviewExecutionQueryPort,
 } from "@reviewrouter/features-review-executions";
-import type { ReviewRunAuthorizationQueryPort } from "@reviewrouter/features-review-run-control";
+import {
+  ReviewRunAuthorizationState,
+  type ReviewRunAuthorizationQueryPort,
+} from "@reviewrouter/features-review-run-control";
 
 export class WorkerInvestigationExecutionAuthority implements InvestigationExecutionAuthorityPort {
   constructor(
     private readonly executions: ReviewExecutionQueryPort,
     private readonly authorizations: ReviewRunAuthorizationQueryPort,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   async check(
@@ -31,7 +35,17 @@ export class WorkerInvestigationExecutionAuthority implements InvestigationExecu
       execution.scmRepositoryIdentityId !==
         input.scope.scmRepositoryIdentityId ||
       execution.pullRequestNumber !== input.scope.pullRequestNumber ||
+      execution.mutationEpoch !== authorization.mutationEpoch ||
+      authorization.workspaceId !== input.scope.workspaceId ||
+      authorization.repositoryConnectionId !==
+        input.scope.repositoryConnectionId ||
+      authorization.scmRepositoryIdentityId !==
+        input.scope.scmRepositoryIdentityId ||
+      authorization.pullRequestNumber !== input.scope.pullRequestNumber ||
+      authorization.state !== ReviewRunAuthorizationState.Active ||
+      authorization.expiresAt <= this.now() ||
       authorization.trustDomain !== input.scope.trustDomain ||
+      authorization.reviewRevisionHash !== input.revision.reviewRevisionHash ||
       !execution.workSlots.some(
         (slot) =>
           slot.workSlotId === input.workSlotId &&

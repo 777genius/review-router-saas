@@ -375,6 +375,11 @@ export class InMemoryInvestigationStore
     current: ReviewInvestigation,
   ): boolean {
     if (input.guard === undefined) return true;
+    if (
+      input.guard.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority
+    ) {
+      return true;
+    }
     if (input.guard.kind !== InvestigationStoreCommitGuardKind.LeaseFence) {
       return false;
     }

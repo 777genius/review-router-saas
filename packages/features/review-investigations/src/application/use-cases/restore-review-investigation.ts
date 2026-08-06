@@ -37,11 +37,14 @@ export class RestoreReviewInvestigation {
   }
 
   private async require(investigationId: string): Promise<ReviewInvestigation> {
-    const investigation = this.expiredTurns
-      ? await this.expiredTurns.execute(investigationId)
-      : await this.store.findById(investigationId);
-    if (investigation === null) throw new Error("investigation_missing");
-    return investigation;
+    const stored = await this.store.findById(investigationId);
+    if (stored === null) throw new Error("investigation_missing");
+    if (!(await this.hasValidDossierDigest(stored))) {
+      throw new Error("investigation_dossier_digest_invalid");
+    }
+    return this.expiredTurns
+      ? this.expiredTurns.execute(investigationId)
+      : stored;
   }
 
   private async hasValidDossierDigest(

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AbortInvestigationTurn,
   AcquireInvestigationLease,
@@ -13,6 +13,7 @@ import {
   InvestigationLeaseAcquireStatus,
   InvestigationStoreTransitionKind,
   InvestigationObligationKind,
+  InvestigationObligationState,
   InvestigationReceiptReplayVerdict,
   InvestigationReceiptKind,
   InvestigationTurnProviderKind,
@@ -1427,10 +1428,28 @@ describe("review investigation in-memory vertical slice", () => {
     const harness = createHarness();
     const opened = await harness.open.execute(openCommand("drain-open"));
     const planned = await planDiscovery(harness, opened);
+    const historicalReceipt = receipt("receipt-drain", changedSubject);
     harness.authority.verdict =
       InvestigationExecutionAuthorityVerdict.Superseded;
     const command = {
       ...emptyCommit(planned, "drain-commit"),
+      closureClaims: [
+        {
+          obligationId: planned.turn!.obligationIds[0]!,
+          receipt: historicalReceipt,
+        },
+      ],
+      findings: [
+        {
+          fingerprint: "historical-access-check",
+          severity: InvestigationFindingSeverity.Major,
+          title: "Access check is stale",
+          body: "The superseded revision exposed a stale access decision.",
+          path: "src/service.ts",
+          line: 12,
+          evidenceReceiptIds: [historicalReceipt.receiptId],
+        },
+      ],
       admittedAt: "2026-08-02T10:00:59.999Z",
       resultDeadlines: [planned.turn!.expiresAt],
     } as const;
@@ -1453,6 +1472,67 @@ describe("review investigation in-memory vertical slice", () => {
       sourceState: ReviewInvestigationState.Superseded,
       sourceInvestigationVersion: committed.version,
     });
+    expect(
+      Date.parse(stored!.replayEvidenceCheckpoint!.expiresAt),
+    ).toBeGreaterThan(Date.parse(planned.turn!.expiresAt));
+
+    harness.authority.verdict = InvestigationExecutionAuthorityVerdict.Current;
+    const target = openCommand("drain-target");
+    const replay = new ReplayReviewInvestigation(
+      harness.store,
+      harness.authority,
+      {
+        replay: async ({ sourceReceipt, targetRevision, replayProofId }) => ({
+          verdict: InvestigationReceiptReplayVerdict.Matched,
+          targetReceipt: {
+            ...sourceReceipt,
+            receiptId: `drain-target-${sourceReceipt.receiptId}`,
+            reviewRevisionHash: targetRevision.reviewRevisionHash,
+            replayProofId,
+          },
+        }),
+      },
+      harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
+      harness.clock,
+    );
+    const replayed = await replay.execute({
+      commandId: "replay-drained-findings",
+      sourceInvestigationId: stored!.investigationId,
+      sourceCheckpointHash: stored!.replayEvidenceCheckpoint!.checkpointHash,
+      targetScope: target.scope,
+      targetRevision: {
+        ...target.revision,
+        headSha: "8".repeat(40),
+        reviewRevisionHash: "8".repeat(64),
+      },
+      targetExecutionId: "execution-drain-target",
+      targetWorkSlotId: "slot-drain-target",
+      targetStableReviewUnitKey: target.stableReviewUnitKey,
+      targetProviderVoteLaneId: target.providerVoteLaneId,
+      targetProviderStrategyId: target.providerStrategyId,
+      targetInvestigationManifestCanonicalJson:
+        target.investigationManifestCanonicalJson!,
+      targetInvestigationManifestHash: target.investigationManifestHash!,
+      targetRuntimeProfile: target.runtimeProfile,
+      targetContract: target.contract,
+      targetPolicy: target.policy,
+      targetSeedObligations: target.seedObligations,
+      targetInitialReceipts: [],
+      replayProofs: stored!.obligations.map((obligation) => ({
+        obligationId: obligation.obligationId,
+        replayProofId: `proof-drain-${obligation.obligationId}`,
+      })),
+    });
+    const replayedAggregate = await harness.store.findById(
+      replayed.investigationId,
+    );
+    expect(
+      replayedAggregate?.obligations.find(
+        (obligation) =>
+          obligation.kind === InvestigationObligationKind.FindingRevalidation,
+      ),
+    ).toMatchObject({ state: InvestigationObligationState.Open });
   });
 
   it("rejects historical drain when execution authority is unauthorized", async () => {
@@ -1517,7 +1597,7 @@ describe("review investigation in-memory vertical slice", () => {
     const harness = createHarness();
     const opened = await harness.open.execute(openCommand("lazy-open"));
     const planned = await planDiscovery(harness, opened);
-    harness.clock.advance(60_000);
+    harness.clock.advance(2 * 60 * 60_000);
     harness.authority.verdict =
       InvestigationExecutionAuthorityVerdict.Superseded;
     const reconcile = new ReconcileExpiredActiveTurn(
@@ -1543,8 +1623,66 @@ describe("review investigation in-memory vertical slice", () => {
     ).resolves.toMatchObject({
       replayEvidenceCheckpoint: {
         sourceState: ReviewInvestigationState.Superseded,
+        issuedAt: harness.clock.now().toISOString(),
       },
     });
+    const recovered = await harness.store.findById(planned.investigationId);
+    expect(
+      Date.parse(recovered!.replayEvidenceCheckpoint!.expiresAt),
+    ).toBeGreaterThan(harness.clock.now().getTime());
+  });
+
+  it("terminalizes an expired turn after authorization is revoked", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("revoked-expiry"));
+    const planned = await planDiscovery(harness, opened);
+    harness.clock.advance(60_000);
+    harness.authority.verdict =
+      InvestigationExecutionAuthorityVerdict.Unauthorized;
+
+    await expect(
+      new ReconcileExpiredActiveTurn(
+        harness.store,
+        harness.authority,
+        harness.digest,
+        harness.clock,
+      ).execute(planned.investigationId),
+    ).resolves.toMatchObject({
+      state: ReviewInvestigationState.Superseded,
+      activeTurn: null,
+    });
+  });
+
+  it("validates the persisted dossier before lazy recovery mutates it", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("corrupt-expiry"));
+    const planned = await planDiscovery(harness, opened);
+    harness.clock.advance(60_000);
+    harness.authority.verdict =
+      InvestigationExecutionAuthorityVerdict.Superseded;
+    const findStored = harness.store.findById.bind(harness.store);
+    vi.spyOn(harness.store, "findById").mockImplementation(async (id) => {
+      const stored = await findStored(id);
+      return stored === null
+        ? null
+        : { ...stored, dossierDigest: "0".repeat(64) };
+    });
+    const commit = vi.spyOn(harness.store, "commit");
+    const restore = new RestoreReviewInvestigation(
+      harness.store,
+      harness.digest,
+      new ReconcileExpiredActiveTurn(
+        harness.store,
+        harness.authority,
+        harness.digest,
+        harness.clock,
+      ),
+    );
+
+    await expect(restore.snapshot(planned.investigationId)).rejects.toThrow(
+      "investigation_dossier_digest_invalid",
+    );
+    expect(commit).not.toHaveBeenCalled();
   });
 });
 

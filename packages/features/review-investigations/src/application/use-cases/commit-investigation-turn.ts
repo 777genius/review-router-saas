@@ -73,6 +73,7 @@ export type CommitInvestigationTurnCommand = Readonly<{
   storeCommitGuard?: InvestigationStoreCommitGuard;
   resultDeadlines?: readonly string[];
   admittedAt?: string;
+  replayCheckpointTtlMs?: number;
 }>;
 
 export class CommitInvestigationTurn {
@@ -196,10 +197,7 @@ export class CommitInvestigationTurn {
           sourceConclusion: next.conclusion,
           sourceVersion: next.version,
           issuedAt: new Date(admittedAt),
-          ttlMs: Math.max(
-            1,
-            Date.parse(admission.effectiveDeadline) - Date.parse(admittedAt),
-          ),
+          ttlMs: command.replayCheckpointTtlMs ?? 3_600_000,
           digest: this.digest,
         }),
       };
