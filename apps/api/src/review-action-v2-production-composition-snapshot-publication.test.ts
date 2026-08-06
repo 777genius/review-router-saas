@@ -23,7 +23,13 @@ import {
   ReviewPublicationLifecycleObservationVersion,
   ReviewPublicationTerminalOutcome,
   RequestReviewPublicationStatus,
+  currentReviewProjectionPolicyVersion,
+  renderCanonicalReviewPublication,
+  resolveReviewPublicationRenderPolicyVersion,
+  ReviewPublicationProjectionCoverage,
+  ReviewPublicationOccurrenceState,
   reviewPublicationLifecycleExpectationFromProjection,
+  type ReviewPublicationRenderingSource,
   type RequestReviewPublicationCommand,
   type ReviewPublicationDecisionPorts,
 } from "@reviewrouter/features-review-publishing/v2";
@@ -133,6 +139,144 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
         publicationAttemptId,
       },
     });
+  });
+
+  it("preserves structured preliminary finding counts in a partial publication operation", async () => {
+    const partialPublishing: ReviewPublicationRenderingSource = {
+      ...publishing,
+      check: {
+        ...publishing.check,
+        conclusion: "success",
+      },
+      summary: {
+        ...publishing.summary,
+        allClear: false,
+        body: "- P1: authorization is inverted",
+        occurrenceCounts: {
+          ...publishing.summary.occurrenceCounts,
+          new: 1,
+          reconfirmed: 1,
+          changed: 1,
+        },
+      },
+    };
+    const projectionHash = hash("e");
+    const partialArtifact = {
+      ...finalizedArtifactWithProjectionEnvelope(
+        {
+          ...JSON.parse(projectionEnvelopeJson),
+          occurrences: [
+            { state: "new" },
+            { state: "reconfirmed" },
+            { state: "changed" },
+          ],
+          publishing: partialPublishing,
+        },
+        projectionHash,
+      ),
+      coverageState: ReviewCoverageState.Partial,
+      projectionPolicyVersion: currentReviewProjectionPolicyVersion,
+    };
+    const publicationRepository = new InMemoryReviewPublicationRepository();
+    const routes = createRoutes(
+      publicationRepository,
+      { assertCurrentPolicy: vi.fn() },
+      partialArtifact,
+    );
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      partialArtifact.publicationPermit,
+      now,
+    );
+
+    const accepted = await routes.publication.request!.execute(
+      await publicationRequest(
+        publicationPermit,
+        canonicalJson(partialPublishing),
+        projectionHash,
+      ),
+    );
+    const stored = await publicationRepository.findById(
+      accepted.result.publicationAttemptId!,
+    );
+    const expected = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Partial,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          currentReviewProjectionPolicyVersion,
+        ),
+        targetCommitId: partialArtifact.reviewedHeadSha,
+        occurrenceStates: [
+          ReviewPublicationOccurrenceState.New,
+          ReviewPublicationOccurrenceState.Reconfirmed,
+          ReviewPublicationOccurrenceState.Changed,
+        ],
+        source: partialPublishing,
+      },
+      {
+        digestUtf8: (value) =>
+          createHash("sha256").update(value, "utf8").digest("hex"),
+        utf8ByteLength: (value) => Buffer.byteLength(value, "utf8"),
+      },
+    );
+
+    expect(stored?.attempt.operations).toHaveLength(1);
+    expect(stored?.attempt.operations[0]).toMatchObject({
+      bodyHash: expected.summary.bodyHash,
+      markerHash: expected.summary.markerHash,
+    });
+    expect(expected.summary.body).toContain(
+      "Review incomplete - 3 preliminary findings preserved",
+    );
+  });
+
+  it("rejects partial counts that disagree with canonical occurrences", async () => {
+    const partialPublishing: ReviewPublicationRenderingSource = {
+      ...publishing,
+      check: { ...publishing.check, conclusion: "success" },
+      summary: {
+        ...publishing.summary,
+        allClear: false,
+        occurrenceCounts: {
+          ...publishing.summary.occurrenceCounts,
+          new: 1,
+        },
+      },
+    };
+    const projectionHash = hash("f");
+    const partialArtifact = {
+      ...finalizedArtifactWithPublishing(partialPublishing, projectionHash),
+      coverageState: ReviewCoverageState.Partial,
+      projectionPolicyVersion: currentReviewProjectionPolicyVersion,
+    };
+    const routes = createRoutes(
+      new InMemoryReviewPublicationRepository(),
+      { assertCurrentPolicy: vi.fn() },
+      partialArtifact,
+    );
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      partialArtifact.publicationPermit,
+      now,
+    );
+
+    const app = Fastify({ logger: false });
+    await registerReviewPublicationRequestV2Routes(app, routes.publication);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-publication/request",
+      payload: await publicationRequest(
+        publicationPermit,
+        canonicalJson(partialPublishing),
+        projectionHash,
+      ),
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({
+      error: {
+        errorCode: ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      },
+    });
+    await app.close();
   });
 
   it("accepts canonical producer metadata outside publication rendering", async () => {

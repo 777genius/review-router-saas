@@ -11,13 +11,16 @@ export const legacyReviewProjectionPolicyVersion =
   "review-projection-policy.v2-t0";
 export const clearPartialReviewProjectionPolicyVersion =
   "review-projection-policy.v3-t0";
-export const currentReviewProjectionPolicyVersion =
+export const hiddenMarkerReviewProjectionPolicyVersion =
   "review-projection-policy.v4-t0";
+export const currentReviewProjectionPolicyVersion =
+  "review-projection-policy.v5-t0";
 
 export enum CanonicalReviewPublicationRenderPolicyVersion {
   LegacyV1 = 1,
   ClearPartialV2 = 2,
   HiddenMarkersV3 = 3,
+  PreliminaryFindingsV4 = 4,
 }
 
 export const legacyPartialReviewPublicationSummary =
@@ -30,11 +33,32 @@ export const partialReviewPublicationSummary = [
   "<sub>Eligible completed evidence is preserved for a safe retry. This status is not an all-clear.</sub>",
 ].join("\n");
 
+export type ReviewPublicationOccurrenceCounts = {
+  readonly new: number;
+  readonly reconfirmed: number;
+  readonly changed: number;
+  readonly carried_unverified: number;
+  readonly resolved: number;
+  readonly uncertain: number;
+  readonly suppressed_by_human: number;
+};
+
+export enum ReviewPublicationOccurrenceState {
+  New = "new",
+  Reconfirmed = "reconfirmed",
+  Changed = "changed",
+  CarriedUnverified = "carried_unverified",
+  Resolved = "resolved",
+  Uncertain = "uncertain",
+  SuppressedByHuman = "suppressed_by_human",
+}
+
 export type ReviewPublicationRenderingSource = {
   readonly summary: {
     readonly marker: string;
     readonly body: string;
     readonly allClear: boolean;
+    readonly occurrenceCounts: ReviewPublicationOccurrenceCounts;
   };
   readonly check: {
     readonly marker: string;
@@ -114,8 +138,10 @@ export function resolveReviewPublicationRenderPolicyVersion(
       return CanonicalReviewPublicationRenderPolicyVersion.LegacyV1;
     case clearPartialReviewProjectionPolicyVersion:
       return CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2;
-    case currentReviewProjectionPolicyVersion:
+    case hiddenMarkerReviewProjectionPolicyVersion:
       return CanonicalReviewPublicationRenderPolicyVersion.HiddenMarkersV3;
+    case currentReviewProjectionPolicyVersion:
+      return CanonicalReviewPublicationRenderPolicyVersion.PreliminaryFindingsV4;
     default:
       throw new Error(
         `review_publication_projection_policy_unsupported:${projectionPolicyVersion}`,
@@ -132,17 +158,30 @@ export function renderCanonicalReviewPublication(
     readonly coverage: ReviewPublicationProjectionCoverage;
     readonly renderPolicyVersion: CanonicalReviewPublicationRenderPolicyVersion;
     readonly targetCommitId: string;
+    readonly occurrenceStates: readonly ReviewPublicationOccurrenceState[];
     readonly source: ReviewPublicationRenderingSource;
   },
   primitives: CanonicalReviewPublicationRenderingPrimitives,
 ): CanonicalReviewPublicationRendering {
+  const verifiedOccurrenceCounts =
+    input.renderPolicyVersion ===
+    CanonicalReviewPublicationRenderPolicyVersion.PreliminaryFindingsV4
+      ? occurrenceCountsBoundToProjection(
+          input.source.summary.occurrenceCounts,
+          input.occurrenceStates,
+        )
+      : null;
   const partial =
     input.coverage === ReviewPublicationProjectionCoverage.Partial;
   const summary = payload(
     input.source.summary.marker,
     withMarker(
       partial
-        ? partialSummary(input.renderPolicyVersion)
+        ? partialSummary(
+            input.renderPolicyVersion,
+            input.source,
+            verifiedOccurrenceCounts,
+          )
         : input.source.summary.body,
       input.source.summary.marker,
       input.renderPolicyVersion,
@@ -268,6 +307,8 @@ export function renderCanonicalReviewPublication(
 
 function partialSummary(
   version: CanonicalReviewPublicationRenderPolicyVersion,
+  source: ReviewPublicationRenderingSource,
+  verifiedOccurrenceCounts: ReviewPublicationOccurrenceCounts | null,
 ): string {
   switch (version) {
     case CanonicalReviewPublicationRenderPolicyVersion.LegacyV1:
@@ -275,7 +316,94 @@ function partialSummary(
     case CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2:
     case CanonicalReviewPublicationRenderPolicyVersion.HiddenMarkersV3:
       return partialReviewPublicationSummary;
+    case CanonicalReviewPublicationRenderPolicyVersion.PreliminaryFindingsV4:
+      if (verifiedOccurrenceCounts === null) {
+        throw new Error("publication_occurrence_counts_invalid");
+      }
+      return preliminaryFindingsPartialSummary(
+        source,
+        verifiedOccurrenceCounts,
+      );
   }
+}
+
+function preliminaryFindingsPartialSummary(
+  source: ReviewPublicationRenderingSource,
+  occurrenceCounts: ReviewPublicationOccurrenceCounts,
+): string {
+  const preliminaryFindingCount =
+    occurrenceCounts.new +
+    occurrenceCounts.reconfirmed +
+    occurrenceCounts.changed;
+  const findingLabel = preliminaryFindingCount === 1 ? "finding" : "findings";
+  const preliminaryBody = removePartialAllClearClaims(
+    source.summary.body.trim(),
+  )
+    .replace(/^##\s+Review incomplete\b[^\n]*$/gim, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return [
+    `## Review incomplete - ${preliminaryFindingCount} preliminary ${findingLabel} preserved ⚠️`,
+    "",
+    "Required review units or context obligations remain uncovered, so this result is not an all-clear.",
+    ...(preliminaryFindingCount > 0 && preliminaryBody.length > 0
+      ? ["", "### Preliminary findings", "", preliminaryBody]
+      : [
+          "",
+          "No preliminary findings were preserved.",
+          ...(preliminaryBody.length > 0
+            ? ["", "### Partial review details", "", preliminaryBody]
+            : []),
+        ]),
+    "",
+    "<sub>Inline comments, managed check conclusions, and lifecycle changes were withheld until required coverage completes.</sub>",
+  ].join("\n");
+}
+
+function occurrenceCountsBoundToProjection(
+  declared: ReviewPublicationOccurrenceCounts,
+  states: readonly ReviewPublicationOccurrenceState[],
+): ReviewPublicationOccurrenceCounts {
+  const keys = Object.values(ReviewPublicationOccurrenceState);
+  if (
+    Object.keys(declared).length !== keys.length ||
+    keys.some(
+      (key) => !Number.isSafeInteger(declared[key]) || declared[key] < 0,
+    ) ||
+    !Number.isSafeInteger(keys.reduce((sum, key) => sum + declared[key], 0))
+  ) {
+    throw new Error("publication_occurrence_counts_invalid");
+  }
+  const derived: Record<ReviewPublicationOccurrenceState, number> = {
+    [ReviewPublicationOccurrenceState.New]: 0,
+    [ReviewPublicationOccurrenceState.Reconfirmed]: 0,
+    [ReviewPublicationOccurrenceState.Changed]: 0,
+    [ReviewPublicationOccurrenceState.CarriedUnverified]: 0,
+    [ReviewPublicationOccurrenceState.Resolved]: 0,
+    [ReviewPublicationOccurrenceState.Uncertain]: 0,
+    [ReviewPublicationOccurrenceState.SuppressedByHuman]: 0,
+  };
+  for (const state of states) {
+    if (!Object.hasOwn(derived, state)) {
+      throw new Error("publication_occurrence_state_invalid");
+    }
+    derived[state] += 1;
+  }
+  if (keys.some((key) => declared[key] !== derived[key])) {
+    throw new Error("publication_occurrence_counts_mismatch");
+  }
+  return derived;
+}
+
+function removePartialAllClearClaims(body: string): string {
+  return body
+    .replace(/\ball[ -]?clear\b/gi, "No blocking findings in reviewed coverage")
+    .replace(/\bno issues? found\b/gi, "No issues found in reviewed coverage")
+    .replace(
+      /^(##\s+)?Review complete(?:d)?\b[^\n]*$/gim,
+      (_match, heading: string | undefined) =>
+        heading === undefined ? "Reviewed coverage" : "## Reviewed coverage",
+    );
 }
 
 function payload(
@@ -310,7 +438,10 @@ function markerForBody(
   version: CanonicalReviewPublicationRenderPolicyVersion,
 ): string {
   if (
-    version !== CanonicalReviewPublicationRenderPolicyVersion.HiddenMarkersV3 ||
+    (version !==
+      CanonicalReviewPublicationRenderPolicyVersion.HiddenMarkersV3 &&
+      version !==
+        CanonicalReviewPublicationRenderPolicyVersion.PreliminaryFindingsV4) ||
     marker.trim().startsWith("<!--")
   ) {
     return marker;

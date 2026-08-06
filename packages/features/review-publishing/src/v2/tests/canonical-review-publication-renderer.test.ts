@@ -4,9 +4,11 @@ import { describe, expect, it } from "vitest";
 import {
   CanonicalReviewPublicationRenderPolicyVersion,
   ReviewPublicationLifecycleSemantic,
+  ReviewPublicationOccurrenceState,
   ReviewPublicationProjectionCoverage,
   ReviewPublicationSummarySemantic,
   currentReviewProjectionPolicyVersion,
+  hiddenMarkerReviewProjectionPolicyVersion,
   legacyPartialReviewPublicationSummary,
   partialReviewPublicationSummary,
   resolveReviewPublicationRenderPolicyVersion,
@@ -22,6 +24,7 @@ describe("canonical review publication renderer", () => {
         renderPolicyVersion:
           CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2,
         targetCommitId: "a".repeat(40),
+        occurrenceStates: [ReviewPublicationOccurrenceState.New],
         source: source(),
       },
       primitives,
@@ -49,6 +52,7 @@ describe("canonical review publication renderer", () => {
         renderPolicyVersion:
           CanonicalReviewPublicationRenderPolicyVersion.LegacyV1,
         targetCommitId: "a".repeat(40),
+        occurrenceStates: [ReviewPublicationOccurrenceState.New],
         source: source(),
       },
       primitives,
@@ -59,6 +63,164 @@ describe("canonical review publication renderer", () => {
     );
   });
 
+  it("preserves v4 partial canonical bytes after introducing v5", () => {
+    const rendered = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Partial,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          hiddenMarkerReviewProjectionPolicyVersion,
+        ),
+        targetCommitId: "a".repeat(40),
+        occurrenceStates: [ReviewPublicationOccurrenceState.New],
+        source: source(),
+      },
+      primitives,
+    );
+
+    expect(rendered.summary.body).toBe(
+      `${partialReviewPublicationSummary}\n\n<!-- summary -->`,
+    );
+  });
+
+  it("preserves preliminary findings in the current partial summary", () => {
+    const rendered = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Partial,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          currentReviewProjectionPolicyVersion,
+        ),
+        targetCommitId: "a".repeat(40),
+        occurrenceStates: occurrenceStates(
+          [ReviewPublicationOccurrenceState.New, 1],
+          [ReviewPublicationOccurrenceState.Reconfirmed, 1],
+          [ReviewPublicationOccurrenceState.Changed, 1],
+          [ReviewPublicationOccurrenceState.CarriedUnverified, 2],
+          [ReviewPublicationOccurrenceState.Resolved, 3],
+          [ReviewPublicationOccurrenceState.Uncertain, 4],
+          [ReviewPublicationOccurrenceState.SuppressedByHuman, 5],
+        ),
+        source: source({
+          summaryBody:
+            "Review complete\n\n## Review incomplete - 99 preliminary findings preserved ⚠️\n\nAll-clear. No issues found.\n\n- P1: authorization is inverted",
+          occurrenceCounts: {
+            new: 1,
+            reconfirmed: 1,
+            changed: 1,
+            carried_unverified: 2,
+            resolved: 3,
+            uncertain: 4,
+            suppressed_by_human: 5,
+          },
+        }),
+      },
+      primitives,
+    );
+
+    expect(rendered.summary.body).toContain(
+      "## Review incomplete - 3 preliminary findings preserved ⚠️",
+    );
+    expect(rendered.summary.body).toContain("### Preliminary findings");
+    expect(rendered.summary.body).toContain("- P1: authorization is inverted");
+    expect(rendered.summary.body).toContain("not an all-clear");
+    expect(rendered.summary.body).not.toContain("All-clear.");
+    expect(rendered.summary.body).not.toMatch(/^Review complete/im);
+    expect(rendered.summary.body).not.toMatch(/^##\s+Review complete/im);
+    expect(
+      rendered.summary.body.match(/^## Review incomplete\b/gm),
+    ).toHaveLength(1);
+    expect(rendered.summary.body).not.toContain("99 preliminary");
+    expect(rendered).toMatchObject({
+      managedCheck: null,
+      inlineReviews: [],
+      lifecycle: [],
+    });
+  });
+
+  it("states when partial coverage preserved no findings", () => {
+    const rendered = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Partial,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          currentReviewProjectionPolicyVersion,
+        ),
+        targetCommitId: "a".repeat(40),
+        occurrenceStates: occurrenceStates(
+          [ReviewPublicationOccurrenceState.CarriedUnverified, 2],
+          [ReviewPublicationOccurrenceState.Resolved, 1],
+          [ReviewPublicationOccurrenceState.Uncertain, 1],
+        ),
+        source: source({
+          summaryBody:
+            "### Coverage not completed\n\n- dependency context unavailable",
+          occurrenceCounts: {
+            new: 0,
+            reconfirmed: 0,
+            changed: 0,
+            carried_unverified: 2,
+            resolved: 1,
+            uncertain: 1,
+            suppressed_by_human: 0,
+          },
+        }),
+      },
+      primitives,
+    );
+
+    expect(rendered.summary.body).toContain(
+      "## Review incomplete - 0 preliminary findings preserved ⚠️",
+    );
+    expect(rendered.summary.body).toContain(
+      "No preliminary findings were preserved.",
+    );
+    expect(rendered.summary.body).not.toContain("### Preliminary findings");
+    expect(rendered.summary.body).toContain("### Partial review details");
+    expect(rendered.summary.body).toContain("dependency context unavailable");
+  });
+
+  it("rejects partial finding totals that exceed safe integer precision", () => {
+    expect(() =>
+      renderCanonicalReviewPublication(
+        {
+          coverage: ReviewPublicationProjectionCoverage.Partial,
+          renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+            currentReviewProjectionPolicyVersion,
+          ),
+          targetCommitId: "a".repeat(40),
+          occurrenceStates: [],
+          source: source({
+            occurrenceCounts: {
+              new: Number.MAX_SAFE_INTEGER,
+              reconfirmed: 1,
+              changed: 0,
+              carried_unverified: 0,
+              resolved: 0,
+              uncertain: 0,
+              suppressed_by_human: 0,
+            },
+          }),
+        },
+        primitives,
+      ),
+    ).toThrow("publication_occurrence_counts_invalid");
+  });
+
+  it("rejects v5 counts that are not bound to canonical occurrences", () => {
+    expect(() =>
+      renderCanonicalReviewPublication(
+        {
+          coverage: ReviewPublicationProjectionCoverage.Partial,
+          renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+            currentReviewProjectionPolicyVersion,
+          ),
+          targetCommitId: "a".repeat(40),
+          occurrenceStates: [],
+          source: source(),
+        },
+        primitives,
+      ),
+    ).toThrow("publication_occurrence_counts_mismatch");
+  });
+
   it("renders planning facts and execution payloads from the same canonical bytes", () => {
     const rendered = renderCanonicalReviewPublication(
       {
@@ -66,6 +228,7 @@ describe("canonical review publication renderer", () => {
         renderPolicyVersion:
           CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2,
         targetCommitId: "a".repeat(40),
+        occurrenceStates: [ReviewPublicationOccurrenceState.New],
         source: source(),
       },
       primitives,
@@ -103,6 +266,7 @@ describe("canonical review publication renderer", () => {
           currentReviewProjectionPolicyVersion,
         ),
         targetCommitId: "a".repeat(40),
+        occurrenceStates: [ReviewPublicationOccurrenceState.New],
         source: source({
           summaryMarker: "reviewrouter:summary:v2:abc123",
           checkMarker: "reviewrouter:check:v2:abc123",
@@ -144,6 +308,7 @@ describe("canonical review publication renderer", () => {
           currentReviewProjectionPolicyVersion,
         ),
         targetCommitId: "a".repeat(40),
+        occurrenceStates: [ReviewPublicationOccurrenceState.New],
         source: {
           ...rawSource,
           summary: {
@@ -190,6 +355,7 @@ describe("canonical review publication renderer", () => {
           renderPolicyVersion:
             CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2,
           targetCommitId: "a".repeat(40),
+          occurrenceStates: [ReviewPublicationOccurrenceState.New],
           source: {
             ...oversized,
             summary: { ...oversized.summary, marker: "x".repeat(4_097) },
@@ -207,13 +373,24 @@ function source(
     readonly checkMarker?: string;
     readonly inlineMarker?: string;
     readonly findingMarker?: string;
+    readonly summaryBody?: string;
+    readonly occurrenceCounts?: ReviewPublicationRenderingSource["summary"]["occurrenceCounts"];
   } = {},
 ): ReviewPublicationRenderingSource {
   return {
     summary: {
       marker: overrides.summaryMarker ?? "<!-- summary -->",
-      body: "One finding",
+      body: overrides.summaryBody ?? "One finding",
       allClear: false,
+      occurrenceCounts: overrides.occurrenceCounts ?? {
+        new: 1,
+        reconfirmed: 0,
+        changed: 0,
+        carried_unverified: 0,
+        resolved: 0,
+        uncertain: 0,
+        suppressed_by_human: 0,
+      },
     },
     check: {
       marker: overrides.checkMarker ?? "<!-- check -->",
@@ -261,3 +438,9 @@ const primitives = {
   digestUtf8: hash,
   utf8ByteLength: (value: string) => Buffer.byteLength(value, "utf8"),
 };
+
+function occurrenceStates(
+  ...entries: readonly (readonly [ReviewPublicationOccurrenceState, number])[]
+): ReviewPublicationOccurrenceState[] {
+  return entries.flatMap(([state, count]) => Array(count).fill(state));
+}

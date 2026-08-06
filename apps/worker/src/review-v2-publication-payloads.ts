@@ -5,12 +5,14 @@ import {
   ReviewPublicationKind,
   ReviewPublicationLifecycleSemantic,
   ReviewPublicationProjectionCoverage,
+  ReviewPublicationOccurrenceState,
   ReviewPublicationSummarySemantic,
   publishedReviewProjectionPublicationEnvelopeVersion,
   renderCanonicalReviewPublication,
   resolveReviewPublicationRenderPolicyVersion,
   type PublishedReviewProjectionPublicationEnvelope,
   type ReviewPublicationOperation,
+  type ReviewPublicationOccurrenceCounts,
   type ReviewPublicationPermitIdentity,
 } from "@reviewrouter/features-review-publishing/v2";
 import {
@@ -207,6 +209,7 @@ type ProjectionEnvelope = {
       readonly marker: string;
       readonly body: string;
       readonly allClear: boolean;
+      readonly occurrenceCounts: ReviewPublicationOccurrenceCounts;
     };
     readonly check: {
       readonly marker: string;
@@ -280,6 +283,9 @@ function buildCatalog(
         artifact.projectionPolicyVersion,
       ),
       targetCommitId: artifact.reviewedHeadSha,
+      occurrenceStates: projection.occurrences.map((occurrence) =>
+        reviewPublicationOccurrenceState(occurrence.state),
+      ),
       source: projection.publishing,
     },
     {
@@ -326,6 +332,19 @@ function buildCatalog(
     } as const,
   }));
   return { summary, managedCheck, inlineChunks, lifecycle };
+}
+
+function reviewPublicationOccurrenceState(
+  value: string,
+): ReviewPublicationOccurrenceState {
+  if (
+    !Object.values(ReviewPublicationOccurrenceState).includes(
+      value as ReviewPublicationOccurrenceState,
+    )
+  ) {
+    throw new Error("review_v2_projection_occurrence_state_invalid");
+  }
+  return value as ReviewPublicationOccurrenceState;
 }
 
 function payloadFields(value: {
@@ -437,6 +456,7 @@ function parseProjection(value: string): ProjectionEnvelope {
     !Array.isArray(parsed.occurrences) ||
     !isRecord(publishing) ||
     !isRecord(publishing.summary) ||
+    !isOccurrenceCounts(publishing.summary.occurrenceCounts) ||
     !isRecord(publishing.check) ||
     !Array.isArray(publishing.inlineReviewChunks) ||
     !Array.isArray(publishing.lifecycle) ||
@@ -446,6 +466,30 @@ function parseProjection(value: string): ProjectionEnvelope {
     throw new Error("review_v2_projection_shape_invalid");
   }
   return parsed as unknown as ProjectionEnvelope;
+}
+
+function isOccurrenceCounts(
+  value: unknown,
+): value is ReviewPublicationOccurrenceCounts {
+  if (!isRecord(value)) return false;
+  const keys = [
+    "new",
+    "reconfirmed",
+    "changed",
+    "carried_unverified",
+    "resolved",
+    "uncertain",
+    "suppressed_by_human",
+  ] as const;
+  return (
+    Object.keys(value).length === keys.length &&
+    keys.every(
+      (key) => Number.isSafeInteger(value[key]) && (value[key] as number) >= 0,
+    ) &&
+    Number.isSafeInteger(
+      keys.reduce((sum, key) => sum + (value[key] as number), 0),
+    )
+  );
 }
 
 function canonicalJson(value: unknown): string {

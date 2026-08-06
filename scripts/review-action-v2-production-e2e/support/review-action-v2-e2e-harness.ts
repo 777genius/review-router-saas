@@ -736,9 +736,18 @@ export class ReviewActionV2E2EHarness {
         inlineReviewChunks: [],
         lifecycle: [],
         summary: {
-          allClear: true,
+          allClear: !allowPartial,
           body: allowPartial ? "Partial review" : "Review complete",
           marker: `<!-- ${flow.executionId}:summary -->`,
+          occurrenceCounts: {
+            new: 0,
+            reconfirmed: 0,
+            changed: 0,
+            carried_unverified: 0,
+            resolved: 0,
+            uncertain: 0,
+            suppressed_by_human: 0,
+          },
         },
       },
       scope: {
