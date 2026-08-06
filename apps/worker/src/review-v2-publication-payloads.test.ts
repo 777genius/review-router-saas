@@ -92,15 +92,78 @@ describe("canonical review v2 projection adapter", () => {
       lineageHints: { hints: [{ lineageId: "lineage-1" }] },
     });
   });
+
+  it("publishes only the preserved summary for a partial v5 projection", async () => {
+    const artifact = finalizedArtifact({ partial: true });
+    const adapter = new CanonicalReviewV2ProjectionAdapter({
+      async findArtifact() {
+        return {
+          artifact,
+          protocolLimitsProfileId: "limits-1",
+          limitsDigest: hash("8"),
+        };
+      },
+    });
+
+    const envelope = await adapter.publicationEnvelope(artifact);
+    const planner = new ReviewPublicationOperationPlanningService({
+      async findReleaseBoundLimits() {
+        return {
+          producerReleaseId: "release-1",
+          protocolLimitsProfileId: "limits-1",
+          limitsDigest: hash("8"),
+          maxPublicationOperations: 20,
+          maxPublicationChunks: 20,
+          maxPublicationBodyBytes: 1_000_000,
+          maxReconciliationDurationMs: 60_000,
+        };
+      },
+    });
+    const plans = await planner.plan({
+      identity: {
+        publicationAttemptId: "publication-1",
+        version: ReviewPublicationOperationIdentityVersion.AttemptScopedV2,
+      },
+      envelope: envelope!,
+    });
+    const payload = await adapter.resolve({
+      permit: artifact.publicationPermit,
+      operation: {
+        ...plans[0]!,
+        publicationAttemptId: "publication-1",
+        state: ReviewPublicationOperationState.Planned,
+      },
+    });
+
+    expect(envelope).not.toBeNull();
+    expect(plans).toHaveLength(1);
+    expect(payload).toMatchObject({
+      kind: ReviewV2PublicationPayloadKind.Summary,
+      bodyHash: plans[0]?.bodyHash,
+      markerHash: plans[0]?.markerHash,
+    });
+    if (payload?.kind !== ReviewV2PublicationPayloadKind.Summary) {
+      throw new Error("expected_summary_payload");
+    }
+    expect(payload.body).toContain(
+      "Review incomplete - 1 preliminary finding preserved",
+    );
+    expect(envelope?.managedCheck).toBeNull();
+    expect(envelope?.inlineReviews).toEqual([]);
+    expect(envelope?.lifecycle).toEqual([]);
+  });
 });
 
-function finalizedArtifact(): FinalizedReviewProjectionArtifact {
+function finalizedArtifact(
+  options: { readonly partial?: boolean } = {},
+): FinalizedReviewProjectionArtifact {
+  const partial = options.partial ?? false;
   const createdAt = new Date("2026-07-23T12:00:00.000Z");
   const publicationNotAfter = new Date("2026-07-23T12:10:00.000Z");
   const retainUntil = new Date("2026-08-23T12:00:00.000Z");
   const projectionEnvelopeJson = canonicalJson({
     commandLedgerWatermark: "2",
-    coverage: { state: "complete" },
+    coverage: { state: partial ? "partial" : "complete" },
     envelopeVersion: "review_projection.v1",
     lifecycleStateHash: hash("4"),
     occurrences: [
@@ -146,6 +209,15 @@ function finalizedArtifact(): FinalizedReviewProjectionArtifact {
         allClear: false,
         body: "One finding",
         marker: "reviewrouter:summary:v2:test",
+        occurrenceCounts: {
+          new: 1,
+          reconfirmed: 0,
+          changed: 0,
+          carried_unverified: 0,
+          resolved: 0,
+          uncertain: 0,
+          suppressed_by_human: 0,
+        },
       },
     },
     snapshot: {
@@ -158,7 +230,9 @@ function finalizedArtifact(): FinalizedReviewProjectionArtifact {
     generation: 1n,
     reviewedHeadSha: "a".repeat(40),
     reviewRevisionHash: hash("2"),
-    coverageState: ReviewCoverageState.Completed,
+    coverageState: partial
+      ? ReviewCoverageState.Partial
+      : ReviewCoverageState.Completed,
     projectionEnvelopeVersion: 1,
     projectionEnvelopeJson,
     projectionHash: hash("3"),
@@ -166,7 +240,7 @@ function finalizedArtifact(): FinalizedReviewProjectionArtifact {
     findingCount: 1,
     lifecycleStateHash: hash("4"),
     commandLedgerWatermark: 2n,
-    projectionPolicyVersion: "review-projection-policy.v4-t0",
+    projectionPolicyVersion: "review-projection-policy.v5-t0",
     publicationPermit: {
       workspaceId: "workspace-1",
       repositoryConnectionId: "repository-1",

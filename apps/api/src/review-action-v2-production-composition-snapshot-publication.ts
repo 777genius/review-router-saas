@@ -956,7 +956,7 @@ function publicationProjection(value: unknown) {
     ["marker", "body", "allClear", "occurrenceCounts"],
     "publication_summary_shape_invalid",
   );
-  assertOccurrenceCounts(summary.occurrenceCounts);
+  const occurrenceCounts = occurrenceCountsOf(summary.occurrenceCounts);
   const check = exactRecord(
     root.check,
     ["marker", "name", "title", "summary", "conclusion"],
@@ -980,6 +980,7 @@ function publicationProjection(value: unknown) {
       marker: boundedString(summary.marker, 4_096),
       body: boundedString(summary.body, 1_000_000),
       allClear: boolean(summary.allClear),
+      occurrenceCounts,
     },
     check: {
       marker: boundedString(check.marker, 4_096),
@@ -1538,7 +1539,7 @@ function boundedStringArray(
   value.forEach((entry) => boundedString(entry, maxEntryBytes));
 }
 
-function assertOccurrenceCounts(value: unknown) {
+function occurrenceCountsOf(value: unknown) {
   const counts = exactRecord(
     value,
     [
@@ -1561,6 +1562,29 @@ function assertOccurrenceCounts(value: unknown) {
       );
     }
   });
+  if (
+    !Number.isSafeInteger(
+      Object.values(counts).reduce<number>(
+        (sum, count) => sum + (count as number),
+        0,
+      ),
+    )
+  ) {
+    throw routeFailure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "publication_occurrence_counts_invalid",
+    );
+  }
+  return {
+    new: counts.new as number,
+    reconfirmed: counts.reconfirmed as number,
+    changed: counts.changed as number,
+    carried_unverified: counts.carried_unverified as number,
+    resolved: counts.resolved as number,
+    uncertain: counts.uncertain as number,
+    suppressed_by_human: counts.suppressed_by_human as number,
+  };
 }
 
 function sha256String(value: unknown) {

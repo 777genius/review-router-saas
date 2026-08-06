@@ -227,11 +227,12 @@ describeWithDatabase.sequential(
       expect(process.state).toBe("blocked_partial");
       expect(fixture.fakeGitHub.comments).toHaveLength(1);
       expect(fixture.fakeGitHub.comments[0]?.body).toContain(
-        "## Review incomplete ⚠️",
+        "## Review incomplete - 0 preliminary findings preserved ⚠️",
       );
       expect(fixture.fakeGitHub.comments[0]?.body).toContain(
-        "No approval was issued",
+        "No preliminary findings were preserved",
       );
+      expect(fixture.fakeGitHub.comments[0]?.body).toContain("Partial review");
       expect(fixture.fakeGitHub.checkRuns).toHaveLength(0);
       await expect(
         fixture.prisma.reviewPublicationAttemptV2.findFirstOrThrow({

@@ -150,10 +150,7 @@ import {
   DisabledReviewActionV2InvestigationLeaseCapabilityAdapter,
   ReviewActionV2InvestigationLeaseCapabilityAdapter,
 } from "./review-action-v2-investigation-lease-capabilities.js";
-import {
-  resolveReviewActionV2ProjectionPolicyVersion,
-  reviewActionV2ProjectionPolicyVersion,
-} from "./review-action-v2-projection-policy.js";
+import { resolveReviewActionV2ProjectionPolicyVersion } from "./review-action-v2-projection-policy.js";
 import { ReviewContextAttestationEvidenceAdapter } from "./review-context-attestation-evidence-adapter.js";
 import { ContextAttestationInvestigationReceiptReplayAdapter } from "./review-investigation-receipt-replay-adapter.js";
 import {
@@ -279,12 +276,12 @@ export function composeReviewActionV2ProductionRunControl(input: {
     input.env,
     reviewActionV2ProjectionPolicyVersionEnv,
   );
-  if (
-    configuredProjectionPolicyVersion !== reviewActionV2ProjectionPolicyVersion
-  ) {
+  const projectionPolicyVersion = resolveReviewActionV2ProjectionPolicyVersion(
+    configuredProjectionPolicyVersion,
+  );
+  if (projectionPolicyVersion === null) {
     throw new Error("review_action_v2_projection_policy_version_unsupported");
   }
-  const projectionPolicyVersion = reviewActionV2ProjectionPolicyVersion;
   const clock = new SystemClock();
   const digest = new ProductionReviewActionV2Digest();
   const repositories = createPrismaReviewRunControlRepositories(input.prisma);

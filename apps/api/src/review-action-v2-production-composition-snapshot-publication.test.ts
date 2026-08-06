@@ -23,7 +23,12 @@ import {
   ReviewPublicationLifecycleObservationVersion,
   ReviewPublicationTerminalOutcome,
   RequestReviewPublicationStatus,
+  currentReviewProjectionPolicyVersion,
+  renderCanonicalReviewPublication,
+  resolveReviewPublicationRenderPolicyVersion,
+  ReviewPublicationProjectionCoverage,
   reviewPublicationLifecycleExpectationFromProjection,
+  type ReviewPublicationRenderingSource,
   type RequestReviewPublicationCommand,
   type ReviewPublicationDecisionPorts,
 } from "@reviewrouter/features-review-publishing/v2";
@@ -133,6 +138,78 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
         publicationAttemptId,
       },
     });
+  });
+
+  it("preserves structured preliminary finding counts in a partial publication operation", async () => {
+    const partialPublishing: ReviewPublicationRenderingSource = {
+      ...publishing,
+      check: {
+        ...publishing.check,
+        conclusion: "success",
+      },
+      summary: {
+        ...publishing.summary,
+        allClear: false,
+        body: "- P1: authorization is inverted",
+        occurrenceCounts: {
+          ...publishing.summary.occurrenceCounts,
+          new: 1,
+          reconfirmed: 1,
+          changed: 1,
+        },
+      },
+    };
+    const projectionHash = hash("e");
+    const partialArtifact = {
+      ...finalizedArtifactWithPublishing(partialPublishing, projectionHash),
+      coverageState: ReviewCoverageState.Partial,
+      projectionPolicyVersion: currentReviewProjectionPolicyVersion,
+    };
+    const publicationRepository = new InMemoryReviewPublicationRepository();
+    const routes = createRoutes(
+      publicationRepository,
+      { assertCurrentPolicy: vi.fn() },
+      partialArtifact,
+    );
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      partialArtifact.publicationPermit,
+      now,
+    );
+
+    const accepted = await routes.publication.request!.execute(
+      await publicationRequest(
+        publicationPermit,
+        canonicalJson(partialPublishing),
+        projectionHash,
+      ),
+    );
+    const stored = await publicationRepository.findById(
+      accepted.result.publicationAttemptId!,
+    );
+    const expected = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Partial,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          currentReviewProjectionPolicyVersion,
+        ),
+        targetCommitId: partialArtifact.reviewedHeadSha,
+        source: partialPublishing,
+      },
+      {
+        digestUtf8: (value) =>
+          createHash("sha256").update(value, "utf8").digest("hex"),
+        utf8ByteLength: (value) => Buffer.byteLength(value, "utf8"),
+      },
+    );
+
+    expect(stored?.attempt.operations).toHaveLength(1);
+    expect(stored?.attempt.operations[0]).toMatchObject({
+      bodyHash: expected.summary.bodyHash,
+      markerHash: expected.summary.markerHash,
+    });
+    expect(expected.summary.body).toContain(
+      "Review incomplete - 3 preliminary findings preserved",
+    );
   });
 
   it("accepts canonical producer metadata outside publication rendering", async () => {

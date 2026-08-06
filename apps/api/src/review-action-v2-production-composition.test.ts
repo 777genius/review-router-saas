@@ -246,6 +246,21 @@ describe("Review Action v2 production composition", () => {
     ).toThrow("review_action_v2_projection_policy_version_unsupported");
   });
 
+  it("accepts a supported prior projection policy during a rolling deploy", () => {
+    expect(() =>
+      composeReviewActionV2ProductionRoutes({
+        enabled: true,
+        env: {
+          ...productionEnv(),
+          [reviewActionV2ProjectionPolicyVersionEnv]:
+            "review-projection-policy.v4-t0",
+        },
+        runtime,
+        prisma: inertPrisma(),
+      }),
+    ).not.toThrow();
+  });
+
   it("rejects malformed capability rotation config without exposing it", () => {
     const env = {
       ...productionEnv(),

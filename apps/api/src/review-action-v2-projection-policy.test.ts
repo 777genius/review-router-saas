@@ -1,5 +1,7 @@
 import {
+  clearPartialReviewProjectionPolicyVersion,
   currentReviewProjectionPolicyVersion,
+  hiddenMarkerReviewProjectionPolicyVersion,
   legacyReviewProjectionPolicyVersion,
 } from "@reviewrouter/features-review-publishing/v2";
 import { describe, expect, it } from "vitest";
@@ -21,6 +23,16 @@ describe("Review Action v2 projection policy compatibility", () => {
         legacyReviewProjectionPolicyVersion,
       ),
     ).toBe(legacyReviewProjectionPolicyVersion);
+    expect(
+      resolveReviewActionV2ProjectionPolicyVersion(
+        clearPartialReviewProjectionPolicyVersion,
+      ),
+    ).toBe(clearPartialReviewProjectionPolicyVersion);
+    expect(
+      resolveReviewActionV2ProjectionPolicyVersion(
+        hiddenMarkerReviewProjectionPolicyVersion,
+      ),
+    ).toBe(hiddenMarkerReviewProjectionPolicyVersion);
     expect(
       resolveReviewActionV2ProjectionPolicyVersion(
         currentReviewProjectionPolicyVersion,

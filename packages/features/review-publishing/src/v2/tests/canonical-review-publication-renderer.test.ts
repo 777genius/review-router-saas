@@ -7,6 +7,7 @@ import {
   ReviewPublicationProjectionCoverage,
   ReviewPublicationSummarySemantic,
   currentReviewProjectionPolicyVersion,
+  hiddenMarkerReviewProjectionPolicyVersion,
   legacyPartialReviewPublicationSummary,
   partialReviewPublicationSummary,
   resolveReviewPublicationRenderPolicyVersion,
@@ -57,6 +58,131 @@ describe("canonical review publication renderer", () => {
     expect(rendered.summary.body).toBe(
       `${legacyPartialReviewPublicationSummary}\n\n<!-- summary -->`,
     );
+  });
+
+  it("preserves v4 partial canonical bytes after introducing v5", () => {
+    const rendered = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Partial,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          hiddenMarkerReviewProjectionPolicyVersion,
+        ),
+        targetCommitId: "a".repeat(40),
+        source: source(),
+      },
+      primitives,
+    );
+
+    expect(rendered.summary.body).toBe(
+      `${partialReviewPublicationSummary}\n\n<!-- summary -->`,
+    );
+  });
+
+  it("preserves preliminary findings in the current partial summary", () => {
+    const rendered = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Partial,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          currentReviewProjectionPolicyVersion,
+        ),
+        targetCommitId: "a".repeat(40),
+        source: source({
+          summaryBody:
+            "Review complete\n\n## Review incomplete - 99 preliminary findings preserved ⚠️\n\nAll-clear. No issues found.\n\n- P1: authorization is inverted",
+          occurrenceCounts: {
+            new: 1,
+            reconfirmed: 1,
+            changed: 1,
+            carried_unverified: 2,
+            resolved: 3,
+            uncertain: 4,
+            suppressed_by_human: 5,
+          },
+        }),
+      },
+      primitives,
+    );
+
+    expect(rendered.summary.body).toContain(
+      "## Review incomplete - 3 preliminary findings preserved ⚠️",
+    );
+    expect(rendered.summary.body).toContain("### Preliminary findings");
+    expect(rendered.summary.body).toContain("- P1: authorization is inverted");
+    expect(rendered.summary.body).toContain("not an all-clear");
+    expect(rendered.summary.body).not.toContain("All-clear.");
+    expect(rendered.summary.body).not.toMatch(/^Review complete/im);
+    expect(rendered.summary.body).not.toMatch(/^##\s+Review complete/im);
+    expect(
+      rendered.summary.body.match(/^## Review incomplete\b/gm),
+    ).toHaveLength(1);
+    expect(rendered.summary.body).not.toContain("99 preliminary");
+    expect(rendered).toMatchObject({
+      managedCheck: null,
+      inlineReviews: [],
+      lifecycle: [],
+    });
+  });
+
+  it("states when partial coverage preserved no findings", () => {
+    const rendered = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Partial,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          currentReviewProjectionPolicyVersion,
+        ),
+        targetCommitId: "a".repeat(40),
+        source: source({
+          summaryBody:
+            "### Coverage not completed\n\n- dependency context unavailable",
+          occurrenceCounts: {
+            new: 0,
+            reconfirmed: 0,
+            changed: 0,
+            carried_unverified: 2,
+            resolved: 1,
+            uncertain: 1,
+            suppressed_by_human: 0,
+          },
+        }),
+      },
+      primitives,
+    );
+
+    expect(rendered.summary.body).toContain(
+      "## Review incomplete - 0 preliminary findings preserved ⚠️",
+    );
+    expect(rendered.summary.body).toContain(
+      "No preliminary findings were preserved.",
+    );
+    expect(rendered.summary.body).not.toContain("### Preliminary findings");
+    expect(rendered.summary.body).toContain("### Partial review details");
+    expect(rendered.summary.body).toContain("dependency context unavailable");
+  });
+
+  it("rejects partial finding totals that exceed safe integer precision", () => {
+    expect(() =>
+      renderCanonicalReviewPublication(
+        {
+          coverage: ReviewPublicationProjectionCoverage.Partial,
+          renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+            currentReviewProjectionPolicyVersion,
+          ),
+          targetCommitId: "a".repeat(40),
+          source: source({
+            occurrenceCounts: {
+              new: Number.MAX_SAFE_INTEGER,
+              reconfirmed: 1,
+              changed: 0,
+              carried_unverified: 0,
+              resolved: 0,
+              uncertain: 0,
+              suppressed_by_human: 0,
+            },
+          }),
+        },
+        primitives,
+      ),
+    ).toThrow("publication_occurrence_counts_invalid");
   });
 
   it("renders planning facts and execution payloads from the same canonical bytes", () => {
@@ -207,13 +333,24 @@ function source(
     readonly checkMarker?: string;
     readonly inlineMarker?: string;
     readonly findingMarker?: string;
+    readonly summaryBody?: string;
+    readonly occurrenceCounts?: ReviewPublicationRenderingSource["summary"]["occurrenceCounts"];
   } = {},
 ): ReviewPublicationRenderingSource {
   return {
     summary: {
       marker: overrides.summaryMarker ?? "<!-- summary -->",
-      body: "One finding",
+      body: overrides.summaryBody ?? "One finding",
       allClear: false,
+      occurrenceCounts: overrides.occurrenceCounts ?? {
+        new: 1,
+        reconfirmed: 0,
+        changed: 0,
+        carried_unverified: 0,
+        resolved: 0,
+        uncertain: 0,
+        suppressed_by_human: 0,
+      },
     },
     check: {
       marker: overrides.checkMarker ?? "<!-- check -->",
