@@ -122,7 +122,7 @@ const baseEnv = {
     { providerKind: "codex", providerVoteIdentityHash: "6".repeat(64) },
   ]),
   REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION:
-    "review-projection-policy.v4-t0",
+    "review-projection-policy.v5-t0",
   REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64: contextSessionKey,
   REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID: "context-self-hosted",
   REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON: JSON.stringify([
