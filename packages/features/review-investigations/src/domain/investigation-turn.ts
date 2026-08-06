@@ -3,6 +3,7 @@ import type {
   InvestigationObligation,
 } from "./investigation-obligation";
 import { canonicalJson, type CanonicalValue } from "./canonicalization";
+import type { InvestigationTokenUsage } from "./investigation-token-usage";
 import {
   ContextCriticDecision,
   InvestigationFindingSeverity,
@@ -60,16 +61,12 @@ export type InvestigationTurnProvenance = Readonly<{
   actualProviderKind: InvestigationTurnProviderKind;
   actualModel: string;
   runtimeProfile: ReviewInvestigationRuntimeProfile;
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  reasoningOutputTokens: number;
-  totalTokens: number;
   durationMs: number;
   acceptedAttestationId: string;
   acceptedAttestationHash: string;
   terminalOutcomeHash: string;
-}>;
+}> &
+  InvestigationTokenUsage;
 
 export function turnProvenanceCanonicalValue(
   provenance: InvestigationTurnProvenance,

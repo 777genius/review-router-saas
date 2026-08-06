@@ -409,12 +409,12 @@ describe("review investigation operations production composition", () => {
         replayOutcome: InvestigationReplayOutcome.Unknown,
         failure: InvestigationOperationalFailure.None,
         semanticTurns: 1,
-        criticCycles: 1,
+        criticCycles: 0,
         gatewayOperations: 2,
-        promptTokens: 130,
-        completionTokens: 40,
-        totalTokens: 170,
-        durationMs: 1_500,
+        promptTokens: 100,
+        completionTokens: 10,
+        totalTokens: 110,
+        durationMs: 1_000,
         timeToFirstFindingMs: null,
         capacityWaitMs: null,
         protocolBytes: Buffer.byteLength('{"findings":1}', "utf8"),
@@ -457,7 +457,7 @@ describe("review investigation operations production composition", () => {
 });
 
 function terminalInvestigation(): ReviewInvestigation {
-  const discovery = {
+  const provenance = {
     turnId: "turn-discovery",
     purpose: ReviewInvestigationTurnPurpose.Discovery,
     actualProviderKind: InvestigationTurnProviderKind.Codex,
@@ -465,25 +465,13 @@ function terminalInvestigation(): ReviewInvestigation {
     runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
     inputTokens: 100,
     cachedInputTokens: 25,
-    outputTokens: 20,
+    outputTokens: 10,
     reasoningOutputTokens: 5,
-    totalTokens: 125,
+    totalTokens: 110,
     durationMs: 1_000,
     acceptedAttestationId: "attestation-discovery",
     acceptedAttestationHash: "d".repeat(64),
     terminalOutcomeHash: "e".repeat(64),
-  } as const;
-  const critic = {
-    ...discovery,
-    turnId: "turn-critic",
-    purpose: ReviewInvestigationTurnPurpose.Critic,
-    inputTokens: 30,
-    cachedInputTokens: 0,
-    outputTokens: 10,
-    reasoningOutputTokens: 5,
-    totalTokens: 45,
-    durationMs: 500,
-    acceptedAttestationId: "attestation-critic",
   } as const;
   return {
     investigationId: "investigation-terminal",
@@ -502,10 +490,10 @@ function terminalInvestigation(): ReviewInvestigation {
     ],
     findings: [{ fingerprint: "finding-1" }],
     semanticTurns: 1,
-    criticCycles: 1,
-    totalUsageTokens: 170,
-    totalDurationMs: 1_500,
-    turnProvenance: [discovery, critic],
+    criticCycles: 0,
+    totalUsageTokens: 110,
+    totalDurationMs: 1_000,
+    turnProvenance: [provenance],
     conclusion: ReviewInvestigationConclusion.Findings,
     certificate: {
       certificateHash: "b".repeat(64),

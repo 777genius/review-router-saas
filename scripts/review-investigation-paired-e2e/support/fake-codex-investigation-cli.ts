@@ -165,6 +165,7 @@ async function executeTurn(prompt: string): Promise<void> {
   const usage = tokenUsage(
     Buffer.byteLength(prompt, "utf8"),
     Buffer.byteLength(finalText, "utf8"),
+    5,
   );
   await notify("rawResponse/completed", {
     threadId,
@@ -443,14 +444,18 @@ function parseReviewRouterConfig(field: "command" | "args" | "cwd"): unknown {
   return JSON.parse(value.slice(prefix.length));
 }
 
-function tokenUsage(inputTokens: number, outputTokens: number) {
+function tokenUsage(
+  inputTokens: number,
+  outputTokens: number,
+  reasoningOutputTokens: number,
+) {
   return {
     totalTokens: inputTokens + outputTokens,
     inputTokens,
     cachedInputTokens: 0,
     cacheWriteInputTokens: 0,
     outputTokens,
-    reasoningOutputTokens: 0,
+    reasoningOutputTokens,
   };
 }
 

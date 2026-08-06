@@ -911,6 +911,38 @@ describe("CommitAttestedInvestigationTurn", () => {
     ).toThrow("investigation_turn_observation_incomplete");
   });
 
+  it("enforces app-server token usage semantics", () => {
+    const fixture = observationFixture({
+      turnId: "turn-1",
+      dossierVersion: 2,
+      obligationId: hash("5"),
+      operationReceiptId: hash("9"),
+    });
+
+    expect(parseInvestigationTurnObservation(fixture).usage).toEqual({
+      inputTokens: 100,
+      cachedInputTokens: 50,
+      outputTokens: 10,
+      reasoningOutputTokens: 5,
+      totalTokens: 110,
+    });
+    expect(() =>
+      parseInvestigationTurnObservation({
+        ...fixture,
+        usage: { ...fixture.usage, totalTokens: 115 },
+      }),
+    ).toThrow("investigation_turn_usage_invalid");
+    expect(() =>
+      parseInvestigationTurnObservation({
+        ...fixture,
+        usage: {
+          ...fixture.usage,
+          reasoningOutputTokens: 11,
+        },
+      }),
+    ).toThrow("investigation_turn_usage_invalid");
+  });
+
   it("copies and freezes operation-backed claim arrays", () => {
     const operationReceiptIds = [hash("9")];
     const claims = [
@@ -1605,7 +1637,7 @@ function observationFixture(input: {
       cachedInputTokens: 50,
       outputTokens: 10,
       reasoningOutputTokens: 5,
-      totalTokens: 115,
+      totalTokens: 110,
     }),
     durationMs: 1_000,
     schemaComplete: true,

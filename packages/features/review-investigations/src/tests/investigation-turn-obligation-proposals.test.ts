@@ -216,7 +216,7 @@ function observation(obligationProposals: readonly unknown[]) {
       cachedInputTokens: 50,
       outputTokens: 10,
       reasoningOutputTokens: 5,
-      totalTokens: 115,
+      totalTokens: 110,
     },
     durationMs: 1_000,
     schemaComplete: true,

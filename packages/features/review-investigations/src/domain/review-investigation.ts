@@ -32,6 +32,7 @@ import {
   policyCanonicalValue,
   type ReviewInvestigationPolicy,
 } from "./investigation-policy";
+import { isValidInvestigationTokenUsage } from "./investigation-token-usage";
 import {
   findingCanonicalValue,
   turnCanonicalValue,
@@ -808,11 +809,7 @@ function validateTurnProvenance(
     provenance.runtimeProfile !== investigation.runtimeProfile ||
     provenance.totalTokens !== commit.usageTokens ||
     provenance.durationMs !== commit.durationMs ||
-    provenance.totalTokens !==
-      provenance.inputTokens +
-        provenance.outputTokens +
-        provenance.reasoningOutputTokens ||
-    provenance.cachedInputTokens > provenance.inputTokens ||
+    !isValidInvestigationTokenUsage(provenance) ||
     investigation.turnProvenance.some((item) => item.turnId === turn.turnId)
   ) {
     throw new ReviewInvestigationDomainError("turn_provenance_invalid");

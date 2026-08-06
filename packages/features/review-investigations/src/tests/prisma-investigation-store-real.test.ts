@@ -14,6 +14,7 @@ import {
   InvestigationOperationRevision,
   InvestigationProbeKind,
   InvestigationTextSearchMatchMode,
+  InvestigationTurnProviderKind,
   InvestigationPrivateMaterialExpiryReason,
   InvestigationObligationState,
   ReviewInvestigationConclusion,
@@ -135,6 +136,75 @@ async function createLeaseHarness(): Promise<InvestigationLeaseStoreContractHarn
 }
 
 describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
+  it("round-trips token usage with reasoning included in output", async () => {
+    const suffix = `token-usage-${randomUUID()}`;
+    const seed = createInvestigationStoreContractSeed(suffix);
+    const harness = await createHarness(seed);
+    const store = harness.store as PrismaInvestigationStore;
+    try {
+      await open(store, seed, `token-usage-open-${suffix}`);
+      const leased = planned(seed, `turn-token-usage-${suffix}`);
+      await plan(store, leased, `token-usage-plan-${suffix}`);
+      const provenance = {
+        turnId: leased.activeTurn!.turnId,
+        purpose: leased.activeTurn!.purpose,
+        actualProviderKind: InvestigationTurnProviderKind.Codex,
+        actualModel: "gpt-5.6-sol",
+        runtimeProfile: leased.runtimeProfile,
+        inputTokens: 100,
+        cachedInputTokens: 50,
+        outputTokens: 10,
+        reasoningOutputTokens: 5,
+        totalTokens: 110,
+        durationMs: 1_000,
+        acceptedAttestationId: `attestation-${suffix}`,
+        acceptedAttestationHash: "a".repeat(64),
+        terminalOutcomeHash: "b".repeat(64),
+      } as const;
+      const committed = commitInvestigationTurn({
+        investigation: leased,
+        commit: {
+          turnId: leased.activeTurn!.turnId,
+          closureClaims: [],
+          unresolvableDecisions: [],
+          proposedObligations: [],
+          findings: [],
+          criticDecision: null,
+          usageTokens: 110,
+          durationMs: 1_000,
+          provenance,
+        },
+        committedAt: "2026-08-02T10:03:00.000Z",
+      });
+      await expect(
+        store.commit({
+          investigation: committed,
+          expectedVersion: leased.version,
+          commandId: `token-usage-commit-${suffix}`,
+          commandHash: "8".repeat(64),
+          transition: {
+            kind: InvestigationStoreTransitionKind.TurnCommitted,
+            turnId: leased.activeTurn!.turnId,
+            acceptedAttestationId: provenance.acceptedAttestationId,
+            sanitizedOutcomeHash: provenance.terminalOutcomeHash,
+          },
+        }),
+      ).resolves.toMatchObject({
+        status: InvestigationStoreCommitStatus.Committed,
+      });
+
+      const restarted = (await harness.restart()) as PrismaInvestigationStore;
+      await expect(
+        restarted.findById(seed.investigationId),
+      ).resolves.toMatchObject({
+        totalUsageTokens: 110,
+        turnProvenance: [provenance],
+      });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("rehydrates an explicitly versioned legacy policy row", async () => {
     const base = createInvestigationStoreContractSeed(
       `legacy-policy-${randomUUID()}`,

@@ -68,6 +68,7 @@ import {
   type InvestigationTurn,
   type InvestigationTurnProvenance,
 } from "../../domain/investigation-turn";
+import { isValidInvestigationTokenUsage } from "../../domain/investigation-token-usage";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
 import {
   ContextCriticDecision,
@@ -1642,11 +1643,7 @@ function assertRehydratedAggregate(investigation: ReviewInvestigation): void {
     assertDigest(provenance.terminalOutcomeHash, "terminal_outcome_hash");
     if (
       provenance.runtimeProfile !== investigation.runtimeProfile ||
-      provenance.totalTokens !==
-        provenance.inputTokens +
-          provenance.outputTokens +
-          provenance.reasoningOutputTokens ||
-      provenance.cachedInputTokens > provenance.inputTokens
+      !isValidInvestigationTokenUsage(provenance)
     ) {
       throw new Error("investigation_turn_provenance_binding_corrupt");
     }

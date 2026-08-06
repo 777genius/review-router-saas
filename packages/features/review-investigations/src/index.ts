@@ -7,6 +7,7 @@ export * from "./domain/obligation-closure-policy";
 export * from "./domain/coverage-policies";
 export * from "./domain/investigation-policy";
 export * from "./domain/investigation-critic-policy";
+export * from "./domain/investigation-token-usage";
 export * from "./domain/investigation-turn";
 export * from "./domain/investigation-turn-observation";
 export * from "./domain/investigation-certificate";
