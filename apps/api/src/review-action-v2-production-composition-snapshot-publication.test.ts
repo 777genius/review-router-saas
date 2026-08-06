@@ -258,15 +258,25 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
       now,
     );
 
-    await expect(
-      routes.publication.request!.execute(
-        await publicationRequest(
-          publicationPermit,
-          canonicalJson(partialPublishing),
-          projectionHash,
-        ),
+    const app = Fastify({ logger: false });
+    await registerReviewPublicationRequestV2Routes(app, routes.publication);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-publication/request",
+      payload: await publicationRequest(
+        publicationPermit,
+        canonicalJson(partialPublishing),
+        projectionHash,
       ),
-    ).rejects.toThrow("publication_occurrence_counts_mismatch");
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({
+      error: {
+        errorCode: ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      },
+    });
+    await app.close();
   });
 
   it("accepts canonical producer metadata outside publication rendering", async () => {

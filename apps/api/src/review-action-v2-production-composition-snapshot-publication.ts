@@ -891,21 +891,34 @@ function publishedEnvelope(input: {
     input.artifact.coverageState === ReviewCoverageState.Partial
       ? ReviewPublicationProjectionCoverage.Partial
       : ReviewPublicationProjectionCoverage.Completed;
-  const rendered = renderCanonicalReviewPublication(
-    {
-      coverage,
-      renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
-        input.artifact.projectionPolicyVersion,
-      ),
-      targetCommitId: input.artifact.reviewedHeadSha,
-      occurrenceStates: publicationOccurrenceStates(projection.occurrences),
-      source: publishing,
-    },
-    {
-      digestUtf8: sha256,
-      utf8ByteLength: (value) => Buffer.byteLength(value, "utf8"),
-    },
-  );
+  let rendered;
+  try {
+    rendered = renderCanonicalReviewPublication(
+      {
+        coverage,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          input.artifact.projectionPolicyVersion,
+        ),
+        targetCommitId: input.artifact.reviewedHeadSha,
+        occurrenceStates: publicationOccurrenceStates(projection.occurrences),
+        source: publishing,
+      },
+      {
+        digestUtf8: sha256,
+        utf8ByteLength: (value) => Buffer.byteLength(value, "utf8"),
+      },
+    );
+  } catch (error) {
+    const issue = publicationRenderingInvariantIssue(error);
+    if (issue !== null) {
+      throw routeFailure(
+        422,
+        ReviewActionV2ProtocolErrorCode.InvariantViolation,
+        issue,
+      );
+    }
+    throw error;
+  }
   return {
     envelopeVersion: publishedReviewProjectionPublicationEnvelopeVersion,
     producerReleaseId: input.artifact.publicationPermit.producerReleaseId,
@@ -941,6 +954,15 @@ function publishedEnvelope(input: {
       ...bodyFactsOf(entry),
     })),
   };
+}
+
+function publicationRenderingInvariantIssue(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  return error.message === "publication_occurrence_counts_invalid" ||
+    error.message === "publication_occurrence_counts_mismatch" ||
+    error.message === "publication_occurrence_state_invalid"
+    ? error.message
+    : null;
 }
 
 function publicationOccurrenceStates(
