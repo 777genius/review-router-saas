@@ -878,15 +878,19 @@ class PrismaContextReusePublicationBindingQuery implements ContextReusePublicati
           repositoryConnectionId: observation.repositoryConnectionId,
           scmRepositoryIdentityId: observation.scmRepositoryIdentityId,
           pullRequestNumber: observation.pullRequestNumber,
-          providerKind: evidenceProviderKind(observation.providerKind),
-          taskKindSet: observation.taskKindSet.map(evidenceTaskKind),
+          providerKind: mapPersistedContextReuseProviderKind(
+            observation.providerKind,
+          ),
+          taskKindSet: observation.taskKindSet.map(
+            mapPersistedContextReuseTaskKind,
+          ),
           requestedModel: observation.requestedModel,
           actualModel: observation.actualModel,
           providerRuntimeVersion: observation.providerRuntimeVersion,
           producerReleaseId: observation.producerReleaseId,
           selectedProtocolVersion: observation.selectedProtocolVersion,
           trustedCapabilityProfile: observation.trustedCapabilityProfile,
-          executionProfile: evidenceExecutionProfile(
+          executionProfile: mapPersistedContextReuseExecutionProfile(
             observation.executionProfile,
           ),
           sourceExecutionId: observation.sourceExecutionId,
@@ -1611,7 +1615,9 @@ function isExactRecord(
   );
 }
 
-function evidenceProviderKind(value: string): EvidenceProviderKind {
+export function mapPersistedContextReuseProviderKind(
+  value: string,
+): EvidenceProviderKind {
   switch (value) {
     case EvidenceProviderKind.Codex:
       return EvidenceProviderKind.Codex;
@@ -1620,22 +1626,26 @@ function evidenceProviderKind(value: string): EvidenceProviderKind {
     case EvidenceProviderKind.OpenRouter:
       return EvidenceProviderKind.OpenRouter;
     default:
-      throw new Error("context_reuse_provider_kind_invalid");
+      return EvidenceProviderKind.Unknown;
   }
 }
 
-function evidenceTaskKind(value: string): EvidenceTaskKind {
+export function mapPersistedContextReuseTaskKind(
+  value: string,
+): EvidenceTaskKind {
   switch (value) {
     case EvidenceTaskKind.FindingDiscovery:
       return EvidenceTaskKind.FindingDiscovery;
     case EvidenceTaskKind.LifecycleRevalidation:
       return EvidenceTaskKind.LifecycleRevalidation;
     default:
-      throw new Error("context_reuse_task_kind_invalid");
+      return EvidenceTaskKind.Unknown;
   }
 }
 
-function evidenceExecutionProfile(value: string): ProviderExecutionProfile {
+export function mapPersistedContextReuseExecutionProfile(
+  value: string,
+): ProviderExecutionProfile {
   switch (value) {
     case ProviderExecutionProfile.PromptOnlyEnvelopeV1:
       return ProviderExecutionProfile.PromptOnlyEnvelopeV1;
@@ -1643,8 +1653,10 @@ function evidenceExecutionProfile(value: string): ProviderExecutionProfile {
       return ProviderExecutionProfile.AgenticUnboundedV1;
     case ProviderExecutionProfile.ContextGatewayV1:
       return ProviderExecutionProfile.ContextGatewayV1;
+    case ProviderExecutionProfile.InvestigationGatewayV1:
+      return ProviderExecutionProfile.InvestigationGatewayV1;
     default:
-      throw new Error("context_reuse_execution_profile_invalid");
+      return ProviderExecutionProfile.Unknown;
   }
 }
 

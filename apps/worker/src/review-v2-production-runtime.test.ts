@@ -16,6 +16,9 @@ import {
 import type { createPrismaClient } from "@reviewrouter/platform-db";
 import { SystemClock } from "@reviewrouter/shared";
 import {
+  mapPersistedContextReuseExecutionProfile,
+  mapPersistedContextReuseProviderKind,
+  mapPersistedContextReuseTaskKind,
   createProductionReviewV2WorkerRuntime,
   ProductionReviewV2Freshness,
   productionReviewV2AdjudicationEvidence,
@@ -23,6 +26,11 @@ import {
   reviewV2CapabilityActiveKeyIdEnv,
   reviewV2CapabilityKeysEnv,
 } from "./review-v2-production-runtime";
+import {
+  ProviderExecutionProfile,
+  ReviewProviderKind as EvidenceProviderKind,
+  ReviewTaskKind as EvidenceTaskKind,
+} from "@reviewrouter/features-review-evidence";
 import {
   createReviewV2WorkerFeature,
   reviewV2WorkerEnabledEnv,
@@ -109,6 +117,27 @@ describe("review v2 production worker composition", () => {
       }),
     ).toThrow(
       `review_v2_worker_config_missing:${reviewV2CapabilityActiveKeyIdEnv}`,
+    );
+  });
+
+  it("maps every persisted context-reuse discriminator without throwing", () => {
+    expect(mapPersistedContextReuseProviderKind("future_provider")).toBe(
+      EvidenceProviderKind.Unknown,
+    );
+    expect(
+      ["code_review", "finding_revalidation", "conflict_review"].map(
+        mapPersistedContextReuseTaskKind,
+      ),
+    ).toEqual([
+      EvidenceTaskKind.Unknown,
+      EvidenceTaskKind.Unknown,
+      EvidenceTaskKind.Unknown,
+    ]);
+    expect(
+      mapPersistedContextReuseExecutionProfile("investigation_gateway_v1"),
+    ).toBe(ProviderExecutionProfile.InvestigationGatewayV1);
+    expect(mapPersistedContextReuseExecutionProfile("future_profile")).toBe(
+      ProviderExecutionProfile.Unknown,
     );
   });
 
