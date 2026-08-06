@@ -254,6 +254,8 @@ export class PrismaInvestigationStore
     );
     return this.prisma.$transaction(
       async (transaction) => {
+        const databaseNow = await investigationDatabaseNow(transaction);
+        const effectiveCutoff = cutoff < databaseNow ? cutoff : databaseNow;
         const candidates = await transaction.$queryRaw<
           Array<{ investigationId: string }>
         >(Prisma.sql`
@@ -264,7 +266,7 @@ export class PrismaInvestigationStore
            AND turn."turnId" = investigation."activeTurnId"
           WHERE investigation."state" = 'turn_leased'::"ReviewInvestigationStateV1"
             AND turn."state" = 'leased'::"ReviewInvestigationTurnStateV1"
-            AND turn."expiresAt" <= ${cutoff}
+            AND turn."expiresAt" <= ${effectiveCutoff}
           ORDER BY turn."expiresAt" ASC, investigation."investigationId" ASC
           LIMIT ${input.limit}
           FOR UPDATE OF investigation SKIP LOCKED
@@ -681,6 +683,8 @@ export class PrismaInvestigationStore
     );
     return this.prisma.$transaction(
       async (transaction) => {
+        const databaseNow = await investigationDatabaseNow(transaction);
+        const effectiveCutoff = cutoff < databaseNow ? cutoff : databaseNow;
         const candidates = await transaction.$queryRaw<
           ExpiredPrivateMaterialCandidate[]
         >(Prisma.sql`
@@ -691,14 +695,8 @@ export class PrismaInvestigationStore
           FROM "ReviewInvestigationPrivateMaterial" AS material
           INNER JOIN "ReviewInvestigation" AS investigation
             ON investigation."investigationId" = material."investigationId"
-          WHERE material."expiresAt" <= ${cutoff}
-            AND NOT EXISTS (
-              SELECT 1
-              FROM "ReviewInvestigationTurn" AS active_turn
-              WHERE active_turn."turnId" = investigation."activeTurnId"
-                AND active_turn."state" = 'leased'::"ReviewInvestigationTurnStateV1"
-                AND active_turn."expiresAt" > ${cutoff}
-            )
+          WHERE material."expiresAt" <= ${effectiveCutoff}
+            AND investigation."activeTurnId" IS NULL
           ORDER BY material."expiresAt" ASC, material."privateMaterialId" ASC
           LIMIT ${input.limit}
           FOR UPDATE OF investigation, material SKIP LOCKED
@@ -718,7 +716,7 @@ export class PrismaInvestigationStore
             investigation: current,
             privateMaterialIds: group.privateMaterialIds,
             obligationIds: group.obligationIds,
-            expiredAt: cutoff.toISOString(),
+            expiredAt: effectiveCutoff.toISOString(),
           });
           if (
             reconciled.disposition ===
@@ -786,7 +784,7 @@ export class PrismaInvestigationStore
               where: {
                 privateMaterialId: { in: [...group.privateMaterialIds] },
                 investigationId: group.investigationId,
-                expiresAt: { lte: cutoff },
+                expiresAt: { lte: effectiveCutoff },
               },
             });
           if (deleted.count !== group.privateMaterialIds.length) {

@@ -8,7 +8,8 @@ describe("PrismaInvestigationStore retention pruning", () => {
     const transaction = {
       $queryRaw: vi
         .fn()
-        .mockResolvedValue([
+        .mockResolvedValueOnce([{ epochMs: BigInt(cutoff.getTime() + 1_000) }])
+        .mockResolvedValueOnce([
           { investigationId: "inv-1" },
           { investigationId: "inv-2" },
         ]),
@@ -25,7 +26,7 @@ describe("PrismaInvestigationStore retention pruning", () => {
         limit: 2,
       }),
     ).resolves.toEqual(["inv-1", "inv-2"]);
-    const query = transaction.$queryRaw.mock.calls[0]![0] as {
+    const query = transaction.$queryRaw.mock.calls[1]![0] as {
       readonly sql: string;
       readonly values: readonly unknown[];
     };

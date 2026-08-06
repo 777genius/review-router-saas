@@ -28,7 +28,11 @@ import { HydrateInvestigationTurnObligations } from "../application/use-cases/hy
 import { OpenReviewInvestigation } from "../application/use-cases/open-review-investigation";
 import { PrepareInvestigationSearchQueryPrivateMaterial } from "../application/use-cases/prepare-investigation-search-query-private-material";
 import { ReconcileExpiredInvestigationPrivateMaterial } from "../application/use-cases/reconcile-expired-investigation-private-material";
-import { planInvestigationTurn } from "../domain/review-investigation";
+import { withCurrentDossierDigest } from "../application/use-cases/investigation-use-case-support";
+import {
+  planInvestigationTurn,
+  reconcileExpiredActiveTurn,
+} from "../domain/review-investigation";
 import { AesGcmInvestigationPrivateMaterialCipher } from "../infrastructure/crypto/aes-gcm-investigation-private-material-cipher";
 import { InMemoryInvestigationStore } from "../infrastructure/memory/in-memory-investigation-store";
 import { NodeSha256InvestigationDigest } from "../infrastructure/node/node-sha256-digest";
@@ -203,7 +207,7 @@ describe("investigation search-query private material lifecycle", () => {
     expect(snapshot.privateMaterials).toEqual([]);
   });
 
-  it("defers an active lease and deterministically terminalizes when regeneration is unavailable", async () => {
+  it("defers active-turn ownership and terminalizes after turn recovery", async () => {
     const clock = new FixedInvestigationClock(
       new Date("2026-08-04T10:00:00.000Z"),
     );
@@ -219,20 +223,23 @@ describe("investigation search-query private material lifecycle", () => {
     const searchObligation = aggregate.obligations.find((obligation) =>
       obligation.canonicalSubject.includes(operationInputHash),
     )!;
-    const leased = planInvestigationTurn({
-      investigation: aggregate,
-      turn: {
-        turnId: "turn-private-material-expiry",
-        purpose: ReviewInvestigationTurnPurpose.Discovery,
-        leasedAtVersion: aggregate.version + 1,
-        dossierDigest: aggregate.dossierDigest,
-        obligationIds: [searchObligation.obligationId],
-        semanticTurnOrdinal: 1,
-        criticCycleOrdinal: 0,
-        leasedAt: "2026-08-04T10:04:00.000Z",
-        expiresAt: "2026-08-04T10:06:00.000Z",
-      },
-    });
+    const leased = await withCurrentDossierDigest(
+      digest,
+      planInvestigationTurn({
+        investigation: aggregate,
+        turn: {
+          turnId: "turn-private-material-expiry",
+          purpose: ReviewInvestigationTurnPurpose.Discovery,
+          leasedAtVersion: aggregate.version + 1,
+          dossierDigest: aggregate.dossierDigest,
+          obligationIds: [searchObligation.obligationId],
+          semanticTurnOrdinal: 1,
+          criticCycleOrdinal: 0,
+          leasedAt: "2026-08-04T10:04:00.000Z",
+          expiresAt: "2026-08-04T10:06:00.000Z",
+        },
+      }),
+    );
     const reconcile = new ReconcileExpiredInvestigationPrivateMaterial(digest);
     const input = {
       investigation: leased,
@@ -258,11 +265,31 @@ describe("investigation search-query private material lifecycle", () => {
     });
     expect(afterLease).toEqual(retry);
     expect(afterLease).toMatchObject({
+      disposition:
+        InvestigationPrivateMaterialExpiryDisposition.DeferredActiveTurn,
+      investigation: { version: leased.version },
+      command: null,
+    });
+
+    const recovered = await withCurrentDossierDigest(
+      digest,
+      reconcileExpiredActiveTurn({
+        investigation: leased,
+        reconciledAt: leased.activeTurn!.expiresAt,
+        superseded: false,
+      }).investigation,
+    );
+    const afterRecovery = await reconcile.execute({
+      ...input,
+      investigation: recovered,
+      expiredAt: leased.activeTurn!.expiresAt,
+    });
+    expect(afterRecovery).toMatchObject({
       disposition: InvestigationPrivateMaterialExpiryDisposition.Inconclusive,
       affectedObligationIds: [searchObligation.obligationId],
-      expiredTurnId: leased.activeTurn!.turnId,
+      expiredTurnId: null,
       investigation: {
-        version: leased.version + 1,
+        version: leased.version + 2,
         state: ReviewInvestigationState.Inconclusive,
         conclusion: ReviewInvestigationConclusion.Inconclusive,
         activeTurn: null,
@@ -274,11 +301,11 @@ describe("investigation search-query private material lifecycle", () => {
         commandHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
       },
     });
-    expect(afterLease.investigation.dossierDigest).not.toBe(
+    expect(afterRecovery.investigation.dossierDigest).not.toBe(
       leased.dossierDigest,
     );
     expect(
-      afterLease.investigation.obligations.find(
+      afterRecovery.investigation.obligations.find(
         (obligation) =>
           obligation.obligationId === searchObligation.obligationId,
       ),
@@ -288,6 +315,33 @@ describe("investigation search-query private material lifecycle", () => {
       unresolvableReason:
         InvestigationPrivateMaterialExpiryReason.RegenerationUnavailable,
     });
+  });
+
+  it("rejects a corrupted dossier before private-material recovery", async () => {
+    const digest = new NodeSha256InvestigationDigest();
+    const clock = new FixedInvestigationClock(
+      new Date("2026-08-04T10:00:00.000Z"),
+    );
+    const store = new InMemoryInvestigationStore();
+    const opened = await openInvestigation({
+      store,
+      cipher: configuredCipher(),
+      digest,
+      clock,
+    });
+    const aggregate = (await store.findById(opened.investigationId))!;
+    const obligation = aggregate.obligations.find((candidate) =>
+      candidate.canonicalSubject.includes(operationInputHash),
+    )!;
+
+    await expect(
+      new ReconcileExpiredInvestigationPrivateMaterial(digest).execute({
+        investigation: { ...aggregate, dossierDigest: "0".repeat(64) },
+        privateMaterialIds: ["corrupted-dossier-material"],
+        obligationIds: [obligation.obligationId],
+        expiredAt: "2026-08-04T10:05:00.000Z",
+      }),
+    ).rejects.toThrow("investigation_dossier_digest_invalid");
   });
 });
 

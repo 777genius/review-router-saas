@@ -542,16 +542,10 @@ export function reconcileInvestigationPrivateMaterialExpiry(input: {
     );
   }
   if (current.activeTurn !== null) {
-    const turnExpiresAtMs = canonicalTimestampMs(
-      current.activeTurn.expiresAt,
-      "investigation_turn_expiry_invalid",
+    return privateMaterialExpiryResult(
+      InvestigationPrivateMaterialExpiryDisposition.DeferredActiveTurn,
+      current,
     );
-    if (turnExpiresAtMs > expiredAtMs) {
-      return privateMaterialExpiryResult(
-        InvestigationPrivateMaterialExpiryDisposition.DeferredActiveTurn,
-        current,
-      );
-    }
   }
 
   const candidateIds = new Set(input.obligationIds);
@@ -580,7 +574,7 @@ export function reconcileInvestigationPrivateMaterialExpiry(input: {
       ),
     ),
   ).toISOString();
-  const expiredTurnId = current.activeTurn?.turnId ?? null;
+  const expiredTurnId = null;
   const investigation: ReviewInvestigation = {
     ...current,
     version: current.version + 1,

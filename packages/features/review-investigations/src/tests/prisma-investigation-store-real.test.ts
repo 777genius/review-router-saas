@@ -140,7 +140,9 @@ async function createLeaseHarness(): Promise<InvestigationLeaseStoreContractHarn
 describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
   it("fences expiry recovery until the database clock reaches the turn deadline", async () => {
     const suffix = `db-expiry-fence-${randomUUID()}`;
-    const seed = createInvestigationStoreContractSeed(suffix);
+    const seed = await withValidTestDossierDigest(
+      createInvestigationStoreContractSeed(suffix),
+    );
     const harness = await createHarness(seed);
     const store = harness.store as PrismaInvestigationStore;
     const digest = new NodeSha256InvestigationDigest();
@@ -164,6 +166,22 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
         ),
       };
       await plan(store, futureTurn, `db-expiry-fence-plan-${suffix}`);
+      const cipher = new AesGcmInvestigationPrivateMaterialCipher(
+        "db-turn-expiry-key",
+        new Map([["db-turn-expiry-key", Buffer.alloc(32, 15)]]),
+      );
+      const material = await cipher.encrypt({
+        privateMaterialId: `private-db-turn-expiry-${suffix}`,
+        investigationId: seed.investigationId,
+        obligationId: seed.obligations[0]!.obligationId,
+        plaintextCanonicalJson: '{"query":"active turn private symbol"}',
+        associatedDataCanonicalJson: `{"investigationId":"${seed.investigationId}"}`,
+        createdAt: new Date(expiresAt.getTime() - 60_000).toISOString(),
+        expiresAt: expiresAt.toISOString(),
+      });
+      await expect(store.savePrivateMaterial(material)).resolves.toBe(
+        InvestigationPrivateMaterialPersistenceStatus.Created,
+      );
       const workerClock = new FixedInvestigationClock(
         new Date(expiresAt.getTime() + 60_000),
       );
@@ -180,6 +198,18 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       await expect(reconcile.execute(seed.investigationId)).rejects.toThrow(
         "investigation_lease_fencing_stale",
       );
+      await expect(
+        reconcile.sweep({
+          expiresAtOrBefore: workerClock.now().toISOString(),
+          limit: 10,
+        }),
+      ).resolves.toBe(0);
+      await expect(
+        store.reconcileExpiredPrivateMaterial({
+          expiresAtOrBefore: workerClock.now().toISOString(),
+          limit: 10,
+        }),
+      ).resolves.toBe(0);
       await expect(store.findById(seed.investigationId)).resolves.toMatchObject(
         {
           version: futureTurn.version,
@@ -189,6 +219,54 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
           },
         },
       );
+      await expect(
+        harness.prisma.reviewInvestigationPrivateMaterial.count({
+          where: { privateMaterialId: material.privateMaterialId },
+        }),
+      ).resolves.toBe(1);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("does not expire private material ahead of the database clock", async () => {
+    const suffix = `db-material-expiry-fence-${randomUUID()}`;
+    const seed = createInvestigationStoreContractSeed(suffix);
+    const harness = await createHarness(seed);
+    const store = harness.store as PrismaInvestigationStore;
+    const expiresAt = new Date(Date.now() + 60_000);
+    try {
+      await open(store, seed, `db-material-expiry-fence-open-${suffix}`);
+      const cipher = new AesGcmInvestigationPrivateMaterialCipher(
+        "db-material-expiry-key",
+        new Map([["db-material-expiry-key", Buffer.alloc(32, 13)]]),
+      );
+      const material = await cipher.encrypt({
+        privateMaterialId: `private-db-expiry-fence-${suffix}`,
+        investigationId: seed.investigationId,
+        obligationId: seed.obligations[0]!.obligationId,
+        plaintextCanonicalJson: '{"query":"future private symbol"}',
+        associatedDataCanonicalJson: `{"investigationId":"${seed.investigationId}"}`,
+        createdAt: new Date(expiresAt.getTime() - 60_000).toISOString(),
+        expiresAt: expiresAt.toISOString(),
+      });
+      await expect(store.savePrivateMaterial(material)).resolves.toBe(
+        InvestigationPrivateMaterialPersistenceStatus.Created,
+      );
+
+      await expect(
+        store.reconcileExpiredPrivateMaterial({
+          expiresAtOrBefore: new Date(
+            expiresAt.getTime() + 60_000,
+          ).toISOString(),
+          limit: 10,
+        }),
+      ).resolves.toBe(0);
+      await expect(
+        harness.prisma.reviewInvestigationPrivateMaterial.count({
+          where: { privateMaterialId: material.privateMaterialId },
+        }),
+      ).resolves.toBe(1);
     } finally {
       await harness.dispose();
     }
@@ -671,8 +749,8 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
   });
 
   it("encrypts, expires, and prunes private material", async () => {
-    const seed = createInvestigationStoreContractSeed(
-      `private-${randomUUID()}`,
+    const seed = await withValidTestDossierDigest(
+      createInvestigationStoreContractSeed(`private-${randomUUID()}`),
     );
     const harness = await createHarness(seed, 1_000);
     try {
@@ -797,14 +875,22 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
     }
   });
 
-  it("keeps expired material through a live lease and fences it after lease expiry", async () => {
+  it("keeps expired material until active-turn recovery owns the transition", async () => {
     const suffix = randomUUID();
-    const seed = createInvestigationStoreContractSeed(`lease-${suffix}`);
+    const seed = await withValidTestDossierDigest(
+      createInvestigationStoreContractSeed(`lease-${suffix}`),
+    );
     const harness = await createHarness(seed, 1_000);
     try {
       const store = harness.store as PrismaInvestigationStore;
       await open(store, seed, `lease-open-${suffix}`);
-      const leased = planned(seed, `turn-private-material-${suffix}`);
+      const leasedPreimage = planned(seed, `turn-private-material-${suffix}`);
+      const leased: ReviewInvestigation = {
+        ...leasedPreimage,
+        dossierDigest: await new NodeSha256InvestigationDigest().digestUtf8(
+          canonicalJson(investigationDossierCanonicalValue(leasedPreimage)),
+        ),
+      };
       await plan(store, leased, `lease-plan-${suffix}`);
       const cipher = new AesGcmInvestigationPrivateMaterialCipher(
         "lease-key",
@@ -847,12 +933,32 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
           expiresAtOrBefore: leased.activeTurn!.expiresAt,
           limit: 10,
         }),
+      ).resolves.toBe(0);
+      await expect(
+        new ReconcileExpiredActiveTurn(
+          store,
+          {
+            check: async () =>
+              InvestigationExecutionAuthorityVerdict.Unauthorized,
+          },
+          new NodeSha256InvestigationDigest(),
+          new FixedInvestigationClock(new Date("2026-08-02T10:03:00.000Z")),
+        ).execute(seed.investigationId),
+      ).resolves.toMatchObject({
+        version: leased.version + 1,
+        state: ReviewInvestigationState.Superseded,
+        activeTurn: null,
+      });
+      await expect(
+        store.reconcileExpiredPrivateMaterial({
+          expiresAtOrBefore: leased.activeTurn!.expiresAt,
+          limit: 10,
+        }),
       ).resolves.toBe(1);
       await expect(store.findById(seed.investigationId)).resolves.toMatchObject(
         {
           version: leased.version + 1,
-          state: ReviewInvestigationState.Inconclusive,
-          conclusion: ReviewInvestigationConclusion.Inconclusive,
+          state: ReviewInvestigationState.Superseded,
           activeTurn: null,
         },
       );
@@ -862,9 +968,8 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
         }),
       ).resolves.toMatchObject({
         state: "expired",
-        abortReason:
-          InvestigationPrivateMaterialExpiryReason.RegenerationUnavailable,
-        completedAt: new Date(leased.activeTurn!.expiresAt),
+        abortReason: "expired_active_turn",
+        completedAt: new Date("2026-08-02T10:03:00.000Z"),
       });
       await expect(
         harness.prisma.reviewInvestigationPrivateMaterial.count({
@@ -1467,6 +1572,17 @@ function planned(
       expiresAt: "2026-08-02T10:02:00.000Z",
     },
   });
+}
+
+async function withValidTestDossierDigest(
+  investigation: ReviewInvestigation,
+): Promise<ReviewInvestigation> {
+  return {
+    ...investigation,
+    dossierDigest: await new NodeSha256InvestigationDigest().digestUtf8(
+      canonicalJson(investigationDossierCanonicalValue(investigation)),
+    ),
+  };
 }
 
 async function plan(

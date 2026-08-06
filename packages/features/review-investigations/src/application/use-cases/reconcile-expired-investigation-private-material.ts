@@ -12,7 +12,10 @@ import {
   type ReviewInvestigation,
 } from "../../domain/review-investigation";
 import type { InvestigationDigestPort } from "../ports/digest-port";
-import { withCurrentDossierDigest } from "./investigation-use-case-support";
+import {
+  requireValidDossierDigest,
+  withCurrentDossierDigest,
+} from "./investigation-use-case-support";
 
 export type ReconcileExpiredInvestigationPrivateMaterialResult = Readonly<{
   disposition: InvestigationPrivateMaterialExpiryDisposition;
@@ -34,6 +37,7 @@ export class ReconcileExpiredInvestigationPrivateMaterial {
     readonly obligationIds: readonly string[];
     readonly expiredAt: string;
   }): Promise<ReconcileExpiredInvestigationPrivateMaterialResult> {
+    await requireValidDossierDigest(this.digest, input.investigation);
     const privateMaterialIds = uniqueSortedIdentifiers(
       input.privateMaterialIds,
       "private_material_id",
