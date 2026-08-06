@@ -28,7 +28,7 @@ describe("Review v2 Render context environment", () => {
       ),
     );
     expect(reviewV2ContextEnvForRole(configuredEnv, "web")).toEqual({});
-    expect(reviewV2ProjectionPolicyVersion).not.toBe(
+    expect(reviewV2ProjectionPolicyVersion).toBe(
       reviewActionV2ProjectionPolicyVersion,
     );
     expect(
