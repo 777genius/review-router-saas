@@ -8,6 +8,7 @@ import { createPrismaClient } from "@reviewrouter/platform-db";
 import { describe, expect, it } from "vitest";
 import {
   InvestigationEvidenceRequirementKind,
+  InvestigationPolicyCanonicalVersion,
   InvestigationObligationKind,
   InvestigationOperationKind,
   InvestigationOperationRevision,
@@ -18,22 +19,27 @@ import {
   ReviewInvestigationConclusion,
   ReviewInvestigationState,
   InvestigationPrivateMaterialPersistenceStatus,
+  InvestigationStoreCommitGuardKind,
   InvestigationStoreCommitStatus,
   InvestigationStoreTransitionKind,
   canonicalInvestigationEvidenceRequirement,
+  canonicalJson,
   canonicalInventoryObligationSubject,
   canonicalPageObligationSubjectV2,
   canonicalStandardTextSearchOperationInput,
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
   reviewInvestigationCoverageProfileV2,
+  investigationDossierCanonicalValue,
 } from "../index";
+import { RestoreReviewInvestigation } from "../application/use-cases/restore-review-investigation";
 import { HydrateInvestigationTurnObligations } from "../application/use-cases/hydrate-investigation-turn-obligations";
 import { PrepareInvestigationSearchQueryPrivateMaterial } from "../application/use-cases/prepare-investigation-search-query-private-material";
 import { AesGcmInvestigationPrivateMaterialCipher } from "../infrastructure/crypto/aes-gcm-investigation-private-material-cipher";
 import { PrismaInvestigationStore } from "../infrastructure/prisma/prisma-investigation-store";
 import { NodeSha256InvestigationDigest } from "../infrastructure/node/node-sha256-digest";
 import {
+  createInvestigationLeaseStoreContractCandidate,
   createInvestigationLeaseBindingSeed,
   defineInvestigationLeaseStoreContract,
   type InvestigationLeaseStoreContractHarness,
@@ -129,6 +135,198 @@ async function createLeaseHarness(): Promise<InvestigationLeaseStoreContractHarn
 }
 
 describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
+  it("rehydrates an explicitly versioned legacy policy row", async () => {
+    const base = createInvestigationStoreContractSeed(
+      `legacy-policy-${randomUUID()}`,
+    );
+    const legacyPolicy = { ...base.policy };
+    delete legacyPolicy.maxSeedProbesPerFile;
+    delete legacyPolicy.maxSeedProbesOverall;
+    const digest = new NodeSha256InvestigationDigest();
+    const preimage = {
+      ...base,
+      policyCanonicalVersion: InvestigationPolicyCanonicalVersion.LegacyV1,
+      policy: legacyPolicy,
+    };
+    const seed: ReviewInvestigation = {
+      ...preimage,
+      dossierDigest: await digest.digestUtf8(
+        canonicalJson(investigationDossierCanonicalValue(preimage)),
+      ),
+    };
+    const harness = await createHarness(seed);
+    const store = harness.store as PrismaInvestigationStore;
+    try {
+      await open(store, seed, `legacy-policy-open-${randomUUID()}`);
+      const restarted = (await harness.restart()) as PrismaInvestigationStore;
+      await expect(
+        new RestoreReviewInvestigation(restarted, digest).snapshot(
+          seed.investigationId,
+        ),
+      ).resolves.toMatchObject({
+        dossierDigest: seed.dossierDigest,
+        policyCanonicalVersion: InvestigationPolicyCanonicalVersion.LegacyV1,
+        policy: legacyPolicy,
+      });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("atomically rejects a turn commit after a lease fence takeover", async () => {
+    const suffix = `commit-fence-${randomUUID()}`;
+    const firstCandidate =
+      createInvestigationLeaseStoreContractCandidate(suffix);
+    const { base, planned: plannedInvestigation } =
+      createInvestigationLeaseBindingSeed(firstCandidate);
+    const harness = await createHarness(base);
+    const store = harness.store as PrismaInvestigationStore;
+    try {
+      await open(store, base, `fence-open-${suffix}`);
+      await plan(store, plannedInvestigation, `fence-plan-${suffix}`);
+      const first = (await store.acquireLease(firstCandidate)).lease!;
+      const secondCandidate = {
+        ...firstCandidate,
+        leaseId: `${firstCandidate.leaseId}-takeover`,
+        attemptId: `${firstCandidate.attemptId}-takeover`,
+        leaseCapabilityId: `${firstCandidate.leaseCapabilityId}-takeover`,
+        acquireRequestIdHash: createHash("sha256")
+          .update(`takeover-id:${suffix}`)
+          .digest("hex"),
+        acquireRequestHash: createHash("sha256")
+          .update(`takeover-request:${suffix}`)
+          .digest("hex"),
+        acquiredAt: "2026-08-05T10:01:01.000Z",
+        expiresAt: "2026-08-05T10:02:00.000Z",
+      };
+      const second = (await store.acquireLease(secondCandidate)).lease!;
+      const next = commitInvestigationTurn({
+        investigation: plannedInvestigation,
+        commit: {
+          turnId: plannedInvestigation.activeTurn!.turnId,
+          closureClaims: [],
+          unresolvableDecisions: [],
+          proposedObligations: [],
+          findings: [],
+          criticDecision: null,
+          usageTokens: 1,
+          durationMs: 1,
+          provenance: null,
+        },
+        committedAt: "2026-08-05T10:01:02.000Z",
+      });
+      const transition = {
+        kind: InvestigationStoreTransitionKind.TurnCommitted,
+        turnId: plannedInvestigation.activeTurn!.turnId,
+        acceptedAttestationId: null,
+        sanitizedOutcomeHash: null,
+      } as const;
+      await expect(
+        store.commit({
+          investigation: next,
+          expectedVersion: plannedInvestigation.version,
+          commandId: `fence-stale-commit-${suffix}`,
+          commandHash: "a".repeat(64),
+          transition,
+          guard: {
+            kind: InvestigationStoreCommitGuardKind.LeaseFence,
+            leaseId: first.leaseId,
+            attemptId: first.attemptId,
+            turnId: first.turnId,
+            fencingToken: first.fencingToken.toString(10),
+          },
+        }),
+      ).resolves.toMatchObject({
+        status: InvestigationStoreCommitStatus.LeaseFenceConflict,
+        investigation: { version: plannedInvestigation.version },
+      });
+      await expect(
+        store.commit({
+          investigation: next,
+          expectedVersion: plannedInvestigation.version,
+          commandId: `fence-current-commit-${suffix}`,
+          commandHash: "b".repeat(64),
+          transition,
+          guard: {
+            kind: InvestigationStoreCommitGuardKind.LeaseFence,
+            leaseId: second.leaseId,
+            attemptId: second.attemptId,
+            turnId: second.turnId,
+            fencingToken: second.fencingToken.toString(10),
+          },
+        }),
+      ).resolves.toMatchObject({
+        status: InvestigationStoreCommitStatus.Committed,
+      });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("atomically rejects a turn commit when the persisted lease binding is stale", async () => {
+    const suffix = `commit-binding-${randomUUID()}`;
+    const candidate = createInvestigationLeaseStoreContractCandidate(suffix);
+    const { base, planned } = createInvestigationLeaseBindingSeed(candidate);
+    const harness = await createHarness(base);
+    const store = harness.store as PrismaInvestigationStore;
+    try {
+      await open(store, base, `binding-open-${suffix}`);
+      await plan(store, planned, `binding-plan-${suffix}`);
+      const lease = (await store.acquireLease(candidate)).lease!;
+      await harness.prisma.reviewInvestigationLease.update({
+        where: { leaseId: lease.leaseId },
+        data: { providerStrategyId: `${lease.providerStrategyId}-stale` },
+      });
+      const next = commitInvestigationTurn({
+        investigation: planned,
+        commit: {
+          turnId: planned.activeTurn!.turnId,
+          closureClaims: [],
+          unresolvableDecisions: [],
+          proposedObligations: [],
+          findings: [],
+          criticDecision: null,
+          usageTokens: 1,
+          durationMs: 1,
+          provenance: null,
+        },
+        committedAt: "2026-08-05T10:01:02.000Z",
+      });
+      await expect(
+        store.commit({
+          investigation: next,
+          expectedVersion: planned.version,
+          commandId: `binding-stale-commit-${suffix}`,
+          commandHash: "c".repeat(64),
+          transition: {
+            kind: InvestigationStoreTransitionKind.TurnCommitted,
+            turnId: planned.activeTurn!.turnId,
+            acceptedAttestationId: null,
+            sanitizedOutcomeHash: null,
+          },
+          guard: {
+            kind: InvestigationStoreCommitGuardKind.LeaseFence,
+            leaseId: lease.leaseId,
+            attemptId: lease.attemptId,
+            turnId: lease.turnId,
+            fencingToken: lease.fencingToken.toString(10),
+          },
+        }),
+      ).resolves.toMatchObject({
+        status: InvestigationStoreCommitStatus.LeaseFenceConflict,
+        investigation: { version: planned.version },
+      });
+      await expect(
+        store.findById(planned.investigationId),
+      ).resolves.toMatchObject({
+        version: planned.version,
+        activeTurn: { turnId: planned.activeTurn!.turnId },
+      });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("atomically persists encrypted query material and fails closed after restart", async () => {
     const query = "PrismaSensitiveService.call";
     const queryHash = createHash("sha256").update(query).digest("hex");

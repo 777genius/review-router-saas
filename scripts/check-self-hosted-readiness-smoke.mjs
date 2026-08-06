@@ -34,6 +34,9 @@ const investigationLeaseSigningKey = Buffer.from("i".repeat(32)).toString(
 );
 const contextSessionKey = Buffer.from("c".repeat(32)).toString("base64");
 const contextReplayKey = Buffer.from("r".repeat(32)).toString("base64");
+const investigationPrivateMaterialKey = Buffer.from("p".repeat(32)).toString(
+  "base64url",
+);
 const signingKeys = JSON.stringify([
   { keyId: "self-hosted-t0", secretBase64: signingKey, verifyUntil: null },
 ]);
@@ -130,6 +133,14 @@ const baseEnv = {
     "self-hosted-investigation",
   REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON:
     investigationLeaseSigningKeys,
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_ACTIVE_KEY_ID:
+    "self-hosted-private-material",
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_KEYS_JSON: JSON.stringify(
+    {
+      "self-hosted-private-material": investigationPrivateMaterialKey,
+    },
+  ),
+  REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_TTL_MS: "86400000",
   REVIEW_ROUTER_SELF_HOSTED_ENV_FILE:
     "/tmp/reviewrouter-self-hosted-smoke-env-does-not-exist",
 };
@@ -318,6 +329,22 @@ const cases = [
     },
   },
   {
+    name: "investigation emergency rollback disables recording prerequisites",
+    expectSuccess: true,
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "0",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID: "",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON: "",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_ACTIVE_KEY_ID: "",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_KEYS_JSON: "",
+    },
+  },
+  {
     name: "investigation recording requires its independent lease key ring",
     expectSuccess: false,
     expectedError:
@@ -330,6 +357,52 @@ const cases = [
       REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "1",
       REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID: "",
       REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON: "",
+    },
+  },
+  {
+    name: "investigation recording requires its private material key ring",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_ACTIVE_KEY_ID is required.",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_ACTIVE_KEY_ID: "",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_KEYS_JSON: "",
+    },
+  },
+  {
+    name: "investigation recording rejects private material key IDs rejected by production",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_ACTIVE_KEY_ID is invalid.",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_ACTIVE_KEY_ID:
+        "bad key",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_KEYS_JSON:
+        JSON.stringify({ "bad key": investigationPrivateMaterialKey }),
+    },
+  },
+  {
+    name: "investigation recording rejects private material TTLs rejected by production",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_TTL_MS must be an integer from 60000 through 604800000 milliseconds.",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED: "1",
+      REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_TTL_MS: "59999",
     },
   },
   {

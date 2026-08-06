@@ -1,5 +1,7 @@
 import {
+  InvestigationStoreCommitGuardKind,
   InvestigationStoreCommitStatus,
+  InvestigationStoreTransitionKind,
   type InvestigationStoreCommitResult,
   type InvestigationStorePort,
 } from "../../application/ports/investigation-store-port";
@@ -252,14 +254,9 @@ export class InMemoryInvestigationStore
     });
   }
 
-  async commit(input: {
-    readonly investigation: ReviewInvestigation;
-    readonly expectedVersion: number | null;
-    readonly commandId: string;
-    readonly commandHash: string;
-    readonly transition: import("../../application/ports/investigation-store-port").InvestigationStoreTransition;
-    readonly privateMaterials?: readonly EncryptedInvestigationPrivateMaterial[];
-  }): Promise<InvestigationStoreCommitResult> {
+  async commit(
+    input: Parameters<InvestigationStorePort["commit"]>[0],
+  ): Promise<InvestigationStoreCommitResult> {
     return this.atomic(() => {
       const previousCommand = this.commands.get(input.commandId);
       if (previousCommand) {
@@ -295,6 +292,12 @@ export class InMemoryInvestigationStore
       ) {
         return {
           status: InvestigationStoreCommitStatus.ConcurrencyConflict,
+          investigation: existing ? clone(existing) : null,
+        };
+      }
+      if (!this.commitGuardIsCurrent(input, existing ?? input.investigation)) {
+        return {
+          status: InvestigationStoreCommitStatus.LeaseFenceConflict,
           investigation: existing ? clone(existing) : null,
         };
       }
@@ -341,6 +344,49 @@ export class InMemoryInvestigationStore
         investigation: clone(stored),
       };
     });
+  }
+
+  private commitGuardIsCurrent(
+    input: Parameters<InvestigationStorePort["commit"]>[0],
+    current: ReviewInvestigation,
+  ): boolean {
+    if (input.guard === undefined) return true;
+    if (input.guard.kind !== InvestigationStoreCommitGuardKind.LeaseFence) {
+      return false;
+    }
+    if (
+      input.transition.kind !==
+        InvestigationStoreTransitionKind.TurnCommitted ||
+      input.transition.turnId !== input.guard.turnId
+    ) {
+      return false;
+    }
+    const source = this.leases.get(input.guard.leaseId);
+    if (
+      !source ||
+      source.state !== ReviewInvestigationLeaseState.Active ||
+      source.investigationId !== input.investigation.investigationId ||
+      source.turnId !== input.guard.turnId ||
+      source.attemptId !== input.guard.attemptId ||
+      source.fencingToken.toString(10) !== input.guard.fencingToken
+    ) {
+      return false;
+    }
+    if (!reviewInvestigationLeaseBindingIsCurrent(source, current)) {
+      return false;
+    }
+    const newestFence = [...this.leases.values()]
+      .filter(
+        (lease) =>
+          lease.investigationId === source.investigationId &&
+          lease.turnId === source.turnId,
+      )
+      .reduce(
+        (latest, lease) =>
+          lease.fencingToken > latest ? lease.fencingToken : latest,
+        0n,
+      );
+    return newestFence === source.fencingToken;
   }
 
   private revokeActiveLeasesForInvestigation(investigationId: string): void {

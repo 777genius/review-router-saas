@@ -25,7 +25,10 @@ import { AttestedTurnDiscoveryPreparation } from "../attested-turn-discovery-pre
 import { AttestedTurnProposalPreparation } from "../attested-turn-proposal-preparation";
 import { AttestedTurnUnresolvablePreparation } from "../attested-turn-unresolvable-preparation";
 import type { InvestigationDigestPort } from "../ports/digest-port";
-import type { InvestigationStorePort } from "../ports/investigation-store-port";
+import {
+  InvestigationStoreCommitGuardKind,
+  type InvestigationStorePort,
+} from "../ports/investigation-store-port";
 import type { InvestigationTurnEvidencePort } from "../ports/investigation-turn-evidence-port";
 import type { ReviewInvestigationReadModel } from "../investigation-read-model";
 import { toInvestigationReadModel } from "../investigation-read-model";
@@ -226,6 +229,13 @@ export class CommitAttestedInvestigationTurn {
         terminalOutcomeHash,
       },
       idempotencyHash,
+      storeCommitGuard: {
+        kind: InvestigationStoreCommitGuardKind.LeaseFence,
+        leaseId: command.sourceLeaseId,
+        attemptId: command.sourceAttemptId,
+        turnId: command.turnId,
+        fencingToken: command.sourceFencingToken,
+      },
     };
     return this.commit.execute(commitCommand);
   }

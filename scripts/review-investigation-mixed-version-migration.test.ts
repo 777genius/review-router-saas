@@ -102,6 +102,7 @@ describeRehearsal("review investigation mixed-version migrations", () => {
     applyMigration("000053_review_run_authorization_investigation_snapshot");
     applyMigration("000054_review_config_investigation_rollout");
     applyMigration("000055_review_investigation_shadow_leases");
+    applyMigration("000056_review_investigation_policy_canonical_version");
 
     prisma = createPrismaClient({
       databaseUrl: rehearsalDatabaseUrl,
@@ -126,12 +127,14 @@ describeRehearsal("review investigation mixed-version migrations", () => {
         investigationId: string;
         probePolicyVersion: string;
         searchPolicyVersion: string;
+        policyCanonicalVersion: string;
       }>
     >`
       SELECT
         "investigationId",
         "probePolicyVersion",
-        "searchPolicyVersion"
+        "searchPolicyVersion",
+        "policyCanonicalVersion"
       FROM "ReviewInvestigation"
       WHERE "investigationId" = 'mixed-version-investigation-before-000051'
     `;
@@ -140,6 +143,7 @@ describeRehearsal("review investigation mixed-version migrations", () => {
         investigationId: "mixed-version-investigation-before-000051",
         probePolicyVersion: "review-investigation-probe-policy.v1",
         searchPolicyVersion: "review-investigation-fixed-string-search.v1",
+        policyCanonicalVersion: "review-investigation-policy.v1",
       },
     ]);
 
@@ -165,20 +169,30 @@ describeRehearsal("review investigation mixed-version migrations", () => {
       WHERE table_schema = 'public'
         AND (
           (table_name = 'ReviewInvestigation'
-            AND column_name IN ('probePolicyVersion', 'searchPolicyVersion'))
+            AND column_name IN (
+              'probePolicyVersion',
+              'searchPolicyVersion',
+              'policyCanonicalVersion'
+            ))
           OR
           (table_name = 'ReviewContextGatewaySession'
             AND column_name = 'openingIntentHash')
         )
       ORDER BY column_name
     `;
-    expect(defaults).toHaveLength(3);
+    expect(defaults).toHaveLength(4);
     expect(defaults).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           column_name: "openingIntentHash",
           column_default: expect.stringContaining(
             legacyContextGatewayOpeningIntentHash,
+          ),
+        }),
+        expect.objectContaining({
+          column_name: "policyCanonicalVersion",
+          column_default: expect.stringContaining(
+            "review-investigation-policy.v1",
           ),
         }),
         expect.objectContaining({
@@ -212,11 +226,16 @@ describeRehearsal("review investigation mixed-version migrations", () => {
         where: {
           investigationId: "mixed-version-investigation-after-000052",
         },
-        select: { probePolicyVersion: true, searchPolicyVersion: true },
+        select: {
+          probePolicyVersion: true,
+          searchPolicyVersion: true,
+          policyCanonicalVersion: true,
+        },
       });
     expect(oldWriterInvestigation).toEqual({
       probePolicyVersion: "review-investigation-probe-policy.v1",
       searchPolicyVersion: "review-investigation-fixed-string-search.v1",
+      policyCanonicalVersion: "review-investigation-policy.v1",
     });
 
     const oldWriterAttemptId = "mixed-version-old-writer-attempt";

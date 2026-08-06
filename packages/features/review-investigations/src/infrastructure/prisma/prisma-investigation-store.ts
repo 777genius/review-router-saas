@@ -30,6 +30,7 @@ import {
   type InvestigationPrunerPort,
 } from "../../application/ports/investigation-private-material-ports";
 import {
+  InvestigationStoreCommitGuardKind,
   InvestigationStoreCommitStatus,
   InvestigationStoreTransitionKind,
   type InvestigationStoreCommitResult,
@@ -43,6 +44,8 @@ import {
 import { ReconcileExpiredInvestigationPrivateMaterial } from "../../application/use-cases/reconcile-expired-investigation-private-material";
 import {
   assertInvestigationPolicy,
+  assertInvestigationPolicyCanonicalCompatibility,
+  parseInvestigationPolicyCanonicalVersion,
   type ReviewInvestigationPolicy,
 } from "../../domain/investigation-policy";
 import {
@@ -420,14 +423,9 @@ export class PrismaInvestigationStore
     );
   }
 
-  async commit(input: {
-    readonly investigation: ReviewInvestigation;
-    readonly expectedVersion: number | null;
-    readonly commandId: string;
-    readonly commandHash: string;
-    readonly transition: InvestigationStoreTransition;
-    readonly privateMaterials?: readonly EncryptedInvestigationPrivateMaterial[];
-  }): Promise<InvestigationStoreCommitResult> {
+  async commit(
+    input: Parameters<InvestigationStorePort["commit"]>[0],
+  ): Promise<InvestigationStoreCommitResult> {
     try {
       return await this.prisma.$transaction(
         async (transaction) => {
@@ -482,6 +480,12 @@ export class PrismaInvestigationStore
           if (!current || current.version !== input.expectedVersion) {
             return result(
               InvestigationStoreCommitStatus.ConcurrencyConflict,
+              current,
+            );
+          }
+          if (!(await commitGuardIsCurrent(transaction, input, current))) {
+            return result(
+              InvestigationStoreCommitStatus.LeaseFenceConflict,
               current,
             );
           }
@@ -988,6 +992,14 @@ async function loadAggregate(
   if (domainObligations.some((item) => item === null)) {
     throw new Error("investigation_obligation_receipt_missing");
   }
+  const policyCanonicalVersion = parseInvestigationPolicyCanonicalVersion(
+    record.policyCanonicalVersion,
+  );
+  const policy = toPolicy(record.policy);
+  assertInvestigationPolicyCanonicalCompatibility(
+    policy,
+    policyCanonicalVersion,
+  );
   const aggregate: ReviewInvestigation = {
     investigationId: record.investigationId,
     naturalIdentityHash: record.naturalIdentityHash,
@@ -1028,7 +1040,8 @@ async function loadAggregate(
       runtimeProfileVersion: record.runtimeProfileVersion,
       searchPolicyVersion: record.searchPolicyVersion,
     },
-    policy: toPolicy(record.policy),
+    policyCanonicalVersion,
+    policy,
     state: fromPrismaInvestigationState(record.state),
     obligations: domainObligations as readonly InvestigationObligation[],
     findings: toFindings(record.findings),
@@ -1393,6 +1406,7 @@ function toMainCreate(
     producerReleaseId: investigation.contract.producerReleaseId,
     runtimeProfileVersion: investigation.contract.runtimeProfileVersion,
     searchPolicyVersion: investigation.contract.searchPolicyVersion,
+    policyCanonicalVersion: investigation.policyCanonicalVersion,
     version: BigInt(investigation.version),
     policy: investigation.policy as unknown as Prisma.InputJsonValue,
     state: toPrismaInvestigationState(investigation.state),
@@ -1440,6 +1454,7 @@ function mainScalarData(
 ): Prisma.ReviewInvestigationUncheckedUpdateManyInput {
   return {
     version: BigInt(investigation.version),
+    policyCanonicalVersion: investigation.policyCanonicalVersion,
     policy: investigation.policy as unknown as Prisma.InputJsonValue,
     state: toPrismaInvestigationState(investigation.state),
     findings: investigation.findings as unknown as Prisma.InputJsonValue,
@@ -1887,6 +1902,14 @@ function toPrivateMaterial(
 
 function toPolicy(value: Prisma.JsonValue): ReviewInvestigationPolicy {
   if (!isObject(value)) throw new Error("investigation_policy_corrupt");
+  const maxSeedProbesPerFile = optionalNumberField(
+    value,
+    "maxSeedProbesPerFile",
+  );
+  const maxSeedProbesOverall = optionalNumberField(
+    value,
+    "maxSeedProbesOverall",
+  );
   const policy = {
     policyId: stringField(value, "policyId"),
     maxObligations: numberField(value, "maxObligations"),
@@ -1897,8 +1920,8 @@ function toPolicy(value: Prisma.JsonValue): ReviewInvestigationPolicy {
     maxFindings: numberField(value, "maxFindings"),
     maxProposalsPerTurn: numberField(value, "maxProposalsPerTurn"),
     maxReceiptsPerTurn: numberField(value, "maxReceiptsPerTurn"),
-    maxSeedProbesPerFile: numberField(value, "maxSeedProbesPerFile"),
-    maxSeedProbesOverall: numberField(value, "maxSeedProbesOverall"),
+    ...(maxSeedProbesPerFile === undefined ? {} : { maxSeedProbesPerFile }),
+    ...(maxSeedProbesOverall === undefined ? {} : { maxSeedProbesOverall }),
   };
   assertInvestigationPolicy(policy);
   return policy;
@@ -2103,6 +2126,13 @@ function numberField(value: Record<string, unknown>, field: string): number {
   return candidate;
 }
 
+function optionalNumberField(
+  value: Record<string, unknown>,
+  field: string,
+): number | undefined {
+  return value[field] === undefined ? undefined : numberField(value, field);
+}
+
 function stringEnumField<T extends Record<string, string>>(
   value: Record<string, unknown>,
   field: string,
@@ -2145,6 +2175,53 @@ function isRetryablePersistenceConflict(error: unknown): boolean {
 }
 
 class InvestigationWriteRaceError extends Error {}
+
+async function commitGuardIsCurrent(
+  transaction: Prisma.TransactionClient,
+  input: Parameters<InvestigationStorePort["commit"]>[0],
+  current: ReviewInvestigation,
+): Promise<boolean> {
+  if (input.guard === undefined) return true;
+  if (input.guard.kind !== InvestigationStoreCommitGuardKind.LeaseFence) {
+    return false;
+  }
+  if (
+    input.transition.kind !== InvestigationStoreTransitionKind.TurnCommitted ||
+    input.transition.turnId !== input.guard.turnId
+  ) {
+    return false;
+  }
+  const source = await transaction.reviewInvestigationLease.findUnique({
+    where: { leaseId: input.guard.leaseId },
+  });
+  if (
+    !source ||
+    source.state !== PrismaLeaseState.active ||
+    source.investigationId !== input.investigation.investigationId ||
+    source.turnId !== input.guard.turnId ||
+    source.attemptId !== input.guard.attemptId ||
+    source.fencingToken.toString(10) !== input.guard.fencingToken
+  ) {
+    return false;
+  }
+  if (
+    !reviewInvestigationLeaseBindingIsCurrent(
+      investigationLeaseFromRecord(source),
+      current,
+    )
+  ) {
+    return false;
+  }
+  const newest = await transaction.reviewInvestigationLease.findFirst({
+    where: {
+      investigationId: source.investigationId,
+      turnId: source.turnId,
+    },
+    orderBy: { fencingToken: "desc" },
+    select: { fencingToken: true },
+  });
+  return newest?.fencingToken === source.fencingToken;
+}
 
 async function revokeStaleInvestigationLeases(
   transaction: Prisma.TransactionClient,

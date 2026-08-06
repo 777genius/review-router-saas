@@ -1484,6 +1484,16 @@ async function commitTurn(
     }
     result = await d.investigations.commitTurn.execute(command);
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "investigation_lease_fencing_stale"
+    ) {
+      throw failure(
+        412,
+        ReviewActionV2ProtocolErrorCode.StalePrecondition,
+        error.message,
+      );
+    }
     if (error instanceof ReviewInvestigationDomainError) {
       throw failure(
         422,

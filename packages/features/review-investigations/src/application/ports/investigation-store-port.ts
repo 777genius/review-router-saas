@@ -8,11 +8,24 @@ export enum InvestigationStoreCommitStatus {
   Restored = "restored",
   ConcurrencyConflict = "concurrency_conflict",
   IdempotencyConflict = "idempotency_conflict",
+  LeaseFenceConflict = "lease_fence_conflict",
 }
 
 export type InvestigationStoreCommitResult = Readonly<{
   status: InvestigationStoreCommitStatus;
   investigation: ReviewInvestigation | null;
+}>;
+
+export enum InvestigationStoreCommitGuardKind {
+  LeaseFence = "lease_fence",
+}
+
+export type InvestigationStoreCommitGuard = Readonly<{
+  kind: InvestigationStoreCommitGuardKind.LeaseFence;
+  leaseId: string;
+  attemptId: string;
+  turnId: string;
+  fencingToken: string;
 }>;
 
 export enum InvestigationStoreTransitionKind {
@@ -74,6 +87,7 @@ export interface InvestigationStorePort {
     readonly commandId: string;
     readonly commandHash: string;
     readonly transition: InvestigationStoreTransition;
+    readonly guard?: InvestigationStoreCommitGuard;
     readonly privateMaterials?: readonly EncryptedInvestigationPrivateMaterial[];
   }): Promise<InvestigationStoreCommitResult>;
 }

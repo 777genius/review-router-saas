@@ -27,6 +27,8 @@ import {
 } from "./investigation-obligation";
 import {
   assertInvestigationPolicy,
+  currentInvestigationPolicyCanonicalVersion,
+  InvestigationPolicyCanonicalVersion,
   policyCanonicalValue,
   type ReviewInvestigationPolicy,
 } from "./investigation-policy";
@@ -71,6 +73,7 @@ export type ReviewInvestigation = Readonly<{
   investigationManifestHash: string | null;
   runtimeProfile: ReviewInvestigationRuntimeProfile;
   contract: ReviewInvestigationContract;
+  policyCanonicalVersion: InvestigationPolicyCanonicalVersion;
   policy: ReviewInvestigationPolicy;
   state: ReviewInvestigationState;
   obligations: readonly InvestigationObligation[];
@@ -119,6 +122,7 @@ export function createReviewInvestigation(
     | "nextEligibleAt"
     | "investigationManifestCanonicalJson"
     | "investigationManifestHash"
+    | "policyCanonicalVersion"
   > & { readonly obligations: readonly InvestigationObligation[] },
   admittedManifest: Readonly<{
     canonicalJson: string;
@@ -146,6 +150,7 @@ export function createReviewInvestigation(
     ...input,
     investigationManifestCanonicalJson: admittedManifest?.canonicalJson ?? null,
     investigationManifestHash: admittedManifest?.hash ?? null,
+    policyCanonicalVersion: currentInvestigationPolicyCanonicalVersion,
     version: 1,
     state:
       inventory[0]!.state === InvestigationObligationState.Satisfied
@@ -580,6 +585,7 @@ export function enforceCriticPolicyForConclusion(
 export function investigationDossierCanonicalValue(
   investigation: ReviewInvestigation,
 ): Readonly<Record<string, CanonicalValue>> {
+  const policyCanonicalVersion = investigation.policyCanonicalVersion;
   return {
     investigationId: investigation.investigationId,
     naturalIdentityHash: investigation.naturalIdentityHash,
@@ -596,7 +602,10 @@ export function investigationDossierCanonicalValue(
       : { investigationManifestHash: investigation.investigationManifestHash }),
     runtimeProfile: investigation.runtimeProfile,
     contract: { ...investigation.contract },
-    policy: policyCanonicalValue(investigation.policy),
+    ...(policyCanonicalVersion === InvestigationPolicyCanonicalVersion.LegacyV1
+      ? {}
+      : { policyCanonicalVersion }),
+    policy: policyCanonicalValue(investigation.policy, policyCanonicalVersion),
     state: investigation.state,
     obligations: sortObligations(investigation.obligations).map(
       obligationCanonicalObject,

@@ -8,6 +8,7 @@ import {
   investigationDossierCanonicalValue,
   type ReviewInvestigation,
 } from "../../domain/review-investigation";
+import { currentInvestigationPolicyCanonicalVersion } from "../../domain/investigation-policy";
 import type { EncryptedInvestigationPrivateMaterial } from "../../domain/investigation-private-material";
 import {
   InvestigationExecutionAuthorityVerdict,
@@ -17,6 +18,7 @@ import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationManifestIdentityPort } from "../ports/investigation-manifest-identity-port";
 import {
   InvestigationStoreCommitStatus,
+  type InvestigationStoreCommitGuard,
   type InvestigationStoreTransition,
   type InvestigationStorePort,
 } from "../ports/investigation-store-port";
@@ -71,11 +73,15 @@ export async function withCurrentDossierDigest(
   digest: InvestigationDigestPort,
   investigation: ReviewInvestigation,
 ): Promise<ReviewInvestigation> {
-  return {
+  const current = {
     ...investigation,
+    policyCanonicalVersion: currentInvestigationPolicyCanonicalVersion,
+  };
+  return {
+    ...current,
     dossierDigest: await digestCanonical(
       digest,
-      investigationDossierCanonicalValue(investigation),
+      investigationDossierCanonicalValue(current),
     ),
   };
 }
@@ -100,6 +106,7 @@ export async function commitOrThrow(input: {
   readonly commandId: string;
   readonly commandHash: string;
   readonly transition: InvestigationStoreTransition;
+  readonly guard?: InvestigationStoreCommitGuard;
   readonly privateMaterials?: readonly EncryptedInvestigationPrivateMaterial[];
 }): Promise<ReviewInvestigation> {
   const result = await input.store.commit(input);
@@ -113,6 +120,8 @@ export async function commitOrThrow(input: {
       throw new Error("investigation_concurrency_conflict");
     case InvestigationStoreCommitStatus.IdempotencyConflict:
       throw new Error("investigation_idempotency_conflict");
+    case InvestigationStoreCommitStatus.LeaseFenceConflict:
+      throw new Error("investigation_lease_fencing_stale");
   }
 }
 

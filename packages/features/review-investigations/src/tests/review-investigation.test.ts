@@ -7,6 +7,8 @@ import {
   ContextCriticDecision,
   enforceCriticPolicyForConclusion,
   InvestigationFindingSeverity,
+  InvestigationPolicyCanonicalVersion,
+  policyCanonicalValue,
   InvestigationLeaseAcquireStatus,
   InvestigationStoreTransitionKind,
   InvestigationObligationKind,
@@ -1041,6 +1043,81 @@ describe("review investigation in-memory vertical slice", () => {
       investigationManifestHash: null,
       dossierDigest: legacy.dossierDigest,
     });
+  });
+
+  it("restores legacy policy dossiers and upgrades their digest on mutation", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(
+      openCommand("open-legacy-policy-dossier"),
+    );
+    const stored = (await harness.store.findById(opened.investigationId))!;
+    const legacyPolicy = { ...stored.policy };
+    delete legacyPolicy.maxSeedProbesPerFile;
+    delete legacyPolicy.maxSeedProbesOverall;
+    const legacyPreimage = {
+      ...stored,
+      policyCanonicalVersion: InvestigationPolicyCanonicalVersion.LegacyV1,
+      policy: legacyPolicy,
+    };
+    const legacy = {
+      ...stored,
+      policyCanonicalVersion: InvestigationPolicyCanonicalVersion.LegacyV1,
+      policy: legacyPolicy,
+      dossierDigest: await harness.digest.digestUtf8(
+        canonicalJson(investigationDossierCanonicalValue(legacyPreimage)),
+      ),
+    };
+    const migratedStore = new InMemoryInvestigationStore();
+    await migratedStore.commit({
+      investigation: legacy,
+      expectedVersion: null,
+      commandId: "legacy-policy-open-command",
+      commandHash: "4".repeat(64),
+      transition: { kind: InvestigationStoreTransitionKind.Opened },
+    });
+    const restore = new RestoreReviewInvestigation(
+      migratedStore,
+      harness.digest,
+    );
+    await expect(
+      restore.snapshot(legacy.investigationId),
+    ).resolves.toMatchObject({
+      dossierDigest: legacy.dossierDigest,
+      policyCanonicalVersion: InvestigationPolicyCanonicalVersion.LegacyV1,
+      policy: legacyPolicy,
+    });
+    const planned = await new PlanNextInvestigationTurn(
+      migratedStore,
+      harness.authority,
+      harness.digest,
+      harness.clock,
+    ).execute({
+      commandId: "legacy-policy-plan",
+      investigationId: legacy.investigationId,
+      expectedVersion: legacy.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+    expect(planned.dossierDigest).not.toBe(legacy.dossierDigest);
+    expect(
+      (await migratedStore.findById(legacy.investigationId))
+        ?.policyCanonicalVersion,
+    ).toBe(InvestigationPolicyCanonicalVersion.SeedProbeV2);
+    await expect(
+      restore.snapshot(legacy.investigationId),
+    ).resolves.toMatchObject({
+      dossierDigest: planned.dossierDigest,
+    });
+  });
+
+  it("rejects a legacy canonical version carrying seed probe limits", () => {
+    const policy = openCommand("policy-downgrade").policy;
+    expect(() =>
+      policyCanonicalValue(
+        policy,
+        InvestigationPolicyCanonicalVersion.LegacyV1,
+      ),
+    ).toThrow("investigation_policy_canonical_downgrade_invalid");
   });
 
   it("is order-independent and rejects conflicting command replay", async () => {
