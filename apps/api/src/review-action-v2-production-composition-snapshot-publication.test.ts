@@ -27,6 +27,7 @@ import {
   renderCanonicalReviewPublication,
   resolveReviewPublicationRenderPolicyVersion,
   ReviewPublicationProjectionCoverage,
+  ReviewPublicationOccurrenceState,
   reviewPublicationLifecycleExpectationFromProjection,
   type ReviewPublicationRenderingSource,
   type RequestReviewPublicationCommand,
@@ -161,7 +162,18 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     };
     const projectionHash = hash("e");
     const partialArtifact = {
-      ...finalizedArtifactWithPublishing(partialPublishing, projectionHash),
+      ...finalizedArtifactWithProjectionEnvelope(
+        {
+          ...JSON.parse(projectionEnvelopeJson),
+          occurrences: [
+            { state: "new" },
+            { state: "reconfirmed" },
+            { state: "changed" },
+          ],
+          publishing: partialPublishing,
+        },
+        projectionHash,
+      ),
       coverageState: ReviewCoverageState.Partial,
       projectionPolicyVersion: currentReviewProjectionPolicyVersion,
     };
@@ -193,6 +205,11 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
           currentReviewProjectionPolicyVersion,
         ),
         targetCommitId: partialArtifact.reviewedHeadSha,
+        occurrenceStates: [
+          ReviewPublicationOccurrenceState.New,
+          ReviewPublicationOccurrenceState.Reconfirmed,
+          ReviewPublicationOccurrenceState.Changed,
+        ],
         source: partialPublishing,
       },
       {
@@ -210,6 +227,46 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     expect(expected.summary.body).toContain(
       "Review incomplete - 3 preliminary findings preserved",
     );
+  });
+
+  it("rejects partial counts that disagree with canonical occurrences", async () => {
+    const partialPublishing: ReviewPublicationRenderingSource = {
+      ...publishing,
+      check: { ...publishing.check, conclusion: "success" },
+      summary: {
+        ...publishing.summary,
+        allClear: false,
+        occurrenceCounts: {
+          ...publishing.summary.occurrenceCounts,
+          new: 1,
+        },
+      },
+    };
+    const projectionHash = hash("f");
+    const partialArtifact = {
+      ...finalizedArtifactWithPublishing(partialPublishing, projectionHash),
+      coverageState: ReviewCoverageState.Partial,
+      projectionPolicyVersion: currentReviewProjectionPolicyVersion,
+    };
+    const routes = createRoutes(
+      new InMemoryReviewPublicationRepository(),
+      { assertCurrentPolicy: vi.fn() },
+      partialArtifact,
+    );
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      partialArtifact.publicationPermit,
+      now,
+    );
+
+    await expect(
+      routes.publication.request!.execute(
+        await publicationRequest(
+          publicationPermit,
+          canonicalJson(partialPublishing),
+          projectionHash,
+        ),
+      ),
+    ).rejects.toThrow("publication_occurrence_counts_mismatch");
   });
 
   it("accepts canonical producer metadata outside publication rendering", async () => {

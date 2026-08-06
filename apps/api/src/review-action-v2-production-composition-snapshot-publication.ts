@@ -26,6 +26,7 @@ import {
   ReviewPublicationPlanningError,
   ReviewPublicationPlanningErrorCode,
   ReviewPublicationProjectionCoverage,
+  ReviewPublicationOccurrenceState,
   ReviewPublicationLifecycleObservationVersion,
   ReviewPublicationLifecycleExpectationStatus,
   ReviewPublicationRunControlStatus,
@@ -897,6 +898,7 @@ function publishedEnvelope(input: {
         input.artifact.projectionPolicyVersion,
       ),
       targetCommitId: input.artifact.reviewedHeadSha,
+      occurrenceStates: publicationOccurrenceStates(projection.occurrences),
       source: publishing,
     },
     {
@@ -939,6 +941,40 @@ function publishedEnvelope(input: {
       ...bodyFactsOf(entry),
     })),
   };
+}
+
+function publicationOccurrenceStates(
+  value: unknown,
+): readonly ReviewPublicationOccurrenceState[] {
+  if (!Array.isArray(value) || value.length > 10_000) {
+    throw routeFailure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "publication_occurrences_invalid",
+    );
+  }
+  return value.map((candidate) => {
+    if (typeof candidate !== "object" || candidate === null) {
+      throw routeFailure(
+        422,
+        ReviewActionV2ProtocolErrorCode.InvariantViolation,
+        "publication_occurrences_invalid",
+      );
+    }
+    const state = (candidate as Readonly<Record<string, unknown>>).state;
+    if (
+      !Object.values(ReviewPublicationOccurrenceState).includes(
+        state as ReviewPublicationOccurrenceState,
+      )
+    ) {
+      throw routeFailure(
+        422,
+        ReviewActionV2ProtocolErrorCode.InvariantViolation,
+        "publication_occurrence_state_invalid",
+      );
+    }
+    return state as ReviewPublicationOccurrenceState;
+  });
 }
 
 function publicationProjection(value: unknown) {

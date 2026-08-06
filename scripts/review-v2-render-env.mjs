@@ -6,7 +6,7 @@ export const reviewV2ContextApiEnvKeys = Object.freeze([
 
 export const reviewV2ProjectionPolicyVersionEnvKey =
   "REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION";
-export const reviewV2ProjectionPolicyVersion = "review-projection-policy.v5-t0";
+export const reviewV2ProjectionPolicyVersion = "review-projection-policy.v4-t0";
 
 export const reviewV2ContextWorkerEnvKeys = Object.freeze([]);
 

@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
-import { reviewActionV2ProjectionPolicyVersion } from "../apps/api/src/review-action-v2-projection-policy.js";
+import {
+  resolveReviewActionV2ProjectionPolicyVersion,
+  reviewActionV2ProjectionPolicyVersion,
+} from "../apps/api/src/review-action-v2-projection-policy.js";
 import { describe, expect, it } from "vitest";
 import {
   reviewV2ContextApiEnvKeys,
@@ -17,8 +20,7 @@ describe("Review v2 Render context environment", () => {
   it("keeps cryptographic material API-only", () => {
     expect(reviewV2ContextEnvForRole(configuredEnv, "api")).toEqual({
       ...configuredEnv,
-      [reviewV2ProjectionPolicyVersionEnvKey]:
-        reviewActionV2ProjectionPolicyVersion,
+      [reviewV2ProjectionPolicyVersionEnvKey]: reviewV2ProjectionPolicyVersion,
     });
     expect(reviewV2ContextEnvForRole(configuredEnv, "worker")).toEqual(
       Object.fromEntries(
@@ -26,9 +28,14 @@ describe("Review v2 Render context environment", () => {
       ),
     );
     expect(reviewV2ContextEnvForRole(configuredEnv, "web")).toEqual({});
-    expect(reviewV2ProjectionPolicyVersion).toBe(
+    expect(reviewV2ProjectionPolicyVersion).not.toBe(
       reviewActionV2ProjectionPolicyVersion,
     );
+    expect(
+      resolveReviewActionV2ProjectionPolicyVersion(
+        reviewV2ProjectionPolicyVersion,
+      ),
+    ).toBe(reviewV2ProjectionPolicyVersion);
   });
 
   it("declares every required value in the Render blueprint", () => {
@@ -40,7 +47,7 @@ describe("Review v2 Render context environment", () => {
       expect(blueprint).toContain(`- key: ${key}`);
     }
     expect(blueprint).toContain(
-      `- key: REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION\n        value: "${reviewActionV2ProjectionPolicyVersion}"`,
+      `- key: REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION\n        value: "${reviewV2ProjectionPolicyVersion}"`,
     );
   });
 });

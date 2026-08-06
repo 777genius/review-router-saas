@@ -43,6 +43,16 @@ export type ReviewPublicationOccurrenceCounts = {
   readonly suppressed_by_human: number;
 };
 
+export enum ReviewPublicationOccurrenceState {
+  New = "new",
+  Reconfirmed = "reconfirmed",
+  Changed = "changed",
+  CarriedUnverified = "carried_unverified",
+  Resolved = "resolved",
+  Uncertain = "uncertain",
+  SuppressedByHuman = "suppressed_by_human",
+}
+
 export type ReviewPublicationRenderingSource = {
   readonly summary: {
     readonly marker: string;
@@ -148,17 +158,30 @@ export function renderCanonicalReviewPublication(
     readonly coverage: ReviewPublicationProjectionCoverage;
     readonly renderPolicyVersion: CanonicalReviewPublicationRenderPolicyVersion;
     readonly targetCommitId: string;
+    readonly occurrenceStates: readonly ReviewPublicationOccurrenceState[];
     readonly source: ReviewPublicationRenderingSource;
   },
   primitives: CanonicalReviewPublicationRenderingPrimitives,
 ): CanonicalReviewPublicationRendering {
+  const verifiedOccurrenceCounts =
+    input.renderPolicyVersion ===
+    CanonicalReviewPublicationRenderPolicyVersion.PreliminaryFindingsV4
+      ? occurrenceCountsBoundToProjection(
+          input.source.summary.occurrenceCounts,
+          input.occurrenceStates,
+        )
+      : null;
   const partial =
     input.coverage === ReviewPublicationProjectionCoverage.Partial;
   const summary = payload(
     input.source.summary.marker,
     withMarker(
       partial
-        ? partialSummary(input.renderPolicyVersion, input.source)
+        ? partialSummary(
+            input.renderPolicyVersion,
+            input.source,
+            verifiedOccurrenceCounts,
+          )
         : input.source.summary.body,
       input.source.summary.marker,
       input.renderPolicyVersion,
@@ -285,6 +308,7 @@ export function renderCanonicalReviewPublication(
 function partialSummary(
   version: CanonicalReviewPublicationRenderPolicyVersion,
   source: ReviewPublicationRenderingSource,
+  verifiedOccurrenceCounts: ReviewPublicationOccurrenceCounts | null,
 ): string {
   switch (version) {
     case CanonicalReviewPublicationRenderPolicyVersion.LegacyV1:
@@ -293,24 +317,24 @@ function partialSummary(
     case CanonicalReviewPublicationRenderPolicyVersion.HiddenMarkersV3:
       return partialReviewPublicationSummary;
     case CanonicalReviewPublicationRenderPolicyVersion.PreliminaryFindingsV4:
-      return preliminaryFindingsPartialSummary(source);
+      if (verifiedOccurrenceCounts === null) {
+        throw new Error("publication_occurrence_counts_invalid");
+      }
+      return preliminaryFindingsPartialSummary(
+        source,
+        verifiedOccurrenceCounts,
+      );
   }
 }
 
 function preliminaryFindingsPartialSummary(
   source: ReviewPublicationRenderingSource,
+  occurrenceCounts: ReviewPublicationOccurrenceCounts,
 ): string {
-  const counts = Object.values(source.summary.occurrenceCounts);
-  if (
-    counts.some((count) => !Number.isSafeInteger(count) || count < 0) ||
-    !Number.isSafeInteger(counts.reduce((sum, count) => sum + count, 0))
-  ) {
-    throw new Error("publication_occurrence_counts_invalid");
-  }
   const preliminaryFindingCount =
-    source.summary.occurrenceCounts.new +
-    source.summary.occurrenceCounts.reconfirmed +
-    source.summary.occurrenceCounts.changed;
+    occurrenceCounts.new +
+    occurrenceCounts.reconfirmed +
+    occurrenceCounts.changed;
   const findingLabel = preliminaryFindingCount === 1 ? "finding" : "findings";
   const preliminaryBody = removePartialAllClearClaims(
     source.summary.body.trim(),
@@ -334,6 +358,41 @@ function preliminaryFindingsPartialSummary(
     "",
     "<sub>Inline comments, managed check conclusions, and lifecycle changes were withheld until required coverage completes.</sub>",
   ].join("\n");
+}
+
+function occurrenceCountsBoundToProjection(
+  declared: ReviewPublicationOccurrenceCounts,
+  states: readonly ReviewPublicationOccurrenceState[],
+): ReviewPublicationOccurrenceCounts {
+  const keys = Object.values(ReviewPublicationOccurrenceState);
+  if (
+    Object.keys(declared).length !== keys.length ||
+    keys.some(
+      (key) => !Number.isSafeInteger(declared[key]) || declared[key] < 0,
+    ) ||
+    !Number.isSafeInteger(keys.reduce((sum, key) => sum + declared[key], 0))
+  ) {
+    throw new Error("publication_occurrence_counts_invalid");
+  }
+  const derived: Record<ReviewPublicationOccurrenceState, number> = {
+    [ReviewPublicationOccurrenceState.New]: 0,
+    [ReviewPublicationOccurrenceState.Reconfirmed]: 0,
+    [ReviewPublicationOccurrenceState.Changed]: 0,
+    [ReviewPublicationOccurrenceState.CarriedUnverified]: 0,
+    [ReviewPublicationOccurrenceState.Resolved]: 0,
+    [ReviewPublicationOccurrenceState.Uncertain]: 0,
+    [ReviewPublicationOccurrenceState.SuppressedByHuman]: 0,
+  };
+  for (const state of states) {
+    if (!Object.hasOwn(derived, state)) {
+      throw new Error("publication_occurrence_state_invalid");
+    }
+    derived[state] += 1;
+  }
+  if (keys.some((key) => declared[key] !== derived[key])) {
+    throw new Error("publication_occurrence_counts_mismatch");
+  }
+  return derived;
 }
 
 function removePartialAllClearClaims(body: string): string {

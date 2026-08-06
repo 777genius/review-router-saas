@@ -5,6 +5,7 @@ import {
   ReviewPublicationKind,
   ReviewPublicationLifecycleSemantic,
   ReviewPublicationProjectionCoverage,
+  ReviewPublicationOccurrenceState,
   ReviewPublicationSummarySemantic,
   publishedReviewProjectionPublicationEnvelopeVersion,
   renderCanonicalReviewPublication,
@@ -282,6 +283,9 @@ function buildCatalog(
         artifact.projectionPolicyVersion,
       ),
       targetCommitId: artifact.reviewedHeadSha,
+      occurrenceStates: projection.occurrences.map((occurrence) =>
+        reviewPublicationOccurrenceState(occurrence.state),
+      ),
       source: projection.publishing,
     },
     {
@@ -328,6 +332,19 @@ function buildCatalog(
     } as const,
   }));
   return { summary, managedCheck, inlineChunks, lifecycle };
+}
+
+function reviewPublicationOccurrenceState(
+  value: string,
+): ReviewPublicationOccurrenceState {
+  if (
+    !Object.values(ReviewPublicationOccurrenceState).includes(
+      value as ReviewPublicationOccurrenceState,
+    )
+  ) {
+    throw new Error("review_v2_projection_occurrence_state_invalid");
+  }
+  return value as ReviewPublicationOccurrenceState;
 }
 
 function payloadFields(value: {

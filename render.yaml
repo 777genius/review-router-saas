@@ -143,7 +143,7 @@ envVarGroups:
       - key: REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON
         sync: false
       - key: REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION
-        value: "review-projection-policy.v5-t0"
+        value: "review-projection-policy.v4-t0"
       # Cross-revision context reuse is fail-closed. Session and replay keys are
       # API-only; gateway identity is bound to each immutable producer release.
       - key: REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64
