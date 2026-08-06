@@ -5,13 +5,16 @@ import {
   ReviewMutationAuthorityCommandKind,
   ReviewMutationAuthorityPreflightStatus,
   ReviewMutationLaneKind,
+  ProducerDistributionKind,
   ProducerReleaseState,
+  ReviewCapabilityProfile,
   ReviewSafetyCapability,
   ReviewSafetyPolicyScope,
   ReviewSafetyRolloutMode,
   ScmProvider,
   canonicalReviewOperationalSloProfile,
   canonicalReviewProtocolLimits,
+  reviewInvestigationCapabilityV1,
   reviewMutationAuthorityProofReference,
   type ProducerReleaseCandidate,
   type ReviewOperationalSloThresholds,
@@ -163,6 +166,16 @@ async function main() {
       await authenticateOperator(runtime.digest, process.env);
       requireConfirmation(parsed, "release");
       printJson(await registerRelease(parsed, runtime));
+      return;
+    }
+    if (command === "release revoke") {
+      await authenticateOperator(runtime.digest, process.env);
+      requireConfirmation(parsed, "release");
+      printJson(
+        await runtime.runControl.producerReleases.revokeProducerRelease(
+          requireOption(parsed, "release"),
+        ),
+      );
       return;
     }
     const globalEmergencyTransition =
@@ -470,10 +483,9 @@ async function registerRelease(
   ) as ReviewOperationalSloThresholds;
   const ownerRefs = requireStringArray(bundle, "ownerRefs");
   const runbookRefs = requireStringArray(bundle, "runbookRefs");
-  const candidate = requireObject(
-    bundle,
-    "candidate",
-  ) as ProducerReleaseCandidate;
+  const candidate = parseReviewV2ReleaseBundleCandidate(
+    requireObject(bundle, "candidate"),
+  );
   const protocolLimitsProfileId = requireString(
     bundle,
     "protocolLimitsProfileId",
@@ -816,6 +828,144 @@ function requireObject(input: Record<string, unknown>, name: string) {
   return value as Record<string, unknown>;
 }
 
+type ReviewV2ReleaseBundleCandidate = Omit<
+  ProducerReleaseCandidate,
+  "protocolLimitsProfileId" | "operationalSloProfileId"
+>;
+
+const releaseBundleCandidateKeys = Object.freeze([
+  "producerReleaseId",
+  "distributionKind",
+  "actionCommitSha",
+  "runtimeCommitSha",
+  "wrapperEntrypointDigest",
+  "runtimeEntrypointDigest",
+  "contextGatewayPolicyVersion",
+  "contextGatewayEntrypointDigest",
+  "reviewInvestigationProfile",
+  "schemaDigest",
+  "capabilityProfile",
+]);
+
+export function parseReviewV2ReleaseBundleCandidate(
+  input: Record<string, unknown>,
+): ReviewV2ReleaseBundleCandidate {
+  requireExactKeys(input, releaseBundleCandidateKeys, "candidate");
+  const distributionKind = requireEnum(
+    input,
+    "distributionKind",
+    Object.values(ProducerDistributionKind),
+  );
+  const capabilityProfile = requireEnum(
+    input,
+    "capabilityProfile",
+    Object.values(ReviewCapabilityProfile),
+  );
+  const reviewInvestigationProfile = input.reviewInvestigationProfile;
+  if (
+    reviewInvestigationProfile !== null &&
+    (!reviewInvestigationProfile ||
+      typeof reviewInvestigationProfile !== "object" ||
+      Array.isArray(reviewInvestigationProfile))
+  ) {
+    throw new Error(
+      "review_v2_bundle_field_invalid:candidate.reviewInvestigationProfile",
+    );
+  }
+  if (reviewInvestigationProfile !== null) {
+    requireExactKeys(
+      reviewInvestigationProfile as Record<string, unknown>,
+      ["capability", "coverageProfileHash", "policyHash"],
+      "candidate.reviewInvestigationProfile",
+    );
+  }
+  const parsedReviewInvestigationProfile =
+    reviewInvestigationProfile === null
+      ? null
+      : {
+          capability: requireLiteral(
+            reviewInvestigationProfile as Record<string, unknown>,
+            "capability",
+            reviewInvestigationCapabilityV1,
+            "candidate.reviewInvestigationProfile.capability",
+          ),
+          coverageProfileHash: requireString(
+            reviewInvestigationProfile as Record<string, unknown>,
+            "coverageProfileHash",
+          ),
+          policyHash: requireString(
+            reviewInvestigationProfile as Record<string, unknown>,
+            "policyHash",
+          ),
+        };
+
+  return {
+    producerReleaseId: requireString(input, "producerReleaseId"),
+    distributionKind,
+    actionCommitSha: requireString(input, "actionCommitSha"),
+    runtimeCommitSha: requireString(input, "runtimeCommitSha"),
+    wrapperEntrypointDigest: requireNullableString(
+      input,
+      "wrapperEntrypointDigest",
+    ),
+    runtimeEntrypointDigest: requireString(input, "runtimeEntrypointDigest"),
+    contextGatewayPolicyVersion: requireNullableString(
+      input,
+      "contextGatewayPolicyVersion",
+    ),
+    contextGatewayEntrypointDigest: requireNullableString(
+      input,
+      "contextGatewayEntrypointDigest",
+    ),
+    reviewInvestigationProfile: parsedReviewInvestigationProfile,
+    schemaDigest: requireString(input, "schemaDigest"),
+    capabilityProfile,
+  };
+}
+
+function requireExactKeys(
+  input: Record<string, unknown>,
+  expected: readonly string[],
+  name: string,
+) {
+  const actual = Object.keys(input).sort();
+  const normalizedExpected = [...expected].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(normalizedExpected)) {
+    throw new Error(`review_v2_bundle_field_shape_invalid:${name}`);
+  }
+}
+
+function requireNullableString(
+  input: Record<string, unknown>,
+  name: string,
+): string | null {
+  return input[name] === null ? null : requireString(input, name);
+}
+
+function requireEnum<const Value extends string>(
+  input: Record<string, unknown>,
+  name: string,
+  values: readonly Value[],
+): Value {
+  const value = requireString(input, name);
+  if (!values.includes(value as Value)) {
+    throw new Error(`review_v2_bundle_field_invalid:${name}`);
+  }
+  return value as Value;
+}
+
+function requireLiteral<const Value extends string>(
+  input: Record<string, unknown>,
+  name: string,
+  expected: Value,
+  errorName = name,
+): Value {
+  if (input[name] !== expected) {
+    throw new Error(`review_v2_bundle_field_invalid:${errorName}`);
+  }
+  return expected;
+}
+
 function requireString(input: Record<string, unknown>, name: string) {
   const value = input[name];
   if (typeof value !== "string" || value.length === 0) {
@@ -853,6 +1003,9 @@ function printUsage() {
   process.stdout.write(`  env-preflight\n`);
   process.stdout.write(`  status --repo OWNER/REPO\n`);
   process.stdout.write(`  release register --bundle FILE --confirm release\n`);
+  process.stdout.write(
+    `  release revoke --release RELEASE_ID --confirm release\n`,
+  );
   process.stdout.write(`  emergency global open|stop --confirm global\n`);
   process.stdout.write(
     `  cohort stage --repo OWNER/REPO --confirm OWNER/REPO\n`,

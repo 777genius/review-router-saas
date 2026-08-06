@@ -74,6 +74,13 @@ carries a nested capability identifier, coverage-profile hash, and policy hash;
 legacy candidates use a null investigation profile and cannot open or reuse
 investigation context evidence. Do not enter investigation hashes manually;
 they are derived from the committed Action metadata and checked golden fixture.
+The registration candidate is the normalized domain shape, not the raw generated
+manifest: it must contain an explicit `reviewInvestigationProfile` object (or
+explicit `null` for a legacy release). Raw flattened
+`reviewInvestigationCapability`, `reviewInvestigationCoverageProfileHash`, and
+`reviewInvestigationPolicyHash` fields are rejected. `canonicalizerDigest`
+belongs to the producer attestation assembled from the same validated manifest,
+not to the database registration candidate.
 
 Projection policy compatibility is versioned independently from the current
 deployment default. Finalization accepts only policy versions supported by the
@@ -96,6 +103,16 @@ passed retention.
 ```bash
 pnpm review-v2:admin release register \
   --bundle /secure/path/review-v2-release-bundle.json \
+  --confirm release
+```
+
+If a release is registered with the wrong immutable metadata, do not edit or
+delete its database row. Keep it out of the attestation registry and revoke it
+through the domain command before registering a corrected release ID:
+
+```bash
+pnpm review-v2:admin release revoke \
+  --release INCORRECT_PRODUCER_RELEASE_ID \
   --confirm release
 ```
 

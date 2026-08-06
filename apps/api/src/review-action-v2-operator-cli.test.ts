@@ -7,6 +7,7 @@ import {
 import {
   inspectEnvironment,
   parseArguments,
+  parseReviewV2ReleaseBundleCandidate,
   reviewV2CohortEmergencyInitialization,
   reviewV2CohortOperationForCommand,
   reviewV2CohortRolloutModes,
@@ -74,6 +75,39 @@ describe("review action v2 operator CLI", () => {
       authority: { mutationEpoch: "7" },
       version: 2,
     });
+  });
+
+  it("parses the exact normalized producer release candidate shape", () => {
+    expect(parseReviewV2ReleaseBundleCandidate(releaseCandidate())).toEqual(
+      releaseCandidate(),
+    );
+  });
+
+  it("rejects flattened raw-manifest investigation fields", () => {
+    const withoutProfile = releaseCandidateWithoutInvestigationProfile();
+
+    expect(() =>
+      parseReviewV2ReleaseBundleCandidate({
+        ...withoutProfile,
+        reviewInvestigationCapability: "review_investigation_v1",
+        reviewInvestigationCoverageProfileHash: "5".repeat(64),
+        reviewInvestigationPolicyHash: "6".repeat(64),
+      }),
+    ).toThrow("review_v2_bundle_field_shape_invalid:candidate");
+  });
+
+  it("requires an explicit null for a legacy candidate profile", () => {
+    const candidate = releaseCandidateWithoutInvestigationProfile();
+
+    expect(() => parseReviewV2ReleaseBundleCandidate(candidate)).toThrow(
+      "review_v2_bundle_field_shape_invalid:candidate",
+    );
+    expect(
+      parseReviewV2ReleaseBundleCandidate({
+        ...candidate,
+        reviewInvestigationProfile: null,
+      }).reviewInvestigationProfile,
+    ).toBeNull();
   });
 
   it("stages only T0 capabilities and promotes context reuse independently", () => {
@@ -189,3 +223,34 @@ describe("review action v2 operator CLI", () => {
     ).toBeNull();
   });
 });
+
+function releaseCandidate(): Record<string, unknown> {
+  return {
+    producerReleaseId: "review-action-v2-release",
+    distributionKind: "public_reusable",
+    actionCommitSha: "1".repeat(40),
+    runtimeCommitSha: "2".repeat(40),
+    wrapperEntrypointDigest: null,
+    runtimeEntrypointDigest: "3".repeat(64),
+    contextGatewayPolicyVersion: "context-gateway-v4",
+    contextGatewayEntrypointDigest: "4".repeat(64),
+    reviewInvestigationProfile: {
+      capability: "review_investigation_v1",
+      coverageProfileHash: "5".repeat(64),
+      policyHash: "6".repeat(64),
+    },
+    schemaDigest: "7".repeat(64),
+    capabilityProfile: "exact_revision_v2",
+  };
+}
+
+function releaseCandidateWithoutInvestigationProfile(): Record<
+  string,
+  unknown
+> {
+  return Object.fromEntries(
+    Object.entries(releaseCandidate()).filter(
+      ([key]) => key !== "reviewInvestigationProfile",
+    ),
+  );
+}
