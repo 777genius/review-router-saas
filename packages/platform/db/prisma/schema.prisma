@@ -1196,6 +1196,7 @@ model ReviewInvestigation {
   turnProvenance              Json
   conclusion                  ReviewInvestigationConclusionV1?
   certificateId               String?                              @unique(map: "ReviewInvestigation_certificateId_key")
+  replayEvidenceCheckpointId  String?                              @unique(map: "ReviewInvestigation_replayEvidenceCheckpointId_key")
   dossierDigest               String
   nextEligibleAt              DateTime?
   supersededByInvestigationId String?
@@ -1389,6 +1390,33 @@ model ReviewInvestigationCertificate {
   @@unique([investigationId, terminalVersion], map: "ReviewInvestigationCertificate_terminal_key")
   @@index([reviewRevisionHash, stableReviewUnitKey], map: "ReviewInvestigationCertificate_revision_unit_idx")
   @@index([expiresAt, certificateId], map: "ReviewInvestigationCertificate_expiry_idx")
+}
+
+model ReviewInvestigationReplayEvidenceCheckpoint {
+  checkpointId               String                           @id
+  checkpointHash             String                           @unique(map: "ReviewInvestigationReplayCheckpoint_hash_key")
+  sourceInvestigationId      String
+  sourceInvestigationVersion BigInt
+  sourceDossierDigest        String
+  scopeHash                  String
+  reviewRevisionHash         String
+  stableReviewUnitKey        String
+  providerVoteLaneId         String
+  contractHash               String
+  policyHash                 String
+  producerReleaseId          String
+  producerReleaseHash        String
+  runtimeProfileHash         String
+  receiptSetHash             String
+  contextAttestationSetHash  String
+  sourceState                ReviewInvestigationStateV1
+  sourceConclusion           ReviewInvestigationConclusionV1?
+  issuedAt                   DateTime
+  expiresAt                  DateTime
+
+  @@unique([sourceInvestigationId, sourceInvestigationVersion], map: "ReviewInvestigationReplayCheckpoint_source_version_key")
+  @@index([reviewRevisionHash, stableReviewUnitKey], map: "ReviewInvestigationReplayCheckpoint_revision_unit_idx")
+  @@index([expiresAt, checkpointId], map: "ReviewInvestigationReplayCheckpoint_expiry_idx")
 }
 
 model ReviewInvestigationCommandReceipt {
@@ -2206,6 +2234,7 @@ enum ReviewInvestigationObligationKindV1 {
   side_effect_parity
   external_contract
   binary_artifact
+  finding_revalidation
   context_critic
 }
 

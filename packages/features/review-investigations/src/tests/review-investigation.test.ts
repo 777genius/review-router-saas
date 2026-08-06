@@ -307,7 +307,8 @@ describe("review investigation in-memory vertical slice", () => {
     ).resolves.toMatchObject({
       status: PrepareReviewInvestigationReplayStatus.Prepared,
       sourceInvestigationId: opened.investigationId,
-      sourceCertificateHash: snapshot.certificate!.certificateHash,
+      sourceCheckpointHash:
+        sourceBeforeReplay!.replayEvidenceCheckpoint!.checkpointHash,
       obligations: expect.arrayContaining([
         expect.objectContaining({
           replay: expect.objectContaining({
@@ -424,7 +425,8 @@ describe("review investigation in-memory vertical slice", () => {
     const replayed = await replay.execute({
       commandId: "replay-selective",
       sourceInvestigationId: opened.investigationId,
-      sourceCertificateHash: snapshot.certificate!.certificateHash,
+      sourceCheckpointHash:
+        sourceBeforeReplay!.replayEvidenceCheckpoint!.checkpointHash,
       targetScope: openCommand("unused").scope,
       targetRevision,
       targetExecutionId: "execution-target",
@@ -549,7 +551,8 @@ describe("review investigation in-memory vertical slice", () => {
     const fullyReplayed = await replayAll.execute({
       commandId: "replay-all",
       sourceInvestigationId: opened.investigationId,
-      sourceCertificateHash: snapshot.certificate!.certificateHash,
+      sourceCheckpointHash:
+        sourceBeforeReplay!.replayEvidenceCheckpoint!.checkpointHash,
       targetScope: openCommand("unused").scope,
       targetRevision: {
         ...targetRevision,
@@ -869,6 +872,168 @@ describe("review investigation in-memory vertical slice", () => {
     });
     const snapshot = await harness.restore.snapshot(opened.investigationId);
     expect(snapshot.conclusion).toBe(ReviewInvestigationConclusion.Findings);
+    const source = await harness.store.findById(opened.investigationId);
+    const target = openCommand("findings-target");
+    const replay = new ReplayReviewInvestigation(
+      harness.store,
+      harness.authority,
+      {
+        replay: async ({ sourceReceipt, targetRevision, replayProofId }) => ({
+          verdict: InvestigationReceiptReplayVerdict.Matched,
+          targetReceipt: {
+            ...sourceReceipt,
+            receiptId: `findings-replay-${sourceReceipt.receiptId}`,
+            reviewRevisionHash: targetRevision.reviewRevisionHash,
+            replayProofId,
+          },
+        }),
+      },
+      harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
+      harness.clock,
+    );
+    const replayed = await replay.execute({
+      commandId: "replay-findings-source",
+      sourceInvestigationId: source!.investigationId,
+      sourceCheckpointHash: source!.replayEvidenceCheckpoint!.checkpointHash,
+      targetScope: target.scope,
+      targetRevision: {
+        ...target.revision,
+        headSha: "6".repeat(40),
+        reviewRevisionHash: "6".repeat(64),
+      },
+      targetExecutionId: "execution-findings-target",
+      targetWorkSlotId: "slot-findings-target",
+      targetStableReviewUnitKey: target.stableReviewUnitKey,
+      targetProviderVoteLaneId: target.providerVoteLaneId,
+      targetProviderStrategyId: target.providerStrategyId,
+      targetInvestigationManifestCanonicalJson:
+        target.investigationManifestCanonicalJson!,
+      targetInvestigationManifestHash: target.investigationManifestHash!,
+      targetRuntimeProfile: target.runtimeProfile,
+      targetContract: target.contract,
+      targetPolicy: target.policy,
+      targetSeedObligations: target.seedObligations,
+      targetInitialReceipts: [],
+      replayProofs: source!.obligations.map((obligation) => ({
+        obligationId: obligation.obligationId,
+        replayProofId: `proof-findings-${obligation.obligationId}`,
+      })),
+    });
+    const replayedAggregate = await harness.store.findById(
+      replayed.investigationId,
+    );
+    expect(replayedAggregate).toMatchObject({
+      findings: [],
+      criticDecision: null,
+      certificate: null,
+    });
+    expect(
+      replayedAggregate?.obligations.find(
+        (obligation) =>
+          obligation.kind === InvestigationObligationKind.FindingRevalidation,
+      ),
+    ).toMatchObject({ state: "open" });
+  });
+
+  it("replays committed receipts from superseded revision A into B without terminal state", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("superseded-a"));
+    const discovery = await planDiscovery(harness, opened);
+    const awaitingCritic = await harness.commit.execute({
+      ...emptyCommit(discovery, "commit-superseded-a"),
+      closureClaims: [
+        {
+          obligationId: discovery.turn!.obligationIds[0]!,
+          receipt: receipt("receipt-superseded-a", changedSubject),
+        },
+      ],
+    });
+    const critic = await harness.plan.execute({
+      commandId: "plan-superseded-a-critic",
+      investigationId: opened.investigationId,
+      expectedVersion: awaitingCritic.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+    await harness.abort.execute({
+      commandId: "abort-superseded-a",
+      investigationId: opened.investigationId,
+      expectedVersion: critic.version,
+      turnId: critic.turn!.turnId,
+      reason: ReviewInvestigationAbortReason.SupersededExecution,
+      nextEligibleAt: null,
+    });
+    const source = await harness.store.findById(opened.investigationId);
+    expect(source).toMatchObject({
+      state: ReviewInvestigationState.Superseded,
+      conclusion: null,
+      certificate: null,
+      replayEvidenceCheckpoint: { sourceState: "superseded" },
+    });
+
+    const target = openCommand("superseded-b");
+    const replay = new ReplayReviewInvestigation(
+      harness.store,
+      harness.authority,
+      {
+        replay: async ({ sourceReceipt, targetRevision, replayProofId }) => ({
+          verdict: InvestigationReceiptReplayVerdict.Matched,
+          targetReceipt: {
+            ...sourceReceipt,
+            receiptId: `superseded-b-${sourceReceipt.receiptId}`,
+            reviewRevisionHash: targetRevision.reviewRevisionHash,
+            replayProofId,
+          },
+        }),
+      },
+      harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
+      harness.clock,
+    );
+    const replayed = await replay.execute({
+      commandId: "replay-superseded-a-to-b",
+      sourceInvestigationId: source!.investigationId,
+      sourceCheckpointHash: source!.replayEvidenceCheckpoint!.checkpointHash,
+      targetScope: target.scope,
+      targetRevision: {
+        ...target.revision,
+        headSha: "7".repeat(40),
+        reviewRevisionHash: "7".repeat(64),
+      },
+      targetExecutionId: "execution-superseded-b",
+      targetWorkSlotId: "slot-superseded-b",
+      targetStableReviewUnitKey: target.stableReviewUnitKey,
+      targetProviderVoteLaneId: target.providerVoteLaneId,
+      targetProviderStrategyId: target.providerStrategyId,
+      targetInvestigationManifestCanonicalJson:
+        target.investigationManifestCanonicalJson!,
+      targetInvestigationManifestHash: target.investigationManifestHash!,
+      targetRuntimeProfile: target.runtimeProfile,
+      targetContract: target.contract,
+      targetPolicy: target.policy,
+      targetSeedObligations: target.seedObligations,
+      targetInitialReceipts: [],
+      replayProofs: source!.obligations.map((obligation) => ({
+        obligationId: obligation.obligationId,
+        replayProofId: `proof-superseded-${obligation.obligationId}`,
+      })),
+    });
+    expect(replayed).toMatchObject({
+      state: ReviewInvestigationState.AwaitingTurn,
+      findingCount: 0,
+      certificateId: null,
+      conclusion: null,
+    });
+    const targetAggregate = await harness.store.findById(
+      replayed.investigationId,
+    );
+    expect(targetAggregate).toMatchObject({
+      findings: [],
+      criticDecision: null,
+      certificate: null,
+      replayEvidenceCheckpoint: null,
+    });
   });
 
   it("becomes inconclusive instead of clean when semantic coverage is exhausted", async () => {

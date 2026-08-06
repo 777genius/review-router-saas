@@ -2,6 +2,7 @@ import { canonicalJson } from "../../domain/canonicalization";
 import {
   assertInvestigationRevision,
   assertInvestigationScope,
+  canonicalInvestigationScope,
   type ReviewInvestigationRevision,
   type ReviewInvestigationScope,
   type SeedInvestigationObligation,
@@ -11,6 +12,9 @@ import {
   type CoverageSeedPolicy,
 } from "../../domain/coverage-policies";
 import {
+  createInvestigationObligation,
+  InvestigationObligationOrigin,
+  obligationIdentity,
   satisfyInvestigationObligation,
   type InvestigationEvidenceReceipt,
   type InvestigationObligation,
@@ -20,10 +24,14 @@ import {
   createReplayedReviewInvestigation,
   type ReviewInvestigation,
 } from "../../domain/review-investigation";
-import { isVerifiedCleanReplaySource } from "../../domain/review-investigation-replay-policy";
+import {
+  evaluateReceiptReplayEligibility,
+  isCommittedReplayableObligation,
+} from "../../domain/review-investigation-replay-policy";
 import {
   InvestigationObligationKind,
   InvestigationObligationState,
+  ReviewInvestigationConclusion,
   type ReviewInvestigationRuntimeProfile,
 } from "../../domain/review-investigation-types";
 import {
@@ -59,7 +67,7 @@ import type { PrepareInvestigationSearchQueryPrivateMaterial } from "./prepare-i
 export type ReplayReviewInvestigationCommand = Readonly<{
   commandId: string;
   sourceInvestigationId: string;
-  sourceCertificateHash: string;
+  sourceCheckpointHash: string;
   targetScope: ReviewInvestigationScope;
   targetRevision: ReviewInvestigationRevision;
   targetExecutionId: string;
@@ -138,10 +146,15 @@ export class ReplayReviewInvestigation {
       coverageSeedPolicy: this.coverageSeedPolicy,
       digest: this.digest,
     });
-    const obligations = await this.replayObligations(
+    const targetObligations = await this.withFindingRevalidationObligations(
       source,
       command,
       seed.obligations,
+    );
+    const obligations = await this.replayObligations(
+      source,
+      command,
+      targetObligations,
     );
     const naturalIdentityHash = await digestCanonical(this.digest, {
       scope: { ...command.targetScope },
@@ -197,11 +210,54 @@ export class ReplayReviewInvestigation {
     command: ReplayReviewInvestigationCommand,
   ): Promise<ReviewInvestigation> {
     const source = await this.store.findById(command.sourceInvestigationId);
+    const checkpoint = source?.replayEvidenceCheckpoint ?? null;
+    const replayableReceipts = source
+      ? source.obligations
+          .filter(isCommittedReplayableObligation)
+          .map((obligation) => ({
+            obligationId: obligation.obligationId,
+            receiptId: obligation.receipt.receiptId,
+            evidenceDigest: obligation.receipt.evidenceDigest,
+            acceptedAttestationId: obligation.receipt.acceptedAttestationId,
+            acceptedAttestationHash: obligation.receipt.acceptedAttestationHash,
+          }))
+          .sort((left, right) =>
+            left.obligationId.localeCompare(right.obligationId),
+          )
+      : [];
     if (
       source === null ||
-      source.certificate === null ||
-      !isVerifiedCleanReplaySource(source, this.clock.now().getTime()) ||
-      source.certificate.certificateHash !== command.sourceCertificateHash ||
+      checkpoint === null ||
+      !evaluateReceiptReplayEligibility(source, this.clock.now().getTime())
+        .eligible ||
+      checkpoint.checkpointHash !== command.sourceCheckpointHash ||
+      checkpoint.scopeHash !==
+        (await this.digest.digestUtf8(
+          canonicalInvestigationScope(command.targetScope),
+        )) ||
+      checkpoint.contractHash !==
+        (await digestCanonical(this.digest, command.targetContract)) ||
+      checkpoint.policyHash !==
+        (await digestCanonical(this.digest, command.targetPolicy)) ||
+      checkpoint.producerReleaseHash !==
+        (await digestCanonical(this.digest, {
+          producerReleaseId: command.targetContract.producerReleaseId,
+        })) ||
+      checkpoint.runtimeProfileHash !==
+        (await digestCanonical(this.digest, {
+          runtimeProfile: command.targetRuntimeProfile,
+          runtimeProfileVersion: command.targetContract.runtimeProfileVersion,
+        })) ||
+      checkpoint.receiptSetHash !==
+        (await digestCanonical(this.digest, replayableReceipts)) ||
+      checkpoint.contextAttestationSetHash !==
+        (await digestCanonical(
+          this.digest,
+          replayableReceipts.map((receipt) => ({
+            id: receipt.acceptedAttestationId,
+            hash: receipt.acceptedAttestationHash,
+          })),
+        )) ||
       source.revision.reviewRevisionHash ===
         command.targetRevision.reviewRevisionHash ||
       source.stableReviewUnitKey !== command.targetStableReviewUnitKey ||
@@ -220,22 +276,12 @@ export class ReplayReviewInvestigation {
       source.scope.trustDomain !== command.targetScope.trustDomain ||
       source.scope.authorizationScopeHash !==
         command.targetScope.authorizationScopeHash ||
-      source.certificate.reviewRevisionHash !==
-        source.revision.reviewRevisionHash ||
-      source.certificate.stableReviewUnitKey !== source.stableReviewUnitKey ||
-      source.certificate.providerVoteLaneId !== source.providerVoteLaneId ||
-      source.certificate.producerReleaseId !==
+      checkpoint.reviewRevisionHash !== source.revision.reviewRevisionHash ||
+      checkpoint.stableReviewUnitKey !== source.stableReviewUnitKey ||
+      checkpoint.providerVoteLaneId !== source.providerVoteLaneId ||
+      checkpoint.producerReleaseId !==
         command.targetContract.producerReleaseId ||
-      source.certificate.coverageContractVersion !==
-        command.targetContract.coverageContractVersion ||
-      source.certificate.expansionRulesVersion !==
-        command.targetContract.expansionRulesVersion ||
-      source.certificate.criticPolicyVersion !==
-        command.targetContract.criticPolicyVersion ||
-      source.certificate.gatewayPolicyVersion !==
-        command.targetContract.gatewayPolicyVersion ||
-      source.certificate.runtimeProfileVersion !==
-        command.targetContract.runtimeProfileVersion
+      checkpoint.expiresAt <= this.clock.now().toISOString()
     ) {
       throw new Error("investigation_replay_source_invalid");
     }
@@ -259,7 +305,10 @@ export class ReplayReviewInvestigation {
         throw new Error("investigation_replay_proof_duplicate");
       }
       const sourceObligation = sourceByObligationId.get(proof.obligationId);
-      if (!sourceObligation || !isReceiptReplayable(sourceObligation)) {
+      if (
+        !sourceObligation ||
+        !isCommittedReplayableObligation(sourceObligation)
+      ) {
         throw new Error("investigation_replay_proof_obligation_invalid");
       }
       proofByObligationId.set(proof.obligationId, proof.replayProofId);
@@ -276,12 +325,15 @@ export class ReplayReviewInvestigation {
       if (
         target.state === InvestigationObligationState.Open &&
         sourceObligation &&
-        isReceiptReplayable(sourceObligation) &&
+        isCommittedReplayableObligation(sourceObligation) &&
         proofByObligationId.has(target.obligationId)
       ) {
         const result = await this.replay.replay({
           sourceInvestigationId: source.investigationId,
-          sourceCertificateHash: command.sourceCertificateHash,
+          sourceCheckpointHash: command.sourceCheckpointHash,
+          sourceReceiptId: sourceObligation.receipt.receiptId,
+          sourceEvidenceDigest: sourceObligation.receipt.evidenceDigest,
+          sourceObligationId: sourceObligation.obligationId,
           replayProofId: proofByObligationId.get(target.obligationId)!,
           targetExecutionId: command.targetExecutionId,
           targetWorkSlotId: command.targetWorkSlotId,
@@ -305,21 +357,35 @@ export class ReplayReviewInvestigation {
     }
     return replayed;
   }
-}
 
-function isReceiptReplayable(
-  obligation: InvestigationObligation,
-): obligation is InvestigationObligation & {
-  readonly receipt: InvestigationEvidenceReceipt;
-} {
-  return (
-    obligation.kind !== InvestigationObligationKind.ContextCritic &&
-    obligation.state === InvestigationObligationState.Satisfied &&
-    obligation.receipt !== null &&
-    obligation.receipt.acceptedAttestationId !== null &&
-    obligation.receipt.acceptedAttestationHash !== null &&
-    obligation.receipt.operationReceiptIds.length > 0
-  );
+  private async withFindingRevalidationObligations(
+    source: ReviewInvestigation,
+    command: ReplayReviewInvestigationCommand,
+    obligations: readonly InvestigationObligation[],
+  ): Promise<readonly InvestigationObligation[]> {
+    if (source.conclusion !== ReviewInvestigationConclusion.Findings) {
+      return obligations;
+    }
+    const additions = await Promise.all(
+      source.findings.map(async (finding) => {
+        const identity = obligationIdentity({
+          coverageContractVersion:
+            command.targetContract.coverageContractVersion,
+          stableReviewUnitKey: command.targetStableReviewUnitKey,
+          kind: InvestigationObligationKind.FindingRevalidation,
+          canonicalSubject: `finding:${finding.fingerprint}`,
+          canonicalRequirement: `revalidate source finding ${finding.fingerprint} on the target revision`,
+        });
+        return createInvestigationObligation({
+          obligationId: await digestCanonical(this.digest, identity),
+          identity,
+          riskPriority: 100,
+          origin: InvestigationObligationOrigin.CoverageContract,
+        });
+      }),
+    );
+    return Object.freeze([...obligations, ...additions]);
+  }
 }
 
 function hasSameStableIdentity(

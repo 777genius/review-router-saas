@@ -113,7 +113,7 @@ const proof = {
 
 const replayInput = {
   sourceInvestigationId: "investigation-source",
-  sourceCertificateHash: hash("certificate"),
+  sourceCheckpointHash: hash("checkpoint"),
   replayProofId: "proof-1",
   targetExecutionId: "execution-target",
   targetWorkSlotId: "slot-target",
@@ -148,6 +148,9 @@ const replayInput = {
     truncated: false,
     failed: false,
   },
+  sourceReceiptId: hash("receipt"),
+  sourceEvidenceDigest: hash("evidence"),
+  sourceObligationId: hash("obligation"),
   targetRevision: {
     baseSha: "1".repeat(40),
     mergeBaseSha: "2".repeat(40),

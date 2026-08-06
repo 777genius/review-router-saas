@@ -5,11 +5,10 @@ import type {
 } from "../../domain/coverage-contract";
 import { canonicalJson } from "../../domain/canonicalization";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
-import { isVerifiedCleanReplaySource } from "../../domain/review-investigation-replay-policy";
 import {
-  InvestigationObligationKind,
-  InvestigationObligationState,
-} from "../../domain/review-investigation-types";
+  evaluateReceiptReplayEligibility,
+  isCommittedReplayableObligation,
+} from "../../domain/review-investigation-replay-policy";
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
 import type {
@@ -27,8 +26,8 @@ export enum PrepareReviewInvestigationReplayStatus {
 export type PrepareReviewInvestigationReplayResult = Readonly<{
   status: PrepareReviewInvestigationReplayStatus;
   sourceInvestigationId: string | null;
-  sourceCertificateId: string | null;
-  sourceCertificateHash: string | null;
+  sourceCheckpointId: string | null;
+  sourceCheckpointHash: string | null;
   obligations: readonly Readonly<{
     obligationId: string;
     replay: PreparedInvestigationReceiptReplay;
@@ -78,8 +77,9 @@ export class PrepareReviewInvestigationReplay {
         return Object.freeze({
           status: PrepareReviewInvestigationReplayStatus.Prepared,
           sourceInvestigationId: candidate.investigationId,
-          sourceCertificateId: candidate.certificate!.certificateId,
-          sourceCertificateHash: candidate.certificate!.certificateHash,
+          sourceCheckpointId: candidate.replayEvidenceCheckpoint!.checkpointId,
+          sourceCheckpointHash:
+            candidate.replayEvidenceCheckpoint!.checkpointHash,
           obligations: Object.freeze(prepared),
         });
       }
@@ -87,8 +87,8 @@ export class PrepareReviewInvestigationReplay {
     return Object.freeze({
       status: PrepareReviewInvestigationReplayStatus.Missing,
       sourceInvestigationId: null,
-      sourceCertificateId: null,
-      sourceCertificateHash: null,
+      sourceCheckpointId: null,
+      sourceCheckpointHash: null,
       obligations: Object.freeze([]),
     });
   }
@@ -101,11 +101,12 @@ export class PrepareReviewInvestigationReplay {
       readonly targetContract: ReviewInvestigationContract;
     },
   ): boolean {
-    const certificate = candidate.certificate;
+    const checkpoint = candidate.replayEvidenceCheckpoint;
     return (
-      certificate !== null &&
-      isVerifiedCleanReplaySource(candidate, this.clock.now().getTime()) &&
-      certificate.producerReleaseId === command.producerReleaseId &&
+      checkpoint !== null &&
+      evaluateReceiptReplayEligibility(candidate, this.clock.now().getTime())
+        .eligible &&
+      checkpoint.producerReleaseId === command.producerReleaseId &&
       candidate.contract.producerReleaseId === command.producerReleaseId &&
       canonicalJson(candidate.contract) ===
         canonicalJson(command.targetContract) &&
@@ -129,14 +130,7 @@ export class PrepareReviewInvestigationReplay {
     const cache = new Map<string, PreparedInvestigationReceiptReplay | null>();
     for (const obligation of candidate.obligations) {
       const receipt = obligation.receipt;
-      if (
-        obligation.kind === InvestigationObligationKind.ContextCritic ||
-        obligation.state !== InvestigationObligationState.Satisfied ||
-        receipt === null ||
-        receipt.acceptedAttestationId === null ||
-        receipt.acceptedAttestationHash === null ||
-        receipt.operationReceiptIds.length === 0
-      ) {
+      if (!isCommittedReplayableObligation(obligation) || receipt === null) {
         continue;
       }
       const key = [
@@ -147,12 +141,11 @@ export class PrepareReviewInvestigationReplay {
       if (replay === undefined) {
         replay = await this.preparation.prepare({
           sourceInvestigationId: candidate.investigationId,
-          sourceCertificateId: candidate.certificate!.certificateId,
-          sourceCertificateHash: candidate.certificate!.certificateHash,
-          sourceCertificateExpiresAt: candidate.certificate!.expiresAt,
-          sourceTerminalProviderKind:
-            candidate.certificate!.terminalProviderKind,
-          sourceTerminalActualModel: candidate.certificate!.terminalActualModel,
+          sourceCheckpointId: candidate.replayEvidenceCheckpoint!.checkpointId,
+          sourceCheckpointHash:
+            candidate.replayEvidenceCheckpoint!.checkpointHash,
+          sourceCheckpointExpiresAt:
+            candidate.replayEvidenceCheckpoint!.expiresAt,
           targetExecutionId: command.targetExecutionId,
           targetWorkSlotId: command.targetWorkSlotId,
           targetReviewRevisionHash: command.targetRevision.reviewRevisionHash,

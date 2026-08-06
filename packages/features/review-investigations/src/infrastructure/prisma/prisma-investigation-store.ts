@@ -18,6 +18,7 @@ import {
   type ReviewInvestigationPrivateMaterial as PrismaPrivateMaterialRecord,
   type ReviewInvestigationLease as PrismaLeaseRecord,
   type ReviewInvestigationReceipt as PrismaReceiptRecord,
+  type ReviewInvestigationReplayEvidenceCheckpoint as PrismaReplayEvidenceCheckpointRecord,
   type ReviewInvestigationTurn as PrismaTurnRecord,
 } from "@prisma/client";
 import {
@@ -62,6 +63,7 @@ import {
   type InvestigationObligation,
 } from "../../domain/investigation-obligation";
 import type { ReviewInvestigationCertificate } from "../../domain/investigation-certificate";
+import type { ReplayEvidenceCheckpoint } from "../../domain/replay-evidence-checkpoint";
 import {
   summarizeTerminalDiscoveryProvenance,
   type InvestigationFinding,
@@ -113,6 +115,7 @@ type InvestigationDb = Pick<
   | "reviewInvestigationReceipt"
   | "reviewInvestigationPrivateMaterial"
   | "reviewInvestigationCertificate"
+  | "reviewInvestigationReplayEvidenceCheckpoint"
   | "reviewInvestigationCommandReceipt"
 >;
 
@@ -216,7 +219,7 @@ export class PrismaInvestigationStore
         stableReviewUnitKey: input.stableReviewUnitKey,
         providerVoteLaneId: input.providerVoteLaneId,
         producerReleaseId: input.producerReleaseId,
-        certificateId: { not: null },
+        replayEvidenceCheckpointId: { not: null },
       },
       select: { investigationId: true },
       orderBy: [{ updatedAt: "desc" }, { investigationId: "asc" }],
@@ -233,8 +236,8 @@ export class PrismaInvestigationStore
       )
       .sort(
         (left, right) =>
-          right.certificate!.issuedAt.localeCompare(
-            left.certificate!.issuedAt,
+          right.replayEvidenceCheckpoint!.issuedAt.localeCompare(
+            left.replayEvidenceCheckpoint!.issuedAt,
           ) || left.investigationId.localeCompare(right.investigationId),
       );
   }
@@ -543,6 +546,11 @@ export class PrismaInvestigationStore
             retainUntil,
           );
           await persistCertificate(transaction, current, input.investigation);
+          await persistReplayEvidenceCheckpoint(
+            transaction,
+            current,
+            input.investigation,
+          );
           const updated = await transaction.reviewInvestigation.updateMany({
             where: {
               investigationId: input.investigation.investigationId,
@@ -818,6 +826,11 @@ export class PrismaInvestigationStore
                 AND certificate."expiresAt" > ${cutoff}
             )
             AND NOT EXISTS (
+              SELECT 1 FROM "ReviewInvestigationReplayEvidenceCheckpoint" AS checkpoint
+              WHERE checkpoint."sourceInvestigationId" = investigation."investigationId"
+                AND checkpoint."expiresAt" > ${cutoff}
+            )
+            AND NOT EXISTS (
               SELECT 1 FROM "ReviewInvestigationPrivateMaterial" AS material
               WHERE material."investigationId" = investigation."investigationId"
                 AND material."expiresAt" > ${cutoff}
@@ -850,7 +863,11 @@ export class PrismaInvestigationStore
         if (ids.length === 0) return 0;
         await transaction.reviewInvestigation.updateMany({
           where: { investigationId: { in: ids } },
-          data: { activeTurnId: null, certificateId: null },
+          data: {
+            activeTurnId: null,
+            certificateId: null,
+            replayEvidenceCheckpointId: null,
+          },
         });
         await transaction.reviewInvestigationObligation.updateMany({
           where: { investigationId: { in: ids } },
@@ -872,6 +889,14 @@ export class PrismaInvestigationStore
             expiresAt: { lte: cutoff },
           },
         });
+        await transaction.reviewInvestigationReplayEvidenceCheckpoint.deleteMany(
+          {
+            where: {
+              sourceInvestigationId: { in: ids },
+              expiresAt: { lte: cutoff },
+            },
+          },
+        );
         await transaction.reviewInvestigationCommandReceipt.deleteMany({
           where: {
             investigationId: { in: ids },
@@ -1016,6 +1041,11 @@ async function loadAggregate(
         where: { certificateId: record.certificateId },
       })
     : null;
+  const replayEvidenceCheckpoint = record.replayEvidenceCheckpointId
+    ? await database.reviewInvestigationReplayEvidenceCheckpoint.findUnique({
+        where: { checkpointId: record.replayEvidenceCheckpointId },
+      })
+    : null;
   const receiptById = new Map(receipts.map((item) => [item.receiptId, item]));
   const domainObligations = obligations.map((item) =>
     toObligation(
@@ -1102,6 +1132,9 @@ async function loadAggregate(
         ? null
         : fromPrismaConclusion(record.conclusion),
     certificate: certificate ? toCertificate(certificate) : null,
+    replayEvidenceCheckpoint: replayEvidenceCheckpoint
+      ? toReplayEvidenceCheckpoint(replayEvidenceCheckpoint)
+      : null,
     dossierDigest: record.dossierDigest,
     nextEligibleAt: record.nextEligibleAt?.toISOString() ?? null,
     createdAt: record.createdAt.toISOString(),
@@ -1423,6 +1456,37 @@ async function persistCertificate(
   });
 }
 
+async function persistReplayEvidenceCheckpoint(
+  transaction: Prisma.TransactionClient,
+  current: ReviewInvestigation,
+  next: ReviewInvestigation,
+): Promise<void> {
+  if (current.replayEvidenceCheckpoint) {
+    if (
+      next.replayEvidenceCheckpoint?.checkpointHash !==
+      current.replayEvidenceCheckpoint.checkpointHash
+    ) {
+      throw new Error("investigation_replay_checkpoint_mutation_forbidden");
+    }
+    return;
+  }
+  const checkpoint = next.replayEvidenceCheckpoint;
+  if (!checkpoint) return;
+  await transaction.reviewInvestigationReplayEvidenceCheckpoint.create({
+    data: {
+      ...checkpoint,
+      sourceInvestigationVersion: BigInt(checkpoint.sourceInvestigationVersion),
+      sourceState: toPrismaInvestigationState(checkpoint.sourceState),
+      sourceConclusion:
+        checkpoint.sourceConclusion === null
+          ? null
+          : toPrismaConclusion(checkpoint.sourceConclusion),
+      issuedAt: new Date(checkpoint.issuedAt),
+      expiresAt: new Date(checkpoint.expiresAt),
+    },
+  });
+}
+
 function toMainCreate(
   investigation: ReviewInvestigation,
   retainUntil: Date,
@@ -1480,6 +1544,7 @@ function toMainCreate(
         ? null
         : toPrismaConclusion(investigation.conclusion),
     certificateId: null,
+    replayEvidenceCheckpointId: null,
     dossierDigest: investigation.dossierDigest,
     nextEligibleAt:
       investigation.nextEligibleAt === null
@@ -1527,6 +1592,8 @@ function mainScalarData(
         ? null
         : toPrismaConclusion(investigation.conclusion),
     certificateId: investigation.certificate?.certificateId ?? null,
+    replayEvidenceCheckpointId:
+      investigation.replayEvidenceCheckpoint?.checkpointId ?? null,
     dossierDigest: investigation.dossierDigest,
     nextEligibleAt:
       investigation.nextEligibleAt === null
@@ -1730,6 +1797,17 @@ function assertRehydratedAggregate(investigation: ReviewInvestigation): void {
       throw new Error("investigation_certificate_binding_corrupt");
     }
   }
+  const checkpoint = investigation.replayEvidenceCheckpoint;
+  if (
+    checkpoint !== null &&
+    (checkpoint.sourceInvestigationId !== investigation.investigationId ||
+      checkpoint.sourceInvestigationVersion !== investigation.version ||
+      checkpoint.sourceState !== investigation.state ||
+      checkpoint.sourceConclusion !== investigation.conclusion ||
+      Date.parse(checkpoint.expiresAt) <= Date.parse(checkpoint.issuedAt))
+  ) {
+    throw new Error("investigation_replay_checkpoint_binding_corrupt");
+  }
   const acceptedReceipts = new Set<string>();
   let inventoryWitnessCount = 0;
   for (const obligation of investigation.obligations) {
@@ -1788,9 +1866,12 @@ function aggregateRetainUntil(
   const certificateExpiry = investigation.certificate
     ? new Date(investigation.certificate.expiresAt)
     : null;
-  return certificateExpiry && certificateExpiry > operational
-    ? certificateExpiry
-    : operational;
+  const checkpointExpiry = investigation.replayEvidenceCheckpoint
+    ? new Date(investigation.replayEvidenceCheckpoint.expiresAt)
+    : null;
+  return [operational, certificateExpiry, checkpointExpiry]
+    .filter((value): value is Date => value !== null)
+    .reduce((latest, value) => (value > latest ? value : latest), operational);
 }
 
 function toObligation(
@@ -1916,6 +1997,39 @@ function toCertificate(
       record.criticDecision === null
         ? null
         : fromPrismaCriticDecision(record.criticDecision),
+    issuedAt: record.issuedAt.toISOString(),
+    expiresAt: record.expiresAt.toISOString(),
+  };
+}
+
+function toReplayEvidenceCheckpoint(
+  record: PrismaReplayEvidenceCheckpointRecord,
+): ReplayEvidenceCheckpoint {
+  return {
+    checkpointId: record.checkpointId,
+    checkpointHash: record.checkpointHash,
+    sourceInvestigationId: record.sourceInvestigationId,
+    sourceInvestigationVersion: safeNumber(
+      record.sourceInvestigationVersion,
+      "replay_checkpoint_source_version",
+    ),
+    sourceDossierDigest: record.sourceDossierDigest,
+    scopeHash: record.scopeHash,
+    reviewRevisionHash: record.reviewRevisionHash,
+    stableReviewUnitKey: record.stableReviewUnitKey,
+    providerVoteLaneId: record.providerVoteLaneId,
+    contractHash: record.contractHash,
+    policyHash: record.policyHash,
+    producerReleaseId: record.producerReleaseId,
+    producerReleaseHash: record.producerReleaseHash,
+    runtimeProfileHash: record.runtimeProfileHash,
+    receiptSetHash: record.receiptSetHash,
+    contextAttestationSetHash: record.contextAttestationSetHash,
+    sourceState: fromPrismaInvestigationState(record.sourceState),
+    sourceConclusion:
+      record.sourceConclusion === null
+        ? null
+        : fromPrismaConclusion(record.sourceConclusion),
     issuedAt: record.issuedAt.toISOString(),
     expiresAt: record.expiresAt.toISOString(),
   };
@@ -2578,6 +2692,8 @@ const obligationKindToPrisma: Readonly<
     PrismaObligationKind.external_contract,
   [InvestigationObligationKind.BinaryArtifact]:
     PrismaObligationKind.binary_artifact,
+  [InvestigationObligationKind.FindingRevalidation]:
+    PrismaObligationKind.finding_revalidation,
   [InvestigationObligationKind.ContextCritic]:
     PrismaObligationKind.context_critic,
 };

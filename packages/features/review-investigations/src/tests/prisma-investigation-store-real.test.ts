@@ -1307,7 +1307,11 @@ async function cleanup(
 ): Promise<void> {
   await prisma.reviewInvestigation.updateMany({
     where: { investigationId: seed.investigationId },
-    data: { activeTurnId: null, certificateId: null },
+    data: {
+      activeTurnId: null,
+      certificateId: null,
+      replayEvidenceCheckpointId: null,
+    },
   });
   await prisma.reviewInvestigationCommandReceipt.deleteMany({
     where: { investigationId: seed.investigationId },
@@ -1330,6 +1334,9 @@ async function cleanup(
   });
   await prisma.reviewInvestigationCertificate.deleteMany({
     where: { investigationId: seed.investigationId },
+  });
+  await prisma.reviewInvestigationReplayEvidenceCheckpoint.deleteMany({
+    where: { sourceInvestigationId: seed.investigationId },
   });
   await prisma.reviewInvestigationObligation.deleteMany({
     where: { investigationId: seed.investigationId },

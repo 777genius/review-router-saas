@@ -1,6 +1,5 @@
 import { canonicalJson } from "../../domain/canonicalization";
 import { abortInvestigationTurn } from "../../domain/review-investigation";
-import type { ReviewInvestigationAbortReason } from "../../domain/review-investigation-types";
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import {
@@ -16,6 +15,11 @@ import {
   restoreCommandOrThrow,
   withCurrentDossierDigest,
 } from "./investigation-use-case-support";
+import { issueReplayEvidenceCheckpoint } from "../replay-evidence-checkpoint-issuer";
+import {
+  ReviewInvestigationAbortReason,
+  ReviewInvestigationState,
+} from "../../domain/review-investigation-types";
 
 export type AbortInvestigationTurnCommand = Readonly<{
   commandId: string;
@@ -24,6 +28,7 @@ export type AbortInvestigationTurnCommand = Readonly<{
   turnId: string;
   reason: ReviewInvestigationAbortReason;
   nextEligibleAt: string | null;
+  replayCheckpointTtlMs?: number;
 }>;
 
 export class AbortInvestigationTurn {
@@ -50,6 +55,7 @@ export class AbortInvestigationTurn {
     if (current.version !== command.expectedVersion) {
       throw new Error("investigation_concurrency_conflict");
     }
+    const abortedAt = this.clock.now();
     let next = abortInvestigationTurn({
       investigation: current,
       abort: {
@@ -57,8 +63,25 @@ export class AbortInvestigationTurn {
         reason: command.reason,
         nextEligibleAt: command.nextEligibleAt,
       },
-      abortedAt: this.clock.now().toISOString(),
+      abortedAt: abortedAt.toISOString(),
     });
+    if (
+      command.reason === ReviewInvestigationAbortReason.SupersededExecution &&
+      next.state === ReviewInvestigationState.Superseded
+    ) {
+      next = {
+        ...next,
+        replayEvidenceCheckpoint: await issueReplayEvidenceCheckpoint({
+          source: current,
+          sourceState: ReviewInvestigationState.Superseded,
+          sourceConclusion: current.conclusion,
+          sourceVersion: next.version,
+          issuedAt: abortedAt,
+          ttlMs: command.replayCheckpointTtlMs ?? 3_600_000,
+          digest: this.digest,
+        }),
+      };
+    }
     next = await withCurrentDossierDigest(this.digest, next);
     const committed = await commitOrThrow({
       store: this.store,

@@ -57,7 +57,11 @@ export class ContextAttestationInvestigationReceiptReplayAdapter implements Inve
       proof.expiresAtMs <= now ||
       proof.targetExecutionId !== input.targetExecutionId ||
       proof.targetWorkSlotId !== input.targetWorkSlotId ||
-      proof.targetReviewRevisionHash !== input.targetRevision.reviewRevisionHash
+      proof.targetReviewRevisionHash !==
+        input.targetRevision.reviewRevisionHash ||
+      input.sourceReceipt.receiptId !== input.sourceReceiptId ||
+      input.sourceReceipt.evidenceDigest !== input.sourceEvidenceDigest ||
+      input.obligation.obligationId !== input.sourceObligationId
     ) {
       return Object.freeze({
         verdict: InvestigationReceiptReplayVerdict.Mismatched,
@@ -93,6 +97,7 @@ export class ContextAttestationInvestigationReceiptReplayAdapter implements Inve
     const receiptId = await this.digest.digestUtf8(
       canonicalJson({
         obligationId: input.obligation.obligationId,
+        sourceCheckpointHash: input.sourceCheckpointHash,
         replayProofId: proof.replayProofId,
         sourceReceiptId: input.sourceReceipt.receiptId,
         targetReviewRevisionHash: input.targetRevision.reviewRevisionHash,
@@ -113,7 +118,10 @@ export class ContextAttestationInvestigationReceiptReplayAdapter implements Inve
         evidenceDigest: await this.digest.digestUtf8(
           canonicalJson({
             replayProofId: proof.replayProofId,
-            sourceEvidenceDigest: input.sourceReceipt.evidenceDigest,
+            sourceCheckpointHash: input.sourceCheckpointHash,
+            sourceReceiptId: input.sourceReceiptId,
+            sourceEvidenceDigest: input.sourceEvidenceDigest,
+            sourceObligationId: input.sourceObligationId,
           }),
         ),
         replayProofId: proof.replayProofId,

@@ -115,7 +115,7 @@ export class InMemoryInvestigationStore
     return [...this.investigations.values()]
       .filter(
         (item) =>
-          item.certificate !== null &&
+          item.replayEvidenceCheckpoint !== null &&
           item.revision.reviewRevisionHash !== input.targetReviewRevisionHash &&
           item.stableReviewUnitKey === input.stableReviewUnitKey &&
           item.providerVoteLaneId === input.providerVoteLaneId &&
@@ -132,8 +132,8 @@ export class InMemoryInvestigationStore
       )
       .sort(
         (left, right) =>
-          right.certificate!.issuedAt.localeCompare(
-            left.certificate!.issuedAt,
+          right.replayEvidenceCheckpoint!.issuedAt.localeCompare(
+            left.replayEvidenceCheckpoint!.issuedAt,
           ) || left.investigationId.localeCompare(right.investigationId),
       )
       .slice(0, input.limit)

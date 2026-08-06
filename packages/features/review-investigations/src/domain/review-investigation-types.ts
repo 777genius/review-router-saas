@@ -33,6 +33,7 @@ export enum InvestigationObligationKind {
   SideEffectParity = "side_effect_parity",
   ExternalContract = "external_contract",
   BinaryArtifact = "binary_artifact",
+  FindingRevalidation = "finding_revalidation",
   ContextCritic = "context_critic",
 }
 

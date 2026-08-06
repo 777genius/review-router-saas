@@ -11,6 +11,8 @@ export * from "./domain/investigation-token-usage";
 export * from "./domain/investigation-turn";
 export * from "./domain/investigation-turn-observation";
 export * from "./domain/investigation-certificate";
+export * from "./domain/replay-evidence-checkpoint";
+export * from "./domain/review-investigation-replay-policy";
 export * from "./domain/investigation-private-material";
 export * from "./domain/investigation-lease";
 export * from "./domain/review-investigation";

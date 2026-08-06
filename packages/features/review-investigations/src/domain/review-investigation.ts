@@ -12,6 +12,7 @@ import {
   type ReviewInvestigationScope,
 } from "./coverage-contract";
 import type { ReviewInvestigationCertificate } from "./investigation-certificate";
+import type { ReplayEvidenceCheckpoint } from "./replay-evidence-checkpoint";
 import {
   hasIndependentCriticProvenance,
   requiresIndependentCritic,
@@ -90,6 +91,7 @@ export type ReviewInvestigation = Readonly<{
   turnProvenance: readonly InvestigationTurnProvenance[];
   conclusion: ReviewInvestigationConclusion | null;
   certificate: ReviewInvestigationCertificate | null;
+  replayEvidenceCheckpoint: ReplayEvidenceCheckpoint | null;
   dossierDigest: string;
   nextEligibleAt: string | null;
   createdAt: string;
@@ -133,6 +135,7 @@ export function createReviewInvestigation(
     | "turnProvenance"
     | "conclusion"
     | "certificate"
+    | "replayEvidenceCheckpoint"
     | "nextEligibleAt"
     | "investigationManifestCanonicalJson"
     | "investigationManifestHash"
@@ -183,6 +186,7 @@ export function createReviewInvestigation(
     turnProvenance: [],
     conclusion: null,
     certificate: null,
+    replayEvidenceCheckpoint: null,
     nextEligibleAt: null,
   };
 }
@@ -607,6 +611,7 @@ export function reconcileInvestigationPrivateMaterialExpiry(input: {
 export function concludeReviewInvestigation(input: {
   readonly investigation: ReviewInvestigation;
   readonly certificate: ReviewInvestigationCertificate;
+  readonly replayEvidenceCheckpoint: ReplayEvidenceCheckpoint | null;
   readonly concludedAt: string;
 }): ReviewInvestigation {
   const current = enforceCriticPolicyForConclusion(input.investigation);
@@ -618,7 +623,12 @@ export function concludeReviewInvestigation(input: {
     current.activeTurn !== null ||
     current.certificate !== null ||
     input.certificate.investigationId !== current.investigationId ||
-    input.certificate.investigationVersion !== current.version
+    input.certificate.investigationVersion !== current.version ||
+    (input.replayEvidenceCheckpoint !== null &&
+      (input.replayEvidenceCheckpoint.sourceInvestigationId !==
+        current.investigationId ||
+        input.replayEvidenceCheckpoint.sourceInvestigationVersion !==
+          current.version + 1))
   ) {
     throw new ReviewInvestigationDomainError(
       "investigation_conclusion_invalid",
@@ -660,6 +670,9 @@ export function concludeReviewInvestigation(input: {
         : ReviewInvestigationState.Concluded,
     conclusion,
     certificate: { ...input.certificate },
+    replayEvidenceCheckpoint: input.replayEvidenceCheckpoint
+      ? { ...input.replayEvidenceCheckpoint }
+      : null,
     updatedAt: input.concludedAt,
   };
 }
@@ -729,6 +742,8 @@ export function investigationDossierCanonicalValue(
     ),
     conclusion: investigation.conclusion,
     certificateHash: investigation.certificate?.certificateHash ?? null,
+    replayEvidenceCheckpointHash:
+      investigation.replayEvidenceCheckpoint?.checkpointHash ?? null,
     nextEligibleAt: investigation.nextEligibleAt,
     createdAt: investigation.createdAt,
     updatedAt: investigation.updatedAt,
@@ -743,6 +758,9 @@ export function serializeReviewInvestigation(
     dossierDigest: investigation.dossierDigest,
     certificate: investigation.certificate
       ? { ...investigation.certificate }
+      : null,
+    replayEvidenceCheckpoint: investigation.replayEvidenceCheckpoint
+      ? { ...investigation.replayEvidenceCheckpoint }
       : null,
   });
 }

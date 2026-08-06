@@ -1947,8 +1947,8 @@ async function prepareReplay(
     result: {
       status: ReviewInvestigationReplayPrepareResultStatus.Prepared,
       sourceInvestigationId: result.sourceInvestigationId,
-      sourceCertificateId: result.sourceCertificateId,
-      sourceCertificateHash: result.sourceCertificateHash,
+      sourceCertificateId: result.sourceCheckpointId,
+      sourceCertificateHash: result.sourceCheckpointHash,
       replayPreparationCanonicalJson,
       replayPreparationHash: await d.digest.digestUtf8(
         replayPreparationCanonicalJson,
@@ -2130,7 +2130,7 @@ async function replay(
   const result = await d.investigations.replay.execute({
     commandId: request.idempotencyKey,
     sourceInvestigationId: request.sourceInvestigationId,
-    sourceCertificateHash: request.sourceCertificateHash,
+    sourceCheckpointHash: request.sourceCertificateHash,
     targetScope,
     targetRevision,
     targetExecutionId: request.targetExecutionId,
