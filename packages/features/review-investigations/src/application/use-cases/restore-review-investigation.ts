@@ -1,14 +1,11 @@
-import {
-  investigationDossierCanonicalValue,
-  type ReviewInvestigation,
-} from "../../domain/review-investigation";
+import type { ReviewInvestigation } from "../../domain/review-investigation";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationStorePort } from "../ports/investigation-store-port";
 import {
   toInvestigationReadModel,
   type ReviewInvestigationReadModel,
 } from "../investigation-read-model";
-import { digestCanonical } from "./investigation-use-case-support";
+import { requireValidDossierDigest } from "./investigation-use-case-support";
 import type { ReconcileExpiredActiveTurn } from "./reconcile-expired-active-turn";
 
 export class RestoreReviewInvestigation {
@@ -22,39 +19,22 @@ export class RestoreReviewInvestigation {
     investigationId: string,
   ): Promise<ReviewInvestigationReadModel> {
     const investigation = await this.require(investigationId);
-    if (!(await this.hasValidDossierDigest(investigation))) {
-      throw new Error("investigation_dossier_digest_invalid");
-    }
+    await requireValidDossierDigest(this.digest, investigation);
     return toInvestigationReadModel(investigation);
   }
 
   async snapshot(investigationId: string): Promise<ReviewInvestigation> {
     const investigation = await this.require(investigationId);
-    if (!(await this.hasValidDossierDigest(investigation))) {
-      throw new Error("investigation_dossier_digest_invalid");
-    }
+    await requireValidDossierDigest(this.digest, investigation);
     return investigation;
   }
 
   private async require(investigationId: string): Promise<ReviewInvestigation> {
     const stored = await this.store.findById(investigationId);
     if (stored === null) throw new Error("investigation_missing");
-    if (!(await this.hasValidDossierDigest(stored))) {
-      throw new Error("investigation_dossier_digest_invalid");
-    }
+    await requireValidDossierDigest(this.digest, stored);
     return this.expiredTurns
       ? this.expiredTurns.execute(investigationId)
       : stored;
-  }
-
-  private async hasValidDossierDigest(
-    investigation: ReviewInvestigation,
-  ): Promise<boolean> {
-    return (
-      (await digestCanonical(
-        this.digest,
-        investigationDossierCanonicalValue(investigation),
-      )) === investigation.dossierDigest
-    );
   }
 }

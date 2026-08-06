@@ -8,6 +8,7 @@ import { createPrismaClient } from "@reviewrouter/platform-db";
 import { describe, expect, it } from "vitest";
 import {
   InvestigationEvidenceRequirementKind,
+  InvestigationExecutionAuthorityVerdict,
   InvestigationPolicyCanonicalVersion,
   InvestigationObligationKind,
   InvestigationOperationKind,
@@ -34,6 +35,7 @@ import {
   investigationDossierCanonicalValue,
 } from "../index";
 import { RestoreReviewInvestigation } from "../application/use-cases/restore-review-investigation";
+import { ReconcileExpiredActiveTurn } from "../application/use-cases/reconcile-expired-active-turn";
 import { HydrateInvestigationTurnObligations } from "../application/use-cases/hydrate-investigation-turn-obligations";
 import { PrepareInvestigationSearchQueryPrivateMaterial } from "../application/use-cases/prepare-investigation-search-query-private-material";
 import { AesGcmInvestigationPrivateMaterialCipher } from "../infrastructure/crypto/aes-gcm-investigation-private-material-cipher";
@@ -136,6 +138,62 @@ async function createLeaseHarness(): Promise<InvestigationLeaseStoreContractHarn
 }
 
 describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
+  it("fences expiry recovery until the database clock reaches the turn deadline", async () => {
+    const suffix = `db-expiry-fence-${randomUUID()}`;
+    const seed = createInvestigationStoreContractSeed(suffix);
+    const harness = await createHarness(seed);
+    const store = harness.store as PrismaInvestigationStore;
+    const digest = new NodeSha256InvestigationDigest();
+    const expiresAt = new Date(Date.now() + 60_000);
+    try {
+      await open(store, seed, `db-expiry-fence-open-${suffix}`);
+      const initial = planned(seed, `turn-db-expiry-fence-${suffix}`);
+      const preimage: ReviewInvestigation = {
+        ...initial,
+        activeTurn: {
+          ...initial.activeTurn!,
+          leasedAt: new Date(expiresAt.getTime() - 60_000).toISOString(),
+          expiresAt: expiresAt.toISOString(),
+        },
+        updatedAt: new Date(expiresAt.getTime() - 60_000).toISOString(),
+      };
+      const futureTurn: ReviewInvestigation = {
+        ...preimage,
+        dossierDigest: await digest.digestUtf8(
+          canonicalJson(investigationDossierCanonicalValue(preimage)),
+        ),
+      };
+      await plan(store, futureTurn, `db-expiry-fence-plan-${suffix}`);
+      const workerClock = new FixedInvestigationClock(
+        new Date(expiresAt.getTime() + 60_000),
+      );
+      const reconcile = new ReconcileExpiredActiveTurn(
+        store,
+        {
+          check: async () =>
+            InvestigationExecutionAuthorityVerdict.Unauthorized,
+        },
+        digest,
+        workerClock,
+      );
+
+      await expect(reconcile.execute(seed.investigationId)).rejects.toThrow(
+        "investigation_lease_fencing_stale",
+      );
+      await expect(store.findById(seed.investigationId)).resolves.toMatchObject(
+        {
+          version: futureTurn.version,
+          activeTurn: {
+            turnId: futureTurn.activeTurn!.turnId,
+            expiresAt: expiresAt.toISOString(),
+          },
+        },
+      );
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("round-trips token usage with reasoning included in output", async () => {
     const suffix = `token-usage-${randomUUID()}`;
     const seed = createInvestigationStoreContractSeed(suffix);

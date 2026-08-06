@@ -18,6 +18,7 @@ import {
 import { issueReplayEvidenceCheckpoint } from "../replay-evidence-checkpoint-issuer";
 import {
   commitOrThrow,
+  requireValidDossierDigest,
   withCurrentDossierDigest,
 } from "./investigation-use-case-support";
 
@@ -33,6 +34,7 @@ export class ReconcileExpiredActiveTurn {
   async execute(investigationId: string): Promise<ReviewInvestigation> {
     const current = await this.store.findById(investigationId);
     if (current === null) throw new Error("investigation_missing");
+    await requireValidDossierDigest(this.digest, current);
     const turn = current.activeTurn;
     if (turn === null || new Date(turn.expiresAt) > this.clock.now()) {
       return current;
@@ -92,8 +94,10 @@ export class ReconcileExpiredActiveTurn {
         turnId: turn.turnId,
       },
       guard: {
-        kind: InvestigationStoreCommitGuardKind.ExecutionAuthority,
+        kind: InvestigationStoreCommitGuardKind.ExpiredActiveTurn,
         expectedVerdict: verdict,
+        turnId: turn.turnId,
+        expiresAt: turn.expiresAt,
       },
     });
   }

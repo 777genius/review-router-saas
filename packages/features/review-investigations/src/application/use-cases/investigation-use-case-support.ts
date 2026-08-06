@@ -86,6 +86,19 @@ export async function withCurrentDossierDigest(
   };
 }
 
+export async function requireValidDossierDigest(
+  digest: InvestigationDigestPort,
+  investigation: ReviewInvestigation,
+): Promise<void> {
+  const current = await digestCanonical(
+    digest,
+    investigationDossierCanonicalValue(investigation),
+  );
+  if (current !== investigation.dossierDigest) {
+    throw new Error("investigation_dossier_digest_invalid");
+  }
+}
+
 export async function requireCurrentExecution(input: {
   readonly authority: InvestigationExecutionAuthorityPort;
   readonly investigation: Pick<

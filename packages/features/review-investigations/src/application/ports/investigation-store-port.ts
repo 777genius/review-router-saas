@@ -21,6 +21,7 @@ export type InvestigationStoreCommitResult = Readonly<{
 export enum InvestigationStoreCommitGuardKind {
   LeaseFence = "lease_fence",
   ExecutionAuthority = "execution_authority",
+  ExpiredActiveTurn = "expired_active_turn",
 }
 
 export type InvestigationStoreCommitGuard =
@@ -40,6 +41,15 @@ export type InvestigationStoreCommitGuard =
   | Readonly<{
       kind: InvestigationStoreCommitGuardKind.ExecutionAuthority;
       expectedVerdict: InvestigationExecutionAuthorityVerdict;
+      resultAdmission?: TurnResultAdmissionKind;
+      admittedAt?: string;
+      effectiveDeadline?: string;
+    }>
+  | Readonly<{
+      kind: InvestigationStoreCommitGuardKind.ExpiredActiveTurn;
+      expectedVerdict: InvestigationExecutionAuthorityVerdict;
+      turnId: string;
+      expiresAt: string;
       resultAdmission?: TurnResultAdmissionKind;
       admittedAt?: string;
       effectiveDeadline?: string;

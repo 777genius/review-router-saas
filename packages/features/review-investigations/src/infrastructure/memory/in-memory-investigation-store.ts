@@ -380,6 +380,18 @@ export class InMemoryInvestigationStore
     ) {
       return true;
     }
+    if (
+      input.guard.kind === InvestigationStoreCommitGuardKind.ExpiredActiveTurn
+    ) {
+      return (
+        input.transition.kind ===
+          InvestigationStoreTransitionKind.ActiveTurnExpired &&
+        input.transition.turnId === input.guard.turnId &&
+        current.activeTurn?.turnId === input.guard.turnId &&
+        current.activeTurn.expiresAt === input.guard.expiresAt &&
+        input.investigation.activeTurn === null
+      );
+    }
     if (input.guard.kind !== InvestigationStoreCommitGuardKind.LeaseFence) {
       return false;
     }

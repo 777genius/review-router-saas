@@ -1653,7 +1653,7 @@ describe("review investigation in-memory vertical slice", () => {
     });
   });
 
-  it("validates the persisted dossier before lazy recovery mutates it", async () => {
+  it("validates the persisted dossier before direct recovery mutates it", async () => {
     const harness = createHarness();
     const opened = await harness.open.execute(openCommand("corrupt-expiry"));
     const planned = await planDiscovery(harness, opened);
@@ -1668,18 +1668,14 @@ describe("review investigation in-memory vertical slice", () => {
         : { ...stored, dossierDigest: "0".repeat(64) };
     });
     const commit = vi.spyOn(harness.store, "commit");
-    const restore = new RestoreReviewInvestigation(
+    const reconcile = new ReconcileExpiredActiveTurn(
       harness.store,
+      harness.authority,
       harness.digest,
-      new ReconcileExpiredActiveTurn(
-        harness.store,
-        harness.authority,
-        harness.digest,
-        harness.clock,
-      ),
+      harness.clock,
     );
 
-    await expect(restore.snapshot(planned.investigationId)).rejects.toThrow(
+    await expect(reconcile.execute(planned.investigationId)).rejects.toThrow(
       "investigation_dossier_digest_invalid",
     );
     expect(commit).not.toHaveBeenCalled();

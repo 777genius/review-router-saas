@@ -21,6 +21,7 @@ import {
 import {
   commitOrThrow,
   requireCurrentExecution,
+  requireValidDossierDigest,
   restoreCommandOrThrow,
   withCurrentDossierDigest,
 } from "./investigation-use-case-support";
@@ -60,6 +61,7 @@ export class PlanNextInvestigationTurn {
     if (restored) return toInvestigationReadModel(restored);
     const current = await this.store.findById(command.investigationId);
     if (current === null) throw new Error("investigation_missing");
+    await requireValidDossierDigest(this.digest, current);
     if (current.version !== command.expectedVersion) {
       throw new Error("investigation_concurrency_conflict");
     }

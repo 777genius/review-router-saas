@@ -2373,6 +2373,20 @@ async function commitGuardIsCurrent(
       input.guard.expectedVerdict
     );
   }
+  if (
+    input.guard.kind === InvestigationStoreCommitGuardKind.ExpiredActiveTurn
+  ) {
+    return (
+      input.transition.kind ===
+        InvestigationStoreTransitionKind.ActiveTurnExpired &&
+      input.transition.turnId === input.guard.turnId &&
+      current.activeTurn?.turnId === input.guard.turnId &&
+      current.activeTurn.expiresAt === input.guard.expiresAt &&
+      databaseNow >= new Date(input.guard.expiresAt) &&
+      (await executionAuthorityVerdict(transaction, current, databaseNow)) ===
+        input.guard.expectedVerdict
+    );
+  }
   if (input.guard.kind !== InvestigationStoreCommitGuardKind.LeaseFence) {
     return false;
   }
