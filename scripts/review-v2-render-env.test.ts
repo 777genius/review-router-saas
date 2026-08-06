@@ -38,9 +38,13 @@ describe("Review v2 Render context environment", () => {
     ).toBe(reviewV2ProjectionPolicyVersion);
   });
 
-  it("declares every required value in the Render blueprint", () => {
+  it("declares every required value in deployment defaults", () => {
     const blueprint = readFileSync(
       new URL("../render.yaml", import.meta.url),
+      "utf8",
+    );
+    const selfHostedEnv = readFileSync(
+      new URL("../deploy/self-hosted/.env.example", import.meta.url),
       "utf8",
     );
     for (const key of reviewV2ContextApiEnvKeys) {
@@ -48,6 +52,9 @@ describe("Review v2 Render context environment", () => {
     }
     expect(blueprint).toContain(
       `- key: REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION\n        value: "${reviewV2ProjectionPolicyVersion}"`,
+    );
+    expect(selfHostedEnv).toContain(
+      `${reviewV2ProjectionPolicyVersionEnvKey}=${reviewV2ProjectionPolicyVersion}`,
     );
   });
 });
