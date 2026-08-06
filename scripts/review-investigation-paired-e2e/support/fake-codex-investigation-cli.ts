@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import readline from "node:readline";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -19,17 +19,96 @@ type ClosureClaim = Readonly<{
   operationReceiptIds: readonly string[];
 }>;
 
+type JsonRpcRequest = Readonly<{
+  id?: number;
+  method: string;
+  params?: Readonly<Record<string, unknown>>;
+}>;
+
 const briefMarker = "REVIEWROUTER_INVESTIGATION_TURN_BRIEF_V1_BASE64URL:";
 const scenarioMarker = "REVIEWROUTER_PAIRED_E2E_SCENARIO:";
+const threadId = "reviewrouter-paired-e2e-thread";
+const turnId = "reviewrouter-paired-e2e-turn";
+let protocolCwd = process.cwd();
+let requestedModel = "gpt-paired-e2e";
+let outputQueue = Promise.resolve();
+let itemSequence = 0;
 
 void main();
 
 async function main(): Promise<void> {
-  const prompt = await readStdin();
+  if (process.argv.includes("--version")) {
+    process.stdout.write("codex-cli 0.145.0\n");
+    return;
+  }
+  if (!process.argv.includes("app-server")) {
+    throw new Error("paired_fake_app_server_required");
+  }
+  const input = readline.createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
+  });
+  input.on("line", (line) => {
+    void handleRequest(JSON.parse(line) as JsonRpcRequest).catch(fail);
+  });
+}
+
+async function handleRequest(message: JsonRpcRequest): Promise<void> {
+  switch (message.method) {
+    case "initialize":
+      await respond(message, {
+        userAgent: "Codex Desktop/0.145.0 reviewrouter-paired-e2e",
+        codexHome: process.cwd(),
+        platformFamily: "unix",
+        platformOs: process.platform,
+      });
+      await notify("remoteControl/status/changed", { status: "disabled" });
+      return;
+    case "initialized":
+      return;
+    case "thread/start": {
+      const params = requireRecord(message.params, "thread_start_params");
+      requestedModel = stringField(params, "model");
+      protocolCwd = stringField(params, "cwd");
+      const thread = threadRecord();
+      await respond(message, {
+        thread,
+        model: requestedModel,
+        modelProvider: "openai",
+        serviceTier: null,
+        cwd: protocolCwd,
+        instructionSources: [],
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandbox: { type: "readOnly", networkAccess: false },
+        reasoningEffort: "xhigh",
+      });
+      await notify("thread/started", { thread });
+      return;
+    }
+    case "turn/start": {
+      const prompt = turnPrompt(
+        requireRecord(message.params, "turn_start_params"),
+      );
+      await respond(message, { turn: turnRecord("inProgress") });
+      await notify("turn/started", {
+        threadId,
+        turn: turnRecord("inProgress"),
+      });
+      void executeTurn(prompt).catch(fail);
+      return;
+    }
+    case "turn/interrupt":
+      await respond(message, {});
+      return;
+    default:
+      throw new Error(`paired_fake_request_unsupported:${message.method}`);
+  }
+}
+
+async function executeTurn(prompt: string): Promise<void> {
   const brief = decodeBrief(prompt);
   const scenario = decodeScenario(prompt);
-  const outputPath = requireArgumentValue("--output-last-message");
-  const model = requireArgumentValue("--model");
   const closureClaims: ClosureClaim[] = [];
 
   if (brief.purpose === "discovery") {
@@ -68,21 +147,40 @@ async function main(): Promise<void> {
     unresolvableClaims: [],
     criticDecision: brief.purpose === "critic" ? "accept" : null,
   };
-  await writeFile(outputPath, JSON.stringify(output), "utf8");
-  process.stdout.write(
-    `${JSON.stringify({ type: "session_configured", model })}\n`,
+  const finalText = JSON.stringify(output);
+  const item = {
+    type: "agentMessage",
+    id: "final-answer",
+    text: finalText,
+    phase: "final_answer",
+    memoryCitation: null,
+  };
+  await notify("item/started", { threadId, turnId, startedAtMs: 1, item });
+  await notify("item/completed", {
+    threadId,
+    turnId,
+    completedAtMs: 2,
+    item,
+  });
+  const usage = tokenUsage(
+    Buffer.byteLength(prompt, "utf8"),
+    Buffer.byteLength(finalText, "utf8"),
   );
-  process.stdout.write(
-    `${JSON.stringify({
-      type: "turn.completed",
-      usage: {
-        input_tokens: Buffer.byteLength(prompt, "utf8"),
-        cached_input_tokens: 0,
-        output_tokens: Buffer.byteLength(JSON.stringify(output), "utf8"),
-        reasoning_output_tokens: 0,
-      },
-    })}\n`,
-  );
+  await notify("rawResponse/completed", {
+    threadId,
+    turnId,
+    responseId: "response-1",
+    usage,
+  });
+  await notify("thread/tokenUsage/updated", {
+    threadId,
+    turnId,
+    tokenUsage: { total: usage, last: usage, modelContextWindow: 200_000 },
+  });
+  await notify("turn/completed", {
+    threadId,
+    turn: turnRecord("completed"),
+  });
 }
 
 function proposalForMissingCaller(brief: TurnBrief, scenario: Scenario) {
@@ -259,8 +357,42 @@ async function callTool(
   tool: string,
   args: Readonly<Record<string, unknown>>,
 ): Promise<Record<string, unknown>> {
+  const id = `mcp-${++itemSequence}`;
+  await notify("item/started", {
+    threadId,
+    turnId,
+    startedAtMs: 1,
+    item: mcpItem(id, tool, args, "inProgress", null),
+  });
   const result = await client.callTool({ name: tool, arguments: { ...args } });
+  await notify("item/completed", {
+    threadId,
+    turnId,
+    completedAtMs: 2,
+    item: mcpItem(id, tool, args, "completed", { content: result.content }),
+  });
   return parseToolPayload(result.content);
+}
+
+function mcpItem(
+  id: string,
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  status: "inProgress" | "completed",
+  result: Readonly<Record<string, unknown>> | null,
+) {
+  return {
+    type: "mcpToolCall",
+    id,
+    server: "reviewrouter",
+    tool,
+    arguments: args,
+    status,
+    result,
+    error: null,
+    pluginId: null,
+    appContext: null,
+  };
 }
 
 function parseToolPayload(content: unknown): Record<string, unknown> {
@@ -311,17 +443,85 @@ function parseReviewRouterConfig(field: "command" | "args" | "cwd"): unknown {
   return JSON.parse(value.slice(prefix.length));
 }
 
-function requireArgumentValue(flag: string): string {
-  const index = process.argv.indexOf(flag);
-  const value = index >= 0 ? process.argv[index + 1] : undefined;
-  if (!value) throw new Error(`paired_fake_argument_missing:${flag}`);
-  return value;
+function tokenUsage(inputTokens: number, outputTokens: number) {
+  return {
+    totalTokens: inputTokens + outputTokens,
+    inputTokens,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens,
+    reasoningOutputTokens: 0,
+  };
 }
 
-async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks).toString("utf8");
+function threadRecord() {
+  return {
+    id: threadId,
+    ephemeral: true,
+    modelProvider: "openai",
+    path: null,
+    cwd: protocolCwd,
+    cliVersion: "0.145.0",
+    turns: [],
+  };
+}
+
+function turnRecord(status: "inProgress" | "completed") {
+  return { id: turnId, status, error: null, items: [] };
+}
+
+function turnPrompt(params: Readonly<Record<string, unknown>>): string {
+  const input = params.input;
+  if (!Array.isArray(input) || input.length !== 1) {
+    throw new Error("paired_fake_turn_input_invalid");
+  }
+  return stringField(requireRecord(input[0], "turn_input"), "text");
+}
+
+function respond(
+  request: JsonRpcRequest,
+  result: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  if (!Number.isSafeInteger(request.id)) {
+    throw new Error("paired_fake_request_id_invalid");
+  }
+  return send({ id: request.id, result });
+}
+
+function notify(
+  method: string,
+  params: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  return send({ method, params, emittedAtMs: 1 });
+}
+
+function send(value: Readonly<Record<string, unknown>>): Promise<void> {
+  const line = `${JSON.stringify(value)}\n`;
+  outputQueue = outputQueue.then(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        process.stdout.write(line, "utf8", (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      }),
+  );
+  return outputQueue;
+}
+
+function fail(error: unknown): void {
+  process.stderr.write(
+    `${error instanceof Error ? error.message : "paired_fake_failure"}\n`,
+  );
+  process.exitCode = 1;
+  process.stdin.destroy();
+}
+
+function requireRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`paired_fake_${field}_invalid`);
+  }
+  return value as Record<string, unknown>;
 }
 
 function stringEnvironment(

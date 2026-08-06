@@ -1,6 +1,7 @@
 import {
   Prisma,
   ProviderExecutionProfileV2 as PrismaExecutionProfile,
+  ReviewContextLeaseAuthorityKindV1 as PrismaLeaseAuthorityKind,
   ReviewContextGatewaySessionStateV1 as PrismaGatewaySessionState,
   ReviewProviderKindV2 as PrismaProviderKind,
   type PrismaClient,
@@ -26,6 +27,7 @@ import {
   type EncryptedContextReplayMaterial,
 } from "../../domain/encrypted-context-replay-material";
 import {
+  ContextLeaseAuthorityKind,
   ContextProviderKind,
   GatewaySessionState,
   openGatewaySession,
@@ -423,6 +425,9 @@ function toSessionCreateInput(
     sourceWorkSlotId: session.sourceWorkSlotId,
     attemptId: session.attemptId,
     openingIntentHash: session.openingIntentHash,
+    sourceLeaseAuthorityKind: toPrismaLeaseAuthorityKind(
+      session.sourceLeaseAuthorityKind,
+    ),
     sourceLeaseId: session.sourceLeaseId,
     sourceFencingToken: BigInt(session.sourceFencingToken),
     providerKind: toPrismaProviderKind(session.providerKind),
@@ -575,6 +580,9 @@ function toGatewaySession(
     sourceWorkSlotId: record.sourceWorkSlotId,
     attemptId: record.attemptId,
     openingIntentHash: record.openingIntentHash,
+    sourceLeaseAuthorityKind: fromPrismaLeaseAuthorityKind(
+      record.sourceLeaseAuthorityKind,
+    ),
     sourceLeaseId: record.sourceLeaseId,
     sourceFencingToken: record.sourceFencingToken.toString(),
     providerKind: fromPrismaProviderKind(record.providerKind),
@@ -703,6 +711,28 @@ function fromPrismaProviderKind(
   }
 }
 
+function toPrismaLeaseAuthorityKind(
+  value: ContextLeaseAuthorityKind,
+): PrismaLeaseAuthorityKind {
+  switch (value) {
+    case ContextLeaseAuthorityKind.StandardExecution:
+      return PrismaLeaseAuthorityKind.standard_execution;
+    case ContextLeaseAuthorityKind.InvestigationShadow:
+      return PrismaLeaseAuthorityKind.investigation_shadow;
+  }
+}
+
+function fromPrismaLeaseAuthorityKind(
+  value: PrismaLeaseAuthorityKind,
+): ContextLeaseAuthorityKind {
+  switch (value) {
+    case PrismaLeaseAuthorityKind.standard_execution:
+      return ContextLeaseAuthorityKind.StandardExecution;
+    case PrismaLeaseAuthorityKind.investigation_shadow:
+      return ContextLeaseAuthorityKind.InvestigationShadow;
+  }
+}
+
 function toPrismaSessionState(
   value: GatewaySessionState,
 ): PrismaGatewaySessionState {
@@ -789,6 +819,7 @@ function sameAttestationIntent(
     left.sourceExecutionId === right.sourceExecutionId &&
     left.sourceWorkSlotId === right.sourceWorkSlotId &&
     left.attemptId === right.attemptId &&
+    left.sourceLeaseAuthorityKind === right.sourceLeaseAuthorityKind &&
     left.sourceLeaseId === right.sourceLeaseId &&
     left.sourceFencingToken === right.sourceFencingToken &&
     left.sourceReviewRevisionHash === right.sourceReviewRevisionHash &&
@@ -825,6 +856,8 @@ function validAcceptanceAggregate(input: {
     input.attestation.sourceWorkSlotId ===
       input.expectedSession.sourceWorkSlotId &&
     input.attestation.attemptId === input.expectedSession.attemptId &&
+    input.attestation.sourceLeaseAuthorityKind ===
+      input.expectedSession.sourceLeaseAuthorityKind &&
     input.attestation.sourceLeaseId === input.expectedSession.sourceLeaseId &&
     input.attestation.sourceFencingToken ===
       input.expectedSession.sourceFencingToken &&

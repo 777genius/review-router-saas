@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   AbortInvestigationTurn,
+  AcquireInvestigationLease,
   CommitInvestigationTurn,
   ConcludeReviewInvestigation,
   ContextCriticDecision,
   enforceCriticPolicyForConclusion,
   InvestigationFindingSeverity,
+  InvestigationPolicyCanonicalVersion,
+  policyCanonicalValue,
+  InvestigationLeaseAcquireStatus,
+  InvestigationStoreTransitionKind,
   InvestigationObligationKind,
   InvestigationReceiptReplayVerdict,
   InvestigationReceiptKind,
   InvestigationTurnProviderKind,
+  investigationDossierCanonicalValue,
+  canonicalJson,
   independentCriticRiskPriorityV1,
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
@@ -35,13 +42,81 @@ import { NodeSha256InvestigationDigest } from "../infrastructure/node/node-sha25
 import {
   CurrentInvestigationExecutionAuthority,
   FixedInvestigationClock,
-} from "../testing/investigation-test-kit";
+  digestBackedInvestigationManifestIdentity,
+} from "../testing";
 
 const revisionHash = "a".repeat(64);
 const inventorySubject = "inventory:canonical";
 const changedSubject = "src/service.ts@head";
 
 describe("review investigation in-memory vertical slice", () => {
+  it("normalizes manifest identity adapter failures at the application boundary", async () => {
+    const harness = createHarness();
+    const open = new OpenReviewInvestigation(
+      harness.store,
+      harness.authority,
+      harness.digest,
+      {
+        computeManifestKey: async () => {
+          throw new Error("provider-specific identity failure");
+        },
+      },
+      harness.clock,
+    );
+
+    await expect(open.execute(openCommand("identity-failure"))).rejects.toThrow(
+      "investigation_manifest_identity_failed",
+    );
+  });
+
+  it("normalizes manifest identity failures while acquiring a lease", async () => {
+    const harness = createHarness();
+    const command = openCommand("lease-identity-open");
+    const opened = await harness.open.execute(command);
+    const planned = await harness.plan.execute({
+      commandId: "lease-identity-plan",
+      investigationId: opened.investigationId,
+      expectedVersion: opened.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+    const acquire = new AcquireInvestigationLease(
+      harness.store,
+      harness.store,
+      harness.authority,
+      harness.digest,
+      {
+        computeManifestKey: async () => {
+          throw new Error("provider-specific identity failure");
+        },
+      },
+      harness.clock,
+    );
+
+    await expect(
+      acquire.execute({
+        investigationId: opened.investigationId,
+        expectedVersion: planned.version,
+        turnId: planned.turn!.turnId,
+        authorizationId: "authorization-test",
+        mutationEpoch: 1n,
+        providerStrategyId: command.providerStrategyId,
+        investigationManifestCanonicalJson:
+          command.investigationManifestCanonicalJson!,
+        investigationManifestHash: command.investigationManifestHash!,
+        acquireRequestId: "lease-identity-acquire",
+        acquireRequestHash: "1".repeat(64),
+        ownerIdHash: "2".repeat(64),
+        leaseId: "lease-identity-failure",
+        attemptId: "attempt-identity-failure",
+        leaseCapabilityId: "capability-identity-failure",
+        capabilitySigningKeyId: "signing-key-1",
+        initialLeaseDurationMs: 30_000,
+        retentionDurationMs: 3_600_000,
+      }),
+    ).rejects.toThrow("investigation_manifest_identity_failed");
+  });
+
   it("fails closed when discovery turns report mixed terminal models", () => {
     const base = {
       turnId: "turn-1",
@@ -330,6 +405,7 @@ describe("review investigation in-memory vertical slice", () => {
               },
       },
       harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
       harness.clock,
     );
     const targetRevision = {
@@ -351,6 +427,9 @@ describe("review investigation in-memory vertical slice", () => {
       targetStableReviewUnitKey: targetOpen.stableReviewUnitKey,
       targetProviderVoteLaneId: targetOpen.providerVoteLaneId,
       targetProviderStrategyId: "strategy-target",
+      targetInvestigationManifestCanonicalJson:
+        targetOpen.investigationManifestCanonicalJson!,
+      targetInvestigationManifestHash: targetOpen.investigationManifestHash!,
       targetRuntimeProfile: targetOpen.runtimeProfile,
       targetContract: targetOpen.contract,
       targetPolicy: targetOpen.policy,
@@ -381,6 +460,11 @@ describe("review investigation in-memory vertical slice", () => {
     const replayedTarget = await harness.store.findById(
       replayed.investigationId,
     );
+    expect(replayedTarget).toMatchObject({
+      investigationManifestCanonicalJson:
+        targetOpen.investigationManifestCanonicalJson!,
+      investigationManifestHash: targetOpen.investigationManifestHash!,
+    });
     expect(
       replayedTarget?.obligations.map((item) => item.canonicalSubject),
     ).toEqual(expect.arrayContaining([inventorySubject, targetOnlySubject]));
@@ -389,6 +473,43 @@ describe("review investigation in-memory vertical slice", () => {
         (item) => item.canonicalSubject === changedSubject,
       ),
     ).toBe(false);
+    const replayedPlan = await harness.plan.execute({
+      commandId: "plan-selective-replay",
+      investigationId: replayed.investigationId,
+      expectedVersion: replayed.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+    const acquiredReplayLease = await new AcquireInvestigationLease(
+      harness.store,
+      harness.store,
+      harness.authority,
+      harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
+      harness.clock,
+    ).execute({
+      investigationId: replayed.investigationId,
+      expectedVersion: replayedPlan.version,
+      turnId: replayedPlan.turn!.turnId,
+      authorizationId: "authorization-target",
+      mutationEpoch: 1n,
+      providerStrategyId: "strategy-target",
+      investigationManifestCanonicalJson:
+        targetOpen.investigationManifestCanonicalJson!,
+      investigationManifestHash: targetOpen.investigationManifestHash!,
+      acquireRequestId: "acquire-selective-replay",
+      acquireRequestHash: "1".repeat(64),
+      ownerIdHash: "2".repeat(64),
+      leaseId: "lease-selective-replay",
+      attemptId: "attempt-selective-replay",
+      leaseCapabilityId: "capability-selective-replay",
+      capabilitySigningKeyId: "signing-key-1",
+      initialLeaseDurationMs: 30_000,
+      retentionDurationMs: 3_600_000,
+    });
+    expect(acquiredReplayLease.status).toBe(
+      InvestigationLeaseAcquireStatus.Acquired,
+    );
     expect(await harness.store.findById(opened.investigationId)).toEqual(
       sourceBeforeReplay,
     );
@@ -417,6 +538,7 @@ describe("review investigation in-memory vertical slice", () => {
         },
       },
       harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
       harness.clock,
     );
     const fullyReplayed = await replayAll.execute({
@@ -434,6 +556,9 @@ describe("review investigation in-memory vertical slice", () => {
       targetStableReviewUnitKey: targetOpen.stableReviewUnitKey,
       targetProviderVoteLaneId: targetOpen.providerVoteLaneId,
       targetProviderStrategyId: "strategy-target-all",
+      targetInvestigationManifestCanonicalJson:
+        targetOpen.investigationManifestCanonicalJson!,
+      targetInvestigationManifestHash: targetOpen.investigationManifestHash!,
       targetRuntimeProfile: targetOpen.runtimeProfile,
       targetContract: targetOpen.contract,
       targetPolicy: targetOpen.policy,
@@ -878,6 +1003,123 @@ describe("review investigation in-memory vertical slice", () => {
     );
   });
 
+  it("preserves the legacy dossier preimage when no manifest was admitted", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(
+      openCommand("open-legacy-dossier"),
+    );
+    const stored = (await harness.store.findById(opened.investigationId))!;
+    const legacyWithoutDigest = {
+      ...stored,
+      investigationManifestCanonicalJson: null,
+      investigationManifestHash: null,
+    };
+    const legacy = {
+      ...legacyWithoutDigest,
+      dossierDigest: await harness.digest.digestUtf8(
+        canonicalJson(investigationDossierCanonicalValue(legacyWithoutDigest)),
+      ),
+    };
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        investigationDossierCanonicalValue(legacy),
+        "investigationManifestHash",
+      ),
+    ).toBe(false);
+    const migratedStore = new InMemoryInvestigationStore();
+    await migratedStore.commit({
+      investigation: legacy,
+      expectedVersion: null,
+      commandId: "legacy-open-command",
+      commandHash: "3".repeat(64),
+      transition: { kind: InvestigationStoreTransitionKind.Opened },
+    });
+    await expect(
+      new RestoreReviewInvestigation(migratedStore, harness.digest).snapshot(
+        legacy.investigationId,
+      ),
+    ).resolves.toMatchObject({
+      investigationManifestCanonicalJson: null,
+      investigationManifestHash: null,
+      dossierDigest: legacy.dossierDigest,
+    });
+  });
+
+  it("restores legacy policy dossiers and upgrades their digest on mutation", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(
+      openCommand("open-legacy-policy-dossier"),
+    );
+    const stored = (await harness.store.findById(opened.investigationId))!;
+    const legacyPolicy = { ...stored.policy };
+    delete legacyPolicy.maxSeedProbesPerFile;
+    delete legacyPolicy.maxSeedProbesOverall;
+    const legacyPreimage = {
+      ...stored,
+      policyCanonicalVersion: InvestigationPolicyCanonicalVersion.LegacyV1,
+      policy: legacyPolicy,
+    };
+    const legacy = {
+      ...stored,
+      policyCanonicalVersion: InvestigationPolicyCanonicalVersion.LegacyV1,
+      policy: legacyPolicy,
+      dossierDigest: await harness.digest.digestUtf8(
+        canonicalJson(investigationDossierCanonicalValue(legacyPreimage)),
+      ),
+    };
+    const migratedStore = new InMemoryInvestigationStore();
+    await migratedStore.commit({
+      investigation: legacy,
+      expectedVersion: null,
+      commandId: "legacy-policy-open-command",
+      commandHash: "4".repeat(64),
+      transition: { kind: InvestigationStoreTransitionKind.Opened },
+    });
+    const restore = new RestoreReviewInvestigation(
+      migratedStore,
+      harness.digest,
+    );
+    await expect(
+      restore.snapshot(legacy.investigationId),
+    ).resolves.toMatchObject({
+      dossierDigest: legacy.dossierDigest,
+      policyCanonicalVersion: InvestigationPolicyCanonicalVersion.LegacyV1,
+      policy: legacyPolicy,
+    });
+    const planned = await new PlanNextInvestigationTurn(
+      migratedStore,
+      harness.authority,
+      harness.digest,
+      harness.clock,
+    ).execute({
+      commandId: "legacy-policy-plan",
+      investigationId: legacy.investigationId,
+      expectedVersion: legacy.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+    expect(planned.dossierDigest).not.toBe(legacy.dossierDigest);
+    expect(
+      (await migratedStore.findById(legacy.investigationId))
+        ?.policyCanonicalVersion,
+    ).toBe(InvestigationPolicyCanonicalVersion.SeedProbeV2);
+    await expect(
+      restore.snapshot(legacy.investigationId),
+    ).resolves.toMatchObject({
+      dossierDigest: planned.dossierDigest,
+    });
+  });
+
+  it("rejects a legacy canonical version carrying seed probe limits", () => {
+    const policy = openCommand("policy-downgrade").policy;
+    expect(() =>
+      policyCanonicalValue(
+        policy,
+        InvestigationPolicyCanonicalVersion.LegacyV1,
+      ),
+    ).toThrow("investigation_policy_canonical_downgrade_invalid");
+  });
+
   it("is order-independent and rejects conflicting command replay", async () => {
     for (let seed = 1; seed <= 50; seed += 1) {
       const left = createHarness();
@@ -968,7 +1210,13 @@ function createHarness(customPolicy: ReviewInvestigationPolicy = policy) {
     clock,
     authority,
     policy: customPolicy,
-    open: new OpenReviewInvestigation(store, authority, digest, clock),
+    open: new OpenReviewInvestigation(
+      store,
+      authority,
+      digest,
+      digestBackedInvestigationManifestIdentity(digest),
+      clock,
+    ),
     restore: new RestoreReviewInvestigation(store, digest),
     plan: new PlanNextInvestigationTurn(store, authority, digest, clock),
     commit: new CommitInvestigationTurn(store, authority, digest, clock),
@@ -1018,6 +1266,9 @@ function openCommand(
     stableReviewUnitKey: "stable-unit-test",
     providerVoteLaneId: "lane-codex",
     providerStrategyId: "strategy-single-provider",
+    investigationManifestCanonicalJson: "{}",
+    investigationManifestHash:
+      "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
     contract: {
       coverageContractVersion: "coverage-v1",
@@ -1166,4 +1417,6 @@ const policy: ReviewInvestigationPolicy = {
   maxFindings: 20,
   maxProposalsPerTurn: 20,
   maxReceiptsPerTurn: 50,
+  maxSeedProbesPerFile: 48,
+  maxSeedProbesOverall: 384,
 };

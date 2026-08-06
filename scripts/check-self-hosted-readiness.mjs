@@ -182,11 +182,64 @@ function requireT0RuntimeContract() {
 
 function requireInvestigationRetentionMaintenance() {
   if (
-    read("REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED") === "1" &&
-    read("REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED") !== "1"
+    read("REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED") !== "1" ||
+    read("REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED") === "1"
   ) {
+    return;
+  }
+  requireRotatingKeyRing(
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID",
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON",
+  );
+  requireInvestigationPrivateMaterialKeyRing();
+  if (read("REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED") !== "1") {
     errors.push(
       "REVIEW_ROUTER_REVIEW_INVESTIGATION_MAINTENANCE_ENABLED must be 1 when investigation recording is enabled.",
+    );
+  }
+}
+
+function requireInvestigationPrivateMaterialKeyRing() {
+  const activeKeyName =
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_ACTIVE_KEY_ID";
+  const keysName =
+    "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_KEYS_JSON";
+  const activeKeyId = read(activeKeyName);
+  if (!activeKeyId) {
+    errors.push(`${activeKeyName} is required.`);
+  } else if (!isInvestigationPrivateMaterialKeyId(activeKeyId)) {
+    errors.push(`${activeKeyName} is invalid.`);
+  }
+  const raw = read(keysName);
+  let keys;
+  try {
+    keys = JSON.parse(raw);
+  } catch {
+    keys = null;
+  }
+  const entries = isRecord(keys) ? Object.entries(keys) : [];
+  const valid =
+    entries.length >= 1 &&
+    entries.length <= 16 &&
+    entries.every(
+      ([keyId, encoded]) =>
+        isInvestigationPrivateMaterialKeyId(keyId) &&
+        isCanonicalBase64UrlKey(encoded, 32),
+    );
+  if (!valid) {
+    errors.push(
+      `${keysName} must contain 1-16 canonical 32-byte base64url keys.`,
+    );
+    return;
+  }
+  if (activeKeyId && !Object.hasOwn(keys, activeKeyId)) {
+    errors.push(`${activeKeyName} must identify a key in ${keysName}.`);
+  }
+  const ttlName = "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRIVATE_MATERIAL_TTL_MS";
+  const ttlValue = read(ttlName);
+  if (ttlValue && !isInvestigationPrivateMaterialTtl(ttlValue)) {
+    errors.push(
+      `${ttlName} must be an integer from 60000 through 604800000 milliseconds.`,
     );
   }
 }
@@ -413,6 +466,29 @@ function isCanonicalBase64Key(value, minimumByteLength, exactLength) {
     lengthValid &&
     decoded.toString("base64").replace(/=+$/u, "") === value.replace(/=+$/u, "")
   );
+}
+
+function isCanonicalBase64UrlKey(value, byteLength) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/u.test(value)) {
+    return false;
+  }
+  const decoded = Buffer.from(value, "base64url");
+  return (
+    decoded.byteLength === byteLength && decoded.toString("base64url") === value
+  );
+}
+
+function isInvestigationPrivateMaterialKeyId(value) {
+  return (
+    typeof value === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u.test(value)
+  );
+}
+
+function isInvestigationPrivateMaterialTtl(value) {
+  if (!/^[1-9][0-9]*$/u.test(value)) return false;
+  const ttlMs = Number(value);
+  return Number.isSafeInteger(ttlMs) && ttlMs >= 60_000 && ttlMs <= 604_800_000;
 }
 
 function isIsoTimestamp(value) {

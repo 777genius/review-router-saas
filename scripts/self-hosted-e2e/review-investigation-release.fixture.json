@@ -15,9 +15,11 @@
       "maxOperationalAttempts": 8,
       "maxProposalsPerTurn": 16,
       "maxReceiptsPerTurn": 64,
+      "maxSeedProbesOverall": 384,
+      "maxSeedProbesPerFile": 48,
       "maxSemanticTurns": 8,
       "policyId": "production-shaped-disposable-e2e.v1"
     },
-    "policyHash": "232a049e3a801e11d8270ada630244090918962c639e23d6c3ff2ececebbcc8c"
+    "policyHash": "c96e460e5a7473cba3f67cf5aee4fd4ea2e7da43f60b513975ffaf9930d94689"
   }
 }

@@ -3,6 +3,7 @@ import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
   reviewActionV2CanonicalizerDigest,
   reviewActionV2PublishedSchemaDigest,
+  reviewInvestigationExtensionV1,
 } from "@reviewrouter/protocol-review-action-v2";
 import { describe, expect, it, vi } from "vitest";
 import { createApiApp } from "./app.js";
@@ -14,6 +15,7 @@ import {
 import {
   assertReviewIntentRolloutConfiguration,
   composeReviewActionV2ProductionRoutes,
+  createTrustedProducerReleaseMaterializer,
   ProductionReviewInvestigationAuthorizationCapability,
   readInvestigationRolloutPolicy,
   reviewActionV2CapabilityActiveKeyIdEnv,
@@ -26,6 +28,8 @@ import {
   reviewInvestigationPrivateMaterialKeysEnv,
   reviewInvestigationPrivateMaterialTtlEnv,
   reviewInvestigationMaintenanceEnabledEnv,
+  reviewInvestigationLeaseCapabilityActiveKeyIdEnv,
+  reviewInvestigationLeaseCapabilityKeysEnv,
   reviewInvestigationProductionEffectsEnabledEnv,
   reviewInvestigationRecordingEnabledEnv,
   reviewInvestigationShadowEnabledEnv,
@@ -193,6 +197,41 @@ describe("Review Action v2 production composition", () => {
     expect(routes.investigation.open?.capabilityEnabled).toBe(true);
   });
 
+  it.each([
+    reviewInvestigationLeaseCapabilityActiveKeyIdEnv,
+    reviewInvestigationLeaseCapabilityKeysEnv,
+  ])("requires %s only while investigation recording is enabled", (name) => {
+    const dormantEnv = { ...productionEnv(), [name]: undefined };
+    expect(() =>
+      composeReviewActionV2ProductionRoutes({
+        enabled: true,
+        env: dormantEnv,
+        runtime,
+        prisma: inertPrisma(),
+      }),
+    ).not.toThrow();
+
+    const activeEnv = {
+      ...productionEnv(),
+      [name]: undefined,
+      [reviewInvestigationRecordingEnabledEnv]: "1",
+      [reviewInvestigationPrivateMaterialActiveKeyIdEnv]: "private-v1",
+      [reviewInvestigationPrivateMaterialKeysEnv]: JSON.stringify({
+        "private-v1": Buffer.alloc(32, 7).toString("base64url"),
+      }),
+      [reviewInvestigationPrivateMaterialTtlEnv]: "300000",
+      [reviewInvestigationMaintenanceEnabledEnv]: "1",
+    };
+    expect(() =>
+      composeReviewActionV2ProductionRoutes({
+        enabled: true,
+        env: activeEnv,
+        runtime,
+        prisma: inertPrisma(),
+      }),
+    ).toThrow();
+  });
+
   it("rejects a projection policy version that the producer cannot emit", () => {
     expect(() =>
       composeReviewActionV2ProductionRoutes({
@@ -338,9 +377,13 @@ describe("Review Action v2 production composition", () => {
         } as never,
       }),
     ).resolves.toEqual({
-      authorizationDescriptorVersion: 2,
+      authorizationDescriptorVersion: 3,
       capability: "review_investigation_v1",
       coverageProfileHash: "a".repeat(64),
+      extensionCanonicalizerDigest:
+        reviewInvestigationExtensionV1.canonicalizerDigest,
+      extensionId: reviewInvestigationExtensionV1.extensionId,
+      extensionSchemaDigest: reviewInvestigationExtensionV1.schemaDigest,
       policyHash: "b".repeat(64),
       providerCapabilities: [
         {
@@ -356,6 +399,59 @@ describe("Review Action v2 production composition", () => {
           provider: InvestigationRolloutProvider.Codex,
         }),
       ],
+    });
+  });
+
+  it("preserves the investigation profile while materializing a trusted release", async () => {
+    const registerProducerRelease = vi.fn().mockResolvedValue({
+      status: "created",
+      value: {},
+    });
+    const reviewInvestigationProfile = {
+      capability: "review_investigation_v1",
+      coverageProfileHash: "a".repeat(64),
+      policyHash: "b".repeat(64),
+    } as const;
+    const materializer = createTrustedProducerReleaseMaterializer({
+      digest: {} as never,
+      producerReleases: {
+        registerProducerRelease,
+      } as never,
+      releaseQueries: {
+        findProducerReleaseById: vi.fn().mockResolvedValue(null),
+      } as never,
+      protocolLimitsQueries: {
+        findProtocolLimitsProfileById: vi
+          .fn()
+          .mockResolvedValue({ limitsDigest: "c".repeat(64) }),
+      } as never,
+      operationalSloQueries: {
+        findOperationalSloProfileById: vi
+          .fn()
+          .mockResolvedValue({ sloDigest: "d".repeat(64) }),
+      } as never,
+    });
+
+    await materializer.ensureRegistered({
+      producerReleaseId: "release-1",
+      distributionKind: "public_reusable",
+      actionCommitSha: "1".repeat(40),
+      runtimeCommitSha: "2".repeat(40),
+      wrapperEntrypointDigest: null,
+      runtimeEntrypointDigest: "e".repeat(64),
+      contextGatewayPolicyVersion: "context-gateway-v4",
+      contextGatewayEntrypointDigest: "f".repeat(64),
+      schemaDigest: reviewActionV2PublishedSchemaDigest,
+      capabilityProfile: "exact_revision_v2",
+      protocolLimitsProfileId: "limits-v2",
+      operationalSloProfileId: "slo-v2",
+      reviewInvestigationProfile,
+    } as never);
+
+    expect(registerProducerRelease).toHaveBeenCalledWith({
+      candidate: expect.objectContaining({ reviewInvestigationProfile }),
+      expectedProtocolLimitsDigest: "c".repeat(64),
+      expectedOperationalSloDigest: "d".repeat(64),
     });
   });
 
@@ -470,6 +566,14 @@ function productionEnv(): Record<string, string> {
       reviewActionV2ProjectionPolicyVersion,
     [reviewActionV2CapabilityActiveKeyIdEnv]: "active-v2",
     [reviewActionV2CapabilityKeysEnv]: signingKeys,
+    [reviewInvestigationLeaseCapabilityActiveKeyIdEnv]: "shadow-v1",
+    [reviewInvestigationLeaseCapabilityKeysEnv]: JSON.stringify([
+      {
+        keyId: "shadow-v1",
+        secretBase64: Buffer.from("i".repeat(32)).toString("base64"),
+        verifyUntil: null,
+      },
+    ]),
     [reviewActionV2ContextSessionSecretEnv]: Buffer.from(
       "h".repeat(32),
     ).toString("base64"),

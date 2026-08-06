@@ -16,6 +16,7 @@ import type { ReviewInvestigationRuntimeProfile } from "../../domain/review-inve
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
+import type { InvestigationManifestIdentityPort } from "../ports/investigation-manifest-identity-port";
 import {
   InvestigationStoreTransitionKind,
   type InvestigationStorePort,
@@ -25,6 +26,7 @@ import {
   type ReviewInvestigationReadModel,
 } from "../investigation-read-model";
 import {
+  admitInvestigationManifest,
   commitOrThrow,
   digestCanonical,
   requireCurrentExecution,
@@ -46,6 +48,8 @@ export type OpenReviewInvestigationCommand = Readonly<{
   stableReviewUnitKey: string;
   providerVoteLaneId: string;
   providerStrategyId: string;
+  investigationManifestCanonicalJson?: string;
+  investigationManifestHash?: string;
   runtimeProfile: ReviewInvestigationRuntimeProfile;
   contract: ReviewInvestigationContract;
   policy: ReviewInvestigationPolicy;
@@ -58,6 +62,7 @@ export class OpenReviewInvestigation {
     private readonly store: InvestigationStorePort,
     private readonly authority: InvestigationExecutionAuthorityPort,
     private readonly digest: InvestigationDigestPort,
+    private readonly manifestIdentity: InvestigationManifestIdentityPort,
     private readonly clock: InvestigationClockPort,
     private readonly coverageSeedPolicy: CoverageSeedPolicy = new VersionedCoverageSeedPolicy(),
     private readonly privateMaterial?: PrepareInvestigationSearchQueryPrivateMaterial,
@@ -82,6 +87,15 @@ export class OpenReviewInvestigation {
       commandHash,
     });
     if (restored) return toInvestigationReadModel(restored);
+    const admittedManifest =
+      command.investigationManifestCanonicalJson === undefined &&
+      command.investigationManifestHash === undefined
+        ? null
+        : await admitInvestigationManifest({
+            canonicalJson: command.investigationManifestCanonicalJson ?? "",
+            hash: command.investigationManifestHash ?? "",
+            identity: this.manifestIdentity,
+          });
     await requireCurrentExecution({
       authority: this.authority,
       investigation: command,
@@ -106,24 +120,27 @@ export class OpenReviewInvestigation {
       digest: this.digest,
     });
     const now = this.clock.now().toISOString();
-    let investigation = createReviewInvestigation({
-      investigationId: `investigation-${naturalIdentityHash.slice(0, 32)}`,
-      naturalIdentityHash,
-      scope: { ...command.scope },
-      revision: { ...command.revision },
-      executionId: command.executionId,
-      workSlotId: command.workSlotId,
-      stableReviewUnitKey: command.stableReviewUnitKey,
-      providerVoteLaneId: command.providerVoteLaneId,
-      providerStrategyId: command.providerStrategyId,
-      runtimeProfile: command.runtimeProfile,
-      contract: { ...command.contract },
-      policy: { ...command.policy },
-      obligations: seed.obligations,
-      dossierDigest: "0".repeat(64),
-      createdAt: now,
-      updatedAt: now,
-    });
+    let investigation = createReviewInvestigation(
+      {
+        investigationId: `investigation-${naturalIdentityHash.slice(0, 32)}`,
+        naturalIdentityHash,
+        scope: { ...command.scope },
+        revision: { ...command.revision },
+        executionId: command.executionId,
+        workSlotId: command.workSlotId,
+        stableReviewUnitKey: command.stableReviewUnitKey,
+        providerVoteLaneId: command.providerVoteLaneId,
+        providerStrategyId: command.providerStrategyId,
+        runtimeProfile: command.runtimeProfile,
+        contract: { ...command.contract },
+        policy: { ...command.policy },
+        obligations: seed.obligations,
+        dossierDigest: "0".repeat(64),
+        createdAt: now,
+        updatedAt: now,
+      },
+      admittedManifest,
+    );
     investigation = await withCurrentDossierDigest(this.digest, investigation);
     const privateMaterials = await prepareInvestigationSeedPrivateMaterials({
       investigation,

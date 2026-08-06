@@ -35,6 +35,7 @@ import {
   reviewInvestigationCoverageProfileV2,
   type InvestigationTurnEvidencePort,
   type InvestigationTurnObservation,
+  type ReviewInvestigation,
 } from "../index";
 import { InMemoryInvestigationStore } from "../infrastructure/memory/in-memory-investigation-store";
 import { AesGcmInvestigationPrivateMaterialCipher } from "../infrastructure/crypto/aes-gcm-investigation-private-material-cipher";
@@ -43,6 +44,7 @@ import { PrepareInvestigationSearchQueryPrivateMaterial } from "../application/u
 import {
   CurrentInvestigationExecutionAuthority,
   FixedInvestigationClock,
+  digestBackedInvestigationManifestIdentity,
 } from "../testing";
 
 const hash = (character: string) => character.repeat(64);
@@ -87,6 +89,7 @@ describe("CommitAttestedInvestigationTurn", () => {
       store,
       authority,
       digest,
+      digestBackedInvestigationManifestIdentity(digest),
       clock,
     ).execute({
       commandId: "open-binary-unresolvable",
@@ -109,6 +112,9 @@ describe("CommitAttestedInvestigationTurn", () => {
       stableReviewUnitKey: "review-unit-binary",
       providerVoteLaneId: "provider-lane-1",
       providerStrategyId: "codex-primary",
+      investigationManifestCanonicalJson: "{}",
+      investigationManifestHash:
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
       contract: {
         ...reviewInvestigationCoverageProfileV2,
@@ -124,6 +130,8 @@ describe("CommitAttestedInvestigationTurn", () => {
         maxFindings: 32,
         maxProposalsPerTurn: 16,
         maxReceiptsPerTurn: 32,
+        maxSeedProbesPerFile: 48,
+        maxSeedProbesOverall: 384,
       },
       seedObligations: [
         {
@@ -206,6 +214,10 @@ describe("CommitAttestedInvestigationTurn", () => {
           ],
         }),
     };
+    const inventoryFence = await acquireTestLease(store, provisional, {
+      leaseId: "lease-inventory",
+      attemptId: "attempt-inventory",
+    });
     const afterInventory = await new CommitAttestedInvestigationTurn(
       store,
       inventoryEvidence,
@@ -218,7 +230,7 @@ describe("CommitAttestedInvestigationTurn", () => {
       turnId: inventoryPlan.turn!.turnId,
       sourceAttemptId: "attempt-inventory",
       sourceLeaseId: "lease-inventory",
-      sourceFencingToken: "fence-inventory",
+      sourceFencingToken: inventoryFence,
       acceptedAttestationId: "attestation-1",
       acceptedAttestationHash: hash("8"),
       turnObservationHash: await digest.digestUtf8(
@@ -282,6 +294,10 @@ describe("CommitAttestedInvestigationTurn", () => {
           ],
         }),
     };
+    const fence = await acquireTestLease(store, current, {
+      leaseId: "lease-1",
+      attemptId: "attempt-1",
+    });
     const result = await new CommitAttestedInvestigationTurn(
       store,
       evidence,
@@ -294,7 +310,7 @@ describe("CommitAttestedInvestigationTurn", () => {
       turnId: planned.turn!.turnId,
       sourceAttemptId: "attempt-1",
       sourceLeaseId: "lease-1",
-      sourceFencingToken: "fence-1",
+      sourceFencingToken: fence,
       acceptedAttestationId: "attestation-1",
       acceptedAttestationHash: hash("8"),
       turnObservationHash: await digest.digestUtf8(
@@ -997,6 +1013,7 @@ describe("CommitAttestedInvestigationTurn", () => {
       store,
       authority,
       digest,
+      digestBackedInvestigationManifestIdentity(digest),
       clock,
       undefined,
       privateMaterialPreparer(digest),
@@ -1021,6 +1038,9 @@ describe("CommitAttestedInvestigationTurn", () => {
       stableReviewUnitKey: "review-unit-1",
       providerVoteLaneId: "provider-lane-1",
       providerStrategyId: "codex-primary",
+      investigationManifestCanonicalJson: "{}",
+      investigationManifestHash:
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
       contract: {
         ...reviewInvestigationCoverageProfileV2,
@@ -1036,6 +1056,8 @@ describe("CommitAttestedInvestigationTurn", () => {
         maxFindings: 32,
         maxProposalsPerTurn: 16,
         maxReceiptsPerTurn: 32,
+        maxSeedProbesPerFile: 48,
+        maxSeedProbesOverall: 384,
       },
       seedObligations: [
         inventorySeedV2({ reviewRevisionHash: revisionHash }),
@@ -1163,6 +1185,10 @@ describe("CommitAttestedInvestigationTurn", () => {
       ),
       observation,
     } as const;
+    await acquireTestLease(store, aggregate, {
+      leaseId: command.sourceLeaseId,
+      attemptId: command.sourceAttemptId,
+    });
     const firstResult = await commit.execute(command);
 
     const committed = (await store.findById(opened.investigationId))!;
@@ -1174,6 +1200,13 @@ describe("CommitAttestedInvestigationTurn", () => {
         }),
       ]),
     );
+    expect(await commit.restoreCommittedCommand(command)).toEqual(firstResult);
+    await expect(
+      commit.restoreCommittedCommand({
+        ...command,
+        sourceFencingToken: "2",
+      }),
+    ).rejects.toThrow("investigation_idempotency_conflict");
     expect(await commit.execute(command)).toEqual(firstResult);
     expect(evidence.verify).toHaveBeenCalledTimes(1);
   });
@@ -1192,6 +1225,7 @@ describe("CommitAttestedInvestigationTurn", () => {
       store,
       authority,
       digest,
+      digestBackedInvestigationManifestIdentity(digest),
       clock,
     ).execute({
       commandId: "open-inventory-mismatch",
@@ -1214,6 +1248,9 @@ describe("CommitAttestedInvestigationTurn", () => {
       stableReviewUnitKey: "review-unit-1",
       providerVoteLaneId: "provider-lane-1",
       providerStrategyId: "codex-primary",
+      investigationManifestCanonicalJson: "{}",
+      investigationManifestHash:
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
       contract: {
         ...reviewInvestigationCoverageProfileV2,
@@ -1229,6 +1266,8 @@ describe("CommitAttestedInvestigationTurn", () => {
         maxFindings: 32,
         maxProposalsPerTurn: 16,
         maxReceiptsPerTurn: 32,
+        maxSeedProbesPerFile: 48,
+        maxSeedProbesOverall: 384,
       },
       seedObligations: [
         inventorySeedV2({
@@ -1363,6 +1402,7 @@ async function createFixture() {
     store,
     authority,
     digest,
+    digestBackedInvestigationManifestIdentity(digest),
     clock,
   ).execute({
     commandId: "open-attested-1",
@@ -1385,6 +1425,9 @@ async function createFixture() {
     stableReviewUnitKey: "review-unit-1",
     providerVoteLaneId: "provider-lane-1",
     providerStrategyId: "codex-primary",
+    investigationManifestCanonicalJson: "{}",
+    investigationManifestHash:
+      "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
     contract: {
       coverageContractVersion: "coverage-v1",
@@ -1406,6 +1449,8 @@ async function createFixture() {
       maxFindings: 32,
       maxProposalsPerTurn: 16,
       maxReceiptsPerTurn: 32,
+      maxSeedProbesPerFile: 48,
+      maxSeedProbesOverall: 384,
     },
     seedObligations: [
       {
@@ -1444,6 +1489,10 @@ async function createFixture() {
     digest,
     clock,
   );
+  await acquireTestLease(store, aggregate!, {
+    leaseId: "lease-1",
+    attemptId: "attempt-1",
+  });
   return {
     store,
     digest,
@@ -1458,6 +1507,53 @@ async function createFixture() {
       baseCommit,
     ),
   };
+}
+
+async function acquireTestLease(
+  store: InMemoryInvestigationStore,
+  investigation: ReviewInvestigation,
+  identity: Readonly<{ leaseId: string; attemptId: string }>,
+): Promise<string> {
+  const turn = investigation.activeTurn!;
+  const result = await store.acquireLease({
+    leaseId: identity.leaseId,
+    workspaceId: investigation.scope.workspaceId,
+    repositoryConnectionId: investigation.scope.repositoryConnectionId,
+    scmRepositoryIdentityId: investigation.scope.scmRepositoryIdentityId,
+    pullRequestNumber: investigation.scope.pullRequestNumber,
+    authorizationId: "authorization-test",
+    mutationEpoch: 1n,
+    executionId: investigation.executionId,
+    workSlotId: investigation.workSlotId,
+    revision: investigation.revision,
+    investigationId: investigation.investigationId,
+    investigationVersion: investigation.version,
+    turnId: turn.turnId,
+    turnPurpose: turn.purpose,
+    providerVoteLaneId: investigation.providerVoteLaneId,
+    providerStrategyId: investigation.providerStrategyId,
+    investigationManifestCanonicalJson:
+      investigation.investigationManifestCanonicalJson!,
+    investigationManifestHash: investigation.investigationManifestHash!,
+    attemptId: identity.attemptId,
+    acquireRequestIdHash: createHash("sha256")
+      .update(`acquire:${identity.leaseId}`)
+      .digest("hex"),
+    acquireRequestHash: createHash("sha256")
+      .update(`request:${identity.leaseId}`)
+      .digest("hex"),
+    ownerIdHash: hash("a"),
+    leaseCapabilityId: `capability-${identity.leaseId}`,
+    capabilitySigningKeyId: "test-signing-key",
+    acquiredAt: investigation.updatedAt,
+    expiresAt: turn.expiresAt,
+    resultReportUntil: turn.expiresAt,
+    retainUntil: new Date(
+      new Date(turn.expiresAt).getTime() + 3_600_000,
+    ).toISOString(),
+  });
+  if (result.lease === null) throw new Error("test_lease_acquisition_failed");
+  return result.lease.fencingToken.toString(10);
 }
 
 function observationFixture(input: {

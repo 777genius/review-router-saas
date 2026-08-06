@@ -20,11 +20,7 @@ export class RestoreReviewInvestigation {
     investigationId: string,
   ): Promise<ReviewInvestigationReadModel> {
     const investigation = await this.require(investigationId);
-    const expected = await digestCanonical(
-      this.digest,
-      investigationDossierCanonicalValue(investigation),
-    );
-    if (expected !== investigation.dossierDigest) {
+    if (!(await this.hasValidDossierDigest(investigation))) {
       throw new Error("investigation_dossier_digest_invalid");
     }
     return toInvestigationReadModel(investigation);
@@ -32,11 +28,7 @@ export class RestoreReviewInvestigation {
 
   async snapshot(investigationId: string): Promise<ReviewInvestigation> {
     const investigation = await this.require(investigationId);
-    const expected = await digestCanonical(
-      this.digest,
-      investigationDossierCanonicalValue(investigation),
-    );
-    if (expected !== investigation.dossierDigest) {
+    if (!(await this.hasValidDossierDigest(investigation))) {
       throw new Error("investigation_dossier_digest_invalid");
     }
     return investigation;
@@ -46,5 +38,16 @@ export class RestoreReviewInvestigation {
     const investigation = await this.store.findById(investigationId);
     if (investigation === null) throw new Error("investigation_missing");
     return investigation;
+  }
+
+  private async hasValidDossierDigest(
+    investigation: ReviewInvestigation,
+  ): Promise<boolean> {
+    return (
+      (await digestCanonical(
+        this.digest,
+        investigationDossierCanonicalValue(investigation),
+      )) === investigation.dossierDigest
+    );
   }
 }

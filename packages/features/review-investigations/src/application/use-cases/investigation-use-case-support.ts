@@ -1,19 +1,24 @@
 import {
+  assertDigest,
   canonicalJson,
+  ReviewInvestigationDomainError,
   type CanonicalValue,
 } from "../../domain/canonicalization";
 import {
   investigationDossierCanonicalValue,
   type ReviewInvestigation,
 } from "../../domain/review-investigation";
+import { currentInvestigationPolicyCanonicalVersion } from "../../domain/investigation-policy";
 import type { EncryptedInvestigationPrivateMaterial } from "../../domain/investigation-private-material";
 import {
   InvestigationExecutionAuthorityVerdict,
   type InvestigationExecutionAuthorityPort,
 } from "../ports/execution-authority-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
+import type { InvestigationManifestIdentityPort } from "../ports/investigation-manifest-identity-port";
 import {
   InvestigationStoreCommitStatus,
+  type InvestigationStoreCommitGuard,
   type InvestigationStoreTransition,
   type InvestigationStorePort,
 } from "../ports/investigation-store-port";
@@ -25,15 +30,58 @@ export async function digestCanonical(
   return digest.digestUtf8(canonicalJson(value));
 }
 
+export async function admitInvestigationManifest(input: {
+  readonly canonicalJson: string;
+  readonly hash: string;
+  readonly identity: InvestigationManifestIdentityPort;
+}): Promise<Readonly<{ canonicalJson: string; hash: string }>> {
+  assertDigest(input.hash, "investigation_manifest_hash");
+  let normalized: string;
+  try {
+    normalized = canonicalJson(JSON.parse(input.canonicalJson));
+  } catch {
+    throw new ReviewInvestigationDomainError(
+      "investigation_manifest_not_canonical",
+    );
+  }
+  const computedHash = await computeInvestigationManifestKey(
+    input.identity,
+    normalized,
+  );
+  if (normalized !== input.canonicalJson || computedHash !== input.hash) {
+    throw new ReviewInvestigationDomainError(
+      "investigation_manifest_hash_mismatch",
+    );
+  }
+  return Object.freeze({ canonicalJson: normalized, hash: input.hash });
+}
+
+export async function computeInvestigationManifestKey(
+  identity: InvestigationManifestIdentityPort,
+  canonicalManifest: string,
+): Promise<string> {
+  try {
+    return await identity.computeManifestKey(canonicalManifest);
+  } catch {
+    throw new ReviewInvestigationDomainError(
+      "investigation_manifest_identity_failed",
+    );
+  }
+}
+
 export async function withCurrentDossierDigest(
   digest: InvestigationDigestPort,
   investigation: ReviewInvestigation,
 ): Promise<ReviewInvestigation> {
-  return {
+  const current = {
     ...investigation,
+    policyCanonicalVersion: currentInvestigationPolicyCanonicalVersion,
+  };
+  return {
+    ...current,
     dossierDigest: await digestCanonical(
       digest,
-      investigationDossierCanonicalValue(investigation),
+      investigationDossierCanonicalValue(current),
     ),
   };
 }
@@ -58,6 +106,7 @@ export async function commitOrThrow(input: {
   readonly commandId: string;
   readonly commandHash: string;
   readonly transition: InvestigationStoreTransition;
+  readonly guard?: InvestigationStoreCommitGuard;
   readonly privateMaterials?: readonly EncryptedInvestigationPrivateMaterial[];
 }): Promise<ReviewInvestigation> {
   const result = await input.store.commit(input);
@@ -71,6 +120,8 @@ export async function commitOrThrow(input: {
       throw new Error("investigation_concurrency_conflict");
     case InvestigationStoreCommitStatus.IdempotencyConflict:
       throw new Error("investigation_idempotency_conflict");
+    case InvestigationStoreCommitStatus.LeaseFenceConflict:
+      throw new Error("investigation_lease_fencing_stale");
   }
 }
 

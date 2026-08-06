@@ -104,6 +104,7 @@ export class AcceptSealedContextAttestation {
       sourceExecutionId: sealed.sourceExecutionId,
       sourceWorkSlotId: sealed.sourceWorkSlotId,
       attemptId: sealed.attemptId,
+      sourceLeaseAuthorityKind: sealed.sourceLeaseAuthorityKind,
       sourceLeaseId: sealed.sourceLeaseId,
       sourceFencingToken: sealed.sourceFencingToken,
       sourceReviewRevisionHash: sealed.sourceRevision.reviewRevisionHash,

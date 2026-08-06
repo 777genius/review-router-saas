@@ -12,6 +12,7 @@ import {
   createContextDependencyManifest,
 } from "../domain/context-dependency-manifest";
 import {
+  ContextLeaseAuthorityKind,
   ContextProviderKind,
   activateGatewaySession,
   openGatewaySession,
@@ -69,6 +70,7 @@ describeDatabase("PrismaContextAttestationStore PostgreSQL invariants", () => {
         sourceWorkSlotId: "slot-1",
         attemptId: `attempt-${randomUUID()}`,
         openingIntentHash: digest("opening-intent"),
+        sourceLeaseAuthorityKind: ContextLeaseAuthorityKind.StandardExecution,
         sourceLeaseId: `lease-${randomUUID()}`,
         sourceFencingToken: "1",
         providerKind: ContextProviderKind.Codex,

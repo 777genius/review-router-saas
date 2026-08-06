@@ -19,6 +19,7 @@ import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
 import {
+  type InvestigationStoreCommitGuard,
   InvestigationStoreTransitionKind,
   type InvestigationStorePort,
 } from "../ports/investigation-store-port";
@@ -59,6 +60,7 @@ export type CommitInvestigationTurnCommand = Readonly<{
   sanitizedOutcomeHash?: string | null;
   provenance?: InvestigationTurnProvenance | null;
   idempotencyHash?: string;
+  storeCommitGuard?: InvestigationStoreCommitGuard;
 }>;
 
 export class CommitInvestigationTurn {
@@ -166,6 +168,9 @@ export class CommitInvestigationTurn {
         acceptedAttestationId: command.acceptedAttestationId ?? null,
         sanitizedOutcomeHash: command.sanitizedOutcomeHash ?? null,
       },
+      ...(command.storeCommitGuard === undefined
+        ? {}
+        : { guard: command.storeCommitGuard }),
     });
     return toInvestigationReadModel(committed);
   }

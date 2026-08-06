@@ -42,6 +42,7 @@ import {
   canonicalizeReviewActionV2Request,
   reviewActionV2GoldenFixtures,
   reviewActionV2PublishedSchemaDigest,
+  reviewInvestigationExtensionV1,
   ReviewActionV2OperationId,
   ReviewActionV2ProtocolErrorCode,
   ReviewRunAuthorizationResultStatus,
@@ -643,7 +644,11 @@ describe("Review Action v2 run-control composition", () => {
     };
     const descriptor = {
       ...reviewInvestigationProfile,
-      authorizationDescriptorVersion: 2 as const,
+      authorizationDescriptorVersion: 3 as const,
+      extensionCanonicalizerDigest:
+        reviewInvestigationExtensionV1.canonicalizerDigest,
+      extensionId: reviewInvestigationExtensionV1.extensionId,
+      extensionSchemaDigest: reviewInvestigationExtensionV1.schemaDigest,
       providerCapabilities: [
         {
           providerKind: "codex" as const,
@@ -703,6 +708,69 @@ describe("Review Action v2 run-control composition", () => {
     );
   });
 
+  it("restores a persisted legacy V2 investigation snapshot across deployment", async () => {
+    const legacyDescriptor = {
+      authorizationDescriptorVersion: 2,
+      capability: reviewInvestigationCapabilityV1,
+      coverageProfileHash: hash("5"),
+      policyHash: hash("6"),
+      providerCapabilities: [
+        {
+          providerKind: "codex",
+          capabilities: [InvestigationRolloutCapability.Recording],
+        },
+      ],
+    } as const;
+    const currentDescriptor = {
+      ...legacyDescriptor,
+      authorizationDescriptorVersion: 3 as const,
+      extensionCanonicalizerDigest:
+        reviewInvestigationExtensionV1.canonicalizerDigest,
+      extensionId: reviewInvestigationExtensionV1.extensionId,
+      extensionSchemaDigest: reviewInvestigationExtensionV1.schemaDigest,
+    };
+    const persistedAuthorizations = dependencies.authorizations;
+    const handlers = createReviewActionV2RunControlHandlers({
+      ...dependencies,
+      reviewInvestigationCapability: {
+        resolve: async () => currentDescriptor,
+      },
+      authorizations: {
+        authorizeReviewRun: async (input) => {
+          const outcome =
+            await persistedAuthorizations.authorizeReviewRun(input);
+          return "authorization" in outcome
+            ? {
+                ...outcome,
+                authorization: {
+                  ...outcome.authorization,
+                  reviewInvestigationAuthorizationDescriptorCanonicalJson:
+                    canonicalJson(legacyDescriptor),
+                },
+              }
+            : outcome;
+        },
+        renewReviewRunAuthorization: (input) =>
+          persistedAuthorizations.renewReviewRunAuthorization(input),
+        resolveReviewRunAuthorizationToken: (input) =>
+          persistedAuthorizations.resolveReviewRunAuthorizationToken(input),
+      },
+    });
+
+    const first = await handlers.authorize!.execute(authorizeRequest());
+    const replay = await handlers.authorize!.execute(authorizeRequest());
+
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.result.status).toBe(
+      ReviewRunAuthorizationResultStatus.Restored,
+    );
+    expect(
+      JSON.parse(replay.result.authorizationFactsCanonicalJson!)
+        .reviewInvestigation,
+    ).toEqual(legacyDescriptor);
+  });
+
   it("omits investigation capability when the resolver returns null", async () => {
     const handlers = createReviewActionV2RunControlHandlers({
       ...dependencies,
@@ -721,9 +789,13 @@ describe("Review Action v2 run-control composition", () => {
       ...dependencies,
       reviewInvestigationCapability: {
         resolve: async () => ({
-          authorizationDescriptorVersion: 2,
+          authorizationDescriptorVersion: 3,
           capability: reviewInvestigationCapabilityV1,
           coverageProfileHash: hash("5"),
+          extensionCanonicalizerDigest:
+            reviewInvestigationExtensionV1.canonicalizerDigest,
+          extensionId: reviewInvestigationExtensionV1.extensionId,
+          extensionSchemaDigest: reviewInvestigationExtensionV1.schemaDigest,
           policyHash: hash("6"),
           providerCapabilities: [
             {
@@ -807,16 +879,21 @@ describe("Review Action v2 run-control composition", () => {
       ],
     },
   ])(
-    "omits a non-canonical V2 descriptor with $name",
+    "omits a non-canonical V3 descriptor with $name",
     async ({ providerCapabilities }) => {
       const handlers = createReviewActionV2RunControlHandlers({
         ...dependencies,
         reviewInvestigationCapability: {
           resolve: async () =>
             ({
-              authorizationDescriptorVersion: 2,
+              authorizationDescriptorVersion: 3,
               capability: reviewInvestigationCapabilityV1,
               coverageProfileHash: hash("5"),
+              extensionCanonicalizerDigest:
+                reviewInvestigationExtensionV1.canonicalizerDigest,
+              extensionId: reviewInvestigationExtensionV1.extensionId,
+              extensionSchemaDigest:
+                reviewInvestigationExtensionV1.schemaDigest,
               policyHash: hash("6"),
               providerCapabilities,
             }) as never,

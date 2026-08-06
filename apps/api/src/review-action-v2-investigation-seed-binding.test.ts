@@ -9,6 +9,7 @@ import {
   ProviderExecutionProfile,
   ReviewProviderKind,
   ReviewTaskKind,
+  buildProviderInvocationIdentity,
   serializeProviderInvocationManifestCanonicalWireJson,
 } from "@reviewrouter/features-review-evidence";
 import {
@@ -31,10 +32,24 @@ import {
   canonicalizeReviewActionV2Request,
   reviewActionV2PublishedProtocolVersion,
   reviewActionV2PublishedSchemaDigest,
+  reviewInvestigationExtensionV1,
   type ReviewActionV2RequestMap,
+  type ReviewInvestigationOpenV2Request,
   type ReviewInvestigationOpenRequest,
 } from "@reviewrouter/protocol-review-action-v2";
 import { composeReviewActionV2InvestigationRoutes } from "./review-action-v2-investigation-composition.js";
+
+const investigationLeaseHandlerStubs = {
+  investigationLeaseQueries: {} as never,
+  investigationLeaseCapabilities: {} as never,
+  nextInvestigationLeaseId: () => "investigation-lease-1",
+  nextInvestigationAttemptId: () => "investigation-attempt-1",
+  investigationLeaseTiming: {
+    initialLeaseDurationMs: 60_000,
+    renewLeaseDurationMs: 60_000,
+    retentionDurationMs: 3_600_000,
+  },
+} as const;
 
 const now = new Date("2026-08-04T12:00:00.000Z");
 const policy = Object.freeze({
@@ -47,6 +62,8 @@ const policy = Object.freeze({
   maxFindings: 256,
   maxProposalsPerTurn: 128,
   maxReceiptsPerTurn: 256,
+  maxSeedProbesPerFile: 48,
+  maxSeedProbesOverall: 384,
 });
 const authorization = Object.freeze({
   authorizationId: "authorization-1",
@@ -63,6 +80,19 @@ const authorization = Object.freeze({
   reviewRevisionHash: sha("revision"),
   producerReleaseId: "release-1",
   selectedProtocolVersion: "review_action_v2",
+  reviewInvestigationAuthorizationDescriptorCanonicalJson: canonicalJson({
+    authorizationDescriptorVersion: 3,
+    capability: "review_investigation_v1",
+    coverageProfileHash: sha("coverage-profile"),
+    extensionCanonicalizerDigest:
+      reviewInvestigationExtensionV1.canonicalizerDigest,
+    extensionId: reviewInvestigationExtensionV1.extensionId,
+    extensionSchemaDigest: reviewInvestigationExtensionV1.schemaDigest,
+    policyHash: sha("policy"),
+    providerCapabilities: [
+      { capabilities: ["recording"], providerKind: "codex" },
+    ],
+  }),
 });
 const baseObligations = Object.freeze([
   inventoryObligation(sha("inventory-aggregate")),
@@ -71,12 +101,60 @@ const baseObligations = Object.freeze([
 ]);
 
 describe("Review Action v2 trusted investigation seed binding", () => {
+  it("keeps the frozen base-v2 open path usable without extension manifest fields", async () => {
+    const trustedEnvelope = envelope(baseObligations);
+    const extended = await openRequest(trustedEnvelope);
+    const harness = harnessFor({
+      trustedEnvelope,
+      legacyLeaseBinding: {
+        preparedManifestKey: extended.investigationManifestHash,
+        providerInvocationKey: extended.providerStrategyId,
+      },
+    });
+    const baseRequest: Record<string, unknown> = { ...extended };
+    delete baseRequest.investigationManifestCanonicalJson;
+    delete baseRequest.investigationManifestHash;
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvestigationOpen,
+      baseRequest as unknown as ReviewInvestigationOpenRequest,
+    );
+
+    await expect(harness.routes.open!.execute(request)).resolves.toMatchObject({
+      statusCode: 201,
+    });
+    expect(harness.open).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        investigationManifestCanonicalJson: expect.anything(),
+        investigationManifestHash: expect.anything(),
+      }),
+    );
+  });
+
+  it("rejects open-v2 when the signed authorization did not negotiate the extension", async () => {
+    const trustedEnvelope = envelope(baseObligations);
+    const harness = harnessFor({
+      trustedEnvelope,
+      authorizationOverride: {
+        ...authorization,
+        reviewInvestigationAuthorizationDescriptorCanonicalJson: null,
+      } as never,
+    });
+
+    await expect(
+      harness.routes.openV2!.execute(await openRequest(trustedEnvelope)),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      issues: ["review_investigation_extension_not_authorized"],
+    });
+    expect(harness.open).not.toHaveBeenCalled();
+  });
+
   it("passes only obligations from the lease-bound canonical envelope to domain Open", async () => {
     const trustedEnvelope = envelope(baseObligations);
     const harness = harnessFor({ trustedEnvelope });
 
     await expect(
-      harness.routes.open!.execute(await openRequest(trustedEnvelope)),
+      harness.routes.openV2!.execute(await openRequest(trustedEnvelope)),
     ).resolves.toMatchObject({ statusCode: 201 });
 
     expect(harness.open).toHaveBeenCalledOnce();
@@ -106,7 +184,9 @@ describe("Review Action v2 trusted investigation seed binding", () => {
       const harness = harnessFor({ trustedEnvelope });
 
       await expect(
-        harness.routes.open!.execute(await openRequest(tamperedEnvelope)),
+        harness.routes.openV2!.execute(
+          await openRequest(tamperedEnvelope, undefined, trustedEnvelope),
+        ),
       ).rejects.toMatchObject({
         statusCode: 412,
         issues: ["investigation_seed_prepared_manifest_mismatch"],
@@ -116,31 +196,23 @@ describe("Review Action v2 trusted investigation seed binding", () => {
   );
 
   it.each([
-    ["missing", { leaseMode: "missing" as const }, "active_lease_missing"],
-    [
-      "different-work-slot",
-      { leaseMode: "different-work-slot" as const },
-      "active_lease_missing",
-    ],
-    ["multiple", { leaseMode: "multiple" as const }, "active_lease_ambiguous"],
-    ["expired", { leaseMode: "expired" as const }, "active_lease_stale"],
-    [
-      "non-provider-execution",
-      { leaseMode: "observation" as const },
-      "active_lease_missing",
-    ],
-  ])("rejects a %s provider-execution lease", async (_name, options, issue) => {
-    const trustedEnvelope = envelope(baseObligations);
-    const harness = harnessFor({ trustedEnvelope, ...options });
+    ["missing", { leaseMode: "missing" as const }],
+    ["different-work-slot", { leaseMode: "different-work-slot" as const }],
+    ["multiple", { leaseMode: "multiple" as const }],
+    ["expired", { leaseMode: "expired" as const }],
+    ["non-provider-execution", { leaseMode: "observation" as const }],
+  ])(
+    "does not depend on a %s authoritative provider-execution lease",
+    async (_name, options) => {
+      const trustedEnvelope = envelope(baseObligations);
+      const harness = harnessFor({ trustedEnvelope, ...options });
 
-    await expect(
-      harness.routes.open!.execute(await openRequest(trustedEnvelope)),
-    ).rejects.toMatchObject({
-      statusCode: 412,
-      issues: [`investigation_seed_${issue}`],
-    });
-    expect(harness.open).not.toHaveBeenCalled();
-  });
+      await expect(
+        harness.routes.openV2!.execute(await openRequest(trustedEnvelope)),
+      ).resolves.toMatchObject({ statusCode: 201 });
+      expect(harness.open).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     [
@@ -157,7 +229,9 @@ describe("Review Action v2 trusted investigation seed binding", () => {
       const harness = harnessFor({ trustedEnvelope, manifestOverrides });
 
       await expect(
-        harness.routes.open!.execute(await openRequest(trustedEnvelope)),
+        harness.routes.openV2!.execute(
+          await openRequest(trustedEnvelope, manifestOverrides),
+        ),
       ).rejects.toMatchObject({
         statusCode: 412,
         issues: ["investigation_seed_prepared_manifest_mismatch"],
@@ -174,7 +248,7 @@ describe("Review Action v2 trusted investigation seed binding", () => {
     const harness = harnessFor({ trustedEnvelope: malformed });
 
     await expect(
-      harness.routes.open!.execute(await openRequest(malformed)),
+      harness.routes.openV2!.execute(await openRequest(malformed)),
     ).rejects.toMatchObject({
       statusCode: 400,
       issues: ["investigation_seed_envelope_invalid"],
@@ -193,7 +267,13 @@ function harnessFor(input: {
     | "observation"
     | "different-work-slot";
   readonly manifestOverrides?: Readonly<Record<string, unknown>>;
+  readonly legacyLeaseBinding?: Readonly<{
+    preparedManifestKey: string;
+    providerInvocationKey: string;
+  }>;
+  readonly authorizationOverride?: typeof authorization;
 }) {
+  const activeAuthorization = input.authorizationOverride ?? authorization;
   const trustedEnvelopeCanonicalJson = canonicalJson(
     input.trustedEnvelope as never,
   );
@@ -240,12 +320,15 @@ function harnessFor(input: {
         : new Date("2026-08-04T12:30:00.000Z"),
     attemptId: "attempt-1",
     preparedManifestCanonicalJson: manifestCanonicalJson,
-    preparedManifestKey: sha("manifest"),
+    preparedManifestKey:
+      input.legacyLeaseBinding?.preparedManifestKey ?? sha("manifest"),
     authorizationId: authorization.authorizationId,
     producerReleaseId: authorization.producerReleaseId,
     reviewRevisionHash: authorization.reviewRevisionHash,
     providerVoteIdentityHash: sha("lane"),
-    providerInvocationKey: sha("provider-invocation"),
+    providerInvocationKey:
+      input.legacyLeaseBinding?.providerInvocationKey ??
+      sha("provider-invocation"),
   };
   const activeLeases =
     input.leaseMode === "missing"
@@ -261,11 +344,12 @@ function harnessFor(input: {
       createRequestId: () => "request-generated",
     },
     handlers: {
+      ...investigationLeaseHandlerStubs,
       authorizations: {
         async resolveReviewRunAuthorizationToken() {
           return {
             status: ReviewRunAuthorizationTokenResolutionStatus.Valid,
-            authorization,
+            authorization: activeAuthorization,
           } as never;
         },
       },
@@ -295,6 +379,12 @@ function harnessFor(input: {
                 activeLeaseId: "lease-1",
               },
             ],
+          },
+          stream: {
+            activeExecutionId: "execution-1",
+            currentRevision: {
+              reviewRevisionHash: authorization.reviewRevisionHash,
+            },
           },
           activeLeases,
         }),
@@ -330,13 +420,50 @@ function harnessFor(input: {
 
 async function openRequest(
   seedEnvelope: Readonly<Record<string, unknown>>,
-): Promise<ReviewInvestigationOpenRequest> {
+  manifestOverrides?: Readonly<Record<string, unknown>>,
+  manifestSeedEnvelope: Readonly<Record<string, unknown>> = seedEnvelope,
+): Promise<ReviewInvestigationOpenV2Request> {
   const seedObligationsCanonicalJson = canonicalJson(seedEnvelope as never);
+  const manifestSeedCanonicalJson = canonicalJson(
+    manifestSeedEnvelope as never,
+  );
+  const manifest = {
+    manifestVersion: 1 as const,
+    scopeHash: scopeHash(),
+    taskKindSet: [ReviewTaskKind.FindingDiscovery],
+    providerKind: ReviewProviderKind.Codex,
+    providerCapabilityHash: sha("capability"),
+    requestedModel: "gpt-test",
+    providerPolicyVersion: "codex-provider-policy.v2-t0",
+    producerReleaseId: authorization.producerReleaseId,
+    selectedProtocolVersion: authorization.selectedProtocolVersion,
+    providerRequestEnvelopeHash: sha(manifestSeedCanonicalJson),
+    outputSchemaHash: sha("schema"),
+    reviewConfigHash: sha("config"),
+    runtimeCompatibilityKey: sha("runtime"),
+    filePatchManifestHash: sha("patch"),
+    contextManifestHash: sha("context"),
+    memoryBundleHash: null,
+    codeGraphProjectionHash: null,
+    lifecycleTargetSetHash: null,
+    liveLifecycleStateHash: null,
+    toolPolicyHash: sha("tools"),
+    executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
+    baseTreeHash: sha("base-tree"),
+    environmentContractHash: sha("environment"),
+    ...manifestOverrides,
+  };
+  const investigationManifestCanonicalJson =
+    serializeProviderInvocationManifestCanonicalWireJson(manifest);
+  const identity = await buildProviderInvocationIdentity(digest, {
+    manifest,
+    providerVoteIdentityHash: sha("lane"),
+  });
   const contract = {
     ...reviewInvestigationCoverageProfileV2,
     producerReleaseId: authorization.producerReleaseId,
   };
-  return withBodyHash(ReviewActionV2OperationId.ReviewInvestigationOpen, {
+  return withBodyHash(ReviewActionV2OperationId.ReviewInvestigationOpenV2, {
     protocolVersion: reviewActionV2PublishedProtocolVersion,
     schemaDigest: reviewActionV2PublishedSchemaDigest,
     requestId: "open-seed-binding",
@@ -349,7 +476,9 @@ async function openRequest(
     reviewRevisionHash: authorization.reviewRevisionHash,
     stableReviewUnitKey: "unit-1",
     providerVoteLaneId: sha("lane"),
-    providerStrategyId: sha("provider-invocation"),
+    providerStrategyId: identity.providerInvocationKey,
+    investigationManifestCanonicalJson,
+    investigationManifestHash: identity.manifestKey,
     runtimeProfile:
       ReviewInvestigationPublishedRuntimeProfile.GatewayAttestedAgentV1,
     coverageContractCanonicalJson: canonicalJson(contract),

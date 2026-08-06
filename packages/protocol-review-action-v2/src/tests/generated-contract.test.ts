@@ -13,6 +13,8 @@ import {
   reviewActionV2GoldenFixtures,
   reviewActionV2Operations,
   reviewActionV2PublishedSchemaDigest,
+  reviewActionV2CanonicalizerDigest,
+  reviewInvestigationExtensionV1,
   reviewActionV2SchemaDigest,
   reviewRunAuthorizeNegotiationGoldenFixture,
   ReviewActionV2CallerAuthority,
@@ -45,6 +47,25 @@ import {
 } from "../../../../scripts/generate-review-action-v2-protocol.mjs";
 
 describe("generated Review Action v2 negotiation contract", () => {
+  it("publishes concrete request and response schemas for extension operations", async () => {
+    for (const operationId of reviewInvestigationExtensionV1.operationIds) {
+      const schema = JSON.parse(
+        await readFile(
+          new URL(
+            `../generated/schemas/${operationId}.schema.json`,
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      ) as { readonly oneOf?: readonly unknown[] };
+
+      expect(schema.oneOf).toHaveLength(2);
+      expect(schema.oneOf?.every((definition) => definition !== null)).toBe(
+        true,
+      );
+    }
+  });
+
   it("keeps the generated schema digest and golden fixtures byte-consistent", async () => {
     const schema = JSON.parse(
       await readFile(
@@ -130,7 +151,7 @@ describe("generated Review Action v2 negotiation contract", () => {
     ).toThrow("protocol_contract_operation_id_duplicate");
   });
 
-  it("publishes all twenty-eight strict operation schemas and fixtures", async () => {
+  it("publishes all strict operation schemas and fixtures", async () => {
     const schema = JSON.parse(
       await readFile(
         new URL("../generated/review-action-v2.schema.json", import.meta.url),
@@ -138,11 +159,37 @@ describe("generated Review Action v2 negotiation contract", () => {
       ),
     ) as { readonly $defs: Readonly<Record<string, unknown>> };
 
-    expect(reviewActionV2Operations).toHaveLength(28);
-    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(28);
+    const extensionSchema = JSON.parse(
+      await readFile(
+        new URL(
+          "../generated/review-investigation-extension-v1.schema.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as { readonly $defs: Readonly<Record<string, unknown>> };
+
+    expect(reviewActionV2Operations).toHaveLength(35);
+    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(35);
     expect(Object.keys(schema.$defs)).toHaveLength(56);
+    expect(Object.keys(extensionSchema.$defs)).toHaveLength(14);
     expect(sha256(canonicalJson(schema))).toBe(
       reviewActionV2PublishedSchemaDigest,
+    );
+    expect(
+      sha256(
+        canonicalJson({
+          baseSchemaDigest: reviewActionV2PublishedSchemaDigest,
+          extensionId: reviewInvestigationExtensionV1.extensionId,
+          schema: extensionSchema,
+        }),
+      ),
+    ).toBe(reviewInvestigationExtensionV1.schemaDigest);
+    expect(reviewActionV2PublishedSchemaDigest).toBe(
+      "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+    );
+    expect(reviewActionV2CanonicalizerDigest).toBe(
+      "865b2cd347d1e5bade8aa921c3384b0c7cd388d275f535919ffb403286d66271",
     );
 
     for (const operation of reviewActionV2Operations) {
@@ -240,6 +287,8 @@ describe("generated Review Action v2 negotiation contract", () => {
     ).toEqual([
       ReviewActionV2OperationId.ReviewContextGatewayOpen,
       ReviewActionV2OperationId.ReviewContextGatewaySeal,
+      ReviewActionV2OperationId.ReviewInvestigationContextGatewayOpen,
+      ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal,
       ReviewActionV2OperationId.ReviewContextReceiptReplayCommit,
       ReviewActionV2OperationId.ReviewContextReplayCommit,
     ]);
@@ -396,12 +445,17 @@ describe("generated Review Action v2 negotiation contract", () => {
       fragment?.operations.map((operation) => operation.operationId),
     ).toEqual([
       ReviewActionV2OperationId.ReviewInvestigationOpen,
+      ReviewActionV2OperationId.ReviewInvestigationOpenV2,
       ReviewActionV2OperationId.ReviewInvestigationRestore,
       ReviewActionV2OperationId.ReviewInvestigationTurnPlan,
       ReviewActionV2OperationId.ReviewInvestigationTurnCommit,
+      ReviewActionV2OperationId.ReviewInvestigationLeaseAcquire,
+      ReviewActionV2OperationId.ReviewInvestigationLeaseRenew,
+      ReviewActionV2OperationId.ReviewInvestigationLeaseRelease,
       ReviewActionV2OperationId.ReviewInvestigationTurnAbort,
       ReviewActionV2OperationId.ReviewInvestigationReplayPrepare,
       ReviewActionV2OperationId.ReviewInvestigationReplay,
+      ReviewActionV2OperationId.ReviewInvestigationReplayV2,
       ReviewActionV2OperationId.ReviewInvestigationConclude,
     ]);
     expect(Object.values(ReviewInvestigationNextAction)).toEqual([

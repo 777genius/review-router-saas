@@ -30,6 +30,7 @@ describe("PrismaInvestigationStore retention pruning", () => {
     expect(query.sql).toContain('certificate."expiresAt" >');
     expect(query.sql).toContain('material."expiresAt" >');
     expect(query.sql).toContain('turn."retainUntil" >');
+    expect(query.sql).toContain('lease."retainUntil" >');
     expect(query.sql).toContain('command."retainUntil" >');
     expect(query.sql).toContain("FOR UPDATE OF investigation SKIP LOCKED");
     expect(query.values).toContain(25);
@@ -56,6 +57,13 @@ describe("PrismaInvestigationStore retention pruning", () => {
         .invocationCallOrder[0],
     ).toBeLessThan(
       transaction.reviewInvestigation.deleteMany.mock.invocationCallOrder[0]!,
+    );
+    expect(
+      transaction.reviewInvestigationLease.deleteMany.mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      transaction.reviewInvestigationTurn.deleteMany.mock
+        .invocationCallOrder[0]!,
     );
     expect(transaction.reviewInvestigation.deleteMany).toHaveBeenCalledWith({
       where: expect.objectContaining({
@@ -134,6 +142,9 @@ function retentionTransaction(
       deleteMany: vi.fn().mockResolvedValue({ count: candidates.length }),
     },
     reviewInvestigationPrivateMaterial: {
+      deleteMany: vi.fn().mockResolvedValue({ count: candidates.length }),
+    },
+    reviewInvestigationLease: {
       deleteMany: vi.fn().mockResolvedValue({ count: candidates.length }),
     },
     reviewInvestigationTurn: {

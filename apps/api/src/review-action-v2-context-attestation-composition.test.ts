@@ -6,6 +6,7 @@ import {
   ContextFileKind,
   ContextGatewayV4OperationKind,
   ContextGatewayV4OutcomeKind,
+  canonicalContextAttestationManifest,
   canonicalContextGatewayV4Manifest,
   canonicalContextDependencyManifest,
   canonicalContextDependencyOperation,
@@ -16,6 +17,12 @@ import {
 } from "@reviewrouter/features-review-context-attestation";
 import { AesGcmContextReplayMaterialCipher } from "@reviewrouter/features-review-context-attestation/composition";
 import { InMemoryContextAttestationStore } from "@reviewrouter/features-review-context-attestation/testing";
+import {
+  ReviewInvestigationLeasePurpose,
+  ReviewInvestigationLeaseState,
+  ReviewInvestigationTurnPurpose,
+  type ReviewInvestigationLease,
+} from "@reviewrouter/features-review-investigations";
 import {
   ActualModelCompatibilityMode,
   ProviderExecutionProfile,
@@ -51,6 +58,8 @@ import {
   type ReviewRunAuthorization,
 } from "@reviewrouter/features-review-run-control";
 import {
+  CapabilityAudience,
+  CapabilityKind,
   ConfiguredCapabilityKeyRing,
   JoseRotatingCapabilityCodec,
 } from "@reviewrouter/platform-signed-capabilities";
@@ -60,18 +69,23 @@ import {
   ReviewContextGatewaySealResultStatus,
   ReviewContextReplayCommitResultStatus,
   canonicalizeReviewContextConfinementEvidence,
+  canonicalizeReviewInvestigationContextConfinementEvidence,
   canonicalizeReviewContextGatewayEvent,
   canonicalizeReviewContextReplayChainSeed,
   canonicalizeReviewContextReplayEvent,
   canonicalizeReviewActionV2Request,
   reviewActionV2PublishedProtocolVersion,
   reviewActionV2PublishedSchemaDigest,
+  reviewInvestigationExtensionV1,
   type ReviewActionV2RequestMap,
   type ReviewContextGatewayOpenRequest,
   type ReviewContextGatewaySealRequest,
+  type ReviewInvestigationContextGatewayOpenRequest,
+  type ReviewInvestigationContextGatewaySealRequest,
   type ReviewContextReplayCommitRequest,
 } from "@reviewrouter/protocol-review-action-v2";
 import { ReviewActionV2ExecutionEvidenceCapabilityAdapter } from "./review-action-v2-execution-evidence-capabilities.js";
+import { ReviewActionV2InvestigationLeaseCapabilityAdapter } from "./review-action-v2-investigation-lease-capabilities.js";
 import {
   composeReviewActionV2ContextAttestationRoutes,
   createReviewActionV2ContextReplayCoordinator,
@@ -102,6 +116,105 @@ describe("Review Action v2 context attestation composition", () => {
     expect(opened.result.status).toBe(
       ReviewContextGatewayOpenResultStatus.Opened,
     );
+    await expect(
+      fixture.routes.openInvestigationGateway!.execute(
+        await withBodyHash(
+          ReviewActionV2OperationId.ReviewInvestigationContextGatewayOpen,
+          {
+            ...fixture.openRequest,
+            requestId: "gateway-open-standard-as-shadow",
+            idempotencyKey: "gateway-open-standard-as-shadow",
+          } satisfies ReviewInvestigationContextGatewayOpenRequest,
+        ),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 401,
+      issues: ["context_investigation_lease_capability_invalid"],
+    });
+  });
+
+  it("opens and seals only with the explicitly selected shadow authority", async () => {
+    const fixture = await createShadowFixture();
+    const opened = await fixture.routes.openInvestigationGateway!.execute(
+      fixture.openRequest,
+    );
+    expect(opened.result.status).toBe(
+      ReviewContextGatewayOpenResultStatus.Opened,
+    );
+
+    await expect(
+      fixture.routes.openGateway!.execute(
+        await withBodyHash(ReviewActionV2OperationId.ReviewContextGatewayOpen, {
+          ...fixture.openRequest,
+          requestId: "gateway-open-wrong-authority",
+          idempotencyKey: "gateway-open-wrong-authority",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 401,
+      issues: ["lease_capability_invalid"],
+    });
+
+    const sessionId = required(opened.result.sessionId);
+    const manifest = sourceV4Manifest({
+      sessionId,
+      sessionSecret: Buffer.from(
+        required(opened.result.gatewaySessionSecret),
+        "base64url",
+      ),
+      eventChainSeedHash: required(opened.result.eventChainSeedHash),
+    });
+    const replayMaterialCanonicalJson = stableJson({
+      materialVersion: 1,
+      sourceDependencies: [],
+    });
+    const shadowSealRequest = await createShadowSealRequest({
+      fixture: fixture as never,
+      sessionId,
+      sealCapability: required(opened.result.sealCapability),
+      transcriptCanonicalJson: canonicalContextGatewayV4Manifest(manifest),
+      replayMaterialCanonicalJson,
+    });
+    await expect(
+      fixture.routes.sealGateway!.execute(
+        await withBodyHash(ReviewActionV2OperationId.ReviewContextGatewaySeal, {
+          ...shadowSealRequest,
+          requestId: "gateway-seal-wrong-authority",
+          idempotencyKey: "gateway-seal-wrong-authority",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 401,
+      issues: ["lease_capability_invalid"],
+    });
+    const sealed =
+      await fixture.routes.sealInvestigationGateway!.execute(shadowSealRequest);
+    expect(sealed.result.status).toBe(
+      ReviewContextGatewaySealResultStatus.Accepted,
+    );
+  });
+
+  it("rejects the shadow gateway without the signed investigation extension", async () => {
+    const fixture = await createShadowFixture({
+      authorizeInvestigationExtension: false,
+    });
+
+    await expect(
+      fixture.routes.openInvestigationGateway!.execute(fixture.openRequest),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      issues: ["review_investigation_extension_not_authorized"],
+    });
+  });
+
+  it("rejects the shadow gateway after the live rollout is disabled", async () => {
+    const fixture = await createShadowFixture({
+      investigationRolloutAllowed: false,
+    });
+
+    await expect(
+      fixture.routes.openInvestigationGateway!.execute(fixture.openRequest),
+    ).rejects.toThrow("investigation_rollout_emergency_disabled");
   });
 
   it.each([
@@ -190,6 +303,138 @@ describe("Review Action v2 context attestation composition", () => {
 
     expect(sealed.result.status).toBe(
       ReviewContextGatewaySealResultStatus.Accepted,
+    );
+  });
+
+  it("preserves legacy gateway crypto, capability, replay AAD, and attestation preimages", async () => {
+    const fixture = await createFixture();
+    const opened = await fixture.routes.openGateway!.execute(
+      fixture.openRequest,
+    );
+    const sessionId = required(opened.result.sessionId);
+    const session = required(
+      await fixture.dependencies.store.findSession(sessionId),
+    );
+    const expectedSessionSecret = createHmac(
+      "sha256",
+      Buffer.from("abcdef0123456789abcdef0123456789"),
+    )
+      .update("rr.context-gateway-session-secret.v1")
+      .update("\0")
+      .update(
+        canonicalJson({
+          attemptId: session.attemptId,
+          openingIntentHash: session.openingIntentHash,
+          sourceLeaseId: session.sourceLeaseId,
+          sourceFencingToken: session.sourceFencingToken,
+          sourceExecutionId: session.sourceExecutionId,
+          sourceWorkSlotId: session.sourceWorkSlotId,
+          sourceReviewRevisionHash: session.sourceRevision.reviewRevisionHash,
+          checkoutTreeOid: session.sourceRevision.checkoutTreeOid,
+          gatewayPolicyVersion: session.gatewayPolicyVersion,
+          gatewayBinaryHash: session.gatewayBinaryHash,
+          confinementProofHash: session.confinementProofHash,
+        }),
+      )
+      .digest();
+    expect(required(opened.result.gatewaySessionSecret)).toBe(
+      expectedSessionSecret.toString("base64url"),
+    );
+    expect(required(opened.result.eventChainSeedHash)).toBe(
+      createHmac("sha256", expectedSessionSecret)
+        .update(
+          canonicalJson({
+            domain: "rr.context-gateway-seed.v1",
+            attemptId: session.attemptId,
+            openingIntentHash: session.openingIntentHash,
+            sourceLeaseId: session.sourceLeaseId,
+            sourceFencingToken: session.sourceFencingToken,
+          }),
+        )
+        .digest("hex"),
+    );
+
+    const keyRing = capabilityKeyRing();
+    const sealClaims = await new JoseRotatingCapabilityCodec(keyRing, 0).verify(
+      {
+        token: required(opened.result.sealCapability),
+        expectedIssuer: "reviewrouter-context-test",
+        expectedAudience: CapabilityAudience.ReviewInvocationLease,
+        expectedKind: CapabilityKind.InvocationLease,
+        now,
+      },
+    );
+    expect(sealClaims.payload).not.toHaveProperty(
+      "source_lease_authority_kind",
+    );
+
+    const transcript = sourceTranscript({
+      sessionId,
+      sessionSecret: expectedSessionSecret,
+      eventChainSeedHash: required(opened.result.eventChainSeedHash),
+    });
+    const replayMaterialCanonicalJson = stableJson({
+      materialVersion: 1,
+      sourceDependencies: [
+        {
+          operationKey: transcript.dependencies[0]!.operationKey,
+          replayQuery: null,
+          sequence: 1,
+        },
+      ],
+    });
+    const sealed = await fixture.routes.sealGateway!.execute(
+      await sealRequest({
+        fixture,
+        sessionId,
+        sealCapability: required(opened.result.sealCapability),
+        transcriptCanonicalJson: canonicalContextDependencyManifest(transcript),
+        replayMaterialCanonicalJson,
+      }),
+    );
+    const attestationId = required(sealed.result.attestationId);
+    const attestation = required(
+      await fixture.dependencies.store.findAcceptedAttestation(attestationId),
+    );
+    const material = required(
+      await fixture.dependencies.store.findReplayMaterialByAttestationId(
+        attestationId,
+      ),
+    );
+    expect(material.associatedDataHash).toBe(
+      sha(
+        canonicalJson({
+          associatedDataVersion: 1,
+          sessionId: session.sessionId,
+          sourceExecutionId: session.sourceExecutionId,
+          sourceWorkSlotId: session.sourceWorkSlotId,
+          sourceReviewRevisionHash: session.sourceRevision.reviewRevisionHash,
+          checkoutTreeOid: session.sourceRevision.checkoutTreeOid,
+          gatewayPolicyVersion: session.gatewayPolicyVersion,
+          gatewayBinaryHash: session.gatewayBinaryHash,
+          confinementProofHash: session.confinementProofHash,
+        }),
+      ),
+    );
+    expect(attestation.attestationHash).toBe(
+      sha(
+        JSON.stringify({
+          acceptedAtMs: attestation.acceptedAtMs,
+          actualModel: attestation.actualModel,
+          attestationId: attestation.attestationId,
+          manifest: canonicalContextAttestationManifest(attestation.manifest),
+          reuseExpiresAtMs: attestation.reuseExpiresAtMs,
+          replayMaterialHash: attestation.replayMaterialHash,
+          sessionId: attestation.sessionId,
+          sourceExecutionId: attestation.sourceExecutionId,
+          sourceFencingToken: attestation.sourceFencingToken,
+          sourceLeaseId: attestation.sourceLeaseId,
+          sourceReviewRevisionHash: attestation.sourceReviewRevisionHash,
+          sourceWorkSlotId: attestation.sourceWorkSlotId,
+          terminalOutcomeHash: attestation.terminalOutcomeHash,
+          trustedCapabilityProfile: attestation.trustedCapabilityProfile,
+        }),
+      ),
     );
   });
 
@@ -520,6 +765,8 @@ async function createFixture(
       readonly contextGatewayPolicyVersion?: string | null;
       readonly contextGatewayEntrypointDigest?: string | null;
     };
+    authorizeInvestigationExtension?: boolean;
+    investigationRolloutAllowed?: boolean;
   } = {},
 ) {
   const activeGatewayPolicyVersion =
@@ -540,7 +787,11 @@ async function createFixture(
     manifest,
     providerVoteIdentityHash,
   });
-  let currentAuthorization = authorization(sourceRevision, "authorization-1");
+  let currentAuthorization = authorization(
+    sourceRevision,
+    "authorization-1",
+    options.authorizeInvestigationExtension ?? true,
+  );
   let currentSnapshot = snapshot(
     currentAuthorization,
     "execution-source",
@@ -559,6 +810,16 @@ async function createFixture(
   });
   const leaseCapability = await capabilities.issueLease(lease, scopeHash);
   const dependencies: ReviewActionV2ContextAttestationHandlerDependencies = {
+    investigationLeaseQueries: {} as never,
+    investigationQueries: {} as never,
+    investigationLeaseCapabilities: {} as never,
+    investigationRollout: {
+      async assertAllowed() {
+        if (options.investigationRolloutAllowed === false) {
+          throw new Error("investigation_rollout_emergency_disabled");
+        }
+      },
+    },
     authorizations: {
       async resolveReviewRunAuthorizationToken() {
         return {
@@ -716,6 +977,7 @@ async function createFixture(
       currentAuthorization = authorization(
         targetRevision,
         "authorization-target",
+        options.authorizeInvestigationExtension ?? true,
       );
       currentSnapshot = snapshot(
         currentAuthorization,
@@ -727,6 +989,147 @@ async function createFixture(
     disableContextReuse() {
       contextReuseMode = ReviewReuseEffectMode.Disabled;
     },
+  };
+}
+
+async function createShadowFixture(
+  options: {
+    readonly authorizeInvestigationExtension?: boolean;
+    readonly investigationRolloutAllowed?: boolean;
+  } = {},
+) {
+  const fixture = await createFixture({
+    executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
+    gatewayPolicyVersion: "context-gateway-v4",
+    release: { contextGatewayPolicyVersion: "context-gateway-v4" },
+    authorizeInvestigationExtension:
+      options.authorizeInvestigationExtension ?? true,
+    investigationRolloutAllowed: options.investigationRolloutAllowed ?? true,
+  });
+  const capabilities = investigationCapabilityAdapter();
+  const capabilityIdentity = await capabilities.prepareIdentity();
+  const manifestCanonicalJson =
+    serializeProviderInvocationManifestCanonicalWireJson(fixture.manifest);
+  const lease: ReviewInvestigationLease = {
+    leaseId: "investigation-lease-1",
+    purpose: ReviewInvestigationLeasePurpose.ShadowTurn,
+    workspaceId: "workspace-1",
+    repositoryConnectionId: "connection-1",
+    scmRepositoryIdentityId: "repository-1",
+    pullRequestNumber: 42,
+    authorizationId: fixture.authorization().authorizationId,
+    mutationEpoch: fixture.authorization().mutationEpoch,
+    executionId: fixture.openRequest.sourceExecutionId,
+    workSlotId: fixture.openRequest.sourceWorkSlotId,
+    revision: sourceRevision,
+    investigationId: "investigation-1",
+    investigationVersion: 3,
+    turnId: "investigation-turn-1",
+    turnPurpose: ReviewInvestigationTurnPurpose.Discovery,
+    providerVoteLaneId: providerVoteIdentityHash,
+    providerStrategyId: fixture.providerInvocationKey,
+    investigationManifestCanonicalJson: manifestCanonicalJson,
+    investigationManifestHash: fixture.manifestKey,
+    attemptId: "investigation-attempt-1",
+    acquireRequestIdHash: sha("investigation-acquire-request-id"),
+    acquireRequestHash: sha("investigation-acquire-request"),
+    lastRenewRequestIdHash: null,
+    lastRenewRequestHash: null,
+    lastReleaseRequestIdHash: null,
+    lastReleaseRequestHash: null,
+    ownerIdHash: sha("investigation-owner"),
+    leaseCapabilityId: capabilityIdentity.capabilityId,
+    capabilitySigningKeyId: capabilityIdentity.signingKeyId,
+    fencingToken: 91n,
+    state: ReviewInvestigationLeaseState.Active,
+    acquiredAt: new Date(now.getTime() - 2_000).toISOString(),
+    renewedAt: new Date(now.getTime() - 1_000).toISOString(),
+    expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+    resultReportUntil: new Date(now.getTime() + 120_000).toISOString(),
+    retainUntil: new Date(now.getTime() + 3_600_000).toISOString(),
+  };
+  const aggregate = {
+    investigationId: lease.investigationId,
+    version: lease.investigationVersion,
+    scope: {
+      workspaceId: lease.workspaceId,
+      repositoryConnectionId: lease.repositoryConnectionId,
+      scmRepositoryIdentityId: lease.scmRepositoryIdentityId,
+      pullRequestNumber: lease.pullRequestNumber,
+    },
+    revision: lease.revision,
+    executionId: lease.executionId,
+    workSlotId: lease.workSlotId,
+    providerVoteLaneId: lease.providerVoteLaneId,
+    providerStrategyId: lease.providerStrategyId,
+    investigationManifestCanonicalJson:
+      lease.investigationManifestCanonicalJson,
+    investigationManifestHash: lease.investigationManifestHash,
+    activeTurn: {
+      turnId: lease.turnId,
+      purpose: lease.turnPurpose,
+    },
+  } as never;
+  const leaseCapability = await capabilities.issue(
+    lease,
+    fixture.manifest.scopeHash,
+  );
+  const dependencies: ReviewActionV2ContextAttestationHandlerDependencies = {
+    ...fixture.dependencies,
+    investigationLeaseQueries: {
+      findLease: async (leaseId) => (leaseId === lease.leaseId ? lease : null),
+    },
+    investigationQueries: {
+      findById: async (investigationId) =>
+        investigationId === lease.investigationId ? aggregate : null,
+    },
+    investigationLeaseCapabilities: capabilities,
+  };
+  const routes = composeReviewActionV2ContextAttestationRoutes({
+    enabled: true,
+    runtime: {
+      readServerTime: async () => now,
+      createRequestId: () => "request-generated",
+    },
+    handlers: dependencies,
+  });
+  const confinementEvidenceHash = sha(
+    canonicalizeReviewInvestigationContextConfinementEvidence({
+      attemptId: lease.attemptId,
+      sourceLeaseId: lease.leaseId,
+      sourceFencingToken: lease.fencingToken.toString(10),
+      sourceExecutionId: lease.executionId,
+      sourceWorkSlotId: lease.workSlotId,
+      sourceReviewRevisionHash: lease.revision.reviewRevisionHash,
+      checkoutTreeOid: sourceTree,
+      providerKind: fixture.manifest.providerKind,
+      requestedModel: fixture.manifest.requestedModel,
+      executionProfile: fixture.manifest.executionProfile,
+      providerInvocationKey: lease.providerStrategyId,
+      toolPolicyHash: fixture.manifest.toolPolicyHash,
+      gatewayPolicyVersion: fixture.openRequest.gatewayPolicyVersion,
+      gatewayBinaryHash,
+    }),
+  );
+  const openRequest = await withBodyHash(
+    ReviewActionV2OperationId.ReviewInvestigationContextGatewayOpen,
+    {
+      ...fixture.openRequest,
+      requestId: "shadow-gateway-open",
+      idempotencyKey: "shadow-gateway-open",
+      leaseCapability,
+      attemptId: lease.attemptId,
+      sourceLeaseId: lease.leaseId,
+      fencingToken: lease.fencingToken.toString(10),
+      confinementEvidenceHash,
+    } satisfies ReviewInvestigationContextGatewayOpenRequest,
+  );
+  return {
+    ...fixture,
+    dependencies,
+    lease,
+    openRequest,
+    routes,
   };
 }
 
@@ -930,6 +1333,40 @@ async function sealRequest(input: {
   } satisfies ReviewContextGatewaySealRequest);
 }
 
+async function createShadowSealRequest(input: {
+  fixture: Awaited<ReturnType<typeof createShadowFixture>>;
+  sessionId: string;
+  sealCapability: string;
+  transcriptCanonicalJson: string;
+  replayMaterialCanonicalJson: string;
+  actualModel?: string;
+}) {
+  return withBodyHash(
+    ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal,
+    {
+      ...envelope("investigation-gateway-seal"),
+      authorizationToken: "authorization-token",
+      leaseCapability: input.fixture.openRequest.leaseCapability,
+      idempotencyKey: "investigation-gateway-seal",
+      requestBodyHash: sha("placeholder"),
+      sessionId: input.sessionId,
+      sealCapability: input.sealCapability,
+      attemptId: input.fixture.lease.attemptId,
+      sourceLeaseId: input.fixture.lease.leaseId,
+      fencingToken: input.fixture.lease.fencingToken.toString(10),
+      providerSucceeded: true,
+      schemaValidated: true,
+      fullyConsumed: true,
+      actualModel: input.actualModel ?? requestedModel,
+      terminalOutcomeHash: sha("terminal-outcome"),
+      transcriptCanonicalJson: input.transcriptCanonicalJson,
+      transcriptHash: sha(input.transcriptCanonicalJson),
+      replayMaterialCanonicalJson: input.replayMaterialCanonicalJson,
+      replayMaterialHash: sha(input.replayMaterialCanonicalJson),
+    } satisfies ReviewInvestigationContextGatewaySealRequest,
+  );
+}
+
 function sourceObservation(input: {
   fixture: Awaited<ReturnType<typeof createFixture>>;
   attestationId: string;
@@ -1032,6 +1469,7 @@ function invocationManifest(
 function authorization(
   facts: ReturnType<typeof revision>,
   authorizationId: string,
+  authorizeInvestigationExtension = true,
 ): ReviewRunAuthorization {
   return {
     authorizationId,
@@ -1052,6 +1490,22 @@ function authorization(
     schemaDigest: reviewActionV2PublishedSchemaDigest,
     protocolLimitsProfileId: "limits-v1",
     operationalSloProfileId: "slo-v1",
+    reviewInvestigationAuthorizationDescriptorCanonicalJson:
+      authorizeInvestigationExtension
+        ? canonicalJson({
+            authorizationDescriptorVersion: 3,
+            capability: "review_investigation_v1",
+            coverageProfileHash: sha("coverage-profile"),
+            extensionCanonicalizerDigest:
+              reviewInvestigationExtensionV1.canonicalizerDigest,
+            extensionId: reviewInvestigationExtensionV1.extensionId,
+            extensionSchemaDigest: reviewInvestigationExtensionV1.schemaDigest,
+            policyHash: sha("policy"),
+            providerCapabilities: [
+              { capabilities: ["recording"], providerKind: "codex" },
+            ],
+          })
+        : null,
     providerVoteLanes: [
       {
         providerKind: "codex",
@@ -1151,6 +1605,30 @@ function sourceLease(input: {
 }
 
 function capabilityAdapter() {
+  const keyRing = capabilityKeyRing();
+  let sequence = 0;
+  return new ReviewActionV2ExecutionEvidenceCapabilityAdapter(
+    new JoseRotatingCapabilityCodec(keyRing, 0),
+    keyRing,
+    "reviewrouter-context-test",
+    () => `capability-${++sequence}`,
+  );
+}
+
+function capabilityKeyRing() {
+  return new ConfiguredCapabilityKeyRing({
+    activeKeyId: "test-key",
+    keys: [
+      {
+        keyId: "test-key",
+        secret: Buffer.from("0123456789abcdef0123456789abcdef"),
+        verifyUntil: null,
+      },
+    ],
+  });
+}
+
+function investigationCapabilityAdapter() {
   const keyRing = new ConfiguredCapabilityKeyRing({
     activeKeyId: "test-key",
     keys: [
@@ -1162,11 +1640,11 @@ function capabilityAdapter() {
     ],
   });
   let sequence = 0;
-  return new ReviewActionV2ExecutionEvidenceCapabilityAdapter(
+  return new ReviewActionV2InvestigationLeaseCapabilityAdapter(
     new JoseRotatingCapabilityCodec(keyRing, 0),
     keyRing,
     "reviewrouter-context-test",
-    () => `capability-${++sequence}`,
+    () => `investigation-capability-${++sequence}`,
   );
 }
 

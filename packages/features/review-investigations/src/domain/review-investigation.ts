@@ -27,6 +27,8 @@ import {
 } from "./investigation-obligation";
 import {
   assertInvestigationPolicy,
+  currentInvestigationPolicyCanonicalVersion,
+  InvestigationPolicyCanonicalVersion,
   policyCanonicalValue,
   type ReviewInvestigationPolicy,
 } from "./investigation-policy";
@@ -67,8 +69,11 @@ export type ReviewInvestigation = Readonly<{
   stableReviewUnitKey: string;
   providerVoteLaneId: string;
   providerStrategyId: string;
+  investigationManifestCanonicalJson: string | null;
+  investigationManifestHash: string | null;
   runtimeProfile: ReviewInvestigationRuntimeProfile;
   contract: ReviewInvestigationContract;
+  policyCanonicalVersion: InvestigationPolicyCanonicalVersion;
   policy: ReviewInvestigationPolicy;
   state: ReviewInvestigationState;
   obligations: readonly InvestigationObligation[];
@@ -115,7 +120,14 @@ export function createReviewInvestigation(
     | "conclusion"
     | "certificate"
     | "nextEligibleAt"
+    | "investigationManifestCanonicalJson"
+    | "investigationManifestHash"
+    | "policyCanonicalVersion"
   > & { readonly obligations: readonly InvestigationObligation[] },
+  admittedManifest: Readonly<{
+    canonicalJson: string;
+    hash: string;
+  }> | null = null,
 ): ReviewInvestigation {
   assertInvestigationScope(input.scope);
   assertInvestigationRevision(input.revision);
@@ -136,6 +148,9 @@ export function createReviewInvestigation(
   }
   return {
     ...input,
+    investigationManifestCanonicalJson: admittedManifest?.canonicalJson ?? null,
+    investigationManifestHash: admittedManifest?.hash ?? null,
+    policyCanonicalVersion: currentInvestigationPolicyCanonicalVersion,
     version: 1,
     state:
       inventory[0]!.state === InvestigationObligationState.Satisfied
@@ -160,8 +175,9 @@ export function createReviewInvestigation(
 
 export function createReplayedReviewInvestigation(
   input: Parameters<typeof createReviewInvestigation>[0],
+  admittedManifest: Parameters<typeof createReviewInvestigation>[1],
 ): ReviewInvestigation {
-  const investigation = createReviewInvestigation(input);
+  const investigation = createReviewInvestigation(input, admittedManifest);
   const inventory = investigation.obligations.find(
     (item) => item.kind === InvestigationObligationKind.InventoryWitness,
   )!;
@@ -569,6 +585,7 @@ export function enforceCriticPolicyForConclusion(
 export function investigationDossierCanonicalValue(
   investigation: ReviewInvestigation,
 ): Readonly<Record<string, CanonicalValue>> {
+  const policyCanonicalVersion = investigation.policyCanonicalVersion;
   return {
     investigationId: investigation.investigationId,
     naturalIdentityHash: investigation.naturalIdentityHash,
@@ -580,9 +597,15 @@ export function investigationDossierCanonicalValue(
     stableReviewUnitKey: investigation.stableReviewUnitKey,
     providerVoteLaneId: investigation.providerVoteLaneId,
     providerStrategyId: investigation.providerStrategyId,
+    ...(investigation.investigationManifestHash === null
+      ? {}
+      : { investigationManifestHash: investigation.investigationManifestHash }),
     runtimeProfile: investigation.runtimeProfile,
     contract: { ...investigation.contract },
-    policy: policyCanonicalValue(investigation.policy),
+    ...(policyCanonicalVersion === InvestigationPolicyCanonicalVersion.LegacyV1
+      ? {}
+      : { policyCanonicalVersion }),
+    policy: policyCanonicalValue(investigation.policy, policyCanonicalVersion),
     state: investigation.state,
     obligations: sortObligations(investigation.obligations).map(
       obligationCanonicalObject,

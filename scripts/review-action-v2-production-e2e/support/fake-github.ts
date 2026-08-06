@@ -33,6 +33,7 @@ export class FakeGitHubTransport {
   readonly comments: StoredComment[] = [];
   readonly checkRuns: StoredCheckRun[] = [];
   revision: FakeGitHubRevision;
+  sourceRunId: string;
   failNextCommentAfterWrite = false;
   private nextExternalId = 10_000;
 
@@ -50,6 +51,7 @@ export class FakeGitHubTransport {
     }>,
   ) {
     this.revision = options.revision;
+    this.sourceRunId = options.sourceRunId;
   }
 
   seedForeignComments(count: number): void {
@@ -115,11 +117,10 @@ export class FakeGitHubTransport {
     const repositoryPrefix = `/repos/${this.options.owner}/${this.options.repo}`;
     if (
       method === "GET" &&
-      url.pathname ===
-        `${repositoryPrefix}/actions/runs/${this.options.sourceRunId}`
+      url.pathname === `${repositoryPrefix}/actions/runs/${this.sourceRunId}`
     ) {
       return json(200, {
-        id: Number(this.options.sourceRunId),
+        id: Number(this.sourceRunId),
         pull_requests: [{ number: this.options.pullRequestNumber }],
       });
     }

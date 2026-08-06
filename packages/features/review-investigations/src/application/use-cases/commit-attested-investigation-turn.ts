@@ -25,7 +25,10 @@ import { AttestedTurnDiscoveryPreparation } from "../attested-turn-discovery-pre
 import { AttestedTurnProposalPreparation } from "../attested-turn-proposal-preparation";
 import { AttestedTurnUnresolvablePreparation } from "../attested-turn-unresolvable-preparation";
 import type { InvestigationDigestPort } from "../ports/digest-port";
-import type { InvestigationStorePort } from "../ports/investigation-store-port";
+import {
+  InvestigationStoreCommitGuardKind,
+  type InvestigationStorePort,
+} from "../ports/investigation-store-port";
 import type { InvestigationTurnEvidencePort } from "../ports/investigation-turn-evidence-port";
 import type { ReviewInvestigationReadModel } from "../investigation-read-model";
 import { toInvestigationReadModel } from "../investigation-read-model";
@@ -82,17 +85,8 @@ export class CommitAttestedInvestigationTurn {
   async execute(
     command: CommitAttestedInvestigationTurnCommand,
   ): Promise<ReviewInvestigationReadModel> {
-    const idempotencyHash = await this.digest.digestUtf8(
-      canonicalJson({
-        operation: "commit_attested_investigation_turn",
-        command,
-      }),
-    );
-    const restored = await restoreCommandOrThrow({
-      store: this.store,
-      commandId: command.commandId,
-      commandHash: idempotencyHash,
-    });
+    const { commandHash: idempotencyHash, restored } =
+      await this.restoreCommand(command);
     if (restored) return toInvestigationReadModel(restored);
     const current = await this.store.findById(command.investigationId);
     if (
@@ -235,8 +229,50 @@ export class CommitAttestedInvestigationTurn {
         terminalOutcomeHash,
       },
       idempotencyHash,
+      storeCommitGuard: {
+        kind: InvestigationStoreCommitGuardKind.LeaseFence,
+        leaseId: command.sourceLeaseId,
+        attemptId: command.sourceAttemptId,
+        turnId: command.turnId,
+        fencingToken: command.sourceFencingToken,
+      },
     };
     return this.commit.execute(commitCommand);
+  }
+
+  async restoreCommittedCommand(
+    command: CommitAttestedInvestigationTurnCommand,
+  ): Promise<ReviewInvestigationReadModel | null> {
+    const { restored } = await this.restoreCommand(command);
+    return restored === null ? null : toInvestigationReadModel(restored);
+  }
+
+  private async restoreCommand(
+    command: CommitAttestedInvestigationTurnCommand,
+  ): Promise<
+    Readonly<{
+      commandHash: string;
+      restored: ReviewInvestigation | null;
+    }>
+  > {
+    const commandHash = await this.commandHash(command);
+    const restored = await restoreCommandOrThrow({
+      store: this.store,
+      commandId: command.commandId,
+      commandHash,
+    });
+    return Object.freeze({ commandHash, restored });
+  }
+
+  private commandHash(
+    command: CommitAttestedInvestigationTurnCommand,
+  ): Promise<string> {
+    return this.digest.digestUtf8(
+      canonicalJson({
+        operation: "commit_attested_investigation_turn",
+        command,
+      }),
+    );
   }
 }
 

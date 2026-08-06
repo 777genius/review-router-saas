@@ -4,9 +4,11 @@ import {
   ContextDependencyReplayDenialReason,
   ContextDependencyReplayStatus,
   ContextFileKind,
+  ContextLeaseAuthorityKind,
   ContextProviderKind,
   GatewaySessionState,
   activateGatewaySession,
+  canonicalAcceptedDependencyAttestationBytes,
   canonicalContextDependencyManifest,
   contextDependencyManifestVersion,
   createAcceptedDependencyAttestation,
@@ -247,6 +249,7 @@ describe("AcceptedDependencyAttestation", () => {
       sourceWorkSlotId: "slot-1",
       attemptId: "attempt-1",
       openingIntentHash: hash("1"),
+      sourceLeaseAuthorityKind: ContextLeaseAuthorityKind.StandardExecution,
       sourceLeaseId: "lease-1",
       sourceFencingToken: "1",
       providerKind: ContextProviderKind.Codex,
@@ -284,5 +287,21 @@ describe("AcceptedDependencyAttestation", () => {
       throw new Error("legacy_manifest_expected");
     }
     expect(accepted.attestation.manifest.dependencies).toHaveLength(1);
+    const { attestationHash: _attestationHash, ...candidate } =
+      accepted.attestation;
+    expect(_attestationHash).toBe(accepted.attestation.attestationHash);
+    expect(
+      Buffer.from(
+        canonicalAcceptedDependencyAttestationBytes(candidate),
+      ).equals(
+        Buffer.from(
+          canonicalAcceptedDependencyAttestationBytes({
+            ...candidate,
+            sourceLeaseAuthorityKind:
+              ContextLeaseAuthorityKind.InvestigationShadow,
+          }),
+        ),
+      ),
+    ).toBe(false);
   });
 });

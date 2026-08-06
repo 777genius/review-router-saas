@@ -6,6 +6,11 @@ export enum ContextProviderKind {
   OpenRouter = "openrouter",
 }
 
+export enum ContextLeaseAuthorityKind {
+  StandardExecution = "standard_execution",
+  InvestigationShadow = "investigation_shadow",
+}
+
 export enum GatewaySessionState {
   Opened = "opened",
   Active = "active",
@@ -39,6 +44,7 @@ export type GatewaySession = Readonly<{
   sourceWorkSlotId: string;
   attemptId: string;
   openingIntentHash: string;
+  sourceLeaseAuthorityKind: ContextLeaseAuthorityKind;
   sourceLeaseId: string;
   sourceFencingToken: string;
   providerKind: ContextProviderKind;
@@ -73,6 +79,13 @@ export function openGatewaySession(
   assertIdentifier(candidate.sourceWorkSlotId, "source_work_slot_id");
   assertIdentifier(candidate.attemptId, "attempt_id");
   assertSha256(candidate.openingIntentHash, "opening_intent_hash");
+  if (
+    !Object.values(ContextLeaseAuthorityKind).includes(
+      candidate.sourceLeaseAuthorityKind,
+    )
+  ) {
+    throw new Error("source_lease_authority_kind_invalid");
+  }
   assertIdentifier(candidate.sourceLeaseId, "source_lease_id");
   assertPositiveIntegerString(
     candidate.sourceFencingToken,

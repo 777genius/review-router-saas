@@ -73,6 +73,10 @@ export async function generateReviewActionV2Protocol(input = {}) {
   const generatedPublishedSchema = await format(prettyJson(published.schema), {
     parser: "json",
   });
+  const generatedInvestigationExtensionSchema = await format(
+    prettyJson(published.extensionSchema),
+    { parser: "json" },
+  );
   const generatedPublishedFixtures = await format(
     prettyJson(published.fixtures),
     { parser: "json" },
@@ -92,6 +96,10 @@ export async function generateReviewActionV2Protocol(input = {}) {
     ["generated/review-action-v2-negotiation.schema.json", generatedSchema],
     ["generated/review-action-v2.ts", generatedPublishedContract],
     ["generated/review-action-v2.schema.json", generatedPublishedSchema],
+    [
+      "generated/review-investigation-extension-v1.schema.json",
+      generatedInvestigationExtensionSchema,
+    ],
     [
       "generated/fixtures/review-action-v2.golden.json",
       generatedPublishedFixtures,
@@ -118,10 +126,23 @@ export async function generateReviewActionV2Protocol(input = {}) {
     );
   }
   for (const operationDescriptor of publishedContract.operations) {
+    const operationSchemaSource =
+      published.extensionSchema.$defs[
+        `${operationDescriptor.operationId}_request`
+      ] === undefined
+        ? published.schema
+        : published.extensionSchema;
     const requestDefinition =
-      published.schema.$defs[`${operationDescriptor.operationId}_request`];
+      operationSchemaSource.$defs[`${operationDescriptor.operationId}_request`];
     const responseDefinition =
-      published.schema.$defs[`${operationDescriptor.operationId}_response`];
+      operationSchemaSource.$defs[
+        `${operationDescriptor.operationId}_response`
+      ];
+    if (requestDefinition === undefined || responseDefinition === undefined) {
+      throw new Error(
+        `protocol_operation_schema_missing:${operationDescriptor.operationId}`,
+      );
+    }
     const operationSchema = {
       $schema: published.schema.$schema,
       $id: `${publishedContract.schemaId}/${operationDescriptor.operationId}`,
@@ -411,6 +432,22 @@ function createManifest(
     schemaDigest: published.schemaDigest,
     goldenFixtureDigest: published.goldenFixtureDigest,
     canonicalizerDigest: published.canonicalizerDigest,
+    extensions: [
+      {
+        extensionId: "review-investigation-shadow.v1",
+        schemaDigest: published.extensionSchemaDigest,
+        canonicalizerDigest: published.extensionCanonicalizerDigest,
+        operationIds: [
+          "review_investigation_open_v2",
+          "review_investigation_lease_acquire",
+          "review_investigation_lease_renew",
+          "review_investigation_lease_release",
+          "review_investigation_replay_v2",
+          "review_investigation_context_gateway_open",
+          "review_investigation_context_gateway_seal",
+        ],
+      },
+    ],
     canonicalizerGoldenFixtureDigest:
       published.canonicalizerGoldenFixtureDigest,
     negotiationBridge: {

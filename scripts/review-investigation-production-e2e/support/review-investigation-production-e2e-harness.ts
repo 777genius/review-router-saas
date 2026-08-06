@@ -8,6 +8,7 @@ import {
 } from "node:crypto";
 import {
   ContextAttestationPersistenceStatus,
+  ContextLeaseAuthorityKind,
   ContextGatewayV4OperationKind,
   ContextGatewayV4OutcomeKind,
   ContextProviderKind,
@@ -78,6 +79,7 @@ import {
   ReviewInvestigationMutationResultStatus,
   ReviewInvestigationNextAction,
   ReviewInvestigationOpenResultStatus,
+  ReviewInvestigationLeaseResultStatus,
   ReviewInvestigationPublishedRuntimeProfile,
   ReviewInvocationLeaseResultStatus,
   canonicalizeReviewActionV2Request,
@@ -85,7 +87,9 @@ import {
   reviewActionV2PublishedSchemaDigest,
   type ReviewActionV2RequestMap,
   type ReviewInvestigationConcludeRequest,
-  type ReviewInvestigationOpenRequest,
+  type ReviewInvestigationLeaseAcquireRequest,
+  type ReviewInvestigationLeaseReleaseRequest,
+  type ReviewInvestigationOpenV2Request,
   type ReviewInvestigationTurnCommitRequest,
   type ReviewInvestigationTurnPlanRequest,
   type ReviewInvocationLeaseAcquireRequest,
@@ -154,6 +158,8 @@ export const productionInvestigationPolicy: ReviewInvestigationPolicy =
     maxFindings: 32,
     maxProposalsPerTurn: 16,
     maxReceiptsPerTurn: 64,
+    maxSeedProbesPerFile: 48,
+    maxSeedProbesOverall: 384,
   });
 
 type InvestigationExecution = Readonly<{
@@ -348,7 +354,7 @@ export class ReviewInvestigationProductionE2EHarness {
       try {
         const opened = await this.openInvestigation(execution, input.label);
         const duplicateOpen = await requiredHandler(
-          this.routes.investigation.open,
+          this.routes.investigation.openV2,
         ).execute(opened.request);
         ensure(
           duplicateOpen.result.investigationId ===
@@ -358,7 +364,7 @@ export class ReviewInvestigationProductionE2EHarness {
           "duplicate_open_not_idempotent",
         );
         await expectFailure(
-          requiredHandler(this.routes.investigation.open).execute(
+          requiredHandler(this.routes.investigation.openV2).execute(
             await this.conflictingOpenRequest(opened.request),
           ),
           "conflicting_open_replay_accepted",
@@ -384,8 +390,11 @@ export class ReviewInvestigationProductionE2EHarness {
         current,
         `${input.label}-discovery-${discoveryOrdinal}`,
       );
-      const lease = await this.acquireTurnLease(
+      const lease = await this.acquireInvestigationTurnLease(
         execution,
+        plan.read,
+        plan.brief,
+        plan.turnCapability,
         `${input.label}-discovery-${discoveryOrdinal}`,
       );
       const commit = await this.commitTurn({
@@ -416,7 +425,7 @@ export class ReviewInvestigationProductionE2EHarness {
           "conflicting_commit_replay_accepted",
         );
       }
-      await this.releaseTurnLease(
+      await this.releaseInvestigationTurnLease(
         execution,
         lease,
         `${input.label}-discovery-${discoveryOrdinal}`,
@@ -435,8 +444,11 @@ export class ReviewInvestigationProductionE2EHarness {
       current,
       `${input.label}-critic`,
     );
-    const criticLease = await this.acquireTurnLease(
+    const criticLease = await this.acquireInvestigationTurnLease(
       execution,
+      criticPlan.read,
+      criticPlan.brief,
+      criticPlan.turnCapability,
       `${input.label}-critic`,
     );
     const critic = await this.commitTurn({
@@ -449,7 +461,7 @@ export class ReviewInvestigationProductionE2EHarness {
       expandRelations: false,
       critic: true,
     });
-    await this.releaseTurnLease(
+    await this.releaseInvestigationTurnLease(
       execution,
       criticLease,
       `${input.label}-critic`,
@@ -764,7 +776,7 @@ export class ReviewInvestigationProductionE2EHarness {
     );
     const seedEnvelopeCanonicalJson = canonicalJson(seedEnvelope);
     const request = await withBodyHash(
-      ReviewActionV2OperationId.ReviewInvestigationOpen,
+      ReviewActionV2OperationId.ReviewInvestigationOpenV2,
       {
         ...envelope(`${label}-open`),
         authorizationToken: execution.flow.authorizationToken,
@@ -789,10 +801,13 @@ export class ReviewInvestigationProductionE2EHarness {
         seedObligationsHash: sha256(seedEnvelopeCanonicalJson),
         initialReceiptsCanonicalJson: canonicalJson([]),
         initialReceiptsHash: sha256(canonicalJson([])),
-      } satisfies ReviewInvestigationOpenRequest,
+        investigationManifestCanonicalJson:
+          execution.flow.manifestCanonicalJson,
+        investigationManifestHash: execution.flow.manifestKey,
+      } satisfies ReviewInvestigationOpenV2Request,
     );
     const response = await requiredHandler(
-      this.routes.investigation.open,
+      this.routes.investigation.openV2,
     ).execute(request);
     ensure(
       response.result.status === ReviewInvestigationOpenResultStatus.Opened,
@@ -802,8 +817,8 @@ export class ReviewInvestigationProductionE2EHarness {
   }
 
   private async conflictingOpenRequest(
-    request: ReviewInvestigationOpenRequest,
-  ): Promise<ReviewInvestigationOpenRequest> {
+    request: ReviewInvestigationOpenV2Request,
+  ): Promise<ReviewInvestigationOpenV2Request> {
     const current = record(JSON.parse(request.seedObligationsCanonicalJson));
     const changed = {
       ...current,
@@ -816,7 +831,7 @@ export class ReviewInvestigationProductionE2EHarness {
           : seed,
       ),
     };
-    return withBodyHash(ReviewActionV2OperationId.ReviewInvestigationOpen, {
+    return withBodyHash(ReviewActionV2OperationId.ReviewInvestigationOpenV2, {
       ...request,
       requestBodyHash: zeroHash,
       seedObligationsCanonicalJson: canonicalJson(changed),
@@ -992,6 +1007,77 @@ export class ReviewInvestigationProductionE2EHarness {
       leaseCapability: requiredString(response.result.leaseCapability),
       fencingToken: requiredString(response.result.fencingToken),
     });
+  }
+
+  private async acquireInvestigationTurnLease(
+    execution: InvestigationExecution,
+    current: InvestigationRead,
+    brief: TurnBrief,
+    turnCapability: string,
+    label: string,
+  ): Promise<ActiveLease> {
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvestigationLeaseAcquire,
+      {
+        ...envelope(`${label}-investigation-lease-acquire`),
+        authorizationToken: execution.flow.authorizationToken,
+        idempotencyKey: `${label}-investigation-lease-acquire`,
+        requestBodyHash: zeroHash,
+        investigationId: current.investigationId,
+        expectedVersion: current.investigationVersion,
+        turnId: brief.turnId,
+        turnCapability,
+        providerStrategyId: execution.flow.providerInvocationKey,
+        investigationManifestCanonicalJson:
+          execution.flow.manifestCanonicalJson,
+        investigationManifestHash: execution.flow.manifestKey,
+        acquireRequestId: `${label}-investigation-lease-acquire`,
+        ownerIdHash: execution.flow.ownerIdHash,
+      } satisfies ReviewInvestigationLeaseAcquireRequest,
+    );
+    const response = await requiredHandler(
+      this.routes.investigation.acquireLease,
+    ).execute(request);
+    ensure(
+      response.result.status ===
+        ReviewInvestigationLeaseResultStatus.Acquired ||
+        response.result.status ===
+          ReviewInvestigationLeaseResultStatus.Restored,
+      `investigation_shadow_lease_not_acquired:${response.result.status}`,
+    );
+    return Object.freeze({
+      leaseId: requiredString(response.result.leaseId),
+      attemptId: requiredString(response.result.attemptId),
+      leaseCapability: requiredString(response.result.leaseCapability),
+      fencingToken: requiredString(response.result.fencingToken),
+    });
+  }
+
+  private async releaseInvestigationTurnLease(
+    execution: InvestigationExecution,
+    lease: ActiveLease,
+    label: string,
+  ): Promise<void> {
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvestigationLeaseRelease,
+      {
+        ...envelope(`${label}-investigation-lease-release`),
+        leaseCapability: lease.leaseCapability,
+        idempotencyKey: `${label}-investigation-lease-release`,
+        requestBodyHash: zeroHash,
+        leaseId: lease.leaseId,
+        ownerIdHash: execution.flow.ownerIdHash,
+        fencingToken: lease.fencingToken,
+        releaseRequestId: `${label}-investigation-lease-release`,
+      } satisfies ReviewInvestigationLeaseReleaseRequest,
+    );
+    const response = await requiredHandler(
+      this.routes.investigation.releaseLease,
+    ).execute(request);
+    ensure(
+      response.result.status === ReviewInvestigationLeaseResultStatus.Expired,
+      `investigation_committed_lease_cleanup_drift:${response.result.status}`,
+    );
   }
 
   private async assertProviderAttemptBudget(
@@ -1369,6 +1455,7 @@ async function persistAcceptedAttestation(input: {
       sourceWorkSlotId: input.execution.flow.workSlotId,
       attemptId: input.lease.attemptId,
       openingIntentHash: sha256(`${input.label}:opening-intent`),
+      sourceLeaseAuthorityKind: ContextLeaseAuthorityKind.InvestigationShadow,
       sourceLeaseId: input.lease.leaseId,
       sourceFencingToken: input.lease.fencingToken,
       providerKind: ContextProviderKind.Codex,

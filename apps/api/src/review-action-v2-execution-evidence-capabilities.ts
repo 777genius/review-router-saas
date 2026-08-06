@@ -18,6 +18,8 @@ const leaseRole = "review_execution_lease_v1";
 const investigationTurnRole = "review_investigation_turn_v1";
 const attachmentRole = "review_evidence_attachment_v1";
 const contextGatewaySealRole = "review_context_gateway_seal_v1";
+const investigationContextGatewaySealRole =
+  "review_investigation_context_gateway_seal_v1";
 const contextReplayRole = "review_context_replay_v1";
 const investigationReceiptReplayRole = "review_investigation_receipt_replay_v1";
 const publicationRole = "review_publication_permit_v1";
@@ -113,6 +115,10 @@ export type ReviewActionV2ContextGatewaySealAuthority = Readonly<{
   confinementEvidenceHash: string;
   expiresAt: Date;
 }>;
+
+export type ReviewActionV2InvestigationContextGatewaySealAuthority =
+  ReviewActionV2ContextGatewaySealAuthority &
+    Readonly<{ sourceLeaseAuthorityKind: "investigation_shadow" }>;
 
 export type ReviewActionV2ContextReplayAuthority = Readonly<{
   capabilityId?: string;
@@ -513,6 +519,106 @@ export class ReviewActionV2ExecutionEvidenceCapabilityAdapter {
       sessionId: string(payload.session_id),
       sourceExecutionId: string(payload.source_execution_id),
       sourceWorkSlotId: string(payload.source_work_slot_id),
+      attemptId: string(payload.attempt_id),
+      sourceLeaseId: string(payload.source_lease_id),
+      sourceFencingToken: unsignedBigInt(payload.source_fencing_token).toString(
+        10,
+      ),
+      sourceReviewRevisionHash: sha256(payload.source_revision_hash),
+      checkoutTreeOid: commitSha(payload.checkout_tree_oid),
+      gatewayPolicyVersion: string(payload.gateway_policy_version),
+      gatewayBinaryHash: sha256(payload.gateway_binary_hash),
+      confinementEvidenceHash: sha256(payload.confinement_evidence_hash),
+      expiresAt: new Date(claims.expiresAt),
+    });
+  }
+
+  async issueInvestigationContextGatewaySeal(
+    authority: ReviewActionV2InvestigationContextGatewaySealAuthority,
+    issuedAt: Date,
+  ): Promise<string> {
+    const identity = await this.prepareIdentity();
+    return (
+      await this.codec.sign({
+        capabilityId: identity.capabilityId,
+        kind: CapabilityKind.ContextGatewaySeal,
+        audience: CapabilityAudience.ReviewContextGatewaySeal,
+        issuer: this.issuer,
+        subject: authority.sessionId,
+        issuedAt,
+        notBefore: issuedAt,
+        ownershipExpiresAt: authority.expiresAt,
+        expiresAt: authority.expiresAt,
+        payload: {
+          role: investigationContextGatewaySealRole,
+          authorization_id: authority.authorizationId,
+          mutation_epoch: authority.mutationEpoch.toString(10),
+          scope_hash: authority.scopeHash,
+          session_id: authority.sessionId,
+          source_execution_id: authority.sourceExecutionId,
+          source_work_slot_id: authority.sourceWorkSlotId,
+          source_lease_authority_kind: authority.sourceLeaseAuthorityKind,
+          attempt_id: authority.attemptId,
+          source_lease_id: authority.sourceLeaseId,
+          source_fencing_token: authority.sourceFencingToken,
+          source_revision_hash: authority.sourceReviewRevisionHash,
+          checkout_tree_oid: authority.checkoutTreeOid,
+          gateway_policy_version: authority.gatewayPolicyVersion,
+          gateway_binary_hash: authority.gatewayBinaryHash,
+          confinement_evidence_hash: authority.confinementEvidenceHash,
+        },
+      })
+    ).token;
+  }
+
+  async verifyInvestigationContextGatewaySeal(
+    token: string,
+    now: Date,
+  ): Promise<ReviewActionV2InvestigationContextGatewaySealAuthority> {
+    const claims = await this.codec.verify({
+      token,
+      expectedIssuer: this.issuer,
+      expectedAudience: CapabilityAudience.ReviewContextGatewaySeal,
+      expectedKind: CapabilityKind.ContextGatewaySeal,
+      now,
+    });
+    const payload = exactPayload(claims.payload, [
+      "role",
+      "authorization_id",
+      "mutation_epoch",
+      "scope_hash",
+      "session_id",
+      "source_execution_id",
+      "source_work_slot_id",
+      "source_lease_authority_kind",
+      "attempt_id",
+      "source_lease_id",
+      "source_fencing_token",
+      "source_revision_hash",
+      "checkout_tree_oid",
+      "gateway_policy_version",
+      "gateway_binary_hash",
+      "confinement_evidence_hash",
+    ]);
+    if (
+      string(payload.role) !== investigationContextGatewaySealRole ||
+      string(payload.source_lease_authority_kind) !== "investigation_shadow" ||
+      claims.subject !== string(payload.session_id) ||
+      claims.ownershipExpiresAt === null
+    ) {
+      throw new Error(
+        "review_investigation_context_gateway_seal_capability_claims_invalid",
+      );
+    }
+    return Object.freeze({
+      capabilityId: claims.capabilityId,
+      authorizationId: string(payload.authorization_id),
+      mutationEpoch: unsignedBigInt(payload.mutation_epoch),
+      scopeHash: sha256(payload.scope_hash),
+      sessionId: string(payload.session_id),
+      sourceExecutionId: string(payload.source_execution_id),
+      sourceWorkSlotId: string(payload.source_work_slot_id),
+      sourceLeaseAuthorityKind: "investigation_shadow" as const,
       attemptId: string(payload.attempt_id),
       sourceLeaseId: string(payload.source_lease_id),
       sourceFencingToken: unsignedBigInt(payload.source_fencing_token).toString(

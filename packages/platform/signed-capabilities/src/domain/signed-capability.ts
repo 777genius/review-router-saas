@@ -1,6 +1,8 @@
 export enum CapabilityAudience {
   ReviewRun = "review_run",
   ReviewInvocationLease = "review_invocation_lease",
+  ReviewInvestigationShadowLease = "review_investigation_shadow_lease",
+  ReviewContextGatewaySeal = "review_context_gateway_seal",
   ReviewPublicationClaim = "review_publication_claim",
   ReviewPublicationOperation = "review_publication_operation",
   ReviewCompletionProcess = "review_completion_process",
@@ -9,6 +11,8 @@ export enum CapabilityAudience {
 export enum CapabilityKind {
   RunAuthorization = "run_authorization",
   InvocationLease = "invocation_lease",
+  InvestigationShadowLease = "investigation_shadow_lease",
+  ContextGatewaySeal = "context_gateway_seal",
   PublicationClaim = "publication_claim",
   PublicationOperation = "publication_operation",
   CompletionCommand = "completion_command",

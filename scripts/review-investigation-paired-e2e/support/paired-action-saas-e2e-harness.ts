@@ -41,14 +41,20 @@ import {
   reviewActionV2CapabilityKeysEnv,
   reviewActionV2ProjectionPolicyVersionEnv,
   reviewActionV2ProviderVoteLanesEnv,
+  reviewInvestigationLeaseCapabilityActiveKeyIdEnv,
+  reviewInvestigationLeaseCapabilityKeysEnv,
   reviewInvestigationContextCriticEnabledEnv,
+  reviewInvestigationCrossRevisionReplayEnabledEnv,
   reviewInvestigationEmergencyDisabledEnv,
   reviewInvestigationMaintenanceEnabledEnv,
   reviewInvestigationPrivateMaterialActiveKeyIdEnv,
   reviewInvestigationPrivateMaterialKeysEnv,
   reviewInvestigationPrivateMaterialTtlEnv,
   reviewInvestigationRecordingEnabledEnv,
+  reviewInvestigationRolloutSelectorsEnv,
+  reviewInvestigationProductionEffectsEnabledEnv,
   reviewInvestigationShadowEnabledEnv,
+  reviewInvestigationVerifiedCleanEnabledEnv,
 } from "../../../apps/api/src/review-action-v2-production-composition.js";
 import {
   reviewActionV2ContextReplayActiveKeyIdEnv,
@@ -74,6 +80,7 @@ const sourceRunId = "770001";
 const providerVoteIdentityHash = sha256("paired-action-saas-provider-vote");
 const capabilityKeyId = "paired-action-saas-capability-key";
 const contextReplayKeyId = "paired-action-saas-context-replay-key";
+const investigationLeaseKeyId = "paired-action-saas-investigation-lease-key";
 const privateMaterialKeyId = "paired-action-saas-private-material-key";
 const actionReleaseRelevantPaths = Object.freeze([
   ".github/workflows",
@@ -93,6 +100,7 @@ export enum PairedActionScenario {
   TamperedSeedManifest = "tampered_seed_manifest",
   StaleRevision = "stale_revision",
   IncompletePathChain = "incomplete_path_chain",
+  ReplayPrepared = "replay_prepared",
 }
 
 export type PairedProtocolDiagnostic = Readonly<{
@@ -107,6 +115,10 @@ export type PairedActionProcessResult = Readonly<{
   ok: boolean;
   scenario: PairedActionScenario;
   releaseManifestHash: string;
+  replayPreparationMissing?: boolean;
+  preparedObligationCount?: number;
+  sourceInvestigationId?: string;
+  replayedInvestigationId?: string;
   observation?: Readonly<{
     investigationCertificateId: string;
     investigationCertificateHash: string;
@@ -157,7 +169,7 @@ export class PairedActionSaasE2EHarness {
   readonly releaseManifest: PairedActionReleaseManifest;
   readonly releaseManifestCanonicalJson: string;
   readonly releaseManifestHash: string;
-  readonly repository: DisposableRepository;
+  repository: DisposableRepository;
   readonly actionSourceDir: string;
   readonly actionRef: string;
   readonly producerReleaseId: string;
@@ -168,6 +180,7 @@ export class PairedActionSaasE2EHarness {
   private readonly apiUrl: string;
   private readonly oidcPrivateKey: KeyObject;
   private readonly oidcKeyId: string;
+  private readonly fakeGitHub: FakeGitHubTransport;
   private readonly originalFetch: typeof globalThis.fetch;
   private readonly temporaryRoot: string;
   private oidcOrdinal = 0;
@@ -189,6 +202,7 @@ export class PairedActionSaasE2EHarness {
     apiUrl: string;
     oidcPrivateKey: KeyObject;
     oidcKeyId: string;
+    fakeGitHub: FakeGitHubTransport;
     originalFetch: typeof globalThis.fetch;
     temporaryRoot: string;
   }) {
@@ -209,6 +223,7 @@ export class PairedActionSaasE2EHarness {
     this.apiUrl = input.apiUrl;
     this.oidcPrivateKey = input.oidcPrivateKey;
     this.oidcKeyId = input.oidcKeyId;
+    this.fakeGitHub = input.fakeGitHub;
     this.originalFetch = input.originalFetch;
     this.temporaryRoot = input.temporaryRoot;
   }
@@ -342,6 +357,7 @@ export class PairedActionSaasE2EHarness {
         apiUrl,
         oidcPrivateKey: oidcKeys.privateKey,
         oidcKeyId,
+        fakeGitHub,
         originalFetch,
         temporaryRoot,
       });
@@ -459,6 +475,24 @@ export class PairedActionSaasE2EHarness {
     }
   }
 
+  async advanceReviewRevision(): Promise<DisposableRepository> {
+    this.repository = await advanceDisposableRepository(this.repository, {
+      workspaceId: this.workspaceId,
+      repositoryConnectionId: this.repositoryConnectionId,
+      scmRepositoryIdentityId: this.scmRepositoryIdentityId,
+    });
+    this.fakeGitHub.revision = {
+      baseSha: this.repository.baseSha,
+      mergeBaseSha: this.repository.mergeBaseSha,
+      headSha: this.repository.headSha,
+      headTreeSha: this.repository.headTreeSha,
+    };
+    this.fakeGitHub.sourceRunId = String(
+      Number(this.fakeGitHub.sourceRunId) + 1,
+    );
+    return this.repository;
+  }
+
   async close(): Promise<void> {
     await this.app.close();
     globalThis.fetch = this.originalFetch;
@@ -475,7 +509,7 @@ export class PairedActionSaasE2EHarness {
       repository_owner: owner,
       event_name: "pull_request",
       ref: `refs/pull/${pullRequestNumber}/merge`,
-      run_id: sourceRunId,
+      run_id: this.fakeGitHub.sourceRunId,
       run_attempt: "1",
       workflow_ref: `${owner}/${repo}/.github/workflows/reviewrouter.yml@refs/pull/${pullRequestNumber}/merge`,
       workflow_sha: this.repository.headSha,
@@ -881,6 +915,14 @@ function productionEnvironment(input: {
       reviewActionV2ProjectionPolicyVersion,
     [reviewActionV2CapabilityActiveKeyIdEnv]: capabilityKeyId,
     [reviewActionV2CapabilityKeysEnv]: signingKeys,
+    [reviewInvestigationLeaseCapabilityActiveKeyIdEnv]: investigationLeaseKeyId,
+    [reviewInvestigationLeaseCapabilityKeysEnv]: JSON.stringify([
+      {
+        keyId: investigationLeaseKeyId,
+        secretBase64: Buffer.from("l".repeat(32)).toString("base64"),
+        verifyUntil: null,
+      },
+    ]),
     [reviewActionV2ContextSessionSecretEnv]: Buffer.from(
       "s".repeat(32),
     ).toString("base64"),
@@ -894,6 +936,29 @@ function productionEnvironment(input: {
     [reviewInvestigationRecordingEnabledEnv]: "1",
     [reviewInvestigationShadowEnabledEnv]: "1",
     [reviewInvestigationContextCriticEnabledEnv]: "1",
+    [reviewInvestigationCrossRevisionReplayEnabledEnv]: "1",
+    [reviewInvestigationVerifiedCleanEnabledEnv]: "1",
+    [reviewInvestigationProductionEffectsEnabledEnv]: "1",
+    [reviewInvestigationRolloutSelectorsEnv]: JSON.stringify({
+      verified_clean: [
+        {
+          producerReleaseIds: [input.producerReleaseId],
+          providers: ["codex"],
+        },
+      ],
+      cross_revision_replay: [
+        {
+          producerReleaseIds: [input.producerReleaseId],
+          providers: ["codex"],
+        },
+      ],
+      production_effects: [
+        {
+          producerReleaseIds: [input.producerReleaseId],
+          providers: ["codex"],
+        },
+      ],
+    }),
     [reviewInvestigationMaintenanceEnabledEnv]: "1",
     [reviewInvestigationEmergencyDisabledEnv]: "0",
     [reviewInvestigationPrivateMaterialActiveKeyIdEnv]: privateMaterialKeyId,
@@ -938,15 +1003,59 @@ async function createDisposableRepository(
   );
   await git(root, ["add", "-A"]);
   await git(root, ["commit", "-qm", "test: paired head"]);
+  return disposableRepositoryRevision(temporaryRoot, root, baseSha, scope);
+}
+
+async function advanceDisposableRepository(
+  repository: DisposableRepository,
+  scope: Readonly<{
+    workspaceId: string;
+    repositoryConnectionId: string;
+    scmRepositoryIdentityId: string;
+  }>,
+): Promise<DisposableRepository> {
+  await writeFile(
+    path.join(repository.root, "src/independent.ts"),
+    "export const independentValue = 1;\n",
+  );
+  await git(repository.root, ["add", "-A"]);
+  await git(repository.root, ["commit", "-qm", "test: paired replay target"]);
+  return disposableRepositoryRevision(
+    repository.parent,
+    repository.root,
+    repository.baseSha,
+    scope,
+  );
+}
+
+async function disposableRepositoryRevision(
+  parent: string,
+  root: string,
+  baseSha: string,
+  scope: Readonly<{
+    workspaceId: string;
+    repositoryConnectionId: string;
+    scmRepositoryIdentityId: string;
+  }>,
+): Promise<DisposableRepository> {
   const headSha = await gitText(root, ["rev-parse", "HEAD"]);
   const headTreeSha = await gitText(root, ["rev-parse", "HEAD^{tree}"]);
   const fullDiff = await gitText(
     root,
-    ["diff", "--no-ext-diff", "--no-textconv", "--binary", baseSha, headSha],
+    [
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--binary",
+      baseSha,
+      headSha,
+      "--",
+      "src/contract.ts",
+    ],
     false,
   );
   return Object.freeze({
-    parent: temporaryRoot,
+    parent,
     root,
     baseSha,
     mergeBaseSha: baseSha,

@@ -27,6 +27,19 @@ The corresponding environment variables use the same order:
 - `REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED`;
 - `REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED`.
 
+Recording also requires an independent rotating key ring for investigation
+lease capabilities:
+
+- `REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_ACTIVE_KEY_ID`;
+- `REVIEW_ROUTER_REVIEW_INVESTIGATION_LEASE_CAPABILITY_KEYS_JSON`.
+
+The JSON value is a non-empty array of
+`{"keyId":"...","secretBase64":"...","verifyUntil":null}` entries. The
+active key must be present in the array. Generate a dedicated 32-byte secret;
+do not reuse authorization, general Review V2 capability, context replay, or
+private-material keys. Keep retired keys only through their bounded verification
+window. Missing or malformed lease keys make recording composition fail closed.
+
 `REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED=1` overrides every
 capability. Cohort selectors are supplied through
 `REVIEW_ROUTER_REVIEW_INVESTIGATION_SELECTORS_JSON`.

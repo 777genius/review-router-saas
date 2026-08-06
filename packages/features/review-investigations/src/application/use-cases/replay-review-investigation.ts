@@ -33,6 +33,7 @@ import {
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
+import type { InvestigationManifestIdentityPort } from "../ports/investigation-manifest-identity-port";
 import {
   InvestigationReceiptReplayVerdict,
   type InvestigationReceiptReplayPort,
@@ -42,6 +43,7 @@ import {
   type InvestigationStorePort,
 } from "../ports/investigation-store-port";
 import {
+  admitInvestigationManifest,
   commitOrThrow,
   digestCanonical,
   requireCurrentExecution,
@@ -65,6 +67,8 @@ export type ReplayReviewInvestigationCommand = Readonly<{
   targetStableReviewUnitKey: string;
   targetProviderVoteLaneId: string;
   targetProviderStrategyId: string;
+  targetInvestigationManifestCanonicalJson?: string;
+  targetInvestigationManifestHash?: string;
   targetRuntimeProfile: ReviewInvestigationRuntimeProfile;
   targetContract: ReviewInvestigation["contract"];
   targetPolicy: ReviewInvestigationPolicy;
@@ -82,6 +86,7 @@ export class ReplayReviewInvestigation {
     private readonly authority: InvestigationExecutionAuthorityPort,
     private readonly replay: InvestigationReceiptReplayPort,
     private readonly digest: InvestigationDigestPort,
+    private readonly manifestIdentity: InvestigationManifestIdentityPort,
     private readonly clock: InvestigationClockPort,
     private readonly coverageSeedPolicy: CoverageSeedPolicy = new VersionedCoverageSeedPolicy(),
     private readonly privateMaterial?: PrepareInvestigationSearchQueryPrivateMaterial,
@@ -102,6 +107,16 @@ export class ReplayReviewInvestigation {
 
     assertInvestigationScope(command.targetScope);
     assertInvestigationRevision(command.targetRevision);
+    const admittedManifest =
+      command.targetInvestigationManifestCanonicalJson === undefined &&
+      command.targetInvestigationManifestHash === undefined
+        ? null
+        : await admitInvestigationManifest({
+            canonicalJson:
+              command.targetInvestigationManifestCanonicalJson ?? "",
+            hash: command.targetInvestigationManifestHash ?? "",
+            identity: this.manifestIdentity,
+          });
 
     await requireCurrentExecution({
       authority: this.authority,
@@ -139,24 +154,27 @@ export class ReplayReviewInvestigation {
       runtimeProfileVersion: command.targetContract.runtimeProfileVersion,
     });
     const now = this.clock.now().toISOString();
-    let target = createReplayedReviewInvestigation({
-      investigationId: `investigation-${naturalIdentityHash.slice(0, 32)}`,
-      naturalIdentityHash,
-      scope: { ...command.targetScope },
-      revision: { ...command.targetRevision },
-      executionId: command.targetExecutionId,
-      workSlotId: command.targetWorkSlotId,
-      stableReviewUnitKey: command.targetStableReviewUnitKey,
-      providerVoteLaneId: command.targetProviderVoteLaneId,
-      providerStrategyId: command.targetProviderStrategyId,
-      runtimeProfile: command.targetRuntimeProfile,
-      contract: { ...command.targetContract },
-      policy: { ...command.targetPolicy },
-      obligations,
-      dossierDigest: "0".repeat(64),
-      createdAt: now,
-      updatedAt: now,
-    });
+    let target = createReplayedReviewInvestigation(
+      {
+        investigationId: `investigation-${naturalIdentityHash.slice(0, 32)}`,
+        naturalIdentityHash,
+        scope: { ...command.targetScope },
+        revision: { ...command.targetRevision },
+        executionId: command.targetExecutionId,
+        workSlotId: command.targetWorkSlotId,
+        stableReviewUnitKey: command.targetStableReviewUnitKey,
+        providerVoteLaneId: command.targetProviderVoteLaneId,
+        providerStrategyId: command.targetProviderStrategyId,
+        runtimeProfile: command.targetRuntimeProfile,
+        contract: { ...command.targetContract },
+        policy: { ...command.targetPolicy },
+        obligations,
+        dossierDigest: "0".repeat(64),
+        createdAt: now,
+        updatedAt: now,
+      },
+      admittedManifest,
+    );
     target = await withCurrentDossierDigest(this.digest, target);
     const privateMaterials = await prepareInvestigationSeedPrivateMaterials({
       investigation: target,

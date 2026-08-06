@@ -73,6 +73,8 @@ import {
   reviewActionV2ProjectionPolicyVersionEnv,
   reviewActionV2ProviderVoteLanesEnv,
   reviewInvestigationContextCriticEnabledEnv,
+  reviewInvestigationLeaseCapabilityActiveKeyIdEnv,
+  reviewInvestigationLeaseCapabilityKeysEnv,
   reviewInvestigationMaintenanceEnabledEnv,
   reviewInvestigationRecordingEnabledEnv,
   reviewInvestigationShadowEnabledEnv,
@@ -100,6 +102,7 @@ const mergeBaseSha = "d".repeat(40);
 const headSha = "e".repeat(40);
 const providerVoteIdentityHash = sha256("provider-vote");
 const capabilityKeyId = "review-v2-e2e-key";
+const investigationLeaseKeyId = "review-v2-e2e-investigation-lease-key";
 
 export type ReviewActionV2E2EFlow = Readonly<{
   authorizationId: string;
@@ -1405,6 +1408,15 @@ function productionEnv(input: {
           [reviewInvestigationShadowEnabledEnv]: "1",
           [reviewInvestigationContextCriticEnabledEnv]: "1",
           [reviewInvestigationMaintenanceEnabledEnv]: "1",
+          [reviewInvestigationLeaseCapabilityActiveKeyIdEnv]:
+            investigationLeaseKeyId,
+          [reviewInvestigationLeaseCapabilityKeysEnv]: JSON.stringify([
+            {
+              keyId: investigationLeaseKeyId,
+              secretBase64: Buffer.from("l".repeat(32)).toString("base64"),
+              verifyUntil: null,
+            },
+          ]),
         }
       : {}),
     [reviewV2WorkerEnabledEnv]: "1",
