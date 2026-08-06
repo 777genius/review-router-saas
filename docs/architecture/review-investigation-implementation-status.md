@@ -1,6 +1,6 @@
 # Review Investigation implementation status
 
-Updated: 2026-08-04
+Updated: 2026-08-06
 
 ## Implemented and merged
 
@@ -36,43 +36,60 @@ Updated: 2026-08-04
   source-level Action/SaaS harness binds the same artifact digests. Repository
   contents and provider credentials are not used by these disposable gates.
 
-## Dormant production deployment
+## v1.0.77 release deployment
 
-- Public Action PR `777genius/review-router#86` is merged. Immutable release
-  commit `295e76f7777a995b8fd0b0bb0a36788429c89b83` is an ancestor of Action
-  `main` merge commit `cde842c08ba0c58ca1d606beb8da86fd2eb089c2`.
-- SaaS PR `777genius/review-router-saas#103` is merged at
-  `126d0d13e38ba31112be85879e5b3429f4e5870d`. Its CI passed Quality Gates,
-  paired Action/SaaS production-shaped E2E, hosted readiness, and disposable
-  self-hosted E2E.
-- Render web, API, and worker services are live on SaaS commit
-  `126d0d13e38ba31112be85879e5b3429f4e5870d`. The production Action override is
-  pinned to the immutable Action release commit above; the prior release remains
-  in the bounded rollback allowlist.
-- All six investigation rollout environment flags are unset, which is the
-  fail-closed disabled state. No investigation comments, checks, merge signals,
-  or cross-revision reuse are enabled by this deployment.
+- Public Action release `v1.0.77` and moving tag `v1` resolve to immutable
+  commit `31f01509879052d787d0d873d76d8f8e3f82c78c`. The exact release checkout
+  passed 2,549 tests with 3 skips, typecheck, build, generated metadata checks,
+  and an independent source/artifact audit.
+- SaaS release fixes are merged through `777genius/review-router-saas#110` and
+  `#111`. Render web, API, and worker are live on the same immutable commit
+  `02c1ef15970ebf912a57d8f732f2238ebad8e3f3`; API health, readiness, and the
+  database dependency report healthy. The exact SaaS tree passed 2,101 tests
+  with 70 skips, 389 architecture checks, typecheck, lint, format, and build.
+- The paired Action/SaaS release harness passed all 6 scenarios. The real
+  PostgreSQL contract suite passed all 14 cases, including recovery and
+  persistence boundaries.
+- The final SaaS tree passed the disposable self-hosted E2E: all 58 migrations
+  applied and reapplied idempotently, 7 production Review v2 scenarios passed,
+  2 same-release investigation scenarios passed, the fake OIDC action path
+  completed, logs stayed sanitized, and the harness removed its containers,
+  network, and volume.
+- Producer release `review-action-v2-31f01509-investigation` is registered with
+  the `review_investigation_v1` profile, coverage-profile hash
+  `4462900f2e610b2649101987f1131158312b2ad8d453e1fb5f048174f9fbfdc9`,
+  Context Gateway v4, and the exact Action/runtime/schema digests. The malformed
+  legacy-shaped registration `review-action-v2-31f01509` is now irrevocably
+  revoked through the domain command.
+- API and worker use the same canonical sandbox selector policy. Recording,
+  shadow, context critic, and cross-revision replay are enabled only for
+  `777genius/review-router-saas-e2e`; verified-clean and production effects stay
+  disabled. The bounded Action rollback allowlist retains the previous release
+  until old work drains.
 
 ## Deliberately not enabled
 
-All investigation capabilities remain disabled by default. This implementation
-does not claim production promotion because no approved real shadow cohort was
-run during release validation.
+All investigation capabilities remain disabled by default outside the explicit
+sandbox selector. This implementation does not claim production promotion.
 
 The merge and dormant deployment gate is complete. The following Definition of
 Done items remain operational activation gates:
 
-1. register the exact paired producer release and capability manifest for an
-   explicitly approved test cohort;
-2. archive a live sandbox GitHub E2E for hosted and self-hosted deployments
-   against those same paired release IDs;
+1. archive a successful live hosted sandbox review against the exact paired
+   release IDs;
+2. prove live supersession, stale mutation denial, compatible evidence reuse,
+   and rollback on controlled sandbox revisions;
 3. collect approved shadow samples with trusted usage/model attribution and
    externally evaluated ground truth;
 4. archive an immutable promotion report that meets production thresholds;
-5. obtain owner approval and enable one internal/test cohort.
+5. obtain owner approval before enabling any non-sandbox production effects.
 
-Until those gates are complete, findings effects, verified clean, and
-cross-revision replay must remain off in production.
+At the 2026-08-06 checkpoint, GitHub reported a major Actions outage and did not
+create runs for new sandbox revisions. This is an external availability blocker,
+not provider-auth evidence; it must not trigger repeated login or tight-loop
+reruns. Until the remaining gates are complete, findings effects and verified
+clean must remain off. Cross-revision replay may stay enabled only for the
+explicit sandbox selector and must be disabled again after rollback proof.
 
 The Claude Code adapter and provider-neutral contract tests are implemented,
 but Claude is not a production investigation or independent-critic lane yet.

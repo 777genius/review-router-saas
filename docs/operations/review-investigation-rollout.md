@@ -1,6 +1,21 @@
 # Review Investigation rollout and rollback
 
-Status: dormant implementation. No production cohort is approved by this document.
+Status: sandbox shadow validation active; production effects dormant. No
+non-sandbox cohort is approved by this document.
+
+## Current v1.0.77 posture
+
+The only approved hosted cohort is
+`777genius/review-router-saas-e2e`, provider `codex`, producer release
+`review-action-v2-31f01509-investigation`. API and worker may enable recording,
+shadow, context critic, and cross-revision replay only when all of those selector
+dimensions match. Repository runtime configuration must independently enable the
+same capabilities.
+
+Verified clean and production effects remain disabled. Empty selector lists are
+not approved for v1.0.77, including capabilities whose domain model can represent
+a deliberate global cohort. Do not widen or remove the sandbox selectors without
+a new promotion decision, immutable report, owner approval, and rollback window.
 
 ## Ownership
 
@@ -73,8 +88,9 @@ mixed versions must never infer support from feature flags alone.
 ## Cohorts
 
 Each capability may be restricted by workspace, repository connection, provider,
-trust domain, and producer release. Recording, shadow, and context critic may use
-an empty selector list for a deliberate global cohort. Production effects,
+trust domain, and producer release. Recording, shadow, and context critic can
+technically represent an empty selector list for a separately approved deliberate
+global cohort. Production effects,
 verified clean, and cross-revision replay require an explicit non-empty
 allowlist; enabling one without its selector fails closed. Multiple selectors
 are OR-ed; fields inside one selector are AND-ed. Unknown providers never match
@@ -87,9 +103,10 @@ Configure selectors with
 `REVIEW_ROUTER_REVIEW_INVESTIGATION_SELECTORS_JSON`. The value is an object
 keyed by capability. Every value is a bounded selector array; unknown
 capabilities, fields, providers, duplicate values, or malformed JSON fail
-closed. Selector fields must contain at least one value. Use an empty selector
-list only for a deliberate global recording/shadow/critic cohort; an empty
-selector object or field is rejected as ambiguous. Example:
+closed. Selector fields must contain at least one value. An empty selector list
+requires an explicit future global-cohort approval and is forbidden by the
+current v1.0.77 posture; an empty selector object or field is rejected as
+ambiguous. Example:
 
 ```json
 {
@@ -193,16 +210,16 @@ evidence.
 Terminal output must describe the safety decision, not merely whether the
 workflow process exited. Use these user-visible outcomes consistently:
 
-| Outcome | Meaning | Publication rule |
-| --- | --- | --- |
-| `completed` | Required coverage and current-revision checks passed | Publish the current projection |
-| `partial` | Some required coverage did not complete | Preserve preliminary findings in the summary; withhold inline comments and lifecycle mutations |
-| `superseded` | A newer pull-request revision exists | Preserve evidence; publish zero findings for the stale revision |
-| `publication_stale` | Revision or lifecycle preconditions changed at the mutation boundary | Preserve evidence; apply no SCM mutation |
-| `lane_busy` | A required provider lane is already occupied | Report a delay; preserve eligible evidence for retry |
-| `provider_capacity` | The provider refused work because capacity is unavailable | Report unavailable capacity; do not describe the review as failed or complete |
-| `failed` | Execution or revision validation failed | Publish no approval and direct the operator to the typed failure |
-| `skipped` | Admission policy intentionally excluded the revision | State the policy reason without implying that review ran |
+| Outcome             | Meaning                                                              | Publication rule                                                                               |
+| ------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `completed`         | Required coverage and current-revision checks passed                 | Publish the current projection                                                                 |
+| `partial`           | Some required coverage did not complete                              | Preserve preliminary findings in the summary; withhold inline comments and lifecycle mutations |
+| `superseded`        | A newer pull-request revision exists                                 | Preserve evidence; publish zero findings for the stale revision                                |
+| `publication_stale` | Revision or lifecycle preconditions changed at the mutation boundary | Preserve evidence; apply no SCM mutation                                                       |
+| `lane_busy`         | A required provider lane is already occupied                         | Report a delay; preserve eligible evidence for retry                                           |
+| `provider_capacity` | The provider refused work because capacity is unavailable            | Report unavailable capacity; do not describe the review as failed or complete                  |
+| `failed`            | Execution or revision validation failed                              | Publish no approval and direct the operator to the typed failure                               |
+| `skipped`           | Admission policy intentionally excluded the revision                 | State the policy reason without implying that review ran                                       |
 
 A partial summary with findings must begin with
 `Review incomplete - N preliminary findings preserved`. It must also state what
