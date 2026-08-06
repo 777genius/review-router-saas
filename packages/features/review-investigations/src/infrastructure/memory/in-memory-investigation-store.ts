@@ -18,6 +18,8 @@ import {
   type EncryptedInvestigationPrivateMaterial,
 } from "../../domain/investigation-private-material";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
+import { ReviewInvestigationState } from "../../domain/review-investigation-types";
+import { TurnResultAdmissionKind } from "../../domain/turn-result-admission";
 import {
   assertReviewInvestigationLease,
   createReviewInvestigationLease,
@@ -113,7 +115,7 @@ export class InMemoryInvestigationStore
     return [...this.investigations.values()]
       .filter(
         (item) =>
-          item.certificate !== null &&
+          item.replayEvidenceCheckpoint !== null &&
           item.revision.reviewRevisionHash !== input.targetReviewRevisionHash &&
           item.stableReviewUnitKey === input.stableReviewUnitKey &&
           item.providerVoteLaneId === input.providerVoteLaneId &&
@@ -130,12 +132,34 @@ export class InMemoryInvestigationStore
       )
       .sort(
         (left, right) =>
-          right.certificate!.issuedAt.localeCompare(
-            left.certificate!.issuedAt,
+          right.replayEvidenceCheckpoint!.issuedAt.localeCompare(
+            left.replayEvidenceCheckpoint!.issuedAt,
           ) || left.investigationId.localeCompare(right.investigationId),
       )
       .slice(0, input.limit)
       .map((item) => clone(item));
+  }
+
+  async findExpiredActiveTurnIds(input: {
+    readonly expiresAtOrBefore: string;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    await this.transactionTail;
+    const cutoff = new Date(input.expiresAtOrBefore);
+    return [...this.investigations.values()]
+      .filter(
+        (item) =>
+          item.activeTurn !== null &&
+          new Date(item.activeTurn.expiresAt) <= cutoff,
+      )
+      .sort(
+        (left, right) =>
+          left.activeTurn!.expiresAt.localeCompare(
+            right.activeTurn!.expiresAt,
+          ) || left.investigationId.localeCompare(right.investigationId),
+      )
+      .slice(0, input.limit)
+      .map((item) => item.investigationId);
   }
 
   async findLease(leaseId: string): Promise<ReviewInvestigationLease | null> {
@@ -351,6 +375,23 @@ export class InMemoryInvestigationStore
     current: ReviewInvestigation,
   ): boolean {
     if (input.guard === undefined) return true;
+    if (
+      input.guard.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority
+    ) {
+      return true;
+    }
+    if (
+      input.guard.kind === InvestigationStoreCommitGuardKind.ExpiredActiveTurn
+    ) {
+      return (
+        input.transition.kind ===
+          InvestigationStoreTransitionKind.ActiveTurnExpired &&
+        input.transition.turnId === input.guard.turnId &&
+        current.activeTurn?.turnId === input.guard.turnId &&
+        current.activeTurn.expiresAt === input.guard.expiresAt &&
+        input.investigation.activeTurn === null
+      );
+    }
     if (input.guard.kind !== InvestigationStoreCommitGuardKind.LeaseFence) {
       return false;
     }
@@ -368,7 +409,26 @@ export class InMemoryInvestigationStore
       source.investigationId !== input.investigation.investigationId ||
       source.turnId !== input.guard.turnId ||
       source.attemptId !== input.guard.attemptId ||
-      source.fencingToken.toString(10) !== input.guard.fencingToken
+      source.fencingToken.toString(10) !== input.guard.fencingToken ||
+      (input.guard.leaseCapabilityId !== undefined &&
+        source.leaseCapabilityId !== input.guard.leaseCapabilityId) ||
+      (input.guard.authorizationId !== undefined &&
+        source.authorizationId !== input.guard.authorizationId) ||
+      (input.guard.mutationEpoch !== undefined &&
+        source.mutationEpoch !== input.guard.mutationEpoch)
+    ) {
+      return false;
+    }
+    if (!resultAdmissionDeadlineIsCurrent(input.guard, source, current)) {
+      return false;
+    }
+    if (
+      input.guard.resultAdmission === TurnResultAdmissionKind.Rejected ||
+      (input.guard.resultAdmission ===
+        TurnResultAdmissionKind.HistoricalDrain &&
+        input.investigation.state !== ReviewInvestigationState.Superseded) ||
+      (input.guard.resultAdmission === TurnResultAdmissionKind.Current &&
+        input.investigation.state === ReviewInvestigationState.Superseded)
     ) {
       return false;
     }
@@ -540,6 +600,30 @@ export class InMemoryInvestigationStore
       release();
     }
   }
+}
+
+function resultAdmissionDeadlineIsCurrent(
+  guard: NonNullable<Parameters<InvestigationStorePort["commit"]>[0]["guard"]>,
+  lease: ReviewInvestigationLease,
+  investigation: ReviewInvestigation,
+): boolean {
+  const values = [
+    guard.resultAdmission,
+    guard.admittedAt,
+    guard.effectiveDeadline,
+  ];
+  if (values.every((value) => value === undefined)) return true;
+  if (values.some((value) => value === undefined)) return false;
+  const admittedAt = Date.parse(guard.admittedAt!);
+  const effectiveDeadline = Date.parse(guard.effectiveDeadline!);
+  return (
+    Number.isFinite(admittedAt) &&
+    Number.isFinite(effectiveDeadline) &&
+    admittedAt < effectiveDeadline &&
+    effectiveDeadline <= Date.parse(lease.resultReportUntil) &&
+    investigation.activeTurn !== null &&
+    effectiveDeadline <= Date.parse(investigation.activeTurn.expiresAt)
+  );
 }
 
 type SerializedInvestigationLease = Omit<

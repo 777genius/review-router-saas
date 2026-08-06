@@ -3,6 +3,7 @@ import { contextGatewayV4PolicyVersion } from "@reviewrouter/features-review-con
 import {
   canonicalInvestigationScope,
   InvestigationTurnProviderKind,
+  isValidInvestigationTokenUsage,
   ReviewInvestigationConclusion,
   type InvestigationStorePort,
   type ReviewInvestigation,
@@ -554,9 +555,9 @@ function completeTokenBreakdown(
   let totalTokens = 0;
   let durationMs = 0;
   for (const provenance of investigation.turnProvenance) {
+    if (!isValidInvestigationTokenUsage(provenance)) return null;
     promptTokens += provenance.inputTokens;
-    completionTokens +=
-      provenance.outputTokens + provenance.reasoningOutputTokens;
+    completionTokens += provenance.outputTokens;
     totalTokens += provenance.totalTokens;
     durationMs += provenance.durationMs;
     if (

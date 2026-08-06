@@ -2,6 +2,10 @@ import { canonicalJson, type CanonicalValue } from "./canonicalization";
 import type { SeedInvestigationObligation } from "./coverage-contract";
 import { parseProviderInvestigationObligationProposals } from "./investigation-turn-obligation-proposal";
 import {
+  isValidInvestigationTokenUsage,
+  type InvestigationTokenUsage,
+} from "./investigation-token-usage";
+import {
   ContextCriticDecision,
   InvestigationFindingSeverity,
   InvestigationTurnProviderKind,
@@ -48,13 +52,7 @@ export type InvestigationTurnObservation = Readonly<{
   actualProviderKind: InvestigationTurnProviderKind;
   actualModel: string;
   runtimeProfile: ReviewInvestigationRuntimeProfile;
-  usage: Readonly<{
-    inputTokens: number;
-    cachedInputTokens: number;
-    outputTokens: number;
-    reasoningOutputTokens: number;
-    totalTokens: number;
-  }>;
+  usage: InvestigationTokenUsage;
   durationMs: number;
   schemaComplete: true;
   streamComplete: true;
@@ -116,12 +114,7 @@ export function parseInvestigationTurnObservation(
     ),
     totalTokens: nonNegativeInteger(usage.totalTokens, "total_tokens"),
   });
-  if (
-    parsedUsage.totalTokens !==
-    parsedUsage.inputTokens +
-      parsedUsage.outputTokens +
-      parsedUsage.reasoningOutputTokens
-  ) {
+  if (!isValidInvestigationTokenUsage(parsedUsage)) {
     throw new Error("investigation_turn_usage_invalid");
   }
   return Object.freeze({

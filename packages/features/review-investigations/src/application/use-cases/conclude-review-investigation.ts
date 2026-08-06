@@ -39,6 +39,7 @@ import {
   restoreCommandOrThrow,
   withCurrentDossierDigest,
 } from "./investigation-use-case-support";
+import { issueReplayEvidenceCheckpoint } from "../replay-evidence-checkpoint-issuer";
 
 export type ConcludeReviewInvestigationCommand = Readonly<{
   commandId: string;
@@ -173,9 +174,23 @@ export class ConcludeReviewInvestigation {
         certificateCandidateCanonicalValue(candidate),
       ),
     };
+    const terminalState =
+      conclusion === ReviewInvestigationConclusion.Inconclusive
+        ? ReviewInvestigationState.Inconclusive
+        : ReviewInvestigationState.Concluded;
+    const replayEvidenceCheckpoint = await issueReplayEvidenceCheckpoint({
+      source: current,
+      sourceState: terminalState,
+      sourceConclusion: conclusion,
+      sourceVersion: current.version + 1,
+      issuedAt: now,
+      ttlMs: command.certificateTtlMs,
+      digest: this.digest,
+    });
     let next = concludeReviewInvestigation({
       investigation: current,
       certificate,
+      replayEvidenceCheckpoint,
       concludedAt: now.toISOString(),
     });
     next = await withCurrentDossierDigest(this.digest, next);

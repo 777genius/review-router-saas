@@ -7,6 +7,7 @@ import {
   InvestigationBinaryArtifactContentKind,
   InvestigationFileContentKind,
   InvestigationFindingSeverity,
+  InvestigationExecutionAuthorityVerdict,
   InvestigationEvidenceRequirementKind,
   InvestigationObligationKind,
   InvestigationObligationOrigin,
@@ -412,6 +413,96 @@ describe("CommitAttestedInvestigationTurn", () => {
         terminalOutcomeHash,
       }),
     );
+  });
+
+  it("preserves an attested provider result during bounded historical drain", async () => {
+    const fixture = await createFixture();
+    const observation = observationFixture({
+      turnId: fixture.turnId,
+      dossierVersion: fixture.planned.version,
+      obligationId: fixture.obligationId,
+      operationReceiptId: hash("9"),
+    });
+    const terminalOutcomeHash = await fixture.digest.digestUtf8(
+      canonicalInvestigationTerminalObservation(observation),
+    );
+    fixture.evidence.verify.mockResolvedValue({
+      acceptedAttestationId: "attestation-1",
+      acceptedAttestationHash: hash("8"),
+      terminalOutcomeHash,
+      gatewayPolicyVersion: "context-gateway-v4",
+      actualProviderKind: InvestigationTurnProviderKind.Codex,
+      operations: [
+        {
+          operationReceiptId: hash("9"),
+          operationKey: hash("7"),
+          sequence: 1,
+          operationKind: InvestigationOperationKind.CanonicalInventory,
+          operationInputHash: hash("5"),
+          evidenceDigest: hash("6"),
+          treeOid: "3".repeat(40),
+          queryDigest: hash("4"),
+          cursorInputHash: null,
+          pageOrdinal: 0,
+          pageItemCount: 1,
+          pageItemsHash: hash("3"),
+          pagePathHashes: [],
+          aggregatePathCount: 0,
+          aggregatePathSetHash: await fixture.digest.digestUtf8(
+            JSON.stringify([]),
+          ),
+          aggregateItemCount: 1,
+          aggregateHash: hash("2"),
+          complete: true,
+          nextCursorHash: null,
+        },
+      ],
+    });
+    fixture.authority.verdict =
+      InvestigationExecutionAuthorityVerdict.Superseded;
+    const command = {
+      commandId: "commit-attested-historical-1",
+      investigationId: fixture.planned.investigationId,
+      expectedVersion: fixture.planned.version,
+      turnId: fixture.turnId,
+      sourceAttemptId: "attempt-1",
+      sourceLeaseId: "lease-1",
+      sourceFencingToken: "1",
+      acceptedAttestationId: "attestation-1",
+      acceptedAttestationHash: hash("8"),
+      turnObservationHash: await fixture.digest.digestUtf8(
+        canonicalInvestigationTurnObservation(observation),
+      ),
+      observation,
+      authorizationDeadline: fixture.planned.turn!.expiresAt,
+      capabilityDeadline: fixture.planned.turn!.expiresAt,
+      drainDeadline: fixture.planned.turn!.expiresAt,
+    } as const;
+
+    await expect(fixture.commit.execute(command)).resolves.toMatchObject({
+      state: ReviewInvestigationState.Superseded,
+      turn: null,
+    });
+    await expect(fixture.commit.execute(command)).resolves.toMatchObject({
+      state: ReviewInvestigationState.Superseded,
+    });
+    const stored = await fixture.store.findById(
+      fixture.planned.investigationId,
+    );
+    expect(stored).toMatchObject({
+      certificate: null,
+      totalUsageTokens: 110,
+      totalDurationMs: 1_000,
+    });
+    expect(stored?.turnProvenance).toHaveLength(1);
+    expect(stored?.replayEvidenceCheckpoint).toMatchObject({
+      sourceState: ReviewInvestigationState.Superseded,
+      sourceInvestigationVersion: stored?.version,
+    });
+    expect(stored?.obligations[0]?.receipt).toMatchObject({
+      acceptedAttestationId: "attestation-1",
+    });
+    expect(fixture.evidence.verify).toHaveBeenCalledTimes(1);
   });
 
   it("accepts a finding only when complete head-file evidence binds its path and line", async () => {
@@ -909,6 +1000,38 @@ describe("CommitAttestedInvestigationTurn", () => {
         observationVersion: 1,
       }),
     ).toThrow("investigation_turn_observation_incomplete");
+  });
+
+  it("enforces app-server token usage semantics", () => {
+    const fixture = observationFixture({
+      turnId: "turn-1",
+      dossierVersion: 2,
+      obligationId: hash("5"),
+      operationReceiptId: hash("9"),
+    });
+
+    expect(parseInvestigationTurnObservation(fixture).usage).toEqual({
+      inputTokens: 100,
+      cachedInputTokens: 50,
+      outputTokens: 10,
+      reasoningOutputTokens: 5,
+      totalTokens: 110,
+    });
+    expect(() =>
+      parseInvestigationTurnObservation({
+        ...fixture,
+        usage: { ...fixture.usage, totalTokens: 115 },
+      }),
+    ).toThrow("investigation_turn_usage_invalid");
+    expect(() =>
+      parseInvestigationTurnObservation({
+        ...fixture,
+        usage: {
+          ...fixture.usage,
+          reasoningOutputTokens: 11,
+        },
+      }),
+    ).toThrow("investigation_turn_usage_invalid");
   });
 
   it("copies and freezes operation-backed claim arrays", () => {
@@ -1495,6 +1618,7 @@ async function createFixture() {
   });
   return {
     store,
+    authority,
     digest,
     evidence,
     planned,
@@ -1605,7 +1729,7 @@ function observationFixture(input: {
       cachedInputTokens: 50,
       outputTokens: 10,
       reasoningOutputTokens: 5,
-      totalTokens: 115,
+      totalTokens: 110,
     }),
     durationMs: 1_000,
     schemaComplete: true,

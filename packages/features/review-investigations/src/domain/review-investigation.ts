@@ -12,6 +12,7 @@ import {
   type ReviewInvestigationScope,
 } from "./coverage-contract";
 import type { ReviewInvestigationCertificate } from "./investigation-certificate";
+import type { ReplayEvidenceCheckpoint } from "./replay-evidence-checkpoint";
 import {
   hasIndependentCriticProvenance,
   requiresIndependentCritic,
@@ -32,6 +33,7 @@ import {
   policyCanonicalValue,
   type ReviewInvestigationPolicy,
 } from "./investigation-policy";
+import { isValidInvestigationTokenUsage } from "./investigation-token-usage";
 import {
   findingCanonicalValue,
   turnCanonicalValue,
@@ -89,6 +91,7 @@ export type ReviewInvestigation = Readonly<{
   turnProvenance: readonly InvestigationTurnProvenance[];
   conclusion: ReviewInvestigationConclusion | null;
   certificate: ReviewInvestigationCertificate | null;
+  replayEvidenceCheckpoint: ReplayEvidenceCheckpoint | null;
   dossierDigest: string;
   nextEligibleAt: string | null;
   createdAt: string;
@@ -99,6 +102,19 @@ export type InvestigationPrivateMaterialExpiryReconciliation = Readonly<{
   disposition: InvestigationPrivateMaterialExpiryDisposition;
   investigation: ReviewInvestigation;
   affectedObligationIds: readonly string[];
+  expiredTurnId: string | null;
+}>;
+
+export enum ExpiredActiveTurnReconciliationDisposition {
+  Unchanged = "unchanged",
+  Recovered = "recovered",
+  Inconclusive = "inconclusive",
+  Superseded = "superseded",
+}
+
+export type ExpiredActiveTurnReconciliation = Readonly<{
+  disposition: ExpiredActiveTurnReconciliationDisposition;
+  investigation: ReviewInvestigation;
   expiredTurnId: string | null;
 }>;
 
@@ -119,6 +135,7 @@ export function createReviewInvestigation(
     | "turnProvenance"
     | "conclusion"
     | "certificate"
+    | "replayEvidenceCheckpoint"
     | "nextEligibleAt"
     | "investigationManifestCanonicalJson"
     | "investigationManifestHash"
@@ -169,6 +186,7 @@ export function createReviewInvestigation(
     turnProvenance: [],
     conclusion: null,
     certificate: null,
+    replayEvidenceCheckpoint: null,
     nextEligibleAt: null,
   };
 }
@@ -356,6 +374,93 @@ export function commitInvestigationTurn(input: {
   return decideStateAfterCommit(next, turn.purpose, effectiveCriticDecision);
 }
 
+export function commitHistoricalInvestigationTurn(input: {
+  readonly investigation: ReviewInvestigation;
+  readonly commit: InvestigationTurnCommit;
+  readonly committedAt: string;
+}): ReviewInvestigation {
+  const committed = commitInvestigationTurn(input);
+  return {
+    ...committed,
+    state: ReviewInvestigationState.Superseded,
+    conclusion: null,
+    certificate: null,
+    nextEligibleAt: null,
+  };
+}
+
+export function reconcileExpiredActiveTurn(input: {
+  readonly investigation: ReviewInvestigation;
+  readonly reconciledAt: string;
+  readonly superseded: boolean;
+}): ExpiredActiveTurnReconciliation {
+  const current = input.investigation;
+  const turn = current.activeTurn;
+  const reconciledAtMs = canonicalTimestampMs(
+    input.reconciledAt,
+    "investigation_turn_reconciled_at_invalid",
+  );
+  if (
+    current.state !== ReviewInvestigationState.TurnLeased ||
+    turn === null ||
+    canonicalTimestampMs(turn.expiresAt, "investigation_turn_expiry_invalid") >
+      reconciledAtMs
+  ) {
+    return {
+      disposition: ExpiredActiveTurnReconciliationDisposition.Unchanged,
+      investigation: current,
+      expiredTurnId: null,
+    };
+  }
+  if (input.superseded) {
+    return {
+      disposition: ExpiredActiveTurnReconciliationDisposition.Superseded,
+      investigation: {
+        ...current,
+        version: current.version + 1,
+        state: ReviewInvestigationState.Superseded,
+        activeTurn: null,
+        nextEligibleAt: null,
+        updatedAt: input.reconciledAt,
+      },
+      expiredTurnId: turn.turnId,
+    };
+  }
+  const operationalAttempts = current.operationalAttempts + 1;
+  if (operationalAttempts >= current.policy.maxOperationalAttempts) {
+    return {
+      disposition: ExpiredActiveTurnReconciliationDisposition.Inconclusive,
+      investigation: transitionToInconclusive(
+        {
+          ...current,
+          version: current.version + 1,
+          activeTurn: null,
+          operationalAttempts,
+          nextEligibleAt: null,
+        },
+        input.reconciledAt,
+      ),
+      expiredTurnId: turn.turnId,
+    };
+  }
+  return {
+    disposition: ExpiredActiveTurnReconciliationDisposition.Recovered,
+    investigation: {
+      ...current,
+      version: current.version + 1,
+      state:
+        turn.purpose === ReviewInvestigationTurnPurpose.Critic
+          ? ReviewInvestigationState.AwaitingCritic
+          : ReviewInvestigationState.AwaitingTurn,
+      activeTurn: null,
+      operationalAttempts,
+      nextEligibleAt: null,
+      updatedAt: input.reconciledAt,
+    },
+    expiredTurnId: turn.turnId,
+  };
+}
+
 export function abortInvestigationTurn(input: {
   readonly investigation: ReviewInvestigation;
   readonly abort: InvestigationTurnAbort;
@@ -437,16 +542,10 @@ export function reconcileInvestigationPrivateMaterialExpiry(input: {
     );
   }
   if (current.activeTurn !== null) {
-    const turnExpiresAtMs = canonicalTimestampMs(
-      current.activeTurn.expiresAt,
-      "investigation_turn_expiry_invalid",
+    return privateMaterialExpiryResult(
+      InvestigationPrivateMaterialExpiryDisposition.DeferredActiveTurn,
+      current,
     );
-    if (turnExpiresAtMs > expiredAtMs) {
-      return privateMaterialExpiryResult(
-        InvestigationPrivateMaterialExpiryDisposition.DeferredActiveTurn,
-        current,
-      );
-    }
   }
 
   const candidateIds = new Set(input.obligationIds);
@@ -475,7 +574,7 @@ export function reconcileInvestigationPrivateMaterialExpiry(input: {
       ),
     ),
   ).toISOString();
-  const expiredTurnId = current.activeTurn?.turnId ?? null;
+  const expiredTurnId = null;
   const investigation: ReviewInvestigation = {
     ...current,
     version: current.version + 1,
@@ -506,6 +605,7 @@ export function reconcileInvestigationPrivateMaterialExpiry(input: {
 export function concludeReviewInvestigation(input: {
   readonly investigation: ReviewInvestigation;
   readonly certificate: ReviewInvestigationCertificate;
+  readonly replayEvidenceCheckpoint: ReplayEvidenceCheckpoint | null;
   readonly concludedAt: string;
 }): ReviewInvestigation {
   const current = enforceCriticPolicyForConclusion(input.investigation);
@@ -517,7 +617,12 @@ export function concludeReviewInvestigation(input: {
     current.activeTurn !== null ||
     current.certificate !== null ||
     input.certificate.investigationId !== current.investigationId ||
-    input.certificate.investigationVersion !== current.version
+    input.certificate.investigationVersion !== current.version ||
+    (input.replayEvidenceCheckpoint !== null &&
+      (input.replayEvidenceCheckpoint.sourceInvestigationId !==
+        current.investigationId ||
+        input.replayEvidenceCheckpoint.sourceInvestigationVersion !==
+          current.version + 1))
   ) {
     throw new ReviewInvestigationDomainError(
       "investigation_conclusion_invalid",
@@ -559,6 +664,9 @@ export function concludeReviewInvestigation(input: {
         : ReviewInvestigationState.Concluded,
     conclusion,
     certificate: { ...input.certificate },
+    replayEvidenceCheckpoint: input.replayEvidenceCheckpoint
+      ? { ...input.replayEvidenceCheckpoint }
+      : null,
     updatedAt: input.concludedAt,
   };
 }
@@ -628,6 +736,8 @@ export function investigationDossierCanonicalValue(
     ),
     conclusion: investigation.conclusion,
     certificateHash: investigation.certificate?.certificateHash ?? null,
+    replayEvidenceCheckpointHash:
+      investigation.replayEvidenceCheckpoint?.checkpointHash ?? null,
     nextEligibleAt: investigation.nextEligibleAt,
     createdAt: investigation.createdAt,
     updatedAt: investigation.updatedAt,
@@ -642,6 +752,9 @@ export function serializeReviewInvestigation(
     dossierDigest: investigation.dossierDigest,
     certificate: investigation.certificate
       ? { ...investigation.certificate }
+      : null,
+    replayEvidenceCheckpoint: investigation.replayEvidenceCheckpoint
+      ? { ...investigation.replayEvidenceCheckpoint }
       : null,
   });
 }
@@ -808,11 +921,7 @@ function validateTurnProvenance(
     provenance.runtimeProfile !== investigation.runtimeProfile ||
     provenance.totalTokens !== commit.usageTokens ||
     provenance.durationMs !== commit.durationMs ||
-    provenance.totalTokens !==
-      provenance.inputTokens +
-        provenance.outputTokens +
-        provenance.reasoningOutputTokens ||
-    provenance.cachedInputTokens > provenance.inputTokens ||
+    !isValidInvestigationTokenUsage(provenance) ||
     investigation.turnProvenance.some((item) => item.turnId === turn.turnId)
   ) {
     throw new ReviewInvestigationDomainError("turn_provenance_invalid");

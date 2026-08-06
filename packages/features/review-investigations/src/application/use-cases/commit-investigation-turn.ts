@@ -7,6 +7,7 @@ import {
   type InvestigationEvidenceReceipt,
 } from "../../domain/investigation-obligation";
 import {
+  commitHistoricalInvestigationTurn,
   commitInvestigationTurn,
   proposalOriginForTurn,
 } from "../../domain/review-investigation";
@@ -15,9 +16,17 @@ import type {
   InvestigationTurnProvenance,
 } from "../../domain/investigation-turn";
 import type { ContextCriticDecision } from "../../domain/review-investigation-types";
+import {
+  decideTurnResultAdmission,
+  TurnResultAdmissionKind,
+  TurnResultAuthority,
+} from "../../domain/turn-result-admission";
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
-import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
+import {
+  InvestigationExecutionAuthorityVerdict,
+  type InvestigationExecutionAuthorityPort,
+} from "../ports/execution-authority-port";
 import {
   type InvestigationStoreCommitGuard,
   InvestigationStoreTransitionKind,
@@ -27,6 +36,7 @@ import {
   toInvestigationReadModel,
   type ReviewInvestigationReadModel,
 } from "../investigation-read-model";
+import { issueReplayEvidenceCheckpoint } from "../replay-evidence-checkpoint-issuer";
 import {
   commitOrThrow,
   digestCanonical,
@@ -61,6 +71,9 @@ export type CommitInvestigationTurnCommand = Readonly<{
   provenance?: InvestigationTurnProvenance | null;
   idempotencyHash?: string;
   storeCommitGuard?: InvestigationStoreCommitGuard;
+  resultDeadlines?: readonly string[];
+  admittedAt?: string;
+  replayCheckpointTtlMs?: number;
 }>;
 
 export class CommitInvestigationTurn {
@@ -97,10 +110,23 @@ export class CommitInvestigationTurn {
     ) {
       throw new Error("investigation_concurrency_conflict");
     }
-    await requireCurrentExecution({
-      authority: this.authority,
-      investigation: current,
-    });
+    const authorityVerdict = await this.authority.check(current);
+    const admittedAt = command.admittedAt ?? this.clock.now().toISOString();
+    const admission = command.resultDeadlines
+      ? decideTurnResultAdmission({
+          authority: resultAuthority(authorityVerdict),
+          admittedAt,
+          deadlines: [current.activeTurn.expiresAt, ...command.resultDeadlines],
+        })
+      : null;
+    if (admission === null) {
+      await requireCurrentExecution({
+        authority: this.authority,
+        investigation: current,
+      });
+    } else if (admission.kind === TurnResultAdmissionKind.Rejected) {
+      throw new Error(`investigation_turn_result_${authorityVerdict}`);
+    }
     const origin = proposalOriginForTurn(current.activeTurn.purpose);
     const proposedObligations = await Promise.all(
       command.proposals.map(async (proposal) => {
@@ -136,7 +162,13 @@ export class CommitInvestigationTurn {
         });
       }),
     );
-    let next = commitInvestigationTurn({
+    const isHistoricalDrain =
+      admission?.kind === TurnResultAdmissionKind.HistoricalDrain;
+    let next = (
+      isHistoricalDrain
+        ? commitHistoricalInvestigationTurn
+        : commitInvestigationTurn
+    )({
       investigation: current,
       commit: {
         turnId: command.turnId,
@@ -153,8 +185,23 @@ export class CommitInvestigationTurn {
         durationMs: command.durationMs,
         provenance: command.provenance ?? null,
       },
-      committedAt: this.clock.now().toISOString(),
+      committedAt: admittedAt,
     });
+    if (isHistoricalDrain) {
+      next = await withCurrentDossierDigest(this.digest, next);
+      next = {
+        ...next,
+        replayEvidenceCheckpoint: await issueReplayEvidenceCheckpoint({
+          source: next,
+          sourceState: next.state,
+          sourceConclusion: next.conclusion,
+          sourceVersion: next.version,
+          issuedAt: new Date(admittedAt),
+          ttlMs: command.replayCheckpointTtlMs ?? 3_600_000,
+          digest: this.digest,
+        }),
+      };
+    }
     next = await withCurrentDossierDigest(this.digest, next);
     const committed = await commitOrThrow({
       store: this.store,
@@ -170,8 +217,32 @@ export class CommitInvestigationTurn {
       },
       ...(command.storeCommitGuard === undefined
         ? {}
-        : { guard: command.storeCommitGuard }),
+        : {
+            guard:
+              admission === null
+                ? command.storeCommitGuard
+                : {
+                    ...command.storeCommitGuard,
+                    resultAdmission: admission.kind,
+                    admittedAt,
+                    effectiveDeadline: admission.effectiveDeadline,
+                  },
+          }),
     });
     return toInvestigationReadModel(committed);
+  }
+}
+
+function resultAuthority(
+  verdict: InvestigationExecutionAuthorityVerdict,
+): TurnResultAuthority {
+  switch (verdict) {
+    case InvestigationExecutionAuthorityVerdict.Current:
+      return TurnResultAuthority.Current;
+    case InvestigationExecutionAuthorityVerdict.Superseded:
+      return TurnResultAuthority.Superseded;
+    case InvestigationExecutionAuthorityVerdict.Missing:
+    case InvestigationExecutionAuthorityVerdict.Unauthorized:
+      return TurnResultAuthority.Rejected;
   }
 }

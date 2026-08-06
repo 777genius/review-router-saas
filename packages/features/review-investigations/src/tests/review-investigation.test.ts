@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AbortInvestigationTurn,
   AcquireInvestigationLease,
@@ -7,11 +7,13 @@ import {
   ContextCriticDecision,
   enforceCriticPolicyForConclusion,
   InvestigationFindingSeverity,
+  InvestigationExecutionAuthorityVerdict,
   InvestigationPolicyCanonicalVersion,
   policyCanonicalValue,
   InvestigationLeaseAcquireStatus,
   InvestigationStoreTransitionKind,
   InvestigationObligationKind,
+  InvestigationObligationState,
   InvestigationReceiptReplayVerdict,
   InvestigationReceiptKind,
   InvestigationTurnProviderKind,
@@ -23,6 +25,7 @@ import {
   PrepareReviewInvestigationReplay,
   PrepareReviewInvestigationReplayStatus,
   ReplayReviewInvestigation,
+  ReconcileExpiredActiveTurn,
   RestoreReviewInvestigation,
   ReviewInvestigationAbortReason,
   ReviewInvestigationConclusion,
@@ -30,6 +33,9 @@ import {
   ReviewInvestigationRuntimeProfile,
   ReviewInvestigationState,
   ReviewInvestigationTurnPurpose,
+  TurnResultAdmissionKind,
+  TurnResultAuthority,
+  decideTurnResultAdmission,
   reviewInvestigationCriticPolicyV1,
   serializeReviewInvestigation,
   summarizeTerminalDiscoveryProvenance,
@@ -302,7 +308,8 @@ describe("review investigation in-memory vertical slice", () => {
     ).resolves.toMatchObject({
       status: PrepareReviewInvestigationReplayStatus.Prepared,
       sourceInvestigationId: opened.investigationId,
-      sourceCertificateHash: snapshot.certificate!.certificateHash,
+      sourceCheckpointHash:
+        sourceBeforeReplay!.replayEvidenceCheckpoint!.checkpointHash,
       obligations: expect.arrayContaining([
         expect.objectContaining({
           replay: expect.objectContaining({
@@ -419,7 +426,8 @@ describe("review investigation in-memory vertical slice", () => {
     const replayed = await replay.execute({
       commandId: "replay-selective",
       sourceInvestigationId: opened.investigationId,
-      sourceCertificateHash: snapshot.certificate!.certificateHash,
+      sourceCheckpointHash:
+        sourceBeforeReplay!.replayEvidenceCheckpoint!.checkpointHash,
       targetScope: openCommand("unused").scope,
       targetRevision,
       targetExecutionId: "execution-target",
@@ -544,7 +552,8 @@ describe("review investigation in-memory vertical slice", () => {
     const fullyReplayed = await replayAll.execute({
       commandId: "replay-all",
       sourceInvestigationId: opened.investigationId,
-      sourceCertificateHash: snapshot.certificate!.certificateHash,
+      sourceCheckpointHash:
+        sourceBeforeReplay!.replayEvidenceCheckpoint!.checkpointHash,
       targetScope: openCommand("unused").scope,
       targetRevision: {
         ...targetRevision,
@@ -864,6 +873,168 @@ describe("review investigation in-memory vertical slice", () => {
     });
     const snapshot = await harness.restore.snapshot(opened.investigationId);
     expect(snapshot.conclusion).toBe(ReviewInvestigationConclusion.Findings);
+    const source = await harness.store.findById(opened.investigationId);
+    const target = openCommand("findings-target");
+    const replay = new ReplayReviewInvestigation(
+      harness.store,
+      harness.authority,
+      {
+        replay: async ({ sourceReceipt, targetRevision, replayProofId }) => ({
+          verdict: InvestigationReceiptReplayVerdict.Matched,
+          targetReceipt: {
+            ...sourceReceipt,
+            receiptId: `findings-replay-${sourceReceipt.receiptId}`,
+            reviewRevisionHash: targetRevision.reviewRevisionHash,
+            replayProofId,
+          },
+        }),
+      },
+      harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
+      harness.clock,
+    );
+    const replayed = await replay.execute({
+      commandId: "replay-findings-source",
+      sourceInvestigationId: source!.investigationId,
+      sourceCheckpointHash: source!.replayEvidenceCheckpoint!.checkpointHash,
+      targetScope: target.scope,
+      targetRevision: {
+        ...target.revision,
+        headSha: "6".repeat(40),
+        reviewRevisionHash: "6".repeat(64),
+      },
+      targetExecutionId: "execution-findings-target",
+      targetWorkSlotId: "slot-findings-target",
+      targetStableReviewUnitKey: target.stableReviewUnitKey,
+      targetProviderVoteLaneId: target.providerVoteLaneId,
+      targetProviderStrategyId: target.providerStrategyId,
+      targetInvestigationManifestCanonicalJson:
+        target.investigationManifestCanonicalJson!,
+      targetInvestigationManifestHash: target.investigationManifestHash!,
+      targetRuntimeProfile: target.runtimeProfile,
+      targetContract: target.contract,
+      targetPolicy: target.policy,
+      targetSeedObligations: target.seedObligations,
+      targetInitialReceipts: [],
+      replayProofs: source!.obligations.map((obligation) => ({
+        obligationId: obligation.obligationId,
+        replayProofId: `proof-findings-${obligation.obligationId}`,
+      })),
+    });
+    const replayedAggregate = await harness.store.findById(
+      replayed.investigationId,
+    );
+    expect(replayedAggregate).toMatchObject({
+      findings: [],
+      criticDecision: null,
+      certificate: null,
+    });
+    expect(
+      replayedAggregate?.obligations.find(
+        (obligation) =>
+          obligation.kind === InvestigationObligationKind.FindingRevalidation,
+      ),
+    ).toMatchObject({ state: "open" });
+  });
+
+  it("replays committed receipts from superseded revision A into B without terminal state", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("superseded-a"));
+    const discovery = await planDiscovery(harness, opened);
+    const awaitingCritic = await harness.commit.execute({
+      ...emptyCommit(discovery, "commit-superseded-a"),
+      closureClaims: [
+        {
+          obligationId: discovery.turn!.obligationIds[0]!,
+          receipt: receipt("receipt-superseded-a", changedSubject),
+        },
+      ],
+    });
+    const critic = await harness.plan.execute({
+      commandId: "plan-superseded-a-critic",
+      investigationId: opened.investigationId,
+      expectedVersion: awaitingCritic.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+    await harness.abort.execute({
+      commandId: "abort-superseded-a",
+      investigationId: opened.investigationId,
+      expectedVersion: critic.version,
+      turnId: critic.turn!.turnId,
+      reason: ReviewInvestigationAbortReason.SupersededExecution,
+      nextEligibleAt: null,
+    });
+    const source = await harness.store.findById(opened.investigationId);
+    expect(source).toMatchObject({
+      state: ReviewInvestigationState.Superseded,
+      conclusion: null,
+      certificate: null,
+      replayEvidenceCheckpoint: { sourceState: "superseded" },
+    });
+
+    const target = openCommand("superseded-b");
+    const replay = new ReplayReviewInvestigation(
+      harness.store,
+      harness.authority,
+      {
+        replay: async ({ sourceReceipt, targetRevision, replayProofId }) => ({
+          verdict: InvestigationReceiptReplayVerdict.Matched,
+          targetReceipt: {
+            ...sourceReceipt,
+            receiptId: `superseded-b-${sourceReceipt.receiptId}`,
+            reviewRevisionHash: targetRevision.reviewRevisionHash,
+            replayProofId,
+          },
+        }),
+      },
+      harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
+      harness.clock,
+    );
+    const replayed = await replay.execute({
+      commandId: "replay-superseded-a-to-b",
+      sourceInvestigationId: source!.investigationId,
+      sourceCheckpointHash: source!.replayEvidenceCheckpoint!.checkpointHash,
+      targetScope: target.scope,
+      targetRevision: {
+        ...target.revision,
+        headSha: "7".repeat(40),
+        reviewRevisionHash: "7".repeat(64),
+      },
+      targetExecutionId: "execution-superseded-b",
+      targetWorkSlotId: "slot-superseded-b",
+      targetStableReviewUnitKey: target.stableReviewUnitKey,
+      targetProviderVoteLaneId: target.providerVoteLaneId,
+      targetProviderStrategyId: target.providerStrategyId,
+      targetInvestigationManifestCanonicalJson:
+        target.investigationManifestCanonicalJson!,
+      targetInvestigationManifestHash: target.investigationManifestHash!,
+      targetRuntimeProfile: target.runtimeProfile,
+      targetContract: target.contract,
+      targetPolicy: target.policy,
+      targetSeedObligations: target.seedObligations,
+      targetInitialReceipts: [],
+      replayProofs: source!.obligations.map((obligation) => ({
+        obligationId: obligation.obligationId,
+        replayProofId: `proof-superseded-${obligation.obligationId}`,
+      })),
+    });
+    expect(replayed).toMatchObject({
+      state: ReviewInvestigationState.AwaitingTurn,
+      findingCount: 0,
+      certificateId: null,
+      conclusion: null,
+    });
+    const targetAggregate = await harness.store.findById(
+      replayed.investigationId,
+    );
+    expect(targetAggregate).toMatchObject({
+      findings: [],
+      criticDecision: null,
+      certificate: null,
+      replayEvidenceCheckpoint: null,
+    });
   });
 
   it("becomes inconclusive instead of clean when semantic coverage is exhausted", async () => {
@@ -1194,6 +1365,320 @@ describe("review investigation in-memory vertical slice", () => {
         ],
       }),
     ).rejects.toThrow("finding_evidence_invalid");
+  });
+  it("admits results only strictly before the effective deadline", () => {
+    const deadline = "2026-08-02T10:01:00.000Z";
+    expect(
+      decideTurnResultAdmission({
+        authority: TurnResultAuthority.Superseded,
+        admittedAt: "2026-08-02T10:00:59.999Z",
+        deadlines: [deadline, "2026-08-02T10:02:00.000Z"],
+      }),
+    ).toEqual({
+      kind: TurnResultAdmissionKind.HistoricalDrain,
+      effectiveDeadline: deadline,
+    });
+    expect(
+      decideTurnResultAdmission({
+        authority: TurnResultAuthority.Current,
+        admittedAt: deadline,
+        deadlines: [deadline],
+      }).kind,
+    ).toBe(TurnResultAdmissionKind.Rejected);
+  });
+
+  it("recovers an expired current turn and becomes inconclusive on budget", async () => {
+    const harness = createHarness({ ...policy, maxOperationalAttempts: 2 });
+    const opened = await harness.open.execute(
+      openCommand("expiry-open", harness.policy),
+    );
+    const planned = await planDiscovery(harness, opened);
+    harness.clock.advance(60_000);
+    const reconcile = new ReconcileExpiredActiveTurn(
+      harness.store,
+      harness.authority,
+      harness.digest,
+      harness.clock,
+    );
+
+    const recovered = await reconcile.execute(planned.investigationId);
+    expect(recovered).toMatchObject({
+      state: ReviewInvestigationState.AwaitingTurn,
+      activeTurn: null,
+      operationalAttempts: 1,
+    });
+    const replanned = await harness.plan.execute({
+      commandId: "expiry-replan",
+      investigationId: recovered.investigationId,
+      expectedVersion: recovered.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+    harness.clock.advance(60_000);
+    const exhausted = await reconcile.execute(replanned.investigationId);
+    expect(exhausted).toMatchObject({
+      state: ReviewInvestigationState.Inconclusive,
+      conclusion: ReviewInvestigationConclusion.Inconclusive,
+      activeTurn: null,
+      operationalAttempts: 2,
+    });
+  });
+
+  it("drains a superseded result without producing a current projection", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("drain-open"));
+    const planned = await planDiscovery(harness, opened);
+    const historicalReceipt = receipt("receipt-drain", changedSubject);
+    harness.authority.verdict =
+      InvestigationExecutionAuthorityVerdict.Superseded;
+    const command = {
+      ...emptyCommit(planned, "drain-commit"),
+      closureClaims: [
+        {
+          obligationId: planned.turn!.obligationIds[0]!,
+          receipt: historicalReceipt,
+        },
+      ],
+      findings: [
+        {
+          fingerprint: "historical-access-check",
+          severity: InvestigationFindingSeverity.Major,
+          title: "Access check is stale",
+          body: "The superseded revision exposed a stale access decision.",
+          path: "src/service.ts",
+          line: 12,
+          evidenceReceiptIds: [historicalReceipt.receiptId],
+        },
+      ],
+      admittedAt: "2026-08-02T10:00:59.999Z",
+      resultDeadlines: [planned.turn!.expiresAt],
+    } as const;
+    const committed = await harness.commit.execute(command);
+    await expect(harness.commit.execute(command)).resolves.toEqual(committed);
+
+    expect(committed).toMatchObject({
+      state: ReviewInvestigationState.Superseded,
+      turn: null,
+      conclusion: null,
+    });
+    const stored = await harness.store.findById(committed.investigationId);
+    expect(stored).toMatchObject({
+      certificate: null,
+      totalUsageTokens: 100,
+      totalDurationMs: 100,
+    });
+    expect(stored?.turnProvenance).toHaveLength(1);
+    expect(stored?.replayEvidenceCheckpoint).toMatchObject({
+      sourceState: ReviewInvestigationState.Superseded,
+      sourceInvestigationVersion: committed.version,
+    });
+    expect(
+      Date.parse(stored!.replayEvidenceCheckpoint!.expiresAt),
+    ).toBeGreaterThan(Date.parse(planned.turn!.expiresAt));
+
+    harness.authority.verdict = InvestigationExecutionAuthorityVerdict.Current;
+    const target = openCommand("drain-target");
+    const replay = new ReplayReviewInvestigation(
+      harness.store,
+      harness.authority,
+      {
+        replay: async ({ sourceReceipt, targetRevision, replayProofId }) => ({
+          verdict: InvestigationReceiptReplayVerdict.Matched,
+          targetReceipt: {
+            ...sourceReceipt,
+            receiptId: `drain-target-${sourceReceipt.receiptId}`,
+            reviewRevisionHash: targetRevision.reviewRevisionHash,
+            replayProofId,
+          },
+        }),
+      },
+      harness.digest,
+      digestBackedInvestigationManifestIdentity(harness.digest),
+      harness.clock,
+    );
+    const replayed = await replay.execute({
+      commandId: "replay-drained-findings",
+      sourceInvestigationId: stored!.investigationId,
+      sourceCheckpointHash: stored!.replayEvidenceCheckpoint!.checkpointHash,
+      targetScope: target.scope,
+      targetRevision: {
+        ...target.revision,
+        headSha: "8".repeat(40),
+        reviewRevisionHash: "8".repeat(64),
+      },
+      targetExecutionId: "execution-drain-target",
+      targetWorkSlotId: "slot-drain-target",
+      targetStableReviewUnitKey: target.stableReviewUnitKey,
+      targetProviderVoteLaneId: target.providerVoteLaneId,
+      targetProviderStrategyId: target.providerStrategyId,
+      targetInvestigationManifestCanonicalJson:
+        target.investigationManifestCanonicalJson!,
+      targetInvestigationManifestHash: target.investigationManifestHash!,
+      targetRuntimeProfile: target.runtimeProfile,
+      targetContract: target.contract,
+      targetPolicy: target.policy,
+      targetSeedObligations: target.seedObligations,
+      targetInitialReceipts: [],
+      replayProofs: stored!.obligations.map((obligation) => ({
+        obligationId: obligation.obligationId,
+        replayProofId: `proof-drain-${obligation.obligationId}`,
+      })),
+    });
+    const replayedAggregate = await harness.store.findById(
+      replayed.investigationId,
+    );
+    expect(
+      replayedAggregate?.obligations.find(
+        (obligation) =>
+          obligation.kind === InvestigationObligationKind.FindingRevalidation,
+      ),
+    ).toMatchObject({ state: InvestigationObligationState.Open });
+  });
+
+  it("rejects historical drain when execution authority is unauthorized", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("revoke-open"));
+    const planned = await planDiscovery(harness, opened);
+    harness.authority.verdict =
+      InvestigationExecutionAuthorityVerdict.Unauthorized;
+
+    await expect(
+      harness.commit.execute({
+        ...emptyCommit(planned, "revoke-commit"),
+        admittedAt: "2026-08-02T10:00:59.999Z",
+        resultDeadlines: [planned.turn!.expiresAt],
+      }),
+    ).rejects.toThrow("investigation_turn_result_unauthorized");
+    await expect(
+      harness.store.findById(planned.investigationId),
+    ).resolves.toMatchObject({
+      state: ReviewInvestigationState.TurnLeased,
+      activeTurn: { turnId: planned.turn!.turnId },
+    });
+  });
+
+  it("serializes historical commit against expiry reconciliation", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("race-open"));
+    const planned = await planDiscovery(harness, opened);
+    harness.clock.advance(60_000);
+    harness.authority.verdict =
+      InvestigationExecutionAuthorityVerdict.Superseded;
+    const reconcile = new ReconcileExpiredActiveTurn(
+      harness.store,
+      harness.authority,
+      harness.digest,
+      harness.clock,
+    );
+    const results = await Promise.allSettled([
+      harness.commit.execute({
+        ...emptyCommit(planned, "race-commit"),
+        admittedAt: "2026-08-02T10:00:59.999Z",
+        resultDeadlines: [planned.turn!.expiresAt],
+      }),
+      reconcile.execute(planned.investigationId),
+    ]);
+
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
+    await expect(
+      harness.store.findById(planned.investigationId),
+    ).resolves.toMatchObject({
+      state: ReviewInvestigationState.Superseded,
+      activeTurn: null,
+    });
+  });
+
+  it("lazy restore reconciles an expired superseded active turn", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("lazy-open"));
+    const planned = await planDiscovery(harness, opened);
+    harness.clock.advance(2 * 60 * 60_000);
+    harness.authority.verdict =
+      InvestigationExecutionAuthorityVerdict.Superseded;
+    const reconcile = new ReconcileExpiredActiveTurn(
+      harness.store,
+      harness.authority,
+      harness.digest,
+      harness.clock,
+    );
+    const restore = new RestoreReviewInvestigation(
+      harness.store,
+      harness.digest,
+      reconcile,
+    );
+
+    await expect(
+      restore.execute(planned.investigationId),
+    ).resolves.toMatchObject({
+      state: ReviewInvestigationState.Superseded,
+      turn: null,
+    });
+    await expect(
+      harness.store.findById(planned.investigationId),
+    ).resolves.toMatchObject({
+      replayEvidenceCheckpoint: {
+        sourceState: ReviewInvestigationState.Superseded,
+        issuedAt: harness.clock.now().toISOString(),
+      },
+    });
+    const recovered = await harness.store.findById(planned.investigationId);
+    expect(
+      Date.parse(recovered!.replayEvidenceCheckpoint!.expiresAt),
+    ).toBeGreaterThan(harness.clock.now().getTime());
+  });
+
+  it("terminalizes an expired turn after authorization is revoked", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("revoked-expiry"));
+    const planned = await planDiscovery(harness, opened);
+    harness.clock.advance(60_000);
+    harness.authority.verdict =
+      InvestigationExecutionAuthorityVerdict.Unauthorized;
+
+    await expect(
+      new ReconcileExpiredActiveTurn(
+        harness.store,
+        harness.authority,
+        harness.digest,
+        harness.clock,
+      ).execute(planned.investigationId),
+    ).resolves.toMatchObject({
+      state: ReviewInvestigationState.Superseded,
+      activeTurn: null,
+    });
+  });
+
+  it("validates the persisted dossier before direct recovery mutates it", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("corrupt-expiry"));
+    const planned = await planDiscovery(harness, opened);
+    harness.clock.advance(60_000);
+    harness.authority.verdict =
+      InvestigationExecutionAuthorityVerdict.Superseded;
+    const findStored = harness.store.findById.bind(harness.store);
+    vi.spyOn(harness.store, "findById").mockImplementation(async (id) => {
+      const stored = await findStored(id);
+      return stored === null
+        ? null
+        : { ...stored, dossierDigest: "0".repeat(64) };
+    });
+    const commit = vi.spyOn(harness.store, "commit");
+    const reconcile = new ReconcileExpiredActiveTurn(
+      harness.store,
+      harness.authority,
+      harness.digest,
+      harness.clock,
+    );
+
+    await expect(reconcile.execute(planned.investigationId)).rejects.toThrow(
+      "investigation_dossier_digest_invalid",
+    );
+    expect(commit).not.toHaveBeenCalled();
   });
 });
 

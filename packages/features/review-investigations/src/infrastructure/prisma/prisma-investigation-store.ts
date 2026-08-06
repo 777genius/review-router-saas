@@ -18,6 +18,7 @@ import {
   type ReviewInvestigationPrivateMaterial as PrismaPrivateMaterialRecord,
   type ReviewInvestigationLease as PrismaLeaseRecord,
   type ReviewInvestigationReceipt as PrismaReceiptRecord,
+  type ReviewInvestigationReplayEvidenceCheckpoint as PrismaReplayEvidenceCheckpointRecord,
   type ReviewInvestigationTurn as PrismaTurnRecord,
 } from "@prisma/client";
 import {
@@ -29,6 +30,7 @@ import {
   type InvestigationPrivateMaterialStorePort,
   type InvestigationPrunerPort,
 } from "../../application/ports/investigation-private-material-ports";
+import { InvestigationExecutionAuthorityVerdict } from "../../application/ports/execution-authority-port";
 import {
   InvestigationStoreCommitGuardKind,
   InvestigationStoreCommitStatus,
@@ -62,13 +64,16 @@ import {
   type InvestigationObligation,
 } from "../../domain/investigation-obligation";
 import type { ReviewInvestigationCertificate } from "../../domain/investigation-certificate";
+import type { ReplayEvidenceCheckpoint } from "../../domain/replay-evidence-checkpoint";
 import {
   summarizeTerminalDiscoveryProvenance,
   type InvestigationFinding,
   type InvestigationTurn,
   type InvestigationTurnProvenance,
 } from "../../domain/investigation-turn";
+import { isValidInvestigationTokenUsage } from "../../domain/investigation-token-usage";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
+import { TurnResultAdmissionKind } from "../../domain/turn-result-admission";
 import {
   ContextCriticDecision,
   InvestigationFindingSeverity,
@@ -111,6 +116,7 @@ type InvestigationDb = Pick<
   | "reviewInvestigationReceipt"
   | "reviewInvestigationPrivateMaterial"
   | "reviewInvestigationCertificate"
+  | "reviewInvestigationReplayEvidenceCheckpoint"
   | "reviewInvestigationCommandReceipt"
 >;
 
@@ -214,7 +220,7 @@ export class PrismaInvestigationStore
         stableReviewUnitKey: input.stableReviewUnitKey,
         providerVoteLaneId: input.providerVoteLaneId,
         producerReleaseId: input.producerReleaseId,
-        certificateId: { not: null },
+        replayEvidenceCheckpointId: { not: null },
       },
       select: { investigationId: true },
       orderBy: [{ updatedAt: "desc" }, { investigationId: "asc" }],
@@ -231,10 +237,44 @@ export class PrismaInvestigationStore
       )
       .sort(
         (left, right) =>
-          right.certificate!.issuedAt.localeCompare(
-            left.certificate!.issuedAt,
+          right.replayEvidenceCheckpoint!.issuedAt.localeCompare(
+            left.replayEvidenceCheckpoint!.issuedAt,
           ) || left.investigationId.localeCompare(right.investigationId),
       );
+  }
+
+  async findExpiredActiveTurnIds(input: {
+    readonly expiresAtOrBefore: string;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    assertPruneLimit(input.limit);
+    const cutoff = parseCanonicalCutoff(
+      input.expiresAtOrBefore,
+      "investigation_turn_expiry_cutoff_invalid",
+    );
+    return this.prisma.$transaction(
+      async (transaction) => {
+        const databaseNow = await investigationDatabaseNow(transaction);
+        const effectiveCutoff = cutoff < databaseNow ? cutoff : databaseNow;
+        const candidates = await transaction.$queryRaw<
+          Array<{ investigationId: string }>
+        >(Prisma.sql`
+          SELECT investigation."investigationId"
+          FROM "ReviewInvestigation" AS investigation
+          INNER JOIN "ReviewInvestigationTurn" AS turn
+            ON turn."investigationId" = investigation."investigationId"
+           AND turn."turnId" = investigation."activeTurnId"
+          WHERE investigation."state" = 'turn_leased'::"ReviewInvestigationStateV1"
+            AND turn."state" = 'leased'::"ReviewInvestigationTurnStateV1"
+            AND turn."expiresAt" <= ${effectiveCutoff}
+          ORDER BY turn."expiresAt" ASC, investigation."investigationId" ASC
+          LIMIT ${input.limit}
+          FOR UPDATE OF investigation SKIP LOCKED
+        `);
+        return candidates.map((candidate) => candidate.investigationId);
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
   }
 
   async findLease(leaseId: string): Promise<ReviewInvestigationLease | null> {
@@ -467,6 +507,12 @@ export class PrismaInvestigationStore
               privateMaterials,
             });
           }
+          if (input.guard !== undefined) {
+            await lockInvestigationExecutionScope(
+              transaction,
+              input.investigation,
+            );
+          }
           await transaction.$queryRaw(Prisma.sql`
             SELECT "investigationId"
             FROM "ReviewInvestigation"
@@ -509,6 +555,11 @@ export class PrismaInvestigationStore
             retainUntil,
           );
           await persistCertificate(transaction, current, input.investigation);
+          await persistReplayEvidenceCheckpoint(
+            transaction,
+            current,
+            input.investigation,
+          );
           const updated = await transaction.reviewInvestigation.updateMany({
             where: {
               investigationId: input.investigation.investigationId,
@@ -632,6 +683,8 @@ export class PrismaInvestigationStore
     );
     return this.prisma.$transaction(
       async (transaction) => {
+        const databaseNow = await investigationDatabaseNow(transaction);
+        const effectiveCutoff = cutoff < databaseNow ? cutoff : databaseNow;
         const candidates = await transaction.$queryRaw<
           ExpiredPrivateMaterialCandidate[]
         >(Prisma.sql`
@@ -642,14 +695,8 @@ export class PrismaInvestigationStore
           FROM "ReviewInvestigationPrivateMaterial" AS material
           INNER JOIN "ReviewInvestigation" AS investigation
             ON investigation."investigationId" = material."investigationId"
-          WHERE material."expiresAt" <= ${cutoff}
-            AND NOT EXISTS (
-              SELECT 1
-              FROM "ReviewInvestigationTurn" AS active_turn
-              WHERE active_turn."turnId" = investigation."activeTurnId"
-                AND active_turn."state" = 'leased'::"ReviewInvestigationTurnStateV1"
-                AND active_turn."expiresAt" > ${cutoff}
-            )
+          WHERE material."expiresAt" <= ${effectiveCutoff}
+            AND investigation."activeTurnId" IS NULL
           ORDER BY material."expiresAt" ASC, material."privateMaterialId" ASC
           LIMIT ${input.limit}
           FOR UPDATE OF investigation, material SKIP LOCKED
@@ -669,7 +716,7 @@ export class PrismaInvestigationStore
             investigation: current,
             privateMaterialIds: group.privateMaterialIds,
             obligationIds: group.obligationIds,
-            expiredAt: cutoff.toISOString(),
+            expiredAt: effectiveCutoff.toISOString(),
           });
           if (
             reconciled.disposition ===
@@ -737,7 +784,7 @@ export class PrismaInvestigationStore
               where: {
                 privateMaterialId: { in: [...group.privateMaterialIds] },
                 investigationId: group.investigationId,
-                expiresAt: { lte: cutoff },
+                expiresAt: { lte: effectiveCutoff },
               },
             });
           if (deleted.count !== group.privateMaterialIds.length) {
@@ -784,6 +831,11 @@ export class PrismaInvestigationStore
                 AND certificate."expiresAt" > ${cutoff}
             )
             AND NOT EXISTS (
+              SELECT 1 FROM "ReviewInvestigationReplayEvidenceCheckpoint" AS checkpoint
+              WHERE checkpoint."sourceInvestigationId" = investigation."investigationId"
+                AND checkpoint."expiresAt" > ${cutoff}
+            )
+            AND NOT EXISTS (
               SELECT 1 FROM "ReviewInvestigationPrivateMaterial" AS material
               WHERE material."investigationId" = investigation."investigationId"
                 AND material."expiresAt" > ${cutoff}
@@ -816,7 +868,11 @@ export class PrismaInvestigationStore
         if (ids.length === 0) return 0;
         await transaction.reviewInvestigation.updateMany({
           where: { investigationId: { in: ids } },
-          data: { activeTurnId: null, certificateId: null },
+          data: {
+            activeTurnId: null,
+            certificateId: null,
+            replayEvidenceCheckpointId: null,
+          },
         });
         await transaction.reviewInvestigationObligation.updateMany({
           where: { investigationId: { in: ids } },
@@ -838,6 +894,14 @@ export class PrismaInvestigationStore
             expiresAt: { lte: cutoff },
           },
         });
+        await transaction.reviewInvestigationReplayEvidenceCheckpoint.deleteMany(
+          {
+            where: {
+              sourceInvestigationId: { in: ids },
+              expiresAt: { lte: cutoff },
+            },
+          },
+        );
         await transaction.reviewInvestigationCommandReceipt.deleteMany({
           where: {
             investigationId: { in: ids },
@@ -982,6 +1046,11 @@ async function loadAggregate(
         where: { certificateId: record.certificateId },
       })
     : null;
+  const replayEvidenceCheckpoint = record.replayEvidenceCheckpointId
+    ? await database.reviewInvestigationReplayEvidenceCheckpoint.findUnique({
+        where: { checkpointId: record.replayEvidenceCheckpointId },
+      })
+    : null;
   const receiptById = new Map(receipts.map((item) => [item.receiptId, item]));
   const domainObligations = obligations.map((item) =>
     toObligation(
@@ -1068,6 +1137,9 @@ async function loadAggregate(
         ? null
         : fromPrismaConclusion(record.conclusion),
     certificate: certificate ? toCertificate(certificate) : null,
+    replayEvidenceCheckpoint: replayEvidenceCheckpoint
+      ? toReplayEvidenceCheckpoint(replayEvidenceCheckpoint)
+      : null,
     dossierDigest: record.dossierDigest,
     nextEligibleAt: record.nextEligibleAt?.toISOString() ?? null,
     createdAt: record.createdAt.toISOString(),
@@ -1131,6 +1203,23 @@ async function persistTransition(
           state: PrismaTurnState.committed,
           acceptedAttestationId: transition.acceptedAttestationId,
           sanitizedOutcomeHash: transition.sanitizedOutcomeHash,
+          completedAt: new Date(next.updatedAt),
+          retainUntil,
+        },
+      });
+      if (updated.count !== 1) throw new InvestigationWriteRaceError();
+      return;
+    }
+    case InvestigationStoreTransitionKind.ActiveTurnExpired: {
+      const updated = await transaction.reviewInvestigationTurn.updateMany({
+        where: {
+          turnId: transition.turnId,
+          investigationId: next.investigationId,
+          state: PrismaTurnState.leased,
+        },
+        data: {
+          state: PrismaTurnState.expired,
+          abortReason: "expired_active_turn",
           completedAt: new Date(next.updatedAt),
           retainUntil,
         },
@@ -1372,6 +1461,37 @@ async function persistCertificate(
   });
 }
 
+async function persistReplayEvidenceCheckpoint(
+  transaction: Prisma.TransactionClient,
+  current: ReviewInvestigation,
+  next: ReviewInvestigation,
+): Promise<void> {
+  if (current.replayEvidenceCheckpoint) {
+    if (
+      next.replayEvidenceCheckpoint?.checkpointHash !==
+      current.replayEvidenceCheckpoint.checkpointHash
+    ) {
+      throw new Error("investigation_replay_checkpoint_mutation_forbidden");
+    }
+    return;
+  }
+  const checkpoint = next.replayEvidenceCheckpoint;
+  if (!checkpoint) return;
+  await transaction.reviewInvestigationReplayEvidenceCheckpoint.create({
+    data: {
+      ...checkpoint,
+      sourceInvestigationVersion: BigInt(checkpoint.sourceInvestigationVersion),
+      sourceState: toPrismaInvestigationState(checkpoint.sourceState),
+      sourceConclusion:
+        checkpoint.sourceConclusion === null
+          ? null
+          : toPrismaConclusion(checkpoint.sourceConclusion),
+      issuedAt: new Date(checkpoint.issuedAt),
+      expiresAt: new Date(checkpoint.expiresAt),
+    },
+  });
+}
+
 function toMainCreate(
   investigation: ReviewInvestigation,
   retainUntil: Date,
@@ -1429,6 +1549,7 @@ function toMainCreate(
         ? null
         : toPrismaConclusion(investigation.conclusion),
     certificateId: null,
+    replayEvidenceCheckpointId: null,
     dossierDigest: investigation.dossierDigest,
     nextEligibleAt:
       investigation.nextEligibleAt === null
@@ -1476,6 +1597,8 @@ function mainScalarData(
         ? null
         : toPrismaConclusion(investigation.conclusion),
     certificateId: investigation.certificate?.certificateId ?? null,
+    replayEvidenceCheckpointId:
+      investigation.replayEvidenceCheckpoint?.checkpointId ?? null,
     dossierDigest: investigation.dossierDigest,
     nextEligibleAt:
       investigation.nextEligibleAt === null
@@ -1531,6 +1654,20 @@ function assertUpdate(
         next.activeTurn !== null
       ) {
         throw new Error("investigation_turn_terminal_transition_invalid");
+      }
+      return;
+    case InvestigationStoreTransitionKind.ActiveTurnExpired:
+      if (
+        current.activeTurn?.turnId !== transition.turnId ||
+        next.activeTurn !== null ||
+        ![
+          ReviewInvestigationState.AwaitingTurn,
+          ReviewInvestigationState.AwaitingCritic,
+          ReviewInvestigationState.Inconclusive,
+          ReviewInvestigationState.Superseded,
+        ].includes(next.state)
+      ) {
+        throw new Error("investigation_turn_expiry_transition_invalid");
       }
       return;
     case InvestigationStoreTransitionKind.PrivateMaterialExpired: {
@@ -1642,11 +1779,7 @@ function assertRehydratedAggregate(investigation: ReviewInvestigation): void {
     assertDigest(provenance.terminalOutcomeHash, "terminal_outcome_hash");
     if (
       provenance.runtimeProfile !== investigation.runtimeProfile ||
-      provenance.totalTokens !==
-        provenance.inputTokens +
-          provenance.outputTokens +
-          provenance.reasoningOutputTokens ||
-      provenance.cachedInputTokens > provenance.inputTokens
+      !isValidInvestigationTokenUsage(provenance)
     ) {
       throw new Error("investigation_turn_provenance_binding_corrupt");
     }
@@ -1668,6 +1801,17 @@ function assertRehydratedAggregate(investigation: ReviewInvestigation): void {
     ) {
       throw new Error("investigation_certificate_binding_corrupt");
     }
+  }
+  const checkpoint = investigation.replayEvidenceCheckpoint;
+  if (
+    checkpoint !== null &&
+    (checkpoint.sourceInvestigationId !== investigation.investigationId ||
+      checkpoint.sourceInvestigationVersion !== investigation.version ||
+      checkpoint.sourceState !== investigation.state ||
+      checkpoint.sourceConclusion !== investigation.conclusion ||
+      Date.parse(checkpoint.expiresAt) <= Date.parse(checkpoint.issuedAt))
+  ) {
+    throw new Error("investigation_replay_checkpoint_binding_corrupt");
   }
   const acceptedReceipts = new Set<string>();
   let inventoryWitnessCount = 0;
@@ -1727,9 +1871,12 @@ function aggregateRetainUntil(
   const certificateExpiry = investigation.certificate
     ? new Date(investigation.certificate.expiresAt)
     : null;
-  return certificateExpiry && certificateExpiry > operational
-    ? certificateExpiry
-    : operational;
+  const checkpointExpiry = investigation.replayEvidenceCheckpoint
+    ? new Date(investigation.replayEvidenceCheckpoint.expiresAt)
+    : null;
+  return [operational, certificateExpiry, checkpointExpiry]
+    .filter((value): value is Date => value !== null)
+    .reduce((latest, value) => (value > latest ? value : latest), operational);
 }
 
 function toObligation(
@@ -1855,6 +2002,39 @@ function toCertificate(
       record.criticDecision === null
         ? null
         : fromPrismaCriticDecision(record.criticDecision),
+    issuedAt: record.issuedAt.toISOString(),
+    expiresAt: record.expiresAt.toISOString(),
+  };
+}
+
+function toReplayEvidenceCheckpoint(
+  record: PrismaReplayEvidenceCheckpointRecord,
+): ReplayEvidenceCheckpoint {
+  return {
+    checkpointId: record.checkpointId,
+    checkpointHash: record.checkpointHash,
+    sourceInvestigationId: record.sourceInvestigationId,
+    sourceInvestigationVersion: safeNumber(
+      record.sourceInvestigationVersion,
+      "replay_checkpoint_source_version",
+    ),
+    sourceDossierDigest: record.sourceDossierDigest,
+    scopeHash: record.scopeHash,
+    reviewRevisionHash: record.reviewRevisionHash,
+    stableReviewUnitKey: record.stableReviewUnitKey,
+    providerVoteLaneId: record.providerVoteLaneId,
+    contractHash: record.contractHash,
+    policyHash: record.policyHash,
+    producerReleaseId: record.producerReleaseId,
+    producerReleaseHash: record.producerReleaseHash,
+    runtimeProfileHash: record.runtimeProfileHash,
+    receiptSetHash: record.receiptSetHash,
+    contextAttestationSetHash: record.contextAttestationSetHash,
+    sourceState: fromPrismaInvestigationState(record.sourceState),
+    sourceConclusion:
+      record.sourceConclusion === null
+        ? null
+        : fromPrismaConclusion(record.sourceConclusion),
     issuedAt: record.issuedAt.toISOString(),
     expiresAt: record.expiresAt.toISOString(),
   };
@@ -2182,6 +2362,29 @@ async function commitGuardIsCurrent(
   current: ReviewInvestigation,
 ): Promise<boolean> {
   if (input.guard === undefined) return true;
+  const databaseNow = await investigationDatabaseNow(transaction);
+  if (
+    input.guard.kind === InvestigationStoreCommitGuardKind.ExecutionAuthority
+  ) {
+    return (
+      (await executionAuthorityVerdict(transaction, current, databaseNow)) ===
+      input.guard.expectedVerdict
+    );
+  }
+  if (
+    input.guard.kind === InvestigationStoreCommitGuardKind.ExpiredActiveTurn
+  ) {
+    return (
+      input.transition.kind ===
+        InvestigationStoreTransitionKind.ActiveTurnExpired &&
+      input.transition.turnId === input.guard.turnId &&
+      current.activeTurn?.turnId === input.guard.turnId &&
+      current.activeTurn.expiresAt === input.guard.expiresAt &&
+      databaseNow >= new Date(input.guard.expiresAt) &&
+      (await executionAuthorityVerdict(transaction, current, databaseNow)) ===
+        input.guard.expectedVerdict
+    );
+  }
   if (input.guard.kind !== InvestigationStoreCommitGuardKind.LeaseFence) {
     return false;
   }
@@ -2200,9 +2403,78 @@ async function commitGuardIsCurrent(
     source.investigationId !== input.investigation.investigationId ||
     source.turnId !== input.guard.turnId ||
     source.attemptId !== input.guard.attemptId ||
-    source.fencingToken.toString(10) !== input.guard.fencingToken
+    source.fencingToken.toString(10) !== input.guard.fencingToken ||
+    (input.guard.leaseCapabilityId !== undefined &&
+      source.leaseCapabilityId !== input.guard.leaseCapabilityId) ||
+    (input.guard.authorizationId !== undefined &&
+      source.authorizationId !== input.guard.authorizationId) ||
+    (input.guard.mutationEpoch !== undefined &&
+      source.mutationEpoch !== input.guard.mutationEpoch)
   ) {
     return false;
+  }
+  if (
+    input.guard.authorizationId !== undefined &&
+    input.guard.mutationEpoch !== undefined
+  ) {
+    const authorization = await transaction.reviewRunAuthorization.findUnique({
+      where: { authorizationId: input.guard.authorizationId },
+      select: { state: true, mutationEpoch: true, expiresAt: true },
+    });
+    if (
+      authorization?.state !== "active" ||
+      authorization.mutationEpoch !== input.guard.mutationEpoch ||
+      authorization.expiresAt <= databaseNow
+    ) {
+      return false;
+    }
+    const emergencyStops = await transaction.reviewSafetyEmergencyControl.count(
+      {
+        where: {
+          stopped: true,
+          OR: [
+            { policyScope: "global" },
+            {
+              policyScope: "workspace",
+              workspaceId: current.scope.workspaceId,
+            },
+            {
+              policyScope: "repository",
+              workspaceId: current.scope.workspaceId,
+              repositoryConnectionId: current.scope.repositoryConnectionId,
+              scmRepositoryIdentityId: current.scope.scmRepositoryIdentityId,
+            },
+          ],
+        },
+      },
+    );
+    if (emergencyStops > 0) return false;
+  }
+  if (
+    !resultAdmissionDeadlineIsCurrent(input.guard, source, current, databaseNow)
+  ) {
+    return false;
+  }
+  if (
+    input.guard.resultAdmission === TurnResultAdmissionKind.Rejected ||
+    (input.guard.resultAdmission === TurnResultAdmissionKind.HistoricalDrain &&
+      input.investigation.state !== ReviewInvestigationState.Superseded) ||
+    (input.guard.resultAdmission === TurnResultAdmissionKind.Current &&
+      input.investigation.state === ReviewInvestigationState.Superseded)
+  ) {
+    return false;
+  }
+  if (input.guard.resultAdmission !== undefined) {
+    const expectedVerdict =
+      input.guard.resultAdmission === TurnResultAdmissionKind.Current
+        ? InvestigationExecutionAuthorityVerdict.Current
+        : InvestigationExecutionAuthorityVerdict.Superseded;
+    if (
+      (await executionAuthorityVerdict(transaction, current, databaseNow)) !==
+      expectedVerdict
+    ) {
+      return false;
+    }
   }
   if (
     !reviewInvestigationLeaseBindingIsCurrent(
@@ -2221,6 +2493,140 @@ async function commitGuardIsCurrent(
     select: { fencingToken: true },
   });
   return newest?.fencingToken === source.fencingToken;
+}
+
+function resultAdmissionDeadlineIsCurrent(
+  guard: Extract<
+    NonNullable<Parameters<InvestigationStorePort["commit"]>[0]["guard"]>,
+    { kind: InvestigationStoreCommitGuardKind.LeaseFence }
+  >,
+  lease: PrismaLeaseRecord,
+  investigation: ReviewInvestigation,
+  databaseNow: Date,
+): boolean {
+  const values = [
+    guard.resultAdmission,
+    guard.admittedAt,
+    guard.effectiveDeadline,
+  ];
+  if (values.every((value) => value === undefined)) return true;
+  if (values.some((value) => value === undefined)) return false;
+  const admittedAt = new Date(guard.admittedAt!);
+  const effectiveDeadline = new Date(guard.effectiveDeadline!);
+  return (
+    Number.isFinite(admittedAt.getTime()) &&
+    Number.isFinite(effectiveDeadline.getTime()) &&
+    admittedAt < effectiveDeadline &&
+    databaseNow < effectiveDeadline &&
+    effectiveDeadline <= lease.resultReportUntil &&
+    investigation.activeTurn !== null &&
+    effectiveDeadline <= new Date(investigation.activeTurn.expiresAt)
+  );
+}
+
+async function executionAuthorityVerdict(
+  transaction: Prisma.TransactionClient,
+  investigation: ReviewInvestigation,
+  databaseNow: Date,
+): Promise<InvestigationExecutionAuthorityVerdict> {
+  const execution = await transaction.reviewExecutionV2.findUnique({
+    where: { executionId: investigation.executionId },
+  });
+  if (execution === null) {
+    return InvestigationExecutionAuthorityVerdict.Missing;
+  }
+  const [authorization, slot, stream] = await Promise.all([
+    transaction.reviewRunAuthorization.findUnique({
+      where: { authorizationId: execution.authorizationId },
+    }),
+    transaction.reviewExecutionWorkSlotV2.findUnique({
+      where: {
+        executionId_workSlotId: {
+          executionId: investigation.executionId,
+          workSlotId: investigation.workSlotId,
+        },
+      },
+    }),
+    transaction.reviewExecutionStreamV2.findUnique({
+      where: {
+        workspaceId_repositoryConnectionId_scmRepositoryIdentityId_pullRequestNumber:
+          {
+            workspaceId: investigation.scope.workspaceId,
+            repositoryConnectionId: investigation.scope.repositoryConnectionId,
+            scmRepositoryIdentityId:
+              investigation.scope.scmRepositoryIdentityId,
+            pullRequestNumber: investigation.scope.pullRequestNumber,
+          },
+      },
+    }),
+  ]);
+  if (
+    authorization === null ||
+    slot === null ||
+    execution.workspaceId !== investigation.scope.workspaceId ||
+    execution.repositoryConnectionId !==
+      investigation.scope.repositoryConnectionId ||
+    execution.scmRepositoryIdentityId !==
+      investigation.scope.scmRepositoryIdentityId ||
+    execution.pullRequestNumber !== investigation.scope.pullRequestNumber ||
+    execution.authorizationId !== authorization.authorizationId ||
+    execution.mutationEpoch !== authorization.mutationEpoch ||
+    authorization.workspaceId !== investigation.scope.workspaceId ||
+    authorization.repositoryConnectionId !==
+      investigation.scope.repositoryConnectionId ||
+    authorization.scmRepositoryIdentityId !==
+      investigation.scope.scmRepositoryIdentityId ||
+    authorization.pullRequestNumber !== investigation.scope.pullRequestNumber ||
+    authorization.trustDomain !== investigation.scope.trustDomain ||
+    authorization.reviewRevisionHash !==
+      investigation.revision.reviewRevisionHash ||
+    authorization.state !== "active" ||
+    authorization.expiresAt <= databaseNow ||
+    slot.providerVoteIdentityHash !== investigation.providerVoteLaneId
+  ) {
+    return InvestigationExecutionAuthorityVerdict.Unauthorized;
+  }
+  if (
+    execution.state !== "running" ||
+    stream?.activeExecutionId !== execution.executionId ||
+    stream.currentReviewRevisionHash !==
+      investigation.revision.reviewRevisionHash ||
+    execution.reviewRevisionHash !==
+      investigation.revision.reviewRevisionHash ||
+    execution.headSha !== investigation.revision.headSha
+  ) {
+    return InvestigationExecutionAuthorityVerdict.Superseded;
+  }
+  return InvestigationExecutionAuthorityVerdict.Current;
+}
+
+async function lockInvestigationExecutionScope(
+  transaction: Prisma.TransactionClient,
+  investigation: ReviewInvestigation,
+): Promise<void> {
+  const key = JSON.stringify([
+    investigation.scope.workspaceId,
+    investigation.scope.repositoryConnectionId,
+    investigation.scope.scmRepositoryIdentityId,
+    investigation.scope.pullRequestNumber,
+  ]);
+  await transaction.$executeRaw(
+    Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+  );
+}
+
+async function investigationDatabaseNow(
+  transaction: Prisma.TransactionClient,
+): Promise<Date> {
+  const [row] = await transaction.$queryRaw<Array<{ epochMs: bigint }>>(
+    Prisma.sql`SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS "epochMs"`,
+  );
+  if (row === undefined) throw new Error("investigation_database_time_missing");
+  const epochMs = Number(row.epochMs);
+  if (!Number.isSafeInteger(epochMs)) {
+    throw new Error("investigation_database_time_invalid");
+  }
+  return new Date(epochMs);
 }
 
 async function revokeStaleInvestigationLeases(
@@ -2437,6 +2843,8 @@ const obligationKindToPrisma: Readonly<
     PrismaObligationKind.external_contract,
   [InvestigationObligationKind.BinaryArtifact]:
     PrismaObligationKind.binary_artifact,
+  [InvestigationObligationKind.FindingRevalidation]:
+    PrismaObligationKind.finding_revalidation,
   [InvestigationObligationKind.ContextCritic]:
     PrismaObligationKind.context_critic,
 };

@@ -35,7 +35,6 @@ import type {
   ReviewInvestigationLease,
 } from "@reviewrouter/features-review-investigations";
 import {
-  InvestigationTurnProviderKind,
   ReviewInvestigationLeaseProtectedOperation,
   ReviewInvestigationLeaseState,
   ReviewInvestigationTurnPurpose,
@@ -1508,20 +1507,23 @@ async function prepareInvestigationReceiptReplay(
     !targetTree ||
     attestation.attestationHash !== attestationHash ||
     attestation.reuseExpiresAtMs <= now.getTime() ||
-    Date.parse(input.sourceCertificateExpiresAt) <= now.getTime() ||
+    Date.parse(input.sourceCheckpointExpiresAt) <= now.getTime() ||
     attestation.manifest.manifestVersion !== 3 ||
-    attestation.manifest.gatewayPolicyVersion !==
-      contextGatewayV4PolicyVersion ||
-    !investigationProviderMatches(
-      input.sourceTerminalProviderKind,
-      target.manifest.providerKind,
-    ) ||
-    input.sourceTerminalActualModel !== target.manifest.requestedModel
+    attestation.manifest.gatewayPolicyVersion !== contextGatewayV4PolicyVersion
   ) {
     return null;
   }
   const session = await d.store.findSession(attestation.sessionId);
-  if (!session) return null;
+  if (
+    !session ||
+    !investigationProviderMatches(
+      session.providerKind,
+      target.manifest.providerKind,
+    ) ||
+    attestation.actualModel !== target.manifest.requestedModel
+  ) {
+    return null;
+  }
   const release = await d.producerReleases.resolve({
     producerReleaseId: target.manifest.producerReleaseId,
   });
@@ -1628,13 +1630,13 @@ async function prepareInvestigationReceiptReplay(
   const expiresAt = minDate(
     target.authorization.expiresAt,
     new Date(attestation.reuseExpiresAtMs),
-    new Date(input.sourceCertificateExpiresAt),
+    new Date(input.sourceCheckpointExpiresAt),
     new Date(now.getTime() + d.config.replayCapabilityLifetimeMs),
   );
   const replayCapability = await d.capabilities.issueInvestigationReceiptReplay(
     {
-      sourceCertificateId: input.sourceCertificateId,
-      sourceCertificateHash: input.sourceCertificateHash,
+      sourceCertificateId: input.sourceCheckpointId,
+      sourceCertificateHash: input.sourceCheckpointHash,
       attestationId,
       attestationHash,
       sourceOperationReceiptIds,
@@ -1771,15 +1773,15 @@ function gatewayV4ReplayGroupKey(
 }
 
 function investigationProviderMatches(
-  source: InvestigationTurnProviderKind | null,
+  source: ContextProviderKind,
   target: ReviewProviderKind,
 ): boolean {
   switch (source) {
-    case InvestigationTurnProviderKind.Codex:
+    case ContextProviderKind.Codex:
       return target === ReviewProviderKind.Codex;
-    case InvestigationTurnProviderKind.ClaudeCode:
+    case ContextProviderKind.ClaudeCode:
       return target === ReviewProviderKind.ClaudeCode;
-    case null:
+    case ContextProviderKind.OpenRouter:
       return false;
   }
 }

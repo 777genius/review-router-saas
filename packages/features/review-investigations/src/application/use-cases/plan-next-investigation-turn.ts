@@ -21,9 +21,11 @@ import {
 import {
   commitOrThrow,
   requireCurrentExecution,
+  requireValidDossierDigest,
   restoreCommandOrThrow,
   withCurrentDossierDigest,
 } from "./investigation-use-case-support";
+import type { ReconcileExpiredActiveTurn } from "./reconcile-expired-active-turn";
 
 export type PlanNextInvestigationTurnCommand = Readonly<{
   commandId: string;
@@ -39,11 +41,15 @@ export class PlanNextInvestigationTurn {
     private readonly authority: InvestigationExecutionAuthorityPort,
     private readonly digest: InvestigationDigestPort,
     private readonly clock: InvestigationClockPort,
+    private readonly expiredTurns?: Pick<ReconcileExpiredActiveTurn, "execute">,
   ) {}
 
   async execute(
     command: PlanNextInvestigationTurnCommand,
   ): Promise<ReviewInvestigationReadModel> {
+    if (this.expiredTurns) {
+      await this.expiredTurns.execute(command.investigationId);
+    }
     const commandHash = await this.digest.digestUtf8(
       canonicalJson({ operation: "plan_next_investigation_turn", command }),
     );
@@ -55,6 +61,7 @@ export class PlanNextInvestigationTurn {
     if (restored) return toInvestigationReadModel(restored);
     const current = await this.store.findById(command.investigationId);
     if (current === null) throw new Error("investigation_missing");
+    await requireValidDossierDigest(this.digest, current);
     if (current.version !== command.expectedVersion) {
       throw new Error("investigation_concurrency_conflict");
     }

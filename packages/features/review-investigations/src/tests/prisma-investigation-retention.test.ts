@@ -4,6 +4,37 @@ import { PrismaInvestigationStore } from "../infrastructure/prisma/prisma-invest
 const cutoff = new Date("2026-08-03T12:00:00.000Z");
 
 describe("PrismaInvestigationStore retention pruning", () => {
+  it("selects a bounded multi-row expired-turn batch with skip locked", async () => {
+    const transaction = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([{ epochMs: BigInt(cutoff.getTime() + 1_000) }])
+        .mockResolvedValueOnce([
+          { investigationId: "inv-1" },
+          { investigationId: "inv-2" },
+        ]),
+    };
+    const store = new PrismaInvestigationStore({
+      $transaction: async (
+        callback: (value: typeof transaction) => Promise<readonly string[]>,
+      ) => callback(transaction),
+    } as never);
+
+    await expect(
+      store.findExpiredActiveTurnIds({
+        expiresAtOrBefore: cutoff.toISOString(),
+        limit: 2,
+      }),
+    ).resolves.toEqual(["inv-1", "inv-2"]);
+    const query = transaction.$queryRaw.mock.calls[1]![0] as {
+      readonly sql: string;
+      readonly values: readonly unknown[];
+    };
+    expect(query.sql).toContain('turn."expiresAt" <=');
+    expect(query.sql).toContain("FOR UPDATE OF investigation SKIP LOCKED");
+    expect(query.values).toContain(2);
+  });
+
   it("locks a bounded terminal set and deletes an expired graph in dependency order", async () => {
     const transaction = retentionTransaction([{ investigationId: "inv-1" }]);
     const prisma = {
@@ -28,6 +59,7 @@ describe("PrismaInvestigationStore retention pruning", () => {
     expect(query.sql).toContain("'concluded'");
     expect(query.sql).toContain('receipt."retainUntil" >');
     expect(query.sql).toContain('certificate."expiresAt" >');
+    expect(query.sql).toContain('checkpoint."expiresAt" >');
     expect(query.sql).toContain('material."expiresAt" >');
     expect(query.sql).toContain('turn."retainUntil" >');
     expect(query.sql).toContain('lease."retainUntil" >');
@@ -37,7 +69,11 @@ describe("PrismaInvestigationStore retention pruning", () => {
 
     expect(transaction.reviewInvestigation.updateMany).toHaveBeenCalledWith({
       where: { investigationId: { in: ["inv-1"] } },
-      data: { activeTurnId: null, certificateId: null },
+      data: {
+        activeTurnId: null,
+        certificateId: null,
+        replayEvidenceCheckpointId: null,
+      },
     });
     expect(
       transaction.reviewInvestigationObligation.updateMany,
@@ -54,6 +90,12 @@ describe("PrismaInvestigationStore retention pruning", () => {
     );
     expect(
       transaction.reviewInvestigationCertificate.deleteMany.mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      transaction.reviewInvestigation.deleteMany.mock.invocationCallOrder[0]!,
+    );
+    expect(
+      transaction.reviewInvestigationReplayEvidenceCheckpoint.deleteMany.mock
         .invocationCallOrder[0],
     ).toBeLessThan(
       transaction.reviewInvestigation.deleteMany.mock.invocationCallOrder[0]!,
@@ -136,6 +178,9 @@ function retentionTransaction(
       deleteMany: vi.fn().mockResolvedValue({ count: candidates.length }),
     },
     reviewInvestigationCertificate: {
+      deleteMany: vi.fn().mockResolvedValue({ count: candidates.length }),
+    },
+    reviewInvestigationReplayEvidenceCheckpoint: {
       deleteMany: vi.fn().mockResolvedValue({ count: candidates.length }),
     },
     reviewInvestigationCommandReceipt: {
