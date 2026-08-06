@@ -185,7 +185,7 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
           transition: {
             kind: InvestigationStoreTransitionKind.TurnCommitted,
             turnId: leased.activeTurn!.turnId,
-            acceptedAttestationId: provenance.acceptedAttestationId,
+            acceptedAttestationId: null,
             sanitizedOutcomeHash: provenance.terminalOutcomeHash,
           },
         }),
