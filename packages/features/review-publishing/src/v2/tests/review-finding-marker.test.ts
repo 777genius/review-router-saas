@@ -54,6 +54,7 @@ describe("review finding marker grammar", () => {
       ),
     ) as FindingMarkerFixture;
     expect(fixture.schemaVersion).toBe("review_finding_marker_grammar.v1");
+    expect(fixture.cases.length).toBeGreaterThan(0);
     for (const testCase of fixture.cases) {
       expect(
         extractUniqueReviewFindingFingerprint(testCase.body),

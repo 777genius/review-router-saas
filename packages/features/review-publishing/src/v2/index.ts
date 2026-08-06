@@ -3,6 +3,7 @@ export * from "./domain/review-publication-operation-planning";
 export * from "./domain/canonical-review-publication-renderer";
 export * from "./domain/review-lifecycle-thread-state-witness";
 export * from "./domain/review-finding-marker";
+export * from "./domain/canonical-review-publication-json";
 export * from "./application/ports/review-publication-operation-planning-port";
 export * from "./application/ports/review-publication-ports";
 export * from "./application/ports/review-command-ledger-verification-port";

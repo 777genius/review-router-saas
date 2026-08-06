@@ -173,9 +173,36 @@ describe("review v2 production worker composition", () => {
       safeReason: "publication_live_tuple_not_current",
     });
   });
+
+  it("returns the complete freshness snapshot when every fact is current", async () => {
+    const permit = publicationPermit();
+
+    await expect(
+      productionFreshness("all-current").read(
+        ReviewV2ScmProvider.GitHub,
+        permit,
+      ),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationFreshnessReadStatus.Available,
+      snapshot: {
+        baseSha: "b".repeat(40),
+        mergeBaseSha: "c".repeat(40),
+        reviewedHeadSha: permit.reviewedHeadSha,
+        reviewRevisionHash: permit.reviewRevisionHash,
+        lifecycleStateHash: permit.lifecycleStateHash,
+        commandLedgerWatermark: permit.commandLedgerWatermark,
+        authorizationId: permit.authorizationId,
+        producerReleaseId: permit.producerReleaseId,
+        permitEpoch: permit.permitEpoch,
+        publicationSafetyDecisionHash: permit.publicationSafetyDecisionHash,
+        publicationNotAfter: permit.publicationNotAfter,
+      },
+    });
+  });
 });
 
 type FreshnessFact =
+  | "all-current"
   | "permit"
   | "run-control"
   | "authority"

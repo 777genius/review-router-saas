@@ -90,6 +90,43 @@ describe("context reuse publication policy", () => {
       status: ReviewV2ContextReusePublicationStatus.Unavailable,
     });
   });
+
+  it.each([
+    {
+      name: "unknown provider",
+      transform: (binding: ContextReusePublicationBinding) => ({
+        ...binding,
+        observation: {
+          ...binding.observation,
+          providerKind: ReviewProviderKind.Unknown,
+        },
+      }),
+    },
+    {
+      name: "unknown task",
+      transform: (binding: ContextReusePublicationBinding) => ({
+        ...binding,
+        observation: {
+          ...binding.observation,
+          taskKindSet: [ReviewTaskKind.Unknown],
+        },
+      }),
+    },
+  ])(
+    "classifies a deterministic $name binding as stale",
+    async ({ transform }) => {
+      const safety = allowingSafety();
+      const binding = transform(
+        createBinding(reusePolicyVectorHash(safety.hashes)),
+      );
+
+      await expect(
+        createGuard(binding, safety.resolver).resolve(permit()),
+      ).resolves.toEqual({
+        status: ReviewV2ContextReusePublicationStatus.Stale,
+      });
+    },
+  );
 });
 
 function createGuard(

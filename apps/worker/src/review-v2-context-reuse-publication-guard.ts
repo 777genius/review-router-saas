@@ -211,10 +211,17 @@ export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2Conte
     ) {
       return false;
     }
-    const providerTasks = observation.taskKindSet.map((taskKind) => ({
-      providerKind: safetyProvider(observation.providerKind),
-      taskKind: safetyTask(taskKind),
-    }));
+    const providerKind = safetyProvider(observation.providerKind);
+    if (providerKind === null) return false;
+    const providerTasks: Array<{
+      readonly providerKind: ReviewProviderKind;
+      readonly taskKind: ReviewTaskKind;
+    }> = [];
+    for (const taskKind of observation.taskKindSet) {
+      const mappedTaskKind = safetyTask(taskKind);
+      if (mappedTaskKind === null) return false;
+      providerTasks.push({ providerKind, taskKind: mappedTaskKind });
+    }
     const target = {
       workspaceId: permit.workspaceId,
       repositoryConnectionId: permit.repositoryConnectionId,
@@ -284,7 +291,9 @@ function unavailable(): ReviewV2ContextReusePublicationDecision {
   return { status: ReviewV2ContextReusePublicationStatus.Unavailable };
 }
 
-function safetyProvider(value: EvidenceProviderKind): ReviewProviderKind {
+function safetyProvider(
+  value: EvidenceProviderKind,
+): ReviewProviderKind | null {
   switch (value) {
     case EvidenceProviderKind.Codex:
       return ReviewProviderKind.Codex;
@@ -293,22 +302,22 @@ function safetyProvider(value: EvidenceProviderKind): ReviewProviderKind {
     case EvidenceProviderKind.OpenRouter:
       return ReviewProviderKind.OpenRouter;
     case EvidenceProviderKind.Unknown:
-      throw new Error("context_reuse_provider_unknown");
+      return null;
     default:
-      throw new Error("context_reuse_provider_invalid");
+      return null;
   }
 }
 
-function safetyTask(value: EvidenceTaskKind): ReviewTaskKind {
+function safetyTask(value: EvidenceTaskKind): ReviewTaskKind | null {
   switch (value) {
     case EvidenceTaskKind.FindingDiscovery:
       return ReviewTaskKind.CodeReview;
     case EvidenceTaskKind.LifecycleRevalidation:
       return ReviewTaskKind.FindingRevalidation;
     case EvidenceTaskKind.Unknown:
-      throw new Error("context_reuse_task_unknown");
+      return null;
     default:
-      throw new Error("context_reuse_task_invalid");
+      return null;
   }
 }
 

@@ -6,6 +6,7 @@ import {
   type ReviewCommandLedgerVerificationDecision,
   type ReviewCommandLedgerVerificationPort,
 } from "../application/ports/review-command-ledger-verification-port";
+import { canonicalReviewPublicationJson } from "../domain/canonical-review-publication-json";
 
 const commandLedgerMarker =
   /<!--\s*reviewrouter-ledger:v1\s+payload=([A-Za-z0-9_-]+)\s+signature=([a-f0-9]{64})\s*-->/u;
@@ -46,7 +47,7 @@ export class HmacReviewCommandLedgerVerifier implements ReviewCommandLedgerVerif
     if (!ledgerKey) return unavailable();
 
     const expectedSignature = createHmac("sha256", ledgerKey)
-      .update(canonicalJson(payload))
+      .update(canonicalReviewPublicationJson(payload))
       .digest("hex");
     if (!safeEqualHex(expectedSignature, match[2] ?? "")) return invalid();
     if (
@@ -80,21 +81,6 @@ export class HmacReviewCommandLedgerVerifier implements ReviewCommandLedgerVerif
       commandLedgerStateDigest: expectedSignature,
     };
   }
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  }
-  const record = value as Readonly<Record<string, unknown>>;
-  return `{${Object.keys(record)
-    .sort()
-    .filter((key) => record[key] !== undefined)
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
 }
 
 function safeEqualHex(left: string, right: string): boolean {

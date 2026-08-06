@@ -574,7 +574,7 @@ export async function createApiApp(
           ...(options.actionSessionSecret
             ? {
                 ledgerHmacSecret:
-                  process.env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
+                  reviewActionV2Env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
                   options.actionSessionSecret,
               }
             : {}),

@@ -456,6 +456,44 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
         ],
       },
     },
+    {
+      name: "v1 target with a short marker fingerprint",
+      source: {
+        ...publishing,
+        lifecycleObservationVersion:
+          ReviewPublicationLifecycleObservationVersion.ThreadStateV1,
+        lifecycle: [
+          {
+            targetId: "target-v1",
+            threadId: "thread-v1",
+            verdict: "resolved",
+            reasonCodes: [],
+            mutationEligible: true,
+            markerFingerprint: "a".repeat(23),
+            threadStateHash: hash("b"),
+          },
+        ],
+      },
+    },
+    {
+      name: "v1 target with a non-hexadecimal thread state hash",
+      source: {
+        ...publishing,
+        lifecycleObservationVersion:
+          ReviewPublicationLifecycleObservationVersion.ThreadStateV1,
+        lifecycle: [
+          {
+            targetId: "target-v1",
+            threadId: "thread-v1",
+            verdict: "resolved",
+            reasonCodes: [],
+            mutationEligible: true,
+            markerFingerprint: "a".repeat(24),
+            threadStateHash: "z".repeat(64),
+          },
+        ],
+      },
+    },
   ])(
     "rejects $name at the real outer publication parser",
     async ({ source }) => {

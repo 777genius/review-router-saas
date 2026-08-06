@@ -7,6 +7,7 @@ import {
 } from "../infrastructure/github/github-review-publication-lifecycle";
 import { LiveReviewPublicationLifecycleStatus } from "../application/ports/review-publication-ports";
 import type { ReviewPublicationScope } from "../domain/review-publication-attempt";
+import { canonicalReviewPublicationJson } from "../domain/canonical-review-publication-json";
 import { HmacReviewCommandLedgerVerifier } from "../infrastructure/hmac-review-command-ledger-verifier";
 
 const scope: ReviewPublicationScope = {
@@ -631,7 +632,7 @@ function commandLedgerBody(
   repositoryFullName = "777genius/agent-teams-ai",
   action: "skip" | "unskip" = "skip",
 ) {
-  const payloadText = JSON.stringify({
+  const payloadText = canonicalReviewPublicationJson({
     entries: [
       {
         action,

@@ -28,6 +28,7 @@ import {
 
 export { PrismaReviewPublicationRepository } from "../infrastructure/prisma/prisma-review-publication-repository";
 export { HmacReviewCommandLedgerVerifier } from "../infrastructure/hmac-review-command-ledger-verifier";
+export { resolveReviewCommandLedgerHmacSecret } from "../infrastructure/review-command-ledger-configuration";
 export { trustedReviewCommandLedgerAuthorsFromEnv } from "../infrastructure/github/github-review-publication-lifecycle";
 export { reviewLifecycleThreadStateHash } from "../infrastructure/review-lifecycle-thread-state-witness";
 export {

@@ -332,8 +332,8 @@ describe("review publication v2", () => {
         permits: {
           async resolve() {
             return {
-              status: CurrentPublicationPermitStatus.Unavailable,
-              reason: "provider_timeout",
+              status: CurrentPublicationPermitStatus.Stale,
+              reason: "projection_replaced",
             } as const;
           },
         },

@@ -95,6 +95,7 @@ import {
   GitHubReviewPublicationLifecycleAdapter,
   HmacReviewCommandLedgerVerifier,
   OctokitGitHubInstallationGraphqlClientFactory,
+  resolveReviewCommandLedgerHmacSecret,
   trustedReviewCommandLedgerAuthorsFromEnv,
 } from "@reviewrouter/features-review-publishing/v2/composition";
 import {
@@ -402,12 +403,10 @@ export function composeReviewActionV2ProductionRoutes(input: {
   if (!githubAppPrivateKey) {
     throw new Error("review_action_v2_github_app_private_key_missing");
   }
-  const ledgerHmacSecret =
-    input.ledgerHmacSecret?.trim() ||
-    input.env.REVIEW_ROUTER_LEDGER_HMAC_KEY?.trim() ||
-    input.env.REVIEW_ROUTER_ACTION_SESSION_SECRET?.trim() ||
-    input.env.AUTH_SECRET?.trim() ||
-    null;
+  const ledgerHmacSecret = resolveReviewCommandLedgerHmacSecret(
+    input.env,
+    input.ledgerHmacSecret,
+  );
   const commandLedgers = new HmacReviewCommandLedgerVerifier(
     ledgerHmacSecret ? new HmacActionLedgerKey(ledgerHmacSecret) : null,
   );

@@ -66,6 +66,7 @@ import {
   OctokitGitHubInstallationGraphqlClientFactory,
   PrismaReviewPublicationRepository,
   createReviewPublicationV2Application,
+  resolveReviewCommandLedgerHmacSecret,
   trustedReviewCommandLedgerAuthorsFromEnv,
   type GitHubReviewLifecycleRepositoryQueryPort,
 } from "@reviewrouter/features-review-publishing/v2/composition";
@@ -204,11 +205,7 @@ export function createProductionReviewV2WorkerRuntime(input: {
   const githubRepositories = new PrismaReviewV2GitHubRepositoryQuery(
     input.prisma,
   );
-  const ledgerHmacSecret =
-    input.env.REVIEW_ROUTER_LEDGER_HMAC_KEY?.trim() ||
-    input.env.REVIEW_ROUTER_ACTION_SESSION_SECRET?.trim() ||
-    input.env.AUTH_SECRET?.trim() ||
-    null;
+  const ledgerHmacSecret = resolveReviewCommandLedgerHmacSecret(input.env);
   const commandLedgers = new HmacReviewCommandLedgerVerifier(
     ledgerHmacSecret ? new HmacActionLedgerKey(ledgerHmacSecret) : null,
   );

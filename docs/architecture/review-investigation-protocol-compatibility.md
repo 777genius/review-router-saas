@@ -35,11 +35,11 @@ the complete paginated comment history of the target thread while deliberately
 excluding `isResolved`; a permitted resolve is a mutation after authorization,
 not evidence that the observed thread changed before publication.
 
-GitHub lifecycle lookup has three domain outcomes: `current`, `changed` or
-`missing`, and `unavailable`. Only conclusive facts may establish changed or
-missing state. Transient/malformed GitHub responses are `unavailable` and map to
-the existing retryable `capacity_limited` response; they must never be reported
-as a stale revision.
+GitHub lifecycle lookup has four domain outcomes: `current`, `changed`,
+`missing`, and `unavailable`. Only `current`, `changed`, and `missing` are
+conclusive facts. Transient or malformed GitHub responses are `unavailable` and
+map to the existing retryable `capacity_limited` response; they must never be
+reported as a stale revision.
 
 The projection envelope must be validated without stripping its version or
 per-target witness fields before persistence/publication. This preserves the

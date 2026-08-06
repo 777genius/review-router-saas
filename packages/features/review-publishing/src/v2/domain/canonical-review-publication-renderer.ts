@@ -5,6 +5,7 @@ import {
   ReviewPublicationSummarySemantic,
   type CanonicalReviewPublicationBodyFacts,
 } from "./review-publication-operation-planning";
+import { canonicalReviewPublicationJson } from "./canonical-review-publication-json";
 
 export const legacyReviewProjectionPolicyVersion =
   "review-projection-policy.v2-t0";
@@ -168,7 +169,7 @@ export function renderCanonicalReviewPublication(
   );
   const managedCheck = payload(
     input.source.check.marker,
-    canonicalJson({
+    canonicalReviewPublicationJson({
       conclusion: input.source.check.conclusion,
       name: input.source.check.name,
       summary: checkSummary,
@@ -199,7 +200,7 @@ export function renderCanonicalReviewPublication(
       create: {
         ...payload(
           chunk.marker,
-          canonicalJson({
+          canonicalReviewPublicationJson({
             body: createReviewBody,
             comments,
             commitId: input.targetCommitId,
@@ -212,7 +213,7 @@ export function renderCanonicalReviewPublication(
       submit: {
         ...payload(
           submitMarker,
-          canonicalJson({
+          canonicalReviewPublicationJson({
             body: submitReviewBody,
             event: "COMMENT",
           }),
@@ -240,7 +241,7 @@ export function renderCanonicalReviewPublication(
         resolve,
         ...payload(
           marker,
-          canonicalJson({ resolve, threadId: entry.threadId }),
+          canonicalReviewPublicationJson({ resolve, threadId: entry.threadId }),
           primitives,
         ),
       };
@@ -315,21 +316,6 @@ function markerForBody(
     return marker;
   }
   return `<!-- ${marker} -->`;
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = value as Readonly<Record<string, unknown>>;
-  return `{${Object.keys(record)
-    .filter((key) => record[key] !== undefined)
-    .sort(codeUnitCompare)
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
-}
-
-function codeUnitCompare(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function assertBoundedString(

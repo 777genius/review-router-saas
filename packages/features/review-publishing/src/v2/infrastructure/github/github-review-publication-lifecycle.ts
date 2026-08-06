@@ -675,8 +675,11 @@ function requiredTimestampValue(
   value: string | null | undefined,
   field: string,
 ): string {
+  if (typeof value !== "string") {
+    throw new Error(`${field}_invalid`);
+  }
   timestamp(value, field);
-  return value as string;
+  return value;
 }
 
 function commitSha(value: string | null | undefined): string {
