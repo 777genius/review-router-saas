@@ -36,6 +36,7 @@ import {
   toInvestigationReadModel,
   type ReviewInvestigationReadModel,
 } from "../investigation-read-model";
+import { issueReplayEvidenceCheckpoint } from "../replay-evidence-checkpoint-issuer";
 import {
   commitOrThrow,
   digestCanonical,
@@ -160,8 +161,10 @@ export class CommitInvestigationTurn {
         });
       }),
     );
+    const isHistoricalDrain =
+      admission?.kind === TurnResultAdmissionKind.HistoricalDrain;
     let next = (
-      admission?.kind === TurnResultAdmissionKind.HistoricalDrain
+      isHistoricalDrain
         ? commitHistoricalInvestigationTurn
         : commitInvestigationTurn
     )({
@@ -183,6 +186,24 @@ export class CommitInvestigationTurn {
       },
       committedAt: admittedAt,
     });
+    if (isHistoricalDrain) {
+      next = await withCurrentDossierDigest(this.digest, next);
+      next = {
+        ...next,
+        replayEvidenceCheckpoint: await issueReplayEvidenceCheckpoint({
+          source: next,
+          sourceState: next.state,
+          sourceConclusion: next.conclusion,
+          sourceVersion: next.version,
+          issuedAt: new Date(admittedAt),
+          ttlMs: Math.max(
+            1,
+            Date.parse(admission.effectiveDeadline) - Date.parse(admittedAt),
+          ),
+          digest: this.digest,
+        }),
+      };
+    }
     next = await withCurrentDossierDigest(this.digest, next);
     const committed = await commitOrThrow({
       store: this.store,

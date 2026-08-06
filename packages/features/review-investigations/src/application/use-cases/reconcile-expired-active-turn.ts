@@ -14,6 +14,7 @@ import {
   InvestigationStoreTransitionKind,
   type InvestigationStorePort,
 } from "../ports/investigation-store-port";
+import { issueReplayEvidenceCheckpoint } from "../replay-evidence-checkpoint-issuer";
 import {
   commitOrThrow,
   withCurrentDossierDigest,
@@ -25,6 +26,7 @@ export class ReconcileExpiredActiveTurn {
     private readonly authority: InvestigationExecutionAuthorityPort,
     private readonly digest: InvestigationDigestPort,
     private readonly clock: InvestigationClockPort,
+    private readonly replayCheckpointTtlMs = 3_600_000,
   ) {}
 
   async execute(investigationId: string): Promise<ReviewInvestigation> {
@@ -51,10 +53,25 @@ export class ReconcileExpiredActiveTurn {
     ) {
       return current;
     }
-    const next = await withCurrentDossierDigest(
-      this.digest,
-      reconciled.investigation,
-    );
+    let next = reconciled.investigation;
+    if (
+      reconciled.disposition ===
+      ExpiredActiveTurnReconciliationDisposition.Superseded
+    ) {
+      next = {
+        ...next,
+        replayEvidenceCheckpoint: await issueReplayEvidenceCheckpoint({
+          source: current,
+          sourceState: next.state,
+          sourceConclusion: next.conclusion,
+          sourceVersion: next.version,
+          issuedAt: new Date(turn.expiresAt),
+          ttlMs: this.replayCheckpointTtlMs,
+          digest: this.digest,
+        }),
+      };
+    }
+    next = await withCurrentDossierDigest(this.digest, next);
     const commandHash = await this.digest.digestUtf8(
       canonicalJson({
         operation: "reconcile_expired_active_turn",

@@ -1449,6 +1449,10 @@ describe("review investigation in-memory vertical slice", () => {
       totalDurationMs: 100,
     });
     expect(stored?.turnProvenance).toHaveLength(1);
+    expect(stored?.replayEvidenceCheckpoint).toMatchObject({
+      sourceState: ReviewInvestigationState.Superseded,
+      sourceInvestigationVersion: committed.version,
+    });
   });
 
   it("rejects historical drain when execution authority is unauthorized", async () => {
@@ -1533,6 +1537,13 @@ describe("review investigation in-memory vertical slice", () => {
     ).resolves.toMatchObject({
       state: ReviewInvestigationState.Superseded,
       turn: null,
+    });
+    await expect(
+      harness.store.findById(planned.investigationId),
+    ).resolves.toMatchObject({
+      replayEvidenceCheckpoint: {
+        sourceState: ReviewInvestigationState.Superseded,
+      },
     });
   });
 });

@@ -491,10 +491,14 @@ describe("CommitAttestedInvestigationTurn", () => {
     );
     expect(stored).toMatchObject({
       certificate: null,
-      totalUsageTokens: 115,
+      totalUsageTokens: 110,
       totalDurationMs: 1_000,
     });
     expect(stored?.turnProvenance).toHaveLength(1);
+    expect(stored?.replayEvidenceCheckpoint).toMatchObject({
+      sourceState: ReviewInvestigationState.Superseded,
+      sourceInvestigationVersion: stored?.version,
+    });
     expect(stored?.obligations[0]?.receipt).toMatchObject({
       acceptedAttestationId: "attestation-1",
     });
