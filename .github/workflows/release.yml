@@ -132,29 +132,79 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Require successful CI on this commit
+        id: ci
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          CI_URL="$(
+          CI_RUN="$(
             gh run list \
               --repo "$GITHUB_REPOSITORY" \
               --workflow CI \
               --branch main \
               --limit 50 \
-              --json headSha,status,conclusion,url \
-              --jq ".[] | select(.headSha == \"$GITHUB_SHA\" and .status == \"completed\" and .conclusion == \"success\") | .url" \
+              --json databaseId,headSha,status,conclusion,url \
+              --jq ".[] | select(.headSha == \"$GITHUB_SHA\" and .status == \"completed\" and .conclusion == \"success\") | [.databaseId, .url] | @tsv" \
               | head -n 1
           )"
 
-          if [[ -z "$CI_URL" ]]; then
+          if [[ -z "$CI_RUN" ]]; then
             echo "::error::CI must complete successfully on $GITHUB_SHA before release"
             exit 1
           fi
 
+          CI_RUN_ID="${CI_RUN%%$'\t'*}"
+          CI_URL="${CI_RUN#*$'\t'}"
+          if [[ ! "$CI_RUN_ID" =~ ^[0-9]+$ || -z "$CI_URL" ]]; then
+            echo "::error::could not resolve the successful CI run identity for $GITHUB_SHA"
+            exit 1
+          fi
+
+          echo "run_id=$CI_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "Using CI gate: $CI_URL"
+
+      - name: Require Action tag tested by CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ steps.ci.outputs.run_id }}
+          RELEASE_ACTION_SHA: ${{ steps.release.outputs.action_sha }}
+        run: |
+          set -euo pipefail
+
+          gate_dir="$RUNNER_TEMP/paired-action-release-gate"
+          mkdir -p "$gate_dir"
+          gh run download "$CI_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name paired-action-release-gate \
+            --dir "$gate_dir"
+
+          node - "$gate_dir/paired-action-release-gate.json" "$GITHUB_SHA" "$RELEASE_ACTION_SHA" <<'NODE'
+          const { readFileSync } = require("node:fs");
+          const [evidencePath, expectedSaasSha, releaseActionSha] = process.argv.slice(2);
+          const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+          const shaPattern = /^[a-f0-9]{40}$/u;
+
+          if (evidence.schemaVersion !== "reviewrouter.paired-action-release-gate.v1") {
+            throw new Error("paired Action CI evidence has an unsupported schema version");
+          }
+          if (!shaPattern.test(evidence.saasSha) || evidence.saasSha !== expectedSaasSha) {
+            throw new Error(
+              `paired Action CI evidence belongs to SaaS ${evidence.saasSha}, expected ${expectedSaasSha}`,
+            );
+          }
+          if (!shaPattern.test(evidence.actionSha)) {
+            throw new Error("paired Action CI evidence does not contain an immutable Action SHA");
+          }
+          if (evidence.actionSha !== releaseActionSha) {
+            throw new Error(
+              `Action tag resolves to ${releaseActionSha}, but CI tested ${evidence.actionSha}`,
+            );
+          }
+          console.log(`Action tag and CI gate agree on ${evidence.actionSha}`);
+          NODE
 
       - name: Preflight production Action ref override sync
         if: ${{ inputs.sync_production_action_ref }}

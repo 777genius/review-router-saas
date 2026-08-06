@@ -28,7 +28,7 @@ env:
   REVIEW_ROUTER_ACTION_VERSION: main
   REVIEW_ROUTER_DEFAULT_MODEL: gpt-5.5
   REVIEW_ROUTER_DEFAULT_EFFORT: xhigh
-  REVIEW_ROUTER_PAIRED_ACTION_REF: c4dc9d460e1b3b10321c12d7d066845f6a5301b0
+  REVIEW_ROUTER_PAIRED_ACTION_REF: a7edf25d3b8d230055f51ff04f5cbb96babd7920
   REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS: "0"
   REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0"
   REVIEW_ROUTER_PG_DUMP: /usr/lib/postgresql/17/bin/pg_dump
@@ -155,13 +155,70 @@ jobs:
           path: .paired/review-router-action
           persist-credentials: false
 
+      - name: Verify paired Review Action checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git -C .paired/review-router-action rev-parse HEAD)"
+          if [[ "$actual_sha" != "$REVIEW_ROUTER_PAIRED_ACTION_REF" ]]; then
+            echo "::error::paired Action checkout resolved to $actual_sha, expected $REVIEW_ROUTER_PAIRED_ACTION_REF"
+            exit 1
+          fi
+
       - name: Install paired Review Action dependencies
         run: npm ci --ignore-scripts --prefix .paired/review-router-action
+
+      - name: Paired Review Action lifecycle producer and fixture tests
+        run: |
+          npm --prefix .paired/review-router-action test -- \
+            --runInBand \
+            --runTestsByPath \
+            __tests__/unit/github/comment-fingerprint-golden.test.ts \
+            __tests__/e2e/production-entrypoint-artifact.e2e.test.ts \
+            __tests__/unit/review-orchestration/github-review-state-adapter.test.ts \
+            __tests__/unit/review-projection/build-current-review-projection.test.ts \
+            __tests__/unit/review-projection/review-lifecycle-observation.test.ts
+
+      - name: Paired Review Action projection parser contract
+        env:
+          REVIEW_ROUTER_PAIRED_ACTION_REPO: ${{ github.workspace }}/.paired/review-router-action
+        run: |
+          pnpm exec vitest run \
+            apps/api/src/review-action-v2-production-composition-snapshot-publication.test.ts \
+            packages/features/review-publishing/src/v2/tests/review-finding-marker.test.ts \
+            --testNamePattern "accepts the paired Action golden projection target|matches the paired Action golden corpus"
 
       - name: Paired Review Action to SaaS investigation E2E
         env:
           REVIEW_ROUTER_ACTION_SOURCE_DIR: ${{ github.workspace }}/.paired/review-router-action
         run: pnpm review-investigation:paired-e2e
+
+      - name: Record paired Action release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          action_sha="$(git -C .paired/review-router-action rev-parse HEAD)"
+          node - "$RUNNER_TEMP/paired-action-release-gate.json" "$GITHUB_SHA" "$action_sha" <<'NODE'
+          const { writeFileSync } = require("node:fs");
+          const [outputPath, saasSha, actionSha] = process.argv.slice(2);
+          writeFileSync(
+            outputPath,
+            `${JSON.stringify({
+              schemaVersion: "reviewrouter.paired-action-release-gate.v1",
+              saasSha,
+              actionSha,
+            })}\n`,
+            "utf8",
+          );
+          NODE
+
+      - name: Upload paired Action release gate
+        uses: actions/upload-artifact@v4
+        with:
+          name: paired-action-release-gate
+          path: ${{ runner.temp }}/paired-action-release-gate.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Remove paired Review Action checkout
         if: always()

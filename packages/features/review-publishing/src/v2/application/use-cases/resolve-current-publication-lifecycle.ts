@@ -11,9 +11,8 @@ import {
   type ReviewPublicationLifecycleTargetIdentity,
 } from "../ports/review-publication-ports";
 import type { ReviewPublicationScope } from "../../domain/review-publication-attempt";
-
-const findingMarker =
-  /(?:<!--\s*review-router-finding:([a-f0-9]{24,64})\s*-->|reviewrouter:finding:v2:([a-f0-9]{24,64}))/iu;
+import { extractUniqueReviewFindingFingerprint } from "../../domain/review-finding-marker";
+import { ReviewPublicationLifecycleObservationVersion } from "../../domain/review-lifecycle-thread-state-witness";
 
 export class ResolveCurrentPublicationLifecycle implements CurrentPublicationLifecyclePort {
   constructor(
@@ -62,6 +61,7 @@ export class ResolveCurrentPublicationLifecycle implements CurrentPublicationLif
           live.targets,
           expectation.observedNotAfter,
           expectation.createdTargetFingerprints,
+          expectation.lifecycleObservationVersion,
         )
       ) {
         return changed();
@@ -82,7 +82,7 @@ export function reviewPublicationLifecycleExpectationFromProjection(input: {
   readonly lifecycleStateHash: string;
   readonly commandLedgerWatermark: bigint;
   readonly projectionEnvelopeJson: string;
-  readonly authorizationCreatedAt: Date;
+  readonly legacyObservationBoundary: Date;
 }): ReviewPublicationLifecycleExpectationDecision {
   const envelope = JSON.parse(input.projectionEnvelopeJson) as unknown;
   const publishing = requiredRecord(
@@ -92,6 +92,7 @@ export function reviewPublicationLifecycleExpectationFromProjection(input: {
   if (!Array.isArray(publishing.lifecycle)) {
     throw new Error("projection_lifecycle_invalid");
   }
+  const lifecycleObservationVersion = observationVersion(publishing);
   const targets = publishing.lifecycle.map((candidate, index) => {
     const target = requiredRecord(candidate, `projection_lifecycle_${index}`);
     return Object.freeze({
@@ -101,6 +102,7 @@ export function reviewPublicationLifecycleExpectationFromProjection(input: {
         target.mutationEligible,
         "lifecycle_mutation_eligible",
       ),
+      ...targetObservation(target, lifecycleObservationVersion),
     });
   });
   const createdTargetFingerprints = inlineFindingFingerprints(publishing);
@@ -114,9 +116,10 @@ export function reviewPublicationLifecycleExpectationFromProjection(input: {
     ),
     commandLedgerWatermark: input.commandLedgerWatermark,
     observedNotAfter: requiredDate(
-      input.authorizationCreatedAt,
+      input.legacyObservationBoundary,
       "authorization_created_at",
     ),
+    lifecycleObservationVersion,
     targets: Object.freeze([...targets].sort(compareTargets)),
     createdTargetFingerprints,
   };
@@ -136,7 +139,36 @@ function assertExpectation(
     throw new Error("command_ledger_watermark_invalid");
   }
   requiredDate(expectation.observedNotAfter, "observed_not_after");
+  if (
+    expectation.lifecycleObservationVersion !== null &&
+    expectation.lifecycleObservationVersion !==
+      ReviewPublicationLifecycleObservationVersion.ThreadStateV1
+  ) {
+    throw new Error("lifecycle_observation_version_unsupported");
+  }
   assertUniqueTargets(expectation.targets);
+  for (const target of expectation.targets) {
+    const observation = target.observation;
+    if (
+      expectation.lifecycleObservationVersion === null &&
+      observation !== undefined
+    ) {
+      throw new Error("lifecycle_observation_unexpected");
+    }
+    if (
+      expectation.lifecycleObservationVersion ===
+        ReviewPublicationLifecycleObservationVersion.ThreadStateV1 &&
+      observation === undefined
+    ) {
+      throw new Error("lifecycle_observation_incomplete");
+    }
+    if (!observation) continue;
+    requiredFingerprint(
+      observation.markerFingerprint,
+      "lifecycle_marker_fingerprint",
+    );
+    requiredSha256(observation.threadStateHash, "lifecycle_thread_state_hash");
+  }
   assertUniqueFingerprints(expectation.createdTargetFingerprints);
 }
 
@@ -151,6 +183,7 @@ function assertLiveLifecycle(input: {
   }
   for (const target of input.targets) {
     requiredFingerprint(target.markerFingerprint, "marker_fingerprint");
+    requiredSha256(target.threadStateHash, "lifecycle_thread_state_hash");
     requiredBoolean(target.isResolved, "lifecycle_target_resolved");
     requiredBoolean(
       target.parentOwnedByIntegration,
@@ -165,6 +198,12 @@ function assertLiveLifecycle(input: {
     if (target.lastRelevantChangeAt < target.parentCreatedAt) {
       throw new Error("lifecycle_target_timestamp_order_invalid");
     }
+    if (
+      target.lastRelevantChangeAt > target.parentCreatedAt &&
+      !target.hasRelevantInteractionAfterParent
+    ) {
+      throw new Error("lifecycle_target_interaction_inconsistent");
+    }
   }
   assertUniqueTargets(input.targets);
 }
@@ -174,6 +213,7 @@ function lifecycleChangedAfterBoundary(
   live: readonly LiveReviewPublicationLifecycleTargetIdentity[],
   boundary: Date,
   createdTargetFingerprints: readonly string[],
+  lifecycleObservationVersion: ReviewPublicationLifecycleObservationVersion | null,
 ): boolean {
   const expectedByTargetId = new Map(
     expected.map((target) => [target.targetId, target] as const),
@@ -184,11 +224,22 @@ function lifecycleChangedAfterBoundary(
   for (const target of expected) {
     const current = liveByTargetId.get(target.targetId);
     if (!current) {
+      if (
+        lifecycleObservationVersion ===
+        ReviewPublicationLifecycleObservationVersion.ThreadStateV1
+      ) {
+        return true;
+      }
       continue;
     }
     if (
       current.threadId !== target.threadId ||
-      couldBeAfterBoundary(current.lastRelevantChangeAt, boundary) ||
+      lifecycleTargetChanged(
+        target,
+        current,
+        boundary,
+        lifecycleObservationVersion,
+      ) ||
       (current.isResolved && !target.mutationEligible)
     ) {
       return true;
@@ -206,6 +257,66 @@ function lifecycleChangedAfterBoundary(
       !permittedFingerprints.has(target.markerFingerprint)
     );
   });
+}
+
+function targetObservation(
+  target: Readonly<Record<string, unknown>>,
+  lifecycleObservationVersion: ReviewPublicationLifecycleObservationVersion | null,
+): Readonly<{
+  observation?: {
+    readonly markerFingerprint: string;
+    readonly threadStateHash: string;
+  };
+}> {
+  if (lifecycleObservationVersion === null) {
+    if (
+      target.markerFingerprint !== undefined ||
+      target.threadStateHash !== undefined
+    ) {
+      throw new Error("projection_lifecycle_observation_version_missing");
+    }
+    return Object.freeze({});
+  }
+  return Object.freeze({
+    observation: Object.freeze({
+      markerFingerprint: requiredFingerprint(
+        target.markerFingerprint,
+        "lifecycle_marker_fingerprint",
+      ),
+      threadStateHash: requiredSha256(
+        target.threadStateHash,
+        "lifecycle_thread_state_hash",
+      ),
+    }),
+  });
+}
+
+function lifecycleTargetChanged(
+  expected: ReviewPublicationLifecycleTargetIdentity,
+  live: LiveReviewPublicationLifecycleTargetIdentity,
+  legacyBoundary: Date,
+  lifecycleObservationVersion: ReviewPublicationLifecycleObservationVersion | null,
+): boolean {
+  const observation = expected.observation;
+  if (lifecycleObservationVersion === null) {
+    return couldBeAfterBoundary(live.lastRelevantChangeAt, legacyBoundary);
+  }
+  if (!observation) throw new Error("lifecycle_observation_incomplete");
+  return (
+    live.markerFingerprint !== observation.markerFingerprint ||
+    live.threadStateHash !== observation.threadStateHash
+  );
+}
+
+function observationVersion(
+  publishing: Readonly<Record<string, unknown>>,
+): ReviewPublicationLifecycleObservationVersion | null {
+  const value = publishing.lifecycleObservationVersion;
+  if (value === undefined) return null;
+  if (value !== ReviewPublicationLifecycleObservationVersion.ThreadStateV1) {
+    throw new Error("projection_lifecycle_observation_version_unsupported");
+  }
+  return value;
 }
 
 function inlineFindingFingerprints(
@@ -227,8 +338,7 @@ function inlineFindingFingerprints(
         comment.marker,
         "projection_inline_marker",
       );
-      const markerMatch = findingMarker.exec(marker);
-      const fingerprint = (markerMatch?.[1] ?? markerMatch?.[2])?.toLowerCase();
+      const fingerprint = extractUniqueReviewFindingFingerprint(marker);
       if (!fingerprint) throw new Error("projection_inline_marker_invalid");
       fingerprints.push(fingerprint);
     });
@@ -251,6 +361,13 @@ function assertUniqueFingerprints(fingerprints: readonly string[]): void {
 
 function requiredFingerprint(value: unknown, field: string): string {
   if (typeof value !== "string" || !/^[a-f0-9]{24,64}$/u.test(value)) {
+    throw new Error(`${field}_invalid`);
+  }
+  return value;
+}
+
+function requiredSha256(value: unknown, field: string): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value)) {
     throw new Error(`${field}_invalid`);
   }
   return value;

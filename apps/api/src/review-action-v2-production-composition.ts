@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { App } from "@octokit/app";
 import {
+  HmacActionLedgerKey,
   JoseGitHubActionsOidcTokenVerifier,
   PrismaActionControlPlaneRepository,
 } from "@reviewrouter/features-action-control-plane";
@@ -92,7 +93,10 @@ import {
 } from "@reviewrouter/features-review-executions/composition";
 import {
   GitHubReviewPublicationLifecycleAdapter,
+  HmacReviewCommandLedgerVerifier,
   OctokitGitHubInstallationGraphqlClientFactory,
+  resolveReviewCommandLedgerHmacSecret,
+  trustedReviewCommandLedgerAuthorsFromEnv,
 } from "@reviewrouter/features-review-publishing/v2/composition";
 import {
   CanonicalReviewRevisionResolutionStatus,
@@ -371,6 +375,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
   readonly runtime: ReviewActionV2RouteRuntime;
   readonly prisma?: PrismaClient | undefined;
   readonly oidcAudience?: string | undefined;
+  readonly ledgerHmacSecret?: string | undefined;
   readonly investigationTelemetrySamples?:
     | ReviewInvestigationTerminalTelemetrySamplePort
     | undefined;
@@ -398,6 +403,13 @@ export function composeReviewActionV2ProductionRoutes(input: {
   if (!githubAppPrivateKey) {
     throw new Error("review_action_v2_github_app_private_key_missing");
   }
+  const ledgerHmacSecret = resolveReviewCommandLedgerHmacSecret(
+    input.env,
+    input.ledgerHmacSecret,
+  );
+  const commandLedgers = new HmacReviewCommandLedgerVerifier(
+    ledgerHmacSecret ? new HmacActionLedgerKey(ledgerHmacSecret) : null,
+  );
   assertReviewIntentRolloutConfiguration(input.env);
   const investigationRollout = readInvestigationRolloutPolicy(input.env);
   const investigationRecordingEnabled = investigationCapabilityEnabled(
@@ -709,6 +721,8 @@ export function composeReviewActionV2ProductionRoutes(input: {
           return {
             githubInstallationId:
               repository.installation.githubInstallationId.toString(),
+            githubRepositoryId: requiredGithubRepositoryId(repository),
+            repositoryFullName: repository.fullName,
             owner: repository.owner,
             repo: repository.name,
           };
@@ -718,6 +732,8 @@ export function composeReviewActionV2ProductionRoutes(input: {
         appId: githubAppId,
         privateKey: githubAppPrivateKey,
       }),
+      commandLedgers,
+      trustedReviewCommandLedgerAuthorsFromEnv(input.env),
     ),
     contextPolicy: contextReplay,
     now: () => clock.now(),
@@ -931,6 +947,15 @@ export function composeReviewActionV2ProductionRoutes(input: {
     snapshot: snapshotPublication.snapshot,
     publication: snapshotPublication.publication,
   });
+}
+
+function requiredGithubRepositoryId(repository: {
+  readonly githubRepositoryId: bigint | null;
+}): string {
+  if (repository.githubRepositoryId === null) {
+    throw new Error("review_lifecycle_github_repository_id_missing");
+  }
+  return repository.githubRepositoryId.toString();
 }
 
 export class ProductionReviewInvestigationAuthorizationCapability implements ReviewInvestigationAuthorizationCapabilityPort {

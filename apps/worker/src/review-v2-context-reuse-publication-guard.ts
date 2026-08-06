@@ -99,8 +99,20 @@ export interface ContextReuseProducerReleaseQueryPort {
   }> | null>;
 }
 
+export enum ReviewV2ContextReusePublicationStatus {
+  Current = "current",
+  Stale = "stale",
+  Unavailable = "unavailable",
+}
+
+export type ReviewV2ContextReusePublicationDecision = Readonly<{
+  status: ReviewV2ContextReusePublicationStatus;
+}>;
+
 export interface ReviewV2ContextReusePublicationGuardPort {
-  isCurrent(permit: ReviewPublicationPermitIdentity): Promise<boolean>;
+  resolve(
+    permit: ReviewPublicationPermitIdentity,
+  ): Promise<ReviewV2ContextReusePublicationDecision>;
 }
 
 export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2ContextReusePublicationGuardPort {
@@ -113,19 +125,21 @@ export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2Conte
     }>,
   ) {}
 
-  async isCurrent(permit: ReviewPublicationPermitIdentity): Promise<boolean> {
+  async resolve(
+    permit: ReviewPublicationPermitIdentity,
+  ): Promise<ReviewV2ContextReusePublicationDecision> {
     try {
       const bindings =
         await this.dependencies.bindings.findContextReuseBindings(
           permit.executionId,
         );
-      if (bindings === null) return false;
+      if (bindings === null) return stale();
       for (const binding of bindings) {
-        if (!(await this.verifyBinding(permit, binding))) return false;
+        if (!(await this.verifyBinding(permit, binding))) return stale();
       }
-      return true;
+      return current();
     } catch {
-      return false;
+      return unavailable();
     }
   }
 
@@ -197,10 +211,17 @@ export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2Conte
     ) {
       return false;
     }
-    const providerTasks = observation.taskKindSet.map((taskKind) => ({
-      providerKind: safetyProvider(observation.providerKind),
-      taskKind: safetyTask(taskKind),
-    }));
+    const providerKind = safetyProvider(observation.providerKind);
+    if (providerKind === null) return false;
+    const providerTasks: Array<{
+      readonly providerKind: ReviewProviderKind;
+      readonly taskKind: ReviewTaskKind;
+    }> = [];
+    for (const taskKind of observation.taskKindSet) {
+      const mappedTaskKind = safetyTask(taskKind);
+      if (mappedTaskKind === null) return false;
+      providerTasks.push({ providerKind, taskKind: mappedTaskKind });
+    }
     const target = {
       workspaceId: permit.workspaceId,
       repositoryConnectionId: permit.repositoryConnectionId,
@@ -258,7 +279,21 @@ export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2Conte
   }
 }
 
-function safetyProvider(value: EvidenceProviderKind): ReviewProviderKind {
+function current(): ReviewV2ContextReusePublicationDecision {
+  return { status: ReviewV2ContextReusePublicationStatus.Current };
+}
+
+function stale(): ReviewV2ContextReusePublicationDecision {
+  return { status: ReviewV2ContextReusePublicationStatus.Stale };
+}
+
+function unavailable(): ReviewV2ContextReusePublicationDecision {
+  return { status: ReviewV2ContextReusePublicationStatus.Unavailable };
+}
+
+function safetyProvider(
+  value: EvidenceProviderKind,
+): ReviewProviderKind | null {
   switch (value) {
     case EvidenceProviderKind.Codex:
       return ReviewProviderKind.Codex;
@@ -267,22 +302,22 @@ function safetyProvider(value: EvidenceProviderKind): ReviewProviderKind {
     case EvidenceProviderKind.OpenRouter:
       return ReviewProviderKind.OpenRouter;
     case EvidenceProviderKind.Unknown:
-      throw new Error("context_reuse_provider_unknown");
+      return null;
     default:
-      throw new Error("context_reuse_provider_invalid");
+      return null;
   }
 }
 
-function safetyTask(value: EvidenceTaskKind): ReviewTaskKind {
+function safetyTask(value: EvidenceTaskKind): ReviewTaskKind | null {
   switch (value) {
     case EvidenceTaskKind.FindingDiscovery:
       return ReviewTaskKind.CodeReview;
     case EvidenceTaskKind.LifecycleRevalidation:
       return ReviewTaskKind.FindingRevalidation;
     case EvidenceTaskKind.Unknown:
-      throw new Error("context_reuse_task_unknown");
+      return null;
     default:
-      throw new Error("context_reuse_task_invalid");
+      return null;
   }
 }
 

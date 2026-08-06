@@ -571,6 +571,13 @@ export async function createApiApp(
           ...(options.actionOidcAudience
             ? { oidcAudience: options.actionOidcAudience }
             : {}),
+          ...(options.actionSessionSecret
+            ? {
+                ledgerHmacSecret:
+                  reviewActionV2Env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
+                  options.actionSessionSecret,
+              }
+            : {}),
           ...(options.reviewInvestigationTelemetrySamples
             ? {
                 investigationTelemetrySamples:
