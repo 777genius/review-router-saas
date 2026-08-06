@@ -27,6 +27,9 @@ import {
 } from "../application/ports/review-publication-ports";
 
 export { PrismaReviewPublicationRepository } from "../infrastructure/prisma/prisma-review-publication-repository";
+export { HmacReviewCommandLedgerVerifier } from "../infrastructure/hmac-review-command-ledger-verifier";
+export { trustedReviewCommandLedgerAuthorsFromEnv } from "../infrastructure/github/github-review-publication-lifecycle";
+export { reviewLifecycleThreadStateHash } from "../infrastructure/review-lifecycle-thread-state-witness";
 export {
   GitHubReviewPublicationLifecycleAdapter,
   OctokitGitHubInstallationGraphqlClientFactory,

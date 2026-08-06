@@ -99,8 +99,20 @@ export interface ContextReuseProducerReleaseQueryPort {
   }> | null>;
 }
 
+export enum ReviewV2ContextReusePublicationStatus {
+  Current = "current",
+  Stale = "stale",
+  Unavailable = "unavailable",
+}
+
+export type ReviewV2ContextReusePublicationDecision = Readonly<{
+  status: ReviewV2ContextReusePublicationStatus;
+}>;
+
 export interface ReviewV2ContextReusePublicationGuardPort {
-  isCurrent(permit: ReviewPublicationPermitIdentity): Promise<boolean>;
+  resolve(
+    permit: ReviewPublicationPermitIdentity,
+  ): Promise<ReviewV2ContextReusePublicationDecision>;
 }
 
 export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2ContextReusePublicationGuardPort {
@@ -113,19 +125,21 @@ export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2Conte
     }>,
   ) {}
 
-  async isCurrent(permit: ReviewPublicationPermitIdentity): Promise<boolean> {
+  async resolve(
+    permit: ReviewPublicationPermitIdentity,
+  ): Promise<ReviewV2ContextReusePublicationDecision> {
     try {
       const bindings =
         await this.dependencies.bindings.findContextReuseBindings(
           permit.executionId,
         );
-      if (bindings === null) return false;
+      if (bindings === null) return stale();
       for (const binding of bindings) {
-        if (!(await this.verifyBinding(permit, binding))) return false;
+        if (!(await this.verifyBinding(permit, binding))) return stale();
       }
-      return true;
+      return current();
     } catch {
-      return false;
+      return unavailable();
     }
   }
 
@@ -256,6 +270,18 @@ export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2Conte
     );
     return sameHash(expected, binding.reusePolicyVectorHash);
   }
+}
+
+function current(): ReviewV2ContextReusePublicationDecision {
+  return { status: ReviewV2ContextReusePublicationStatus.Current };
+}
+
+function stale(): ReviewV2ContextReusePublicationDecision {
+  return { status: ReviewV2ContextReusePublicationStatus.Stale };
+}
+
+function unavailable(): ReviewV2ContextReusePublicationDecision {
+  return { status: ReviewV2ContextReusePublicationStatus.Unavailable };
 }
 
 function safetyProvider(value: EvidenceProviderKind): ReviewProviderKind {

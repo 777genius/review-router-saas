@@ -22,9 +22,11 @@ import {
   ReviewPublicationAdjudicationEvidenceStatus,
   ReviewPublicationCapability,
   ReviewPublicationGateRejectedError,
+  ReviewPublicationGateRejectionReason,
   ReviewPublicationPlanningError,
   ReviewPublicationPlanningErrorCode,
   ReviewPublicationProjectionCoverage,
+  ReviewPublicationLifecycleObservationVersion,
   ReviewPublicationLifecycleExpectationStatus,
   ReviewPublicationRunControlStatus,
   ResolveCurrentPublicationLifecycle,
@@ -434,6 +436,16 @@ async function requestPublication(
     }
   } catch (error) {
     if (error instanceof ReviewPublicationGateRejectedError) {
+      if (
+        error.reason ===
+        ReviewPublicationGateRejectionReason.PublicationFactsUnavailable
+      ) {
+        throw routeFailure(
+          429,
+          ReviewActionV2ProtocolErrorCode.CapacityLimited,
+          error.reason,
+        );
+      }
       throw routeFailure(
         412,
         ReviewActionV2ProtocolErrorCode.StalePrecondition,
@@ -655,7 +667,7 @@ function productionPublicationDecisions(input: {
             lifecycleStateHash: artifact.lifecycleStateHash,
             commandLedgerWatermark: artifact.commandLedgerWatermark,
             projectionEnvelopeJson: artifact.projectionEnvelopeJson,
-            authorizationCreatedAt: authorization.createdAt,
+            legacyObservationBoundary: authorization.createdAt,
           });
         } catch {
           return {
@@ -930,10 +942,14 @@ function publishedEnvelope(input: {
 }
 
 function publicationProjection(value: unknown) {
-  const root = exactRecord(
+  const root = exactRecordWithOptional(
     value,
     ["summary", "check", "inlineReviewChunks", "lifecycle"],
+    ["lifecycleObservationVersion"],
     "publication_projection_shape_invalid",
+  );
+  const lifecycleObservationVersion = publicationLifecycleObservationVersion(
+    root.lifecycleObservationVersion,
   );
   const summary = exactRecord(
     root.summary,
@@ -957,6 +973,9 @@ function publicationProjection(value: unknown) {
     );
   }
   return {
+    ...(lifecycleObservationVersion === null
+      ? {}
+      : { lifecycleObservationVersion }),
     summary: {
       marker: boundedString(summary.marker, 4_096),
       body: boundedString(summary.body, 1_000_000),
@@ -1003,20 +1022,64 @@ function publicationProjection(value: unknown) {
     lifecycle: root.lifecycle.map((value) => {
       const entry = exactRecordWithOptional(
         value,
-        ["targetId", "threadId", "verdict", "reasonCodes", "mutationEligible"],
+        [
+          "targetId",
+          "threadId",
+          "verdict",
+          "reasonCodes",
+          "mutationEligible",
+          ...(lifecycleObservationVersion === null
+            ? []
+            : ["markerFingerprint", "threadStateHash"]),
+        ],
         ["lineageId"],
         "publication_lifecycle_shape_invalid",
       );
       optionalBoundedString(entry.lineageId, 512);
       boundedStringArray(entry.reasonCodes, 256, 512);
+      const observation =
+        lifecycleObservationVersion === null
+          ? {}
+          : {
+              markerFingerprint: lifecycleMarkerFingerprint(
+                entry.markerFingerprint,
+              ),
+              threadStateHash: sha256String(entry.threadStateHash),
+            };
       return {
         targetId: boundedString(entry.targetId, 512),
         threadId: boundedString(entry.threadId, 512),
         verdict: boundedString(entry.verdict, 64),
         mutationEligible: boolean(entry.mutationEligible),
+        ...observation,
       };
     }),
   };
+}
+
+function publicationLifecycleObservationVersion(
+  value: unknown,
+): ReviewPublicationLifecycleObservationVersion | null {
+  if (value === undefined) return null;
+  if (value !== ReviewPublicationLifecycleObservationVersion.ThreadStateV1) {
+    throw routeFailure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "publication_lifecycle_observation_version_invalid",
+    );
+  }
+  return value;
+}
+
+function lifecycleMarkerFingerprint(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{24,64}$/u.test(value)) {
+    throw routeFailure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "publication_lifecycle_marker_fingerprint_invalid",
+    );
+  }
+  return value;
 }
 
 function deterministicPublicationCommand(

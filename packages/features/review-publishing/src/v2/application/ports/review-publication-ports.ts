@@ -17,6 +17,7 @@ import type {
   ReviewPublicationScope,
   ReviewPublicationTerminalOutcome,
 } from "../../domain/review-publication-attempt";
+import type { ReviewPublicationLifecycleObservationVersion } from "../../domain/review-lifecycle-thread-state-witness";
 
 export enum ReviewPublicationCapability {
   Request = "request_review_publication",
@@ -617,6 +618,12 @@ export type ReviewPublicationLifecycleTargetIdentity = {
   readonly targetId: string;
   readonly threadId: string;
   readonly mutationEligible: boolean;
+  readonly observation?: ReviewPublicationLifecycleTargetObservation;
+};
+
+export type ReviewPublicationLifecycleTargetObservation = {
+  readonly markerFingerprint: string;
+  readonly threadStateHash: string;
 };
 
 export enum ReviewPublicationLifecycleExpectationStatus {
@@ -632,6 +639,7 @@ export type ReviewPublicationLifecycleExpectationDecision =
       readonly lifecycleStateHash: string;
       readonly commandLedgerWatermark: bigint;
       readonly observedNotAfter: Date;
+      readonly lifecycleObservationVersion: ReviewPublicationLifecycleObservationVersion | null;
       readonly targets: readonly ReviewPublicationLifecycleTargetIdentity[];
       readonly createdTargetFingerprints: readonly string[];
     }
@@ -649,9 +657,10 @@ export interface ReviewPublicationLifecycleExpectationPort {
 
 export type LiveReviewPublicationLifecycleTargetIdentity = Omit<
   ReviewPublicationLifecycleTargetIdentity,
-  "mutationEligible"
+  "mutationEligible" | "observation"
 > & {
   readonly markerFingerprint: string;
+  readonly threadStateHash: string;
   readonly isResolved: boolean;
   readonly parentOwnedByIntegration: boolean;
   readonly hasRelevantInteractionAfterParent: boolean;
@@ -722,6 +731,7 @@ export enum ReviewPublicationGateRejectionReason {
   RevisionNotCurrent = "revision_not_current",
   LifecycleNotCurrent = "lifecycle_not_current",
   LifecycleStatusNotCurrent = "lifecycle_status_not_current",
+  PublicationFactsUnavailable = "publication_facts_unavailable",
   LifecycleHashMismatch = "lifecycle_hash_mismatch",
   LifecycleWatermarkMismatch = "lifecycle_watermark_mismatch",
   SafetyDenied = "safety_denied",

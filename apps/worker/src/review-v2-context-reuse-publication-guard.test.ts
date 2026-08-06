@@ -16,6 +16,7 @@ import {
 } from "@reviewrouter/features-review-run-control";
 import type { ReviewPublicationPermitIdentity } from "@reviewrouter/features-review-publishing/v2";
 import {
+  ReviewV2ContextReusePublicationStatus,
   VerifyCurrentContextReusePublicationPolicy,
   type ContextReusePublicationBinding,
 } from "./review-v2-context-reuse-publication-guard";
@@ -38,7 +39,9 @@ describe("context reuse publication policy", () => {
     const binding = createBinding(reusePolicyVectorHash(safety.hashes));
     const guard = createGuard(binding, safety.resolver);
 
-    await expect(guard.isCurrent(permit())).resolves.toBe(true);
+    await expect(guard.resolve(permit())).resolves.toEqual({
+      status: ReviewV2ContextReusePublicationStatus.Current,
+    });
   });
 
   it("fails closed when the gateway release or current safety policy changes", async () => {
@@ -48,13 +51,17 @@ describe("context reuse publication policy", () => {
     await expect(
       createGuard(binding, safety.resolver, {
         gatewayBinaryHash: hash("changed"),
-      }).isCurrent(permit()),
-    ).resolves.toBe(false);
+      }).resolve(permit()),
+    ).resolves.toEqual({
+      status: ReviewV2ContextReusePublicationStatus.Stale,
+    });
 
     safety.contextAllowed = false;
     await expect(
-      createGuard(binding, safety.resolver).isCurrent(permit()),
-    ).resolves.toBe(false);
+      createGuard(binding, safety.resolver).resolve(permit()),
+    ).resolves.toEqual({
+      status: ReviewV2ContextReusePublicationStatus.Stale,
+    });
   });
 
   it("fails closed for a legacy release without a bound gateway artifact", async () => {
@@ -65,8 +72,23 @@ describe("context reuse publication policy", () => {
       createGuard(binding, safety.resolver, {
         contextGatewayPolicyVersion: null,
         contextGatewayEntrypointDigest: null,
-      }).isCurrent(permit()),
-    ).resolves.toBe(false);
+      }).resolve(permit()),
+    ).resolves.toEqual({
+      status: ReviewV2ContextReusePublicationStatus.Stale,
+    });
+  });
+
+  it("reports dependency failures as unavailable rather than stale", async () => {
+    const safety = allowingSafety();
+    const binding = createBinding(reusePolicyVectorHash(safety.hashes));
+
+    await expect(
+      createGuard(binding, safety.resolver, {
+        bindingsUnavailable: true,
+      }).resolve(permit()),
+    ).resolves.toEqual({
+      status: ReviewV2ContextReusePublicationStatus.Unavailable,
+    });
   });
 });
 
@@ -77,11 +99,15 @@ function createGuard(
     readonly gatewayBinaryHash?: string;
     readonly contextGatewayPolicyVersion?: string | null;
     readonly contextGatewayEntrypointDigest?: string | null;
+    readonly bindingsUnavailable?: boolean;
   } = {},
 ) {
   return new VerifyCurrentContextReusePublicationPolicy({
     bindings: {
       async findContextReuseBindings() {
+        if (override.bindingsUnavailable) {
+          throw new Error("bindings_unavailable");
+        }
         return [binding];
       },
     },

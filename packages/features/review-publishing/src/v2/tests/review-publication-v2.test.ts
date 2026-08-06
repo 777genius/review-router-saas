@@ -119,8 +119,8 @@ describe("review publication v2", () => {
         permits: {
           async resolve() {
             return {
-              status: CurrentPublicationPermitStatus.Unavailable,
-              reason: "timeout",
+              status: CurrentPublicationPermitStatus.Stale,
+              reason: "projection_replaced",
             } as const;
           },
         },
@@ -136,7 +136,7 @@ describe("review publication v2", () => {
             producerReleaseId: string;
           }) {
             return {
-              status: ReviewPublicationRunControlStatus.Unavailable,
+              status: ReviewPublicationRunControlStatus.AuthorizationRevoked,
               ...input,
             } as const;
           },
@@ -189,6 +189,21 @@ describe("review publication v2", () => {
       ReviewPublicationGateRejectionReason.LifecycleStatusNotCurrent,
     ],
     [
+      "lifecycle missing",
+      {
+        lifecycle: {
+          async resolve() {
+            return {
+              status: CurrentPublicationLifecycleStatus.Missing,
+              lifecycleStateHash: null,
+              commandLedgerWatermark: null,
+            } as const;
+          },
+        },
+      },
+      ReviewPublicationGateRejectionReason.LifecycleStatusNotCurrent,
+    ],
+    [
       "safety",
       {
         safety: {
@@ -211,6 +226,135 @@ describe("review publication v2", () => {
       ).rejects.toEqual(new ReviewPublicationGateRejectedError(reason));
     },
   );
+
+  it.each([
+    [
+      "permit",
+      {
+        permits: {
+          async resolve() {
+            return {
+              status: CurrentPublicationPermitStatus.Unavailable,
+              reason: "provider_timeout",
+            } as const;
+          },
+        },
+      },
+    ],
+    [
+      "run control",
+      {
+        runControl: {
+          async resolve(input: {
+            authorizationId: string;
+            producerReleaseId: string;
+          }) {
+            return {
+              status: ReviewPublicationRunControlStatus.Unavailable,
+              ...input,
+            } as const;
+          },
+        },
+      },
+    ],
+    [
+      "mutation authority",
+      {
+        authority: {
+          async resolve() {
+            return {
+              status: CurrentMutationAuthorityStatus.Unavailable,
+              mutationEpoch: null,
+            } as const;
+          },
+        },
+      },
+    ],
+    [
+      "revision",
+      {
+        revision: {
+          async resolve() {
+            return {
+              status: CurrentReviewRevisionStatus.Unavailable,
+              reviewedHeadSha: null,
+              reviewRevisionHash: null,
+            } as const;
+          },
+        },
+      },
+    ],
+    [
+      "lifecycle",
+      {
+        lifecycle: {
+          async resolve() {
+            return {
+              status: CurrentPublicationLifecycleStatus.Unavailable,
+              lifecycleStateHash: null,
+              commandLedgerWatermark: null,
+            } as const;
+          },
+        },
+      },
+    ],
+    [
+      "safety",
+      {
+        safety: {
+          async resolve() {
+            return {
+              status: CurrentReviewSafetyDecisionStatus.Unavailable,
+              decisionHash: null,
+            } as const;
+          },
+        },
+      },
+    ],
+  ] as const)(
+    "classifies unavailable %s facts as retryable provider-neutral capacity",
+    async (_, override) => {
+      const harness = createHarness({ decisionOverrides: override });
+
+      await expect(
+        harness.application.request(requestCommand()),
+      ).rejects.toEqual(
+        new ReviewPublicationGateRejectedError(
+          ReviewPublicationGateRejectionReason.PublicationFactsUnavailable,
+        ),
+      );
+    },
+  );
+
+  it("classifies every unavailable fact before earlier generic not-current checks", async () => {
+    const harness = createHarness({
+      decisionOverrides: {
+        permits: {
+          async resolve() {
+            return {
+              status: CurrentPublicationPermitStatus.Unavailable,
+              reason: "provider_timeout",
+            } as const;
+          },
+        },
+        lifecycle: {
+          async resolve() {
+            return {
+              status: CurrentPublicationLifecycleStatus.Unavailable,
+              lifecycleStateHash: null,
+              commandLedgerWatermark: null,
+            } as const;
+          },
+        },
+      },
+    });
+
+    await expect(harness.application.request(requestCommand())).rejects.toEqual(
+      new ReviewPublicationGateRejectedError(
+        ReviewPublicationGateRejectionReason.PublicationFactsUnavailable,
+      ),
+    );
+  });
 
   it.each([
     [

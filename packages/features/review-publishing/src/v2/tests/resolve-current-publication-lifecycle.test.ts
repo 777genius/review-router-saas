@@ -7,6 +7,7 @@ import {
   type ReviewPublicationLifecycleExpectationPort,
 } from "../application/ports/review-publication-ports";
 import type { ReviewPublicationScope } from "../domain/review-publication-attempt";
+import { ReviewPublicationLifecycleObservationVersion } from "../domain/review-lifecycle-thread-state-witness";
 import {
   ResolveCurrentPublicationLifecycle,
   reviewPublicationLifecycleExpectationFromProjection,
@@ -21,6 +22,8 @@ const scope: ReviewPublicationScope = {
 const headSha = "a".repeat(40);
 const boundary = new Date("2026-07-23T10:00:00.000Z");
 const currentFindingFingerprint = "c".repeat(24);
+const targetFingerprint = "b".repeat(24);
+const targetThreadStateHash = "1".repeat(64);
 const targets = [
   {
     targetId: "rrt_first",
@@ -69,6 +72,7 @@ describe("ResolveCurrentPublicationLifecycle", () => {
       live: availableLive({
         targets: liveTargets({
           lastRelevantChangeAt: new Date("2026-07-23T10:00:00.000Z"),
+          hasRelevantInteractionAfterParent: true,
         }),
       }),
     },
@@ -95,6 +99,7 @@ describe("ResolveCurrentPublicationLifecycle", () => {
             targetId: "rrt_current_publication",
             threadId: "thread-current-publication",
             markerFingerprint: currentFindingFingerprint,
+            threadStateHash: "2".repeat(64),
             isResolved: false,
             parentOwnedByIntegration: true,
             hasRelevantInteractionAfterParent: false,
@@ -117,6 +122,7 @@ describe("ResolveCurrentPublicationLifecycle", () => {
             targetId: "rrt_reopened",
             threadId: "thread-reopened",
             markerFingerprint: "d".repeat(24),
+            threadStateHash: "3".repeat(64),
             isResolved: false,
             parentOwnedByIntegration: true,
             hasRelevantInteractionAfterParent: false,
@@ -152,6 +158,7 @@ describe("ResolveCurrentPublicationLifecycle", () => {
             targetId: "rrt_untrusted_current",
             threadId: "thread-untrusted-current",
             markerFingerprint: currentFindingFingerprint,
+            threadStateHash: "4".repeat(64),
             isResolved: false,
             parentOwnedByIntegration: true,
             hasRelevantInteractionAfterParent: false,
@@ -203,6 +210,7 @@ describe("ResolveCurrentPublicationLifecycle", () => {
             targetId: "rrt_already_resolved",
             threadId: "thread-already-resolved",
             markerFingerprint: "f".repeat(24),
+            threadStateHash: "5".repeat(64),
             isResolved: true,
             parentOwnedByIntegration: true,
             hasRelevantInteractionAfterParent: false,
@@ -235,6 +243,107 @@ describe("ResolveCurrentPublicationLifecycle", () => {
       commandLedgerWatermark: null,
     });
   });
+
+  it("uses an exact v1 witness instead of the legacy authorization boundary", async () => {
+    const expectation = expectationWithObservation();
+    const result = await resolver({
+      expectation,
+      live: availableLive({
+        targets: liveTargets({
+          lastRelevantChangeAt: new Date("2026-07-23T10:00:30.000Z"),
+          hasRelevantInteractionAfterParent: true,
+        }),
+      }),
+    }).resolve(scope);
+
+    expect(result.status).toBe(CurrentPublicationLifecycleStatus.Current);
+  });
+
+  it("accepts an exact-v1 resolve authorized by mutation eligibility", async () => {
+    const result = await resolver({
+      expectation: expectationWithObservation(),
+      live: availableLive({
+        targets: liveTargets().map((target) =>
+          target.targetId === "rrt_first"
+            ? { ...target, isResolved: true }
+            : target,
+        ),
+      }),
+    }).resolve(scope);
+
+    expect(result.status).toBe(CurrentPublicationLifecycleStatus.Current);
+  });
+
+  it("keeps an exact-v1 authorized resolve idempotent after resolution", async () => {
+    const lifecycle = resolver({
+      expectation: expectationWithObservation(),
+      live: availableLive({
+        targets: liveTargets().map((target) =>
+          target.targetId === "rrt_first"
+            ? { ...target, isResolved: true }
+            : target,
+        ),
+      }),
+    });
+
+    await expect(lifecycle.resolve(scope)).resolves.toMatchObject({
+      status: CurrentPublicationLifecycleStatus.Current,
+    });
+    await expect(lifecycle.resolve(scope)).resolves.toMatchObject({
+      status: CurrentPublicationLifecycleStatus.Current,
+    });
+  });
+
+  it("rejects an exact-v1 external resolution when mutation was not authorized", async () => {
+    const result = await resolver({
+      expectation: expectationWithObservation(),
+      live: availableLive({
+        targets: liveTargets().map((target) =>
+          target.targetId === "rrt_second"
+            ? { ...target, isResolved: true }
+            : target,
+        ),
+      }),
+    }).resolve(scope);
+
+    expect(result.status).toBe(CurrentPublicationLifecycleStatus.Changed);
+  });
+
+  it.each([
+    {
+      name: "marker changed",
+      override: { markerFingerprint: "d".repeat(24) },
+    },
+    {
+      name: "thread state changed",
+      override: { threadStateHash: "9".repeat(64) },
+    },
+  ])(
+    "rejects the lifecycle when $name after projection",
+    async ({ override }) => {
+      const result = await resolver({
+        expectation: expectationWithObservation(),
+        live: availableLive({
+          targets: liveTargets({
+            lastRelevantChangeAt: new Date("2026-07-23T10:00:30.000Z"),
+            hasRelevantInteractionAfterParent: true,
+            ...override,
+          }),
+        }),
+      }).resolve(scope);
+
+      expect(result.status).toBe(CurrentPublicationLifecycleStatus.Changed);
+    },
+  );
+
+  it("treats an absent exactly witnessed target as changed", async () => {
+    const result = await resolver({
+      expectation: expectationWithObservation(),
+      live: availableLive({ targets: [] }),
+    }).resolve(scope);
+
+    expect(result.status).toBe(CurrentPublicationLifecycleStatus.Changed);
+  });
 });
 
 describe("reviewPublicationLifecycleExpectationFromProjection", () => {
@@ -254,7 +363,7 @@ describe("reviewPublicationLifecycleExpectationFromProjection", () => {
         reviewedHeadSha: headSha,
         lifecycleStateHash: "lifecycle-hash",
         commandLedgerWatermark: 17n,
-        authorizationCreatedAt: boundary,
+        legacyObservationBoundary: boundary,
         projectionEnvelopeJson: JSON.stringify({
           publishing: {
             lifecycle: [targets[1], targets[0]],
@@ -269,6 +378,7 @@ describe("reviewPublicationLifecycleExpectationFromProjection", () => {
 
       expect(result).toMatchObject({
         status: ReviewPublicationLifecycleExpectationStatus.Available,
+        lifecycleObservationVersion: null,
         targets,
         createdTargetFingerprints: [currentFindingFingerprint],
       });
@@ -281,13 +391,92 @@ describe("reviewPublicationLifecycleExpectationFromProjection", () => {
         reviewedHeadSha: headSha,
         lifecycleStateHash: "lifecycle-hash",
         commandLedgerWatermark: 17n,
-        authorizationCreatedAt: boundary,
+        legacyObservationBoundary: boundary,
         projectionEnvelopeJson: JSON.stringify({
           publishing: { lifecycle: [targets[0], targets[0]] },
         }),
       }),
     ).toThrow("lifecycle_target_duplicate");
   });
+
+  it("parses a complete lifecycle observation witness", () => {
+    const result = reviewPublicationLifecycleExpectationFromProjection({
+      reviewedHeadSha: headSha,
+      lifecycleStateHash: "lifecycle-hash",
+      commandLedgerWatermark: 17n,
+      legacyObservationBoundary: boundary,
+      projectionEnvelopeJson: JSON.stringify({
+        publishing: {
+          lifecycleObservationVersion:
+            ReviewPublicationLifecycleObservationVersion.ThreadStateV1,
+          lifecycle: [projectionTargetWithObservation(targets[0])],
+        },
+      }),
+    });
+
+    expect(result).toMatchObject({
+      status: ReviewPublicationLifecycleExpectationStatus.Available,
+      lifecycleObservationVersion:
+        ReviewPublicationLifecycleObservationVersion.ThreadStateV1,
+      targets: [
+        {
+          ...targets[0],
+          observation: {
+            markerFingerprint: targetFingerprint,
+            threadStateHash: targetThreadStateHash,
+          },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    {
+      name: "unknown observation version",
+      publishing: {
+        lifecycleObservationVersion: "review_lifecycle_observation.v2",
+        lifecycle: [projectionTargetWithObservation(targets[0])],
+      },
+    },
+    {
+      name: "hash without an envelope version",
+      publishing: { lifecycle: [projectionTargetWithObservation(targets[0])] },
+    },
+    {
+      name: "marker without an envelope version",
+      publishing: {
+        lifecycle: [{ ...targets[0], markerFingerprint: targetFingerprint }],
+      },
+    },
+    {
+      name: "mixed v1 targets",
+      publishing: {
+        lifecycleObservationVersion:
+          ReviewPublicationLifecycleObservationVersion.ThreadStateV1,
+        lifecycle: [projectionTargetWithObservation(targets[0]), targets[1]],
+      },
+    },
+    {
+      name: "malformed v1 hash",
+      publishing: {
+        lifecycleObservationVersion:
+          ReviewPublicationLifecycleObservationVersion.ThreadStateV1,
+        lifecycle: [
+          {
+            ...projectionTargetWithObservation(targets[0]),
+            threadStateHash: "bad",
+          },
+        ],
+      },
+    },
+  ])(
+    "maps $name to unavailable rather than changed",
+    async ({ publishing }) => {
+      const result = await resolverFromProjection(publishing).resolve(scope);
+
+      expect(result.status).toBe(CurrentPublicationLifecycleStatus.Unavailable);
+    },
+  );
 });
 
 function resolver(overrides?: {
@@ -308,6 +497,7 @@ function resolver(overrides?: {
             lifecycleStateHash: "lifecycle-hash",
             commandLedgerWatermark: 17n,
             observedNotAfter: boundary,
+            lifecycleObservationVersion: null,
             targets,
             createdTargetFingerprints: [currentFindingFingerprint],
           }
@@ -317,6 +507,27 @@ function resolver(overrides?: {
     live: {
       async resolve() {
         return overrides?.live ?? availableLive();
+      },
+    },
+  });
+}
+
+function resolverFromProjection(publishing: unknown) {
+  return new ResolveCurrentPublicationLifecycle({
+    expectations: {
+      async resolve() {
+        return reviewPublicationLifecycleExpectationFromProjection({
+          reviewedHeadSha: headSha,
+          lifecycleStateHash: "lifecycle-hash",
+          commandLedgerWatermark: 17n,
+          legacyObservationBoundary: boundary,
+          projectionEnvelopeJson: JSON.stringify({ publishing }),
+        });
+      },
+    },
+    live: {
+      async resolve() {
+        return availableLive();
       },
     },
   });
@@ -342,17 +553,51 @@ function availableLive(
 function liveTargets(overrides?: {
   readonly parentCreatedAt?: Date;
   readonly lastRelevantChangeAt?: Date;
+  readonly hasRelevantInteractionAfterParent?: boolean;
+  readonly markerFingerprint?: string;
+  readonly threadStateHash?: string;
+  readonly parentOwnedByIntegration?: boolean;
 }) {
   return targets.map((target) => ({
     targetId: target.targetId,
     threadId: target.threadId,
-    markerFingerprint: "b".repeat(24),
+    markerFingerprint: overrides?.markerFingerprint ?? targetFingerprint,
+    threadStateHash: overrides?.threadStateHash ?? targetThreadStateHash,
     isResolved: false,
-    parentOwnedByIntegration: true,
-    hasRelevantInteractionAfterParent: false,
+    parentOwnedByIntegration: overrides?.parentOwnedByIntegration ?? true,
+    hasRelevantInteractionAfterParent:
+      overrides?.hasRelevantInteractionAfterParent ?? false,
     parentCreatedAt:
       overrides?.parentCreatedAt ?? new Date("2026-07-23T09:00:00.000Z"),
     lastRelevantChangeAt:
-      overrides?.lastRelevantChangeAt ?? new Date("2026-07-23T09:59:59.999Z"),
+      overrides?.lastRelevantChangeAt ?? new Date("2026-07-23T09:00:00.000Z"),
   }));
+}
+
+function expectationWithObservation() {
+  return {
+    status: ReviewPublicationLifecycleExpectationStatus.Available,
+    reviewedHeadSha: headSha,
+    lifecycleStateHash: "lifecycle-hash",
+    commandLedgerWatermark: 17n,
+    observedNotAfter: boundary,
+    lifecycleObservationVersion:
+      ReviewPublicationLifecycleObservationVersion.ThreadStateV1,
+    targets: targets.map((target) => ({
+      ...target,
+      observation: {
+        markerFingerprint: targetFingerprint,
+        threadStateHash: targetThreadStateHash,
+      },
+    })),
+    createdTargetFingerprints: [currentFindingFingerprint],
+  } as const;
+}
+
+function projectionTargetWithObservation(target: (typeof targets)[number]) {
+  return {
+    ...target,
+    markerFingerprint: targetFingerprint,
+    threadStateHash: targetThreadStateHash,
+  };
 }

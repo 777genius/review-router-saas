@@ -6,19 +6,23 @@ import {
   type LiveReviewPublicationLifecyclePort,
   type LiveReviewPublicationLifecycleTargetIdentity,
 } from "../../application/ports/review-publication-ports";
+import {
+  ReviewCommandLedgerVerificationStatus,
+  type ReviewCommandLedgerVerificationPort,
+} from "../../application/ports/review-command-ledger-verification-port";
 import type { ReviewPublicationScope } from "../../domain/review-publication-attempt";
+import { extractUniqueReviewFindingFingerprint } from "../../domain/review-finding-marker";
+import { reviewLifecycleThreadStateHash } from "../review-lifecycle-thread-state-witness";
 
-const findingMarker =
-  /(?:<!--\s*review-router-finding:([a-f0-9]{24,64})\s*-->|reviewrouter:finding:v2:([a-f0-9]{24,64}))/iu;
-const commandLedgerMarker =
-  /<!--\s*reviewrouter-ledger:v1\s+payload=([A-Za-z0-9_-]+)\s+signature=([a-f0-9]{64})\s*-->/iu;
-const commandLedgerMarkerPresence = /<!--\s*reviewrouter-ledger:v1\b/iu;
+const commandLedgerMarkerPresence = /<!--\s*reviewrouter-ledger:v1\b/u;
 const maxThreadPages = 100;
 const maxCommentPagesPerThread = 100;
 const maxCommandLedgerPages = 100;
 
 export type GitHubReviewLifecycleRepository = {
   readonly githubInstallationId: string;
+  readonly githubRepositoryId: string;
+  readonly repositoryFullName: string;
   readonly owner: string;
   readonly repo: string;
 };
@@ -52,11 +56,17 @@ type ReviewComment = {
   readonly updatedAt?: string | null;
   readonly lastEditedAt?: string | null;
   readonly viewerDidAuthor?: boolean | null;
+  readonly author?: {
+    readonly login?: string | null;
+  } | null;
 };
 
 type IssueComment = {
   readonly body?: string | null;
   readonly viewerDidAuthor?: boolean | null;
+  readonly author?: {
+    readonly login?: string | null;
+  } | null;
 };
 
 type ReviewThread = {
@@ -96,6 +106,7 @@ query ReviewRouterPublicationLifecycle(
             pageInfo { hasNextPage endCursor }
             nodes {
               id body createdAt updatedAt lastEditedAt viewerDidAuthor
+              author { login }
             }
           }
         }
@@ -113,7 +124,10 @@ query ReviewRouterPublicationLifecycleComments(
     ... on PullRequestReviewThread {
       comments(first: 100, after: $commentsAfter) {
         pageInfo { hasNextPage endCursor }
-        nodes { id body createdAt updatedAt lastEditedAt viewerDidAuthor }
+        nodes {
+          id body createdAt updatedAt lastEditedAt viewerDidAuthor
+          author { login }
+        }
       }
     }
   }
@@ -131,7 +145,7 @@ query ReviewRouterPublicationCommandLedger(
       headRefOid
       comments(first: 100, after: $commentsAfter) {
         pageInfo { hasNextPage endCursor }
-        nodes { body viewerDidAuthor }
+        nodes { body viewerDidAuthor author { login } }
       }
     }
   }
@@ -141,6 +155,8 @@ export class GitHubReviewPublicationLifecycleAdapter implements LiveReviewPublic
   constructor(
     private readonly repositories: GitHubReviewLifecycleRepositoryQueryPort,
     private readonly clients: GitHubInstallationGraphqlClientFactoryPort,
+    private readonly commandLedgers: ReviewCommandLedgerVerificationPort,
+    private readonly trustedCommandLedgerAuthors: ReadonlySet<string>,
   ) {}
 
   async resolve(
@@ -152,8 +168,17 @@ export class GitHubReviewPublicationLifecycleAdapter implements LiveReviewPublic
         return { status: LiveReviewPublicationLifecycleStatus.Missing };
       }
       const client = await this.clients.create(repository.githubInstallationId);
-      return await loadInventory(client, repository, scope.pullRequestNumber);
-    } catch {
+      return await loadInventory(
+        client,
+        repository,
+        scope,
+        this.commandLedgers,
+        this.trustedCommandLedgerAuthors,
+      );
+    } catch (error) {
+      if (error instanceof GitHubPullRequestMissingError) {
+        return { status: LiveReviewPublicationLifecycleStatus.Missing };
+      }
       return { status: LiveReviewPublicationLifecycleStatus.Unavailable };
     }
   }
@@ -183,12 +208,16 @@ export class OctokitGitHubInstallationGraphqlClientFactory implements GitHubInst
 async function loadInventory(
   client: GitHubGraphqlClient,
   repository: GitHubReviewLifecycleRepository,
-  pullRequestNumber: number,
+  scope: ReviewPublicationScope,
+  commandLedgers: ReviewCommandLedgerVerificationPort,
+  trustedCommandLedgerAuthors: ReadonlySet<string>,
 ): Promise<LiveReviewPublicationLifecycleDecision> {
   const commandLedgerBefore = await loadCommandLedger(
     client,
     repository,
-    pullRequestNumber,
+    scope,
+    commandLedgers,
+    trustedCommandLedgerAuthors,
   );
   let cursor: string | null = null;
   const seenCursors = new Set<string>();
@@ -209,13 +238,13 @@ async function loadInventory(
     }>(inventoryQuery, {
       owner: repository.owner,
       repo: repository.repo,
-      prNumber: pullRequestNumber,
+      prNumber: scope.pullRequestNumber,
       threadsAfter: cursor,
     });
-    const pullRequest = response.repository?.pullRequest;
+    const pullRequest = requiredPullRequest(response, "github_lifecycle");
     const connection = pullRequest?.reviewThreads;
-    if (!pullRequest || !connection || !Array.isArray(connection.nodes)) {
-      return { status: LiveReviewPublicationLifecycleStatus.Missing };
+    if (!connection || !Array.isArray(connection.nodes)) {
+      throw new Error("github_lifecycle_threads_unavailable");
     }
     const pageHeadSha = commitSha(pullRequest.headRefOid);
     if (pageHeadSha !== commandLedgerBefore.reviewedHeadSha) {
@@ -231,12 +260,24 @@ async function loadInventory(
       const thread = requiredThread(candidate);
       const comments = await loadAllComments(client, thread);
       const parent = comments[0];
-      const markerMatch = findingMarker.exec(parent?.body ?? "");
-      const fingerprint = markerMatch?.[1] ?? markerMatch?.[2];
+      const fingerprint = extractUniqueReviewFindingFingerprint(
+        parent?.body ?? "",
+      );
       if (!parent || !fingerprint) continue;
+      const parentOwnedByIntegration = isTrustedGitHubCommentAuthor(
+        parent,
+        trustedCommandLedgerAuthors,
+        "github_parent",
+      );
+      if (!parentOwnedByIntegration) continue;
       const parentCreatedAt = timestamp(
         parent.createdAt,
         "github_parent_created_at",
+      );
+      const parentCommentUpdatedAt = laterDate(
+        parent.createdAt,
+        parent.updatedAt,
+        parent.lastEditedAt,
       );
       let lastRelevantChangeAt = parentCreatedAt;
       for (const comment of comments) {
@@ -250,16 +291,26 @@ async function loadInventory(
         }
       }
       targets.push({
-        targetId: targetIdFor(thread.id, parent.id, fingerprint.toLowerCase()),
+        targetId: targetIdFor(thread.id, parent.id, fingerprint),
         threadId: thread.id,
-        markerFingerprint: fingerprint.toLowerCase(),
+        markerFingerprint: fingerprint,
+        threadStateHash: reviewLifecycleThreadStateHash({
+          threadId: thread.id,
+          comments: comments.map((comment) => ({
+            id: comment.id,
+            authorLogin: commentAuthorLogin(comment),
+            body: comment.body ?? "",
+            createdAt: requiredTimestampValue(
+              comment.createdAt,
+              "github_comment_created_at",
+            ),
+            updatedAt: comment.updatedAt ?? null,
+          })),
+        }),
         isResolved: thread.isResolved,
-        parentOwnedByIntegration: requiredBoolean(
-          parent.viewerDidAuthor,
-          "github_parent_ownership",
-        ),
+        parentOwnedByIntegration,
         hasRelevantInteractionAfterParent:
-          comments.length > 1 || parent.lastEditedAt != null,
+          comments.length > 1 || parentCommentUpdatedAt > parentCreatedAt,
         parentCreatedAt,
         lastRelevantChangeAt,
       });
@@ -273,12 +324,16 @@ async function loadInventory(
       const commandLedgerAfter = await loadCommandLedger(
         client,
         repository,
-        pullRequestNumber,
+        scope,
+        commandLedgers,
+        trustedCommandLedgerAuthors,
       );
       if (
         commandLedgerAfter.reviewedHeadSha !== reviewedHeadSha ||
         commandLedgerAfter.commandLedgerWatermark !==
-          commandLedgerBefore.commandLedgerWatermark
+          commandLedgerBefore.commandLedgerWatermark ||
+        commandLedgerAfter.commandLedgerStateDigest !==
+          commandLedgerBefore.commandLedgerStateDigest
       ) {
         throw new Error("github_command_ledger_changed_during_inventory");
       }
@@ -299,14 +354,21 @@ async function loadInventory(
 async function loadCommandLedger(
   client: GitHubGraphqlClient,
   repository: GitHubReviewLifecycleRepository,
-  pullRequestNumber: number,
+  scope: ReviewPublicationScope,
+  commandLedgers: ReviewCommandLedgerVerificationPort,
+  trustedCommandLedgerAuthors: ReadonlySet<string>,
 ): Promise<{
   readonly reviewedHeadSha: string;
   readonly commandLedgerWatermark: bigint;
+  readonly commandLedgerStateDigest: string | null;
 }> {
   let cursor: string | null = null;
   let reviewedHeadSha: string | null = null;
-  let commandLedgerWatermark: bigint | null = null;
+  let latestCommandLedger: {
+    readonly watermark: bigint;
+    readonly stateDigest: string;
+  } | null = null;
+  let markerWithoutValidSignature = false;
   const seenCursors = new Set<string>();
 
   for (let page = 0; page < maxCommandLedgerPages; page += 1) {
@@ -323,13 +385,13 @@ async function loadCommandLedger(
     }>(commandLedgerQuery, {
       owner: repository.owner,
       repo: repository.repo,
-      prNumber: pullRequestNumber,
+      prNumber: scope.pullRequestNumber,
       commentsAfter: cursor,
     });
-    const pullRequest = response.repository?.pullRequest;
+    const pullRequest = requiredPullRequest(response, "github_command_ledger");
     const connection = pullRequest?.comments;
-    if (!pullRequest || !connection || !Array.isArray(connection.nodes)) {
-      throw new Error("github_command_ledger_missing");
+    if (!connection || !Array.isArray(connection.nodes)) {
+      throw new Error("github_command_ledger_unavailable");
     }
     const pageHeadSha = commitSha(pullRequest.headRefOid);
     if (reviewedHeadSha !== null && reviewedHeadSha !== pageHeadSha) {
@@ -342,18 +404,41 @@ async function loadCommandLedger(
       const body = comment.body ?? "";
       if (!commandLedgerMarkerPresence.test(body)) continue;
       if (
-        !requiredBoolean(comment.viewerDidAuthor, "github_ledger_ownership")
+        !isTrustedGitHubCommentAuthor(
+          comment,
+          trustedCommandLedgerAuthors,
+          "github_command_ledger",
+        )
       ) {
         continue;
       }
-      if (commandLedgerWatermark !== null) {
-        throw new Error("github_command_ledger_ambiguous");
-      }
-      commandLedgerWatermark = parseCommandLedgerWatermark(
-        body,
+      const verification = await commandLedgers.verify({
+        scope,
         repository,
-        pullRequestNumber,
-      );
+        markerBody: body,
+      });
+      if (verification.status === ReviewCommandLedgerVerificationStatus.Valid) {
+        if (
+          latestCommandLedger !== null &&
+          verification.commandLedgerWatermark ===
+            latestCommandLedger.watermark &&
+          verification.commandLedgerStateDigest !==
+            latestCommandLedger.stateDigest
+        ) {
+          throw new Error("github_command_ledger_ambiguous");
+        }
+        if (
+          latestCommandLedger === null ||
+          verification.commandLedgerWatermark > latestCommandLedger.watermark
+        ) {
+          latestCommandLedger = {
+            watermark: verification.commandLedgerWatermark,
+            stateDigest: verification.commandLedgerStateDigest,
+          };
+        }
+      } else {
+        markerWithoutValidSignature = true;
+      }
     }
 
     const pageInfo = requiredPageInfo(connection.pageInfo);
@@ -361,9 +446,13 @@ async function loadCommandLedger(
       if (reviewedHeadSha === null) {
         throw new Error("github_command_ledger_head_sha_missing");
       }
+      if (latestCommandLedger === null && markerWithoutValidSignature) {
+        throw new Error("github_command_ledger_unverifiable");
+      }
       return {
         reviewedHeadSha,
-        commandLedgerWatermark: commandLedgerWatermark ?? 0n,
+        commandLedgerWatermark: latestCommandLedger?.watermark ?? 0n,
+        commandLedgerStateDigest: latestCommandLedger?.stateDigest ?? null,
       };
     }
     cursor = nextCursor(pageInfo, seenCursors, "github_ledger_cursor");
@@ -371,56 +460,75 @@ async function loadCommandLedger(
   throw new Error("github_command_ledger_pagination_limit_exceeded");
 }
 
-function parseCommandLedgerWatermark(
-  body: string,
-  repository: GitHubReviewLifecycleRepository,
-  pullRequestNumber: number,
-): bigint {
-  const encoded = commandLedgerMarker.exec(body)?.[1];
-  if (!encoded) throw new Error("github_command_ledger_marker_invalid");
-  let value: unknown;
-  try {
-    value = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-  } catch {
-    throw new Error("github_command_ledger_payload_invalid");
+export function trustedReviewCommandLedgerAuthorsFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): ReadonlySet<string> {
+  const appSlugs = [
+    env.GITHUB_APP_SLUG,
+    env.REVIEW_APP_SLUG,
+    env.REVIEW_ROUTER_APP_SLUG,
+    env.REVIEWROUTER_APP_SLUG,
+    env.AI_ROBOT_REVIEW_APP_SLUG,
+  ];
+  const configuredAuthors = [
+    env.REVIEW_APP_BOT_LOGIN,
+    env.REVIEW_ROUTER_APP_BOT_LOGIN,
+    env.REVIEWROUTER_APP_BOT_LOGIN,
+    ...splitCommaSeparated(env.REVIEW_THREAD_LIFECYCLE_TRUSTED_AUTHORS),
+    ...splitCommaSeparated(env.REVIEW_ROUTER_TRUSTED_BOT_AUTHORS),
+  ];
+  const githubActionsAuthor =
+    env.REVIEWROUTER_COMMENT_TOKEN_MODE !== "app-oidc" ||
+    env.REVIEW_ROUTER_COMMENT_TOKEN_STATUS === "fallback"
+      ? "github-actions[bot]"
+      : undefined;
+  return new Set(
+    [
+      "review-router-ai[bot]",
+      githubActionsAuthor,
+      ...appSlugs.map((slug) => {
+        const normalized = slug?.trim();
+        return normalized ? `${normalized}[bot]` : undefined;
+      }),
+      ...configuredAuthors,
+    ]
+      .map(canonicalGitHubLogin)
+      .filter((value): value is string => value !== null),
+  );
+}
+
+function isTrustedGitHubCommentAuthor(
+  comment: IssueComment | ReviewComment,
+  trustedAuthors: ReadonlySet<string>,
+  field: string,
+): boolean {
+  if (comment.viewerDidAuthor === true) return true;
+  if (comment.viewerDidAuthor !== false) {
+    throw new Error(`${field}_author_ownership_invalid`);
   }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("github_command_ledger_payload_invalid");
+  if (!Object.prototype.hasOwnProperty.call(comment, "author")) {
+    throw new Error(`${field}_author_missing`);
   }
-  const payload = value as Readonly<Record<string, unknown>>;
-  if (
-    payload.version !== 1 ||
-    payload.repo !== `${repository.owner}/${repository.repo}` ||
-    payload.pr !== pullRequestNumber ||
-    !Array.isArray(payload.entries)
-  ) {
-    throw new Error("github_command_ledger_payload_invalid");
+  if (comment.author === null) return false;
+  const login = canonicalGitHubLogin(comment.author?.login);
+  if (login === null) {
+    throw new Error(`${field}_author_invalid`);
   }
-  let watermark = 0n;
-  for (const candidate of payload.entries) {
-    if (
-      !candidate ||
-      typeof candidate !== "object" ||
-      Array.isArray(candidate)
-    ) {
-      throw new Error("github_command_ledger_entry_invalid");
-    }
-    const entry = candidate as Readonly<Record<string, unknown>>;
-    if (entry.action !== "skip" && entry.action !== "unskip") {
-      throw new Error("github_command_ledger_entry_invalid");
-    }
-    const rawId = entry.commandCommentId ?? entry.parentCommentId;
-    if (
-      typeof rawId !== "number" ||
-      !Number.isSafeInteger(rawId) ||
-      rawId <= 0
-    ) {
-      throw new Error("github_command_ledger_entry_invalid");
-    }
-    const id = BigInt(rawId);
-    if (id > watermark) watermark = id;
-  }
-  return watermark;
+  return trustedAuthors.has(login);
+}
+
+function canonicalGitHubLogin(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : null;
+}
+
+function splitCommaSeparated(value: string | undefined): readonly string[] {
+  return (
+    value
+      ?.split(",")
+      .map((item) => item.trim())
+      .filter(Boolean) ?? []
+  );
 }
 
 async function loadAllComments(
@@ -473,6 +581,47 @@ function requiredComment(comment: ReviewComment | null): ValidReviewComment {
   return { ...comment, id: comment.id };
 }
 
+class GitHubPullRequestMissingError extends Error {
+  constructor() {
+    super("github_pull_request_missing");
+    this.name = "GitHubPullRequestMissingError";
+  }
+}
+
+function requiredPullRequest<T extends object>(
+  response: {
+    readonly repository?: {
+      readonly pullRequest?: T | null;
+    } | null;
+  },
+  field: string,
+): T {
+  const repository = response.repository;
+  if (
+    !repository ||
+    !Object.prototype.hasOwnProperty.call(repository, "pullRequest") ||
+    repository.pullRequest === undefined
+  ) {
+    throw new Error(`${field}_repository_payload_invalid`);
+  }
+  if (repository.pullRequest === null) {
+    throw new GitHubPullRequestMissingError();
+  }
+  return repository.pullRequest;
+}
+
+function commentAuthorLogin(comment: ValidReviewComment): string | null {
+  if (!Object.prototype.hasOwnProperty.call(comment, "author")) {
+    throw new Error("github_comment_author_missing");
+  }
+  if (comment.author === null) return null;
+  const login = comment.author?.login;
+  if (typeof login !== "string" || login.length === 0) {
+    throw new Error("github_comment_author_invalid");
+  }
+  return login;
+}
+
 function requiredPageInfo(value?: PageInfo | null): Required<PageInfo> {
   if (!value || typeof value.hasNextPage !== "boolean") {
     throw new Error("github_page_info_invalid");
@@ -515,16 +664,19 @@ function laterDate(
   );
 }
 
-function requiredBoolean(value: unknown, field: string): boolean {
-  if (typeof value !== "boolean") throw new Error(`${field}_invalid`);
-  return value;
-}
-
 function timestamp(value: string | null | undefined, field: string): Date {
   if (typeof value !== "string") throw new Error(`${field}_invalid`);
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.getTime())) throw new Error(`${field}_invalid`);
   return parsed;
+}
+
+function requiredTimestampValue(
+  value: string | null | undefined,
+  field: string,
+): string {
+  timestamp(value, field);
+  return value as string;
 }
 
 function commitSha(value: string | null | undefined): string {

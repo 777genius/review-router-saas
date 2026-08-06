@@ -43,6 +43,17 @@ export async function assertCurrentReviewPublication(input: {
       }),
     ]);
 
+  if (
+    permit.status === CurrentPublicationPermitStatus.Unavailable ||
+    runControl.status === ReviewPublicationRunControlStatus.Unavailable ||
+    authority.status === CurrentMutationAuthorityStatus.Unavailable ||
+    revision.status === CurrentReviewRevisionStatus.Unavailable ||
+    lifecycle.status === CurrentPublicationLifecycleStatus.Unavailable ||
+    safety.status === CurrentReviewSafetyDecisionStatus.Unavailable
+  ) {
+    reject(ReviewPublicationGateRejectionReason.PublicationFactsUnavailable);
+  }
+
   if (permit.status !== CurrentPublicationPermitStatus.Current) {
     reject(ReviewPublicationGateRejectionReason.PermitNotCurrent);
   }

@@ -1,14 +1,23 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  CurrentMutationAuthorityStatus,
+  CurrentPublicationLifecycleStatus,
+  CurrentPublicationPermitStatus,
+  CurrentReviewRevisionStatus,
+  CurrentReviewSafetyDecisionStatus,
   ReviewPublicationAdjudicationEvidenceStatus,
   ReviewPublicationCapability,
+  ReviewPublicationRunControlStatus,
   ReviewPublicationTerminalOutcome,
+  type ReviewPublicationDecisionPorts,
+  type ReviewPublicationPermitIdentity,
 } from "@reviewrouter/features-review-publishing/v2";
 import type { createPrismaClient } from "@reviewrouter/platform-db";
 import { SystemClock } from "@reviewrouter/shared";
 import {
   createProductionReviewV2WorkerRuntime,
+  ProductionReviewV2Freshness,
   productionReviewV2AdjudicationEvidence,
   productionReviewV2PublicationCapabilities,
   reviewV2CapabilityActiveKeyIdEnv,
@@ -18,6 +27,14 @@ import {
   createReviewV2WorkerFeature,
   reviewV2WorkerEnabledEnv,
 } from "./review-v2-worker-runtime";
+import {
+  ReviewV2ContextReusePublicationStatus,
+  type ReviewV2ContextReusePublicationGuardPort,
+} from "./review-v2-context-reuse-publication-guard";
+import {
+  ReviewV2PublicationFreshnessReadStatus,
+  ReviewV2ScmProvider,
+} from "./review-v2-publication-ports";
 
 describe("review v2 production worker composition", () => {
   it("boots the enabled factory with Prisma, GitHub App, publication, and schedulers", () => {
@@ -113,4 +130,188 @@ describe("review v2 production worker composition", () => {
       reason: "operator_adjudication_requires_live_inventory",
     });
   });
+
+  it.each([
+    "permit",
+    "run-control",
+    "authority",
+    "lifecycle",
+    "safety",
+    "context-reuse",
+  ] as const)(
+    "keeps an unavailable %s fact retryable in the production freshness path",
+    async (unavailableFact) => {
+      const freshness = productionFreshness(unavailableFact);
+
+      await expect(
+        freshness.read(ReviewV2ScmProvider.GitHub, publicationPermit()),
+      ).resolves.toEqual({
+        status: ReviewV2PublicationFreshnessReadStatus.Unavailable,
+        safeReason: "publication_live_tuple_unavailable",
+      });
+    },
+  );
+
+  it("keeps thrown live dependencies retryable in the production freshness path", async () => {
+    const freshness = productionFreshness("dependency-throw");
+
+    await expect(
+      freshness.read(ReviewV2ScmProvider.GitHub, publicationPermit()),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationFreshnessReadStatus.Unavailable,
+      safeReason: "publication_live_tuple_unavailable",
+    });
+  });
+
+  it("classifies a proven non-current fact as missing rather than unavailable", async () => {
+    const freshness = productionFreshness("permit-stale");
+
+    await expect(
+      freshness.read(ReviewV2ScmProvider.GitHub, publicationPermit()),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationFreshnessReadStatus.Missing,
+      safeReason: "publication_live_tuple_not_current",
+    });
+  });
 });
+
+type FreshnessFact =
+  | "permit"
+  | "run-control"
+  | "authority"
+  | "lifecycle"
+  | "safety"
+  | "context-reuse"
+  | "dependency-throw"
+  | "permit-stale";
+
+function productionFreshness(fact: FreshnessFact): ProductionReviewV2Freshness {
+  const permit = publicationPermit();
+  const decisions: ReviewPublicationDecisionPorts = {
+    permits: {
+      async resolve() {
+        if (fact === "dependency-throw")
+          throw new Error("provider_unavailable");
+        if (fact === "permit") {
+          return {
+            status: CurrentPublicationPermitStatus.Unavailable,
+            reason: "permit_unavailable",
+          };
+        }
+        if (fact === "permit-stale") {
+          return {
+            status: CurrentPublicationPermitStatus.Stale,
+            reason: "permit_stale",
+          };
+        }
+        return { status: CurrentPublicationPermitStatus.Current, permit };
+      },
+    },
+    runControl: {
+      async resolve() {
+        return {
+          status:
+            fact === "run-control"
+              ? ReviewPublicationRunControlStatus.Unavailable
+              : ReviewPublicationRunControlStatus.Allowed,
+          authorizationId: permit.authorizationId,
+          producerReleaseId: permit.producerReleaseId,
+        };
+      },
+    },
+    authority: {
+      async resolve() {
+        return {
+          status:
+            fact === "authority"
+              ? CurrentMutationAuthorityStatus.Unavailable
+              : CurrentMutationAuthorityStatus.Active,
+          mutationEpoch: fact === "authority" ? null : permit.permitEpoch,
+        };
+      },
+    },
+    revision: {
+      async resolve() {
+        return {
+          status: CurrentReviewRevisionStatus.Current,
+          reviewedHeadSha: permit.reviewedHeadSha,
+          reviewRevisionHash: permit.reviewRevisionHash,
+        };
+      },
+    },
+    lifecycle: {
+      async resolve() {
+        return {
+          status:
+            fact === "lifecycle"
+              ? CurrentPublicationLifecycleStatus.Unavailable
+              : CurrentPublicationLifecycleStatus.Current,
+          lifecycleStateHash:
+            fact === "lifecycle" ? null : permit.lifecycleStateHash,
+          commandLedgerWatermark:
+            fact === "lifecycle" ? null : permit.commandLedgerWatermark,
+        };
+      },
+    },
+    safety: {
+      async resolve() {
+        return {
+          status:
+            fact === "safety"
+              ? CurrentReviewSafetyDecisionStatus.Unavailable
+              : CurrentReviewSafetyDecisionStatus.Allowed,
+          decisionHash:
+            fact === "safety" ? null : permit.publicationSafetyDecisionHash,
+        };
+      },
+    },
+  };
+  const contextReuse: ReviewV2ContextReusePublicationGuardPort = {
+    async resolve() {
+      return {
+        status:
+          fact === "context-reuse"
+            ? ReviewV2ContextReusePublicationStatus.Unavailable
+            : ReviewV2ContextReusePublicationStatus.Current,
+      };
+    },
+  };
+  return new ProductionReviewV2Freshness(
+    decisions,
+    [
+      {
+        provider: ReviewV2ScmProvider.GitHub,
+        async readLiveRevision() {
+          return {
+            baseSha: "b".repeat(40),
+            mergeBaseSha: "c".repeat(40),
+            headSha: permit.reviewedHeadSha,
+            reviewRevisionHash: permit.reviewRevisionHash,
+          };
+        },
+      },
+    ],
+    contextReuse,
+  );
+}
+
+function publicationPermit(): ReviewPublicationPermitIdentity {
+  return {
+    workspaceId: "workspace-1",
+    repositoryConnectionId: "repository-connection-1",
+    scmRepositoryIdentityId: "scm-repository-1",
+    pullRequestNumber: 42,
+    executionId: "execution-1",
+    generation: 1n,
+    authorizationId: "authorization-1",
+    producerReleaseId: "release-1",
+    reviewedHeadSha: "a".repeat(40),
+    reviewRevisionHash: "b".repeat(64),
+    projectionHash: "c".repeat(64),
+    lifecycleStateHash: "d".repeat(64),
+    commandLedgerWatermark: 2n,
+    permitEpoch: 7n,
+    publicationSafetyDecisionHash: "f".repeat(64),
+    publicationNotAfter: new Date("2026-08-05T12:00:00.000Z"),
+  };
+}

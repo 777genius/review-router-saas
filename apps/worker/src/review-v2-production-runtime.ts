@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import {
+  HmacActionLedgerKey,
   PrismaActionControlPlaneRepository,
   managedCodexWorkflowPath,
 } from "@reviewrouter/features-action-control-plane";
@@ -61,9 +62,11 @@ import {
 } from "@reviewrouter/features-review-publishing/v2";
 import {
   GitHubReviewPublicationLifecycleAdapter,
+  HmacReviewCommandLedgerVerifier,
   OctokitGitHubInstallationGraphqlClientFactory,
   PrismaReviewPublicationRepository,
   createReviewPublicationV2Application,
+  trustedReviewCommandLedgerAuthorsFromEnv,
   type GitHubReviewLifecycleRepositoryQueryPort,
 } from "@reviewrouter/features-review-publishing/v2/composition";
 import {
@@ -142,6 +145,7 @@ import {
   createReviewRequestIngressHandler,
 } from "./review-v2-request-ingress-handler";
 import {
+  ReviewV2ContextReusePublicationStatus,
   VerifyCurrentContextReusePublicationPolicy,
   type ContextReusePublicationBinding,
   type ContextReusePublicationBindingQueryPort,
@@ -200,6 +204,14 @@ export function createProductionReviewV2WorkerRuntime(input: {
   const githubRepositories = new PrismaReviewV2GitHubRepositoryQuery(
     input.prisma,
   );
+  const ledgerHmacSecret =
+    input.env.REVIEW_ROUTER_LEDGER_HMAC_KEY?.trim() ||
+    input.env.REVIEW_ROUTER_ACTION_SESSION_SECRET?.trim() ||
+    input.env.AUTH_SECRET?.trim() ||
+    null;
+  const commandLedgers = new HmacReviewCommandLedgerVerifier(
+    ledgerHmacSecret ? new HmacActionLedgerKey(ledgerHmacSecret) : null,
+  );
   const decisions = createProductionPublicationDecisions({
     executions,
     releases,
@@ -212,6 +224,8 @@ export function createProductionReviewV2WorkerRuntime(input: {
         appId: input.githubAppId,
         privateKey: input.githubPrivateKey,
       }),
+      commandLedgers,
+      trustedReviewCommandLedgerAuthorsFromEnv(input.env),
     ),
   });
   const contextReusePublicationPolicy =
@@ -637,7 +651,7 @@ function createProductionPublicationDecisions(input: {
             lifecycleStateHash: artifact.lifecycleStateHash,
             commandLedgerWatermark: artifact.commandLedgerWatermark,
             projectionEnvelopeJson: artifact.projectionEnvelopeJson,
-            authorizationCreatedAt: authorization.createdAt,
+            legacyObservationBoundary: authorization.createdAt,
           });
         } catch {
           return {
@@ -952,7 +966,7 @@ class ProductionContextReuseProducerReleaseQuery implements ContextReuseProducer
   }
 }
 
-class ProductionReviewV2Freshness implements ReviewV2PublicationFreshnessPort {
+export class ProductionReviewV2Freshness implements ReviewV2PublicationFreshnessPort {
   constructor(
     private readonly decisions: ReviewPublicationDecisionPorts,
     sources: readonly ReviewV2ScmLiveRevisionPort[],
@@ -983,6 +997,33 @@ class ProductionReviewV2Freshness implements ReviewV2PublicationFreshnessPort {
         safeReason: "publication_live_scm_provider_unavailable",
       } as const;
     }
+    let facts;
+    try {
+      facts = await Promise.all([
+        source.readLiveRevision(permit),
+        this.decisions.permits.resolve({
+          executionId: permit.executionId,
+          generation: permit.generation,
+          projectionHash: permit.projectionHash,
+        }),
+        this.decisions.runControl.resolve({
+          authorizationId: permit.authorizationId,
+          producerReleaseId: permit.producerReleaseId,
+        }),
+        this.decisions.authority.resolve(scope),
+        this.decisions.lifecycle.resolve(scope),
+        this.decisions.safety.resolve({
+          scope,
+          capability: ReviewPublicationCapability.BeginOperation,
+        }),
+        this.contextReusePolicy.resolve(permit),
+      ] as const);
+    } catch {
+      return {
+        status: ReviewV2PublicationFreshnessReadStatus.Unavailable,
+        safeReason: "publication_live_tuple_unavailable",
+      } as const;
+    }
     const [
       liveRevision,
       currentPermit,
@@ -990,42 +1031,65 @@ class ProductionReviewV2Freshness implements ReviewV2PublicationFreshnessPort {
       authority,
       lifecycle,
       safety,
-      contextReuseCurrent,
-    ] = await Promise.all([
-      source.readLiveRevision(permit),
-      this.decisions.permits.resolve({
-        executionId: permit.executionId,
-        generation: permit.generation,
-        projectionHash: permit.projectionHash,
-      }),
-      this.decisions.runControl.resolve({
-        authorizationId: permit.authorizationId,
-        producerReleaseId: permit.producerReleaseId,
-      }),
-      this.decisions.authority.resolve(scope),
-      this.decisions.lifecycle.resolve(scope),
-      this.decisions.safety.resolve({
-        scope,
-        capability: ReviewPublicationCapability.BeginOperation,
-      }),
-      this.contextReusePolicy.isCurrent(permit),
-    ]);
+      contextReuse,
+    ] = facts;
+    if (
+      currentPermit.status === CurrentPublicationPermitStatus.Unavailable ||
+      runControl.status === ReviewPublicationRunControlStatus.Unavailable ||
+      authority.status === CurrentMutationAuthorityStatus.Unavailable ||
+      lifecycle.status === CurrentPublicationLifecycleStatus.Unavailable ||
+      safety.status === CurrentReviewSafetyDecisionStatus.Unavailable ||
+      contextReuse.status === ReviewV2ContextReusePublicationStatus.Unavailable
+    ) {
+      return {
+        status: ReviewV2PublicationFreshnessReadStatus.Unavailable,
+        safeReason: "publication_live_tuple_unavailable",
+      } as const;
+    }
     if (
       liveRevision === null ||
+      currentPermit.status === CurrentPublicationPermitStatus.Missing ||
+      currentPermit.status === CurrentPublicationPermitStatus.Stale ||
+      runControl.status ===
+        ReviewPublicationRunControlStatus.AuthorizationRevoked ||
+      runControl.status ===
+        ReviewPublicationRunControlStatus.ProducerReleaseRevoked ||
+      runControl.status === ReviewPublicationRunControlStatus.Missing ||
+      authority.status === CurrentMutationAuthorityStatus.Inactive ||
+      authority.status === CurrentMutationAuthorityStatus.Missing ||
+      lifecycle.status === CurrentPublicationLifecycleStatus.Changed ||
+      lifecycle.status === CurrentPublicationLifecycleStatus.Missing ||
+      safety.status === CurrentReviewSafetyDecisionStatus.Disabled ||
+      safety.status === CurrentReviewSafetyDecisionStatus.Stale ||
+      contextReuse.status === ReviewV2ContextReusePublicationStatus.Stale
+    ) {
+      return {
+        status: ReviewV2PublicationFreshnessReadStatus.Missing,
+        safeReason: "publication_live_tuple_not_current",
+      } as const;
+    }
+    if (
       currentPermit.status !== CurrentPublicationPermitStatus.Current ||
       runControl.status !== ReviewPublicationRunControlStatus.Allowed ||
       authority.status !== CurrentMutationAuthorityStatus.Active ||
       lifecycle.status !== CurrentPublicationLifecycleStatus.Current ||
       safety.status !== CurrentReviewSafetyDecisionStatus.Allowed ||
-      !contextReuseCurrent ||
-      authority.mutationEpoch === null ||
-      safety.decisionHash === null ||
-      lifecycle.lifecycleStateHash === null ||
-      lifecycle.commandLedgerWatermark === null
+      contextReuse.status !== ReviewV2ContextReusePublicationStatus.Current
     ) {
       return {
-        status: ReviewV2PublicationFreshnessReadStatus.Missing,
-        safeReason: "publication_live_tuple_not_current",
+        status: ReviewV2PublicationFreshnessReadStatus.Unavailable,
+        safeReason: "publication_live_tuple_unavailable",
+      } as const;
+    }
+    if (
+      authority.mutationEpoch === null ||
+      lifecycle.lifecycleStateHash === null ||
+      lifecycle.commandLedgerWatermark === null ||
+      safety.decisionHash === null
+    ) {
+      return {
+        status: ReviewV2PublicationFreshnessReadStatus.Unavailable,
+        safeReason: "publication_live_tuple_unavailable",
       } as const;
     }
     return {
@@ -1225,10 +1289,21 @@ class PrismaReviewV2GitHubRepositoryQuery
     return {
       githubInstallationId:
         repository.installation.githubInstallationId.toString(),
+      githubRepositoryId: requiredGithubRepositoryId(repository),
+      repositoryFullName: repository.fullName,
       owner: repository.owner,
       repo: repository.name,
     };
   }
+}
+
+function requiredGithubRepositoryId(repository: {
+  readonly githubRepositoryId: bigint | null;
+}): string {
+  if (repository.githubRepositoryId === null) {
+    throw new Error("review_lifecycle_github_repository_id_missing");
+  }
+  return repository.githubRepositoryId.toString();
 }
 
 type PublicationWork = {

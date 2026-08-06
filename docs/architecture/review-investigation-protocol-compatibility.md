@@ -20,3 +20,39 @@ downgrade a clean-capable path.
 Release order is dormant server capability, public Action support, registered
 producer release, shadow cohort, findings effects, verified clean, then
 cross-revision replay. Released tags and artifacts are immutable.
+
+## Lifecycle observation compatibility
+
+Lifecycle witness rollout is parser-first. The server accepts the legacy
+projection only through the explicit legacy authorization boundary and accepts
+`review_lifecycle_observation.v1` only when every target carries a valid marker
+fingerprint and thread-state hash. Unknown versions, mixed legacy/v1 targets,
+duplicate target identities, and incomplete witnesses fail closed.
+
+For v1, the Action and SaaS share the golden
+`review_lifecycle_thread_state.v1` canonicalization fixture. The witness covers
+the complete paginated comment history of the target thread while deliberately
+excluding `isResolved`; a permitted resolve is a mutation after authorization,
+not evidence that the observed thread changed before publication.
+
+GitHub lifecycle lookup has three domain outcomes: `current`, `changed` or
+`missing`, and `unavailable`. Only conclusive facts may establish changed or
+missing state. Transient/malformed GitHub responses are `unavailable` and map to
+the existing retryable `capacity_limited` response; they must never be reported
+as a stale revision.
+
+The projection envelope must be validated without stripping its version or
+per-target witness fields before persistence/publication. This preserves the
+same evidence across request, claim, begin, retry, and lifecycle mutation gates.
+
+## Command ledger compatibility
+
+Hosted publication verifies the same repository- and PR-bound HMAC command
+ledger used by the Action. A valid ledger is accepted independently of whether
+the GitHub author is the App bot or `github-actions[bot]`; invalid,
+unverifiable, or ambiguous ledgers fail closed. Key derivation uses the existing
+repository-scoped Action ledger key contract and timing-safe signature checks.
+
+Rotating Codex authorization is never updated by direct secret replacement.
+Operators must use `scripts/reseed-codex-rotating-auth.sh` so queued work cannot
+observe an older auth generation.
