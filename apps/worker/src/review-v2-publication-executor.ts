@@ -7,6 +7,7 @@ import {
   RenewReviewPublicationClaimStatus,
   ReviewPublicationAttemptState,
   ReviewPublicationExternalEffectKind,
+  ReviewPublicationKind,
   ReviewPublicationOperationState,
   ReviewPublicationReceiptStatus,
   ReviewPublicationTerminalOutcome,
@@ -62,7 +63,11 @@ type FreshnessAssessment =
     };
 
 type ReconciliationResult =
-  | { readonly settled: false }
+  | {
+      readonly settled: false;
+      readonly claim: ReviewPublicationClaimTerm;
+      readonly capability: ReviewPublicationOperationCapabilityFacts;
+    }
   | {
       readonly settled: true;
       readonly result: ReviewV2PublicationExecutionResult;
@@ -114,6 +119,8 @@ export class ExecuteReviewV2PublicationOperation {
       view,
       operation,
     );
+    let resumedCapability: ReviewPublicationOperationCapabilityFacts | null =
+      null;
     if (priorCapability) {
       const reconciled = await this.reconcileBeforeRetry({
         command,
@@ -123,6 +130,10 @@ export class ExecuteReviewV2PublicationOperation {
         capability: priorCapability,
       });
       if (reconciled.settled) return reconciled.result;
+      claim = reconciled.claim;
+      resumedCapability = capabilityBelongsToClaim(reconciled.capability, claim)
+        ? reconciled.capability
+        : null;
       view = await this.dependencies.attempts.findById(
         command.publicationAttemptId,
       );
@@ -179,30 +190,58 @@ export class ExecuteReviewV2PublicationOperation {
     const signingKeyId =
       await this.dependencies.capabilityIdentity.activeSigningKeyId();
     assertIdentifier(signingKeyId, "publication_capability_key_invalid");
-    const beginCommand = buildBeginCommand({
-      view,
-      operation,
-      claim,
-      signingKeyId,
-    });
-    let begun;
-    try {
-      begun = await this.dependencies.application.beginOperation(beginCommand);
-    } catch {
-      return this.terminalizeKnownOutcome({
-        command,
+    let begun: {
+      readonly attempt: ReviewPublicationAttemptView["attempt"];
+      readonly operation: ReviewPublicationOperation;
+      readonly capability: ReviewPublicationOperationCapabilityFacts;
+    };
+    if (resumedCapability) {
+      begun = {
+        attempt: view.attempt,
+        operation,
+        capability: resumedCapability,
+      };
+    } else {
+      const beginCommand = buildBeginCommand({
+        view,
         operation,
         claim,
-        finalOutcome: ReviewPublicationTerminalOutcome.SupersededNoEffect,
-        finalReason: "publication_begin_gate_rejected",
-        lastErrorCode: "publication_begin_gate_rejected",
+        signingKeyId,
       });
-    }
-    if (
-      begun.status !== BeginReviewPublicationOperationStatus.Begun &&
-      begun.status !== BeginReviewPublicationOperationStatus.Restored
-    ) {
-      return mapBeginFailure(begun.status);
+      let beginResult;
+      try {
+        beginResult =
+          await this.dependencies.application.beginOperation(beginCommand);
+      } catch {
+        if (potentialEffect) {
+          return this.terminalizeKnownAmbiguity({
+            command,
+            operation,
+            claim,
+            finalReason: "publication_begin_failed_after_possible_effect",
+            lastErrorCode: "publication_begin_gate_rejected",
+          });
+        }
+        return this.terminalizeKnownOutcome({
+          command,
+          operation,
+          claim,
+          finalOutcome: ReviewPublicationTerminalOutcome.SupersededNoEffect,
+          finalReason: "publication_begin_gate_rejected",
+          lastErrorCode: "publication_begin_gate_rejected",
+        });
+      }
+      if (
+        beginResult.status !== BeginReviewPublicationOperationStatus.Begun &&
+        beginResult.status !== BeginReviewPublicationOperationStatus.Restored
+      ) {
+        return mapBeginFailure(beginResult.status);
+      }
+      begun = {
+        attempt: beginResult.attempt,
+        operation: beginResult.operation,
+        capability: beginResult.capability,
+      };
     }
 
     const capability = begun.capability;
@@ -214,6 +253,15 @@ export class ExecuteReviewV2PublicationOperation {
       begun.attempt.permit,
     );
     if (credentialFreshness.status !== "current") {
+      if (potentialEffect) {
+        return this.terminalizeKnownAmbiguity({
+          command,
+          operation: begun.operation,
+          claim,
+          finalReason: "credential_freshness_changed_after_possible_effect",
+          lastErrorCode: credentialFreshness.safeReason,
+        });
+      }
       return credentialFreshness.status === "unavailable"
         ? retryable(credentialFreshness.safeReason)
         : this.terminalizeKnownOutcome({
@@ -275,6 +323,41 @@ export class ExecuteReviewV2PublicationOperation {
         });
       }
 
+      const replacement = await this.removeStalePendingReviewBeforeMutation({
+        command,
+        operation: begun.operation,
+        permit: begun.attempt.permit,
+        claim,
+        gateway: mutationSession.gateway,
+        inventory,
+        priorEffectMayExist: potentialEffect,
+      });
+      if ("result" in replacement) return replacement.result;
+      claim = replacement.claim;
+      inventory = replacement.inventory;
+      const cleanupMayHaveExternalEffect =
+        replacement.cleanupMayHaveExternalEffect;
+      const priorEffectMayExist =
+        potentialEffect || cleanupMayHaveExternalEffect;
+      if (hasCurrentOperationObject(inventory, begun.operation)) {
+        return this.settleInventory({
+          command,
+          operation: begun.operation,
+          claim,
+          capability,
+          gateway: mutationSession.gateway,
+          inventory,
+          effectKind: ReviewPublicationExternalEffectKind.MarkerReconciled,
+        });
+      }
+      if (
+        begun.operation.publicationKind ===
+          ReviewPublicationKind.PendingReviewCreate &&
+        inventory.length > 0
+      ) {
+        return retryable("publication_pending_review_replacement_raced");
+      }
+
       let applied: ReviewPublicationGatewayObject;
       const mutationLease = await this.renewForMutation(command, claim);
       if ("result" in mutationLease) return mutationLease.result;
@@ -284,6 +367,15 @@ export class ExecuteReviewV2PublicationOperation {
         begun.attempt.permit,
       );
       if (immediatelyBeforeMutation.status !== "current") {
+        if (priorEffectMayExist) {
+          return this.terminalizeKnownAmbiguity({
+            command,
+            operation: begun.operation,
+            claim,
+            finalReason: "pending_review_replacement_freshness_changed",
+            lastErrorCode: immediatelyBeforeMutation.safeReason,
+          });
+        }
         return immediatelyBeforeMutation.status === "unavailable"
           ? retryable(immediatelyBeforeMutation.safeReason)
           : this.terminalizeKnownOutcome({
@@ -309,6 +401,15 @@ export class ExecuteReviewV2PublicationOperation {
         return retryable("publication_effect_gate_unavailable");
       }
       if (effectDecision === ReviewV2PublicationEffectGateDecision.Disabled) {
+        if (priorEffectMayExist) {
+          return this.terminalizeKnownAmbiguity({
+            command,
+            operation: begun.operation,
+            claim,
+            finalReason: "pending_review_replacement_effect_gate_disabled",
+            lastErrorCode: "publication_effect_gate_disabled",
+          });
+        }
         return this.terminalizeKnownOutcome({
           command,
           operation: begun.operation,
@@ -331,6 +432,7 @@ export class ExecuteReviewV2PublicationOperation {
           capability,
           gateway: mutationSession.gateway,
           error,
+          priorEffectMayExist,
         });
       }
       validateGatewayObject(applied, begun.operation);
@@ -395,6 +497,158 @@ export class ExecuteReviewV2PublicationOperation {
     } finally {
       await closeSession(mutationSession);
     }
+  }
+
+  private async removeStalePendingReviewBeforeMutation(input: {
+    readonly command: ReviewV2PublicationExecutionCommand;
+    readonly operation: ReviewPublicationOperation;
+    readonly permit: ReviewPublicationPermitIdentity;
+    readonly claim: ReviewPublicationClaimTerm;
+    readonly gateway: ReviewV2ScmReconciliationGateway;
+    readonly inventory: readonly ReviewPublicationGatewayObject[];
+    readonly priorEffectMayExist: boolean;
+  }): Promise<
+    | {
+        readonly claim: ReviewPublicationClaimTerm;
+        readonly inventory: readonly ReviewPublicationGatewayObject[];
+        readonly cleanupMayHaveExternalEffect: boolean;
+      }
+    | { readonly result: ReviewV2PublicationExecutionResult }
+  > {
+    if (
+      input.operation.publicationKind !==
+        ReviewPublicationKind.PendingReviewCreate ||
+      input.inventory.length === 0
+    ) {
+      return {
+        claim: input.claim,
+        inventory: input.inventory,
+        cleanupMayHaveExternalEffect: false,
+      };
+    }
+
+    const staleObjects = normalizeInventory(input.inventory, input.operation);
+    let claim = input.claim;
+    const cleanupLease = await this.renewForMutation(input.command, claim);
+    if ("result" in cleanupLease) return cleanupLease;
+    claim = cleanupLease.claim;
+
+    const beforeCleanup = await this.readFreshness(
+      input.command.provider,
+      input.permit,
+    );
+    if (beforeCleanup.status !== "current") {
+      return {
+        result:
+          beforeCleanup.status === "unavailable"
+            ? retryable(beforeCleanup.safeReason)
+            : input.priorEffectMayExist
+              ? await this.terminalizeKnownAmbiguity({
+                  command: input.command,
+                  operation: input.operation,
+                  claim,
+                  finalReason:
+                    "pending_review_replacement_freshness_changed_after_possible_effect",
+                  lastErrorCode: beforeCleanup.safeReason,
+                })
+              : await this.terminalizeKnownOutcome({
+                  command: input.command,
+                  operation: input.operation,
+                  claim,
+                  finalOutcome:
+                    ReviewPublicationTerminalOutcome.SupersededNoEffect,
+                  finalReason: "publication_live_facts_superseded",
+                  lastErrorCode: beforeCleanup.safeReason,
+                }),
+      };
+    }
+
+    const finalCleanupLease = await this.renewForMutation(input.command, claim);
+    if ("result" in finalCleanupLease) return finalCleanupLease;
+    claim = finalCleanupLease.claim;
+    const effectDecision = await this.authorizeEffect(
+      input.command.provider,
+      input.permit,
+      input.operation,
+    );
+    if (effectDecision !== ReviewV2PublicationEffectGateDecision.Allowed) {
+      return {
+        result:
+          effectDecision === ReviewV2PublicationEffectGateDecision.Unavailable
+            ? retryable("publication_effect_gate_unavailable")
+            : manual("publication_effect_gate_disabled"),
+      };
+    }
+
+    const [canonical, ...duplicates] = staleObjects;
+    if (!canonical) {
+      return { claim, inventory: [], cleanupMayHaveExternalEffect: false };
+    }
+    try {
+      const cleanupStatus = await input.gateway.markStaleOrDelete({
+        operation: input.operation,
+        canonicalExternalObjectId: canonical.externalObjectId,
+        duplicateExternalObjectIds: duplicates.map(
+          (object) => object.externalObjectId,
+        ),
+        compensateCanonical: true,
+      });
+      if (
+        cleanupStatus !== ReviewPublicationReceiptStatus.Compensated &&
+        cleanupStatus !== ReviewPublicationReceiptStatus.Succeeded
+      ) {
+        return {
+          result: manual("publication_pending_review_replacement_unsupported"),
+        };
+      }
+    } catch {
+      return {
+        result: retryable("publication_pending_review_replacement_unknown"),
+      };
+    }
+
+    const afterCleanup = await this.readFreshness(
+      input.command.provider,
+      input.permit,
+    );
+    if (
+      afterCleanup.status !== "current" ||
+      !sameFreshness(beforeCleanup.snapshot, afterCleanup.snapshot)
+    ) {
+      return {
+        result:
+          afterCleanup.status === "unavailable"
+            ? retryable(afterCleanup.safeReason)
+            : await this.terminalizeKnownAmbiguity({
+                command: input.command,
+                operation: input.operation,
+                claim,
+                finalReason: "pending_review_replacement_freshness_changed",
+                lastErrorCode:
+                  afterCleanup.status === "changed"
+                    ? afterCleanup.safeReason
+                    : "publication_live_facts_changed",
+              }),
+      };
+    }
+
+    let inventory: readonly ReviewPublicationGatewayObject[];
+    try {
+      inventory = await this.loadInventory(input.gateway, input.operation);
+    } catch {
+      return {
+        result: retryable("publication_pending_review_replacement_unverified"),
+      };
+    }
+    const removedIds = new Set(
+      staleObjects.map((object) => object.externalObjectId),
+    );
+    if (inventory.some((object) => removedIds.has(object.externalObjectId))) {
+      return {
+        result: retryable("publication_pending_review_replacement_incomplete"),
+      };
+    }
+    return { claim, inventory, cleanupMayHaveExternalEffect: true };
   }
 
   private async acquireClaim(input: {
@@ -570,7 +824,11 @@ export class ExecuteReviewV2PublicationOperation {
           freshness.status === "current" &&
           this.dependencies.clock.now() < input.operation.reconcileUntil
         ) {
-          return { settled: false };
+          return {
+            settled: false,
+            claim,
+            capability: input.capability,
+          };
         }
         return {
           settled: true,
@@ -611,8 +869,10 @@ export class ExecuteReviewV2PublicationOperation {
     readonly capability: ReviewPublicationOperationCapabilityFacts;
     readonly gateway: ReviewV2ScmReconciliationGateway;
     readonly error: unknown;
+    readonly priorEffectMayExist?: boolean;
   }): Promise<ReviewV2PublicationExecutionResult> {
     if (
+      input.priorEffectMayExist !== true &&
       input.error instanceof ReviewV2ScmMutationError &&
       input.error.outcome ===
         ReviewV2ScmMutationFailureOutcome.DefinitelyNoEffect
@@ -1535,6 +1795,16 @@ function reconstructLatestOperationCapability(
     operationAttempt: latest,
     targetExternalObjectId,
   });
+}
+
+function capabilityBelongsToClaim(
+  capability: ReviewPublicationOperationCapabilityFacts,
+  claim: ReviewPublicationClaimTerm,
+): boolean {
+  return (
+    capability.claimId === claim.claimId &&
+    capability.claimFencingToken === claim.fencingToken
+  );
 }
 
 function canonicalVisibleEffect(

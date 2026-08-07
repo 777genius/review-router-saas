@@ -30,6 +30,7 @@ import {
   type ReviewV2PublicationPayload,
 } from "./review-v2-publication-payloads";
 import {
+  ReviewV2ScmMutationFailureOutcome,
   ReviewV2ScmCredentialPurpose,
   ReviewV2ScmProvider,
 } from "./review-v2-publication-ports";
@@ -522,7 +523,7 @@ describe("protocol v2 provider-neutral SCM gateways", () => {
     ).resolves.toEqual({ objects: [], nextCursor: null });
   });
 
-  it("rejects a pending review whose available line conflicts with the payload", async () => {
+  it("classifies a marker-matched pending review with conflicting coordinates as stale", async () => {
     const marker = "<!-- review-router:review-conflict -->";
     const expectedComments = [
       {
@@ -557,12 +558,182 @@ describe("protocol v2 provider-neutral SCM gateways", () => {
       payload,
     );
 
-    await expect(
-      client.findAllByMarker({
-        operation: reviewOperation(),
-        cursor: null,
+    const result = await client.findAllByMarker({
+      operation: reviewOperation(),
+      cursor: null,
+    });
+
+    expect(result.objects).toEqual([
+      expect.objectContaining({
+        externalObjectId: "review:7",
+        markerHash: payload.markerHash,
       }),
-    ).rejects.toThrow("github_review_comment_identity_mismatch");
+    ]);
+    expect(result.objects[0]?.bodyHash).not.toBe(payload.bodyHash);
+  });
+
+  it("deletes an obsolete pending review idempotently before replacement", async () => {
+    const marker = "<!-- review-router:review-stale -->";
+    const requests: Array<{
+      readonly route: string;
+      readonly reviewId: unknown;
+    }> = [];
+    const payload = {
+      kind: ReviewV2PublicationPayloadKind.PendingReviewCreate,
+      marker,
+      markerHash: hash("1"),
+      bodyHash: hash("2"),
+      bodyByteCount: Buffer.byteLength(marker, "utf8"),
+      body: marker,
+      comments: [],
+    } as const;
+    const client = githubPublicationClient(
+      {
+        async request(route, parameters = {}) {
+          requests.push({ route, reviewId: parameters.review_id });
+          return { data: {} };
+        },
+        async graphql<T = unknown>(): Promise<T> {
+          throw new Error("unexpected_graphql_call");
+        },
+      },
+      payload,
+    );
+
+    await expect(
+      client.markStaleOrDelete({
+        operation: reviewOperation(),
+        canonicalExternalObjectId: "review:7",
+        duplicateExternalObjectIds: ["review:8"],
+        compensateCanonical: true,
+      }),
+    ).resolves.toBe(ReviewPublicationReceiptStatus.Compensated);
+    expect(requests).toEqual([
+      {
+        route:
+          "DELETE /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}",
+        reviewId: 7,
+      },
+      {
+        route:
+          "DELETE /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}",
+        reviewId: 8,
+      },
+    ]);
+  });
+
+  it("treats an already deleted pending review as successful cleanup", async () => {
+    const marker = "<!-- review-router:review-stale-404 -->";
+    const payload = {
+      kind: ReviewV2PublicationPayloadKind.PendingReviewCreate,
+      marker,
+      markerHash: hash("1"),
+      bodyHash: hash("2"),
+      bodyByteCount: Buffer.byteLength(marker, "utf8"),
+      body: marker,
+      comments: [],
+    } as const;
+    const client = githubPublicationClient(
+      {
+        async request() {
+          throw { status: 404 };
+        },
+        async graphql<T = unknown>(): Promise<T> {
+          throw new Error("unexpected_graphql_call");
+        },
+      },
+      payload,
+    );
+
+    await expect(
+      client.markStaleOrDelete({
+        operation: reviewOperation(),
+        canonicalExternalObjectId: "review:7",
+        duplicateExternalObjectIds: [],
+        compensateCanonical: true,
+      }),
+    ).resolves.toBe(ReviewPublicationReceiptStatus.Compensated);
+  });
+
+  it("keeps GitHub 422 mutations retryable because they can be secondary limits", async () => {
+    const marker = "<!-- review-router:summary-422 -->";
+    const payload = {
+      kind: ReviewV2PublicationPayloadKind.Summary,
+      marker,
+      markerHash: hash("1"),
+      bodyHash: hash("2"),
+      bodyByteCount: Buffer.byteLength(marker, "utf8"),
+      body: marker,
+    } as const;
+    const client = githubPublicationClient(
+      {
+        async request() {
+          throw { status: 422 };
+        },
+        async graphql<T = unknown>(): Promise<T> {
+          throw new Error("unexpected_graphql_call");
+        },
+      },
+      payload,
+    );
+
+    await expect(
+      client.applyOperation({
+        operation: operation(),
+        capability: capability(),
+      }),
+    ).rejects.toMatchObject({
+      safeCode: "github_mutation_http_422",
+      outcome: ReviewV2ScmMutationFailureOutcome.DefinitelyNoEffect,
+      retryable: true,
+    });
+  });
+
+  it("keeps a created review ambiguous when post-mutation observation fails", async () => {
+    const marker = "<!-- review-router:review-observation-failure -->";
+    const payload = {
+      kind: ReviewV2PublicationPayloadKind.PendingReviewCreate,
+      marker,
+      markerHash: hash("1"),
+      bodyHash: hash("2"),
+      bodyByteCount: Buffer.byteLength(marker, "utf8"),
+      body: marker,
+      comments: [],
+    } as const;
+    const client = githubPublicationClient(
+      {
+        async request(route) {
+          if (route.startsWith("POST ")) {
+            return {
+              data: {
+                id: 7,
+                body: marker,
+                commit_id: hash("9"),
+                state: "PENDING",
+                user: { login: "review-router[bot]" },
+                app: { slug: "review-router" },
+              },
+            };
+          }
+          throw { status: 403 };
+        },
+        async graphql<T = unknown>(): Promise<T> {
+          throw new Error("unexpected_graphql_call");
+        },
+      },
+      payload,
+    );
+
+    await expect(
+      client.applyOperation({
+        operation: reviewOperation(),
+        capability: capability(),
+      }),
+    ).rejects.toMatchObject({
+      safeCode: "github_review_post_mutation_observation_http_403",
+      outcome: ReviewV2ScmMutationFailureOutcome.EffectMayExist,
+      retryable: true,
+    });
   });
 
   it("queries managed-check inventory at the operation target commit", async () => {
