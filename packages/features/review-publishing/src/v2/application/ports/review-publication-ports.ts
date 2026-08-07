@@ -747,6 +747,10 @@ export enum CurrentReviewPublicationFact {
   Safety = "safety",
 }
 
+const currentReviewPublicationFacts: ReadonlySet<unknown> = new Set(
+  Object.values(CurrentReviewPublicationFact),
+);
+
 export class ReviewPublicationGateRejectedError extends Error {
   declare readonly unavailableFacts?: readonly CurrentReviewPublicationFact[];
 
@@ -773,9 +777,18 @@ export class ReviewPublicationGateRejectedError extends Error {
       reason ===
       ReviewPublicationGateRejectionReason.PublicationFactsUnavailable
     ) {
-      if (unavailableFacts.length === 0) {
+      if (!Array.isArray(unavailableFacts) || unavailableFacts.length === 0) {
         throw new TypeError(
           "publication_facts_unavailable_requires_at_least_one_fact",
+        );
+      }
+      if (
+        unavailableFacts.some(
+          (fact) => !currentReviewPublicationFacts.has(fact),
+        )
+      ) {
+        throw new TypeError(
+          "publication_facts_unavailable_contains_unknown_fact",
         );
       }
       this.unavailableFacts = Object.freeze(

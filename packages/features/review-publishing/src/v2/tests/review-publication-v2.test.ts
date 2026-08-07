@@ -396,6 +396,12 @@ describe("review publication v2", () => {
         [CurrentReviewPublicationFact.Permit],
       ]),
     ).toThrow("publication_unavailable_facts_require_unavailable_rejection");
+    expect(() =>
+      Reflect.construct(ReviewPublicationGateRejectedError, [
+        ReviewPublicationGateRejectionReason.PublicationFactsUnavailable,
+        ["unknown_fact"],
+      ]),
+    ).toThrow("publication_facts_unavailable_contains_unknown_fact");
   });
 
   it("classifies every unavailable fact before earlier generic not-current checks", async () => {
