@@ -356,7 +356,8 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     });
   });
 
-  it("accepts an Action v1 lifecycle witness through the outer Fastify parser without stripping it", async () => {
+  it("accepts an Action v1 revision-aware lifecycle witness through the outer Fastify parser without stripping it", async () => {
+    const markerFingerprint = `rrl_${"a".repeat(32)}`;
     const publishingV1 = {
       ...publishing,
       lifecycleObservationVersion:
@@ -368,7 +369,7 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
           verdict: "resolved",
           reasonCodes: ["provider_reconfirmed"],
           mutationEligible: true,
-          markerFingerprint: "a".repeat(24),
+          markerFingerprint,
           threadStateHash: hash("b"),
         },
       ],
@@ -390,7 +391,7 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
           {
             targetId: "target-v1",
             observation: {
-              markerFingerprint: "a".repeat(24),
+              markerFingerprint,
               threadStateHash: hash("b"),
             },
           },

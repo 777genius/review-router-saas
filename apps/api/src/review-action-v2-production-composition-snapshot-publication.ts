@@ -31,6 +31,7 @@ import {
   ReviewPublicationLifecycleExpectationStatus,
   ReviewPublicationRunControlStatus,
   ResolveCurrentPublicationLifecycle,
+  isReviewFindingFingerprint,
   renderCanonicalReviewPublication,
   resolveReviewPublicationRenderPolicyVersion,
   resolveCurrentReviewPublicationOperationIdentity,
@@ -1175,7 +1176,7 @@ function publicationLifecycleObservationVersion(
 }
 
 function lifecycleMarkerFingerprint(value: unknown): string {
-  if (typeof value !== "string" || !/^[a-f0-9]{24,64}$/u.test(value)) {
+  if (!isReviewFindingFingerprint(value)) {
     throw routeFailure(
       422,
       ReviewActionV2ProtocolErrorCode.InvariantViolation,
