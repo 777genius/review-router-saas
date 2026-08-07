@@ -7,6 +7,7 @@ import {
   CurrentMutationAuthorityStatus,
   CurrentPublicationLifecycleStatus,
   CurrentPublicationPermitStatus,
+  CurrentReviewPublicationFact,
   CurrentReviewRevisionStatus,
   CurrentReviewSafetyDecisionStatus,
   RecordReviewExternalEffectStatus,
@@ -230,6 +231,7 @@ describe("review publication v2", () => {
   it.each([
     [
       "permit",
+      CurrentReviewPublicationFact.Permit,
       {
         permits: {
           async resolve() {
@@ -243,6 +245,7 @@ describe("review publication v2", () => {
     ],
     [
       "run control",
+      CurrentReviewPublicationFact.RunControl,
       {
         runControl: {
           async resolve(input: {
@@ -259,6 +262,7 @@ describe("review publication v2", () => {
     ],
     [
       "mutation authority",
+      CurrentReviewPublicationFact.MutationAuthority,
       {
         authority: {
           async resolve() {
@@ -272,6 +276,7 @@ describe("review publication v2", () => {
     ],
     [
       "revision",
+      CurrentReviewPublicationFact.Revision,
       {
         revision: {
           async resolve() {
@@ -286,6 +291,7 @@ describe("review publication v2", () => {
     ],
     [
       "lifecycle",
+      CurrentReviewPublicationFact.Lifecycle,
       {
         lifecycle: {
           async resolve() {
@@ -300,6 +306,7 @@ describe("review publication v2", () => {
     ],
     [
       "safety",
+      CurrentReviewPublicationFact.Safety,
       {
         safety: {
           async resolve() {
@@ -313,7 +320,7 @@ describe("review publication v2", () => {
     ],
   ] as const)(
     "classifies unavailable %s facts as retryable provider-neutral capacity",
-    async (_, override) => {
+    async (_, fact, override) => {
       const harness = createHarness({ decisionOverrides: override });
 
       await expect(
@@ -321,10 +328,81 @@ describe("review publication v2", () => {
       ).rejects.toEqual(
         new ReviewPublicationGateRejectedError(
           ReviewPublicationGateRejectionReason.PublicationFactsUnavailable,
+          [fact],
         ),
       );
     },
   );
+
+  it("reports multiple unavailable facts in canonical order", async () => {
+    const harness = createHarness({
+      decisionOverrides: {
+        runControl: {
+          async resolve(input: {
+            authorizationId: string;
+            producerReleaseId: string;
+          }) {
+            return {
+              status: ReviewPublicationRunControlStatus.Unavailable,
+              ...input,
+            } as const;
+          },
+        },
+        lifecycle: {
+          async resolve() {
+            return {
+              status: CurrentPublicationLifecycleStatus.Unavailable,
+              lifecycleStateHash: null,
+              commandLedgerWatermark: null,
+            } as const;
+          },
+        },
+      },
+    });
+
+    await expect(harness.application.request(requestCommand())).rejects.toEqual(
+      new ReviewPublicationGateRejectedError(
+        ReviewPublicationGateRejectionReason.PublicationFactsUnavailable,
+        [
+          CurrentReviewPublicationFact.Lifecycle,
+          CurrentReviewPublicationFact.RunControl,
+        ],
+      ),
+    );
+  });
+
+  it("canonicalizes unavailable fact diagnostics and omits them for other rejections", () => {
+    expect(
+      new ReviewPublicationGateRejectedError(
+        ReviewPublicationGateRejectionReason.PublicationFactsUnavailable,
+        [
+          CurrentReviewPublicationFact.Safety,
+          CurrentReviewPublicationFact.Lifecycle,
+          CurrentReviewPublicationFact.Safety,
+        ],
+      ).unavailableFacts,
+    ).toEqual([
+      CurrentReviewPublicationFact.Lifecycle,
+      CurrentReviewPublicationFact.Safety,
+    ]);
+    expect(
+      new ReviewPublicationGateRejectedError(
+        ReviewPublicationGateRejectionReason.PermitNotCurrent,
+      ),
+    ).not.toHaveProperty("unavailableFacts");
+    expect(() =>
+      Reflect.construct(ReviewPublicationGateRejectedError, [
+        ReviewPublicationGateRejectionReason.PermitNotCurrent,
+        [CurrentReviewPublicationFact.Permit],
+      ]),
+    ).toThrow("publication_unavailable_facts_require_unavailable_rejection");
+    expect(() =>
+      Reflect.construct(ReviewPublicationGateRejectedError, [
+        ReviewPublicationGateRejectionReason.PublicationFactsUnavailable,
+        ["unknown_fact"],
+      ]),
+    ).toThrow("publication_facts_unavailable_contains_unknown_fact");
+  });
 
   it("classifies every unavailable fact before earlier generic not-current checks", async () => {
     const harness = createHarness({
@@ -352,6 +430,7 @@ describe("review publication v2", () => {
     await expect(harness.application.request(requestCommand())).rejects.toEqual(
       new ReviewPublicationGateRejectedError(
         ReviewPublicationGateRejectionReason.PublicationFactsUnavailable,
+        [CurrentReviewPublicationFact.Lifecycle],
       ),
     );
   });

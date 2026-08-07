@@ -19,6 +19,7 @@ import {
   ReviewPublicationCapability,
   ReviewPublicationAttemptState,
   CurrentPublicationLifecycleStatus,
+  CurrentReviewSafetyDecisionStatus,
   ReviewPublicationLifecycleExpectationStatus,
   ReviewPublicationLifecycleObservationVersion,
   ReviewPublicationTerminalOutcome,
@@ -915,7 +916,7 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     ).resolves.toBeNull();
   });
 
-  it("maps transient lifecycle unavailability to same-request HTTP retry semantics", async () => {
+  it("maps multiple transient fact gaps to deterministic same-request HTTP retry diagnostics", async () => {
     const publicationRepository = new InMemoryReviewPublicationRepository();
     const routes = createRoutes(
       publicationRepository,
@@ -928,6 +929,14 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
               status: CurrentPublicationLifecycleStatus.Unavailable,
               lifecycleStateHash: null,
               commandLedgerWatermark: null,
+            } as const;
+          },
+        },
+        safety: {
+          async resolve() {
+            return {
+              status: CurrentReviewSafetyDecisionStatus.Unavailable,
+              decisionHash: null,
             } as const;
           },
         },
@@ -950,7 +959,13 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
       error: {
         errorCode: ReviewActionV2ProtocolErrorCode.CapacityLimited,
         retryClass: "same_request",
-        details: { issues: ["publication_facts_unavailable"] },
+        details: {
+          issues: [
+            "publication_facts_unavailable",
+            "publication_fact_unavailable:lifecycle",
+            "publication_fact_unavailable:safety",
+          ],
+        },
       },
     });
     await expect(

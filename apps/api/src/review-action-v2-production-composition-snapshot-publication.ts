@@ -445,6 +445,9 @@ async function requestPublication(
           429,
           ReviewActionV2ProtocolErrorCode.CapacityLimited,
           error.reason,
+          error.unavailableFacts?.map(
+            (fact) => `publication_fact_unavailable:${fact}`,
+          ) ?? [],
         );
       }
       throw routeFailure(
@@ -1671,6 +1674,10 @@ function routeFailure(
   statusCode: ReviewActionV2RouteFailureStatus,
   errorCode: ReviewActionV2ProtocolErrorCode,
   issue: string,
+  additionalIssues: readonly string[] = [],
 ) {
-  return new ReviewActionV2RouteFailure(statusCode, errorCode, [issue]);
+  return new ReviewActionV2RouteFailure(statusCode, errorCode, [
+    issue,
+    ...additionalIssues,
+  ]);
 }

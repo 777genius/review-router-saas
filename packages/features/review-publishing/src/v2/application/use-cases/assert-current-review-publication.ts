@@ -3,6 +3,7 @@ import {
   CurrentMutationAuthorityStatus,
   CurrentPublicationLifecycleStatus,
   CurrentPublicationPermitStatus,
+  CurrentReviewPublicationFact,
   CurrentReviewRevisionStatus,
   CurrentReviewSafetyDecisionStatus,
   ReviewPublicationCapability,
@@ -43,15 +44,31 @@ export async function assertCurrentReviewPublication(input: {
       }),
     ]);
 
-  if (
-    permit.status === CurrentPublicationPermitStatus.Unavailable ||
-    runControl.status === ReviewPublicationRunControlStatus.Unavailable ||
-    authority.status === CurrentMutationAuthorityStatus.Unavailable ||
-    revision.status === CurrentReviewRevisionStatus.Unavailable ||
-    lifecycle.status === CurrentPublicationLifecycleStatus.Unavailable ||
-    safety.status === CurrentReviewSafetyDecisionStatus.Unavailable
-  ) {
-    reject(ReviewPublicationGateRejectionReason.PublicationFactsUnavailable);
+  const unavailableFacts: CurrentReviewPublicationFact[] = [];
+  if (permit.status === CurrentPublicationPermitStatus.Unavailable) {
+    unavailableFacts.push(CurrentReviewPublicationFact.Permit);
+  }
+  if (runControl.status === ReviewPublicationRunControlStatus.Unavailable) {
+    unavailableFacts.push(CurrentReviewPublicationFact.RunControl);
+  }
+  if (authority.status === CurrentMutationAuthorityStatus.Unavailable) {
+    unavailableFacts.push(CurrentReviewPublicationFact.MutationAuthority);
+  }
+  if (revision.status === CurrentReviewRevisionStatus.Unavailable) {
+    unavailableFacts.push(CurrentReviewPublicationFact.Revision);
+  }
+  if (lifecycle.status === CurrentPublicationLifecycleStatus.Unavailable) {
+    unavailableFacts.push(CurrentReviewPublicationFact.Lifecycle);
+  }
+  if (safety.status === CurrentReviewSafetyDecisionStatus.Unavailable) {
+    unavailableFacts.push(CurrentReviewPublicationFact.Safety);
+  }
+  const firstUnavailableFact = unavailableFacts[0];
+  if (firstUnavailableFact !== undefined) {
+    throw new ReviewPublicationGateRejectedError(
+      ReviewPublicationGateRejectionReason.PublicationFactsUnavailable,
+      [firstUnavailableFact, ...unavailableFacts.slice(1)],
+    );
   }
 
   if (permit.status !== CurrentPublicationPermitStatus.Current) {
@@ -133,6 +150,11 @@ function samePermit(
   );
 }
 
-function reject(reason: ReviewPublicationGateRejectionReason): never {
+function reject(
+  reason: Exclude<
+    ReviewPublicationGateRejectionReason,
+    ReviewPublicationGateRejectionReason.PublicationFactsUnavailable
+  >,
+): never {
   throw new ReviewPublicationGateRejectedError(reason);
 }
