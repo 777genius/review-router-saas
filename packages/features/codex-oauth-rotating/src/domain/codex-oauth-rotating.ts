@@ -4,6 +4,7 @@ import sodium from "libsodium-wrappers";
 import {
   createReviewExecutionBudget,
   defaultReviewJobTimeoutMinutes,
+  defaultReviewT0LifecycleTimeoutMinutes,
 } from "./review-execution-budget";
 
 export const codexRotatingAuthMode = "codex_subscription_oauth_rotating";
@@ -21,6 +22,7 @@ export const codexRotatingTimeoutMinutesVariableName =
 export enum CodexRotatingT0WorkflowSchemaVersion {
   DurableDispatchV1 = 1,
   ClientTriggeredV2 = 2,
+  ClientTriggeredLifecycleV3 = 3,
 }
 
 export const codexRotatingWorkflowSchemaVersion =
@@ -28,7 +30,28 @@ export const codexRotatingWorkflowSchemaVersion =
 export const codexRotatingCanonicalT0WorkflowSchemaVersions = [
   CodexRotatingT0WorkflowSchemaVersion.DurableDispatchV1,
   CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+  CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
 ] as const;
+
+export function isClientTriggeredT0WorkflowSchemaVersion(
+  value: number | null | undefined,
+): value is
+  | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
+  | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3 {
+  return (
+    value === CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2 ||
+    value === CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
+  );
+}
+
+export function codexRotatingT0DefaultTimeoutMinutesForSchema(
+  value: CodexRotatingT0WorkflowSchemaVersion,
+): number {
+  return value ===
+    CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
+    ? defaultReviewT0LifecycleTimeoutMinutes
+    : defaultReviewJobTimeoutMinutes;
+}
 export const codexForkAgenticSandboxCertificationVariable =
   "REVIEW_ROUTER_FORK_AGENTIC_SANDBOX";
 export const codexForkAgenticSandboxCertificationValue = "certified";
@@ -462,6 +485,20 @@ export function renderCodexRotatingAdvisoryWorkflow(
     schemaVersion === CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
   ) {
     return renderCanonicalCodexRotatingT0WorkflowV2({
+      actionRef: options.actionRef,
+      apiUrl: options.apiUrl,
+      providerInstanceId: options.providerInstanceId,
+      refreshScheduleCron,
+      claudeCodeOAuthTokenSecret: options.claudeCodeOAuthTokenSecret === true,
+      openRouterApiKeySecret: options.openRouterApiKeySecret === true,
+    });
+  }
+  if (
+    reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
+    schemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
+  ) {
+    return renderCanonicalCodexRotatingT0WorkflowV3({
       actionRef: options.actionRef,
       apiUrl: options.apiUrl,
       providerInstanceId: options.providerInstanceId,
@@ -1146,9 +1183,9 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   const refreshEnabled = refreshJob.length > 0;
   const reviewWith = parseWorkflowFlatMapping(reviewJob, "with", 4);
   const reviewSecrets = parseWorkflowFlatMapping(reviewJob, "secrets", 4);
-  const clientTriggered =
-    source.workflowSchemaVersion ===
-    CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2;
+  const clientTriggered = isClientTriggeredT0WorkflowSchemaVersion(
+    source.workflowSchemaVersion,
+  );
   const expectedConcurrencyGroup = source.providerInstanceId
     ? renderCodexRotatingConcurrencyGroup(source.providerInstanceId)
     : undefined;
@@ -1578,6 +1615,57 @@ export function renderCanonicalCodexRotatingT0WorkflowV2(
     | "openRouterApiKeySecret"
   >,
 ): string {
+  return renderCanonicalCodexRotatingClientTriggeredT0Workflow({
+    ...input,
+    workflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+    defaultTimeoutMinutes: codexRotatingT0DefaultTimeoutMinutesForSchema(
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+    ),
+  });
+}
+
+/**
+ * Immutable schema-v3 contract. It preserves the client-triggered ingress from
+ * schema v2 while reserving the complete T0 execution and publication lifecycle.
+ */
+export function renderCanonicalCodexRotatingT0WorkflowV3(
+  input: Pick<
+    CodexRotatingWorkflowOptions,
+    | "actionRef"
+    | "apiUrl"
+    | "providerInstanceId"
+    | "refreshScheduleCron"
+    | "claudeCodeOAuthTokenSecret"
+    | "openRouterApiKeySecret"
+  >,
+): string {
+  return renderCanonicalCodexRotatingClientTriggeredT0Workflow({
+    ...input,
+    workflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
+    defaultTimeoutMinutes: codexRotatingT0DefaultTimeoutMinutesForSchema(
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
+    ),
+  });
+}
+
+function renderCanonicalCodexRotatingClientTriggeredT0Workflow(
+  input: Pick<
+    CodexRotatingWorkflowOptions,
+    | "actionRef"
+    | "apiUrl"
+    | "providerInstanceId"
+    | "refreshScheduleCron"
+    | "claudeCodeOAuthTokenSecret"
+    | "openRouterApiKeySecret"
+  > & {
+    readonly workflowSchemaVersion:
+      | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
+      | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3;
+    readonly defaultTimeoutMinutes: number;
+  },
+): string {
   assertSafeActionRef(input.actionRef);
   const release = parseImmutableActionRelease(input.actionRef);
   const reusableWorkflowRef = `${release.repository}/.github/workflows/reviewrouter-t0-reusable.yml@${release.commitSha}`;
@@ -1624,9 +1712,9 @@ jobs:
       pr_number: \${{ format('{0}', github.event.pull_request.number) }}
       review_head_sha: \${{ github.event.pull_request.head.sha }}
       provider_instance_id: ${JSON.stringify(input.providerInstanceId)}
-      workflow_schema_version: 2
+      workflow_schema_version: ${input.workflowSchemaVersion}
       max_changed_lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}
-      review_timeout_minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '60') }}
+      review_timeout_minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '${input.defaultTimeoutMinutes}') }}
     secrets:
       CODEX_AUTH_JSON: \${{ secrets.${codexRotatingSecretName} }}
 ${input.claudeCodeOAuthTokenSecret === true ? "      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${input.openRouterApiKeySecret === true ? "      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}${
@@ -1650,7 +1738,7 @@ ${input.claudeCodeOAuthTokenSecret === true ? "      CLAUDE_CODE_OAUTH_TOKEN: ${
           mode: codex-oauth-refresh
           api-url: ${JSON.stringify(input.apiUrl)}
           provider-instance-id: ${JSON.stringify(input.providerInstanceId)}
-          workflow-schema-version: "2"
+          workflow-schema-version: "${input.workflowSchemaVersion}"
           auth-json: \${{ secrets.${codexRotatingSecretName} }}
 `
       : ""

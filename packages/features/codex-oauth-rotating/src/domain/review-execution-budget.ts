@@ -1,4 +1,5 @@
 export const defaultReviewJobTimeoutMinutes = 60;
+export const defaultReviewT0LifecycleTimeoutMinutes = 240;
 export const minimumReviewJobTimeoutMinutes = 10;
 export const maximumReviewJobTimeoutMinutes = 360;
 export const reviewCleanupReserveMinutes = 5;

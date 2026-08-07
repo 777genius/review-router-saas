@@ -3,6 +3,7 @@ import {
   createReviewExecutionDeadlineEpochMs,
   createReviewExecutionBudget,
   defaultReviewJobTimeoutMinutes,
+  defaultReviewT0LifecycleTimeoutMinutes,
   remainingReviewExecutionBudgetMs,
 } from "../domain/review-execution-budget";
 
@@ -14,6 +15,17 @@ describe("review execution budget", () => {
         runtimeTimeoutMinutes: 55,
       },
     );
+  });
+
+  it("keeps the T0 lifecycle budget independent from the legacy default", () => {
+    expect(defaultReviewJobTimeoutMinutes).toBe(60);
+    expect(defaultReviewT0LifecycleTimeoutMinutes).toBe(240);
+    expect(
+      createReviewExecutionBudget(defaultReviewT0LifecycleTimeoutMinutes),
+    ).toEqual({
+      jobTimeoutMinutes: 240,
+      runtimeTimeoutMinutes: 235,
+    });
   });
 
   it("supports an extended repository budget", () => {

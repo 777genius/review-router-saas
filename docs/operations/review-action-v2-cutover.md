@@ -26,7 +26,7 @@ through the `rr_admin` container wrapper in the
   target installation must approve that permission update. `Workflows: Read and
 write` is a different permission and does not authorize dispatch.
 - Client-triggered Direct V2 accepts the narrower `review-only` App profile. It
-  requires the canonical schema-2 workflow and must keep intent ingress,
+  requires the canonical schema-3 workflow for new rollouts and must keep intent ingress,
   intent admission, and server-side dispatch disabled.
 - `REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256` is configured. Supply the
   plaintext credential only to the one operator shell process; do not store it in
@@ -127,8 +127,8 @@ There are two mutually exclusive entry paths:
 - Existing identities, including every identity present during migration v7,
   are conservatively fenced as `v1_open` and use drain/activate.
 - A repository onboarded after v7 may use `initialize-direct-v2` only when it
-  has never issued a legacy mutation capability and the canonical schema-2
-  workflow inventory and all other proof facts pass.
+  has never issued a legacy mutation capability and the canonical schema-2 or
+  schema-3 workflow inventory and all other proof facts pass.
 
 Use an exact `OWNER/REPO` confirmation on every mutation:
 
@@ -205,9 +205,9 @@ After `drainNotBefore`, activation collects and immediately revalidates a
 60-second proof covering legacy admission closure, complete executable-workflow
 authority inventory, exact registered Action SHA, worker configuration,
 repository-scoped execution authority, and safety policy. Managed dispatch
-requires GitHub `actions: write`; client-triggered schema 2 proves its narrower
-execution authority from the canonical workflow inventory. Missing or
-unapproved managed-dispatch permission returns
+requires GitHub `actions: write`; client-triggered canonical schemas 2 and 3
+prove their narrower authority from workflow inventory, and new provisioning
+selects schema 3. Missing or unapproved managed-dispatch permission returns
 `dispatch_capability_unavailable` and leaves the authority in `v1_draining`.
 Transient GitHub failures abort preflight instead of being misreported as a
 permission denial:

@@ -555,7 +555,7 @@ async function createSetupPullRequestMutation(
         ? {
             codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
             codexRotatingWorkflowSchemaVersion:
-              CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+              CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
           }
         : null;
     const forkAgenticSandboxEnabled =

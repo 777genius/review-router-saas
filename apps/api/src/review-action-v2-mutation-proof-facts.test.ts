@@ -86,6 +86,22 @@ describe("ProductionReviewMutationAuthorityProofFacts", () => {
     });
   });
 
+  it("accepts the schema-v3 client-triggered lifecycle workflow", async () => {
+    const facts = await createFacts({
+      authorityMissing: true,
+      directV2InitializationEnabled: true,
+      dispatchCapabilityAvailable: false,
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
+    }).inspectDirectV2InitializationFacts({
+      scmRepositoryIdentityId: "identity-1",
+    });
+
+    expect(facts.facts.executionAuthorityMode).toBe(
+      ReviewMutationExecutionAuthorityMode.ClientTriggered,
+    );
+  });
+
   it("rejects direct V2 when the configured release is revoked despite another registered release sharing its action SHA", async () => {
     const facts = await createFacts({
       authorityMissing: true,
@@ -153,6 +169,7 @@ function createFacts(
     readonly directV2InitializationEnabled?: boolean;
     readonly releaseAttestationStatus?: ProducerReleaseAttestationStatus;
     readonly persistedRelease?: ProducerRelease | null;
+    readonly workflowSchemaVersion?: CodexRotatingT0WorkflowSchemaVersion;
   } = {},
 ): ProductionReviewMutationAuthorityProofFacts {
   const identity: ScmRepositoryIdentity = {
@@ -246,6 +263,7 @@ function createFacts(
         inventoryHash: "a".repeat(64),
         actionCommitSha: "c".repeat(40),
         workflowSchemaVersion:
+          input.workflowSchemaVersion ??
           CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
       }),
     },

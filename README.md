@@ -70,7 +70,7 @@ For a real deployment, follow the
 [end-to-end self-hosting guide](./docs/operations/review-router-self-hosted-end-to-end.md).
 Do not start from the Compose file alone: production readiness also requires an
 exact Action release, release attestations, repository authority initialization,
-and a canonical schema-2 workflow.
+and a canonical schema-3 workflow.
 
 ## Documentation
 
@@ -191,9 +191,10 @@ Only the exact value `true` enables draft review. Removing the variable, or
 setting any other value, keeps draft pull requests skipped. Fork and bot pull
 requests remain blocked in both modes.
 
-Reviews have a 60-minute job budget by default, with the review subprocess
-stopped five minutes earlier so cleanup can finish. Override the full job
-budget per repository with an integer from 10 through 360 minutes:
+New client-triggered T0 workflow schema 3 reserves 240 minutes for the complete
+review and publication lifecycle. Existing immutable schema 1 and schema 2
+workflows keep their original 60-minute fallback and remain valid. Override the
+full job budget per repository with an integer from 10 through 360 minutes:
 
 ```bash
 gh variable set REVIEW_ROUTER_TIMEOUT_MINUTES --repo OWNER/REPOSITORY --body 180

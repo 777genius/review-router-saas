@@ -25,7 +25,7 @@ This guide uses the recommended client-triggered Direct V2 path:
 
 ```text
 pull_request event
-  -> canonical schema-2 workflow
+  -> canonical schema-3 workflow
   -> GitHub OIDC
   -> self-hosted control plane authorization
   -> provider work on the GitHub runner
@@ -522,7 +522,7 @@ Do not delete or rewrite authority rows to recover a repository.
   startup failures
 - public HTTPS endpoints and GitHub webhooks work
 - GitHub App permissions match the configured profile
-- the repository workflow is canonical schema 2 at the exact Action SHA
+- the repository workflow is canonical schema 3 at the exact Action SHA
 - rotating auth was installed through the reseed flow
 - repository authority is initialized through the correct path
 - a disposable PR and a follow-up revision both complete correctly

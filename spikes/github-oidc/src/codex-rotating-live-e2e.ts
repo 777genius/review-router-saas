@@ -608,7 +608,7 @@ async function provisionRotatingWorkflow(input: {
       codexRotatingProviderInstanceId: input.providerInstanceId,
       codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
       codexRotatingWorkflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
       forkAgenticSandboxEnabled: false,
     },
     {
@@ -730,7 +730,9 @@ async function isRotatingWorkflowCurrentOnDefaultBranch(
       `${actionRepository}/.github/workflows/reviewrouter-t0-reusable.yml@${actionCommitSha}`,
     ) &&
     workflow.includes(`provider_instance_id: "${providerInstanceId}"`) &&
-    workflow.includes("workflow_schema_version: 2") &&
+    workflow.includes(
+      `workflow_schema_version: ${CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3}`,
+    ) &&
     workflow.includes(
       "CODEX_AUTH_JSON: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
     ) &&
