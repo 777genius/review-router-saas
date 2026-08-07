@@ -18,6 +18,7 @@ import {
   canonicalContextDependencyResult,
   contextGatewayV4PolicyVersion,
   createContextAttestationManifest,
+  isContextGatewayV4ValidationIssue,
   isLegacyContextDependencyManifest,
   type ContextAttestationStorePort,
   type ContextAttestationManifest,
@@ -3779,6 +3780,7 @@ function compactIssues(
 function safeContextManifestIssue(error: unknown): string | null {
   if (!(error instanceof Error)) return null;
   const message = error.message;
+  if (isContextGatewayV4ValidationIssue(message)) return message;
   if (
     /^(?:context_dependency|context_git|text_search|file_read|directory|git_fact|gateway|checkout_tree|authenticated_event_chain|previous_event|event)_[a-z0-9_]+$/.test(
       message,

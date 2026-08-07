@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  ContextGatewayV4ValidationIssue,
   ContextGatewayV4FailureClass,
   ContextGatewayV4OperationKind,
   ContextGatewayV4OutcomeKind,
@@ -8,6 +9,7 @@ import {
   contextGatewayV4ManifestVersion,
   contextGatewayV4PolicyVersion,
   createContextGatewayV4Manifest,
+  isContextGatewayV4ValidationIssue,
   successfulContextGatewayV4Receipts,
   type ContextGatewayV4Event,
 } from "../domain/context-gateway-v4-manifest";
@@ -18,6 +20,19 @@ import {
 } from "../domain/context-replay-decision";
 
 describe("ContextGatewayV4Manifest", () => {
+  it("recognizes only declared safe validation issues", () => {
+    expect(
+      isContextGatewayV4ValidationIssue(
+        ContextGatewayV4ValidationIssue.EventCountInvalid,
+      ),
+    ).toBe(true);
+    expect(
+      isContextGatewayV4ValidationIssue(
+        "context_gateway_v4_auth_private_material",
+      ),
+    ).toBe(false);
+  });
+
   it("accepts recoverable rejection followed by a complete authenticated page chain", () => {
     const manifest = createContextGatewayV4Manifest(candidate(validEvents()));
     expect(manifest.events).toHaveLength(4);
