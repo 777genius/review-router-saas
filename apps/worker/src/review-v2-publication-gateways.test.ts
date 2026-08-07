@@ -313,6 +313,12 @@ describe("protocol v2 provider-neutral SCM gateways", () => {
       githubReviewComment(index + 1),
     );
     const secondPage = [githubReviewComment(101)];
+    const expectedComments = [...firstPage, ...secondPage].map((comment) => ({
+      path: comment.path,
+      line: comment.line,
+      startLine: null,
+      body: comment.body,
+    }));
     const requests: Array<Readonly<Record<string, unknown>>> = [];
     const octokit: GitHubInstallationClient = {
       async request(route, parameters = {}) {
@@ -342,38 +348,221 @@ describe("protocol v2 provider-neutral SCM gateways", () => {
       kind: ReviewV2PublicationPayloadKind.PendingReviewCreate,
       marker,
       markerHash: hash("1"),
-      bodyHash: hash("2"),
+      bodyHash: digest({
+        body: marker,
+        commitId: hash("9"),
+        comments: expectedComments,
+      }),
       bodyByteCount: Buffer.byteLength(marker, "utf8"),
       body: marker,
-      comments: [],
+      comments: expectedComments,
     } as const;
     const client = githubPublicationClient(octokit, payload);
     const result = await client.findAllByMarker({
       operation: reviewOperation(),
       cursor: null,
     });
-    const comments = [...firstPage, ...secondPage].map((comment) => ({
-      path: comment.path,
-      line: comment.line,
-      startLine: null,
-      body: comment.body,
-    }));
-
     expect(requests.filter((request) => request.page === 2)).toHaveLength(1);
     expect(result.objects).toEqual([
       expect.objectContaining({
         externalObjectId: "review:7",
-        bodyHash: digest({ body: marker, commitId: hash("9"), comments }),
+        bodyHash: payload.bodyHash,
         observedObjectHash: digest({
           commitId: hash("9"),
           author: "review-router[bot]",
           app: "review-router",
           state: "PENDING",
           body: marker,
-          comments,
+          comments: expectedComments,
         }),
       }),
     ]);
+  });
+
+  it("restores canonical line coordinates omitted by pending GitHub reviews", async () => {
+    const marker = "<!-- review-router:review-pending -->";
+    const expectedComments = [
+      {
+        path: "src/access-policy.js",
+        line: 42,
+        startLine: null,
+        body: `finding\n${marker}:finding-1`,
+      },
+    ] as const;
+    const payload = {
+      kind: ReviewV2PublicationPayloadKind.PendingReviewCreate,
+      marker,
+      markerHash: hash("1"),
+      bodyHash: digest({
+        body: marker,
+        commitId: hash("9"),
+        comments: expectedComments,
+      }),
+      bodyByteCount: Buffer.byteLength(marker, "utf8"),
+      body: marker,
+      comments: expectedComments,
+    } as const;
+    const client = githubPublicationClient(
+      pendingReviewClient(marker, {
+        path: expectedComments[0].path,
+        body: expectedComments[0].body,
+        line: null,
+        original_line: null,
+        start_line: null,
+        original_start_line: null,
+        position: 4,
+        original_position: 4,
+      }),
+      payload,
+    );
+
+    await expect(
+      client.findAllByMarker({
+        operation: reviewOperation(),
+        cursor: null,
+      }),
+    ).resolves.toEqual({
+      objects: [
+        expect.objectContaining({
+          externalObjectId: "review:7",
+          bodyHash: payload.bodyHash,
+        }),
+      ],
+      nextCursor: null,
+    });
+  });
+
+  it("matches duplicate pending comments as a canonical multiset", async () => {
+    const marker = "<!-- review-router:review-duplicates -->";
+    const commentBody = `finding\n${marker}:finding-1`;
+    const expectedComments = [42, 43].map((line) => ({
+      path: "src/access-policy.js",
+      line,
+      startLine: null,
+      body: commentBody,
+    }));
+    const payload = {
+      kind: ReviewV2PublicationPayloadKind.PendingReviewCreate,
+      marker,
+      markerHash: hash("1"),
+      bodyHash: digest({
+        body: marker,
+        commitId: hash("9"),
+        comments: expectedComments,
+      }),
+      bodyByteCount: Buffer.byteLength(marker, "utf8"),
+      body: marker,
+      comments: expectedComments,
+    } as const;
+    const client = githubPublicationClient(
+      pendingReviewClient(
+        marker,
+        expectedComments.map((comment, index) => ({
+          path: comment.path,
+          body: comment.body,
+          line: null,
+          original_line: null,
+          start_line: null,
+          original_start_line: null,
+          position: index + 4,
+          original_position: index + 4,
+        })),
+      ),
+      payload,
+    );
+
+    const result = await client.findAllByMarker({
+      operation: reviewOperation(),
+      cursor: null,
+    });
+
+    expect(result.objects).toEqual([
+      expect.objectContaining({ bodyHash: payload.bodyHash }),
+    ]);
+  });
+
+  it("does not accept a pending review as a submitted review", async () => {
+    const marker = "<!-- review-router:review-submitted -->";
+    const comments = [
+      {
+        path: "src/access-policy.js",
+        line: 42,
+        startLine: null,
+        body: `finding\n${marker}:finding-1`,
+      },
+    ] as const;
+    const payload = {
+      kind: ReviewV2PublicationPayloadKind.SubmittedReview,
+      marker,
+      markerHash: hash("1"),
+      bodyHash: digest({ body: marker, commitId: hash("9"), comments }),
+      bodyByteCount: Buffer.byteLength(marker, "utf8"),
+      body: marker,
+      comments,
+    } as const;
+    const client = githubPublicationClient(
+      pendingReviewClient(marker, [
+        {
+          path: comments[0].path,
+          body: comments[0].body,
+          line: null,
+          original_line: null,
+          start_line: null,
+          original_start_line: null,
+        },
+      ]),
+      payload,
+    );
+
+    await expect(
+      client.findAllByMarker({
+        operation: reviewOperation(),
+        cursor: null,
+      }),
+    ).resolves.toEqual({ objects: [], nextCursor: null });
+  });
+
+  it("rejects a pending review whose available line conflicts with the payload", async () => {
+    const marker = "<!-- review-router:review-conflict -->";
+    const expectedComments = [
+      {
+        path: "src/access-policy.js",
+        line: 42,
+        startLine: null,
+        body: `finding\n${marker}:finding-1`,
+      },
+    ] as const;
+    const payload = {
+      kind: ReviewV2PublicationPayloadKind.PendingReviewCreate,
+      marker,
+      markerHash: hash("1"),
+      bodyHash: digest({
+        body: marker,
+        commitId: hash("9"),
+        comments: expectedComments,
+      }),
+      bodyByteCount: Buffer.byteLength(marker, "utf8"),
+      body: marker,
+      comments: expectedComments,
+    } as const;
+    const client = githubPublicationClient(
+      pendingReviewClient(marker, {
+        path: expectedComments[0].path,
+        body: expectedComments[0].body,
+        line: 43,
+        original_line: 43,
+        start_line: null,
+        original_start_line: null,
+      }),
+      payload,
+    );
+
+    await expect(
+      client.findAllByMarker({
+        operation: reviewOperation(),
+        cursor: null,
+      }),
+    ).rejects.toThrow("github_review_comment_identity_mismatch");
   });
 
   it("queries managed-check inventory at the operation target commit", async () => {
@@ -470,6 +659,39 @@ const githubRepository = {
   owner: "owner",
   repo: "repo",
 } as const;
+
+function pendingReviewClient(
+  marker: string,
+  comments:
+    | Readonly<Record<string, unknown>>
+    | readonly Readonly<Record<string, unknown>>[],
+): GitHubInstallationClient {
+  return {
+    async request(route) {
+      if (route.endsWith("/reviews")) {
+        return {
+          data: [
+            {
+              id: 7,
+              body: marker,
+              commit_id: hash("9"),
+              state: "PENDING",
+              user: { login: "review-router[bot]" },
+              app: { slug: "review-router" },
+            },
+          ],
+        };
+      }
+      if (route.endsWith("/comments")) {
+        return { data: Array.isArray(comments) ? comments : [comments] };
+      }
+      throw new Error("unexpected_request_call");
+    },
+    async graphql<T = unknown>(): Promise<T> {
+      throw new Error("unexpected_graphql_call");
+    },
+  };
+}
 
 function githubRevisionClient(
   headSequence: readonly [string, string],
