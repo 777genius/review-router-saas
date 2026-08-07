@@ -28,6 +28,51 @@ export enum ContextGatewayV4OperationKind {
   UnsupportedTool = "unsupported_tool",
 }
 
+export enum ContextGatewayV4ValidationIssue {
+  EventChainInvalid = "context_gateway_v4_event_chain_invalid",
+  EventCountInvalid = "context_gateway_v4_event_count_invalid",
+  EventKindInvalid = "context_gateway_v4_event_kind_invalid",
+  FailureClassInvalid = "context_gateway_v4_failure_class_invalid",
+  FileCompletionInvalid = "context_gateway_v4_file_completion_invalid",
+  FileContentKindInvalid = "context_gateway_v4_file_content_kind_invalid",
+  FileContentMetadataIncomplete = "context_gateway_v4_file_content_metadata_incomplete",
+  FileLineCountInvalid = "context_gateway_v4_file_line_count_invalid",
+  FileRangeGap = "context_gateway_v4_file_range_gap",
+  FileRangeIncomplete = "context_gateway_v4_file_range_incomplete",
+  FileResultShapeInvalid = "context_gateway_v4_file_result_shape_invalid",
+  GitFactInvalid = "context_gateway_v4_git_fact_invalid",
+  GitFactResultShapeInvalid = "context_gateway_v4_git_fact_result_shape_invalid",
+  GitFactResultInvalid = "context_gateway_v4_git_fact_result_invalid",
+  ManifestNotAcceptable = "context_gateway_v4_manifest_not_acceptable",
+  ManifestTooLarge = "context_gateway_v4_manifest_too_large",
+  ManifestVersionUnsupported = "context_gateway_v4_manifest_version_unsupported",
+  OutcomeShapeInvalid = "context_gateway_v4_outcome_shape_invalid",
+  OperationShapeInvalid = "context_gateway_v4_operation_shape_invalid",
+  PageChainIncomplete = "context_gateway_v4_page_chain_incomplete",
+  PageChainInvalid = "context_gateway_v4_page_chain_invalid",
+  PageCompletionInvalid = "context_gateway_v4_page_completion_invalid",
+  PagePathChainInvalid = "context_gateway_v4_page_path_chain_invalid",
+  PageResultShapeInvalid = "context_gateway_v4_page_result_shape_invalid",
+  ReasonInvalid = "context_gateway_v4_reason_invalid",
+  ResultMissing = "context_gateway_v4_result_missing",
+  SequenceInvalid = "context_gateway_v4_sequence_invalid",
+  TerminalFailurePresent = "context_gateway_v4_terminal_failure_present",
+  TerminalHashInvalid = "context_gateway_v4_terminal_hash_invalid",
+  UnsupportedToolSucceeded = "context_gateway_v4_unsupported_tool_succeeded",
+}
+
+const contextGatewayV4ValidationIssues = new Set<string>(
+  Object.values(ContextGatewayV4ValidationIssue),
+);
+
+export function isContextGatewayV4ValidationIssue(
+  value: unknown,
+): value is ContextGatewayV4ValidationIssue {
+  return (
+    typeof value === "string" && contextGatewayV4ValidationIssues.has(value)
+  );
+}
+
 export type ContextGatewayV4Event = Readonly<{
   sequence: number;
   previousEventHash: string;
@@ -75,7 +120,7 @@ export function createContextGatewayV4Manifest(
     candidate.manifestVersion !== contextGatewayV4ManifestVersion ||
     candidate.gatewayPolicyVersion !== contextGatewayV4PolicyVersion
   ) {
-    throw new Error("context_gateway_v4_manifest_version_unsupported");
+    throw new Error(ContextGatewayV4ValidationIssue.ManifestVersionUnsupported);
   }
   assertSha256(candidate.gatewayBinaryHash, "gateway_binary_hash");
   assertGitOid(candidate.checkoutTreeOid, "checkout_tree_oid");
@@ -86,21 +131,21 @@ export function createContextGatewayV4Manifest(
     candidate.confinementTainted !== false ||
     candidate.terminalFailureClass !== null
   ) {
-    throw new Error("context_gateway_v4_manifest_not_acceptable");
+    throw new Error(ContextGatewayV4ValidationIssue.ManifestNotAcceptable);
   }
   if (
     !Array.isArray(candidate.events) ||
     candidate.events.length < 1 ||
     candidate.events.length > contextGatewayV4ManifestMaxEvents
   ) {
-    throw new Error("context_gateway_v4_event_count_invalid");
+    throw new Error(ContextGatewayV4ValidationIssue.EventCountInvalid);
   }
   const events = candidate.events.map((event, index) =>
     normalizeEvent(event, index + 1),
   );
   assertEventChain(events, candidate.eventChainSeedHash);
   if (events.at(-1)?.eventHash !== candidate.authenticatedChainHash) {
-    throw new Error("context_gateway_v4_terminal_hash_invalid");
+    throw new Error(ContextGatewayV4ValidationIssue.TerminalHashInvalid);
   }
   assertSuccessfulEvidenceCompleteness(events);
   const manifest = Object.freeze({
@@ -119,7 +164,7 @@ export function createContextGatewayV4Manifest(
     canonicalContextGatewayV4ManifestBytes(manifest).byteLength >
     contextGatewayV4ManifestMaxBytes
   ) {
-    throw new Error("context_gateway_v4_manifest_too_large");
+    throw new Error(ContextGatewayV4ValidationIssue.ManifestTooLarge);
   }
   return manifest;
 }
@@ -165,7 +210,7 @@ function normalizeEvent(
   expectedSequence: number,
 ): ContextGatewayV4Event {
   if (event.sequence !== expectedSequence) {
-    throw new Error("context_gateway_v4_sequence_invalid");
+    throw new Error(ContextGatewayV4ValidationIssue.SequenceInvalid);
   }
   assertSha256(event.previousEventHash, "previous_event_hash");
   assertSha256(event.eventHash, "event_hash");
@@ -177,7 +222,7 @@ function normalizeEvent(
     !Object.values(ContextGatewayV4OutcomeKind).includes(event.outcome) ||
     event.operation?.kind !== event.operationKind
   ) {
-    throw new Error("context_gateway_v4_event_kind_invalid");
+    throw new Error(ContextGatewayV4ValidationIssue.EventKindInvalid);
   }
   const operation = normalizeOperation(event.operation);
   const succeeded = event.outcome === ContextGatewayV4OutcomeKind.Succeeded;
@@ -192,7 +237,7 @@ function normalizeEvent(
         event.operationReceiptId !== null ||
         event.sanitizedReason === null
   ) {
-    throw new Error("context_gateway_v4_outcome_shape_invalid");
+    throw new Error(ContextGatewayV4ValidationIssue.OutcomeShapeInvalid);
   }
   if (event.operationReceiptId !== null) {
     assertSha256(event.operationReceiptId, "operation_receipt_id");
@@ -201,19 +246,19 @@ function normalizeEvent(
     event.sanitizedReason !== null &&
     !/^[a-z0-9_]{1,160}$/.test(event.sanitizedReason)
   ) {
-    throw new Error("context_gateway_v4_reason_invalid");
+    throw new Error(ContextGatewayV4ValidationIssue.ReasonInvalid);
   }
   if (
     event.failureClass !== null &&
     !Object.values(ContextGatewayV4FailureClass).includes(event.failureClass)
   ) {
-    throw new Error("context_gateway_v4_failure_class_invalid");
+    throw new Error(ContextGatewayV4ValidationIssue.FailureClassInvalid);
   }
   if (
     event.failureClass === ContextGatewayV4FailureClass.ConfinementViolation ||
     event.failureClass === ContextGatewayV4FailureClass.InfrastructureFailure
   ) {
-    throw new Error("context_gateway_v4_terminal_failure_present");
+    throw new Error(ContextGatewayV4ValidationIssue.TerminalFailurePresent);
   }
   const result = event.result === null ? null : normalizeResult(event);
   return Object.freeze({
@@ -246,7 +291,7 @@ function normalizeOperation(
     operation.fact !== "changed_paths" &&
     operation.fact !== "diff_stat"
   ) {
-    throw new Error("context_gateway_v4_git_fact_invalid");
+    throw new Error(ContextGatewayV4ValidationIssue.GitFactInvalid);
   }
   return Object.freeze({ ...operation });
 }
@@ -255,7 +300,9 @@ function normalizeResult(
   event: ContextGatewayV4Event,
 ): Readonly<Record<string, unknown>> {
   const result = event.result;
-  if (result === null) throw new Error("context_gateway_v4_result_missing");
+  if (result === null) {
+    throw new Error(ContextGatewayV4ValidationIssue.ResultMissing);
+  }
   switch (event.operationKind) {
     case ContextGatewayV4OperationKind.FileRead: {
       const extendedFileEvidence = Object.hasOwn(result, "contentKind");
@@ -285,18 +332,22 @@ function normalizeResult(
       assertNonNegativeInteger(result.byteCount, "file_byte_count");
       if (extendedFileEvidence) {
         if (result.contentKind !== "text" && result.contentKind !== "binary") {
-          throw new Error("context_gateway_v4_file_content_kind_invalid");
+          throw new Error(
+            ContextGatewayV4ValidationIssue.FileContentKindInvalid,
+          );
         }
         if (result.contentKind === "text") {
           assertNonNegativeInteger(result.lineCount, "file_line_count");
         } else if (result.lineCount !== null) {
-          throw new Error("context_gateway_v4_file_line_count_invalid");
+          throw new Error(ContextGatewayV4ValidationIssue.FileLineCountInvalid);
         }
       } else if (Object.hasOwn(result, "lineCount")) {
-        throw new Error("context_gateway_v4_file_content_metadata_incomplete");
+        throw new Error(
+          ContextGatewayV4ValidationIssue.FileContentMetadataIncomplete,
+        );
       }
       if (typeof result.eof !== "boolean" || result.complete !== result.eof) {
-        throw new Error("context_gateway_v4_file_completion_invalid");
+        throw new Error(ContextGatewayV4ValidationIssue.FileCompletionInvalid);
       }
       break;
     }
@@ -347,7 +398,7 @@ function normalizeResult(
           ? result.nextCursorHash !== null
           : !isSha256(result.nextCursorHash))
       ) {
-        throw new Error("context_gateway_v4_page_completion_invalid");
+        throw new Error(ContextGatewayV4ValidationIssue.PageCompletionInvalid);
       }
       break;
     case ContextGatewayV4OperationKind.GitFact:
@@ -359,11 +410,11 @@ function normalizeResult(
       assertSha256(result.resultHash, "git_fact_result_hash");
       assertNonNegativeInteger(result.itemCount, "git_fact_item_count");
       if (result.complete !== true || result.fact !== event.operation.fact) {
-        throw new Error("context_gateway_v4_git_fact_result_invalid");
+        throw new Error(ContextGatewayV4ValidationIssue.GitFactResultInvalid);
       }
       break;
     case ContextGatewayV4OperationKind.UnsupportedTool:
-      throw new Error("context_gateway_v4_unsupported_tool_succeeded");
+      throw new Error(ContextGatewayV4ValidationIssue.UnsupportedToolSucceeded);
   }
   return Object.freeze({ ...result });
 }
@@ -438,23 +489,25 @@ function assertCompletePageChain(
       result.aggregateItemCount !==
         aggregateCount + Number(result.pageItemCount)
     ) {
-      throw new Error("context_gateway_v4_page_chain_invalid");
+      throw new Error(ContextGatewayV4ValidationIssue.PageChainInvalid);
     }
     for (const pathHash of result.pagePathHashes as readonly string[]) {
       if (aggregatePathHashes.has(pathHash)) {
-        throw new Error("context_gateway_v4_page_path_chain_invalid");
+        throw new Error(ContextGatewayV4ValidationIssue.PagePathChainInvalid);
       }
       aggregatePathHashes.add(pathHash);
     }
     if (result.aggregatePathCount !== aggregatePathHashes.size) {
-      throw new Error("context_gateway_v4_page_path_chain_invalid");
+      throw new Error(ContextGatewayV4ValidationIssue.PagePathChainInvalid);
     }
     aggregateCount = Number(result.aggregateItemCount);
     terminal = result.complete === true;
     expectedCursorInputHash =
       typeof result.nextCursorHash === "string" ? result.nextCursorHash : null;
   }
-  if (!terminal) throw new Error("context_gateway_v4_page_chain_incomplete");
+  if (!terminal) {
+    throw new Error(ContextGatewayV4ValidationIssue.PageChainIncomplete);
+  }
 }
 
 function assertCompleteFileRanges(
@@ -468,19 +521,19 @@ function assertCompleteFileRanges(
     }))
     .sort((left, right) => left.start - right.start || left.end - right.end);
   if (spans[0]?.start !== 0) {
-    throw new Error("context_gateway_v4_file_range_incomplete");
+    throw new Error(ContextGatewayV4ValidationIssue.FileRangeIncomplete);
   }
   let coveredUntil = 0;
   let eofCovered = false;
   for (const span of spans) {
     if (span.start > coveredUntil) {
-      throw new Error("context_gateway_v4_file_range_gap");
+      throw new Error(ContextGatewayV4ValidationIssue.FileRangeGap);
     }
     coveredUntil = Math.max(coveredUntil, span.end);
     if (span.eof && span.end <= coveredUntil) eofCovered = true;
   }
   if (!eofCovered) {
-    throw new Error("context_gateway_v4_file_range_incomplete");
+    throw new Error(ContextGatewayV4ValidationIssue.FileRangeIncomplete);
   }
 }
 
@@ -491,7 +544,7 @@ function assertEventChain(
   let previous = eventChainSeedHash;
   for (const event of events) {
     if (event.previousEventHash !== previous) {
-      throw new Error("context_gateway_v4_event_chain_invalid");
+      throw new Error(ContextGatewayV4ValidationIssue.EventChainInvalid);
     }
     previous = event.eventHash;
   }
@@ -515,7 +568,7 @@ function toCanonicalValue(manifest: ContextGatewayV4Manifest): unknown {
 function assertExactKeys(
   value: Readonly<Record<string, unknown>>,
   expected: readonly string[],
-  field: string,
+  field: "operation" | "file_result" | "page_result" | "git_fact_result",
 ): void {
   const actual = Object.keys(value).sort();
   const sorted = [...expected].sort();
@@ -523,7 +576,22 @@ function assertExactKeys(
     actual.length !== sorted.length ||
     actual.some((key, index) => key !== sorted[index])
   ) {
-    throw new Error(`context_gateway_v4_${field}_shape_invalid`);
+    throw new Error(contextGatewayV4ShapeIssue(field));
+  }
+}
+
+function contextGatewayV4ShapeIssue(
+  field: "operation" | "file_result" | "page_result" | "git_fact_result",
+): ContextGatewayV4ValidationIssue {
+  switch (field) {
+    case "operation":
+      return ContextGatewayV4ValidationIssue.OperationShapeInvalid;
+    case "file_result":
+      return ContextGatewayV4ValidationIssue.FileResultShapeInvalid;
+    case "page_result":
+      return ContextGatewayV4ValidationIssue.PageResultShapeInvalid;
+    case "git_fact_result":
+      return ContextGatewayV4ValidationIssue.GitFactResultShapeInvalid;
   }
 }
 

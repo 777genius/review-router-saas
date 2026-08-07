@@ -306,6 +306,57 @@ describe("Review Action v2 context attestation composition", () => {
     );
   });
 
+  it("reports the safe v4 validator reason for an empty seal transcript", async () => {
+    const fixture = await createFixture({
+      gatewayPolicyVersion: "context-gateway-v4",
+      release: { contextGatewayPolicyVersion: "context-gateway-v4" },
+    });
+    const opened = await fixture.routes.openGateway!.execute(
+      fixture.openRequest,
+    );
+    const sessionId = required(opened.result.sessionId);
+    const manifest = sourceV4Manifest({
+      sessionId,
+      sessionSecret: Buffer.from(
+        required(opened.result.gatewaySessionSecret),
+        "base64url",
+      ),
+      eventChainSeedHash: required(opened.result.eventChainSeedHash),
+    });
+    const transcriptCanonicalJson = stableJson({
+      ...manifest,
+      authenticatedChainHash: required(opened.result.eventChainSeedHash),
+      events: [],
+    });
+
+    await expect(
+      fixture.routes.sealGateway!.execute(
+        await sealRequest({
+          fixture,
+          sessionId,
+          sealCapability: required(opened.result.sealCapability),
+          transcriptCanonicalJson,
+          replayMaterialCanonicalJson: stableJson({
+            materialVersion: 1,
+            sourceDependencies: [],
+          }),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      issues: [
+        "context_transcript_invalid",
+        "context_gateway_v4_event_count_invalid",
+      ],
+    });
+    await expect(
+      fixture.dependencies.store.findSession(sessionId),
+    ).resolves.toMatchObject({
+      eventCount: 0,
+      state: "active",
+    });
+  });
+
   it("preserves legacy gateway crypto, capability, replay AAD, and attestation preimages", async () => {
     const fixture = await createFixture();
     const opened = await fixture.routes.openGateway!.execute(
