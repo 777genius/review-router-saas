@@ -738,10 +738,54 @@ export enum ReviewPublicationGateRejectionReason {
   SafetyDecisionMismatch = "safety_decision_mismatch",
 }
 
+export enum CurrentReviewPublicationFact {
+  Permit = "permit",
+  RunControl = "run_control",
+  MutationAuthority = "mutation_authority",
+  Revision = "revision",
+  Lifecycle = "lifecycle",
+  Safety = "safety",
+}
+
 export class ReviewPublicationGateRejectedError extends Error {
-  constructor(readonly reason: ReviewPublicationGateRejectionReason) {
+  declare readonly unavailableFacts?: readonly CurrentReviewPublicationFact[];
+
+  constructor(
+    reason: ReviewPublicationGateRejectionReason.PublicationFactsUnavailable,
+    unavailableFacts: readonly [
+      CurrentReviewPublicationFact,
+      ...CurrentReviewPublicationFact[],
+    ],
+  );
+  constructor(
+    reason: Exclude<
+      ReviewPublicationGateRejectionReason,
+      ReviewPublicationGateRejectionReason.PublicationFactsUnavailable
+    >,
+  );
+  constructor(
+    readonly reason: ReviewPublicationGateRejectionReason,
+    unavailableFacts: readonly CurrentReviewPublicationFact[] = [],
+  ) {
     super(reason);
     this.name = "ReviewPublicationGateRejectedError";
+    if (
+      reason ===
+      ReviewPublicationGateRejectionReason.PublicationFactsUnavailable
+    ) {
+      if (unavailableFacts.length === 0) {
+        throw new TypeError(
+          "publication_facts_unavailable_requires_at_least_one_fact",
+        );
+      }
+      this.unavailableFacts = Object.freeze(
+        [...new Set(unavailableFacts)].sort(),
+      );
+    } else if (unavailableFacts.length > 0) {
+      throw new TypeError(
+        "publication_unavailable_facts_require_unavailable_rejection",
+      );
+    }
   }
 }
 
