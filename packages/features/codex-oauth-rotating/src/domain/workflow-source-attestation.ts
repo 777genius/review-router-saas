@@ -4,6 +4,7 @@ import {
   CodexRotatingT0WorkflowSchemaVersion,
   renderCanonicalCodexRotatingT0WorkflowV1,
   renderCanonicalCodexRotatingT0WorkflowV2,
+  renderCanonicalCodexRotatingT0WorkflowV3,
   type CodexRotatingWorkflowSourceMetadata,
 } from "./codex-oauth-rotating";
 
@@ -20,7 +21,9 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
     workflowSchemaVersion !==
       CodexRotatingT0WorkflowSchemaVersion.DurableDispatchV1 &&
     workflowSchemaVersion !==
-      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2 &&
+    workflowSchemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
   ) {
     throw new Error("codex_rotating_t0_workflow_metadata_missing");
   }
@@ -39,7 +42,10 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
     workflowSchemaVersion ===
     CodexRotatingT0WorkflowSchemaVersion.DurableDispatchV1
       ? renderCanonicalCodexRotatingT0WorkflowV1
-      : renderCanonicalCodexRotatingT0WorkflowV2;
+      : workflowSchemaVersion ===
+          CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
+        ? renderCanonicalCodexRotatingT0WorkflowV2
+        : renderCanonicalCodexRotatingT0WorkflowV3;
   const expectedWorkflow = renderExpected({
     actionRef,
     apiUrl,

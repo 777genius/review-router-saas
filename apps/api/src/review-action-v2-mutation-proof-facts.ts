@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { ActionControlPlaneRepositoryPort } from "@reviewrouter/features-action-control-plane";
-import { CodexRotatingT0WorkflowSchemaVersion } from "@reviewrouter/features-codex-oauth-rotating";
+import { isClientTriggeredT0WorkflowSchemaVersion } from "@reviewrouter/features-codex-oauth-rotating";
 import {
   ProducerReleaseAttestationStatus,
   ProducerReleaseState,
@@ -165,8 +165,7 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
       await this.isExactRegisteredReleaseSelected(inventory.actionCommitSha);
     const clientTriggeredWorkflowAvailable =
       inventory.compatible &&
-      inventory.workflowSchemaVersion ===
-        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2;
+      isClientTriggeredT0WorkflowSchemaVersion(inventory.workflowSchemaVersion);
     const executionAuthorityMode = dispatchCapability.available
       ? ReviewMutationExecutionAuthorityMode.ManagedDispatch
       : clientTriggeredWorkflowAvailable

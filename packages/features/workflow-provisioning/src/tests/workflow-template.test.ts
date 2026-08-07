@@ -215,6 +215,9 @@ describe("renderReviewRouterWorkflow", () => {
         : "";
     expect(content).toContain("  pull_request:");
     expect(content).toContain("workflow_schema_version: 2");
+    expect(content).toContain(
+      "review_timeout_minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60') }}",
+    );
     expect(scanCodexRotatingAdvisoryWorkflow(content)).toEqual({
       valid: true,
       errors: [],
@@ -425,11 +428,30 @@ describe("renderReviewRouterWorkflow", () => {
         ".github/workflows/reviewrouter-t0-reusable.yml@",
         'provider_instance_id: "codex-rotating:123456"',
         "workflow_schema_version: 2",
+        "review_timeout_minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60') }}",
         "CODEX_AUTH_JSON: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
       ]),
     ]);
     expect(markers[0]).not.toContain("pull_request_target:");
     expect(markers[0]).not.toContain("mode: codex-oauth-rotating");
+  });
+
+  it("exports the lifecycle timeout only for client-triggered T0 schema v3", () => {
+    const markers = getCodexRotatingWorkflowSetupContentMarkerGroups({
+      providerInstanceId: "codex-rotating:123456",
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
+    });
+
+    expect(markers).toEqual([
+      expect.arrayContaining([
+        "pull_request:",
+        "workflow_schema_version: 3",
+        "review_timeout_minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '240') }}",
+      ]),
+    ]);
+    expect(markers[0]).not.toContain("workflow_schema_version: 2");
   });
 
   it("renders a review-only pull request workflow", () => {

@@ -21,12 +21,14 @@ import {
   codexRotatingAuthMode,
   codexRotatingSecretName,
   CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
   computeCodexAuthGenerationHash,
   computeEncryptedPayloadDigest,
   decodeCodexRotatingSetupManifest,
   encodeCodexRotatingSetupManifest,
   encryptCodexRotatingAuthForGitHubSecret,
   InMemoryCodexRotatingLeaseStore,
+  isClientTriggeredT0WorkflowSchemaVersion,
   parseCodexRotatingEncryptedWritebackRequest,
   pruneCodexRotatingChildEnv,
   readCodexRotatingWorkflowSourceMetadata,
@@ -204,6 +206,25 @@ function writeExecutable(path: string, content: string): void {
 }
 
 describe("Codex rotating auth domain", () => {
+  it("classifies only client-triggered T0 schema versions", () => {
+    expect(
+      isClientTriggeredT0WorkflowSchemaVersion(
+        CodexRotatingT0WorkflowSchemaVersion.DurableDispatchV1,
+      ),
+    ).toBe(false);
+    expect(
+      isClientTriggeredT0WorkflowSchemaVersion(
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+      ),
+    ).toBe(true);
+    expect(
+      isClientTriggeredT0WorkflowSchemaVersion(
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
+      ),
+    ).toBe(true);
+    expect(isClientTriggeredT0WorkflowSchemaVersion(null)).toBe(false);
+  });
+
   it("validates ChatGPT Codex auth and hashes exact bytes", () => {
     const result = validateCodexAuthJsonBytes({
       authJsonBytes: validAuthJson,
@@ -710,6 +731,9 @@ exit 17
     expect(workflow).toContain(
       "review_head_sha: ${{ inputs.review_head_sha }}",
     );
+    expect(workflow).toContain(
+      "review_timeout_minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60') }}",
+    );
     expect(workflow).not.toContain("runs-on:");
     expect(workflow).not.toContain("steps:");
     expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
@@ -818,6 +842,9 @@ exit 17
       "review_head_sha: ${{ github.event.pull_request.head.sha }}",
     );
     expect(clientTriggeredWorkflow).toContain(
+      "review_timeout_minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60') }}",
+    );
+    expect(clientTriggeredWorkflow).toContain(
       "github.event.pull_request.head.repo.full_name == github.repository",
     );
     expect(clientTriggeredWorkflow).toContain("cancel-in-progress: false");
@@ -832,6 +859,54 @@ exit 17
     ).toMatchObject({
       actionRef: `777genius/review-router@${actionSha}`,
       workflowSchemaVersion: 2,
+    });
+    expect(workflowDocumentSemanticSha256(clientTriggeredWorkflow)).toBe(
+      "0a2af7cb0a40125afcaa5fb0de3c9d058497e317fa5c68a809bee54fec5a3842",
+    );
+
+    const lifecycleWorkflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:1163183284",
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    expect(lifecycleWorkflow).toContain("workflow_schema_version: 3");
+    expect(lifecycleWorkflow).toContain(
+      "review_timeout_minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '240') }}",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(lifecycleWorkflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(lifecycleWorkflow),
+    ).toMatchObject({
+      actionRef: `777genius/review-router@${actionSha}`,
+      workflowSchemaVersion: 3,
+    });
+    expect(workflowDocumentSemanticSha256(lifecycleWorkflow)).toBe(
+      "daa7a6562a4a3484f2c2ea6474f3ab5c51df509172456f4565bcc3c437d59e96",
+    );
+
+    const scheduledLifecycleWorkflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:1163183284",
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    expect(scheduledLifecycleWorkflow).toContain(
+      'workflow-schema-version: "3"',
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(scheduledLifecycleWorkflow),
+    ).toEqual({
+      valid: true,
+      errors: [],
     });
 
     const wrongClientHead = clientTriggeredWorkflow.replace(

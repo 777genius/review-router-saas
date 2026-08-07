@@ -58,7 +58,10 @@ when the action is run through a wrapper.
 
 ## Events
 
-Client-triggered Direct V2 uses canonical workflow schema 2. It is valid only
+New client-triggered Direct V2 installations use canonical workflow schema 3.
+Schema 2 remains valid for existing and queued workflows, but keeps its original
+60-minute fallback. Schema 3 preserves the same ingress and permission contract
+while reserving 240 minutes for the complete T0 lifecycle. Both are valid only
 for same-repository PRs where the action performs OIDC admission itself:
 
 ```yaml
@@ -67,7 +70,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 ```
 
-The generated schema-2 workflow also requires a non-bot same-repository head,
+The generated schema-3 workflow also requires a non-bot same-repository head,
 binds `pr_number` and `review_head_sha` to the pull-request event, grants only
 `contents: read`, `pull-requests: read`, and `id-token: write`, and calls the
 reusable workflow at the registered full 40-character Action SHA. It has no
@@ -152,7 +155,7 @@ older revision must not publish as fresh findings for the new revision.
 
 ## Permission Profiles
 
-- `review-only`: canonical schema-2 client-triggered PR workflows. No
+- `review-only`: canonical schema-2 or schema-3 client-triggered PR workflows. No
   server-side dispatch.
 - `managed-review`: server-side durable `workflow_dispatch` and cancellation.
 - `provisioning`: ReviewRouter creates setup PRs and repo secrets.

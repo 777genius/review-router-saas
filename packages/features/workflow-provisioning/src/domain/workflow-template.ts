@@ -8,9 +8,11 @@ import {
   codexRotatingMaxChangedLinesVariableName,
   codexRotatingReviewDraftsVariableName,
   codexRotatingSecretName,
+  codexRotatingT0DefaultTimeoutMinutesForSchema,
   codexRotatingTimeoutMinutesVariableName,
   CodexRotatingReviewActionV2Mode,
   CodexRotatingT0WorkflowSchemaVersion,
+  isClientTriggeredT0WorkflowSchemaVersion,
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -895,9 +897,12 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
 }): readonly (readonly string[])[] {
   if (
     input.reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
-    input.workflowSchemaVersion ===
-      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
+    isClientTriggeredT0WorkflowSchemaVersion(input.workflowSchemaVersion)
   ) {
+    const workflowSchemaVersion = input.workflowSchemaVersion;
+    const defaultTimeoutMinutes = codexRotatingT0DefaultTimeoutMinutesForSchema(
+      workflowSchemaVersion,
+    );
     const markers = [
       "name: ReviewRouter Codex OAuth",
       "run-name: ${{ format('ReviewRouter review PR {0} at {1}'",
@@ -907,9 +912,9 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
       "    permissions:\n      contents: read\n      pull-requests: read\n      id-token: write",
       ".github/workflows/reviewrouter-t0-reusable.yml@",
       `provider_instance_id: ${JSON.stringify(input.providerInstanceId)}`,
-      "workflow_schema_version: 2",
+      `workflow_schema_version: ${workflowSchemaVersion}`,
       `max_changed_lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}`,
-      `review_timeout_minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '60') }}`,
+      `review_timeout_minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '${defaultTimeoutMinutes}') }}`,
       `CODEX_AUTH_JSON: \${{ secrets.${codexRotatingSecretName} }}`,
     ];
 

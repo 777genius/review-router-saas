@@ -306,4 +306,34 @@ describe("workflow setup readiness", () => {
       "pull_request_target:",
     );
   });
+
+  it("requires client-triggered T0 schema-v3 lifecycle markers", async () => {
+    const probe = new CapturingWorkflowProbe({
+      status: "present",
+      expectedActionRefFound: true,
+      expectedContentMarkersFound: true,
+    });
+
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        {
+          ...readinessInput,
+          actionRef:
+            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+          codexRotatingProviderInstanceId: "codex-rotating:123456",
+          codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+          codexRotatingWorkflowSchemaVersion:
+            CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
+        },
+        { workflowProbe: probe },
+      ),
+    ).resolves.toBe(true);
+
+    expect(probe.input?.expectedContentMarkerGroups?.[0]).toEqual(
+      expect.arrayContaining([
+        "workflow_schema_version: 3",
+        "review_timeout_minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '240') }}",
+      ]),
+    );
+  });
 });
