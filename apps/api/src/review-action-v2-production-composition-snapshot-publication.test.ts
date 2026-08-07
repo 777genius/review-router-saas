@@ -67,7 +67,10 @@ import {
   type ReviewPublicationRequest,
 } from "@reviewrouter/protocol-review-action-v2";
 import { ReviewActionV2ExecutionEvidenceCapabilityAdapter } from "./review-action-v2-execution-evidence-capabilities.js";
-import { createReviewActionV2SnapshotPublicationRoutes } from "./review-action-v2-production-composition-snapshot-publication.js";
+import {
+  createProductionPublicationLifecyclePort,
+  createReviewActionV2SnapshotPublicationRoutes,
+} from "./review-action-v2-production-composition-snapshot-publication.js";
 
 const now = new Date("2026-07-23T12:00:00.000Z");
 const hash = (character: string) => character.repeat(64);
@@ -1014,6 +1017,120 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     });
     await app.close();
   });
+
+  it("keeps an invalid publication projection non-retryable", async () => {
+    const routes = createRoutes(
+      new InMemoryReviewPublicationRepository(),
+      { assertCurrentPolicy: vi.fn() },
+      artifact,
+      {
+        lifecycle: {
+          async resolve() {
+            return {
+              status: CurrentPublicationLifecycleStatus.Invalid,
+              lifecycleStateHash: null,
+              commandLedgerWatermark: null,
+            } as const;
+          },
+        },
+        safety: {
+          async resolve() {
+            return {
+              status: CurrentReviewSafetyDecisionStatus.Unavailable,
+              decisionHash: null,
+            } as const;
+          },
+        },
+      },
+    );
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      artifact.publicationPermit,
+      now,
+    );
+    const app = Fastify({ logger: false });
+    await registerReviewPublicationRequestV2Routes(app, routes.publication);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-publication/request",
+      payload: await publicationRequest(publicationPermit),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: {
+        errorCode: ReviewActionV2ProtocolErrorCode.InvalidRequest,
+        retryClass: "never",
+        details: { issues: ["publication_projection_invalid"] },
+      },
+    });
+    await app.close();
+  });
+
+  it("classifies malformed stored projection separately from transient repository failure", async () => {
+    const malformedArtifact = finalizedArtifactWithProjectionEnvelope(
+      {
+        ...JSON.parse(projectionEnvelopeJson),
+        publishing: {
+          ...publishing,
+          inlineReviewChunks: [
+            {
+              comments: [{ marker: "reviewrouter:finding:v2:rrl_malformed" }],
+            },
+          ],
+        },
+      },
+      hash("9"),
+    );
+    const liveResolve = vi.fn();
+    const malformed = createProductionPublicationLifecyclePort({
+      executions: {
+        async findStream() {
+          return { activeExecutionId: malformedArtifact.executionId } as never;
+        },
+        async findExecution() {
+          return { artifact: malformedArtifact } as never;
+        },
+      },
+      authorizationQueries: {
+        async findReviewRunAuthorizationById() {
+          return authorization;
+        },
+      },
+      liveLifecycle: { resolve: liveResolve },
+    });
+
+    await expect(malformed.resolve(publicationScope())).resolves.toEqual({
+      status: CurrentPublicationLifecycleStatus.Invalid,
+      lifecycleStateHash: null,
+      commandLedgerWatermark: null,
+    });
+    expect(liveResolve).not.toHaveBeenCalled();
+
+    const unavailable = createProductionPublicationLifecyclePort({
+      executions: {
+        async findStream() {
+          throw new Error("repository_unavailable");
+        },
+        async findExecution() {
+          throw new Error("unexpected_execution_read");
+        },
+      },
+      authorizationQueries: {
+        async findReviewRunAuthorizationById() {
+          throw new Error("unexpected_authorization_read");
+        },
+      },
+      liveLifecycle: { resolve: liveResolve },
+    });
+
+    await expect(unavailable.resolve(publicationScope())).resolves.toEqual({
+      status: CurrentPublicationLifecycleStatus.Unavailable,
+      lifecycleStateHash: null,
+      commandLedgerWatermark: null,
+    });
+    expect(liveResolve).not.toHaveBeenCalled();
+  });
 });
 
 function createRoutes(
@@ -1255,6 +1372,15 @@ const artifact: FinalizedReviewProjectionArtifact = {
   createdAt: now,
   retainUntil: new Date("2026-08-23T12:00:00.000Z"),
 };
+
+function publicationScope() {
+  return {
+    workspaceId: artifact.publicationPermit.workspaceId,
+    repositoryConnectionId: artifact.publicationPermit.repositoryConnectionId,
+    scmRepositoryIdentityId: artifact.publicationPermit.scmRepositoryIdentityId,
+    pullRequestNumber: artifact.publicationPermit.pullRequestNumber,
+  };
+}
 
 function finalizedArtifactWithPublishing(
   source: unknown,

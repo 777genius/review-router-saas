@@ -224,12 +224,17 @@ describe("ResolveCurrentPublicationLifecycle", () => {
     expect(result.status).toBe(CurrentPublicationLifecycleStatus.Current);
   });
 
-  it("maps missing and unavailable facts without exposing stale hashes", async () => {
+  it("maps missing, unavailable, and invalid facts without exposing stale hashes", async () => {
     const missing = await resolver({
       live: { status: LiveReviewPublicationLifecycleStatus.Missing },
     }).resolve(scope);
     const unavailable = await resolver({
       live: { status: LiveReviewPublicationLifecycleStatus.Unavailable },
+    }).resolve(scope);
+    const invalid = await resolver({
+      expectation: {
+        status: ReviewPublicationLifecycleExpectationStatus.Invalid,
+      },
     }).resolve(scope);
 
     expect(missing).toEqual({
@@ -239,6 +244,11 @@ describe("ResolveCurrentPublicationLifecycle", () => {
     });
     expect(unavailable).toEqual({
       status: CurrentPublicationLifecycleStatus.Unavailable,
+      lifecycleStateHash: null,
+      commandLedgerWatermark: null,
+    });
+    expect(invalid).toEqual({
+      status: CurrentPublicationLifecycleStatus.Invalid,
       lifecycleStateHash: null,
       commandLedgerWatermark: null,
     });
@@ -347,18 +357,27 @@ describe("ResolveCurrentPublicationLifecycle", () => {
 });
 
 describe("reviewPublicationLifecycleExpectationFromProjection", () => {
+  const lineageFindingFingerprint = "rrl_0123456789abcdef0123456789abcdef";
+
   it.each([
     {
       name: "legacy hidden marker",
       marker: `<!-- review-router-finding:${currentFindingFingerprint} -->`,
+      expectedFingerprint: currentFindingFingerprint,
     },
     {
       name: "current v2 marker",
       marker: `reviewrouter:finding:v2:${currentFindingFingerprint}`,
+      expectedFingerprint: currentFindingFingerprint,
+    },
+    {
+      name: "current lineage v2 marker",
+      marker: `reviewrouter:finding:v2:${lineageFindingFingerprint}`,
+      expectedFingerprint: lineageFindingFingerprint,
     },
   ])(
     "parses and sorts lifecycle target identities from $name",
-    ({ marker }) => {
+    ({ marker, expectedFingerprint = currentFindingFingerprint }) => {
       const result = reviewPublicationLifecycleExpectationFromProjection({
         reviewedHeadSha: headSha,
         lifecycleStateHash: "lifecycle-hash",
@@ -380,10 +399,31 @@ describe("reviewPublicationLifecycleExpectationFromProjection", () => {
         status: ReviewPublicationLifecycleExpectationStatus.Available,
         lifecycleObservationVersion: null,
         targets,
-        createdTargetFingerprints: [currentFindingFingerprint],
+        createdTargetFingerprints: [expectedFingerprint],
       });
     },
   );
+
+  it.each([
+    `reviewrouter:finding:v2:${lineageFindingFingerprint}_suffix`,
+    "reviewrouter:finding:v2:rrl_0123456789ABCDEF0123456789ABCDEF",
+    "reviewrouter:finding:v2:rrl_0123456789abcdef0123456789abcde",
+  ])("rejects malformed lineage marker %s", (marker) => {
+    expect(() =>
+      reviewPublicationLifecycleExpectationFromProjection({
+        reviewedHeadSha: headSha,
+        lifecycleStateHash: "lifecycle-hash",
+        commandLedgerWatermark: 17n,
+        legacyObservationBoundary: boundary,
+        projectionEnvelopeJson: JSON.stringify({
+          publishing: {
+            lifecycle: [],
+            inlineReviewChunks: [{ comments: [{ marker }] }],
+          },
+        }),
+      }),
+    ).toThrow("projection_inline_marker_invalid");
+  });
 
   it("rejects duplicate or malformed target identities", () => {
     expect(() =>
@@ -470,11 +510,11 @@ describe("reviewPublicationLifecycleExpectationFromProjection", () => {
       },
     },
   ])(
-    "maps $name to unavailable rather than changed",
+    "maps $name to invalid rather than transiently unavailable",
     async ({ publishing }) => {
       const result = await resolverFromProjection(publishing).resolve(scope);
 
-      expect(result.status).toBe(CurrentPublicationLifecycleStatus.Unavailable);
+      expect(result.status).toBe(CurrentPublicationLifecycleStatus.Invalid);
     },
   );
 });
@@ -516,13 +556,19 @@ function resolverFromProjection(publishing: unknown) {
   return new ResolveCurrentPublicationLifecycle({
     expectations: {
       async resolve() {
-        return reviewPublicationLifecycleExpectationFromProjection({
-          reviewedHeadSha: headSha,
-          lifecycleStateHash: "lifecycle-hash",
-          commandLedgerWatermark: 17n,
-          legacyObservationBoundary: boundary,
-          projectionEnvelopeJson: JSON.stringify({ publishing }),
-        });
+        try {
+          return reviewPublicationLifecycleExpectationFromProjection({
+            reviewedHeadSha: headSha,
+            lifecycleStateHash: "lifecycle-hash",
+            commandLedgerWatermark: 17n,
+            legacyObservationBoundary: boundary,
+            projectionEnvelopeJson: JSON.stringify({ publishing }),
+          });
+        } catch {
+          return {
+            status: ReviewPublicationLifecycleExpectationStatus.Invalid,
+          } as const;
+        }
       },
     },
     live: {

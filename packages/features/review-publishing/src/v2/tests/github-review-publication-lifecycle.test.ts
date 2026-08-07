@@ -18,6 +18,7 @@ const scope: ReviewPublicationScope = {
 };
 const headSha = "a".repeat(40);
 const fingerprint = "b".repeat(24);
+const lineageFingerprint = "rrl_0123456789abcdef0123456789abcdef";
 const ledgerKey = "ledger-key-material-for-tests-00000000000000000000";
 
 describe("GitHubReviewPublicationLifecycleAdapter", () => {
@@ -99,6 +100,45 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
         .filter((query) => !query.includes("PublicationCommandLedger"))
         .every((query) => query.includes("author { login }")),
     ).toBe(true);
+  });
+
+  it("recognizes an Action lineage marker in the live inventory", async () => {
+    const result = await adapter({
+      async graphql<T>(query: string) {
+        if (query.includes("ReviewRouterPublicationCommandLedger")) {
+          return ledgerPage(null, false) as T;
+        }
+        return inventoryPage(
+          [
+            {
+              id: "thread-lineage",
+              isResolved: false,
+              comments: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [
+                  comment(
+                    "parent-lineage",
+                    `reviewrouter:finding:v2:${lineageFingerprint}`,
+                    "2026-07-23T10:00:00Z",
+                  ),
+                ],
+              },
+            },
+          ],
+          false,
+        ) as T;
+      },
+    }).resolve(scope);
+
+    expect(result).toMatchObject({
+      status: LiveReviewPublicationLifecycleStatus.Available,
+      targets: [
+        {
+          threadId: "thread-lineage",
+          markerFingerprint: lineageFingerprint,
+        },
+      ],
+    });
   });
 
   it("retains resolved targets and fails closed on incomplete pagination", async () => {

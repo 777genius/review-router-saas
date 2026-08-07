@@ -600,6 +600,7 @@ export enum CurrentPublicationLifecycleStatus {
   Changed = "changed",
   Missing = "missing",
   Unavailable = "unavailable",
+  Invalid = "invalid",
 }
 
 export type CurrentPublicationLifecycleDecision = {
@@ -630,6 +631,7 @@ export enum ReviewPublicationLifecycleExpectationStatus {
   Available = "available",
   Missing = "missing",
   Unavailable = "unavailable",
+  Invalid = "invalid",
 }
 
 export type ReviewPublicationLifecycleExpectationDecision =
@@ -646,7 +648,8 @@ export type ReviewPublicationLifecycleExpectationDecision =
   | {
       readonly status:
         | ReviewPublicationLifecycleExpectationStatus.Missing
-        | ReviewPublicationLifecycleExpectationStatus.Unavailable;
+        | ReviewPublicationLifecycleExpectationStatus.Unavailable
+        | ReviewPublicationLifecycleExpectationStatus.Invalid;
     };
 
 export interface ReviewPublicationLifecycleExpectationPort {
@@ -732,6 +735,7 @@ export enum ReviewPublicationGateRejectionReason {
   LifecycleNotCurrent = "lifecycle_not_current",
   LifecycleStatusNotCurrent = "lifecycle_status_not_current",
   PublicationFactsUnavailable = "publication_facts_unavailable",
+  PublicationProjectionInvalid = "publication_projection_invalid",
   LifecycleHashMismatch = "lifecycle_hash_mismatch",
   LifecycleWatermarkMismatch = "lifecycle_watermark_mismatch",
   SafetyDenied = "safety_denied",

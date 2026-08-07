@@ -44,6 +44,10 @@ export async function assertCurrentReviewPublication(input: {
       }),
     ]);
 
+  if (lifecycle.status === CurrentPublicationLifecycleStatus.Invalid) {
+    reject(ReviewPublicationGateRejectionReason.PublicationProjectionInvalid);
+  }
+
   const unavailableFacts: CurrentReviewPublicationFact[] = [];
   if (permit.status === CurrentPublicationPermitStatus.Unavailable) {
     unavailableFacts.push(CurrentReviewPublicationFact.Permit);

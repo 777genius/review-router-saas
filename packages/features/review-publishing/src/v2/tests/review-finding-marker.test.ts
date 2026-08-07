@@ -29,6 +29,16 @@ describe("review finding marker grammar", () => {
       "bbbbbbbbbbbbbbbbbbbbbbbb",
     ],
     [
+      "lineage v2",
+      "reviewrouter:finding:v2:rrl_0123456789abcdef0123456789abcdef",
+      "rrl_0123456789abcdef0123456789abcdef",
+    ],
+    [
+      "hidden lineage v2",
+      "<!-- reviewrouter:finding:v2:rrl_0123456789abcdef0123456789abcdef -->",
+      "rrl_0123456789abcdef0123456789abcdef",
+    ],
+    [
       "same duplicate",
       "reviewrouter:finding:v2:bbbbbbbbbbbbbbbbbbbbbbbb\nreviewrouter:finding:v2:bbbbbbbbbbbbbbbbbbbbbbbb",
       "bbbbbbbbbbbbbbbbbbbbbbbb",
@@ -39,6 +49,26 @@ describe("review finding marker grammar", () => {
       null,
     ],
     ["suffix", "reviewrouter:finding:v2:aaaaaaaaaaaaaaaaaaaaaaaa_suffix", null],
+    [
+      "lineage suffix",
+      "reviewrouter:finding:v2:rrl_0123456789abcdef0123456789abcdef_suffix",
+      null,
+    ],
+    [
+      "uppercase lineage",
+      "reviewrouter:finding:v2:rrl_0123456789ABCDEF0123456789ABCDEF",
+      null,
+    ],
+    [
+      "embedded URL marker",
+      "https://example/reviewrouter:finding:v2:bbbbbbbbbbbbbbbbbbbbbbbb",
+      null,
+    ],
+    [
+      "valid plus malformed reserved marker",
+      "reviewrouter:finding:v2:bbbbbbbbbbbbbbbbbbbbbbbb\nreviewrouter:finding:v2:bad",
+      null,
+    ],
   ] as const)("parses %s", (_name, body, expected) => {
     expect(extractUniqueReviewFindingFingerprint(body)).toBe(expected);
   });
@@ -55,6 +85,11 @@ describe("review finding marker grammar", () => {
     ) as FindingMarkerFixture;
     expect(fixture.schemaVersion).toBe("review_finding_marker_grammar.v1");
     expect(fixture.cases.length).toBeGreaterThan(0);
+    expect(
+      fixture.cases.some((testCase) =>
+        testCase.expectedFingerprint?.startsWith("rrl_"),
+      ),
+    ).toBe(true);
     for (const testCase of fixture.cases) {
       expect(
         extractUniqueReviewFindingFingerprint(testCase.body),
