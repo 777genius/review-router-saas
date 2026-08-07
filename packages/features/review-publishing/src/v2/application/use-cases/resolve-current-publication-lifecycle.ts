@@ -11,7 +11,10 @@ import {
   type ReviewPublicationLifecycleTargetIdentity,
 } from "../ports/review-publication-ports";
 import type { ReviewPublicationScope } from "../../domain/review-publication-attempt";
-import { extractUniqueReviewFindingFingerprint } from "../../domain/review-finding-marker";
+import {
+  extractUniqueReviewFindingFingerprint,
+  isReviewFindingFingerprint,
+} from "../../domain/review-finding-marker";
 import { ReviewPublicationLifecycleObservationVersion } from "../../domain/review-lifecycle-thread-state-witness";
 
 export class ResolveCurrentPublicationLifecycle implements CurrentPublicationLifecyclePort {
@@ -35,6 +38,11 @@ export class ResolveCurrentPublicationLifecycle implements CurrentPublicationLif
       expectation.status === ReviewPublicationLifecycleExpectationStatus.Missing
     ) {
       return missing();
+    }
+    if (
+      expectation.status === ReviewPublicationLifecycleExpectationStatus.Invalid
+    ) {
+      return invalid();
     }
     if (
       expectation.status !==
@@ -360,7 +368,7 @@ function assertUniqueFingerprints(fingerprints: readonly string[]): void {
 }
 
 function requiredFingerprint(value: unknown, field: string): string {
-  if (typeof value !== "string" || !/^[a-f0-9]{24,64}$/u.test(value)) {
+  if (!isReviewFindingFingerprint(value)) {
     throw new Error(`${field}_invalid`);
   }
   return value;
@@ -480,6 +488,14 @@ function missing(): CurrentPublicationLifecycleDecision {
 function unavailable(): CurrentPublicationLifecycleDecision {
   return {
     status: CurrentPublicationLifecycleStatus.Unavailable,
+    lifecycleStateHash: null,
+    commandLedgerWatermark: null,
+  };
+}
+
+function invalid(): CurrentPublicationLifecycleDecision {
+  return {
+    status: CurrentPublicationLifecycleStatus.Invalid,
     lifecycleStateHash: null,
     commandLedgerWatermark: null,
   };

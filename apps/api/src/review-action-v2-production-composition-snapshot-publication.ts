@@ -39,6 +39,7 @@ import {
   publishedReviewProjectionPublicationEnvelopeVersion,
   reviewPublicationLifecycleExpectationFromProjection,
   type LiveReviewPublicationLifecyclePort,
+  type CurrentPublicationLifecyclePort,
   type PublishedReviewProjectionPublicationEnvelope,
   type ReviewPublicationAttemptView,
   type ReviewPublicationAttemptQueryPort,
@@ -450,6 +451,16 @@ async function requestPublication(
           ) ?? [],
         );
       }
+      if (
+        error.reason ===
+        ReviewPublicationGateRejectionReason.PublicationProjectionInvalid
+      ) {
+        throw routeFailure(
+          400,
+          ReviewActionV2ProtocolErrorCode.InvalidRequest,
+          error.reason,
+        );
+      }
       throw routeFailure(
         412,
         ReviewActionV2ProtocolErrorCode.StalePrecondition,
@@ -633,19 +644,23 @@ async function readPublicationStatus(
   } as const;
 }
 
-function productionPublicationDecisions(input: {
-  readonly executions: PrismaReviewExecutionStore;
-  readonly releases: ProducerReleaseQueryPort;
-  readonly authorizations: ReviewActionV2AuthorizationResolverPort;
-  readonly authorizationQueries: ReviewRunAuthorizationQueryPort;
-  readonly authorities: ReviewMutationAuthorityQueryPort;
-  readonly safety: ReviewSafetyDecisionResolverPort;
+export function createProductionPublicationLifecyclePort(input: {
+  readonly executions: Pick<
+    PrismaReviewExecutionStore,
+    "findStream" | "findExecution"
+  >;
+  readonly authorizationQueries: Pick<
+    ReviewRunAuthorizationQueryPort,
+    "findReviewRunAuthorizationById"
+  >;
   readonly liveLifecycle: LiveReviewPublicationLifecyclePort;
-  readonly contextPolicy: ReviewPublicationContextPolicyPort;
-}): ReviewPublicationDecisionPorts {
-  const lifecycle = new ResolveCurrentPublicationLifecycle({
+}): CurrentPublicationLifecyclePort {
+  return new ResolveCurrentPublicationLifecycle({
     expectations: {
       async resolve(scope) {
+        let projectionInput: Parameters<
+          typeof reviewPublicationLifecycleExpectationFromProjection
+        >[0];
         try {
           const stream = await input.executions.findStream(scope);
           const snapshot = stream?.activeExecutionId
@@ -666,21 +681,47 @@ function productionPublicationDecisions(input: {
               status: ReviewPublicationLifecycleExpectationStatus.Missing,
             };
           }
-          return reviewPublicationLifecycleExpectationFromProjection({
+          projectionInput = {
             reviewedHeadSha: artifact.reviewedHeadSha,
             lifecycleStateHash: artifact.lifecycleStateHash,
             commandLedgerWatermark: artifact.commandLedgerWatermark,
             projectionEnvelopeJson: artifact.projectionEnvelopeJson,
             legacyObservationBoundary: authorization.createdAt,
-          });
+          };
         } catch {
           return {
             status: ReviewPublicationLifecycleExpectationStatus.Unavailable,
           };
         }
+        try {
+          return reviewPublicationLifecycleExpectationFromProjection(
+            projectionInput,
+          );
+        } catch {
+          return {
+            status: ReviewPublicationLifecycleExpectationStatus.Invalid,
+          };
+        }
       },
     },
     live: input.liveLifecycle,
+  });
+}
+
+function productionPublicationDecisions(input: {
+  readonly executions: PrismaReviewExecutionStore;
+  readonly releases: ProducerReleaseQueryPort;
+  readonly authorizations: ReviewActionV2AuthorizationResolverPort;
+  readonly authorizationQueries: ReviewRunAuthorizationQueryPort;
+  readonly authorities: ReviewMutationAuthorityQueryPort;
+  readonly safety: ReviewSafetyDecisionResolverPort;
+  readonly liveLifecycle: LiveReviewPublicationLifecyclePort;
+  readonly contextPolicy: ReviewPublicationContextPolicyPort;
+}): ReviewPublicationDecisionPorts {
+  const lifecycle = createProductionPublicationLifecyclePort({
+    executions: input.executions,
+    authorizationQueries: input.authorizationQueries,
+    liveLifecycle: input.liveLifecycle,
   });
   return {
     permits: {
