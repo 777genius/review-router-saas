@@ -746,8 +746,10 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
       },
     );
     const rows = requireArray(response.data, "github_reviews_invalid");
-    const candidates = rows.filter((row) =>
-      isOwnedBody(row, payload.marker, this.options.botLogin),
+    const candidates = rows.filter(
+      (row) =>
+        isReviewStateCompatible(payload.kind, row.state) &&
+        isOwnedBody(row, payload.marker, this.options.botLogin),
     );
     const objects = await Promise.all(
       candidates.map((row) => this.reviewObject(row, payload)),
@@ -968,8 +970,16 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
       }
     >,
   ): Promise<ReviewPublicationGatewayObject> {
+    if (!isReviewStateCompatible(payload.kind, row.state)) {
+      throw new Error("github_review_state_mismatch");
+    }
     const reviewId = numericId(row);
-    const comments = await this.loadReviewComments(reviewId);
+    const comments = await this.loadReviewComments(
+      reviewId,
+      payload.kind === ReviewV2PublicationPayloadKind.PendingReviewCreate
+        ? payload.comments
+        : undefined,
+    );
     const commitId = requiredString(
       row.commit_id,
       "github_review_commit_id_invalid",
@@ -985,7 +995,10 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
     );
   }
 
-  private async loadReviewComments(reviewId: number) {
+  private async loadReviewComments(
+    reviewId: number,
+    expectedComments?: readonly ExpectedReviewComment[],
+  ) {
     const comments: Array<{
       readonly path: unknown;
       readonly line: unknown;
@@ -1014,7 +1027,11 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
           body: comment.body,
         })),
       );
-      if (rows.length < 100) return comments;
+      if (rows.length < 100) {
+        return expectedComments
+          ? normalizePendingReviewComments(comments, expectedComments)
+          : comments;
+      }
     }
     throw new Error("github_review_comments_pagination_limit_exceeded");
   }
@@ -1067,6 +1084,91 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
       ...parameters,
     });
   }
+}
+
+type ExpectedReviewComment = Extract<
+  ReviewV2PublicationPayload,
+  {
+    readonly kind:
+      | ReviewV2PublicationPayloadKind.PendingReviewCreate
+      | ReviewV2PublicationPayloadKind.SubmittedReview;
+  }
+>["comments"][number];
+
+type ObservedReviewComment = {
+  readonly path: unknown;
+  readonly line: unknown;
+  readonly startLine: unknown;
+  readonly body: unknown;
+};
+
+/**
+ * GitHub omits line coordinates while a review is pending and exposes only a
+ * diff position. Bind those unavailable coordinates back to the exact payload
+ * only after path and marker-bearing body prove a one-to-one match.
+ */
+function normalizePendingReviewComments(
+  observed: readonly ObservedReviewComment[],
+  expected: readonly ExpectedReviewComment[],
+) {
+  if (observed.length !== expected.length) {
+    throw new Error("github_review_comment_count_mismatch");
+  }
+  const candidateIndexes = expected.map((expectedComment) =>
+    observed.flatMap((candidate, index) =>
+      candidate.path === expectedComment.path &&
+      candidate.body === expectedComment.body &&
+      coordinateMatches(candidate.line, expectedComment.line) &&
+      coordinateMatches(candidate.startLine, expectedComment.startLine)
+        ? [index]
+        : [],
+    ),
+  );
+  const expectedByObserved = Array<number>(observed.length).fill(-1);
+  const matchExpected = (
+    expectedIndex: number,
+    visitedObserved: Set<number>,
+  ): boolean => {
+    for (const observedIndex of candidateIndexes[expectedIndex] ?? []) {
+      if (visitedObserved.has(observedIndex)) continue;
+      visitedObserved.add(observedIndex);
+      const previousExpected = expectedByObserved[observedIndex] ?? -1;
+      if (
+        previousExpected === -1 ||
+        matchExpected(previousExpected, visitedObserved)
+      ) {
+        expectedByObserved[observedIndex] = expectedIndex;
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const expectedIndex of expected.keys()) {
+    if (!matchExpected(expectedIndex, new Set())) {
+      throw new Error("github_review_comment_identity_mismatch");
+    }
+  }
+  return expected.map((expectedComment) => ({
+    path: expectedComment.path,
+    line: expectedComment.line,
+    startLine: expectedComment.startLine,
+    body: expectedComment.body,
+  }));
+}
+
+function coordinateMatches(observed: unknown, expected: number | null) {
+  return observed === null || observed === undefined || observed === expected;
+}
+
+function isReviewStateCompatible(
+  kind:
+    | ReviewV2PublicationPayloadKind.PendingReviewCreate
+    | ReviewV2PublicationPayloadKind.SubmittedReview,
+  state: unknown,
+) {
+  return kind === ReviewV2PublicationPayloadKind.PendingReviewCreate
+    ? state === "PENDING"
+    : typeof state === "string" && state !== "PENDING";
 }
 
 function gatewayObject(
