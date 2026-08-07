@@ -567,16 +567,20 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
     try {
       switch (payload.kind) {
         case ReviewV2PublicationPayloadKind.Summary:
-          return this.createIssueComment(payload, input.operation);
+          return await this.createIssueComment(payload, input.operation);
         case ReviewV2PublicationPayloadKind.ManagedCheck:
-          return this.createCheckRun(payload, input.operation);
+          return await this.createCheckRun(payload, input.operation);
         case ReviewV2PublicationPayloadKind.PendingReviewCreate:
         case ReviewV2PublicationPayloadKind.SubmittedReview:
-          return this.createReview(payload, input.operation);
+          return await this.createReview(payload, input.operation);
         case ReviewV2PublicationPayloadKind.PendingReviewSubmit:
-          return this.submitReview(payload, input.operation, input.capability);
+          return await this.submitReview(
+            payload,
+            input.operation,
+            input.capability,
+          );
         case ReviewV2PublicationPayloadKind.ThreadLifecycle:
-          return this.mutateLifecycle(payload, input.operation);
+          return await this.mutateLifecycle(payload, input.operation);
       }
     } catch (error) {
       if (error instanceof ReviewV2ScmMutationError) throw error;
@@ -644,6 +648,24 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
         return ReviewPublicationReceiptStatus.Compensated;
       }
       case ReviewV2PublicationPayloadKind.PendingReviewCreate:
+        await Promise.all(
+          staleObjectIds.map(async (id) => {
+            try {
+              await this.request(
+                "DELETE /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}",
+                {
+                  pull_number: this.options.permit.pullRequestNumber,
+                  review_id: externalNumericId(id, "review"),
+                },
+              );
+            } catch (error) {
+              if (!isGitHubNotFound(error)) throw error;
+            }
+          }),
+        );
+        return input.compensateCanonical
+          ? ReviewPublicationReceiptStatus.Compensated
+          : ReviewPublicationReceiptStatus.Succeeded;
       case ReviewV2PublicationPayloadKind.PendingReviewSubmit:
       case ReviewV2PublicationPayloadKind.SubmittedReview:
         return ReviewPublicationReceiptStatus.StaleVisible;
@@ -752,7 +774,7 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
         isOwnedBody(row, payload.marker, this.options.botLogin),
     );
     const objects = await Promise.all(
-      candidates.map((row) => this.reviewObject(row, payload)),
+      candidates.map((row) => this.reviewObject(row, payload, true)),
     );
     return pageResult(objects, page, rows.length);
   }
@@ -903,10 +925,14 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
           : {}),
       },
     );
-    return this.reviewObject(
-      requireRecord(response.data, "github_review_invalid"),
-      payload,
-    );
+    try {
+      return await this.reviewObject(
+        requireRecord(response.data, "github_review_invalid"),
+        payload,
+      );
+    } catch (error) {
+      throw githubPostMutationObservationError(error);
+    }
   }
 
   private async submitReview(
@@ -969,6 +995,7 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
           | ReviewV2PublicationPayloadKind.SubmittedReview;
       }
     >,
+    tolerateStalePendingReview = false,
   ): Promise<ReviewPublicationGatewayObject> {
     if (!isReviewStateCompatible(payload.kind, row.state)) {
       throw new Error("github_review_state_mismatch");
@@ -979,6 +1006,7 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
       payload.kind === ReviewV2PublicationPayloadKind.PendingReviewCreate
         ? payload.comments
         : undefined,
+      tolerateStalePendingReview,
     );
     const commitId = requiredString(
       row.commit_id,
@@ -998,6 +1026,7 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
   private async loadReviewComments(
     reviewId: number,
     expectedComments?: readonly ExpectedReviewComment[],
+    tolerateStalePendingReview = false,
   ) {
     const comments: Array<{
       readonly path: unknown;
@@ -1028,9 +1057,13 @@ export class GitHubReviewV2PublicationClient implements ReviewV2ProviderPublicat
         })),
       );
       if (rows.length < 100) {
-        return expectedComments
-          ? normalizePendingReviewComments(comments, expectedComments)
-          : comments;
+        if (!expectedComments) return comments;
+        try {
+          return normalizePendingReviewComments(comments, expectedComments);
+        } catch (error) {
+          if (!tolerateStalePendingReview) throw error;
+          return normalizeObservedReviewComments(comments);
+        }
       }
     }
     throw new Error("github_review_comments_pagination_limit_exceeded");
@@ -1160,6 +1193,25 @@ function coordinateMatches(observed: unknown, expected: number | null) {
   return observed === null || observed === undefined || observed === expected;
 }
 
+function normalizeObservedReviewComments(
+  observed: readonly ObservedReviewComment[],
+) {
+  return observed.map((comment) => ({
+    path: typeof comment.path === "string" ? comment.path : null,
+    line: integerOrNull(comment.line),
+    startLine: integerOrNull(comment.startLine),
+    body: typeof comment.body === "string" ? comment.body : null,
+  }));
+}
+
+function integerOrNull(value: unknown): number | null {
+  return Number.isSafeInteger(value) ? (value as number) : null;
+}
+
+function isGitHubNotFound(error: unknown): boolean {
+  return isRecord(error) && error.status === 404;
+}
+
 function isReviewStateCompatible(
   kind:
     | ReviewV2PublicationPayloadKind.PendingReviewCreate
@@ -1221,6 +1273,7 @@ function githubMutationError(error: unknown): ReviewV2ScmMutationError {
     status !== 408 &&
     status !== 409 &&
     status !== 429;
+  const retryable = status === 422 || !definitelyNoEffect;
   return new ReviewV2ScmMutationError(
     status === null
       ? "github_mutation_transport_failure"
@@ -1228,7 +1281,21 @@ function githubMutationError(error: unknown): ReviewV2ScmMutationError {
     definitelyNoEffect
       ? ReviewV2ScmMutationFailureOutcome.DefinitelyNoEffect
       : ReviewV2ScmMutationFailureOutcome.EffectMayExist,
-    !definitelyNoEffect,
+    retryable,
+  );
+}
+
+function githubPostMutationObservationError(
+  error: unknown,
+): ReviewV2ScmMutationError {
+  const status =
+    isRecord(error) && typeof error.status === "number" ? error.status : null;
+  return new ReviewV2ScmMutationError(
+    status === null
+      ? "github_review_post_mutation_observation_failed"
+      : `github_review_post_mutation_observation_http_${status}`,
+    ReviewV2ScmMutationFailureOutcome.EffectMayExist,
+    true,
   );
 }
 
