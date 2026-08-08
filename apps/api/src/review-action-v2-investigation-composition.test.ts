@@ -14,6 +14,7 @@ import {
   ReviewInvestigationRuntimeProfile,
   ReviewInvestigationState,
   ReviewInvestigationTurnPurpose,
+  ReviewInvestigationDomainError,
   canonicalInvestigationCertificateCandidate,
   canonicalInvestigationTurnObservation,
   reviewInvestigationCoverageProfileV2,
@@ -448,149 +449,172 @@ describe("Review Action v2 investigation composition", () => {
     expect(abortExecute).not.toHaveBeenCalled();
   });
 
-  it("maps an atomic lease fence rejection to 412 without publishing a mutation", async () => {
-    const ownerIdHash = sha("investigation-owner");
-    const aggregate = {
-      ...activeInvestigation(),
-      investigationManifestCanonicalJson: canonicalJson({
-        manifestVersion: 1,
-      }),
-      investigationManifestHash: sha("investigation-manifest"),
-    };
-    const before = structuredClone(aggregate);
-    const lease = investigationLeaseFixture(aggregate, ownerIdHash);
-    const authority = {
-      capabilityId: lease.leaseCapabilityId,
-      authorizationId: lease.authorizationId,
-      mutationEpoch: lease.mutationEpoch,
-      scopeHash: await authorizationScopeHash(),
-      executionId: lease.executionId,
-      workSlotId: lease.workSlotId,
-      reviewRevisionHash: lease.revision.reviewRevisionHash,
-      investigationId: lease.investigationId,
-      investigationVersion: lease.investigationVersion,
-      turnId: lease.turnId,
-      turnPurpose: lease.turnPurpose,
-      providerVoteLaneId: lease.providerVoteLaneId,
-      providerStrategyId: lease.providerStrategyId,
-      investigationManifestHash: lease.investigationManifestHash,
-      ownerIdHash: lease.ownerIdHash,
-      leaseId: lease.leaseId,
-      attemptId: lease.attemptId,
-      fencingToken: lease.fencingToken,
-      ownershipExpiresAt: new Date(lease.expiresAt),
-      resultReportUntil: new Date(lease.resultReportUntil),
-    };
-    const commitExecute = vi
-      .fn()
-      .mockRejectedValue(new Error("investigation_lease_fencing_stale"));
-    const restoreSnapshot = vi.fn().mockResolvedValue(aggregate);
-    const routes = composeReviewActionV2InvestigationRoutes({
-      enabled: true,
-      runtime: {
-        readServerTime: async () => now,
-        createRequestId: () => "request-generated",
-      },
-      handlers: {
-        ...investigationLeaseHandlerStubs,
-        authorizations: authorizationResolver(),
-        authorizationQueries: {} as never,
-        executionQueries: {
-          findExecution: vi.fn().mockResolvedValue(executionSnapshot()),
-        } as never,
-        investigations: {
-          restore: { snapshot: restoreSnapshot },
-          commitTurn: {
-            restoreCommittedCommand: vi.fn().mockResolvedValue(null),
-            execute: commitExecute,
-          },
-        } as never,
-        capabilities: {
-          verifyInvestigationTurn: vi.fn().mockResolvedValue({
-            authorizationId: authorization.authorizationId,
-            executionId: aggregate.executionId,
-            workSlotId: aggregate.workSlotId,
-            reviewRevisionHash: aggregate.revision.reviewRevisionHash,
-            investigationId: aggregate.investigationId,
-            investigationVersion: aggregate.version,
-            dossierDigest: aggregate.dossierDigest,
-            turnId: aggregate.activeTurn!.turnId,
-          }),
-        } as never,
-        investigationLeaseQueries: {
-          findLease: vi.fn().mockResolvedValue(lease),
-        } as never,
-        investigationLeaseCapabilities: {
-          verify: vi.fn().mockResolvedValue(authority),
-        } as never,
-        digest,
-        now: () => now,
-        rollout: allowingRollout,
-        terminalShadowEvidence: { execute: vi.fn() } as never,
-        crossRevisionReplayEnabled: false,
-        replayPreparation: vi.fn() as never,
-      },
-    });
-    const observation: InvestigationTurnObservation = {
-      outputVersion: 2,
-      findings: [],
-      obligationProposals: [],
-      closureClaims: [],
-      operationBackedDiscoveryClaims: [],
-      unresolvableClaims: [],
-      criticDecision: null,
-      observationVersion: 2,
-      invocationId: "investigation-1:turn-1:attempt-1",
-      turnId: aggregate.activeTurn!.turnId,
-      dossierVersion: aggregate.version,
-      purpose: aggregate.activeTurn!.purpose,
-      actualProviderKind: InvestigationTurnProviderKind.Codex,
-      actualModel: "gpt-5.6-sol",
-      runtimeProfile: aggregate.runtimeProfile,
-      usage: {
-        inputTokens: 1,
-        cachedInputTokens: 0,
-        outputTokens: 1,
-        reasoningOutputTokens: 0,
-        totalTokens: 2,
-      },
-      durationMs: 1,
-      schemaComplete: true,
-      streamComplete: true,
-      contextAttestationReference: "attestation-1",
-    };
-    const observationCanonicalJson =
-      canonicalInvestigationTurnObservation(observation);
-    const request = await withBodyHash(
-      ReviewActionV2OperationId.ReviewInvestigationTurnCommit,
-      {
-        ...envelope("investigation-turn-commit-stale-fence"),
-        authorizationToken: "authorization-token",
-        leaseCapability: "lease-capability",
-        idempotencyKey: "investigation-turn-commit-stale-fence",
-        requestBodyHash: sha("placeholder"),
-        investigationId: aggregate.investigationId,
-        expectedVersion: aggregate.version.toString(10),
+  it.each([
+    {
+      failure: new Error("investigation_lease_fencing_stale"),
+      expectedStatusCode: 412,
+      expectedErrorCode: ReviewActionV2ProtocolErrorCode.StalePrecondition,
+      expectedIssue: "investigation_lease_fencing_stale",
+    },
+    {
+      failure: new ReviewInvestigationDomainError(
+        "turn_obligation_claim_invalid",
+      ),
+      expectedStatusCode: 422,
+      expectedErrorCode: ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      expectedIssue: "turn_obligation_claim_invalid",
+    },
+  ])(
+    "maps $expectedIssue without publishing a mutation",
+    async ({
+      failure: commitFailure,
+      expectedStatusCode,
+      expectedErrorCode,
+      expectedIssue,
+    }) => {
+      const ownerIdHash = sha("investigation-owner");
+      const aggregate = {
+        ...activeInvestigation(),
+        investigationManifestCanonicalJson: canonicalJson({
+          manifestVersion: 1,
+        }),
+        investigationManifestHash: sha("investigation-manifest"),
+      };
+      const before = structuredClone(aggregate);
+      const lease = investigationLeaseFixture(aggregate, ownerIdHash);
+      const authority = {
+        capabilityId: lease.leaseCapabilityId,
+        authorizationId: lease.authorizationId,
+        mutationEpoch: lease.mutationEpoch,
+        scopeHash: await authorizationScopeHash(),
+        executionId: lease.executionId,
+        workSlotId: lease.workSlotId,
+        reviewRevisionHash: lease.revision.reviewRevisionHash,
+        investigationId: lease.investigationId,
+        investigationVersion: lease.investigationVersion,
+        turnId: lease.turnId,
+        turnPurpose: lease.turnPurpose,
+        providerVoteLaneId: lease.providerVoteLaneId,
+        providerStrategyId: lease.providerStrategyId,
+        investigationManifestHash: lease.investigationManifestHash,
+        ownerIdHash: lease.ownerIdHash,
+        leaseId: lease.leaseId,
+        attemptId: lease.attemptId,
+        fencingToken: lease.fencingToken,
+        ownershipExpiresAt: new Date(lease.expiresAt),
+        resultReportUntil: new Date(lease.resultReportUntil),
+      };
+      const commitExecute = vi.fn().mockRejectedValue(commitFailure);
+      const restoreSnapshot = vi.fn().mockResolvedValue(aggregate);
+      const routes = composeReviewActionV2InvestigationRoutes({
+        enabled: true,
+        runtime: {
+          readServerTime: async () => now,
+          createRequestId: () => "request-generated",
+        },
+        handlers: {
+          ...investigationLeaseHandlerStubs,
+          authorizations: authorizationResolver(),
+          authorizationQueries: {} as never,
+          executionQueries: {
+            findExecution: vi.fn().mockResolvedValue(executionSnapshot()),
+          } as never,
+          investigations: {
+            restore: { snapshot: restoreSnapshot },
+            commitTurn: {
+              restoreCommittedCommand: vi.fn().mockResolvedValue(null),
+              execute: commitExecute,
+            },
+          } as never,
+          capabilities: {
+            verifyInvestigationTurn: vi.fn().mockResolvedValue({
+              authorizationId: authorization.authorizationId,
+              executionId: aggregate.executionId,
+              workSlotId: aggregate.workSlotId,
+              reviewRevisionHash: aggregate.revision.reviewRevisionHash,
+              investigationId: aggregate.investigationId,
+              investigationVersion: aggregate.version,
+              dossierDigest: aggregate.dossierDigest,
+              turnId: aggregate.activeTurn!.turnId,
+            }),
+          } as never,
+          investigationLeaseQueries: {
+            findLease: vi.fn().mockResolvedValue(lease),
+          } as never,
+          investigationLeaseCapabilities: {
+            verify: vi.fn().mockResolvedValue(authority),
+          } as never,
+          digest,
+          now: () => now,
+          rollout: allowingRollout,
+          terminalShadowEvidence: { execute: vi.fn() } as never,
+          crossRevisionReplayEnabled: false,
+          replayPreparation: vi.fn() as never,
+        },
+      });
+      const observation: InvestigationTurnObservation = {
+        outputVersion: 2,
+        findings: [],
+        obligationProposals: [],
+        closureClaims: [],
+        operationBackedDiscoveryClaims: [],
+        unresolvableClaims: [],
+        criticDecision: null,
+        observationVersion: 2,
+        invocationId: "investigation-1:turn-1:attempt-1",
         turnId: aggregate.activeTurn!.turnId,
-        turnCapability: "turn-capability",
-        sourceLeaseId: lease.leaseId,
-        fencingToken: lease.fencingToken.toString(10),
-        acceptedAttestationId: "attestation-1",
-        acceptedAttestationHash: sha("attestation-1"),
-        turnObservationCanonicalJson: observationCanonicalJson,
-        turnObservationHash: await digest.digestUtf8(observationCanonicalJson),
-      } satisfies ReviewInvestigationTurnCommitRequest,
-    );
+        dossierVersion: aggregate.version,
+        purpose: aggregate.activeTurn!.purpose,
+        actualProviderKind: InvestigationTurnProviderKind.Codex,
+        actualModel: "gpt-5.6-sol",
+        runtimeProfile: aggregate.runtimeProfile,
+        usage: {
+          inputTokens: 1,
+          cachedInputTokens: 0,
+          outputTokens: 1,
+          reasoningOutputTokens: 0,
+          totalTokens: 2,
+        },
+        durationMs: 1,
+        schemaComplete: true,
+        streamComplete: true,
+        contextAttestationReference: "attestation-1",
+      };
+      const observationCanonicalJson =
+        canonicalInvestigationTurnObservation(observation);
+      const request = await withBodyHash(
+        ReviewActionV2OperationId.ReviewInvestigationTurnCommit,
+        {
+          ...envelope("investigation-turn-commit-stale-fence"),
+          authorizationToken: "authorization-token",
+          leaseCapability: "lease-capability",
+          idempotencyKey: "investigation-turn-commit-stale-fence",
+          requestBodyHash: sha("placeholder"),
+          investigationId: aggregate.investigationId,
+          expectedVersion: aggregate.version.toString(10),
+          turnId: aggregate.activeTurn!.turnId,
+          turnCapability: "turn-capability",
+          sourceLeaseId: lease.leaseId,
+          fencingToken: lease.fencingToken.toString(10),
+          acceptedAttestationId: "attestation-1",
+          acceptedAttestationHash: sha("attestation-1"),
+          turnObservationCanonicalJson: observationCanonicalJson,
+          turnObservationHash: await digest.digestUtf8(
+            observationCanonicalJson,
+          ),
+        } satisfies ReviewInvestigationTurnCommitRequest,
+      );
 
-    await expect(routes.commitTurn!.execute(request)).rejects.toMatchObject({
-      statusCode: 412,
-      errorCode: ReviewActionV2ProtocolErrorCode.StalePrecondition,
-      issues: ["investigation_lease_fencing_stale"],
-    });
-    expect(commitExecute).toHaveBeenCalledOnce();
-    expect(aggregate).toEqual(before);
-    expect(restoreSnapshot).toHaveBeenCalled();
-  });
+      await expect(routes.commitTurn!.execute(request)).rejects.toMatchObject({
+        statusCode: expectedStatusCode,
+        errorCode: expectedErrorCode,
+        issues: [expectedIssue],
+      });
+      expect(commitExecute).toHaveBeenCalledOnce();
+      expect(aggregate).toEqual(before);
+      expect(restoreSnapshot).toHaveBeenCalled();
+    },
+  );
 
   it("projects terminal shadow evidence after conclude and heals on idempotent retry", async () => {
     const projection = vi.fn().mockResolvedValue({ status: "idempotent" });

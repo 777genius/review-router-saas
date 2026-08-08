@@ -4,7 +4,10 @@ import {
   VersionedCoverageExpansionPolicy,
   type CoverageExpansionPolicy,
 } from "../../domain/coverage-policies";
-import type { InvestigationFinding } from "../../domain/investigation-turn";
+import {
+  assertInvestigationTurnObligationClaimScope,
+  type InvestigationFinding,
+} from "../../domain/investigation-turn";
 import {
   InvestigationFileContentKind,
   InvestigationOperationKind,
@@ -110,6 +113,11 @@ export class CommitAttestedInvestigationTurn {
     ) {
       throw new Error("investigation_turn_observation_hash_mismatch");
     }
+    assertInvestigationTurnObligationClaimScope({
+      turn: current.activeTurn,
+      closureClaims: command.observation.closureClaims,
+      unresolvableClaims: command.observation.unresolvableClaims,
+    });
     const terminalOutcomeHash = await this.digest.digestUtf8(
       canonicalInvestigationTerminalObservation(command.observation),
     );
