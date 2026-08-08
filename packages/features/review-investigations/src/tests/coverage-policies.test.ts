@@ -193,6 +193,7 @@ describe("versioned coverage policies", () => {
       requiredPathCount: 1,
       requiredPathHashes: [hash("e")],
       requiredPathSetHash: pathSetHash,
+      requiredQueryDigest: hash("6"),
       revision: InvestigationOperationRevision.Head,
       searchPolicyVersion: contract().searchPolicyVersion,
       sourceObligationId: source.obligationId,

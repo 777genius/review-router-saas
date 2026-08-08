@@ -42,6 +42,8 @@ import { InMemoryInvestigationStore } from "../infrastructure/memory/in-memory-i
 import { AesGcmInvestigationPrivateMaterialCipher } from "../infrastructure/crypto/aes-gcm-investigation-private-material-cipher";
 import { NodeSha256InvestigationDigest } from "../infrastructure/node/node-sha256-digest";
 import { PrepareInvestigationSearchQueryPrivateMaterial } from "../application/use-cases/prepare-investigation-search-query-private-material";
+import { ResolveInvestigationSearchQueryPrivateMaterial } from "../application/use-cases/resolve-investigation-search-query-private-material";
+import { HydrateInvestigationTurnObligations } from "../application/use-cases/hydrate-investigation-turn-obligations";
 import {
   CurrentInvestigationExecutionAuthority,
   FixedInvestigationClock,
@@ -1113,7 +1115,7 @@ describe("CommitAttestedInvestigationTurn", () => {
     ).toBe(true);
   });
 
-  it("rejects an operation-backed claim whose receipt is not attested", async () => {
+  it("ignores an operation-backed claim from an unsupported source", async () => {
     const fixture = await createFixture();
     const observation = observationFixture({
       turnId: fixture.turnId,
@@ -1151,7 +1153,14 @@ describe("CommitAttestedInvestigationTurn", () => {
         ),
         observation,
       }),
-    ).rejects.toThrow("investigation_operation_receipt_missing");
+    ).resolves.toMatchObject({
+      openObligationCount: 1,
+      findingCount: 0,
+    });
+    expect(
+      (await fixture.store.findById(fixture.planned.investigationId))!
+        .obligations,
+    ).toHaveLength(1);
   });
 
   it("expands every closed typed search even when the agent reports no discovery claim", async () => {
@@ -1163,7 +1172,7 @@ describe("CommitAttestedInvestigationTurn", () => {
     const digest = new NodeSha256InvestigationDigest();
     const revisionHash = hash("4");
     const pathHash = await digest.digestUtf8("src/service.ts");
-    const query = "service";
+    const query = "SensitiveService.call";
     const queryHash = await digest.digestUtf8(query);
     const operationInputHash = await digest.digestUtf8(
       canonicalStandardTextSearchOperationInput(queryHash),
@@ -1413,7 +1422,21 @@ describe("CommitAttestedInvestigationTurn", () => {
       store,
       evidence,
       digest,
-      new CommitInvestigationTurn(store, authority, digest, clock),
+      new CommitInvestigationTurn(
+        store,
+        authority,
+        digest,
+        clock,
+        privateMaterialPreparer(digest),
+      ),
+      undefined,
+      undefined,
+      new ResolveInvestigationSearchQueryPrivateMaterial(
+        store,
+        privateMaterialCipher(),
+        digest,
+        clock,
+      ),
     );
 
     const fence = await acquireTestLease(store, aggregate, {
@@ -1438,14 +1461,49 @@ describe("CommitAttestedInvestigationTurn", () => {
     const firstResult = await commit.execute(command);
 
     const committed = (await store.findById(opened.investigationId))!;
-    expect(committed.obligations).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: InvestigationObligationKind.DirectCaller,
-          origin: InvestigationObligationOrigin.DeterministicExpansion,
-        }),
-      ]),
+    const relation = committed.obligations.find(
+      (obligation) =>
+        obligation.kind === InvestigationObligationKind.DirectCaller &&
+        obligation.origin ===
+          InvestigationObligationOrigin.DeterministicExpansion,
     );
+    expect(relation).toBeDefined();
+    expect(JSON.parse(relation!.canonicalRequirement)).not.toHaveProperty(
+      "query",
+    );
+    const snapshot = store.exportSnapshot();
+    expect(snapshot).not.toContain(query);
+    const snapshotWithoutRelationMaterial = JSON.parse(snapshot) as {
+      privateMaterials: Array<
+        [string, Readonly<{ obligationId: string | null }>]
+      >;
+    };
+    expect(
+      snapshotWithoutRelationMaterial.privateMaterials.some(
+        ([, material]) => material.obligationId === relation!.obligationId,
+      ),
+    ).toBe(true);
+    snapshotWithoutRelationMaterial.privateMaterials =
+      snapshotWithoutRelationMaterial.privateMaterials.filter(
+        ([, material]) => material.obligationId !== relation!.obligationId,
+      );
+    const restarted = InMemoryInvestigationStore.fromSnapshot(
+      JSON.stringify(snapshotWithoutRelationMaterial),
+    );
+    const restored = (await restarted.findById(opened.investigationId))!;
+    const hydrated = await new HydrateInvestigationTurnObligations(
+      restarted,
+      privateMaterialCipher(),
+      digest,
+      clock,
+    ).execute({
+      investigation: restored,
+      obligationIds: [relation!.obligationId],
+    });
+    expect(JSON.parse(hydrated[0]!.canonicalRequirement)).toMatchObject({
+      query,
+      queryHash,
+    });
     expect(await commit.restoreCommittedCommand(command)).toEqual(firstResult);
     await expect(
       commit.restoreCommittedCommand({
@@ -1457,7 +1515,7 @@ describe("CommitAttestedInvestigationTurn", () => {
     expect(evidence.verify).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects an inventory closure when authenticated changed paths differ from seeded content", async () => {
+  it("commits valid closures while leaving an evidence-mismatched search open without expansion", async () => {
     const store = new InMemoryInvestigationStore();
     const authority = new CurrentInvestigationExecutionAuthority();
     const clock = new FixedInvestigationClock(
@@ -1465,14 +1523,23 @@ describe("CommitAttestedInvestigationTurn", () => {
     );
     const digest = new NodeSha256InvestigationDigest();
     const revisionHash = hash("4");
-    const changedPathHash = await digest.digestUtf8("src/value.ts");
-    const emptyPathSetHash = await digest.digestUtf8(JSON.stringify([]));
+    const sourcePathHash = await digest.digestUtf8("src/value.ts");
+    const query = "value";
+    const queryHash = await digest.digestUtf8(query);
+    const expectedSearchInputHash = await digest.digestUtf8(
+      canonicalStandardTextSearchOperationInput(queryHash),
+    );
+    const sourcePathSetHash = await digest.digestUtf8(
+      JSON.stringify([sourcePathHash]),
+    );
     const opened = await new OpenReviewInvestigation(
       store,
       authority,
       digest,
       digestBackedInvestigationManifestIdentity(digest),
       clock,
+      undefined,
+      privateMaterialPreparer(digest),
     ).execute({
       commandId: "open-inventory-mismatch",
       scope: {
@@ -1518,30 +1585,56 @@ describe("CommitAttestedInvestigationTurn", () => {
       seedObligations: [
         inventorySeedV2({
           reviewRevisionHash: revisionHash,
-          aggregateItemCount: 0,
+          aggregateItemCount: 1,
           aggregateHash: hash("2"),
-          aggregatePathCount: 0,
-          aggregatePathSetHash: emptyPathSetHash,
+          aggregatePathCount: 1,
+          aggregatePathSetHash: sourcePathSetHash,
         }),
         {
           kind: InvestigationObligationKind.ChangedContent,
           canonicalSubject: canonicalFileObligationSubject({
-            pathHash: changedPathHash,
+            pathHash: sourcePathHash,
             revision: InvestigationOperationRevision.Head,
           }),
           canonicalRequirement: canonicalInvestigationEvidenceRequirement({
             requirementVersion: obligationEvidenceRequirementVersionV2,
             kind: InvestigationEvidenceRequirementKind.CompleteChangedFile,
             path: "src/value.ts",
-            pathHash: changedPathHash,
+            pathHash: sourcePathHash,
             revision: InvestigationOperationRevision.Head,
+          }),
+          riskPriority: 900_000,
+        },
+        {
+          kind: InvestigationObligationKind.DirectReferenceSearch,
+          canonicalSubject: canonicalPageObligationSubjectV2({
+            obligationKind: InvestigationObligationKind.DirectReferenceSearch,
+            initialOperationInputHash: expectedSearchInputHash,
+            probeKind: InvestigationProbeKind.DeclarationIdentifier,
+            queryHash,
+          }),
+          canonicalRequirement: canonicalInvestigationEvidenceRequirement({
+            requirementVersion: obligationEvidenceRequirementVersionV2,
+            kind: InvestigationEvidenceRequirementKind.CompletePageChain,
+            operationKind: InvestigationOperationKind.TextSearch,
+            initialOperationInputHash: expectedSearchInputHash,
+            matchMode: InvestigationTextSearchMatchMode.FixedString,
+            query,
+            queryHash,
+            probeKind: InvestigationProbeKind.DeclarationIdentifier,
+            paths: ["."],
+            pageSize: 500,
+            revision: InvestigationOperationRevision.Head,
+            sourcePathHash,
+            searchPolicyVersion:
+              reviewInvestigationCoverageProfileV2.searchPolicyVersion,
           }),
           riskPriority: 800_000,
         },
       ],
       initialReceipts: [],
     });
-    const planned = await new PlanNextInvestigationTurn(
+    const inventoryPlanned = await new PlanNextInvestigationTurn(
       store,
       authority,
       digest,
@@ -1557,22 +1650,22 @@ describe("CommitAttestedInvestigationTurn", () => {
     const inventory = aggregate.obligations.find(
       (item) => item.kind === InvestigationObligationKind.InventoryWitness,
     )!;
-    const observation = observationFixture({
-      turnId: planned.turn!.turnId,
-      dossierVersion: planned.version,
+    const inventoryObservation = observationFixture({
+      turnId: inventoryPlanned.turn!.turnId,
+      dossierVersion: inventoryPlanned.version,
       obligationId: inventory.obligationId,
       operationReceiptId: hash("9"),
     });
-    const terminalOutcomeHash = await digest.digestUtf8(
-      canonicalInvestigationTerminalObservation(observation),
+    const inventoryTerminalOutcomeHash = await digest.digestUtf8(
+      canonicalInvestigationTerminalObservation(inventoryObservation),
     );
-    const evidence = {
+    const inventoryEvidence = {
       verify: vi.fn<InvestigationTurnEvidencePort["verify"]>(),
     };
-    evidence.verify.mockResolvedValue({
+    inventoryEvidence.verify.mockResolvedValue({
       acceptedAttestationId: "attestation-1",
       acceptedAttestationHash: hash("8"),
-      terminalOutcomeHash,
+      terminalOutcomeHash: inventoryTerminalOutcomeHash,
       gatewayPolicyVersion: "context-gateway-v4",
       actualProviderKind: InvestigationTurnProviderKind.Codex,
       operations: [
@@ -1587,12 +1680,127 @@ describe("CommitAttestedInvestigationTurn", () => {
           queryDigest: hash("4"),
           cursorInputHash: null,
           pageOrdinal: 0,
-          pageItemCount: 0,
+          pageItemCount: 1,
           pageItemsHash: hash("3"),
-          pagePathHashes: [],
-          aggregatePathCount: 0,
-          aggregatePathSetHash: await digest.digestUtf8(JSON.stringify([])),
-          aggregateItemCount: 0,
+          pagePathHashes: [sourcePathHash],
+          aggregatePathCount: 1,
+          aggregatePathSetHash: sourcePathSetHash,
+          aggregateItemCount: 1,
+          aggregateHash: hash("2"),
+          complete: true,
+          nextCursorHash: null,
+        },
+      ],
+    });
+    const inventoryFence = await acquireTestLease(store, aggregate, {
+      leaseId: "lease-inventory",
+      attemptId: "attempt-inventory",
+    });
+    const afterInventory = await new CommitAttestedInvestigationTurn(
+      store,
+      inventoryEvidence,
+      digest,
+      new CommitInvestigationTurn(store, authority, digest, clock),
+    ).execute({
+      commandId: "commit-mixed-inventory",
+      investigationId: opened.investigationId,
+      expectedVersion: inventoryPlanned.version,
+      turnId: inventoryPlanned.turn!.turnId,
+      sourceAttemptId: "attempt-inventory",
+      sourceLeaseId: "lease-inventory",
+      sourceFencingToken: inventoryFence,
+      acceptedAttestationId: "attestation-1",
+      acceptedAttestationHash: hash("8"),
+      turnObservationHash: await digest.digestUtf8(
+        canonicalInvestigationTurnObservation(inventoryObservation),
+      ),
+      observation: inventoryObservation,
+    });
+    const planned = await new PlanNextInvestigationTurn(
+      store,
+      authority,
+      digest,
+      clock,
+    ).execute({
+      commandId: "plan-mixed-content-and-search",
+      investigationId: opened.investigationId,
+      expectedVersion: afterInventory.version,
+      leaseDurationMs: 300_000,
+      maxObligationsForTurn: 16,
+    });
+    const current = (await store.findById(opened.investigationId))!;
+    const changed = current.obligations.find(
+      (item) => item.kind === InvestigationObligationKind.ChangedContent,
+    )!;
+    const search = current.obligations.find(
+      (item) => item.kind === InvestigationObligationKind.DirectReferenceSearch,
+    )!;
+    const priorDeterministicExpansionCount = current.obligations.filter(
+      (item) =>
+        item.origin === InvestigationObligationOrigin.DeterministicExpansion,
+    ).length;
+    const observation: InvestigationTurnObservation = {
+      ...observationFixture({
+        turnId: planned.turn!.turnId,
+        dossierVersion: planned.version,
+        obligationId: changed.obligationId,
+        operationReceiptId: hash("b"),
+      }),
+      closureClaims: [
+        {
+          obligationId: changed.obligationId,
+          operationReceiptIds: [hash("b")],
+        },
+        {
+          obligationId: search.obligationId,
+          operationReceiptIds: [hash("a")],
+        },
+      ],
+      operationBackedDiscoveryClaims: [
+        {
+          sourceObligationId: search.obligationId,
+          query,
+          operationReceiptIds: [hash("a")],
+        },
+      ],
+    };
+    const terminalOutcomeHash = await digest.digestUtf8(
+      canonicalInvestigationTerminalObservation(observation),
+    );
+    const evidence = {
+      verify: vi.fn<InvestigationTurnEvidencePort["verify"]>(),
+    };
+    evidence.verify.mockResolvedValue({
+      acceptedAttestationId: "attestation-1",
+      acceptedAttestationHash: hash("8"),
+      terminalOutcomeHash,
+      gatewayPolicyVersion: "context-gateway-v4",
+      actualProviderKind: InvestigationTurnProviderKind.Codex,
+      operations: [
+        await completeTextFileEvidence(digest, {
+          receiptId: hash("b"),
+          path: "src/value.ts",
+          lineCount: 3,
+        }),
+        {
+          operationReceiptId: hash("a"),
+          operationKey: hash("c"),
+          sequence: 2,
+          operationKind: InvestigationOperationKind.TextSearch,
+          operationInputHash: hash("d"),
+          evidenceDigest: hash("e"),
+          treeOid: "3".repeat(40),
+          queryDigest: hash("f"),
+          cursorInputHash: null,
+          pageOrdinal: 0,
+          pageItemCount: 1,
+          pageItemsHash: hash("0"),
+          pagePathHashes: [hash("1")],
+          aggregatePathCount: 1,
+          aggregatePathSetHash: await digest.digestUtf8(
+            JSON.stringify([hash("1")]),
+          ),
+          aggregateItemCount: 1,
           aggregateHash: hash("2"),
           complete: true,
           nextCursorHash: null,
@@ -1606,34 +1814,55 @@ describe("CommitAttestedInvestigationTurn", () => {
       new CommitInvestigationTurn(store, authority, digest, clock),
     );
 
-    await expect(
-      commit.execute({
-        commandId: "commit-inventory-mismatch",
-        investigationId: opened.investigationId,
-        expectedVersion: planned.version,
-        turnId: planned.turn!.turnId,
-        sourceAttemptId: "attempt-1",
-        sourceLeaseId: "lease-1",
-        sourceFencingToken: "1",
-        acceptedAttestationId: "attestation-1",
-        acceptedAttestationHash: hash("8"),
-        turnObservationHash: await digest.digestUtf8(
-          canonicalInvestigationTurnObservation(observation),
-        ),
-        observation,
-      }),
-    ).rejects.toThrow("investigation_inventory_seed_mismatch");
+    const fence = await acquireTestLease(store, current, {
+      leaseId: "lease-1",
+      attemptId: "attempt-1",
+    });
+    const result = await commit.execute({
+      commandId: "commit-mixed-closure-evidence",
+      investigationId: opened.investigationId,
+      expectedVersion: planned.version,
+      turnId: planned.turn!.turnId,
+      sourceAttemptId: "attempt-1",
+      sourceLeaseId: "lease-1",
+      sourceFencingToken: fence,
+      acceptedAttestationId: "attestation-1",
+      acceptedAttestationHash: hash("8"),
+      turnObservationHash: await digest.digestUtf8(
+        canonicalInvestigationTurnObservation(observation),
+      ),
+      observation,
+    });
+
+    expect(result.satisfiedObligationCount).toBe(2);
+    expect(result.openObligationCount).toBe(1);
+    const committed = (await store.findById(opened.investigationId))!;
+    expect(
+      committed.obligations.find(
+        (item) => item.obligationId === search.obligationId,
+      ),
+    ).toMatchObject({ state: "open", receipt: null });
+    expect(
+      committed.obligations.filter(
+        (item) =>
+          item.origin === InvestigationObligationOrigin.DeterministicExpansion,
+      ),
+    ).toHaveLength(priorDeterministicExpansionCount);
   });
 });
 
 function privateMaterialPreparer(digest: NodeSha256InvestigationDigest) {
   return new PrepareInvestigationSearchQueryPrivateMaterial(
-    new AesGcmInvestigationPrivateMaterialCipher(
-      "test-key",
-      new Map([["test-key", Buffer.alloc(32, 19)]]),
-    ),
+    privateMaterialCipher(),
     digest,
     5 * 60 * 1_000,
+  );
+}
+
+function privateMaterialCipher() {
+  return new AesGcmInvestigationPrivateMaterialCipher(
+    "test-key",
+    new Map([["test-key", Buffer.alloc(32, 19)]]),
   );
 }
 

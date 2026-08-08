@@ -184,6 +184,7 @@ export type CompleteRelationContextRequirementV2 = Readonly<{
   requiredPathCount: number;
   requiredPathSetHash: string;
   requiredPathHashes: readonly string[];
+  requiredQueryDigest?: string;
   sourcePathHash: string;
   revision: InvestigationOperationRevision.Head;
   searchPolicyVersion: string;
@@ -192,6 +193,12 @@ export type CompleteRelationContextRequirementV2 = Readonly<{
 export type CompleteRelationContextRequirement =
   | LegacyCompleteRelationContextRequirement
   | CompleteRelationContextRequirementV2;
+
+export type SuppliedCompleteRelationContextRequirementV2 =
+  CompleteRelationContextRequirementV2 &
+    Readonly<{
+      query: string;
+    }>;
 
 export type InvestigationEvidenceRequirement =
   | BinaryArtifactBoundaryRequirement
@@ -203,8 +210,12 @@ export type InvestigationEvidenceRequirement =
   | CompleteRelationContextRequirement;
 
 export type SuppliedInvestigationEvidenceRequirement =
-  | Exclude<InvestigationEvidenceRequirement, CompletePageChainRequirementV2>
-  | SuppliedCompletePageChainRequirementV2;
+  | Exclude<
+      InvestigationEvidenceRequirement,
+      CompletePageChainRequirementV2 | CompleteRelationContextRequirementV2
+    >
+  | SuppliedCompletePageChainRequirementV2
+  | SuppliedCompleteRelationContextRequirementV2;
 
 export type ObligationClosureProof = Readonly<{
   closurePolicyVersion: typeof obligationClosurePolicyVersion;
@@ -215,7 +226,28 @@ export type ObligationClosureProof = Readonly<{
   evidenceDigests: readonly string[];
 }>;
 
+export enum ObligationClosureDecisionKind {
+  Accepted = "accepted",
+  EvidenceMismatch = "evidence_mismatch",
+}
+
+export type ObligationClosureDecision =
+  | Readonly<{
+      kind: ObligationClosureDecisionKind.Accepted;
+      proof: ObligationClosureProof;
+    }>
+  | Readonly<{
+      kind: ObligationClosureDecisionKind.EvidenceMismatch;
+    }>;
+
 export interface ObligationClosurePolicy {
+  decide(input: {
+    readonly obligation: InvestigationObligation;
+    readonly operations: readonly VerifiedInvestigationOperationEvidence[];
+    readonly revision: Readonly<{
+      reviewRevisionHash: string;
+    }>;
+  }): ObligationClosureDecision;
   prove(input: {
     readonly obligation: InvestigationObligation;
     readonly operations: readonly VerifiedInvestigationOperationEvidence[];
@@ -226,6 +258,29 @@ export interface ObligationClosurePolicy {
 }
 
 export class VersionedObligationClosurePolicy implements ObligationClosurePolicy {
+  decide(input: {
+    readonly obligation: InvestigationObligation;
+    readonly operations: readonly VerifiedInvestigationOperationEvidence[];
+    readonly revision: Readonly<{ reviewRevisionHash: string }>;
+  }): ObligationClosureDecision {
+    try {
+      return Object.freeze({
+        kind: ObligationClosureDecisionKind.Accepted,
+        proof: this.prove(input),
+      });
+    } catch (error) {
+      if (
+        error instanceof ReviewInvestigationDomainError &&
+        error.code === "investigation_obligation_evidence_mismatch"
+      ) {
+        return Object.freeze({
+          kind: ObligationClosureDecisionKind.EvidenceMismatch,
+        });
+      }
+      throw error;
+    }
+  }
+
   prove(input: {
     readonly obligation: InvestigationObligation;
     readonly operations: readonly VerifiedInvestigationOperationEvidence[];
@@ -275,9 +330,11 @@ export function toPersistedInvestigationEvidenceRequirement(
   requirement: SuppliedInvestigationEvidenceRequirement,
 ): InvestigationEvidenceRequirement {
   if (
-    requirement.kind !==
-      InvestigationEvidenceRequirementKind.CompletePageChain ||
-    requirement.requirementVersion !== obligationEvidenceRequirementVersionV2
+    requirement.requirementVersion !== obligationEvidenceRequirementVersionV2 ||
+    (requirement.kind !==
+      InvestigationEvidenceRequirementKind.CompletePageChain &&
+      requirement.kind !==
+        InvestigationEvidenceRequirementKind.CompleteRelationContext)
   ) {
     return requirement;
   }
@@ -291,9 +348,11 @@ export function hydrateInvestigationEvidenceRequirement(
   query: string,
 ): SuppliedInvestigationEvidenceRequirement {
   if (
-    requirement.kind !==
-      InvestigationEvidenceRequirementKind.CompletePageChain ||
-    requirement.requirementVersion !== obligationEvidenceRequirementVersionV2
+    requirement.requirementVersion !== obligationEvidenceRequirementVersionV2 ||
+    (requirement.kind !==
+      InvestigationEvidenceRequirementKind.CompletePageChain &&
+      requirement.kind !==
+        InvestigationEvidenceRequirementKind.CompleteRelationContext)
   ) {
     throw invalidRequirement();
   }
@@ -696,10 +755,14 @@ function parseRequirement(
           "initialOperationInputHash",
           "kind",
           "queryHash",
+          ...(supplied ? ["query"] : []),
           "requirementVersion",
           "requiredPathCount",
           "requiredPathHashes",
           "requiredPathSetHash",
+          ...(Object.hasOwn(root, "requiredQueryDigest")
+            ? ["requiredQueryDigest"]
+            : []),
           "revision",
           "searchPolicyVersion",
           "sourceObligationId",
@@ -719,9 +782,13 @@ function parseRequirement(
           sourceObligationId: sha256(root.sourceObligationId),
           initialOperationInputHash: sha256(root.initialOperationInputHash),
           queryHash: sha256(root.queryHash),
+          ...(supplied ? { query: boundedCanonicalQuery(root.query) } : {}),
           requiredPathCount,
           requiredPathSetHash: sha256(root.requiredPathSetHash),
           requiredPathHashes,
+          ...(Object.hasOwn(root, "requiredQueryDigest")
+            ? { requiredQueryDigest: sha256(root.requiredQueryDigest) }
+            : {}),
           sourcePathHash: sha256(root.sourcePathHash),
           revision: InvestigationOperationRevision.Head,
           searchPolicyVersion: boundedIdentifier(root.searchPolicyVersion),
@@ -939,13 +1006,50 @@ function proveRelationContextV2(
   operations: readonly VerifiedInvestigationOperationEvidence[],
   requirement: CompleteRelationContextRequirementV2,
 ): string {
-  if (operations.length === 0 || !operations.every(isFileEvidence)) {
+  const searches = operations.filter(isPageEvidence);
+  const files = operations.filter(isFileEvidence);
+  if (
+    files.length === 0 ||
+    searches.length + files.length !== operations.length ||
+    (requirement.requiredQueryDigest !== undefined && searches.length === 0)
+  ) {
     throw invalidClosure();
+  }
+  let searchTreeOid: string | null = null;
+  if (searches.length > 0) {
+    const firstSearch = provePageChain(
+      searches,
+      InvestigationOperationKind.TextSearch,
+      requirement.initialOperationInputHash,
+    );
+    if (
+      requirement.requiredQueryDigest !== undefined &&
+      firstSearch.queryDigest !== requirement.requiredQueryDigest
+    ) {
+      throw invalidClosure();
+    }
+    searchTreeOid = firstSearch.treeOid;
+    const terminal = [...searches]
+      .sort((left, right) => left.pageOrdinal - right.pageOrdinal)
+      .at(-1)!;
+    const observedPathHashes = new Set(
+      searches.flatMap((page) => page.pagePathHashes),
+    );
+    if (
+      terminal.aggregatePathCount !== requirement.requiredPathCount ||
+      terminal.aggregatePathSetHash !== requirement.requiredPathSetHash ||
+      observedPathHashes.size !== requirement.requiredPathHashes.length ||
+      requirement.requiredPathHashes.some(
+        (pathHash) => !observedPathHashes.has(pathHash),
+      )
+    ) {
+      throw invalidClosure();
+    }
   }
   const requiredPathHashes = new Set(requirement.requiredPathHashes);
   const completeRelatedFiles = new Set<string>();
   let treeOid: string | null = null;
-  for (const group of groupFileEvidence(operations).values()) {
+  for (const group of groupFileEvidence(files).values()) {
     const file = proveFileCoverage(group, {
       requirementVersion: obligationEvidenceRequirementVersion,
       kind: InvestigationEvidenceRequirementKind.CompleteFile,
@@ -967,7 +1071,8 @@ function proveRelationContextV2(
     completeRelatedFiles.size !== requiredPathHashes.size ||
     [...requiredPathHashes].some(
       (pathHash) => !completeRelatedFiles.has(pathHash),
-    )
+    ) ||
+    (searchTreeOid !== null && treeOid !== searchTreeOid)
   ) {
     throw invalidClosure();
   }

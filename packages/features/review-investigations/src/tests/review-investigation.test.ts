@@ -7,6 +7,7 @@ import {
   ContextCriticDecision,
   enforceCriticPolicyForConclusion,
   InvestigationFindingSeverity,
+  InvestigationEvidenceRequirementKind,
   InvestigationExecutionAuthorityVerdict,
   InvestigationPolicyCanonicalVersion,
   policyCanonicalValue,
@@ -14,11 +15,14 @@ import {
   InvestigationStoreTransitionKind,
   InvestigationObligationKind,
   InvestigationObligationState,
+  InvestigationOperationRevision,
   InvestigationReceiptReplayVerdict,
   InvestigationReceiptKind,
   InvestigationTurnProviderKind,
   investigationDossierCanonicalValue,
   canonicalJson,
+  canonicalInvestigationEvidenceRequirement,
+  canonicalRelationObligationSubjectV2,
   independentCriticRiskPriorityV1,
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
@@ -37,6 +41,7 @@ import {
   TurnResultAuthority,
   decideTurnResultAdmission,
   reviewInvestigationCriticPolicyV1,
+  obligationEvidenceRequirementVersionV2,
   serializeReviewInvestigation,
   summarizeTerminalDiscoveryProvenance,
   type CommitInvestigationTurnCommand,
@@ -1493,6 +1498,9 @@ describe("review investigation in-memory vertical slice", () => {
     const opened = await harness.open.execute(openCommand("drain-open"));
     const planned = await planDiscovery(harness, opened);
     const historicalReceipt = receipt("receipt-drain", changedSubject);
+    const obligationCountBeforeDrain = (await harness.store.findById(
+      planned.investigationId,
+    ))!.obligations.length;
     harness.authority.verdict =
       InvestigationExecutionAuthorityVerdict.Superseded;
     const command = {
@@ -1516,9 +1524,41 @@ describe("review investigation in-memory vertical slice", () => {
       ],
       admittedAt: "2026-08-02T10:00:59.999Z",
       resultDeadlines: [planned.turn!.expiresAt],
+      deterministicExpansions: [
+        {
+          kind: InvestigationObligationKind.DirectCaller,
+          canonicalSubject: canonicalRelationObligationSubjectV2({
+            obligationKind: InvestigationObligationKind.DirectCaller,
+            sourceObligationId: "c".repeat(64),
+            initialOperationInputHash: "d".repeat(64),
+            queryHash: "e".repeat(64),
+            requiredPathSetHash: "f".repeat(64),
+          }),
+          canonicalRequirement: canonicalInvestigationEvidenceRequirement({
+            requirementVersion: obligationEvidenceRequirementVersionV2,
+            kind: InvestigationEvidenceRequirementKind.CompleteRelationContext,
+            sourceObligationId: "c".repeat(64),
+            initialOperationInputHash: "d".repeat(64),
+            queryHash: "e".repeat(64),
+            requiredPathCount: 1,
+            requiredPathSetHash: "f".repeat(64),
+            requiredPathHashes: ["1".repeat(64)],
+            requiredQueryDigest: "2".repeat(64),
+            sourcePathHash: "3".repeat(64),
+            revision: InvestigationOperationRevision.Head,
+            searchPolicyVersion: "review-investigation-fixed-string-search.v1",
+          }),
+          riskPriority: 100,
+        },
+      ],
     } as const;
-    const committed = await harness.commit.execute(command);
+    const prepareDeterministicExpansionQueries = vi.fn(async () => {
+      throw new Error("expired_private_material_must_not_be_resolved");
+    });
+    const privateContext = { prepareDeterministicExpansionQueries };
+    const committed = await harness.commit.execute(command, privateContext);
     await expect(harness.commit.execute(command)).resolves.toEqual(committed);
+    expect(prepareDeterministicExpansionQueries).not.toHaveBeenCalled();
 
     expect(committed).toMatchObject({
       state: ReviewInvestigationState.Superseded,
@@ -1532,6 +1572,7 @@ describe("review investigation in-memory vertical slice", () => {
       totalDurationMs: 100,
     });
     expect(stored?.turnProvenance).toHaveLength(1);
+    expect(stored?.obligations).toHaveLength(obligationCountBeforeDrain);
     expect(stored?.replayEvidenceCheckpoint).toMatchObject({
       sourceState: ReviewInvestigationState.Superseded,
       sourceInvestigationVersion: committed.version,

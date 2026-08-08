@@ -458,14 +458,16 @@ export class PrismaInvestigationStore
           const fastRestore = await restoreCommitResult(transaction, input);
           if (fastRestore !== null) return fastRestore;
 
-          const privateMaterials = validateInvestigationPrivateMaterialCommit({
-            investigation: input.investigation,
-            expectedVersion: input.expectedVersion,
-            transition: input.transition,
-            privateMaterials: input.privateMaterials ?? [],
-          });
-
           if (input.expectedVersion === null) {
+            const privateMaterials = validateInvestigationPrivateMaterialCommit(
+              {
+                investigation: input.investigation,
+                currentInvestigation: null,
+                expectedVersion: null,
+                transition: input.transition,
+                privateMaterials: input.privateMaterials ?? [],
+              },
+            );
             return this.createAggregate(transaction, {
               investigation: input.investigation,
               expectedVersion: null,
@@ -499,6 +501,13 @@ export class PrismaInvestigationStore
               current,
             );
           }
+          const privateMaterials = validateInvestigationPrivateMaterialCommit({
+            investigation: input.investigation,
+            currentInvestigation: current,
+            expectedVersion: input.expectedVersion,
+            transition: input.transition,
+            privateMaterials: input.privateMaterials ?? [],
+          });
           if (!(await commitGuardIsCurrent(transaction, input, current))) {
             return result(
               InvestigationStoreCommitStatus.LeaseFenceConflict,
@@ -524,6 +533,7 @@ export class PrismaInvestigationStore
             input.transition,
             retainUntil,
           );
+          await persistPrivateMaterials(transaction, privateMaterials);
           await persistCertificate(transaction, current, input.investigation);
           await persistReplayEvidenceCheckpoint(
             transaction,

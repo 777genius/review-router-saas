@@ -28,6 +28,7 @@ export class PrepareInvestigationSearchQueryPrivateMaterial {
     readonly investigation: ReviewInvestigation;
     readonly obligation: InvestigationObligation;
     readonly query: string;
+    readonly createdAt?: string;
   }): Promise<EncryptedInvestigationPrivateMaterial> {
     const requirement = requirePersistedSearchQueryRequirement(
       input.obligation,
@@ -44,7 +45,7 @@ export class PrepareInvestigationSearchQueryPrivateMaterial {
       }),
     );
     const privateMaterialId = `private-${privateMaterialHash.slice(0, 40)}`;
-    const createdAt = input.investigation.createdAt;
+    const createdAt = input.createdAt ?? input.investigation.createdAt;
     const expiresAt = new Date(
       new Date(createdAt).getTime() + this.ttlMs,
     ).toISOString();

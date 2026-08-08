@@ -1,7 +1,13 @@
 import { canonicalJson } from "../domain/canonicalization";
 import type { PreparedOperationBackedDiscoveryClaim } from "../domain/coverage-policies";
+import { InvestigationObligationOrigin } from "../domain/investigation-obligation";
+import {
+  InvestigationObligationKind,
+  InvestigationObligationState,
+} from "../domain/review-investigation-types";
 import {
   InvestigationEvidenceRequirementKind,
+  canonicalFileObligationSubject,
   canonicalStandardTextSearchOperationInput,
   obligationEvidenceRequirementVersionV2,
   parseInvestigationEvidenceRequirement,
@@ -27,6 +33,7 @@ export class AttestedTurnDiscoveryPreparation {
   }): Promise<readonly PreparedOperationBackedDiscoveryClaim[]> {
     const providerDiscoveryClaims = await this.prepareProviderClaims({
       claims: input.providerClaims,
+      investigation: input.investigation,
       operationEvidence: input.operationEvidence,
     });
     const requiredDiscoveryClaims = await this.prepareClosedSearchClaims({
@@ -42,10 +49,14 @@ export class AttestedTurnDiscoveryPreparation {
 
   private async prepareProviderClaims(input: {
     readonly claims: InvestigationTurnObservation["operationBackedDiscoveryClaims"];
+    readonly investigation: ReviewInvestigation;
     readonly operationEvidence: VerifiedOperationEvidenceIndex;
   }): Promise<readonly PreparedOperationBackedDiscoveryClaim[]> {
+    const acceptedClaims = input.claims.filter((claim) =>
+      isProviderDiscoverySource(input.investigation, claim.sourceObligationId),
+    );
     const claimedReceiptIds = new Set<string>();
-    for (const claim of input.claims) {
+    for (const claim of acceptedClaims) {
       for (const receiptId of claim.operationReceiptIds) {
         if (claimedReceiptIds.has(receiptId)) {
           throw new Error(
@@ -57,7 +68,7 @@ export class AttestedTurnDiscoveryPreparation {
     }
     return Object.freeze(
       await Promise.all(
-        input.claims.map(async (claim) => {
+        acceptedClaims.map(async (claim) => {
           const operations = textSearchOperations(
             claim.operationReceiptIds,
             input.operationEvidence,
@@ -134,6 +145,38 @@ export class AttestedTurnDiscoveryPreparation {
       operations: Object.freeze([...input.operations]),
     });
   }
+}
+
+function isProviderDiscoverySource(
+  investigation: ReviewInvestigation,
+  obligationId: string,
+): boolean {
+  if (
+    investigation.activeTurn !== null &&
+    !investigation.activeTurn.obligationIds.includes(obligationId)
+  ) {
+    return false;
+  }
+  const obligation = investigation.obligations.find(
+    (candidate) => candidate.obligationId === obligationId,
+  );
+  if (
+    !obligation ||
+    obligation.kind !== InvestigationObligationKind.ChangedContent ||
+    obligation.origin !== InvestigationObligationOrigin.CoverageContract ||
+    obligation.state !== InvestigationObligationState.Open
+  ) {
+    return false;
+  }
+  const requirement = parseInvestigationEvidenceRequirement(
+    obligation.canonicalRequirement,
+  );
+  return (
+    requirement.kind ===
+      InvestigationEvidenceRequirementKind.CompleteChangedFile &&
+    requirement.requirementVersion === obligationEvidenceRequirementVersionV2 &&
+    obligation.canonicalSubject === canonicalFileObligationSubject(requirement)
+  );
 }
 
 function textSearchOperations(

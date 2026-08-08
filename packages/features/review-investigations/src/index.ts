@@ -33,6 +33,7 @@ export * from "./application/ports/investigation-replay-preparation-port";
 export * from "./application/ports/investigation-terminal-projection-port";
 export * from "./application/use-cases/open-review-investigation";
 export * from "./application/use-cases/prepare-investigation-search-query-private-material";
+export * from "./application/use-cases/resolve-investigation-search-query-private-material";
 export * from "./application/use-cases/reconcile-expired-investigation-private-material";
 export * from "./application/use-cases/reconcile-expired-active-turn";
 export * from "./application/use-cases/hydrate-investigation-turn-obligations";

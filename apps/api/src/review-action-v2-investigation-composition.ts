@@ -16,6 +16,7 @@ import {
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
   PrepareInvestigationSearchQueryPrivateMaterial,
+  ResolveInvestigationSearchQueryPrivateMaterial,
   PrepareReviewInvestigationReplay,
   ReplayReviewInvestigation,
   ReconcileExpiredActiveTurn,
@@ -269,11 +270,20 @@ export function composeReviewInvestigationUseCases(input: {
         input.clock,
       )
     : null;
+  const resolvePrivateQuery = input.privateMaterial
+    ? new ResolveInvestigationSearchQueryPrivateMaterial(
+        input.privateMaterial.store,
+        input.privateMaterial.cipher,
+        digest,
+        input.clock,
+      )
+    : undefined;
   const commit = new CommitInvestigationTurn(
     input.store,
     input.authority,
     digest,
     input.clock,
+    privateMaterialPreparer,
   );
   const expiredTurns = new ReconcileExpiredActiveTurn(
     input.store,
@@ -324,6 +334,9 @@ export function composeReviewInvestigationUseCases(input: {
       input.evidence,
       digest,
       commit,
+      undefined,
+      undefined,
+      resolvePrivateQuery,
     ),
     abortTurn: new AbortInvestigationTurn(input.store, digest, input.clock),
     conclude: new ConcludeReviewInvestigation(
@@ -2317,10 +2330,12 @@ async function canonicalTurnBrief(
         obligation.canonicalRequirement,
       );
       return (
-        requirement.kind ===
-          InvestigationEvidenceRequirementKind.CompletePageChain &&
         requirement.requirementVersion ===
-          obligationEvidenceRequirementVersionV2
+          obligationEvidenceRequirementVersionV2 &&
+        (requirement.kind ===
+          InvestigationEvidenceRequirementKind.CompletePageChain ||
+          requirement.kind ===
+            InvestigationEvidenceRequirementKind.CompleteRelationContext)
       );
     })
   ) {

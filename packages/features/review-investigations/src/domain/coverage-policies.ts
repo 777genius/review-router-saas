@@ -299,6 +299,7 @@ export class VersionedCoverageExpansionPolicy implements CoverageExpansionPolicy
         requiredPathCount: terminal.aggregatePathCount,
         requiredPathSetHash: terminal.aggregatePathSetHash,
         requiredPathHashes: Object.freeze([...chain.pathHashes]),
+        requiredQueryDigest: chain.pages[0]!.queryDigest,
         sourcePathHash: sourceProfile.sourcePathHash,
         revision: InvestigationOperationRevision.Head,
         searchPolicyVersion: input.contract.searchPolicyVersion,
