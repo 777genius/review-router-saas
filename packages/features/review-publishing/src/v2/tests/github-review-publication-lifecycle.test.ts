@@ -197,6 +197,18 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
     });
   });
 
+  it("fails closed when GitHub reports an edit after its latest update", async () => {
+    const result = await resolveSingleTarget({
+      publishedAt: "2026-07-23T10:00:05Z",
+      updatedAt: "2026-07-23T10:00:08Z",
+      lastEditedAt: "2026-07-23T10:00:11Z",
+    });
+
+    expect(result).toEqual({
+      status: LiveReviewPublicationLifecycleStatus.Unavailable,
+    });
+  });
+
   it("retains resolved targets and fails closed on incomplete pagination", async () => {
     const resolved = await adapter({
       async graphql<T>(query: string) {

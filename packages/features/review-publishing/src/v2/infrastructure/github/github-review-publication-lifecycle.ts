@@ -685,7 +685,8 @@ function hasRelevantParentTimestampChange(
     updatedAt < createdAt ||
     (publishedAt !== null &&
       (publishedAt < createdAt || updatedAt < publishedAt)) ||
-    (lastEditedAt !== null && lastEditedAt < createdAt)
+    (lastEditedAt !== null &&
+      (lastEditedAt < createdAt || lastEditedAt > updatedAt))
   ) {
     throw new Error("github_comment_timestamp_order_invalid");
   }
