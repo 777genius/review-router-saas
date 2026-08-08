@@ -9,19 +9,22 @@ import {
   obligationEvidenceRequirementVersionV2,
   parseInvestigationEvidenceRequirement,
   type CompletePageChainRequirementV2,
+  type CompleteRelationContextRequirementV2,
 } from "../domain/obligation-closure-policy";
 import type { ReviewInvestigation } from "../domain/review-investigation";
 
 export function requirePersistedSearchQueryRequirement(
   obligation: InvestigationObligation,
-): CompletePageChainRequirementV2 {
+): CompletePageChainRequirementV2 | CompleteRelationContextRequirementV2 {
   const requirement = parseInvestigationEvidenceRequirement(
     obligation.canonicalRequirement,
   );
   if (
-    requirement.kind !==
-      InvestigationEvidenceRequirementKind.CompletePageChain ||
-    requirement.requirementVersion !== obligationEvidenceRequirementVersionV2
+    requirement.requirementVersion !== obligationEvidenceRequirementVersionV2 ||
+    (requirement.kind !==
+      InvestigationEvidenceRequirementKind.CompletePageChain &&
+      requirement.kind !==
+        InvestigationEvidenceRequirementKind.CompleteRelationContext)
   ) {
     throw new Error("investigation_private_material_obligation_invalid");
   }

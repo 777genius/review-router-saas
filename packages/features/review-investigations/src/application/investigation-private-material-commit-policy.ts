@@ -8,21 +8,21 @@ import {
   InvestigationEvidenceRequirementKind,
   obligationEvidenceRequirementVersionV2,
   parseInvestigationEvidenceRequirement,
+  requiresInvestigationSearchQueryPrivateMaterial,
 } from "../domain/obligation-closure-policy";
 import type { ReviewInvestigation } from "../domain/review-investigation";
-import { reviewInvestigationCoverageProfileV2 } from "../domain/coverage-contract";
+import { isTypedReviewInvestigationCoverageProfile } from "../domain/coverage-contract";
 
 export function validateInvestigationPrivateMaterialCommit(input: {
   readonly investigation: ReviewInvestigation;
+  readonly currentInvestigation: ReviewInvestigation | null;
   readonly expectedVersion: number | null;
   readonly transition: InvestigationStoreTransition;
   readonly privateMaterials: readonly EncryptedInvestigationPrivateMaterial[];
 }): readonly EncryptedInvestigationPrivateMaterial[] {
-  const requiredObligationIds =
-    persistedSearchQueryPrivateMaterialObligationIds(input.investigation);
+  persistedSearchQueryPrivateMaterialObligationIds(input.investigation);
   if (
-    input.investigation.contract.expansionRulesVersion !==
-    reviewInvestigationCoverageProfileV2.expansionRulesVersion
+    !isTypedReviewInvestigationCoverageProfile(input.investigation.contract)
   ) {
     if (input.privateMaterials.length > 0) {
       throw new Error("investigation_private_material_transition_invalid");
@@ -33,12 +33,23 @@ export function validateInvestigationPrivateMaterialCommit(input: {
   const isOpen =
     input.expectedVersion === null &&
     input.transition.kind === InvestigationStoreTransitionKind.Opened;
-  if (!isOpen) {
+  const isTurnCommit =
+    input.expectedVersion !== null &&
+    input.transition.kind === InvestigationStoreTransitionKind.TurnCommitted &&
+    input.currentInvestigation !== null;
+  if (!isOpen && !isTurnCommit) {
     if (input.privateMaterials.length > 0) {
       throw new Error("investigation_private_material_transition_invalid");
     }
     return Object.freeze([]);
   }
+
+  const requiredObligationIds = isOpen
+    ? pageChainObligationIds(input.investigation)
+    : newlyAddedRelationObligationIds(
+        input.currentInvestigation!,
+        input.investigation,
+      );
 
   const obligations = new Set(
     input.investigation.obligations.map((item) => item.obligationId),
@@ -55,7 +66,10 @@ export function validateInvestigationPrivateMaterialCommit(input: {
       material.obligationId === null ||
       !obligations.has(material.obligationId) ||
       !requiredObligationIds.has(material.obligationId) ||
-      material.createdAt !== input.investigation.createdAt ||
+      material.createdAt !==
+        (isOpen
+          ? input.investigation.createdAt
+          : input.investigation.updatedAt) ||
       materialIds.has(material.privateMaterialId) ||
       materialByObligation.has(material.obligationId)
     ) {
@@ -79,6 +93,51 @@ export function validateInvestigationPrivateMaterialCommit(input: {
   );
 }
 
+function pageChainObligationIds(
+  investigation: ReviewInvestigation,
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const obligation of investigation.obligations) {
+    const requirement = parseInvestigationEvidenceRequirement(
+      obligation.canonicalRequirement,
+    );
+    if (
+      requirement.kind ===
+        InvestigationEvidenceRequirementKind.CompletePageChain &&
+      requirement.requirementVersion === obligationEvidenceRequirementVersionV2
+    ) {
+      ids.add(obligation.obligationId);
+    }
+  }
+  return ids;
+}
+
+function newlyAddedRelationObligationIds(
+  current: ReviewInvestigation,
+  next: ReviewInvestigation,
+): ReadonlySet<string> {
+  const currentIds = new Set(
+    current.obligations.map((obligation) => obligation.obligationId),
+  );
+  const ids = new Set<string>();
+  for (const obligation of next.obligations) {
+    if (currentIds.has(obligation.obligationId)) continue;
+    const requirement = parseInvestigationEvidenceRequirement(
+      obligation.canonicalRequirement,
+    );
+    if (
+      requirement.kind ===
+        InvestigationEvidenceRequirementKind.CompleteRelationContext &&
+      requirement.requirementVersion ===
+        obligationEvidenceRequirementVersionV2 &&
+      requiresInvestigationSearchQueryPrivateMaterial(requirement)
+    ) {
+      ids.add(obligation.obligationId);
+    }
+  }
+  return ids;
+}
+
 export function assertPersistedInvestigationRequirementsSanitized(
   investigation: ReviewInvestigation,
 ): void {
@@ -88,10 +147,7 @@ export function assertPersistedInvestigationRequirementsSanitized(
 function persistedSearchQueryPrivateMaterialObligationIds(
   investigation: ReviewInvestigation,
 ): ReadonlySet<string> {
-  if (
-    investigation.contract.expansionRulesVersion !==
-    reviewInvestigationCoverageProfileV2.expansionRulesVersion
-  ) {
+  if (!isTypedReviewInvestigationCoverageProfile(investigation.contract)) {
     return new Set();
   }
   const requiredObligationIds = new Set<string>();
@@ -118,10 +174,7 @@ function persistedSearchQueryPrivateMaterialObligationIds(
       ) {
         throw new Error("investigation_persisted_search_query_forbidden");
       }
-      if (
-        requirement.kind ===
-        InvestigationEvidenceRequirementKind.CompletePageChain
-      ) {
+      if (requiresInvestigationSearchQueryPrivateMaterial(requirement)) {
         requiredObligationIds.add(obligation.obligationId);
       }
     }

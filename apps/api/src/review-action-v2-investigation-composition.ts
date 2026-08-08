@@ -9,13 +9,13 @@ import {
   InvestigationOperationKind,
   InvestigationOperationRevision,
   InvestigationFileContentKind,
-  InvestigationEvidenceRequirementKind,
   InvestigationFindingSeverity,
   InvestigationTurnProviderKind,
   HydrateInvestigationTurnObligations,
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
   PrepareInvestigationSearchQueryPrivateMaterial,
+  ResolveInvestigationSearchQueryPrivateMaterial,
   PrepareReviewInvestigationReplay,
   ReplayReviewInvestigation,
   ReconcileExpiredActiveTurn,
@@ -38,9 +38,8 @@ import {
   assertSupportedReviewInvestigationCoverageProfile,
   canonicalInvestigationTurnObservation,
   maximumSemanticRiskPriority,
-  obligationEvidenceRequirementVersionV2,
   parseInvestigationEvidenceRequirement,
-  reviewInvestigationCoverageProfileV2,
+  requiresInvestigationSearchQueryPrivateMaterial,
   parseInvestigationTurnObservation,
   type InvestigationClockPort,
   type InvestigationExecutionAuthorityPort,
@@ -269,11 +268,20 @@ export function composeReviewInvestigationUseCases(input: {
         input.clock,
       )
     : null;
+  const resolvePrivateQuery = input.privateMaterial
+    ? new ResolveInvestigationSearchQueryPrivateMaterial(
+        input.privateMaterial.store,
+        input.privateMaterial.cipher,
+        digest,
+        input.clock,
+      )
+    : undefined;
   const commit = new CommitInvestigationTurn(
     input.store,
     input.authority,
     digest,
     input.clock,
+    privateMaterialPreparer,
   );
   const expiredTurns = new ReconcileExpiredActiveTurn(
     input.store,
@@ -324,6 +332,9 @@ export function composeReviewInvestigationUseCases(input: {
       input.evidence,
       digest,
       commit,
+      undefined,
+      undefined,
+      resolvePrivateQuery,
     ),
     abortTurn: new AbortInvestigationTurn(input.store, digest, input.clock),
     conclude: new ConcludeReviewInvestigation(
@@ -2306,8 +2317,6 @@ async function canonicalTurnBrief(
   if (!aggregate.activeTurn || !readModel.turn) return canonicalJson(null);
   if (
     !hydrator &&
-    aggregate.contract.expansionRulesVersion ===
-      reviewInvestigationCoverageProfileV2.expansionRulesVersion &&
     readModel.turn.obligationIds.some((obligationId) => {
       const obligation = aggregate.obligations.find(
         (candidate) => candidate.obligationId === obligationId,
@@ -2316,12 +2325,7 @@ async function canonicalTurnBrief(
       const requirement = parseInvestigationEvidenceRequirement(
         obligation.canonicalRequirement,
       );
-      return (
-        requirement.kind ===
-          InvestigationEvidenceRequirementKind.CompletePageChain &&
-        requirement.requirementVersion ===
-          obligationEvidenceRequirementVersionV2
-      );
+      return requiresInvestigationSearchQueryPrivateMaterial(requirement);
     })
   ) {
     throw new Error("investigation_private_material_unavailable");

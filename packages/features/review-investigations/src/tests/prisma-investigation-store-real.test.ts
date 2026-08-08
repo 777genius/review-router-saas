@@ -32,7 +32,7 @@ import {
   canonicalStandardTextSearchOperationInput,
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
-  reviewInvestigationCoverageProfileV2,
+  reviewInvestigationCoverageProfileV3,
   investigationDossierCanonicalValue,
 } from "../index";
 import { RestoreReviewInvestigation } from "../application/use-cases/restore-review-investigation";
@@ -646,11 +646,11 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       revision: InvestigationOperationRevision.Head,
       sourcePathHash,
       searchPolicyVersion:
-        reviewInvestigationCoverageProfileV2.searchPolicyVersion,
+        reviewInvestigationCoverageProfileV3.searchPolicyVersion,
     });
     const identity = obligationIdentity({
       coverageContractVersion:
-        reviewInvestigationCoverageProfileV2.coverageContractVersion,
+        reviewInvestigationCoverageProfileV3.coverageContractVersion,
       stableReviewUnitKey: base.stableReviewUnitKey,
       kind: InvestigationObligationKind.DirectReferenceSearch,
       canonicalSubject: canonicalPageObligationSubjectV2({
@@ -680,7 +680,7 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
         .digest("hex"),
       identity: obligationIdentity({
         coverageContractVersion:
-          reviewInvestigationCoverageProfileV2.coverageContractVersion,
+          reviewInvestigationCoverageProfileV3.coverageContractVersion,
         stableReviewUnitKey: base.stableReviewUnitKey,
         kind: InvestigationObligationKind.InventoryWitness,
         canonicalSubject: canonicalInventoryObligationSubject(
@@ -694,7 +694,7 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
     const seed: ReviewInvestigation = {
       ...base,
       contract: {
-        ...reviewInvestigationCoverageProfileV2,
+        ...reviewInvestigationCoverageProfileV3,
         producerReleaseId: base.contract.producerReleaseId,
       },
       obligations: [inventoryObligation, obligation],

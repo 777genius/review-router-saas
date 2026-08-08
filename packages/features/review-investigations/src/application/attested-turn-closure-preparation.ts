@@ -5,6 +5,7 @@ import {
 } from "../domain/investigation-obligation";
 import {
   InvestigationEvidenceRequirementKind,
+  ObligationClosureDecisionKind,
   VersionedObligationClosurePolicy,
   canonicalStandardTextSearchOperationInput,
   obligationEvidenceRequirementVersionV2,
@@ -27,6 +28,7 @@ export type PreparedAttestedTurnClosures = Readonly<{
     obligationId: string;
     receipt: InvestigationEvidenceReceipt;
   }>[];
+  acceptedProviderClaims: InvestigationTurnObservation["closureClaims"];
 }>;
 
 export class AttestedTurnClosurePreparation {
@@ -42,29 +44,40 @@ export class AttestedTurnClosurePreparation {
     readonly acceptedAttestationId: string;
     readonly acceptedAttestationHash: string;
   }): Promise<PreparedAttestedTurnClosures> {
+    const adjudicated = await Promise.all(
+      input.closureClaims.map(async (claim) => ({
+        claim,
+        receipt: await this.buildReceipt({
+          claim,
+          investigation: input.investigation,
+          operationEvidence: input.operationEvidence,
+          acceptedAttestationId: input.acceptedAttestationId,
+          acceptedAttestationHash: input.acceptedAttestationHash,
+        }),
+      })),
+    );
+    const accepted = adjudicated.filter(
+      (
+        item,
+      ): item is (typeof adjudicated)[number] & {
+        receipt: InvestigationEvidenceReceipt;
+      } => item.receipt !== null,
+    );
     const closureClaims = Object.freeze(
-      await Promise.all(
-        input.closureClaims.map(async (claim) =>
-          Object.freeze({
-            obligationId: claim.obligationId,
-            receipt: await this.buildReceipt({
-              claim,
-              investigation: input.investigation,
-              operationEvidence: input.operationEvidence,
-              acceptedAttestationId: input.acceptedAttestationId,
-              acceptedAttestationHash: input.acceptedAttestationHash,
-            }),
-          }),
-        ),
+      accepted.map(({ claim, receipt }) =>
+        Object.freeze({ obligationId: claim.obligationId, receipt }),
       ),
     );
+    const acceptedProviderClaims = Object.freeze(
+      accepted.map(({ claim }) => claim),
+    );
     await assertInventoryClosureCompleteness({
-      closureClaims: input.closureClaims,
+      closureClaims: acceptedProviderClaims,
       investigation: input.investigation,
       operationEvidence: input.operationEvidence,
       digest: this.digest,
     });
-    return Object.freeze({ closureClaims });
+    return Object.freeze({ closureClaims, acceptedProviderClaims });
   }
 
   private async buildReceipt(input: {
@@ -73,7 +86,7 @@ export class AttestedTurnClosurePreparation {
     readonly operationEvidence: VerifiedOperationEvidenceIndex;
     readonly acceptedAttestationId: string;
     readonly acceptedAttestationHash: string;
-  }): Promise<InvestigationEvidenceReceipt> {
+  }): Promise<InvestigationEvidenceReceipt | null> {
     const obligation = input.investigation.obligations.find(
       (item) => item.obligationId === input.claim.obligationId,
     );
@@ -89,11 +102,15 @@ export class AttestedTurnClosurePreparation {
       obligation.canonicalRequirement,
       this.digest,
     );
-    const proof = this.closurePolicy.prove({
+    const decision = this.closurePolicy.decide({
       obligation,
       operations,
       revision: input.investigation.revision,
     });
+    if (decision.kind === ObligationClosureDecisionKind.EvidenceMismatch) {
+      return null;
+    }
+    const proof = decision.proof;
     return Object.freeze({
       receiptId: await digestCanonical(this.digest, {
         closurePolicyVersion: proof.closurePolicyVersion,

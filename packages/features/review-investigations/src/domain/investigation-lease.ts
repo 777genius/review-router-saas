@@ -123,7 +123,10 @@ export function decideReviewInvestigationLeaseReplay(input: {
     return ReviewInvestigationLeaseReplayStatus.Proceed;
   }
   const existing = input.existing;
-  return existing.acquireRequestHash === input.candidate.acquireRequestHash &&
+  return existing.state === ReviewInvestigationLeaseState.Active &&
+    timestampMs(existing.expiresAt, "lease_expires_at") >
+      timestampMs(input.candidate.acquiredAt, "lease_acquired_at") &&
+    existing.acquireRequestHash === input.candidate.acquireRequestHash &&
     leaseBindingKey(existing) === leaseBindingKey(input.candidate) &&
     existing.ownerIdHash === input.candidate.ownerIdHash
     ? ReviewInvestigationLeaseReplayStatus.Restored

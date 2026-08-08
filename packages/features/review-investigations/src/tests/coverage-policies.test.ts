@@ -19,7 +19,9 @@ import {
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
   obligationIdentity,
+  relationSearchProofVersion,
   reviewInvestigationCoverageProfileV2,
+  reviewInvestigationCoverageProfileV3,
   type InvestigationPageEvidence,
   type ReviewInvestigationContract,
   type SeedInvestigationObligation,
@@ -69,31 +71,37 @@ describe("versioned coverage policies", () => {
     ).toEqual(seeds);
   });
 
-  it("rejects a legacy changed-file seed under the V2 capability", () => {
-    expect(() =>
-      new VersionedCoverageSeedPolicy().seed({
-        contract: contract(),
-        supplied: [
-          inventorySeed(),
-          {
-            ...changedSeed(),
-            canonicalRequirement: canonicalInvestigationEvidenceRequirement({
-              requirementVersion: obligationEvidenceRequirementVersion,
-              kind: InvestigationEvidenceRequirementKind.CompleteChangedFile,
-              path: "src/service.ts",
-              pathHash: sourcePathHash,
-              revision: InvestigationOperationRevision.Head,
-              referenceSearch: {
-                query: "service",
-                operationInputHash,
-              },
-            }),
-          },
-          probeSeed(),
-        ],
-      }),
-    ).toThrow("investigation_coverage_seed_invalid");
-  });
+  it.each([
+    ["V3", contract()],
+    ["V2 drain", legacyContract()],
+  ])(
+    "rejects a legacy changed-file seed under the %s capability",
+    (_label, profile) => {
+      expect(() =>
+        new VersionedCoverageSeedPolicy().seed({
+          contract: profile,
+          supplied: [
+            inventorySeed(),
+            {
+              ...changedSeed(),
+              canonicalRequirement: canonicalInvestigationEvidenceRequirement({
+                requirementVersion: obligationEvidenceRequirementVersion,
+                kind: InvestigationEvidenceRequirementKind.CompleteChangedFile,
+                path: "src/service.ts",
+                pathHash: sourcePathHash,
+                revision: InvestigationOperationRevision.Head,
+                referenceSearch: {
+                  query: "service",
+                  operationInputHash,
+                },
+              }),
+            },
+            probeSeed(),
+          ],
+        }),
+      ).toThrow("investigation_coverage_seed_invalid");
+    },
+  );
 
   it("rejects unknown V2 requirement keys", () => {
     const probe = probeSeed();
@@ -193,6 +201,7 @@ describe("versioned coverage policies", () => {
       requiredPathCount: 1,
       requiredPathHashes: [hash("e")],
       requiredPathSetHash: pathSetHash,
+      searchProofVersion: relationSearchProofVersion,
       revision: InvestigationOperationRevision.Head,
       searchPolicyVersion: contract().searchPolicyVersion,
       sourceObligationId: source.obligationId,
@@ -207,6 +216,38 @@ describe("versioned coverage policies", () => {
         discoveryClaims: [claim],
       }),
     ).toEqual([]);
+  });
+
+  it("preserves deterministic relation expansion while draining a V2 profile", () => {
+    const source = obligation(changedSeed(), hash("1"));
+    const additions = new VersionedCoverageExpansionPolicy().expand({
+      contract: legacyContract(),
+      currentObligations: [source],
+      discoveryClaims: [
+        discoveryClaim([searchEvidence({ pathHashes: [hash("e")] })]),
+      ],
+    });
+
+    expect(additions).toHaveLength(1);
+    expect(JSON.parse(additions[0]!.canonicalRequirement)).toMatchObject({
+      requiredQueryDigest: hash("6"),
+    });
+    expect(JSON.parse(additions[0]!.canonicalRequirement)).not.toHaveProperty(
+      "searchProofVersion",
+    );
+  });
+
+  it("fails closed when an unsupported profile supplies discovery claims", () => {
+    expect(() =>
+      new VersionedCoverageExpansionPolicy().expand({
+        contract: {
+          ...contract(),
+          expansionRulesVersion: "review-investigation-expansion.v4",
+        },
+        currentObligations: [obligation(changedSeed(), hash("1"))],
+        discoveryClaims: [discoveryClaim([searchEvidence()])],
+      }),
+    ).toThrow("investigation_coverage_profile_unsupported");
   });
 
   it("dedupes and orders equivalent claims independently of receipt order", () => {
@@ -284,8 +325,15 @@ describe("versioned coverage policies", () => {
 
 function contract(): ReviewInvestigationContract {
   return {
-    ...reviewInvestigationCoverageProfileV2,
+    ...reviewInvestigationCoverageProfileV3,
     producerReleaseId: "release-1",
+  };
+}
+
+function legacyContract(): ReviewInvestigationContract {
+  return {
+    ...reviewInvestigationCoverageProfileV2,
+    producerReleaseId: "release-legacy-v2",
   };
 }
 

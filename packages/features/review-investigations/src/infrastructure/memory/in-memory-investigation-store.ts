@@ -297,12 +297,6 @@ export class InMemoryInvestigationStore
           ),
         };
       }
-      const privateMaterials = validateInvestigationPrivateMaterialCommit({
-        investigation: input.investigation,
-        expectedVersion: input.expectedVersion,
-        transition: input.transition,
-        privateMaterials: input.privateMaterials ?? [],
-      });
       const existing = this.investigations.get(
         input.investigation.investigationId,
       );
@@ -319,6 +313,13 @@ export class InMemoryInvestigationStore
           investigation: existing ? clone(existing) : null,
         };
       }
+      const privateMaterials = validateInvestigationPrivateMaterialCommit({
+        investigation: input.investigation,
+        currentInvestigation: existing ?? null,
+        expectedVersion: input.expectedVersion,
+        transition: input.transition,
+        privateMaterials: input.privateMaterials ?? [],
+      });
       if (!this.commitGuardIsCurrent(input, existing ?? input.investigation)) {
         return {
           status: InvestigationStoreCommitStatus.LeaseFenceConflict,

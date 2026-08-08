@@ -3,7 +3,7 @@ import type {
   ReviewInvestigationRevision,
   SeedInvestigationObligation,
 } from "../../domain/coverage-contract";
-import { reviewInvestigationCoverageProfileV2 } from "../../domain/coverage-contract";
+import { isTypedReviewInvestigationCoverageProfile } from "../../domain/coverage-contract";
 import type { CoverageSeedPolicy } from "../../domain/coverage-policies";
 import {
   createInvestigationObligation,
@@ -40,8 +40,7 @@ export async function prepareInvestigationSeed(input: {
   readonly digest: InvestigationDigestPort;
 }): Promise<PreparedInvestigationSeed> {
   if (
-    input.contract.expansionRulesVersion ===
-      reviewInvestigationCoverageProfileV2.expansionRulesVersion &&
+    isTypedReviewInvestigationCoverageProfile(input.contract) &&
     input.initialReceipts.length > 0
   ) {
     throw new Error("investigation_initial_receipts_unverified");
@@ -97,8 +96,7 @@ export async function prepareInvestigationSeedPrivateMaterials(input: {
   readonly preparer: PrepareInvestigationSearchQueryPrivateMaterial | undefined;
 }): Promise<readonly EncryptedInvestigationPrivateMaterial[]> {
   if (
-    input.investigation.contract.expansionRulesVersion !==
-    reviewInvestigationCoverageProfileV2.expansionRulesVersion
+    !isTypedReviewInvestigationCoverageProfile(input.investigation.contract)
   ) {
     return Object.freeze([]);
   }
@@ -139,10 +137,7 @@ async function validateCoverageSeedDigestBindings(input: {
   readonly seeds: readonly SeedInvestigationObligation[];
   readonly digest: InvestigationDigestPort;
 }): Promise<ReadonlyMap<string, string>> {
-  if (
-    input.contract.expansionRulesVersion !==
-    reviewInvestigationCoverageProfileV2.expansionRulesVersion
-  ) {
+  if (!isTypedReviewInvestigationCoverageProfile(input.contract)) {
     return new Map();
   }
   const privateQueries = new Map<string, string>();

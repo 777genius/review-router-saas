@@ -4,10 +4,6 @@ import type {
   InvestigationPrivateMaterialCipherPort,
   InvestigationPrivateMaterialStorePort,
 } from "../ports/investigation-private-material-ports";
-import {
-  canonicalInvestigationSearchQueryPrivateMaterial,
-  parseInvestigationSearchQueryPrivateMaterial,
-} from "../../domain/investigation-private-material";
 import type { InvestigationObligation } from "../../domain/investigation-obligation";
 import {
   canonicalInvestigationEvidenceRequirement,
@@ -15,9 +11,10 @@ import {
   InvestigationEvidenceRequirementKind,
   obligationEvidenceRequirementVersionV2,
   parseInvestigationEvidenceRequirement,
+  requiresInvestigationSearchQueryPrivateMaterial,
 } from "../../domain/obligation-closure-policy";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
-import { canonicalSearchQueryPrivateMaterialAssociatedData } from "../investigation-private-material-binding";
+import { ResolveInvestigationSearchQueryPrivateMaterial } from "./resolve-investigation-search-query-private-material";
 
 export type HydratedInvestigationTurnObligation = Readonly<{
   obligationId: string;
@@ -29,12 +26,22 @@ export type HydratedInvestigationTurnObligation = Readonly<{
 }>;
 
 export class HydrateInvestigationTurnObligations {
+  private readonly resolvePrivateQuery: ResolveInvestigationSearchQueryPrivateMaterial;
+
   constructor(
-    private readonly store: InvestigationPrivateMaterialStorePort,
-    private readonly cipher: InvestigationPrivateMaterialCipherPort,
-    private readonly digest: InvestigationDigestPort,
-    private readonly clock: InvestigationClockPort,
-  ) {}
+    store: InvestigationPrivateMaterialStorePort,
+    cipher: InvestigationPrivateMaterialCipherPort,
+    digest: InvestigationDigestPort,
+    clock: InvestigationClockPort,
+  ) {
+    this.resolvePrivateQuery =
+      new ResolveInvestigationSearchQueryPrivateMaterial(
+        store,
+        cipher,
+        digest,
+        clock,
+      );
+  }
 
   async execute(input: {
     readonly investigation: ReviewInvestigation;
@@ -66,53 +73,65 @@ export class HydrateInvestigationTurnObligations {
     const requirement = parseInvestigationEvidenceRequirement(
       obligation.canonicalRequirement,
     );
-    if (
-      requirement.kind !==
-        InvestigationEvidenceRequirementKind.CompletePageChain ||
-      requirement.requirementVersion !== obligationEvidenceRequirementVersionV2
-    ) {
+    if (!requiresInvestigationSearchQueryPrivateMaterial(requirement)) {
       return briefObligation(obligation, obligation.canonicalRequirement);
     }
-    const material = await this.store.findActivePrivateMaterial({
-      investigationId: investigation.investigationId,
-      obligationId: obligation.obligationId,
-      activeAfter: this.clock.now().toISOString(),
+    const query = await this.resolveQuery({
+      investigation,
+      obligation,
+      requirement,
     });
-    if (!material) {
-      throw new Error("investigation_private_material_unavailable");
-    }
+    return briefObligation(
+      obligation,
+      canonicalInvestigationEvidenceRequirement(
+        hydrateInvestigationEvidenceRequirement(requirement, query),
+      ),
+    );
+  }
+
+  private async resolveQuery(input: {
+    readonly investigation: ReviewInvestigation;
+    readonly obligation: InvestigationObligation;
+    readonly requirement: ReturnType<
+      typeof parseInvestigationEvidenceRequirement
+    >;
+  }): Promise<string> {
     try {
-      const associatedDataCanonicalJson =
-        canonicalSearchQueryPrivateMaterialAssociatedData({
-          investigation,
-          obligation,
-          privateMaterialId: material.privateMaterialId,
-          queryHash: requirement.queryHash,
-          createdAt: material.createdAt,
-          expiresAt: material.expiresAt,
-        });
-      const plaintext = await this.cipher.decrypt({
-        material,
-        associatedDataCanonicalJson,
-      });
-      const payload = parseInvestigationSearchQueryPrivateMaterial(plaintext);
-      if (
-        canonicalInvestigationSearchQueryPrivateMaterial(payload) !==
-          plaintext ||
-        payload.queryHash !== requirement.queryHash ||
-        (await this.digest.digestUtf8(payload.query)) !== requirement.queryHash
-      ) {
-        throw new Error("investigation_private_material_query_mismatch");
-      }
-      return briefObligation(
-        obligation,
-        canonicalInvestigationEvidenceRequirement(
-          hydrateInvestigationEvidenceRequirement(requirement, payload.query),
-        ),
-      );
+      return await this.resolvePrivateQuery.execute(input);
     } catch (error) {
-      throw new Error("investigation_private_material_invalid", {
-        cause: error,
+      if (
+        !(error instanceof Error) ||
+        error.message !== "investigation_private_material_unavailable" ||
+        input.requirement.kind !==
+          InvestigationEvidenceRequirementKind.CompleteRelationContext ||
+        input.requirement.requirementVersion !==
+          obligationEvidenceRequirementVersionV2
+      ) {
+        throw error;
+      }
+      const relationRequirement = input.requirement;
+      const source = input.investigation.obligations.find(
+        (obligation) =>
+          obligation.obligationId === relationRequirement.sourceObligationId,
+      );
+      if (!source) throw error;
+      const sourceRequirement = parseInvestigationEvidenceRequirement(
+        source.canonicalRequirement,
+      );
+      if (
+        sourceRequirement.kind !==
+          InvestigationEvidenceRequirementKind.CompletePageChain ||
+        sourceRequirement.requirementVersion !==
+          obligationEvidenceRequirementVersionV2 ||
+        sourceRequirement.queryHash !== relationRequirement.queryHash ||
+        sourceRequirement.initialOperationInputHash !==
+          relationRequirement.initialOperationInputHash
+      ) {
+        throw error;
+      }
+      return this.resolvePrivateQuery.execute({
+        investigation: input.investigation,
+        obligation: source,
       });
     }
   }

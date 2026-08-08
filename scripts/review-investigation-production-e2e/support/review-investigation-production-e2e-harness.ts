@@ -48,7 +48,8 @@ import {
   canonicalStandardTextSearchOperationInput,
   obligationEvidenceRequirementVersionV2,
   parseSuppliedInvestigationEvidenceRequirement,
-  reviewInvestigationCoverageProfileV2,
+  relationSearchProofVersion,
+  reviewInvestigationCoverageProfileV3,
   type InvestigationTurnObservation,
   type ReviewInvestigationPolicy,
   type SeedInvestigationObligation,
@@ -258,7 +259,7 @@ export class ReviewInvestigationProductionE2EHarness {
   ): Promise<ReviewInvestigationProductionE2EHarness> {
     const policyHash = sha256(canonicalJson(productionInvestigationPolicy));
     const coverageProfileHash = sha256(
-      canonicalJson(reviewInvestigationCoverageProfileV2),
+      canonicalJson(reviewInvestigationCoverageProfileV3),
     );
     const base = await createReviewActionV2E2EHarness(databaseUrl, {
       investigationProfile: {
@@ -767,7 +768,7 @@ export class ReviewInvestigationProductionE2EHarness {
     label: string,
   ) {
     const contract = Object.freeze({
-      ...reviewInvestigationCoverageProfileV2,
+      ...reviewInvestigationCoverageProfileV3,
       producerReleaseId: this.base.producerReleaseId,
     });
     const seedEnvelope = investigationSeedEnvelope(
@@ -1271,7 +1272,7 @@ function seeds(
         revision: InvestigationOperationRevision.Head,
         sourcePathHash,
         searchPolicyVersion:
-          reviewInvestigationCoverageProfileV2.searchPolicyVersion,
+          reviewInvestigationCoverageProfileV3.searchPolicyVersion,
       }),
       riskPriority: 90,
     }),
@@ -1381,6 +1382,21 @@ function prepareTurnObservation(input: {
             obligationEvidenceRequirementVersionV2
           ) {
             throw new Error("unexpected_legacy_relation_obligation");
+          }
+          if (
+            requirement.searchProofVersion === relationSearchProofVersion ||
+            requirement.requiredQueryDigest !== undefined
+          ) {
+            const search = pageEvent({
+              label: `${input.label}:relation-search`,
+              sequence: events.length + 1,
+              operationKind: ContextGatewayV4OperationKind.TextSearch,
+              operationInputHash: requirement.initialOperationInputHash,
+              queryDigest: sha256(`${input.label}:relation-query`),
+              pathHashes: requirement.requiredPathHashes,
+            });
+            events.push(search);
+            receiptIds.push(requiredString(search.operationReceiptId));
           }
           for (const pathHash of requirement.requiredPathHashes) {
             const file = fileEvent(

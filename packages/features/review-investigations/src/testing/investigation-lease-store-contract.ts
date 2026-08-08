@@ -151,6 +151,27 @@ export function defineInvestigationLeaseStoreContract(
         ).resolves.toMatchObject({
           status: ReviewInvestigationLeaseTransitionStatus.Restored,
         });
+        await expect(
+          harness.store.acquireLease(secondCandidate),
+        ).resolves.toEqual({
+          status: InvestigationLeaseAcquireStatus.IdempotencyConflict,
+          lease: null,
+        });
+        await expect(
+          harness.store.acquireLease({
+            ...secondCandidate,
+            leaseId: "lease-term-recovery",
+            attemptId: "attempt-term-recovery",
+            leaseCapabilityId: "capability-term-recovery",
+            acquireRequestIdHash: digest("acquire-term-recovery"),
+            acquireRequestHash: digest("request-term-recovery"),
+            acquiredAt: "2026-08-05T10:01:21.000Z",
+            expiresAt: "2026-08-05T10:02:20.000Z",
+          }),
+        ).resolves.toMatchObject({
+          status: InvestigationLeaseAcquireStatus.Acquired,
+          lease: { fencingToken: takeover.lease!.fencingToken + 1n },
+        });
       } finally {
         await harness.dispose();
       }

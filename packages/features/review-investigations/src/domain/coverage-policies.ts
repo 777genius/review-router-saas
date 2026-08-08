@@ -1,6 +1,6 @@
 import {
-  assertSupportedReviewInvestigationCoverageProfile,
-  reviewInvestigationCoverageProfileV2,
+  ReviewInvestigationCoverageProfileGeneration,
+  resolveReviewInvestigationCoverageProfileGeneration,
   type ReviewInvestigationContract,
   type SeedInvestigationObligation,
 } from "./coverage-contract";
@@ -25,6 +25,7 @@ import {
   canonicalRelationObligationSubjectV2,
   investigationRelationPathMaximumCount,
   obligationEvidenceRequirementVersionV2,
+  relationSearchProofVersion,
   parseInvestigationEvidenceRequirement,
   parseSuppliedInvestigationEvidenceRequirement,
   toPersistedInvestigationEvidenceRequirement,
@@ -69,7 +70,12 @@ export class VersionedCoverageSeedPolicy implements CoverageSeedPolicy {
     readonly contract: ReviewInvestigationContract;
     readonly supplied: readonly SeedInvestigationObligation[];
   }): readonly PolicySeedInvestigationObligation[] {
-    if (!isVersionedCoverageContract(input.contract)) {
+    const profileGeneration =
+      resolveReviewInvestigationCoverageProfileGeneration(input.contract);
+    if (
+      profileGeneration === null ||
+      profileGeneration === ReviewInvestigationCoverageProfileGeneration.V1
+    ) {
       return Object.freeze(
         input.supplied.map((item) =>
           Object.freeze({
@@ -79,7 +85,6 @@ export class VersionedCoverageSeedPolicy implements CoverageSeedPolicy {
         ),
       );
     }
-    assertSupportedReviewInvestigationCoverageProfile(input.contract);
     const inventory: SeedInvestigationObligation[] = [];
     const changedItems: Array<{
       seed: SeedInvestigationObligation;
@@ -253,8 +258,17 @@ export class VersionedCoverageExpansionPolicy implements CoverageExpansionPolicy
     readonly currentObligations: readonly InvestigationObligation[];
     readonly discoveryClaims: readonly PreparedOperationBackedDiscoveryClaim[];
   }): readonly PolicySeedInvestigationObligation[] {
-    if (!isVersionedCoverageContract(input.contract)) return Object.freeze([]);
-    assertSupportedReviewInvestigationCoverageProfile(input.contract);
+    const profileGeneration =
+      resolveReviewInvestigationCoverageProfileGeneration(input.contract);
+    if (
+      profileGeneration === null ||
+      profileGeneration === ReviewInvestigationCoverageProfileGeneration.V1
+    ) {
+      if (input.discoveryClaims.length > 0) {
+        throw new Error("investigation_coverage_profile_unsupported");
+      }
+      return Object.freeze([]);
+    }
     if (input.discoveryClaims.length > maximumDiscoveryClaims) {
       throw invalidDiscovery();
     }
@@ -299,6 +313,10 @@ export class VersionedCoverageExpansionPolicy implements CoverageExpansionPolicy
         requiredPathCount: terminal.aggregatePathCount,
         requiredPathSetHash: terminal.aggregatePathSetHash,
         requiredPathHashes: Object.freeze([...chain.pathHashes]),
+        ...(profileGeneration ===
+        ReviewInvestigationCoverageProfileGeneration.V3
+          ? { searchProofVersion: relationSearchProofVersion }
+          : { requiredQueryDigest: chain.pages[0]!.queryDigest }),
         sourcePathHash: sourceProfile.sourcePathHash,
         revision: InvestigationOperationRevision.Head,
         searchPolicyVersion: input.contract.searchPolicyVersion,
@@ -544,17 +562,6 @@ function compareClaim(
       right.expectedInitialOperationInputHash,
     ) ||
     left.authenticatedPathSetHash.localeCompare(right.authenticatedPathSetHash)
-  );
-}
-
-function isVersionedCoverageContract(
-  contract: ReviewInvestigationContract,
-): boolean {
-  return (
-    contract.coverageContractVersion ===
-      reviewInvestigationCoverageProfileV2.coverageContractVersion &&
-    contract.expansionRulesVersion ===
-      reviewInvestigationCoverageProfileV2.expansionRulesVersion
   );
 }
 

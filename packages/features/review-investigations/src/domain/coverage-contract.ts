@@ -38,6 +38,22 @@ export const reviewInvestigationProbePolicyV1 =
 export const reviewInvestigationSearchPolicyV1 =
   "review-investigation-fixed-string-search.v1" as const;
 
+export enum ReviewInvestigationCoverageProfileGeneration {
+  V1 = 1,
+  V2 = 2,
+  V3 = 3,
+}
+
+export const reviewInvestigationCoverageProfileV1 = Object.freeze({
+  coverageContractVersion: "review-investigation-coverage.v1",
+  expansionRulesVersion: "review-investigation-expansion.v1",
+  criticPolicyVersion: reviewInvestigationCriticPolicyV1,
+  gatewayPolicyVersion: "context-gateway-v2",
+  probePolicyVersion: reviewInvestigationProbePolicyV1,
+  runtimeProfileVersion: "review-investigation-runtime.v1",
+  searchPolicyVersion: reviewInvestigationSearchPolicyV1,
+} as const);
+
 export const reviewInvestigationCoverageProfileV2 = Object.freeze({
   coverageContractVersion: "review-investigation-coverage.v1",
   expansionRulesVersion: "review-investigation-expansion.v2",
@@ -48,11 +64,22 @@ export const reviewInvestigationCoverageProfileV2 = Object.freeze({
   searchPolicyVersion: reviewInvestigationSearchPolicyV1,
 } as const);
 
-export function assertSupportedReviewInvestigationCoverageProfile(
+export const reviewInvestigationCoverageProfileV3 = Object.freeze({
+  ...reviewInvestigationCoverageProfileV2,
+  expansionRulesVersion: "review-investigation-expansion.v3",
+} as const);
+
+export function resolveReviewInvestigationCoverageProfileGeneration(
   contract: ReviewInvestigationContract,
-): void {
+): ReviewInvestigationCoverageProfileGeneration | null {
+  if (
+    contract.coverageContractVersion !==
+    reviewInvestigationCoverageProfileV3.coverageContractVersion
+  ) {
+    return null;
+  }
   const expectedKeys = [
-    ...Object.keys(reviewInvestigationCoverageProfileV2),
+    ...Object.keys(reviewInvestigationCoverageProfileV3),
     "producerReleaseId",
   ].sort();
   const actualKeys = Object.keys(contract).sort();
@@ -62,15 +89,50 @@ export function assertSupportedReviewInvestigationCoverageProfile(
   ) {
     throw new Error("investigation_coverage_profile_unsupported");
   }
-  for (const [field, expected] of Object.entries(
-    reviewInvestigationCoverageProfileV2,
-  )) {
+  for (const [generation, profile] of [
+    [
+      ReviewInvestigationCoverageProfileGeneration.V1,
+      reviewInvestigationCoverageProfileV1,
+    ],
+    [
+      ReviewInvestigationCoverageProfileGeneration.V2,
+      reviewInvestigationCoverageProfileV2,
+    ],
+    [
+      ReviewInvestigationCoverageProfileGeneration.V3,
+      reviewInvestigationCoverageProfileV3,
+    ],
+  ] as const) {
     if (
-      contract[field as keyof typeof reviewInvestigationCoverageProfileV2] !==
-      expected
+      Object.entries(profile).every(
+        ([field, expected]) =>
+          contract[
+            field as keyof typeof reviewInvestigationCoverageProfileV3
+          ] === expected,
+      )
     ) {
-      throw new Error("investigation_coverage_profile_unsupported");
+      return generation;
     }
+  }
+  throw new Error("investigation_coverage_profile_unsupported");
+}
+
+export function isTypedReviewInvestigationCoverageProfile(
+  contract: ReviewInvestigationContract,
+): boolean {
+  const generation =
+    resolveReviewInvestigationCoverageProfileGeneration(contract);
+  return (
+    generation === ReviewInvestigationCoverageProfileGeneration.V2 ||
+    generation === ReviewInvestigationCoverageProfileGeneration.V3
+  );
+}
+
+export function assertSupportedReviewInvestigationCoverageProfile(
+  contract: ReviewInvestigationContract,
+): void {
+  if (!isTypedReviewInvestigationCoverageProfile(contract)) {
+    throw new Error("investigation_coverage_profile_unsupported");
   }
 }
 

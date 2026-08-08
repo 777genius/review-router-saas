@@ -23,7 +23,7 @@ import {
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
   obligationIdentity,
-  reviewInvestigationCoverageProfileV2,
+  reviewInvestigationCoverageProfileV3,
   type InvestigationObligation,
   type InvestigationPageEvidence,
   type ReviewInvestigation,
@@ -245,12 +245,15 @@ describe("AttestedTurnDiscoveryPreparation", () => {
     const operationInputHash = await digest.digestUtf8(
       canonicalStandardTextSearchOperationInput(queryHash),
     );
-    const search = searchObligation({
-      queryHash,
-      operationInputHash,
-      sourcePathHash: hash("a"),
-    });
-    const investigation = investigationFixture([inventoryObligation(), search]);
+    const changed = changedContentObligation(
+      hash("6"),
+      "src/service.ts",
+      hash("a"),
+    );
+    const investigation = investigationFixture([
+      inventoryObligation(),
+      changed,
+    ]);
     const operation = await pageEvidence({
       operationReceiptId: hash("9"),
       operationKind: InvestigationOperationKind.TextSearch,
@@ -264,12 +267,12 @@ describe("AttestedTurnDiscoveryPreparation", () => {
         closureClaims: [],
         providerClaims: [
           {
-            sourceObligationId: search.obligationId,
+            sourceObligationId: changed.obligationId,
             query: "Service",
             operationReceiptIds: [operation.operationReceiptId],
           },
           {
-            sourceObligationId: search.obligationId,
+            sourceObligationId: changed.obligationId,
             query: "OtherService",
             operationReceiptIds: [operation.operationReceiptId],
           },
@@ -309,7 +312,7 @@ function investigationFixture(
     providerStrategyId: "codex-primary",
     runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
     contract: {
-      ...reviewInvestigationCoverageProfileV2,
+      ...reviewInvestigationCoverageProfileV3,
       producerReleaseId: "release-1",
     },
     policy: {
@@ -397,7 +400,7 @@ function searchObligation(input: {
       revision: InvestigationOperationRevision.Head,
       sourcePathHash: input.sourcePathHash,
       searchPolicyVersion:
-        reviewInvestigationCoverageProfileV2.searchPolicyVersion,
+        reviewInvestigationCoverageProfileV3.searchPolicyVersion,
     }),
     origin: InvestigationObligationOrigin.DeterministicExpansion,
   });
@@ -414,7 +417,7 @@ function obligation(input: {
     obligationId: input.obligationId,
     identity: obligationIdentity({
       coverageContractVersion:
-        reviewInvestigationCoverageProfileV2.coverageContractVersion,
+        reviewInvestigationCoverageProfileV3.coverageContractVersion,
       stableReviewUnitKey: "review-unit-1",
       kind: input.kind,
       canonicalSubject: input.canonicalSubject,

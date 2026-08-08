@@ -3,6 +3,7 @@ import type { ReviewInvestigation } from "../../domain/review-investigation";
 import {
   VersionedCoverageExpansionPolicy,
   type CoverageExpansionPolicy,
+  type PreparedOperationBackedDiscoveryClaim,
 } from "../../domain/coverage-policies";
 import {
   assertInvestigationTurnObligationClaimScope,
@@ -15,9 +16,14 @@ import {
   type InvestigationFileReadEvidence,
 } from "../../domain/investigation-operation-evidence";
 import {
+  InvestigationEvidenceRequirementKind,
   VersionedObligationClosurePolicy,
+  canonicalStandardTextSearchOperationInput,
+  obligationEvidenceRequirementVersionV2,
+  parseInvestigationEvidenceRequirement,
   type ObligationClosurePolicy,
 } from "../../domain/obligation-closure-policy";
+import type { SeedInvestigationObligation } from "../../domain/coverage-contract";
 import {
   canonicalInvestigationTerminalObservation,
   canonicalInvestigationTurnObservation,
@@ -47,6 +53,7 @@ import {
   digestCanonical,
   restoreCommandOrThrow,
 } from "./investigation-use-case-support";
+import type { ResolveInvestigationSearchQueryPrivateMaterial } from "./resolve-investigation-search-query-private-material";
 
 export type CommitAttestedInvestigationTurnCommand = Readonly<{
   commandId: string;
@@ -82,6 +89,7 @@ export class CommitAttestedInvestigationTurn {
     private readonly commit: CommitInvestigationTurn,
     closurePolicy: ObligationClosurePolicy = new VersionedObligationClosurePolicy(),
     private readonly expansionPolicy: CoverageExpansionPolicy = new VersionedCoverageExpansionPolicy(),
+    private readonly resolvePrivateQuery?: ResolveInvestigationSearchQueryPrivateMaterial,
   ) {
     this.closurePreparation = new AttestedTurnClosurePreparation(
       digest,
@@ -154,7 +162,7 @@ export class CommitAttestedInvestigationTurn {
       acceptedAttestationHash: command.acceptedAttestationHash,
     });
     const discoveryClaims = await this.discoveryPreparation.prepare({
-      closureClaims: command.observation.closureClaims,
+      closureClaims: preparedClosures.acceptedProviderClaims,
       providerClaims: command.observation.operationBackedDiscoveryClaims,
       investigation: current,
       operationEvidence,
@@ -271,7 +279,15 @@ export class CommitAttestedInvestigationTurn {
             ],
           }),
     };
-    return this.commit.execute(commitCommand);
+    return this.commit.execute(commitCommand, {
+      prepareDeterministicExpansionQueries: () =>
+        this.prepareDeterministicExpansionQueries({
+          investigation: current,
+          deterministicExpansions,
+          discoveryClaims,
+          providerClaims: command.observation.operationBackedDiscoveryClaims,
+        }),
+    });
   }
 
   async restoreCommittedCommand(
@@ -308,6 +324,111 @@ export class CommitAttestedInvestigationTurn {
       }),
     );
   }
+
+  private async prepareDeterministicExpansionQueries(input: {
+    readonly investigation: ReviewInvestigation;
+    readonly deterministicExpansions: readonly SeedInvestigationObligation[];
+    readonly discoveryClaims: readonly PreparedOperationBackedDiscoveryClaim[];
+    readonly providerClaims: InvestigationTurnObservation["operationBackedDiscoveryClaims"];
+  }): Promise<
+    readonly Readonly<{ canonicalSubject: string; query: string }>[]
+  > {
+    if (input.deterministicExpansions.length === 0) {
+      return Object.freeze([]);
+    }
+    const providerQueries = new Map<string, string>();
+    for (const claim of input.providerClaims) {
+      const queryHash = await this.digest.digestUtf8(claim.query);
+      const initialOperationInputHash = await this.digest.digestUtf8(
+        canonicalStandardTextSearchOperationInput(queryHash),
+      );
+      providerQueries.set(
+        discoveryQueryKey({
+          sourceObligationId: claim.sourceObligationId,
+          queryHash,
+          initialOperationInputHash,
+        }),
+        claim.query,
+      );
+    }
+    const queryByExpansionKey = new Map<string, string>();
+    for (const claim of input.discoveryClaims) {
+      const queryKey = discoveryQueryKey({
+        sourceObligationId: claim.sourceObligationId,
+        queryHash: claim.queryHash,
+        initialOperationInputHash: claim.expectedInitialOperationInputHash,
+      });
+      let query = providerQueries.get(queryKey);
+      if (!query) {
+        const source = input.investigation.obligations.find(
+          (obligation) => obligation.obligationId === claim.sourceObligationId,
+        );
+        if (!source || !this.resolvePrivateQuery) {
+          throw new Error("investigation_private_material_required");
+        }
+        const requirement = parseInvestigationEvidenceRequirement(
+          source.canonicalRequirement,
+        );
+        if (
+          requirement.kind !==
+            InvestigationEvidenceRequirementKind.CompletePageChain ||
+          requirement.requirementVersion !==
+            obligationEvidenceRequirementVersionV2 ||
+          requirement.queryHash !== claim.queryHash ||
+          requirement.initialOperationInputHash !==
+            claim.expectedInitialOperationInputHash
+        ) {
+          throw new Error("investigation_private_material_binding_invalid");
+        }
+        query = await this.resolvePrivateQuery.execute({
+          investigation: input.investigation,
+          obligation: source,
+        });
+      }
+      if ((await this.digest.digestUtf8(query)) !== claim.queryHash) {
+        throw new Error("investigation_private_material_query_mismatch");
+      }
+      queryByExpansionKey.set(
+        relationExpansionKey({
+          sourceObligationId: claim.sourceObligationId,
+          queryHash: claim.queryHash,
+          initialOperationInputHash: claim.expectedInitialOperationInputHash,
+          requiredPathSetHash: claim.authenticatedPathSetHash,
+        }),
+        query,
+      );
+    }
+    return Object.freeze(
+      input.deterministicExpansions.map((expansion) => {
+        const requirement = parseInvestigationEvidenceRequirement(
+          expansion.canonicalRequirement,
+        );
+        if (
+          requirement.kind !==
+            InvestigationEvidenceRequirementKind.CompleteRelationContext ||
+          requirement.requirementVersion !==
+            obligationEvidenceRequirementVersionV2
+        ) {
+          throw new Error("investigation_private_material_binding_invalid");
+        }
+        const query = queryByExpansionKey.get(
+          relationExpansionKey({
+            sourceObligationId: requirement.sourceObligationId,
+            queryHash: requirement.queryHash,
+            initialOperationInputHash: requirement.initialOperationInputHash,
+            requiredPathSetHash: requirement.requiredPathSetHash,
+          }),
+        );
+        if (!query) {
+          throw new Error("investigation_private_material_required");
+        }
+        return Object.freeze({
+          canonicalSubject: expansion.canonicalSubject,
+          query,
+        });
+      }),
+    );
+  }
 }
 
 function assertObservationBinding(
@@ -327,6 +448,23 @@ function assertObservationBinding(
   ) {
     throw new Error("investigation_turn_observation_binding_invalid");
   }
+}
+
+function discoveryQueryKey(input: {
+  readonly sourceObligationId: string;
+  readonly queryHash: string;
+  readonly initialOperationInputHash: string;
+}): string {
+  return canonicalJson(input);
+}
+
+function relationExpansionKey(input: {
+  readonly sourceObligationId: string;
+  readonly queryHash: string;
+  readonly initialOperationInputHash: string;
+  readonly requiredPathSetHash: string;
+}): string {
+  return canonicalJson(input);
 }
 
 function assertEvidenceReferences(

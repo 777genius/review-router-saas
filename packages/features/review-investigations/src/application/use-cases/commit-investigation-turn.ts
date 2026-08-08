@@ -1,5 +1,6 @@
 import { canonicalJson } from "../../domain/canonicalization";
 import type { SeedInvestigationObligation } from "../../domain/coverage-contract";
+import type { EncryptedInvestigationPrivateMaterial } from "../../domain/investigation-private-material";
 import {
   createInvestigationObligation,
   InvestigationObligationOrigin,
@@ -10,12 +11,18 @@ import {
   commitHistoricalInvestigationTurn,
   commitInvestigationTurn,
   proposalOriginForTurn,
+  type ReviewInvestigation,
 } from "../../domain/review-investigation";
 import type {
   InvestigationFinding,
   InvestigationTurnProvenance,
 } from "../../domain/investigation-turn";
 import type { ContextCriticDecision } from "../../domain/review-investigation-types";
+import {
+  InvestigationEvidenceRequirementKind,
+  obligationEvidenceRequirementVersionV2,
+  parseInvestigationEvidenceRequirement,
+} from "../../domain/obligation-closure-policy";
 import {
   decideTurnResultAdmission,
   TurnResultAdmissionKind,
@@ -44,6 +51,7 @@ import {
   restoreCommandOrThrow,
   withCurrentDossierDigest,
 } from "./investigation-use-case-support";
+import type { PrepareInvestigationSearchQueryPrivateMaterial } from "./prepare-investigation-search-query-private-material";
 
 export type CommitInvestigationTurnCommand = Readonly<{
   commandId: string;
@@ -76,16 +84,27 @@ export type CommitInvestigationTurnCommand = Readonly<{
   replayCheckpointTtlMs?: number;
 }>;
 
+export type CommitInvestigationTurnPrivateContext = Readonly<{
+  prepareDeterministicExpansionQueries(): Promise<
+    readonly Readonly<{
+      canonicalSubject: string;
+      query: string;
+    }>[]
+  >;
+}>;
+
 export class CommitInvestigationTurn {
   constructor(
     private readonly store: InvestigationStorePort,
     private readonly authority: InvestigationExecutionAuthorityPort,
     private readonly digest: InvestigationDigestPort,
     private readonly clock: InvestigationClockPort,
+    private readonly privateMaterial?: PrepareInvestigationSearchQueryPrivateMaterial,
   ) {}
 
   async execute(
     command: CommitInvestigationTurnCommand,
+    privateContext?: CommitInvestigationTurnPrivateContext,
   ): Promise<ReviewInvestigationReadModel> {
     const { idempotencyHash, ...commandForHash } = command;
     const commandHash =
@@ -174,10 +193,9 @@ export class CommitInvestigationTurn {
         turnId: command.turnId,
         closureClaims: command.closureClaims,
         unresolvableDecisions: command.unresolvableDecisions,
-        proposedObligations: [
-          ...deterministicObligations,
-          ...proposedObligations,
-        ],
+        proposedObligations: isHistoricalDrain
+          ? []
+          : [...deterministicObligations, ...proposedObligations],
         findings: command.findings,
         acceptedEvidenceReceiptIds: command.acceptedEvidenceReceiptIds ?? [],
         criticDecision: command.criticDecision,
@@ -203,6 +221,12 @@ export class CommitInvestigationTurn {
       };
     }
     next = await withCurrentDossierDigest(this.digest, next);
+    const privateMaterials = await this.prepareDeterministicPrivateMaterials({
+      current,
+      next,
+      privateContext,
+      createdAt: admittedAt,
+    });
     const committed = await commitOrThrow({
       store: this.store,
       investigation: next,
@@ -215,6 +239,7 @@ export class CommitInvestigationTurn {
         acceptedAttestationId: command.acceptedAttestationId ?? null,
         sanitizedOutcomeHash: command.sanitizedOutcomeHash ?? null,
       },
+      privateMaterials,
       ...(command.storeCommitGuard === undefined
         ? {}
         : {
@@ -230,6 +255,60 @@ export class CommitInvestigationTurn {
           }),
     });
     return toInvestigationReadModel(committed);
+  }
+
+  private async prepareDeterministicPrivateMaterials(input: {
+    readonly current: ReviewInvestigation;
+    readonly next: ReviewInvestigation;
+    readonly privateContext: CommitInvestigationTurnPrivateContext | undefined;
+    readonly createdAt: string;
+  }): Promise<readonly EncryptedInvestigationPrivateMaterial[]> {
+    const currentIds = new Set(
+      input.current.obligations.map((obligation) => obligation.obligationId),
+    );
+    const relationObligations = input.next.obligations.filter((obligation) => {
+      if (currentIds.has(obligation.obligationId)) return false;
+      const requirement = parseInvestigationEvidenceRequirement(
+        obligation.canonicalRequirement,
+      );
+      return (
+        requirement.kind ===
+          InvestigationEvidenceRequirementKind.CompleteRelationContext &&
+        requirement.requirementVersion ===
+          obligationEvidenceRequirementVersionV2
+      );
+    });
+    if (relationObligations.length === 0) {
+      return Object.freeze([]);
+    }
+    if (!this.privateMaterial || !input.privateContext) {
+      throw new Error("investigation_private_material_required");
+    }
+    const queries = new Map<string, string>();
+    for (const entry of await input.privateContext.prepareDeterministicExpansionQueries()) {
+      if (queries.has(entry.canonicalSubject)) {
+        throw new Error("investigation_private_material_binding_invalid");
+      }
+      queries.set(entry.canonicalSubject, entry.query);
+    }
+    if (queries.size !== relationObligations.length) {
+      throw new Error("investigation_private_material_required");
+    }
+    const materials = await Promise.all(
+      relationObligations.map(async (obligation) => {
+        const query = queries.get(obligation.canonicalSubject);
+        if (!query) {
+          throw new Error("investigation_private_material_required");
+        }
+        return this.privateMaterial!.execute({
+          investigation: input.next,
+          obligation,
+          query,
+          createdAt: input.createdAt,
+        });
+      }),
+    );
+    return Object.freeze(materials);
   }
 }
 

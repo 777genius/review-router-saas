@@ -17,6 +17,7 @@ import {
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
   obligationIdentity,
+  relationSearchProofVersion,
   type InvestigationFileReadEvidence,
   type InvestigationPageEvidence,
   parseInvestigationEvidenceRequirement,
@@ -319,6 +320,106 @@ describe("VersionedObligationClosurePolicy", () => {
       }),
     ).toThrow("investigation_obligation_evidence_mismatch");
   });
+
+  it("accepts the authenticated relation search chain with its complete file evidence", () => {
+    const obligation = relationObligation({
+      searchProofVersion: relationSearchProofVersion,
+    });
+    const search = pageEvidence({
+      inputHash: hash("a"),
+      complete: true,
+    });
+    const related = fileEvidence({
+      receipt: "2",
+      startByte: 0,
+      byteCount: 15,
+      eof: true,
+      pathHash: hash("7"),
+    });
+
+    expect(
+      policy.prove({
+        obligation,
+        operations: [search, related],
+        revision: { reviewRevisionHash: hash("f") },
+      }),
+    ).toMatchObject({
+      receiptKind: "relation",
+      operationReceiptIds: [hash("1"), hash("2")],
+    });
+
+    expect(() =>
+      policy.prove({
+        obligation,
+        operations: [related],
+        revision: { reviewRevisionHash: hash("f") },
+      }),
+    ).toThrow("investigation_obligation_evidence_mismatch");
+  });
+
+  it("accepts a session-keyed query digest change when the stable search input matches", () => {
+    expect(
+      policy.prove({
+        obligation: relationObligation({ requiredQueryDigest: hash("4") }),
+        operations: [
+          {
+            ...pageEvidence({ inputHash: hash("a"), complete: true }),
+            queryDigest: hash("b"),
+          },
+          fileEvidence({
+            receipt: "2",
+            startByte: 0,
+            byteCount: 15,
+            eof: true,
+            pathHash: hash("7"),
+          }),
+        ],
+        revision: { reviewRevisionHash: hash("f") },
+      }),
+    ).toMatchObject({ receiptKind: "relation" });
+  });
+
+  it.each([
+    [
+      "a different relation query",
+      pageEvidence({ inputHash: hash("b"), complete: true }),
+    ],
+    [
+      "a relation result with a different path set",
+      pageEvidence({
+        inputHash: hash("a"),
+        complete: true,
+        pagePathHashes: [hash("6")],
+        aggregatePathSetHash: hash("5"),
+      }),
+    ],
+    [
+      "a relation search from a different tree",
+      {
+        ...pageEvidence({ inputHash: hash("a"), complete: true }),
+        treeOid: "9".repeat(40),
+      },
+    ],
+  ])("rejects %s even when the required file was read", (_label, search) => {
+    expect(() =>
+      policy.prove({
+        obligation: relationObligation({
+          searchProofVersion: relationSearchProofVersion,
+        }),
+        operations: [
+          search,
+          fileEvidence({
+            receipt: "2",
+            startByte: 0,
+            byteCount: 15,
+            eof: true,
+            pathHash: hash("7"),
+          }),
+        ],
+        revision: { reviewRevisionHash: hash("f") },
+      }),
+    ).toThrow("investigation_obligation_evidence_mismatch");
+  });
 });
 
 function fileObligation(pathHash: string) {
@@ -375,7 +476,12 @@ function searchObligation(inputHash: string) {
   });
 }
 
-function relationObligation() {
+function relationObligation(
+  input: {
+    readonly requiredQueryDigest?: string;
+    readonly searchProofVersion?: typeof relationSearchProofVersion;
+  } = {},
+) {
   const canonicalRequirement = canonicalInvestigationEvidenceRequirement({
     requirementVersion: obligationEvidenceRequirementVersionV2,
     kind: InvestigationEvidenceRequirementKind.CompleteRelationContext,
@@ -385,6 +491,12 @@ function relationObligation() {
     requiredPathCount: 1,
     requiredPathSetHash: hash("8"),
     requiredPathHashes: [hash("7")],
+    ...(input.requiredQueryDigest === undefined
+      ? {}
+      : { requiredQueryDigest: input.requiredQueryDigest }),
+    ...(input.searchProofVersion === undefined
+      ? {}
+      : { searchProofVersion: input.searchProofVersion }),
     sourcePathHash: hash("9"),
     revision: InvestigationOperationRevision.Head,
     searchPolicyVersion: "review-investigation-fixed-string-search.v1",
@@ -446,7 +558,10 @@ function pageEvidence(input: {
   inputHash: string;
   complete: boolean;
   nextCursorHash?: string | null;
+  pagePathHashes?: readonly string[];
+  aggregatePathSetHash?: string;
 }): InvestigationPageEvidence {
+  const pagePathHashes = input.pagePathHashes ?? [hash("7")];
   return Object.freeze({
     operationReceiptId: hash("1"),
     operationKey: hash("2"),
@@ -460,9 +575,9 @@ function pageEvidence(input: {
     pageOrdinal: 0,
     pageItemCount: 2,
     pageItemsHash: hash("5"),
-    pagePathHashes: [hash("7")],
-    aggregatePathCount: 1,
-    aggregatePathSetHash: hash("8"),
+    pagePathHashes,
+    aggregatePathCount: pagePathHashes.length,
+    aggregatePathSetHash: input.aggregatePathSetHash ?? hash("8"),
     aggregateItemCount: 2,
     aggregateHash: hash("6"),
     complete: input.complete,
