@@ -122,6 +122,18 @@ export function toDomainClaim(row: DbClaim): ReviewPublicationClaimTerm {
 export function toDomainOperationAttempt(
   row: DbOperationAttempt,
 ): ReviewPublicationOperationAttempt {
+  const state = toDomainOperationAttemptState(row.state);
+  const proofComplete =
+    row.noEffectProofId !== null &&
+    row.noEffectProofHash !== null &&
+    row.noEffectReason !== null &&
+    row.noEffectProvenAt !== null;
+  if (
+    (state === ReviewPublicationOperationAttemptState.NoEffectProven) !==
+    proofComplete
+  ) {
+    throw new Error("publication_no_effect_proof_incomplete");
+  }
   return {
     operationAttemptId: row.operationAttemptId,
     publicationAttemptId: row.publicationAttemptId,
@@ -133,7 +145,12 @@ export function toDomainOperationAttempt(
     capabilitySigningKeyId: row.capabilitySigningKeyId,
     effectReportId: row.effectReportId,
     claimFencingToken: row.claimFencingToken,
-    state: toDomainOperationAttemptState(row.state),
+    state,
+    noEffectProofId: row.noEffectProofId,
+    noEffectProofHash: row.noEffectProofHash,
+    noEffectReason: row.noEffectReason,
+    noEffectProvenAt:
+      row.noEffectProvenAt === null ? null : new Date(row.noEffectProvenAt),
     startedAt: new Date(row.startedAt),
     effectReportUntil: new Date(row.effectReportUntil),
     retainUntil: new Date(row.retainUntil),
@@ -323,6 +340,8 @@ export function toDbOperationAttemptState(
       return DbOperationAttemptState.active;
     case ReviewPublicationOperationAttemptState.EffectObserved:
       return DbOperationAttemptState.effect_observed;
+    case ReviewPublicationOperationAttemptState.NoEffectProven:
+      return DbOperationAttemptState.no_effect_proven;
     case ReviewPublicationOperationAttemptState.Completed:
       return DbOperationAttemptState.completed;
     case ReviewPublicationOperationAttemptState.Stale:
@@ -474,6 +493,8 @@ function toDomainOperationAttemptState(
       return ReviewPublicationOperationAttemptState.Active;
     case DbOperationAttemptState.effect_observed:
       return ReviewPublicationOperationAttemptState.EffectObserved;
+    case DbOperationAttemptState.no_effect_proven:
+      return ReviewPublicationOperationAttemptState.NoEffectProven;
     case DbOperationAttemptState.completed:
       return ReviewPublicationOperationAttemptState.Completed;
     case DbOperationAttemptState.stale:

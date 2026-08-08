@@ -4,9 +4,11 @@ import { claimReviewPublication } from "../application/use-cases/claim-review-pu
 import { claimReviewPublicationForReconciliation } from "../application/use-cases/claim-review-publication-for-reconciliation";
 import { completeReviewPublicationOperation } from "../application/use-cases/complete-review-publication-operation";
 import { recordReviewExternalEffect } from "../application/use-cases/record-review-external-effect";
+import { proveReviewPublicationNoEffect } from "../application/use-cases/prove-review-publication-no-effect";
 import { renewReviewPublicationClaim } from "../application/use-cases/renew-review-publication-claim";
 import { requestReviewPublication } from "../application/use-cases/request-review-publication";
 import { terminalizeUnknownReviewPublication } from "../application/use-cases/terminalize-unknown-review-publication";
+import { reviewPublicationNoEffectProofHash } from "../infrastructure/review-publication-no-effect-proof";
 import {
   ReviewPublicationCapability,
   ReviewPublicationCapabilityDisabledError,
@@ -15,6 +17,7 @@ import {
   type ClaimReviewPublicationCommandPort,
   type CompleteReviewPublicationOperationCommandPort,
   type RecordReviewExternalEffectCommandPort,
+  type ProveReviewPublicationNoEffectCommandPort,
   type RenewReviewPublicationClaimCommandPort,
   type RequestReviewPublicationCommandPort,
   type ReviewPublicationAttemptQueryPort,
@@ -45,7 +48,8 @@ export type ReviewPublicationV2CommandPorts = {
   readonly claims: ClaimReviewPublicationCommandPort;
   readonly claimRenewals: RenewReviewPublicationClaimCommandPort;
   readonly operationBegins: BeginReviewPublicationOperationCommandPort;
-  readonly effects: RecordReviewExternalEffectCommandPort;
+  readonly effects: RecordReviewExternalEffectCommandPort &
+    ProveReviewPublicationNoEffectCommandPort;
   readonly completions: CompleteReviewPublicationOperationCommandPort;
   readonly terminalizations: TerminalizeUnknownReviewPublicationCommandPort;
   readonly adjudications: AdjudicateReviewPublicationOutcomeCommandPort;
@@ -110,6 +114,14 @@ export function createReviewPublicationV2Application(dependencies: {
       recordReviewExternalEffect(command, {
         clock: dependencies.clock,
         commands: dependencies.commands.effects,
+      }),
+    proveNoEffect: (
+      command: Parameters<typeof proveReviewPublicationNoEffect>[0],
+    ) =>
+      proveReviewPublicationNoEffect(command, {
+        clock: dependencies.clock,
+        commands: dependencies.commands.effects,
+        proofHashes: { hash: reviewPublicationNoEffectProofHash },
       }),
     completeOperation: (
       command: Parameters<typeof completeReviewPublicationOperation>[0],

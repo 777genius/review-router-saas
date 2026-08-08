@@ -9,6 +9,7 @@ import {
   BeginReviewPublicationOperationStatus,
   ClaimReviewPublicationStatus,
   CompleteReviewPublicationOperationStatus,
+  ProveReviewPublicationNoEffectStatus,
   RecordReviewExternalEffectStatus,
   RequestReviewPublicationStatus,
   ReviewPublicationCorrectionReason,
@@ -28,6 +29,7 @@ import {
   type ReviewPublicationPermitIdentity,
 } from "../index";
 import { PrismaReviewPublicationRepository } from "../infrastructure/prisma/prisma-review-publication-repository";
+import { reviewPublicationNoEffectProofHash } from "../infrastructure/review-publication-no-effect-proof";
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
@@ -363,6 +365,73 @@ describeWithDatabase("PrismaReviewPublicationRepository real database", () => {
     ).resolves.toEqual({ version: 1, state: "active" });
   });
 
+  it("serializes no-effect proof against recordEffect for the same operation attempt", async () => {
+    const command = requestCommand(fixture, `no-effect-race-${randomUUID()}`);
+    await repository.request(command);
+    const claim = await repository.claim(
+      claimCommand(command.publicationAttemptId),
+    );
+    if (claim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("publication_claim_not_acquired");
+    }
+    const begun = await repository.begin(
+      beginCommand(
+        command.publicationAttemptId,
+        command.operations[0]!.publicationOperationId,
+        {
+          expectedAttemptVersion: claim.attempt.version,
+          claimId: claim.claim.claimId,
+          claimFencingToken: claim.claim.fencingToken,
+        },
+      ),
+    );
+    if (begun.status !== BeginReviewPublicationOperationStatus.Begun) {
+      throw new Error("publication_operation_not_begun");
+    }
+    const proofFacts = {
+      capability: begun.capability,
+      noEffectProofId: `no-effect-proof-${randomUUID()}`,
+      noEffectReason: "provider_rejected_without_effect",
+    } as const;
+    const proofCommand = {
+      ...proofFacts,
+      noEffectProofHash: reviewPublicationNoEffectProofHash(proofFacts),
+      provenAt: new Date(),
+    } as const;
+
+    const [proof, effect] = await Promise.all([
+      repository.proveNoEffect(proofCommand),
+      repository.record(effectCommand(begun.capability)),
+    ]);
+    const proofWon =
+      proof.status === ProveReviewPublicationNoEffectStatus.Proven;
+    expect(effect.status).toBe(
+      proofWon
+        ? RecordReviewExternalEffectStatus.RequestConflict
+        : RecordReviewExternalEffectStatus.Recorded,
+    );
+    expect(proofWon ? effect.status : proof.status).toBe(
+      proofWon
+        ? RecordReviewExternalEffectStatus.RequestConflict
+        : ProveReviewPublicationNoEffectStatus.ExternalEffectExists,
+    );
+    expect(
+      proofWon
+        ? await prisma.reviewPublicationOperationAttemptV2.count({
+            where: {
+              operationAttemptId: begun.operationAttempt.operationAttemptId,
+              state: "no_effect_proven",
+              noEffectProofId: proofCommand.noEffectProofId,
+            },
+          })
+        : await prisma.reviewPublicationExternalEffectV2.count({
+            where: {
+              operationAttemptId: begun.operationAttempt.operationAttemptId,
+            },
+          }),
+    ).toBe(1);
+  });
+
   it("terminalizes unknown once and records an immutable adjudication", async () => {
     const command = requestCommand(fixture, "adjudication", {
       publicationNotAfter: new Date(Date.now() - 2_000),
@@ -382,6 +451,7 @@ describeWithDatabase("PrismaReviewPublicationRepository real database", () => {
       claimId: claim.claim.claimId,
       claimFencingToken: claim.claim.fencingToken,
       tombstoneId: "tombstone-adjudication",
+      siblingTombstones: [],
       finalReason: "provider_outcome_unprovable",
       lastErrorCode: "provider_timeout",
       terminalizedBy: "real-db-test",
@@ -422,7 +492,265 @@ describeWithDatabase("PrismaReviewPublicationRepository real database", () => {
       status: AdjudicateReviewPublicationOutcomeStatus.Restored,
     });
   });
+
+  it("guards sibling effect risk and closes untouched siblings atomically", async () => {
+    const guardedCommand = requestCommand(fixture, `guarded-${randomUUID()}`);
+    guardedCommand.operations.push(
+      siblingOperation(guardedCommand.operations[0]!, "guarded"),
+    );
+    await repository.request(guardedCommand);
+    const guardedClaim = await repository.claim(
+      claimCommand(guardedCommand.publicationAttemptId),
+    );
+    if (guardedClaim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("publication_claim_not_acquired");
+    }
+    const begun = await repository.begin(
+      beginCommand(
+        guardedCommand.publicationAttemptId,
+        guardedCommand.operations[0]!.publicationOperationId,
+        {
+          expectedAttemptVersion: guardedClaim.attempt.version,
+          claimId: guardedClaim.claim.claimId,
+          claimFencingToken: guardedClaim.claim.fencingToken,
+        },
+      ),
+    );
+    if (begun.status !== BeginReviewPublicationOperationStatus.Begun) {
+      throw new Error("publication_operation_not_begun");
+    }
+    const [recordedEffect, targetTerminalization] = await Promise.all([
+      repository.record(effectCommand(begun.capability)),
+      repository.terminalizeUnknown({
+        ...noEffectTerminalCommand(
+          guardedCommand,
+          guardedCommand.operations[0]!.publicationOperationId,
+        ),
+        expectedAttemptVersion: begun.attempt.version,
+        claimId: guardedClaim.claim.claimId,
+        claimFencingToken: guardedClaim.claim.fencingToken,
+      }),
+    ]);
+    expect(recordedEffect.status).toBe(
+      RecordReviewExternalEffectStatus.Recorded,
+    );
+    expect(targetTerminalization).toEqual({
+      status: TerminalizeUnknownReviewPublicationStatus.ExternalEffectRisk,
+    });
+    await expect(
+      repository.terminalizeUnknown({
+        ...noEffectTerminalCommand(
+          guardedCommand,
+          guardedCommand.operations[1]!.publicationOperationId,
+        ),
+        expectedAttemptVersion: begun.attempt.version,
+        claimId: guardedClaim.claim.claimId,
+        claimFencingToken: guardedClaim.claim.fencingToken,
+      }),
+    ).resolves.toEqual({
+      status: TerminalizeUnknownReviewPublicationStatus.ExternalEffectRisk,
+    });
+
+    const closableCommand = requestCommand(fixture, `closable-${randomUUID()}`);
+    closableCommand.operations.push(
+      siblingOperation(closableCommand.operations[0]!, "closable"),
+    );
+    await repository.request(closableCommand);
+    const closableClaim = await repository.claim(
+      claimCommand(closableCommand.publicationAttemptId),
+    );
+    if (closableClaim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("publication_claim_not_acquired");
+    }
+    const terminalCommand = {
+      ...noEffectTerminalCommand(
+        closableCommand,
+        closableCommand.operations[0]!.publicationOperationId,
+      ),
+      expectedAttemptVersion: closableClaim.attempt.version,
+      claimId: closableClaim.claim.claimId,
+      claimFencingToken: closableClaim.claim.fencingToken,
+    };
+    await expect(
+      repository.terminalizeUnknown(terminalCommand),
+    ).resolves.toMatchObject({
+      status: TerminalizeUnknownReviewPublicationStatus.Terminalized,
+      attempt: {
+        state: "terminal",
+        operations: [
+          { state: "superseded_no_effect" },
+          { state: "superseded_no_effect" },
+        ],
+      },
+    });
+    await expect(
+      repository.terminalizeUnknown({
+        ...terminalCommand,
+        siblingTombstones: [],
+      }),
+    ).resolves.toEqual({
+      status: TerminalizeUnknownReviewPublicationStatus.Conflict,
+    });
+  });
+
+  it("waits for every risk deadline and converges all operation attempts", async () => {
+    const command = requestCommand(fixture, `risk-deadlines-${randomUUID()}`);
+    command.operations.push(
+      siblingOperation(command.operations[0]!, "risk-deadlines"),
+    );
+    await repository.request(command);
+    const firstOperation = command.operations[0]!;
+    const secondOperation = command.operations[1]!;
+    await prisma.reviewPublicationOperationV2.update({
+      where: {
+        publicationOperationId: firstOperation.publicationOperationId,
+      },
+      data: { reconcileUntil: new Date(Date.now() - 1_000) },
+    });
+    await prisma.reviewPublicationOperationV2.update({
+      where: {
+        publicationOperationId: secondOperation.publicationOperationId,
+      },
+      data: { reconcileUntil: new Date(Date.now() + 60_000) },
+    });
+    const claim = await repository.claim(
+      claimCommand(command.publicationAttemptId, {
+        expiresAt: new Date(Date.now() + 300_000),
+        reportUntil: new Date(Date.now() + 360_000),
+      }),
+    );
+    if (claim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("publication_claim_not_acquired");
+    }
+    const first = await repository.begin(
+      beginCommand(
+        command.publicationAttemptId,
+        firstOperation.publicationOperationId,
+        {
+          expectedAttemptVersion: claim.attempt.version,
+          claimId: claim.claim.claimId,
+          claimFencingToken: claim.claim.fencingToken,
+        },
+      ),
+    );
+    if (first.status !== BeginReviewPublicationOperationStatus.Begun) {
+      throw new Error("publication_operation_not_begun");
+    }
+    const second = await repository.begin(
+      beginCommand(
+        command.publicationAttemptId,
+        secondOperation.publicationOperationId,
+        {
+          expectedAttemptVersion: first.attempt.version,
+          claimId: claim.claim.claimId,
+          claimFencingToken: claim.claim.fencingToken,
+        },
+      ),
+    );
+    if (second.status !== BeginReviewPublicationOperationStatus.Begun) {
+      throw new Error("publication_operation_not_begun");
+    }
+    const terminalCommand = {
+      publicationAttemptId: command.publicationAttemptId,
+      publicationOperationId: firstOperation.publicationOperationId,
+      expectedAttemptVersion: second.attempt.version,
+      claimId: claim.claim.claimId,
+      claimFencingToken: claim.claim.fencingToken,
+      tombstoneId: `tombstone-${randomUUID()}`,
+      siblingTombstones: [
+        {
+          publicationOperationId: secondOperation.publicationOperationId,
+          tombstoneId: `tombstone-${randomUUID()}`,
+          finalOutcome:
+            ReviewPublicationTerminalOutcome.TerminalUnknown as const,
+        },
+      ],
+      finalOutcome: ReviewPublicationTerminalOutcome.TerminalUnknown,
+      finalReason: "inventory_ambiguous",
+      lastErrorCode: "provider_timeout",
+      terminalizedBy: "real-db-test",
+      terminalizedAt: new Date(),
+      retainUntil: new Date(Date.now() + 86_400_000),
+    } as const;
+    await expect(
+      repository.terminalizeUnknown(terminalCommand),
+    ).resolves.toEqual({
+      status: TerminalizeUnknownReviewPublicationStatus.TooEarly,
+    });
+
+    await prisma.reviewPublicationOperationV2.update({
+      where: {
+        publicationOperationId: secondOperation.publicationOperationId,
+      },
+      data: { reconcileUntil: new Date(Date.now() - 1_000) },
+    });
+    await expect(
+      repository.terminalizeUnknown(terminalCommand),
+    ).resolves.toMatchObject({
+      status: TerminalizeUnknownReviewPublicationStatus.Terminalized,
+      attempt: {
+        terminalOutcome: ReviewPublicationTerminalOutcome.TerminalUnknown,
+      },
+    });
+    expect(
+      await prisma.reviewPublicationOperationAttemptV2.count({
+        where: {
+          publicationAttemptId: command.publicationAttemptId,
+          state: "terminal_unknown",
+        },
+      }),
+    ).toBe(2);
+    expect(
+      await prisma.reviewPublicationAuditTombstoneV2.count({
+        where: { publicationAttemptId: command.publicationAttemptId },
+      }),
+    ).toBe(2);
+  });
 });
+
+function siblingOperation(
+  operation: ReviewPublicationOperationPlan,
+  key: string,
+): ReviewPublicationOperationPlan {
+  return {
+    ...operation,
+    publicationOperationId: `operation-sibling-${key}-${randomUUID()}`,
+    chunkIndex: 1,
+    markerHash: digest(`marker-sibling-${key}`),
+    bodyHash: digest(`body-sibling-${key}`),
+  };
+}
+
+function noEffectTerminalCommand(
+  command: ReturnType<typeof requestCommand>,
+  publicationOperationId: string,
+) {
+  return {
+    publicationAttemptId: command.publicationAttemptId,
+    publicationOperationId,
+    expectedAttemptVersion: 0n,
+    claimId: null,
+    claimFencingToken: null,
+    tombstoneId: `tombstone-${randomUUID()}`,
+    siblingTombstones: command.operations
+      .filter(
+        (operation) =>
+          operation.publicationOperationId !== publicationOperationId,
+      )
+      .map((operation) => ({
+        publicationOperationId: operation.publicationOperationId,
+        tombstoneId: `tombstone-${randomUUID()}`,
+        finalOutcome:
+          ReviewPublicationTerminalOutcome.SupersededNoEffect as ReviewPublicationTerminalOutcome.SupersededNoEffect,
+      })),
+    finalOutcome: ReviewPublicationTerminalOutcome.SupersededNoEffect,
+    finalReason: "operation_superseded",
+    lastErrorCode: "publication_live_facts_changed",
+    terminalizedBy: "real-db-test",
+    terminalizedAt: new Date(),
+    retainUntil: new Date(Date.now() + 86_400_000),
+  } as const;
+}
 
 function requestCommand(
   fixture: Awaited<ReturnType<typeof seedFixture>>,

@@ -3,16 +3,19 @@ import {
   BeginReviewPublicationOperationStatus,
   ClaimReviewPublicationStatus,
   CompleteReviewPublicationOperationStatus,
+  ProveReviewPublicationNoEffectStatus,
   RecordReviewExternalEffectStatus,
   RenewReviewPublicationClaimStatus,
   ReviewPublicationAttemptState,
   ReviewPublicationExternalEffectKind,
   ReviewPublicationKind,
-  ReviewPublicationOperationState,
+  ReviewPublicationOperationAttemptState,
   ReviewPublicationReceiptStatus,
   ReviewPublicationTerminalOutcome,
   TerminalizeUnknownReviewPublicationStatus,
   operationCapabilityFacts,
+  planPublicationSiblingTerminalizations,
+  publicationOperationsWithExternalEffectRisk,
   selectCanonicalExternalEffect,
   type ReviewPublicationAttemptView,
   type ReviewPublicationClaimTerm,
@@ -21,6 +24,7 @@ import {
   type ReviewPublicationOperation,
   type ReviewPublicationOperationCapabilityFacts,
   type ReviewPublicationPermitIdentity,
+  type TerminalizeUnknownReviewPublicationCommand,
 } from "@reviewrouter/features-review-publishing/v2";
 import {
   ReviewV2PublicationCompensationDecision,
@@ -82,22 +86,61 @@ export class ExecuteReviewV2PublicationOperation {
   }
 
   async execute(
-    command: ReviewV2PublicationExecutionCommand,
+    requestedCommand: ReviewV2PublicationExecutionCommand,
   ): Promise<ReviewV2PublicationExecutionResult> {
-    assertCommand(command);
+    assertCommand(requestedCommand);
     let view = await this.dependencies.attempts.findById(
-      command.publicationAttemptId,
+      requestedCommand.publicationAttemptId,
     );
     if (!view) return manual("publication_attempt_missing");
-    const initial = inspectTerminal(view, command.publicationOperationId);
-    if (initial) return initial;
-    let operation = requireOperation(view, command.publicationOperationId);
+    if (view.attempt.state === ReviewPublicationAttemptState.Terminal) {
+      return (
+        inspectTerminal(view, requestedCommand.publicationOperationId) ??
+        manual("publication_attempt_terminal_without_operation_receipt")
+      );
+    }
+    const requestedOperation = requireOperation(
+      view,
+      requestedCommand.publicationOperationId,
+    );
+    const riskOperations = externalEffectRiskOperations(view);
+    const requestedOperationHasRisk = riskOperations.some(
+      (candidate) =>
+        candidate.publicationOperationId ===
+        requestedOperation.publicationOperationId,
+    );
+    let operationSelectedForReconciliation: ReviewPublicationOperation | null =
+      requestedOperationHasRisk ? requestedOperation : null;
+    if (!requestedOperationHasRisk && riskOperations.length > 0) {
+      const routingFreshness = await this.readFreshness(
+        requestedCommand.provider,
+        view.attempt.permit,
+      );
+      if (routingFreshness.status === "changed") {
+        operationSelectedForReconciliation = riskOperations[0] ?? null;
+      }
+    }
+    const operationForExecution =
+      operationSelectedForReconciliation ?? requestedOperation;
+    const reconcilingAggregateSibling =
+      operationForExecution.publicationOperationId !==
+      requestedOperation.publicationOperationId;
+    const command: ReviewV2PublicationExecutionCommand = {
+      ...requestedCommand,
+      publicationOperationId: operationForExecution.publicationOperationId,
+    };
+    if (!reconcilingAggregateSibling) {
+      const initial = inspectTerminal(view, command.publicationOperationId);
+      if (initial) return initial;
+    }
+    let operation = operationForExecution;
+    const pendingNoEffectProof = latestProvenNoEffectAttempt(view, operation);
     const potentialEffect = mayHaveExternalEffect(view, operation);
     const claimResult = await this.acquireClaim({
       command,
       view,
       operation,
-      reconciliationOnly: potentialEffect,
+      reconciliationOnly: potentialEffect || pendingNoEffectProof !== undefined,
     });
     if ("result" in claimResult) return claimResult.result;
     let claim = claimResult.claim;
@@ -106,14 +149,28 @@ export class ExecuteReviewV2PublicationOperation {
       command.publicationAttemptId,
     );
     if (!view) return manual("publication_attempt_disappeared");
-    const afterClaim = inspectTerminal(view, command.publicationOperationId);
-    if (afterClaim) return afterClaim;
+    if (!reconcilingAggregateSibling) {
+      const afterClaim = inspectTerminal(view, command.publicationOperationId);
+      if (afterClaim) return afterClaim;
+    }
     operation = requireOperation(view, command.publicationOperationId);
     const persistedClaim = currentClaim(view, claim);
     if (!persistedClaim) {
       return retryable("publication_claim_changed_after_acquire");
     }
     claim = persistedClaim;
+
+    const provenNoEffectAttempt = latestProvenNoEffectAttempt(view, operation);
+    if (provenNoEffectAttempt) {
+      return this.terminalizeKnownOutcome({
+        command,
+        operation,
+        claim,
+        finalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+        finalReason: "scm_mutation_rejected_no_effect",
+        lastErrorCode: noEffectSafeCode(provenNoEffectAttempt.noEffectReason),
+      });
+    }
 
     const priorCapability = reconstructLatestOperationCapability(
       view,
@@ -886,6 +943,7 @@ export class ExecuteReviewV2PublicationOperation {
             finalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
             finalReason: "scm_mutation_rejected_no_effect",
             lastErrorCode: input.error.safeCode,
+            noEffectCapability: input.capability,
           });
     }
     const errorCode =
@@ -1006,6 +1064,16 @@ export class ExecuteReviewV2PublicationOperation {
       view.attempt.permit,
     );
     if (freshness.status !== "current") {
+      if (externalEffectRiskOperations(view).length > 1) {
+        return this.terminalizeKnownAmbiguity({
+          command: input.command,
+          operation: input.operation,
+          claim: input.claim,
+          finalReason:
+            "multiple_stale_effects_require_aggregate_reconciliation",
+          lastErrorCode: freshness.safeReason,
+        });
+      }
       return this.handleStaleKnownEffect({
         command: input.command,
         operation: input.operation,
@@ -1112,6 +1180,16 @@ export class ExecuteReviewV2PublicationOperation {
       view.attempt.permit,
     );
     if (finalFreshness.status !== "current") {
+      if (externalEffectRiskOperations(view).length > 1) {
+        return this.terminalizeKnownAmbiguity({
+          command: input.command,
+          operation: input.operation,
+          claim: input.claim,
+          finalReason:
+            "multiple_stale_effects_require_aggregate_reconciliation",
+          lastErrorCode: finalFreshness.safeReason,
+        });
+      }
       return this.handleStaleKnownEffect({
         command: input.command,
         operation: input.operation,
@@ -1388,11 +1466,49 @@ export class ExecuteReviewV2PublicationOperation {
       | ReviewPublicationTerminalOutcome.StaleVisible;
     readonly finalReason: string;
     readonly lastErrorCode: string;
+    readonly noEffectCapability?: ReviewPublicationOperationCapabilityFacts;
   }): Promise<ReviewV2PublicationExecutionResult> {
-    const view = await this.dependencies.attempts.findById(
+    let view = await this.dependencies.attempts.findById(
       input.command.publicationAttemptId,
     );
     if (!view) return manual("publication_attempt_disappeared");
+    if (
+      (input.finalOutcome ===
+        ReviewPublicationTerminalOutcome.SupersededNoEffect ||
+        input.finalOutcome ===
+          ReviewPublicationTerminalOutcome.FailedNoEffect) &&
+      mayHaveExternalEffect(view, input.operation)
+    ) {
+      if (!input.noEffectCapability) return retryable(input.lastErrorCode);
+      const noEffectReason = `definitely_no_effect:${safeIdentifier(
+        input.lastErrorCode,
+        "unknown_error",
+      )}`;
+      const noEffectProofId = deterministicId(
+        "no-effect-proof",
+        input.noEffectCapability.operationAttemptId,
+      );
+      let proof;
+      try {
+        proof = await this.dependencies.application.proveNoEffect({
+          capability: input.noEffectCapability,
+          noEffectProofId,
+          noEffectReason,
+        });
+      } catch {
+        return retryable("publication_no_effect_proof_ack_unknown");
+      }
+      if (
+        proof.status !== ProveReviewPublicationNoEffectStatus.Proven &&
+        proof.status !== ProveReviewPublicationNoEffectStatus.Restored
+      ) {
+        return retryable(`publication_no_effect_proof_${proof.status}`);
+      }
+      view = await this.dependencies.attempts.findById(
+        input.command.publicationAttemptId,
+      );
+      if (!view) return manual("publication_attempt_disappeared");
+    }
     let terminalized;
     try {
       terminalized = await this.dependencies.application.terminalizeUnknown({
@@ -1404,6 +1520,11 @@ export class ExecuteReviewV2PublicationOperation {
         tombstoneId: deterministicId(
           "tombstone",
           `${input.command.publicationAttemptId}\0${input.operation.publicationOperationId}`,
+        ),
+        siblingTombstones: terminalizationSiblingTombstones(
+          view,
+          input.operation,
+          input.finalOutcome,
         ),
         finalOutcome: input.finalOutcome,
         finalReason: safeIdentifier(
@@ -1428,9 +1549,18 @@ export class ExecuteReviewV2PublicationOperation {
       case TerminalizeUnknownReviewPublicationStatus.VersionConflict:
       case TerminalizeUnknownReviewPublicationStatus.StaleClaim:
         return retryable(`publication_terminal_outcome_${terminalized.status}`);
+      case TerminalizeUnknownReviewPublicationStatus.ExternalEffectRisk:
+        return retryable(input.lastErrorCode);
+      case TerminalizeUnknownReviewPublicationStatus.Conflict:
+        return this.terminalizeKnownAmbiguity({
+          command: input.command,
+          operation: input.operation,
+          claim: input.claim,
+          finalReason: "attempt_effect_risk_requires_reconciliation",
+          lastErrorCode: input.lastErrorCode,
+        });
       case TerminalizeUnknownReviewPublicationStatus.Missing:
       case TerminalizeUnknownReviewPublicationStatus.TooEarly:
-      case TerminalizeUnknownReviewPublicationStatus.Conflict:
         return manual(`publication_terminal_outcome_${terminalized.status}`);
     }
   }
@@ -1454,6 +1584,11 @@ export class ExecuteReviewV2PublicationOperation {
           "tombstone",
           `${input.command.publicationAttemptId}\0${input.operation.publicationOperationId}`,
         ),
+        siblingTombstones: terminalizationSiblingTombstones(
+          input.view,
+          input.operation,
+          ReviewPublicationTerminalOutcome.SupersededNoEffect,
+        ),
         finalOutcome: ReviewPublicationTerminalOutcome.SupersededNoEffect,
         finalReason: input.finalReason,
         lastErrorCode: input.lastErrorCode,
@@ -1463,15 +1598,27 @@ export class ExecuteReviewV2PublicationOperation {
     } catch {
       return manual("publication_unclaimed_terminalization_unavailable");
     }
-    return terminalized.status ===
-      TerminalizeUnknownReviewPublicationStatus.Terminalized ||
-      terminalized.status === TerminalizeUnknownReviewPublicationStatus.Restored
-      ? {
+    switch (terminalized.status) {
+      case TerminalizeUnknownReviewPublicationStatus.Terminalized:
+      case TerminalizeUnknownReviewPublicationStatus.Restored:
+        return {
           status: ReviewV2PublicationExecutionStatus.Terminalized,
           safeReason: input.finalReason,
           terminalOutcome: ReviewPublicationTerminalOutcome.SupersededNoEffect,
-        }
-      : manual(`publication_unclaimed_terminalization_${terminalized.status}`);
+        };
+      case TerminalizeUnknownReviewPublicationStatus.VersionConflict:
+      case TerminalizeUnknownReviewPublicationStatus.StaleClaim:
+      case TerminalizeUnknownReviewPublicationStatus.ExternalEffectRisk:
+        return retryable(
+          `publication_unclaimed_terminalization_${terminalized.status}`,
+        );
+      case TerminalizeUnknownReviewPublicationStatus.Missing:
+      case TerminalizeUnknownReviewPublicationStatus.TooEarly:
+      case TerminalizeUnknownReviewPublicationStatus.Conflict:
+        return manual(
+          `publication_unclaimed_terminalization_${terminalized.status}`,
+        );
+    }
   }
 
   private async terminalizeOrRetry(input: {
@@ -1497,6 +1644,11 @@ export class ExecuteReviewV2PublicationOperation {
           "tombstone",
           `${input.command.publicationAttemptId}\0${input.operation.publicationOperationId}`,
         ),
+        siblingTombstones: terminalizationSiblingTombstones(
+          input.view,
+          input.operation,
+          ReviewPublicationTerminalOutcome.TerminalUnknown,
+        ),
         finalReason: safeIdentifier(
           input.finalReason,
           "publication_outcome_unknown",
@@ -1518,6 +1670,7 @@ export class ExecuteReviewV2PublicationOperation {
       case TerminalizeUnknownReviewPublicationStatus.TooEarly:
       case TerminalizeUnknownReviewPublicationStatus.VersionConflict:
       case TerminalizeUnknownReviewPublicationStatus.StaleClaim:
+      case TerminalizeUnknownReviewPublicationStatus.ExternalEffectRisk:
         return retryable(`publication_terminalize_${terminalized.status}`);
       case TerminalizeUnknownReviewPublicationStatus.Missing:
       case TerminalizeUnknownReviewPublicationStatus.Conflict:
@@ -1797,6 +1950,30 @@ function reconstructLatestOperationCapability(
   });
 }
 
+function latestProvenNoEffectAttempt(
+  view: ReviewPublicationAttemptView,
+  operation: ReviewPublicationOperation,
+) {
+  return view.operationAttempts
+    .filter(
+      (attempt) =>
+        attempt.publicationOperationId === operation.publicationOperationId &&
+        attempt.state === ReviewPublicationOperationAttemptState.NoEffectProven,
+    )
+    .sort(
+      (left, right) =>
+        right.startedAt.getTime() - left.startedAt.getTime() ||
+        right.operationAttemptId.localeCompare(left.operationAttemptId),
+    )[0];
+}
+
+function noEffectSafeCode(reason: string | null): string {
+  const prefix = "definitely_no_effect:";
+  return reason?.startsWith(prefix) && reason.length > prefix.length
+    ? reason.slice(prefix.length)
+    : "provider_rejected_without_effect";
+}
+
 function capabilityBelongsToClaim(
   capability: ReviewPublicationOperationCapabilityFacts,
   claim: ReviewPublicationClaimTerm,
@@ -1981,16 +2158,6 @@ function inspectTerminal(
   view: ReviewPublicationAttemptView,
   operationId: string,
 ): ReviewV2PublicationExecutionResult | null {
-  const receipt = view.receipts.find(
-    (candidate) => candidate.publicationOperationId === operationId,
-  );
-  if (receipt) {
-    return {
-      status: ReviewV2PublicationExecutionStatus.AlreadyCompleted,
-      safeReason: "publication_operation_already_completed",
-      receiptStatus: receipt.status,
-    };
-  }
   if (
     view.attempt.terminalOutcome ===
     ReviewPublicationTerminalOutcome.TerminalUnknown
@@ -2008,6 +2175,16 @@ function inspectTerminal(
       status: ReviewV2PublicationExecutionStatus.Terminalized,
       safeReason: `publication_${view.attempt.terminalOutcome}`,
       terminalOutcome: view.attempt.terminalOutcome,
+    };
+  }
+  const receipt = view.receipts.find(
+    (candidate) => candidate.publicationOperationId === operationId,
+  );
+  if (receipt) {
+    return {
+      status: ReviewV2PublicationExecutionStatus.AlreadyCompleted,
+      safeReason: "publication_operation_already_completed",
+      receiptStatus: receipt.status,
     };
   }
   if (view.attempt.state === ReviewPublicationAttemptState.Terminal) {
@@ -2047,17 +2224,45 @@ function mayHaveExternalEffect(
   view: ReviewPublicationAttemptView,
   operation: ReviewPublicationOperation,
 ): boolean {
-  return (
-    operation.state !== ReviewPublicationOperationState.Planned ||
-    view.operationAttempts.some(
-      (attempt) =>
-        attempt.publicationOperationId === operation.publicationOperationId,
-    ) ||
-    view.effects.some(
-      (effect) =>
-        effect.publicationOperationId === operation.publicationOperationId,
-    )
+  return externalEffectRiskOperations(view).some(
+    (candidate) =>
+      candidate.publicationOperationId === operation.publicationOperationId,
   );
+}
+
+function externalEffectRiskOperations(
+  view: ReviewPublicationAttemptView,
+): readonly ReviewPublicationOperation[] {
+  return publicationOperationsWithExternalEffectRisk({
+    operations: view.attempt.operations,
+    operationAttempts: view.operationAttempts,
+    effects: view.effects,
+    receipts: view.receipts,
+  });
+}
+
+function terminalizationSiblingTombstones(
+  view: ReviewPublicationAttemptView,
+  operation: ReviewPublicationOperation,
+  outcome: NonNullable<
+    TerminalizeUnknownReviewPublicationCommand["finalOutcome"]
+  >,
+): TerminalizeUnknownReviewPublicationCommand["siblingTombstones"] {
+  return planPublicationSiblingTerminalizations({
+    publicationOperationId: operation.publicationOperationId,
+    attemptOutcome: outcome,
+    operations: view.attempt.operations,
+    operationAttempts: view.operationAttempts,
+    effects: view.effects,
+    receipts: view.receipts,
+  }).map((planned) => ({
+    publicationOperationId: planned.publicationOperationId,
+    tombstoneId: deterministicId(
+      "tombstone",
+      `${view.attempt.publicationAttemptId}\0${planned.publicationOperationId}`,
+    ),
+    finalOutcome: planned.finalOutcome,
+  }));
 }
 
 function mapBeginFailure(

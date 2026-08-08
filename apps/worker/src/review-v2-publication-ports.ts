@@ -5,6 +5,8 @@ import type {
   ClaimReviewPublicationResult,
   CompleteReviewPublicationOperationCommand,
   CompleteReviewPublicationOperationResult,
+  ProveReviewPublicationNoEffectCommand,
+  ProveReviewPublicationNoEffectResult,
   RecordReviewExternalEffectCommand,
   RecordReviewExternalEffectResult,
   RenewReviewPublicationClaimCommand,
@@ -115,6 +117,12 @@ export interface ReviewV2PublicationApplicationPort {
   recordEffect(
     command: Omit<RecordReviewExternalEffectCommand, "observedAt">,
   ): Promise<RecordReviewExternalEffectResult>;
+  proveNoEffect(
+    command: Omit<
+      ProveReviewPublicationNoEffectCommand,
+      "noEffectProofHash" | "provenAt"
+    >,
+  ): Promise<ProveReviewPublicationNoEffectResult>;
   completeOperation(
     command: Omit<CompleteReviewPublicationOperationCommand, "completedAt">,
   ): Promise<CompleteReviewPublicationOperationResult>;
