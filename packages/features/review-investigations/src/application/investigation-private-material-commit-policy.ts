@@ -11,7 +11,7 @@ import {
   requiresInvestigationSearchQueryPrivateMaterial,
 } from "../domain/obligation-closure-policy";
 import type { ReviewInvestigation } from "../domain/review-investigation";
-import { resolveReviewInvestigationCoverageProfileGeneration } from "../domain/coverage-contract";
+import { isTypedReviewInvestigationCoverageProfile } from "../domain/coverage-contract";
 
 export function validateInvestigationPrivateMaterialCommit(input: {
   readonly investigation: ReviewInvestigation;
@@ -22,9 +22,7 @@ export function validateInvestigationPrivateMaterialCommit(input: {
 }): readonly EncryptedInvestigationPrivateMaterial[] {
   persistedSearchQueryPrivateMaterialObligationIds(input.investigation);
   if (
-    resolveReviewInvestigationCoverageProfileGeneration(
-      input.investigation.contract,
-    ) === null
+    !isTypedReviewInvestigationCoverageProfile(input.investigation.contract)
   ) {
     if (input.privateMaterials.length > 0) {
       throw new Error("investigation_private_material_transition_invalid");
@@ -149,11 +147,7 @@ export function assertPersistedInvestigationRequirementsSanitized(
 function persistedSearchQueryPrivateMaterialObligationIds(
   investigation: ReviewInvestigation,
 ): ReadonlySet<string> {
-  if (
-    resolveReviewInvestigationCoverageProfileGeneration(
-      investigation.contract,
-    ) === null
-  ) {
+  if (!isTypedReviewInvestigationCoverageProfile(investigation.contract)) {
     return new Set();
   }
   const requiredObligationIds = new Set<string>();

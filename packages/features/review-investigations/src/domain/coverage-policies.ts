@@ -70,9 +70,11 @@ export class VersionedCoverageSeedPolicy implements CoverageSeedPolicy {
     readonly contract: ReviewInvestigationContract;
     readonly supplied: readonly SeedInvestigationObligation[];
   }): readonly PolicySeedInvestigationObligation[] {
+    const profileGeneration =
+      resolveReviewInvestigationCoverageProfileGeneration(input.contract);
     if (
-      resolveReviewInvestigationCoverageProfileGeneration(input.contract) ===
-      null
+      profileGeneration === null ||
+      profileGeneration === ReviewInvestigationCoverageProfileGeneration.V1
     ) {
       return Object.freeze(
         input.supplied.map((item) =>
@@ -258,7 +260,10 @@ export class VersionedCoverageExpansionPolicy implements CoverageExpansionPolicy
   }): readonly PolicySeedInvestigationObligation[] {
     const profileGeneration =
       resolveReviewInvestigationCoverageProfileGeneration(input.contract);
-    if (profileGeneration === null) {
+    if (
+      profileGeneration === null ||
+      profileGeneration === ReviewInvestigationCoverageProfileGeneration.V1
+    ) {
       if (input.discoveryClaims.length > 0) {
         throw new Error("investigation_coverage_profile_unsupported");
       }

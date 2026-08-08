@@ -39,9 +39,20 @@ export const reviewInvestigationSearchPolicyV1 =
   "review-investigation-fixed-string-search.v1" as const;
 
 export enum ReviewInvestigationCoverageProfileGeneration {
+  V1 = 1,
   V2 = 2,
   V3 = 3,
 }
+
+export const reviewInvestigationCoverageProfileV1 = Object.freeze({
+  coverageContractVersion: "review-investigation-coverage.v1",
+  expansionRulesVersion: "review-investigation-expansion.v1",
+  criticPolicyVersion: reviewInvestigationCriticPolicyV1,
+  gatewayPolicyVersion: "context-gateway-v2",
+  probePolicyVersion: reviewInvestigationProbePolicyV1,
+  runtimeProfileVersion: "review-investigation-runtime.v1",
+  searchPolicyVersion: reviewInvestigationSearchPolicyV1,
+} as const);
 
 export const reviewInvestigationCoverageProfileV2 = Object.freeze({
   coverageContractVersion: "review-investigation-coverage.v1",
@@ -67,17 +78,6 @@ export function resolveReviewInvestigationCoverageProfileGeneration(
   ) {
     return null;
   }
-  if (contract.expansionRulesVersion === "review-investigation-expansion.v1") {
-    return null;
-  }
-  if (
-    contract.expansionRulesVersion !==
-      reviewInvestigationCoverageProfileV2.expansionRulesVersion &&
-    contract.expansionRulesVersion !==
-      reviewInvestigationCoverageProfileV3.expansionRulesVersion
-  ) {
-    throw new Error("investigation_coverage_profile_unsupported");
-  }
   const expectedKeys = [
     ...Object.keys(reviewInvestigationCoverageProfileV3),
     "producerReleaseId",
@@ -90,6 +90,10 @@ export function resolveReviewInvestigationCoverageProfileGeneration(
     throw new Error("investigation_coverage_profile_unsupported");
   }
   for (const [generation, profile] of [
+    [
+      ReviewInvestigationCoverageProfileGeneration.V1,
+      reviewInvestigationCoverageProfileV1,
+    ],
     [
       ReviewInvestigationCoverageProfileGeneration.V2,
       reviewInvestigationCoverageProfileV2,
@@ -113,10 +117,21 @@ export function resolveReviewInvestigationCoverageProfileGeneration(
   throw new Error("investigation_coverage_profile_unsupported");
 }
 
+export function isTypedReviewInvestigationCoverageProfile(
+  contract: ReviewInvestigationContract,
+): boolean {
+  const generation =
+    resolveReviewInvestigationCoverageProfileGeneration(contract);
+  return (
+    generation === ReviewInvestigationCoverageProfileGeneration.V2 ||
+    generation === ReviewInvestigationCoverageProfileGeneration.V3
+  );
+}
+
 export function assertSupportedReviewInvestigationCoverageProfile(
   contract: ReviewInvestigationContract,
 ): void {
-  if (resolveReviewInvestigationCoverageProfileGeneration(contract) === null) {
+  if (!isTypedReviewInvestigationCoverageProfile(contract)) {
     throw new Error("investigation_coverage_profile_unsupported");
   }
 }

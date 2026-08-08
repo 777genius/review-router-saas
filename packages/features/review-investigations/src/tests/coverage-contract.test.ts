@@ -4,6 +4,7 @@ import {
   ReviewInvestigationCoverageProfileGeneration,
   assertSupportedReviewInvestigationCoverageProfile,
   resolveReviewInvestigationCoverageProfileGeneration,
+  reviewInvestigationCoverageProfileV1,
   reviewInvestigationCoverageProfileV2,
   reviewInvestigationCoverageProfileV3,
 } from "../domain/coverage-contract";
@@ -43,6 +44,16 @@ describe("review investigation coverage profile", () => {
   });
 
   it("classifies the drain-compatible and current profiles explicitly", () => {
+    const historicalV1 = {
+      ...reviewInvestigationCoverageProfileV1,
+      producerReleaseId: "release-historical-v1",
+    };
+    expect(
+      resolveReviewInvestigationCoverageProfileGeneration(historicalV1),
+    ).toBe(ReviewInvestigationCoverageProfileGeneration.V1);
+    expect(() =>
+      assertSupportedReviewInvestigationCoverageProfile(historicalV1),
+    ).toThrow("investigation_coverage_profile_unsupported");
     expect(
       resolveReviewInvestigationCoverageProfileGeneration({
         ...reviewInvestigationCoverageProfileV2,
@@ -62,13 +73,24 @@ describe("review investigation coverage profile", () => {
         producerReleaseId: "release-legacy",
       }),
     ).toBeNull();
-    expect(
+    for (const field of Object.keys(reviewInvestigationCoverageProfileV1)) {
+      const mutated = { ...historicalV1, [field]: `${field}.unsupported` };
+      if (field === "coverageContractVersion") {
+        expect(
+          resolveReviewInvestigationCoverageProfileGeneration(mutated),
+        ).toBeNull();
+      } else {
+        expect(() =>
+          resolveReviewInvestigationCoverageProfileGeneration(mutated),
+        ).toThrow("investigation_coverage_profile_unsupported");
+      }
+    }
+    expect(() =>
       resolveReviewInvestigationCoverageProfileGeneration({
-        ...reviewInvestigationCoverageProfileV2,
-        expansionRulesVersion: "review-investigation-expansion.v1",
-        producerReleaseId: "release-historical-v1",
-      }),
-    ).toBeNull();
+        ...historicalV1,
+        unknownPolicyVersion: "unknown.v1",
+      } as never),
+    ).toThrow("investigation_coverage_profile_unsupported");
     expect(() =>
       resolveReviewInvestigationCoverageProfileGeneration({
         ...reviewInvestigationCoverageProfileV3,
