@@ -1382,6 +1382,18 @@ function prepareTurnObservation(input: {
           ) {
             throw new Error("unexpected_legacy_relation_obligation");
           }
+          if (requirement.requiredQueryDigest !== undefined) {
+            const search = pageEvent({
+              label: `${input.label}:relation-search`,
+              sequence: events.length + 1,
+              operationKind: ContextGatewayV4OperationKind.TextSearch,
+              operationInputHash: requirement.initialOperationInputHash,
+              queryDigest: requirement.requiredQueryDigest,
+              pathHashes: requirement.requiredPathHashes,
+            });
+            events.push(search);
+            receiptIds.push(requiredString(search.operationReceiptId));
+          }
           for (const pathHash of requirement.requiredPathHashes) {
             const file = fileEvent(
               `${input.label}:relation-file:${pathHash}`,
