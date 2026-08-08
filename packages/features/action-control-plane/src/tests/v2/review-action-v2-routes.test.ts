@@ -360,6 +360,39 @@ describe("Review Action v2 route registrars", () => {
     await app.close();
   });
 
+  it("records an allowlisted investigation validation code without exposing it to the client", async () => {
+    const diagnostics: unknown[] = [];
+    const app = Fastify({ logger: false });
+    await registerReviewContextAttestationV2Routes(app, {
+      ...runtime,
+      recordProtocolRejection: (diagnostic) => diagnostics.push(diagnostic),
+      openGateway: {
+        capabilityEnabled: true,
+        execute: async () => {
+          throw new Error("investigation_turn_attestation_invalid");
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-context/gateway/open",
+      payload: reviewActionV2GoldenFixtures.review_context_gateway_open.request,
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        internalFailureClass: "Error",
+        internalFailureCode: "investigation_turn_attestation_invalid",
+      }),
+    ]);
+    expect(JSON.stringify(response.json())).not.toContain(
+      "investigation_turn_attestation_invalid",
+    );
+    await app.close();
+  });
+
   it("redacts unsafe unexpected handler messages from diagnostics", async () => {
     const diagnostics: unknown[] = [];
     const app = Fastify({ logger: false });
