@@ -3,15 +3,15 @@ import { ReviewActionV2RetryClass } from "./review-action-v2-negotiation.js";
 
 export const reviewActionV2PublishedProtocolVersion = "2" as const;
 export const reviewActionV2PublishedSchemaDigest =
-  "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27" as const;
+  "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d" as const;
 export const reviewActionV2CanonicalizerDigest =
-  "865b2cd347d1e5bade8aa921c3384b0c7cd388d275f535919ffb403286d66271" as const;
+  "8e682a9f20e128b1819f169f986ac59b8619011ae86d690e78ddbbfb2d60e27a" as const;
 export const reviewInvestigationExtensionV1 = {
   extensionId: "review-investigation-shadow.v1",
   schemaDigest:
-    "8e33c5eb6c9b39a409f53df7910f00c4b025b13a4f718009c4b9e8c277be29f7",
+    "d0ef034badbb94584e017b29d4df44b4a264cf4a988649f9aa5dd6690ac12f34",
   canonicalizerDigest:
-    "68e42878f54d20358ff9ce3806877a20bf9201b79e661e9e5cb53c4566d2e442",
+    "271aa9428fd068efefda9797d259b96aa992b58e7a54064350ab7b204666331a",
   operationIds: [
     "review_investigation_open_v2",
     "review_investigation_lease_acquire",
@@ -20,6 +20,7 @@ export const reviewInvestigationExtensionV1 = {
     "review_investigation_replay_v2",
     "review_investigation_context_gateway_open",
     "review_investigation_context_gateway_seal",
+    "review_investigation_context_gateway_abandon",
   ],
 } as const;
 
@@ -50,8 +51,10 @@ export enum ReviewActionV2OperationId {
   ReviewInvocationLeaseRelease = "review_invocation_lease_release",
   ReviewContextGatewayOpen = "review_context_gateway_open",
   ReviewContextGatewaySeal = "review_context_gateway_seal",
+  ReviewContextGatewayAbandon = "review_context_gateway_abandon",
   ReviewInvestigationContextGatewayOpen = "review_investigation_context_gateway_open",
   ReviewInvestigationContextGatewaySeal = "review_investigation_context_gateway_seal",
+  ReviewInvestigationContextGatewayAbandon = "review_investigation_context_gateway_abandon",
   ReviewEvidenceLookup = "review_evidence_lookup",
   ReviewContextReceiptReplayCommit = "review_context_receipt_replay_commit",
   ReviewContextReplayCommit = "review_context_replay_commit",
@@ -227,6 +230,15 @@ export enum ReviewContextGatewayOpenResultStatus {
 export enum ReviewContextGatewaySealResultStatus {
   Accepted = "accepted",
   Idempotent = "idempotent",
+  Denied = "denied",
+  Conflict = "conflict",
+}
+
+export enum ReviewContextGatewayAbandonResultStatus {
+  Abandoned = "abandoned",
+  Idempotent = "idempotent",
+  AlreadyTerminal = "already_terminal",
+  Expired = "expired",
   Denied = "denied",
   Conflict = "conflict",
 }
@@ -1045,6 +1057,21 @@ export type ReviewContextGatewaySealResult = {
   readonly attestationHash?: string | null;
 };
 
+export type ReviewContextGatewayAbandonRequest =
+  ReviewActionV2RequestEnvelope & {
+    readonly leaseCapability: string;
+    readonly idempotencyKey: string;
+    readonly requestBodyHash: string;
+    readonly sessionId: string;
+    readonly attemptId: string;
+    readonly sourceLeaseId: string;
+    readonly fencingToken: string;
+  };
+
+export type ReviewContextGatewayAbandonResult = {
+  readonly status: ReviewContextGatewayAbandonResultStatus;
+};
+
 export type ReviewInvestigationContextGatewayOpenRequest =
   ReviewActionV2RequestEnvelope & {
     readonly authorizationToken: string;
@@ -1098,6 +1125,21 @@ export type ReviewInvestigationContextGatewaySealResult = {
   readonly status: ReviewContextGatewaySealResultStatus;
   readonly attestationId?: string | null;
   readonly attestationHash?: string | null;
+};
+
+export type ReviewInvestigationContextGatewayAbandonRequest =
+  ReviewActionV2RequestEnvelope & {
+    readonly leaseCapability: string;
+    readonly idempotencyKey: string;
+    readonly requestBodyHash: string;
+    readonly sessionId: string;
+    readonly attemptId: string;
+    readonly sourceLeaseId: string;
+    readonly fencingToken: string;
+  };
+
+export type ReviewInvestigationContextGatewayAbandonResult = {
+  readonly status: ReviewContextGatewayAbandonResultStatus;
 };
 
 export type ReviewEvidenceLookupRequest = ReviewActionV2RequestEnvelope & {
@@ -1282,8 +1324,10 @@ export type ReviewActionV2RequestMap = {
   [ReviewActionV2OperationId.ReviewInvocationLeaseRelease]: ReviewInvocationLeaseReleaseRequest;
   [ReviewActionV2OperationId.ReviewContextGatewayOpen]: ReviewContextGatewayOpenRequest;
   [ReviewActionV2OperationId.ReviewContextGatewaySeal]: ReviewContextGatewaySealRequest;
+  [ReviewActionV2OperationId.ReviewContextGatewayAbandon]: ReviewContextGatewayAbandonRequest;
   [ReviewActionV2OperationId.ReviewInvestigationContextGatewayOpen]: ReviewInvestigationContextGatewayOpenRequest;
   [ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal]: ReviewInvestigationContextGatewaySealRequest;
+  [ReviewActionV2OperationId.ReviewInvestigationContextGatewayAbandon]: ReviewInvestigationContextGatewayAbandonRequest;
   [ReviewActionV2OperationId.ReviewEvidenceLookup]: ReviewEvidenceLookupRequest;
   [ReviewActionV2OperationId.ReviewContextReceiptReplayCommit]: ReviewContextReceiptReplayCommitRequest;
   [ReviewActionV2OperationId.ReviewContextReplayCommit]: ReviewContextReplayCommitRequest;
@@ -1320,8 +1364,10 @@ export type ReviewActionV2ResultMap = {
   [ReviewActionV2OperationId.ReviewInvocationLeaseRelease]: ReviewInvocationLeaseReleaseResult;
   [ReviewActionV2OperationId.ReviewContextGatewayOpen]: ReviewContextGatewayOpenResult;
   [ReviewActionV2OperationId.ReviewContextGatewaySeal]: ReviewContextGatewaySealResult;
+  [ReviewActionV2OperationId.ReviewContextGatewayAbandon]: ReviewContextGatewayAbandonResult;
   [ReviewActionV2OperationId.ReviewInvestigationContextGatewayOpen]: ReviewInvestigationContextGatewayOpenResult;
   [ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal]: ReviewInvestigationContextGatewaySealResult;
+  [ReviewActionV2OperationId.ReviewInvestigationContextGatewayAbandon]: ReviewInvestigationContextGatewayAbandonResult;
   [ReviewActionV2OperationId.ReviewEvidenceLookup]: ReviewEvidenceLookupResult;
   [ReviewActionV2OperationId.ReviewContextReceiptReplayCommit]: ReviewContextReceiptReplayCommitResult;
   [ReviewActionV2OperationId.ReviewContextReplayCommit]: ReviewContextReplayCommitResult;
@@ -3413,6 +3459,66 @@ export const reviewActionV2Operations = [
     resultStatuses: ["accepted", "idempotent", "denied", "conflict"],
   },
   {
+    operationId: "review_context_gateway_abandon",
+    boundedContext: "review_context_attestation",
+    method: "POST",
+    path: "/api/action/v2/review-context/gateway/abandon",
+    callerAuthority: ReviewActionV2CallerAuthority.LeaseCapability,
+    mutability: "command",
+    naturalIdempotencyPreimage: [
+      "session_id",
+      "attempt_id",
+      "source_lease_id",
+      "fencing_token",
+    ],
+    semanticRetryClass: "same_request",
+    transportAudience: "review_action_v2",
+    defaultTimeoutMs: 10000,
+    bodyLimitBytes: 32768,
+    successStatuses: [200],
+    errorCodes: [
+      "invalid_request",
+      "invalid_authentication",
+      "forbidden",
+      "capability_disabled",
+      "not_found",
+      "idempotency_conflict",
+      "resource_gone",
+      "stale_precondition",
+      "limit_exceeded",
+      "invariant_violation",
+      "capacity_limited",
+      "ambiguous_outcome",
+    ],
+    requestFields: [
+      {
+        name: "sessionId",
+        type: "identifier",
+      },
+      {
+        name: "attemptId",
+        type: "identifier",
+      },
+      {
+        name: "sourceLeaseId",
+        type: "identifier",
+      },
+      {
+        name: "fencingToken",
+        type: "decimal",
+      },
+    ],
+    allOrNoneRequestFieldGroups: [],
+    resultStatuses: [
+      "abandoned",
+      "idempotent",
+      "already_terminal",
+      "expired",
+      "denied",
+      "conflict",
+    ],
+  },
+  {
     operationId: "review_investigation_context_gateway_open",
     boundedContext: "review_context_attestation",
     method: "POST",
@@ -3591,6 +3697,66 @@ export const reviewActionV2Operations = [
     ],
     allOrNoneRequestFieldGroups: [],
     resultStatuses: ["accepted", "idempotent", "denied", "conflict"],
+  },
+  {
+    operationId: "review_investigation_context_gateway_abandon",
+    boundedContext: "review_context_attestation",
+    method: "POST",
+    path: "/api/action/v2/review-investigations/context-gateway/abandon",
+    callerAuthority: ReviewActionV2CallerAuthority.LeaseCapability,
+    mutability: "command",
+    naturalIdempotencyPreimage: [
+      "session_id",
+      "attempt_id",
+      "source_lease_id",
+      "fencing_token",
+    ],
+    semanticRetryClass: "same_request",
+    transportAudience: "review_action_v2",
+    defaultTimeoutMs: 10000,
+    bodyLimitBytes: 32768,
+    successStatuses: [200],
+    errorCodes: [
+      "invalid_request",
+      "invalid_authentication",
+      "forbidden",
+      "capability_disabled",
+      "not_found",
+      "idempotency_conflict",
+      "resource_gone",
+      "stale_precondition",
+      "limit_exceeded",
+      "invariant_violation",
+      "capacity_limited",
+      "ambiguous_outcome",
+    ],
+    requestFields: [
+      {
+        name: "sessionId",
+        type: "identifier",
+      },
+      {
+        name: "attemptId",
+        type: "identifier",
+      },
+      {
+        name: "sourceLeaseId",
+        type: "identifier",
+      },
+      {
+        name: "fencingToken",
+        type: "decimal",
+      },
+    ],
+    allOrNoneRequestFieldGroups: [],
+    resultStatuses: [
+      "abandoned",
+      "idempotent",
+      "already_terminal",
+      "expired",
+      "denied",
+      "conflict",
+    ],
   },
   {
     operationId: "review_evidence_lookup",
@@ -4030,21 +4196,21 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_01",
       oidcToken: "fixture.header.payload.signature",
       supportedProtocols: [
         {
           protocolVersion: "2",
           schemaDigest:
-            "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+            "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
         },
       ],
     },
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_01",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4056,7 +4222,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_02",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_2",
@@ -4070,7 +4236,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_02",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4082,7 +4248,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_03",
       authorizationToken: "fixture.header.payload.signature",
       authorizationId: "authorizationId_fixture",
@@ -4092,7 +4258,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_03",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4104,7 +4270,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_04",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_4",
@@ -4125,7 +4291,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_04",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4137,7 +4303,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_05",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_5",
@@ -4151,7 +4317,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_05",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4163,7 +4329,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_06",
       authorizationToken: "fixture.header.payload.signature",
       leaseCapability: "fixture.header.payload.signature",
@@ -4186,7 +4352,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_06",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4198,7 +4364,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_07",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_7",
@@ -4234,7 +4400,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_07",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4246,7 +4412,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_08",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_8",
@@ -4270,7 +4436,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_08",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4282,7 +4448,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_09",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_9",
@@ -4313,7 +4479,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_09",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4325,7 +4491,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_10",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_10",
@@ -4359,7 +4525,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_10",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4371,7 +4537,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_11",
       authorizationToken: "fixture.header.payload.signature",
       authorizationId: "authorizationId_fixture",
@@ -4382,7 +4548,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_11",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4394,7 +4560,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_12",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_12",
@@ -4412,7 +4578,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_12",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4424,7 +4590,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_13",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_13",
@@ -4445,7 +4611,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_13",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4457,7 +4623,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_14",
       leaseCapability: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_14",
@@ -4472,7 +4638,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_14",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4484,7 +4650,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_15",
       leaseCapability: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_15",
@@ -4499,7 +4665,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_15",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4511,7 +4677,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_16",
       authorizationToken: "fixture.header.payload.signature",
       leaseCapability: "fixture.header.payload.signature",
@@ -4534,7 +4700,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_16",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4546,7 +4712,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_17",
       authorizationToken: "fixture.header.payload.signature",
       leaseCapability: "fixture.header.payload.signature",
@@ -4565,7 +4731,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_17",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4577,7 +4743,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_18",
       authorizationToken: "fixture.header.payload.signature",
       authorizationId: "authorizationId_fixture",
@@ -4597,7 +4763,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_18",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4609,7 +4775,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_19",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_19",
@@ -4650,7 +4816,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_19",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4662,7 +4828,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_20",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_20",
@@ -4706,7 +4872,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_20",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4718,7 +4884,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_21",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_21",
@@ -4733,7 +4899,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_21",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4745,7 +4911,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_22",
       authorizationToken: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_22",
@@ -4768,7 +4934,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_22",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4780,7 +4946,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_23",
       leaseCapability: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_23",
@@ -4795,7 +4961,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_23",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4807,7 +4973,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_24",
       leaseCapability: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_24",
@@ -4822,7 +4988,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_24",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4834,7 +5000,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_25",
       authorizationToken: "fixture.header.payload.signature",
       leaseCapability: "fixture.header.payload.signature",
@@ -4858,7 +5024,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_25",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4870,7 +5036,7 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_26",
       authorizationToken: "fixture.header.payload.signature",
       leaseCapability: "fixture.header.payload.signature",
@@ -4898,7 +5064,7 @@ export const reviewActionV2GoldenFixtures = {
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_26",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
@@ -4906,36 +5072,62 @@ export const reviewActionV2GoldenFixtures = {
       },
     },
   },
-  review_investigation_context_gateway_open: {
+  review_context_gateway_abandon: {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_27",
-      authorizationToken: "fixture.header.payload.signature",
       leaseCapability: "fixture.header.payload.signature",
       idempotencyKey: "idem_fixture_27",
       requestBodyHash:
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      sessionId: "sessionId_fixture",
       attemptId: "attemptId_fixture",
       sourceLeaseId: "sourceLeaseId_fixture",
       fencingToken: "27",
-      sourceExecutionId: "sourceExecutionId_fixture",
-      sourceWorkSlotId: "sourceWorkSlotId_fixture",
-      sourceReviewRevisionHash:
-        "2222222222222222222222222222222222222222222222222222222222222222",
-      checkoutTreeOid: "9999999999999999999999999999999999999999",
-      gatewayPolicyVersion: "gatewayPolicyVersion_fixture",
-      gatewayBinaryHash:
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      confinementEvidenceHash:
-        "1111111111111111111111111111111111111111111111111111111111111111",
     },
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
       requestId: "rr_fixture_27",
+      serverTime: "2026-01-01T00:00:00.000Z",
+      result: {
+        status: "abandoned",
+      },
+    },
+  },
+  review_investigation_context_gateway_open: {
+    request: {
+      protocolVersion: "2",
+      schemaDigest:
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_28",
+      authorizationToken: "fixture.header.payload.signature",
+      leaseCapability: "fixture.header.payload.signature",
+      idempotencyKey: "idem_fixture_28",
+      requestBodyHash:
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      attemptId: "attemptId_fixture",
+      sourceLeaseId: "sourceLeaseId_fixture",
+      fencingToken: "28",
+      sourceExecutionId: "sourceExecutionId_fixture",
+      sourceWorkSlotId: "sourceWorkSlotId_fixture",
+      sourceReviewRevisionHash:
+        "3333333333333333333333333333333333333333333333333333333333333333",
+      checkoutTreeOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      gatewayPolicyVersion: "gatewayPolicyVersion_fixture",
+      gatewayBinaryHash:
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      confinementEvidenceHash:
+        "2222222222222222222222222222222222222222222222222222222222222222",
+    },
+    response: {
+      protocolVersion: "2",
+      schemaDigest:
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_28",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
         status: "opened",
@@ -4946,39 +5138,65 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_28",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_29",
       authorizationToken: "fixture.header.payload.signature",
       leaseCapability: "fixture.header.payload.signature",
-      idempotencyKey: "idem_fixture_28",
+      idempotencyKey: "idem_fixture_29",
       requestBodyHash:
-        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       sessionId: "sessionId_fixture",
       sealCapability: "fixture.header.payload.signature",
       attemptId: "attemptId_fixture",
       sourceLeaseId: "sourceLeaseId_fixture",
-      fencingToken: "28",
+      fencingToken: "29",
       providerSucceeded: true,
       schemaValidated: true,
       fullyConsumed: true,
       actualModel: "actualModel_fixture",
       terminalOutcomeHash:
-        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       transcriptCanonicalJson: '{"fixture":true}',
       transcriptHash:
-        "9999999999999999999999999999999999999999999999999999999999999999",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       replayMaterialCanonicalJson: '{"fixture":true}',
       replayMaterialHash:
-        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     },
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_28",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_29",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
         status: "accepted",
+      },
+    },
+  },
+  review_investigation_context_gateway_abandon: {
+    request: {
+      protocolVersion: "2",
+      schemaDigest:
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_30",
+      leaseCapability: "fixture.header.payload.signature",
+      idempotencyKey: "idem_fixture_30",
+      requestBodyHash:
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      sessionId: "sessionId_fixture",
+      attemptId: "attemptId_fixture",
+      sourceLeaseId: "sourceLeaseId_fixture",
+      fencingToken: "30",
+    },
+    response: {
+      protocolVersion: "2",
+      schemaDigest:
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_30",
+      serverTime: "2026-01-01T00:00:00.000Z",
+      result: {
+        status: "abandoned",
       },
     },
   },
@@ -4986,26 +5204,26 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_29",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_31",
       authorizationToken: "fixture.header.payload.signature",
       executionId: "executionId_fixture",
       workSlotId: "workSlotId_fixture",
       planHash:
-        "4444444444444444444444444444444444444444444444444444444444444444",
+        "6666666666666666666666666666666666666666666666666666666666666666",
       manifestCanonicalJson: '{"fixture":true}',
       manifestKey:
-        "7777777777777777777777777777777777777777777777777777777777777777",
+        "9999999999999999999999999999999999999999999999999999999999999999",
       providerInvocationKey:
-        "1111111111111111111111111111111111111111111111111111111111111111",
+        "3333333333333333333333333333333333333333333333333333333333333333",
       providerVoteIdentityHash:
-        "4444444444444444444444444444444444444444444444444444444444444444",
+        "6666666666666666666666666666666666666666666666666666666666666666",
     },
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_29",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_31",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
         status: "hit",
@@ -5016,30 +5234,30 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_30",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_32",
       authorizationToken: "fixture.header.payload.signature",
-      idempotencyKey: "idem_fixture_30",
+      idempotencyKey: "idem_fixture_32",
       requestBodyHash:
-        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "0000000000000000000000000000000000000000000000000000000000000000",
       executionId: "executionId_fixture",
       workSlotId: "workSlotId_fixture",
       attestationId: "attestationId_fixture",
       attestationHash:
-        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       targetReviewRevisionHash:
-        "5555555555555555555555555555555555555555555555555555555555555555",
-      targetCheckoutTreeOid: "2222222222222222222222222222222222222222",
+        "7777777777777777777777777777777777777777777777777777777777777777",
+      targetCheckoutTreeOid: "4444444444444444444444444444444444444444",
       replayCapability: "fixture.header.payload.signature",
       replayResultCanonicalJson: '{"fixture":true}',
       replayResultHash:
-        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     },
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_30",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_32",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
         status: "accepted",
@@ -5050,30 +5268,30 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_31",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_33",
       authorizationToken: "fixture.header.payload.signature",
-      idempotencyKey: "idem_fixture_31",
+      idempotencyKey: "idem_fixture_33",
       requestBodyHash:
-        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "1111111111111111111111111111111111111111111111111111111111111111",
       executionId: "executionId_fixture",
       workSlotId: "workSlotId_fixture",
       attestationId: "attestationId_fixture",
       attestationHash:
-        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       targetReviewRevisionHash:
-        "6666666666666666666666666666666666666666666666666666666666666666",
-      targetCheckoutTreeOid: "3333333333333333333333333333333333333333",
+        "8888888888888888888888888888888888888888888888888888888888888888",
+      targetCheckoutTreeOid: "5555555555555555555555555555555555555555",
       replayCapability: "fixture.header.payload.signature",
       replayResultCanonicalJson: '{"fixture":true}',
       replayResultHash:
-        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "0000000000000000000000000000000000000000000000000000000000000000",
     },
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_31",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_33",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
         status: "accepted",
@@ -5084,18 +5302,18 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_32",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_34",
       authorizationToken: "fixture.header.payload.signature",
       leaseCapability: "fixture.header.payload.signature",
-      idempotencyKey: "idem_fixture_32",
+      idempotencyKey: "idem_fixture_34",
       requestBodyHash:
-        "0000000000000000000000000000000000000000000000000000000000000000",
+        "2222222222222222222222222222222222222222222222222222222222222222",
       attemptId: "attemptId_fixture",
       sourceLeaseId: "sourceLeaseId_fixture",
       ownerIdHash:
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      fencingToken: "32",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      fencingToken: "34",
       completionStatus: "completionStatus_fixture",
       schemaValidated: true,
       fullyConsumed: true,
@@ -5106,15 +5324,15 @@ export const reviewActionV2GoldenFixtures = {
       investigationCertificateHash: null,
       payloadCanonicalJson: '{"fixture":true}',
       payloadHash:
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       qualityFlags: ["qualityFlags_fixture"],
-      transportAttemptCount: 32,
+      transportAttemptCount: 34,
     },
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_32",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_34",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
         status: "accepted",
@@ -5125,17 +5343,17 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_33",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_35",
       authorizationToken: "fixture.header.payload.signature",
       reviewRevisionHash:
-        "2222222222222222222222222222222222222222222222222222222222222222",
+        "4444444444444444444444444444444444444444444444444444444444444444",
     },
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_33",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_35",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
         status: "found",
@@ -5146,22 +5364,22 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_34",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_36",
       authorizationToken: "fixture.header.payload.signature",
-      idempotencyKey: "idem_fixture_34",
+      idempotencyKey: "idem_fixture_36",
       requestBodyHash:
-        "2222222222222222222222222222222222222222222222222222222222222222",
+        "4444444444444444444444444444444444444444444444444444444444444444",
       publicationPermit: "fixture.header.payload.signature",
       projectionHash:
-        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "1111111111111111111111111111111111111111111111111111111111111111",
       operationsCanonicalJson: '{"fixture":true}',
     },
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_34",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_36",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
         status: "accepted",
@@ -5172,16 +5390,16 @@ export const reviewActionV2GoldenFixtures = {
     request: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_35",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_37",
       authorizationToken: "fixture.header.payload.signature",
       publicationAttemptId: "publicationAttemptId_fixture",
     },
     response: {
       protocolVersion: "2",
       schemaDigest:
-        "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
-      requestId: "rr_fixture_35",
+        "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
+      requestId: "rr_fixture_37",
       serverTime: "2026-01-01T00:00:00.000Z",
       result: {
         status: "pending",

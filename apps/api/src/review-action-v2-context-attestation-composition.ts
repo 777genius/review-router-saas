@@ -1,5 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
+  AbandonContextGatewaySession,
+  AbandonContextGatewaySessionStatus,
   AcceptSealedContextAttestation,
   AcceptSealedContextAttestationStatus,
   ContextDependencyKind,
@@ -89,6 +91,7 @@ import {
 import {
   ReviewActionV2OperationId,
   ReviewActionV2ProtocolErrorCode,
+  ReviewContextGatewayAbandonResultStatus,
   ReviewContextGatewayOpenResultStatus,
   ReviewContextGatewaySealResultStatus,
   ReviewContextReceiptReplayCommitResultStatus,
@@ -103,7 +106,9 @@ import {
   canonicalizeReviewActionV2Request,
   type ReviewActionV2RequestMap,
   type ReviewContextGatewayOpenRequest,
+  type ReviewContextGatewayAbandonRequest,
   type ReviewContextGatewaySealRequest,
+  type ReviewInvestigationContextGatewayAbandonRequest,
   type ReviewInvestigationContextGatewayOpenRequest,
   type ReviewInvestigationContextGatewaySealRequest,
   type ReviewContextReceiptReplayCommitRequest,
@@ -346,6 +351,14 @@ export function composeReviewActionV2ContextAttestationRoutes(input: {
         handlers,
       ),
     ),
+    abandonGateway: enabled((request: ReviewContextGatewayAbandonRequest) =>
+      abandonGateway(
+        request,
+        ContextLeaseAuthorityKind.StandardExecution,
+        ReviewActionV2OperationId.ReviewContextGatewayAbandon,
+        handlers,
+      ),
+    ),
     openInvestigationGateway: enabled(
       (request: ReviewInvestigationContextGatewayOpenRequest) =>
         openGateway(
@@ -361,6 +374,15 @@ export function composeReviewActionV2ContextAttestationRoutes(input: {
           request,
           ContextLeaseAuthorityKind.InvestigationShadow,
           ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal,
+          handlers,
+        ),
+    ),
+    abandonInvestigationGateway: enabled(
+      (request: ReviewInvestigationContextGatewayAbandonRequest) =>
+        abandonGateway(
+          request,
+          ContextLeaseAuthorityKind.InvestigationShadow,
+          ReviewActionV2OperationId.ReviewInvestigationContextGatewayAbandon,
           handlers,
         ),
     ),
@@ -442,6 +464,25 @@ async function verifyContextGatewaySeal(
       return capabilities.verifyContextGatewaySeal(token, now);
     case ContextLeaseAuthorityKind.InvestigationShadow:
       return capabilities.verifyInvestigationContextGatewaySeal(token, now);
+  }
+}
+
+function assertAbandonAuthorityKind(
+  expected: ContextLeaseAuthorityKind,
+  authority:
+    | ReviewActionV2ContextGatewaySealAuthority
+    | ReviewActionV2InvestigationContextGatewaySealAuthority,
+): void {
+  const investigationAuthority = "sourceLeaseAuthorityKind" in authority;
+  if (
+    (expected === ContextLeaseAuthorityKind.InvestigationShadow) !==
+    investigationAuthority
+  ) {
+    throw failure(
+      403,
+      ReviewActionV2ProtocolErrorCode.Forbidden,
+      "context_abandon_authority_kind_mismatch",
+    );
   }
 }
 
@@ -743,6 +784,87 @@ async function sealGateway(
       attestationId: outcome.attestation?.attestationId ?? null,
       attestationHash: outcome.attestation?.attestationHash ?? null,
     },
+  };
+}
+
+async function abandonGateway(
+  request:
+    | ReviewContextGatewayAbandonRequest
+    | ReviewInvestigationContextGatewayAbandonRequest,
+  authorityKind: ContextLeaseAuthorityKind,
+  operationId:
+    | ReviewActionV2OperationId.ReviewContextGatewayAbandon
+    | ReviewActionV2OperationId.ReviewInvestigationContextGatewayAbandon,
+  d: ReviewActionV2ContextAttestationHandlerDependencies,
+) {
+  await assertBodyHash(operationId, request, d.digest);
+  const now = d.now();
+  let authority:
+    | ReviewActionV2ContextGatewaySealAuthority
+    | ReviewActionV2InvestigationContextGatewaySealAuthority;
+  try {
+    authority = await verifyContextGatewaySeal(
+      authorityKind,
+      d.capabilities,
+      request.leaseCapability,
+      now,
+    );
+  } catch {
+    throw failure(
+      401,
+      ReviewActionV2ProtocolErrorCode.InvalidAuthentication,
+      "context_abandon_capability_invalid",
+    );
+  }
+  assertAbandonAuthorityKind(authorityKind, authority);
+  requireEqual(
+    request.sessionId,
+    authority.sessionId,
+    "context_abandon_session_mismatch",
+  );
+  requireEqual(
+    request.attemptId,
+    authority.attemptId,
+    "context_abandon_attempt_mismatch",
+  );
+  requireEqual(
+    request.sourceLeaseId,
+    authority.sourceLeaseId,
+    "context_abandon_lease_mismatch",
+  );
+  requireEqual(
+    request.fencingToken,
+    authority.sourceFencingToken,
+    "context_abandon_fencing_mismatch",
+  );
+  const capabilityId = requiredString(
+    authority.capabilityId,
+    "context_abandon_capability_id_missing",
+  );
+  const abandon = new AbandonContextGatewaySession({
+    abandonFacts: {
+      resolveAbandonFacts: async (command) =>
+        command.sessionId === authority.sessionId &&
+        command.capabilityId === capabilityId
+          ? {
+              sessionId: authority.sessionId,
+              attemptId: authority.attemptId,
+              sourceLeaseAuthorityKind: authorityKind,
+              sourceLeaseId: authority.sourceLeaseId,
+              sourceFencingToken: authority.sourceFencingToken,
+            }
+          : null,
+    },
+    store: d.store,
+    clock: { nowMs: () => now.getTime() },
+  });
+  const outcome = await abandon.execute({
+    sessionId: request.sessionId,
+    capabilityId,
+  });
+  return {
+    statusCode: 200 as const,
+    result: { status: mapAbandonStatus(outcome.status) },
   };
 }
 
@@ -3572,6 +3694,23 @@ function mapSealStatus(status: AcceptSealedContextAttestationStatus) {
       return ReviewContextGatewaySealResultStatus.Denied;
     case AcceptSealedContextAttestationStatus.Conflict:
       return ReviewContextGatewaySealResultStatus.Conflict;
+  }
+}
+
+function mapAbandonStatus(status: AbandonContextGatewaySessionStatus) {
+  switch (status) {
+    case AbandonContextGatewaySessionStatus.Abandoned:
+      return ReviewContextGatewayAbandonResultStatus.Abandoned;
+    case AbandonContextGatewaySessionStatus.Idempotent:
+      return ReviewContextGatewayAbandonResultStatus.Idempotent;
+    case AbandonContextGatewaySessionStatus.AlreadyTerminal:
+      return ReviewContextGatewayAbandonResultStatus.AlreadyTerminal;
+    case AbandonContextGatewaySessionStatus.Expired:
+      return ReviewContextGatewayAbandonResultStatus.Expired;
+    case AbandonContextGatewaySessionStatus.Denied:
+      return ReviewContextGatewayAbandonResultStatus.Denied;
+    case AbandonContextGatewaySessionStatus.Conflict:
+      return ReviewContextGatewayAbandonResultStatus.Conflict;
   }
 }
 

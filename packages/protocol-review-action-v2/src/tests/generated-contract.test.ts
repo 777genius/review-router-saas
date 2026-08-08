@@ -169,10 +169,10 @@ describe("generated Review Action v2 negotiation contract", () => {
       ),
     ) as { readonly $defs: Readonly<Record<string, unknown>> };
 
-    expect(reviewActionV2Operations).toHaveLength(35);
-    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(35);
-    expect(Object.keys(schema.$defs)).toHaveLength(56);
-    expect(Object.keys(extensionSchema.$defs)).toHaveLength(14);
+    expect(reviewActionV2Operations).toHaveLength(37);
+    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(37);
+    expect(Object.keys(schema.$defs)).toHaveLength(58);
+    expect(Object.keys(extensionSchema.$defs)).toHaveLength(16);
     expect(sha256(canonicalJson(schema))).toBe(
       reviewActionV2PublishedSchemaDigest,
     );
@@ -186,10 +186,10 @@ describe("generated Review Action v2 negotiation contract", () => {
       ),
     ).toBe(reviewInvestigationExtensionV1.schemaDigest);
     expect(reviewActionV2PublishedSchemaDigest).toBe(
-      "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+      "5a5fddbdffe09960c0cdffb8157fde578c83cdcf38a41ef88831810e7dacf95d",
     );
     expect(reviewActionV2CanonicalizerDigest).toBe(
-      "865b2cd347d1e5bade8aa921c3384b0c7cd388d275f535919ffb403286d66271",
+      "8e682a9f20e128b1819f169f986ac59b8619011ae86d690e78ddbbfb2d60e27a",
     );
 
     for (const operation of reviewActionV2Operations) {
@@ -287,8 +287,10 @@ describe("generated Review Action v2 negotiation contract", () => {
     ).toEqual([
       ReviewActionV2OperationId.ReviewContextGatewayOpen,
       ReviewActionV2OperationId.ReviewContextGatewaySeal,
+      ReviewActionV2OperationId.ReviewContextGatewayAbandon,
       ReviewActionV2OperationId.ReviewInvestigationContextGatewayOpen,
       ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal,
+      ReviewActionV2OperationId.ReviewInvestigationContextGatewayAbandon,
       ReviewActionV2OperationId.ReviewContextReceiptReplayCommit,
       ReviewActionV2OperationId.ReviewContextReplayCommit,
     ]);

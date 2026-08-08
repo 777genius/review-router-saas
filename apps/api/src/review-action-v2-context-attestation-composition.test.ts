@@ -65,6 +65,7 @@ import {
 } from "@reviewrouter/platform-signed-capabilities";
 import {
   ReviewActionV2OperationId,
+  ReviewContextGatewayAbandonResultStatus,
   ReviewContextGatewayOpenResultStatus,
   ReviewContextGatewaySealResultStatus,
   ReviewContextReplayCommitResultStatus,
@@ -78,8 +79,10 @@ import {
   reviewActionV2PublishedSchemaDigest,
   reviewInvestigationExtensionV1,
   type ReviewActionV2RequestMap,
+  type ReviewContextGatewayAbandonRequest,
   type ReviewContextGatewayOpenRequest,
   type ReviewContextGatewaySealRequest,
+  type ReviewInvestigationContextGatewayAbandonRequest,
   type ReviewInvestigationContextGatewayOpenRequest,
   type ReviewInvestigationContextGatewaySealRequest,
   type ReviewContextReplayCommitRequest,
@@ -104,6 +107,78 @@ const sourceRevision = revision("a", "b", "c", "source-revision");
 const targetRevision = revision("a", "b", "d", "target-revision");
 
 describe("Review Action v2 context attestation composition", () => {
+  it("abandons an unsealed gateway session idempotently", async () => {
+    const fixture = await createFixture();
+    const opened = await fixture.routes.openGateway!.execute(
+      fixture.openRequest,
+    );
+    const request = await abandonRequest({
+      fixture,
+      sessionId: required(opened.result.sessionId),
+      sealCapability: required(opened.result.sealCapability),
+    });
+
+    const abandoned = await fixture.routes.abandonGateway!.execute(request);
+    expect(abandoned.result.status).toBe(
+      ReviewContextGatewayAbandonResultStatus.Abandoned,
+    );
+    await expect(
+      fixture.dependencies.store.findSession(required(opened.result.sessionId)),
+    ).resolves.toMatchObject({ state: "revoked" });
+
+    const replayed = await fixture.routes.abandonGateway!.execute(request);
+    expect(replayed.result.status).toBe(
+      ReviewContextGatewayAbandonResultStatus.Idempotent,
+    );
+  });
+
+  it("abandons a shadow gateway after its investigation lease is revoked", async () => {
+    const fixture = await createShadowFixture();
+    const opened = await fixture.routes.openInvestigationGateway!.execute(
+      fixture.openRequest,
+    );
+    fixture.revokeLease();
+
+    const abandoned = await fixture.routes.abandonInvestigationGateway!.execute(
+      await abandonShadowRequest({
+        fixture,
+        sessionId: required(opened.result.sessionId),
+        sealCapability: required(opened.result.sealCapability),
+      }),
+    );
+
+    expect(abandoned.result.status).toBe(
+      ReviewContextGatewayAbandonResultStatus.Abandoned,
+    );
+    await expect(
+      fixture.dependencies.store.findSession(required(opened.result.sessionId)),
+    ).resolves.toMatchObject({ state: "revoked" });
+  });
+
+  it("rejects an abandon request whose session binding is stale", async () => {
+    const fixture = await createFixture();
+    const opened = await fixture.routes.openGateway!.execute(
+      fixture.openRequest,
+    );
+
+    await expect(
+      fixture.routes.abandonGateway!.execute(
+        await abandonRequest({
+          fixture,
+          sessionId: required(opened.result.sessionId),
+          sealCapability: required(opened.result.sealCapability),
+          attemptId: "stale-attempt",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 412,
+      issues: ["context_abandon_attempt_mismatch"],
+    });
+    await expect(
+      fixture.dependencies.store.findSession(required(opened.result.sessionId)),
+    ).resolves.toMatchObject({ state: "active" });
+  });
+
   it("opens a gateway session for the investigation gateway profile", async () => {
     const fixture = await createFixture({
       executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
@@ -1099,6 +1174,7 @@ async function createShadowFixture(
     resultReportUntil: new Date(now.getTime() + 120_000).toISOString(),
     retainUntil: new Date(now.getTime() + 3_600_000).toISOString(),
   };
+  let currentLease = lease;
   const aggregate = {
     investigationId: lease.investigationId,
     version: lease.investigationVersion,
@@ -1128,7 +1204,8 @@ async function createShadowFixture(
   const dependencies: ReviewActionV2ContextAttestationHandlerDependencies = {
     ...fixture.dependencies,
     investigationLeaseQueries: {
-      findLease: async (leaseId) => (leaseId === lease.leaseId ? lease : null),
+      findLease: async (leaseId) =>
+        leaseId === currentLease.leaseId ? currentLease : null,
     },
     investigationQueries: {
       findById: async (investigationId) =>
@@ -1181,6 +1258,12 @@ async function createShadowFixture(
     lease,
     openRequest,
     routes,
+    revokeLease() {
+      currentLease = {
+        ...currentLease,
+        state: ReviewInvestigationLeaseState.Revoked,
+      };
+    },
   };
 }
 
@@ -1382,6 +1465,44 @@ async function sealRequest(input: {
     replayMaterialCanonicalJson: input.replayMaterialCanonicalJson,
     replayMaterialHash: sha(input.replayMaterialCanonicalJson),
   } satisfies ReviewContextGatewaySealRequest);
+}
+
+async function abandonRequest(input: {
+  fixture: Awaited<ReturnType<typeof createFixture>>;
+  sessionId: string;
+  sealCapability: string;
+  attemptId?: string;
+}) {
+  return withBodyHash(ReviewActionV2OperationId.ReviewContextGatewayAbandon, {
+    ...envelope("gateway-abandon"),
+    leaseCapability: input.sealCapability,
+    idempotencyKey: "gateway-abandon",
+    requestBodyHash: sha("placeholder"),
+    sessionId: input.sessionId,
+    attemptId: input.attemptId ?? required(input.fixture.lease.attemptId),
+    sourceLeaseId: input.fixture.lease.leaseId,
+    fencingToken: input.fixture.lease.fencingToken.toString(10),
+  } satisfies ReviewContextGatewayAbandonRequest);
+}
+
+async function abandonShadowRequest(input: {
+  fixture: Awaited<ReturnType<typeof createShadowFixture>>;
+  sessionId: string;
+  sealCapability: string;
+}) {
+  return withBodyHash(
+    ReviewActionV2OperationId.ReviewInvestigationContextGatewayAbandon,
+    {
+      ...envelope("investigation-gateway-abandon"),
+      leaseCapability: input.sealCapability,
+      idempotencyKey: "investigation-gateway-abandon",
+      requestBodyHash: sha("placeholder"),
+      sessionId: input.sessionId,
+      attemptId: input.fixture.lease.attemptId,
+      sourceLeaseId: input.fixture.lease.leaseId,
+      fencingToken: input.fixture.lease.fencingToken.toString(10),
+    } satisfies ReviewInvestigationContextGatewayAbandonRequest,
+  );
 }
 
 async function createShadowSealRequest(input: {
