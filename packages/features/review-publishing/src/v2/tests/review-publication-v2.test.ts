@@ -500,7 +500,9 @@ describe("review publication v2", () => {
     await harness.application.request(requestCommand({ permit }));
     const claim = await harness.application.claim(claimCommand());
     expect(claim.status).toBe(ClaimReviewPublicationStatus.Acquired);
-    if (claim.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (claim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_claim_failed");
+    }
     await harness.application.beginOperation(
       beginCommand({
         expectedAttemptVersion: claim.attempt.version,
@@ -539,7 +541,9 @@ describe("review publication v2", () => {
         requestHash: hash("9"),
       }),
     ).toEqual({ status: ClaimReviewPublicationStatus.RequestConflict });
-    if (first.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (first.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_claim_failed");
+    }
     const begin = beginCommand({
       expectedAttemptVersion: first.attempt.version,
       claimId: first.claim.claimId,
@@ -579,7 +583,9 @@ describe("review publication v2", () => {
       status: ClaimReviewPublicationStatus.Acquired,
       claim: { fencingToken: 2n },
     });
-    if (takeover.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (takeover.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_takeover_failed");
+    }
     expect(
       await harness.application.beginOperation(
         beginCommand({
@@ -598,7 +604,9 @@ describe("review publication v2", () => {
       requestCommand({ operations: independentOperationPlans() }),
     );
     const claim = await harness.application.claim(claimCommand());
-    if (claim.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (claim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_claim_failed");
+    }
     const begun = await harness.application.beginOperation(
       beginCommand({
         operationId: "operation-1",
@@ -607,7 +615,9 @@ describe("review publication v2", () => {
         claimFencingToken: claim.claim.fencingToken,
       }),
     );
-    if (begun.status !== BeginReviewPublicationOperationStatus.Begun) return;
+    if (begun.status !== BeginReviewPublicationOperationStatus.Begun) {
+      throw new Error("test_begin_failed");
+    }
 
     await expect(
       harness.application.terminalizeUnknown({
@@ -712,7 +722,9 @@ describe("review publication v2", () => {
       requestCommand({ operations: independentOperationPlans() }),
     );
     const claim = await harness.application.claim(claimCommand());
-    if (claim.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (claim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_claim_failed");
+    }
     const first = await harness.application.beginOperation(
       beginCommand({
         expectedAttemptVersion: claim.attempt.version,
@@ -720,7 +732,9 @@ describe("review publication v2", () => {
         claimFencingToken: claim.claim.fencingToken,
       }),
     );
-    if (first.status !== BeginReviewPublicationOperationStatus.Begun) return;
+    if (first.status !== BeginReviewPublicationOperationStatus.Begun) {
+      throw new Error("test_begin_failed");
+    }
     const second = await harness.application.beginOperation(
       beginCommand({
         operationId: "operation-2",
@@ -730,7 +744,9 @@ describe("review publication v2", () => {
         ordinal: 2,
       }),
     );
-    if (second.status !== BeginReviewPublicationOperationStatus.Begun) return;
+    if (second.status !== BeginReviewPublicationOperationStatus.Begun) {
+      throw new Error("test_begin_failed");
+    }
     await harness.application.proveNoEffect({
       capability: first.capability,
       noEffectProofId: "no-effect-proof-1",
@@ -789,7 +805,9 @@ describe("review publication v2", () => {
       requestCommand({ operations: independentOperationPlans() }),
     );
     const claim = await harness.application.claim(claimCommand());
-    if (claim.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (claim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_claim_failed");
+    }
 
     const terminalCommand = {
       publicationAttemptId: "publication-1",
@@ -857,7 +875,9 @@ describe("review publication v2", () => {
     const claim = await harness.application.claim(
       claimCommand({ expiresAt: at("2026-07-22T18:00:00.000Z") }),
     );
-    if (claim.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (claim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_claim_failed");
+    }
     const first = await harness.application.beginOperation(
       beginCommand({
         operationId: "operation-1",
@@ -866,7 +886,9 @@ describe("review publication v2", () => {
         claimFencingToken: claim.claim.fencingToken,
       }),
     );
-    if (first.status !== BeginReviewPublicationOperationStatus.Begun) return;
+    if (first.status !== BeginReviewPublicationOperationStatus.Begun) {
+      throw new Error("test_begin_failed");
+    }
     const second = await harness.application.beginOperation(
       beginCommand({
         operationId: "operation-2",
@@ -876,7 +898,9 @@ describe("review publication v2", () => {
         ordinal: 2,
       }),
     );
-    if (second.status !== BeginReviewPublicationOperationStatus.Begun) return;
+    if (second.status !== BeginReviewPublicationOperationStatus.Begun) {
+      throw new Error("test_begin_failed");
+    }
     const terminalCommand = {
       publicationAttemptId: "publication-1",
       publicationOperationId: "operation-1",
@@ -1089,7 +1113,9 @@ describe("review publication v2", () => {
       }),
     );
     expect(takeover.status).toBe(ClaimReviewPublicationStatus.Acquired);
-    if (takeover.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (takeover.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_takeover_failed");
+    }
     const completed = await harness.application.completeOperation(
       completeCommand({
         expectedAttemptVersion: takeover.attempt.version,
@@ -1131,7 +1157,9 @@ describe("review publication v2", () => {
     const harness = createHarness();
     await harness.application.request(requestCommand({ operations }));
     const claim = await harness.application.claim(claimCommand());
-    if (claim.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (claim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_claim_failed");
+    }
     const first = await beginAndComplete(harness, claim, "operation-1", 1);
     expect(first.attempt.terminalOutcome).toBeNull();
     const second = await beginAndComplete(
@@ -1154,7 +1182,9 @@ describe("review publication v2", () => {
     const harness = createHarness();
     await harness.application.request(requestCommand({ operations }));
     const claim = await harness.application.claim(claimCommand());
-    if (claim.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (claim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_claim_failed");
+    }
     expect(
       await harness.application.beginOperation(
         beginCommand({
@@ -1234,7 +1264,9 @@ describe("review publication v2", () => {
     const claim = await harness.application.claim(
       claimCommand({ expiresAt: at("2026-07-22T17:00:00.000Z") }),
     );
-    if (claim.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (claim.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_claim_failed");
+    }
     harness.clock.set(at("2026-07-22T16:01:00.000Z"));
     const terminal = await harness.application.terminalizeUnknown({
       publicationAttemptId: "publication-1",

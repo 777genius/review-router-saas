@@ -254,7 +254,9 @@ describeWithDatabase("PrismaReviewPublicationRepository real database", () => {
       }),
     );
     expect(takeover.status).toBe(ClaimReviewPublicationStatus.Acquired);
-    if (takeover.status !== ClaimReviewPublicationStatus.Acquired) return;
+    if (takeover.status !== ClaimReviewPublicationStatus.Acquired) {
+      throw new Error("test_takeover_failed");
+    }
     expect(takeover.claim.fencingToken > acquired.claim.fencingToken).toBe(
       true,
     );
@@ -405,16 +407,16 @@ describeWithDatabase("PrismaReviewPublicationRepository real database", () => {
     ]);
     const proofWon =
       proof.status === ProveReviewPublicationNoEffectStatus.Proven;
-    expect(effect.status).toBe(
-      proofWon
-        ? RecordReviewExternalEffectStatus.RequestConflict
-        : RecordReviewExternalEffectStatus.Recorded,
-    );
-    expect(proofWon ? effect.status : proof.status).toBe(
-      proofWon
-        ? RecordReviewExternalEffectStatus.RequestConflict
-        : ProveReviewPublicationNoEffectStatus.ExternalEffectExists,
-    );
+    if (proofWon) {
+      expect(effect.status).toBe(
+        RecordReviewExternalEffectStatus.RequestConflict,
+      );
+    } else {
+      expect(effect.status).toBe(RecordReviewExternalEffectStatus.Recorded);
+      expect(proof.status).toBe(
+        ProveReviewPublicationNoEffectStatus.ExternalEffectExists,
+      );
+    }
     expect(
       proofWon
         ? await prisma.reviewPublicationOperationAttemptV2.count({

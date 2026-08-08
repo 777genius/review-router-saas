@@ -13,11 +13,17 @@ ADD CONSTRAINT "ReviewPublicationOperationAttemptV2_no_effect_proof_complete" CH
     AND "noEffectReason" IS NOT NULL
     AND "noEffectProvenAt" IS NOT NULL
   )
-),
+) NOT VALID,
 ADD CONSTRAINT "ReviewPublicationOperationAttemptV2_no_effect_hash_format" CHECK (
   "noEffectProofHash" IS NULL
   OR "noEffectProofHash" ~ '^[a-f0-9]{64}$'
-);
+) NOT VALID;
 
-CREATE UNIQUE INDEX "ReviewPublicationOperationAttemptV2_noEffectProofId_key"
+ALTER TABLE "ReviewPublicationOperationAttemptV2"
+VALIDATE CONSTRAINT "ReviewPublicationOperationAttemptV2_no_effect_proof_complete";
+
+ALTER TABLE "ReviewPublicationOperationAttemptV2"
+VALIDATE CONSTRAINT "ReviewPublicationOperationAttemptV2_no_effect_hash_format";
+
+CREATE UNIQUE INDEX CONCURRENTLY "ReviewPublicationOperationAttemptV2_noEffectProofId_key"
 ON "ReviewPublicationOperationAttemptV2"("noEffectProofId");
