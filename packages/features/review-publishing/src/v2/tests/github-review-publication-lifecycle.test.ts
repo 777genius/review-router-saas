@@ -141,6 +141,62 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
     });
   });
 
+  it.each([
+    {
+      name: "pending review creation",
+      timestamps: { publishedAt: null },
+      expectedInteraction: false,
+    },
+    {
+      name: "pending-to-submitted review transition",
+      timestamps: {
+        publishedAt: "2026-07-23T10:00:11Z",
+        updatedAt: "2026-07-23T10:00:11Z",
+      },
+      expectedInteraction: false,
+    },
+    {
+      name: "parent comment edit",
+      timestamps: {
+        publishedAt: "2026-07-23T10:00:05Z",
+        updatedAt: "2026-07-23T10:00:11Z",
+        lastEditedAt: "2026-07-23T10:00:11Z",
+      },
+      expectedInteraction: true,
+    },
+    {
+      name: "unexplained update after publication",
+      timestamps: {
+        publishedAt: "2026-07-23T10:00:05Z",
+        updatedAt: "2026-07-23T10:00:11Z",
+      },
+      expectedInteraction: true,
+    },
+  ])("classifies $name without weakening freshness", async (testCase) => {
+    const result = await resolveSingleTarget(testCase.timestamps);
+
+    expect(result).toMatchObject({
+      status: LiveReviewPublicationLifecycleStatus.Available,
+      targets: [
+        { hasRelevantInteractionAfterParent: testCase.expectedInteraction },
+      ],
+    });
+  });
+
+  it("fails closed on reversed GitHub publication timestamps", async () => {
+    const result = await resolveSingleTarget(
+      {
+        publishedAt: "2026-07-23T10:00:05Z",
+        updatedAt: "2026-07-23T10:00:05Z",
+      },
+      "2026-07-23T10:00:10Z",
+    );
+
+    expect(result).toEqual({
+      status: LiveReviewPublicationLifecycleStatus.Unavailable,
+    });
+  });
+
   it("retains resolved targets and fails closed on incomplete pagination", async () => {
     const resolved = await adapter({
       async graphql<T>(query: string) {
@@ -613,6 +669,39 @@ function adapter(client: GitHubGraphqlClient) {
   );
 }
 
+async function resolveSingleTarget(
+  timestamps: NonNullable<Parameters<typeof comment>[3]>,
+  createdAt = "2026-07-23T10:00:00Z",
+) {
+  return adapter({
+    async graphql<T>(query: string) {
+      if (query.includes("ReviewRouterPublicationCommandLedger")) {
+        return ledgerPage(null, false) as T;
+      }
+      return inventoryPage(
+        [
+          {
+            id: "thread-timestamp",
+            isResolved: false,
+            comments: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                comment(
+                  "parent-timestamp",
+                  `reviewrouter:finding:v2:${lineageFingerprint}`,
+                  createdAt,
+                  timestamps,
+                ),
+              ],
+            },
+          },
+        ],
+        false,
+      ) as T;
+    },
+  }).resolve(scope);
+}
+
 function commandLedgerVerifier() {
   return new HmacReviewCommandLedgerVerifier({
     deriveLedgerKey() {
@@ -702,6 +791,8 @@ function comment(
   at: string,
   overrides?: {
     readonly lastEditedAt?: string | null;
+    readonly publishedAt?: string | null;
+    readonly updatedAt?: string | null;
     readonly viewerDidAuthor?: boolean;
     readonly authorLogin?: string | null;
   },
@@ -717,7 +808,9 @@ function comment(
     id,
     body,
     createdAt: at,
-    updatedAt: at,
+    publishedAt:
+      overrides?.publishedAt === undefined ? at : overrides.publishedAt,
+    updatedAt: overrides?.updatedAt ?? at,
     lastEditedAt: overrides?.lastEditedAt ?? null,
     viewerDidAuthor,
     author: authorLogin === null ? null : { login: authorLogin },

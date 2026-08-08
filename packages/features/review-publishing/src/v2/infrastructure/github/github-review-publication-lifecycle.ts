@@ -53,6 +53,7 @@ type ReviewComment = {
   readonly id?: string | null;
   readonly body?: string | null;
   readonly createdAt?: string | null;
+  readonly publishedAt?: string | null;
   readonly updatedAt?: string | null;
   readonly lastEditedAt?: string | null;
   readonly viewerDidAuthor?: boolean | null;
@@ -105,7 +106,7 @@ query ReviewRouterPublicationLifecycle(
           comments(first: 100) {
             pageInfo { hasNextPage endCursor }
             nodes {
-              id body createdAt updatedAt lastEditedAt viewerDidAuthor
+              id body createdAt publishedAt updatedAt lastEditedAt viewerDidAuthor
               author { login }
             }
           }
@@ -125,7 +126,7 @@ query ReviewRouterPublicationLifecycleComments(
       comments(first: 100, after: $commentsAfter) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id body createdAt updatedAt lastEditedAt viewerDidAuthor
+          id body createdAt publishedAt updatedAt lastEditedAt viewerDidAuthor
           author { login }
         }
       }
@@ -274,10 +275,9 @@ async function loadInventory(
         parent.createdAt,
         "github_parent_created_at",
       );
-      const parentCommentUpdatedAt = laterDate(
-        parent.createdAt,
-        parent.updatedAt,
-        parent.lastEditedAt,
+      const parentHasRelevantTimestampChange = hasRelevantParentTimestampChange(
+        parent,
+        parentCreatedAt,
       );
       let lastRelevantChangeAt = parentCreatedAt;
       for (const comment of comments) {
@@ -310,7 +310,7 @@ async function loadInventory(
         isResolved: thread.isResolved,
         parentOwnedByIntegration,
         hasRelevantInteractionAfterParent:
-          comments.length > 1 || parentCommentUpdatedAt > parentCreatedAt,
+          comments.length > 1 || parentHasRelevantTimestampChange,
         parentCreatedAt,
         lastRelevantChangeAt,
       });
@@ -662,6 +662,37 @@ function laterDate(
   return new Date(
     Math.max(created.getTime(), updated.getTime(), edited.getTime()),
   );
+}
+
+function hasRelevantParentTimestampChange(
+  parent: ValidReviewComment,
+  createdAt: Date,
+): boolean {
+  // GitHub advances updatedAt when a pending review is submitted without editing its body.
+  const updatedAt = timestamp(
+    parent.updatedAt ?? parent.createdAt,
+    "github_comment_updated_at",
+  );
+  const publishedAt =
+    parent.publishedAt == null
+      ? null
+      : timestamp(parent.publishedAt, "github_comment_published_at");
+  const lastEditedAt =
+    parent.lastEditedAt == null
+      ? null
+      : timestamp(parent.lastEditedAt, "github_comment_last_edited_at");
+  if (
+    updatedAt < createdAt ||
+    (publishedAt !== null &&
+      (publishedAt < createdAt || updatedAt < publishedAt)) ||
+    (lastEditedAt !== null && lastEditedAt < createdAt)
+  ) {
+    throw new Error("github_comment_timestamp_order_invalid");
+  }
+  if (lastEditedAt !== null) return true;
+  return publishedAt === null
+    ? updatedAt.getTime() !== createdAt.getTime()
+    : updatedAt.getTime() !== publishedAt.getTime();
 }
 
 function timestamp(value: string | null | undefined, field: string): Date {
