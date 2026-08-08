@@ -91,7 +91,6 @@ import {
 import {
   ReviewActionV2OperationId,
   ReviewActionV2ProtocolErrorCode,
-  ReviewContextGatewayAbandonResultStatus,
   ReviewContextGatewayOpenResultStatus,
   ReviewContextGatewaySealResultStatus,
   ReviewContextReceiptReplayCommitResultStatus,
@@ -106,9 +105,7 @@ import {
   canonicalizeReviewActionV2Request,
   type ReviewActionV2RequestMap,
   type ReviewContextGatewayOpenRequest,
-  type ReviewContextGatewayAbandonRequest,
   type ReviewContextGatewaySealRequest,
-  type ReviewInvestigationContextGatewayAbandonRequest,
   type ReviewInvestigationContextGatewayOpenRequest,
   type ReviewInvestigationContextGatewaySealRequest,
   type ReviewContextReceiptReplayCommitRequest,
@@ -351,14 +348,6 @@ export function composeReviewActionV2ContextAttestationRoutes(input: {
         handlers,
       ),
     ),
-    abandonGateway: enabled((request: ReviewContextGatewayAbandonRequest) =>
-      abandonGateway(
-        request,
-        ContextLeaseAuthorityKind.StandardExecution,
-        ReviewActionV2OperationId.ReviewContextGatewayAbandon,
-        handlers,
-      ),
-    ),
     openInvestigationGateway: enabled(
       (request: ReviewInvestigationContextGatewayOpenRequest) =>
         openGateway(
@@ -374,15 +363,6 @@ export function composeReviewActionV2ContextAttestationRoutes(input: {
           request,
           ContextLeaseAuthorityKind.InvestigationShadow,
           ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal,
-          handlers,
-        ),
-    ),
-    abandonInvestigationGateway: enabled(
-      (request: ReviewInvestigationContextGatewayAbandonRequest) =>
-        abandonGateway(
-          request,
-          ContextLeaseAuthorityKind.InvestigationShadow,
-          ReviewActionV2OperationId.ReviewInvestigationContextGatewayAbandon,
           handlers,
         ),
     ),
@@ -464,25 +444,6 @@ async function verifyContextGatewaySeal(
       return capabilities.verifyContextGatewaySeal(token, now);
     case ContextLeaseAuthorityKind.InvestigationShadow:
       return capabilities.verifyInvestigationContextGatewaySeal(token, now);
-  }
-}
-
-function assertAbandonAuthorityKind(
-  expected: ContextLeaseAuthorityKind,
-  authority:
-    | ReviewActionV2ContextGatewaySealAuthority
-    | ReviewActionV2InvestigationContextGatewaySealAuthority,
-): void {
-  const investigationAuthority = "sourceLeaseAuthorityKind" in authority;
-  if (
-    (expected === ContextLeaseAuthorityKind.InvestigationShadow) !==
-    investigationAuthority
-  ) {
-    throw failure(
-      403,
-      ReviewActionV2ProtocolErrorCode.Forbidden,
-      "context_abandon_authority_kind_mismatch",
-    );
   }
 }
 
@@ -694,6 +655,23 @@ async function sealGateway(
     session,
     dependencies: d,
   });
+  if (!request.providerSucceeded) {
+    if (request.schemaValidated || request.fullyConsumed) {
+      throw failure(
+        400,
+        ReviewActionV2ProtocolErrorCode.InvalidRequest,
+        "context_failed_seal_flags_invalid",
+      );
+    }
+    return abandonFailedGatewaySession({
+      request,
+      authorityKind,
+      sealAuthority,
+      session,
+      now,
+      dependencies: d,
+    });
+  }
   const transcript = parseContextManifest(
     request.transcriptCanonicalJson,
     "context_transcript_invalid",
@@ -787,84 +765,50 @@ async function sealGateway(
   };
 }
 
-async function abandonGateway(
-  request:
-    | ReviewContextGatewayAbandonRequest
-    | ReviewInvestigationContextGatewayAbandonRequest,
-  authorityKind: ContextLeaseAuthorityKind,
-  operationId:
-    | ReviewActionV2OperationId.ReviewContextGatewayAbandon
-    | ReviewActionV2OperationId.ReviewInvestigationContextGatewayAbandon,
-  d: ReviewActionV2ContextAttestationHandlerDependencies,
-) {
-  await assertBodyHash(operationId, request, d.digest);
-  const now = d.now();
-  let authority:
+async function abandonFailedGatewaySession(input: {
+  readonly request:
+    | ReviewContextGatewaySealRequest
+    | ReviewInvestigationContextGatewaySealRequest;
+  readonly authorityKind: ContextLeaseAuthorityKind;
+  readonly sealAuthority:
     | ReviewActionV2ContextGatewaySealAuthority
     | ReviewActionV2InvestigationContextGatewaySealAuthority;
-  try {
-    authority = await verifyContextGatewaySeal(
-      authorityKind,
-      d.capabilities,
-      request.leaseCapability,
-      now,
-    );
-  } catch {
-    throw failure(
-      401,
-      ReviewActionV2ProtocolErrorCode.InvalidAuthentication,
-      "context_abandon_capability_invalid",
-    );
-  }
-  assertAbandonAuthorityKind(authorityKind, authority);
-  requireEqual(
-    request.sessionId,
-    authority.sessionId,
-    "context_abandon_session_mismatch",
-  );
-  requireEqual(
-    request.attemptId,
-    authority.attemptId,
-    "context_abandon_attempt_mismatch",
-  );
-  requireEqual(
-    request.sourceLeaseId,
-    authority.sourceLeaseId,
-    "context_abandon_lease_mismatch",
-  );
-  requireEqual(
-    request.fencingToken,
-    authority.sourceFencingToken,
-    "context_abandon_fencing_mismatch",
-  );
+  readonly session: GatewaySession;
+  readonly now: Date;
+  readonly dependencies: ReviewActionV2ContextAttestationHandlerDependencies;
+}) {
   const capabilityId = requiredString(
-    authority.capabilityId,
+    input.sealAuthority.capabilityId,
     "context_abandon_capability_id_missing",
   );
   const abandon = new AbandonContextGatewaySession({
     abandonFacts: {
       resolveAbandonFacts: async (command) =>
-        command.sessionId === authority.sessionId &&
+        command.sessionId === input.sealAuthority.sessionId &&
         command.capabilityId === capabilityId
           ? {
-              sessionId: authority.sessionId,
-              attemptId: authority.attemptId,
-              sourceLeaseAuthorityKind: authorityKind,
-              sourceLeaseId: authority.sourceLeaseId,
-              sourceFencingToken: authority.sourceFencingToken,
+              sessionId: input.sealAuthority.sessionId,
+              attemptId: input.sealAuthority.attemptId,
+              sourceLeaseAuthorityKind: input.authorityKind,
+              sourceLeaseId: input.sealAuthority.sourceLeaseId,
+              sourceFencingToken: input.sealAuthority.sourceFencingToken,
             }
           : null,
     },
-    store: d.store,
-    clock: { nowMs: () => now.getTime() },
+    store: input.dependencies.store,
+    clock: { nowMs: () => input.now.getTime() },
   });
   const outcome = await abandon.execute({
-    sessionId: request.sessionId,
+    sessionId: input.request.sessionId,
     capabilityId,
   });
   return {
     statusCode: 200 as const,
-    result: { status: mapAbandonStatus(outcome.status) },
+    result: {
+      status: mapFailedSealStatus(outcome.status),
+      attestationId: null,
+      attestationHash: null,
+    },
   };
 }
 
@@ -3697,20 +3641,18 @@ function mapSealStatus(status: AcceptSealedContextAttestationStatus) {
   }
 }
 
-function mapAbandonStatus(status: AbandonContextGatewaySessionStatus) {
+function mapFailedSealStatus(status: AbandonContextGatewaySessionStatus) {
   switch (status) {
     case AbandonContextGatewaySessionStatus.Abandoned:
-      return ReviewContextGatewayAbandonResultStatus.Abandoned;
+      return ReviewContextGatewaySealResultStatus.Accepted;
     case AbandonContextGatewaySessionStatus.Idempotent:
-      return ReviewContextGatewayAbandonResultStatus.Idempotent;
     case AbandonContextGatewaySessionStatus.AlreadyTerminal:
-      return ReviewContextGatewayAbandonResultStatus.AlreadyTerminal;
     case AbandonContextGatewaySessionStatus.Expired:
-      return ReviewContextGatewayAbandonResultStatus.Expired;
+      return ReviewContextGatewaySealResultStatus.Idempotent;
     case AbandonContextGatewaySessionStatus.Denied:
-      return ReviewContextGatewayAbandonResultStatus.Denied;
+      return ReviewContextGatewaySealResultStatus.Denied;
     case AbandonContextGatewaySessionStatus.Conflict:
-      return ReviewContextGatewayAbandonResultStatus.Conflict;
+      return ReviewContextGatewaySealResultStatus.Conflict;
   }
 }
 

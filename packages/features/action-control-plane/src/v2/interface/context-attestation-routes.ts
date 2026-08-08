@@ -10,10 +10,8 @@ export type RegisterReviewContextAttestationV2RoutesDependencies =
   ReviewActionV2RouteRuntimeDependencies & {
     readonly openGateway?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewContextGatewayOpen>;
     readonly sealGateway?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewContextGatewaySeal>;
-    readonly abandonGateway?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewContextGatewayAbandon>;
     readonly openInvestigationGateway?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationContextGatewayOpen>;
     readonly sealInvestigationGateway?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal>;
-    readonly abandonInvestigationGateway?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationContextGatewayAbandon>;
     readonly commitReplay?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewContextReplayCommit>;
     readonly commitReceiptReplay?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewContextReceiptReplayCommit>;
   };
@@ -36,12 +34,6 @@ export async function registerReviewContextAttestationV2Routes(
   );
   registerReviewActionV2Operation(
     app,
-    ReviewActionV2OperationId.ReviewInvestigationContextGatewayAbandon,
-    dependencies,
-    dependencies.abandonInvestigationGateway,
-  );
-  registerReviewActionV2Operation(
-    app,
     ReviewActionV2OperationId.ReviewContextReceiptReplayCommit,
     dependencies,
     dependencies.commitReceiptReplay,
@@ -57,12 +49,6 @@ export async function registerReviewContextAttestationV2Routes(
     ReviewActionV2OperationId.ReviewContextGatewaySeal,
     dependencies,
     dependencies.sealGateway,
-  );
-  registerReviewActionV2Operation(
-    app,
-    ReviewActionV2OperationId.ReviewContextGatewayAbandon,
-    dependencies,
-    dependencies.abandonGateway,
   );
   registerReviewActionV2Operation(
     app,

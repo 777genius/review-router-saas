@@ -468,14 +468,6 @@ export const reviewActionV2TransportContract = Object.freeze({
             contextAttestationCommitErrors,
           ],
           [
-            "review_context_gateway_abandon",
-            "/api/action/v2/review-context/gateway/abandon",
-            10_000,
-            32_768,
-            [200],
-            commonCommandErrors,
-          ],
-          [
             "review_investigation_context_gateway_open",
             "/api/action/v2/review-investigations/context-gateway/open",
             10_000,
@@ -490,14 +482,6 @@ export const reviewActionV2TransportContract = Object.freeze({
             4_194_304,
             [200, 201],
             contextAttestationCommitErrors,
-          ],
-          [
-            "review_investigation_context_gateway_abandon",
-            "/api/action/v2/review-investigations/context-gateway/abandon",
-            10_000,
-            32_768,
-            [200],
-            commonCommandErrors,
           ],
           [
             "review_evidence_lookup",
