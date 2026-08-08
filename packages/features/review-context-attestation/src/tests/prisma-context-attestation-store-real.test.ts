@@ -14,9 +14,12 @@ import {
 import {
   ContextLeaseAuthorityKind,
   ContextProviderKind,
+  GatewaySessionState,
   activateGatewaySession,
   openGatewaySession,
+  revokeGatewaySession,
   sealGatewaySession,
+  type GatewaySession,
 } from "../domain/gateway-session";
 import { createAcceptedDependencyAttestation } from "../domain/accepted-dependency-attestation";
 import { ContextAttestationPersistenceStatus } from "../application/ports/context-attestation-ports";
@@ -45,7 +48,7 @@ describeDatabase("PrismaContextAttestationStore PostgreSQL invariants", () => {
   });
 
   it("serializes concurrent semantic seals and replaces expired replay proof", async () => {
-    prisma = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 6 });
+    prisma ??= createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 6 });
     const store = new PrismaContextAttestationStore(prisma);
     const nowMs = Date.now();
     const sessionId = `gateway-session-${randomUUID()}`;
@@ -241,7 +244,188 @@ describeDatabase("PrismaContextAttestationStore PostgreSQL invariants", () => {
       store.findReplayProof(replacement.replayProofId),
     ).resolves.toMatchObject(replacement);
   });
+
+  it("serializes accept against abandon with the same session lock", async () => {
+    prisma ??= createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 6 });
+    const store = new PrismaContextAttestationStore(prisma);
+    const nowMs = Date.now();
+    const active = createActiveSession(nowMs);
+    sessionIds.add(active.sessionId);
+    await store.openSession(active);
+    const acceptance = acceptanceInput(active, nowMs);
+    const terminalSession = revokeGatewaySession(active, nowMs + 4);
+
+    const [acceptResult, abandonResult] = await Promise.all([
+      store.acceptAttestation(acceptance),
+      store.abandonSession({
+        expectedSession: active,
+        terminalSession,
+      }),
+    ]);
+    const persisted = await store.findSession(active.sessionId);
+
+    expect(
+      [GatewaySessionState.Accepted, GatewaySessionState.Revoked].includes(
+        persisted!.state,
+      ),
+    ).toBe(true);
+    if (persisted!.state === GatewaySessionState.Accepted) {
+      expect(acceptResult.status).toBe(
+        ContextAttestationPersistenceStatus.Created,
+      );
+      expect(abandonResult).toMatchObject({
+        status: ContextAttestationPersistenceStatus.Idempotent,
+        value: { state: GatewaySessionState.Accepted },
+      });
+    } else {
+      expect(abandonResult.status).toBe(
+        ContextAttestationPersistenceStatus.Created,
+      );
+      expect(acceptResult.status).toBe(
+        ContextAttestationPersistenceStatus.Conflict,
+      );
+      await expect(
+        store.findAcceptedAttestationBySessionId(active.sessionId),
+      ).resolves.toBeNull();
+    }
+  });
+
+  it("makes concurrent abandon commands idempotent", async () => {
+    prisma ??= createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 6 });
+    const store = new PrismaContextAttestationStore(prisma);
+    const nowMs = Date.now();
+    const active = createActiveSession(nowMs);
+    sessionIds.add(active.sessionId);
+    await store.openSession(active);
+    const terminalSession = revokeGatewaySession(active, nowMs + 2);
+
+    const results = await Promise.all([
+      store.abandonSession({ expectedSession: active, terminalSession }),
+      store.abandonSession({ expectedSession: active, terminalSession }),
+    ]);
+
+    expect(results.map((result) => result.status).sort()).toEqual([
+      ContextAttestationPersistenceStatus.Created,
+      ContextAttestationPersistenceStatus.Idempotent,
+    ]);
+    await expect(store.findSession(active.sessionId)).resolves.toMatchObject({
+      state: GatewaySessionState.Revoked,
+      revokedAtMs: nowMs + 2,
+    });
+  });
 });
+
+function createActiveSession(nowMs: number): GatewaySession {
+  return activateGatewaySession(
+    openGatewaySession({
+      sessionId: `gateway-session-${randomUUID()}`,
+      scope: {
+        workspaceId: `workspace-${randomUUID()}`,
+        repositoryConnectionId: `connection-${randomUUID()}`,
+        scmRepositoryIdentityId: `repository-${randomUUID()}`,
+        pullRequestNumber: 42,
+      },
+      sourceRevision: {
+        baseSha: "a".repeat(40),
+        mergeBaseSha: "b".repeat(40),
+        headSha: "c".repeat(40),
+        reviewRevisionHash: digest(`revision-${randomUUID()}`),
+        checkoutTreeOid: "d".repeat(40),
+      },
+      sourceExecutionId: `execution-${randomUUID()}`,
+      sourceWorkSlotId: "slot-1",
+      attemptId: `attempt-${randomUUID()}`,
+      openingIntentHash: digest(`opening-${randomUUID()}`),
+      sourceLeaseAuthorityKind: ContextLeaseAuthorityKind.InvestigationShadow,
+      sourceLeaseId: `lease-${randomUUID()}`,
+      sourceFencingToken: "1",
+      providerKind: ContextProviderKind.Codex,
+      requestedModel: "gpt-test",
+      trustedCapabilityProfile: "context-gateway-v2",
+      gatewayBinaryHash: digest("gateway"),
+      gatewayPolicyVersion: "context-gateway-v2",
+      producerReleaseId: "release-1",
+      selectedProtocolVersion: "review-action-v2",
+      confinementProofHash: digest("confinement"),
+      eventChainSeedHash: digest("seed"),
+      openedAtMs: nowMs,
+      expiresAtMs: nowMs + 120_000,
+    }),
+    nowMs + 1,
+  );
+}
+
+function acceptanceInput(active: GatewaySession, nowMs: number) {
+  const manifest = createContextDependencyManifest({
+    manifestVersion: contextDependencyManifestVersion,
+    gatewayPolicyVersion: active.gatewayPolicyVersion,
+    gatewayBinaryHash: active.gatewayBinaryHash,
+    checkoutTreeOid: active.sourceRevision.checkoutTreeOid,
+    authenticatedChainHash: digest(`event-${active.sessionId}`),
+    complete: true,
+    dependencies: [
+      {
+        sequence: 1,
+        previousEventHash: active.eventChainSeedHash,
+        eventHash: digest(`event-${active.sessionId}`),
+        operationKey: digest(
+          '{"kind":"file_read","maxBytes":100,"path":"src/a.ts","startByte":0}',
+        ),
+        operation: {
+          kind: ContextDependencyKind.FileRead,
+          path: "src/a.ts",
+          startByte: 0,
+          maxBytes: 100,
+        },
+        result: {
+          kind: ContextDependencyKind.FileRead,
+          fileKind: ContextFileKind.Regular,
+          mode: 0o100644,
+          blobOid: "e".repeat(40),
+          symlinkTargetHash: null,
+          contentHash: digest("content"),
+          byteCount: 10,
+          eof: true,
+          complete: true,
+          truncated: false,
+        },
+      },
+    ],
+  });
+  const sealed = sealGatewaySession(active, {
+    eventCount: 1,
+    sealedAtMs: nowMs + 2,
+  });
+  const replayMaterial = {
+    sessionId: active.sessionId,
+    algorithm: "aes-256-gcm-v1" as const,
+    keyId: "key-1",
+    nonceBase64Url: Buffer.alloc(12, 1).toString("base64url"),
+    authTagBase64Url: Buffer.alloc(16, 2).toString("base64url"),
+    ciphertextBase64Url: Buffer.from("{}", "utf8").toString("base64url"),
+    associatedDataHash: digest("aad"),
+    plaintextHash: digest("plaintext"),
+    byteCount: 2,
+    expiresAtMs: nowMs + 100_000,
+  };
+  const accepted = createAcceptedDependencyAttestation({
+    attestationId: `attestation-${randomUUID()}`,
+    attestationHash: digest(`attestation-${randomUUID()}`),
+    session: sealed,
+    manifest,
+    actualModel: "gpt-test",
+    terminalOutcomeHash: digest("outcome"),
+    replayMaterialHash: replayMaterial.plaintextHash,
+    acceptedAtMs: nowMs + 3,
+    reuseExpiresAtMs: nowMs + 60_000,
+  });
+  return {
+    expectedSession: sealed,
+    acceptedSession: accepted.session,
+    attestation: accepted.attestation,
+    replayMaterial,
+  };
+}
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");

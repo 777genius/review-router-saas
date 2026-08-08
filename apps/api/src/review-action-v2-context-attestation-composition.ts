@@ -1,5 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
+  AbandonContextGatewaySession,
+  AbandonContextGatewaySessionStatus,
   AcceptSealedContextAttestation,
   AcceptSealedContextAttestationStatus,
   ContextDependencyKind,
@@ -653,6 +655,23 @@ async function sealGateway(
     session,
     dependencies: d,
   });
+  if (!request.providerSucceeded) {
+    if (request.schemaValidated || request.fullyConsumed) {
+      throw failure(
+        400,
+        ReviewActionV2ProtocolErrorCode.InvalidRequest,
+        "context_failed_seal_flags_invalid",
+      );
+    }
+    return abandonFailedGatewaySession({
+      request,
+      authorityKind,
+      sealAuthority,
+      session,
+      now,
+      dependencies: d,
+    });
+  }
   const transcript = parseContextManifest(
     request.transcriptCanonicalJson,
     "context_transcript_invalid",
@@ -742,6 +761,53 @@ async function sealGateway(
       status: mapSealStatus(outcome.status),
       attestationId: outcome.attestation?.attestationId ?? null,
       attestationHash: outcome.attestation?.attestationHash ?? null,
+    },
+  };
+}
+
+async function abandonFailedGatewaySession(input: {
+  readonly request:
+    | ReviewContextGatewaySealRequest
+    | ReviewInvestigationContextGatewaySealRequest;
+  readonly authorityKind: ContextLeaseAuthorityKind;
+  readonly sealAuthority:
+    | ReviewActionV2ContextGatewaySealAuthority
+    | ReviewActionV2InvestigationContextGatewaySealAuthority;
+  readonly session: GatewaySession;
+  readonly now: Date;
+  readonly dependencies: ReviewActionV2ContextAttestationHandlerDependencies;
+}) {
+  const capabilityId = requiredString(
+    input.sealAuthority.capabilityId,
+    "context_abandon_capability_id_missing",
+  );
+  const abandon = new AbandonContextGatewaySession({
+    abandonFacts: {
+      resolveAbandonFacts: async (command) =>
+        command.sessionId === input.sealAuthority.sessionId &&
+        command.capabilityId === capabilityId
+          ? {
+              sessionId: input.sealAuthority.sessionId,
+              attemptId: input.sealAuthority.attemptId,
+              sourceLeaseAuthorityKind: input.authorityKind,
+              sourceLeaseId: input.sealAuthority.sourceLeaseId,
+              sourceFencingToken: input.sealAuthority.sourceFencingToken,
+            }
+          : null,
+    },
+    store: input.dependencies.store,
+    clock: { nowMs: () => input.now.getTime() },
+  });
+  const outcome = await abandon.execute({
+    sessionId: input.request.sessionId,
+    capabilityId,
+  });
+  return {
+    statusCode: 200 as const,
+    result: {
+      status: mapFailedSealStatus(outcome.status),
+      attestationId: null,
+      attestationHash: null,
     },
   };
 }
@@ -3571,6 +3637,21 @@ function mapSealStatus(status: AcceptSealedContextAttestationStatus) {
     case AcceptSealedContextAttestationStatus.Denied:
       return ReviewContextGatewaySealResultStatus.Denied;
     case AcceptSealedContextAttestationStatus.Conflict:
+      return ReviewContextGatewaySealResultStatus.Conflict;
+  }
+}
+
+function mapFailedSealStatus(status: AbandonContextGatewaySessionStatus) {
+  switch (status) {
+    case AbandonContextGatewaySessionStatus.Abandoned:
+      return ReviewContextGatewaySealResultStatus.Accepted;
+    case AbandonContextGatewaySessionStatus.Idempotent:
+    case AbandonContextGatewaySessionStatus.AlreadyTerminal:
+    case AbandonContextGatewaySessionStatus.Expired:
+      return ReviewContextGatewaySealResultStatus.Idempotent;
+    case AbandonContextGatewaySessionStatus.Denied:
+      return ReviewContextGatewaySealResultStatus.Denied;
+    case AbandonContextGatewaySessionStatus.Conflict:
       return ReviewContextGatewaySealResultStatus.Conflict;
   }
 }

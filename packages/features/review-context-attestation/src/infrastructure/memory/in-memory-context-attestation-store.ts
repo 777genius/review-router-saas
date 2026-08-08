@@ -11,6 +11,9 @@ import {
 import type { EncryptedContextReplayMaterial } from "../../domain/encrypted-context-replay-material";
 import {
   GatewaySessionState,
+  isGatewaySessionTerminal,
+  isValidGatewaySessionAbandonTransition,
+  sameGatewaySessionIdentity,
   type GatewaySession,
 } from "../../domain/gateway-session";
 import type { TargetReplayProof } from "../../domain/target-replay-proof";
@@ -50,6 +53,29 @@ export class InMemoryContextAttestationStore implements ContextAttestationStoreP
 
   async findSession(sessionId: string): Promise<GatewaySession | null> {
     return this.sessions.get(sessionId) ?? null;
+  }
+
+  async abandonSession(input: {
+    readonly expectedSession: GatewaySession;
+    readonly terminalSession: GatewaySession;
+  }): Promise<ContextAttestationPersistenceResult<GatewaySession>> {
+    if (!isValidGatewaySessionAbandonTransition(input)) return conflict();
+    const current = this.sessions.get(input.expectedSession.sessionId);
+    if (
+      !current ||
+      !sameGatewaySessionIdentity(current, input.expectedSession)
+    ) {
+      return conflict();
+    }
+    if (isGatewaySessionTerminal(current)) {
+      return persisted(ContextAttestationPersistenceStatus.Idempotent, current);
+    }
+    if (current.state !== input.expectedSession.state) return conflict();
+    this.sessions.set(current.sessionId, input.terminalSession);
+    return persisted(
+      ContextAttestationPersistenceStatus.Created,
+      input.terminalSession,
+    );
   }
 
   async acceptAttestation(input: {

@@ -59,6 +59,21 @@ export interface TrustedSealedGatewayTranscriptPort {
   }): Promise<TrustedSealedGatewayTranscript | null>;
 }
 
+export type TrustedGatewaySessionAbandonFacts = Readonly<{
+  sessionId: string;
+  attemptId: string;
+  sourceLeaseAuthorityKind: ContextLeaseAuthorityKind;
+  sourceLeaseId: string;
+  sourceFencingToken: string;
+}>;
+
+export interface TrustedGatewaySessionAbandonFactsPort {
+  resolveAbandonFacts(input: {
+    readonly sessionId: string;
+    readonly capabilityId: string;
+  }): Promise<TrustedGatewaySessionAbandonFacts | null>;
+}
+
 export enum ContextAttestationPersistenceStatus {
   Created = "created",
   Idempotent = "idempotent",
@@ -81,6 +96,10 @@ export interface ContextAttestationStorePort {
     session: GatewaySession,
   ): Promise<ContextAttestationPersistenceResult<GatewaySession>>;
   findSession(sessionId: string): Promise<GatewaySession | null>;
+  abandonSession(input: {
+    readonly expectedSession: GatewaySession;
+    readonly terminalSession: GatewaySession;
+  }): Promise<ContextAttestationPersistenceResult<GatewaySession>>;
   acceptAttestation(input: {
     readonly expectedSession: GatewaySession;
     readonly acceptedSession: GatewaySession;

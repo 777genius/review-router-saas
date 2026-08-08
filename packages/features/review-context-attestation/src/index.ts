@@ -8,6 +8,7 @@ export * from "./domain/gateway-session";
 export * from "./domain/target-replay-proof";
 
 export * from "./application/ports/context-attestation-ports";
+export * from "./application/use-cases/abandon-context-gateway-session";
 export * from "./application/use-cases/accept-sealed-context-attestation";
 export * from "./application/use-cases/open-context-gateway-session";
 export * from "./application/use-cases/replay-context-attestation";

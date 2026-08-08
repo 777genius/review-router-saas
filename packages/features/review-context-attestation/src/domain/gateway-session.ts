@@ -172,7 +172,7 @@ export function revokeGatewaySession(
   session: GatewaySession,
   nowMs: number,
 ): GatewaySession {
-  assertEpoch(nowMs, "revoked_at_ms");
+  assertTransitionTime(session, nowMs);
   if (
     session.state === GatewaySessionState.Accepted ||
     session.state === GatewaySessionState.Rejected ||
@@ -186,6 +186,98 @@ export function revokeGatewaySession(
     state: GatewaySessionState.Revoked,
     revokedAtMs: nowMs,
   });
+}
+
+export function expireGatewaySession(
+  session: GatewaySession,
+  nowMs: number,
+): GatewaySession {
+  assertEpoch(nowMs, "expired_at_ms");
+  if (
+    session.state === GatewaySessionState.Accepted ||
+    session.state === GatewaySessionState.Rejected ||
+    session.state === GatewaySessionState.Revoked ||
+    session.state === GatewaySessionState.Expired
+  ) {
+    throw new Error("gateway_session_terminal");
+  }
+  if (nowMs < session.expiresAtMs) {
+    throw new Error("gateway_session_not_expired");
+  }
+  return Object.freeze({
+    ...session,
+    state: GatewaySessionState.Expired,
+    revokedAtMs: nowMs,
+  });
+}
+
+export function isGatewaySessionTerminal(session: GatewaySession): boolean {
+  return (
+    session.state === GatewaySessionState.Accepted ||
+    session.state === GatewaySessionState.Rejected ||
+    session.state === GatewaySessionState.Revoked ||
+    session.state === GatewaySessionState.Expired
+  );
+}
+
+export function isValidGatewaySessionAbandonTransition(input: {
+  readonly expectedSession: GatewaySession;
+  readonly terminalSession: GatewaySession;
+}): boolean {
+  const { expectedSession, terminalSession } = input;
+  return (
+    !isGatewaySessionTerminal(expectedSession) &&
+    (terminalSession.state === GatewaySessionState.Revoked ||
+      terminalSession.state === GatewaySessionState.Expired) &&
+    sameGatewaySessionIdentity(expectedSession, terminalSession) &&
+    terminalSession.eventCount === expectedSession.eventCount &&
+    terminalSession.sealedAtMs === expectedSession.sealedAtMs &&
+    terminalSession.revokedAtMs !== null &&
+    terminalSession.revokedAtMs >= expectedSession.openedAtMs &&
+    (terminalSession.state !== GatewaySessionState.Revoked ||
+      terminalSession.revokedAtMs < expectedSession.expiresAtMs) &&
+    (terminalSession.state !== GatewaySessionState.Expired ||
+      terminalSession.revokedAtMs >= expectedSession.expiresAtMs)
+  );
+}
+
+export function sameGatewaySessionIdentity(
+  left: GatewaySession,
+  right: GatewaySession,
+): boolean {
+  return (
+    left.sessionId === right.sessionId &&
+    left.scope.workspaceId === right.scope.workspaceId &&
+    left.scope.repositoryConnectionId === right.scope.repositoryConnectionId &&
+    left.scope.scmRepositoryIdentityId ===
+      right.scope.scmRepositoryIdentityId &&
+    left.scope.pullRequestNumber === right.scope.pullRequestNumber &&
+    left.sourceRevision.baseSha === right.sourceRevision.baseSha &&
+    left.sourceRevision.mergeBaseSha === right.sourceRevision.mergeBaseSha &&
+    left.sourceRevision.headSha === right.sourceRevision.headSha &&
+    left.sourceRevision.reviewRevisionHash ===
+      right.sourceRevision.reviewRevisionHash &&
+    left.sourceRevision.checkoutTreeOid ===
+      right.sourceRevision.checkoutTreeOid &&
+    left.sourceExecutionId === right.sourceExecutionId &&
+    left.sourceWorkSlotId === right.sourceWorkSlotId &&
+    left.attemptId === right.attemptId &&
+    left.openingIntentHash === right.openingIntentHash &&
+    left.sourceLeaseAuthorityKind === right.sourceLeaseAuthorityKind &&
+    left.sourceLeaseId === right.sourceLeaseId &&
+    left.sourceFencingToken === right.sourceFencingToken &&
+    left.providerKind === right.providerKind &&
+    left.requestedModel === right.requestedModel &&
+    left.trustedCapabilityProfile === right.trustedCapabilityProfile &&
+    left.gatewayBinaryHash === right.gatewayBinaryHash &&
+    left.gatewayPolicyVersion === right.gatewayPolicyVersion &&
+    left.producerReleaseId === right.producerReleaseId &&
+    left.selectedProtocolVersion === right.selectedProtocolVersion &&
+    left.confinementProofHash === right.confinementProofHash &&
+    left.eventChainSeedHash === right.eventChainSeedHash &&
+    left.openedAtMs === right.openedAtMs &&
+    left.expiresAtMs === right.expiresAtMs
+  );
 }
 
 function assertTransitionTime(session: GatewaySession, nowMs: number): void {

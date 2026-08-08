@@ -104,6 +104,97 @@ const sourceRevision = revision("a", "b", "c", "source-revision");
 const targetRevision = revision("a", "b", "d", "target-revision");
 
 describe("Review Action v2 context attestation composition", () => {
+  it("terminalizes a failed gateway seal idempotently", async () => {
+    const fixture = await createFixture();
+    const opened = await fixture.routes.openGateway!.execute(
+      fixture.openRequest,
+    );
+    const request = await sealRequest({
+      fixture,
+      sessionId: required(opened.result.sessionId),
+      sealCapability: required(opened.result.sealCapability),
+      transcriptCanonicalJson: "{}",
+      replayMaterialCanonicalJson: "{}",
+      providerSucceeded: false,
+      schemaValidated: false,
+      fullyConsumed: false,
+    });
+
+    const abandoned = await fixture.routes.sealGateway!.execute(request);
+    expect(abandoned.result).toMatchObject({
+      status: ReviewContextGatewaySealResultStatus.Accepted,
+      attestationId: null,
+      attestationHash: null,
+    });
+    await expect(
+      fixture.dependencies.store.findSession(required(opened.result.sessionId)),
+    ).resolves.toMatchObject({ state: "revoked" });
+
+    const replayed = await fixture.routes.sealGateway!.execute(request);
+    expect(replayed.result).toMatchObject({
+      status: ReviewContextGatewaySealResultStatus.Idempotent,
+      attestationId: null,
+      attestationHash: null,
+    });
+  });
+
+  it("terminalizes a failed shadow gateway seal", async () => {
+    const fixture = await createShadowFixture();
+    const opened = await fixture.routes.openInvestigationGateway!.execute(
+      fixture.openRequest,
+    );
+
+    const abandoned = await fixture.routes.sealInvestigationGateway!.execute(
+      await createShadowSealRequest({
+        fixture,
+        sessionId: required(opened.result.sessionId),
+        sealCapability: required(opened.result.sealCapability),
+        transcriptCanonicalJson: "{}",
+        replayMaterialCanonicalJson: "{}",
+        providerSucceeded: false,
+        schemaValidated: false,
+        fullyConsumed: false,
+      }),
+    );
+
+    expect(abandoned.result).toMatchObject({
+      status: ReviewContextGatewaySealResultStatus.Accepted,
+      attestationId: null,
+      attestationHash: null,
+    });
+    await expect(
+      fixture.dependencies.store.findSession(required(opened.result.sessionId)),
+    ).resolves.toMatchObject({ state: "revoked" });
+  });
+
+  it("rejects inconsistent failed-seal flags without revoking the session", async () => {
+    const fixture = await createFixture();
+    const opened = await fixture.routes.openGateway!.execute(
+      fixture.openRequest,
+    );
+
+    await expect(
+      fixture.routes.sealGateway!.execute(
+        await sealRequest({
+          fixture,
+          sessionId: required(opened.result.sessionId),
+          sealCapability: required(opened.result.sealCapability),
+          transcriptCanonicalJson: "{}",
+          replayMaterialCanonicalJson: "{}",
+          providerSucceeded: false,
+          schemaValidated: true,
+          fullyConsumed: false,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      issues: ["context_failed_seal_flags_invalid"],
+    });
+    await expect(
+      fixture.dependencies.store.findSession(required(opened.result.sessionId)),
+    ).resolves.toMatchObject({ state: "active" });
+  });
+
   it("opens a gateway session for the investigation gateway profile", async () => {
     const fixture = await createFixture({
       executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
@@ -1360,6 +1451,9 @@ async function sealRequest(input: {
   transcriptCanonicalJson: string;
   replayMaterialCanonicalJson: string;
   actualModel?: string;
+  providerSucceeded?: boolean;
+  schemaValidated?: boolean;
+  fullyConsumed?: boolean;
 }) {
   return withBodyHash(ReviewActionV2OperationId.ReviewContextGatewaySeal, {
     ...envelope("gateway-seal"),
@@ -1372,9 +1466,9 @@ async function sealRequest(input: {
     attemptId: required(input.fixture.lease.attemptId),
     sourceLeaseId: input.fixture.lease.leaseId,
     fencingToken: input.fixture.lease.fencingToken.toString(10),
-    providerSucceeded: true,
-    schemaValidated: true,
-    fullyConsumed: true,
+    providerSucceeded: input.providerSucceeded ?? true,
+    schemaValidated: input.schemaValidated ?? true,
+    fullyConsumed: input.fullyConsumed ?? true,
     actualModel: input.actualModel ?? requestedModel,
     terminalOutcomeHash: sha("terminal-outcome"),
     transcriptCanonicalJson: input.transcriptCanonicalJson,
@@ -1391,6 +1485,9 @@ async function createShadowSealRequest(input: {
   transcriptCanonicalJson: string;
   replayMaterialCanonicalJson: string;
   actualModel?: string;
+  providerSucceeded?: boolean;
+  schemaValidated?: boolean;
+  fullyConsumed?: boolean;
 }) {
   return withBodyHash(
     ReviewActionV2OperationId.ReviewInvestigationContextGatewaySeal,
@@ -1405,9 +1502,9 @@ async function createShadowSealRequest(input: {
       attemptId: input.fixture.lease.attemptId,
       sourceLeaseId: input.fixture.lease.leaseId,
       fencingToken: input.fixture.lease.fencingToken.toString(10),
-      providerSucceeded: true,
-      schemaValidated: true,
-      fullyConsumed: true,
+      providerSucceeded: input.providerSucceeded ?? true,
+      schemaValidated: input.schemaValidated ?? true,
+      fullyConsumed: input.fullyConsumed ?? true,
       actualModel: input.actualModel ?? requestedModel,
       terminalOutcomeHash: sha("terminal-outcome"),
       transcriptCanonicalJson: input.transcriptCanonicalJson,

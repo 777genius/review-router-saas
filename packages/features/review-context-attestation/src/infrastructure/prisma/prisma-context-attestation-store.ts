@@ -30,7 +30,10 @@ import {
   ContextLeaseAuthorityKind,
   ContextProviderKind,
   GatewaySessionState,
+  isGatewaySessionTerminal,
+  isValidGatewaySessionAbandonTransition,
   openGatewaySession,
+  sameGatewaySessionIdentity,
   type GatewaySession,
 } from "../../domain/gateway-session";
 import {
@@ -79,6 +82,72 @@ export class PrismaContextAttestationStore implements ContextAttestationStorePor
       where: { sessionId },
     });
     return record ? toGatewaySession(record) : null;
+  }
+
+  async abandonSession(input: {
+    readonly expectedSession: GatewaySession;
+    readonly terminalSession: GatewaySession;
+  }): Promise<ContextAttestationPersistenceResult<GatewaySession>> {
+    if (!isValidGatewaySessionAbandonTransition(input)) return conflict();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (transaction) => {
+            await lockContextAttestationSession(
+              transaction,
+              input.expectedSession.sessionId,
+            );
+            const record =
+              await transaction.reviewContextGatewaySession.findUnique({
+                where: { sessionId: input.expectedSession.sessionId },
+              });
+            if (!record) return conflict();
+            const current = toGatewaySession(record);
+            if (!sameGatewaySessionIdentity(current, input.expectedSession)) {
+              return conflict();
+            }
+            if (isGatewaySessionTerminal(current)) {
+              return persisted(
+                ContextAttestationPersistenceStatus.Idempotent,
+                current,
+              );
+            }
+            if (current.state !== input.expectedSession.state) {
+              return conflict();
+            }
+            const updated =
+              await transaction.reviewContextGatewaySession.updateMany({
+                where: {
+                  sessionId: current.sessionId,
+                  state: toPrismaSessionState(current.state),
+                  attemptId: current.attemptId,
+                  sourceLeaseId: current.sourceLeaseId,
+                  sourceFencingToken: BigInt(current.sourceFencingToken),
+                },
+                data: {
+                  state: toPrismaSessionState(input.terminalSession.state),
+                  revokedAt:
+                    input.terminalSession.revokedAtMs === null
+                      ? null
+                      : new Date(input.terminalSession.revokedAtMs),
+                },
+              });
+            if (updated.count !== 1) {
+              throw new ContextAttestationWriteRaceError();
+            }
+            return persisted(
+              ContextAttestationPersistenceStatus.Created,
+              input.terminalSession,
+            );
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        );
+      } catch (error) {
+        if (!isRetryableWriteConflict(error)) throw error;
+        if (attempt === 2) return conflict();
+      }
+    }
+    return conflict();
   }
 
   async acceptAttestation(input: {
