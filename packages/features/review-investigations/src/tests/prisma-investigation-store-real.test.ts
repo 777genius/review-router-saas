@@ -33,6 +33,7 @@ import {
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
   reviewInvestigationCoverageProfileV3,
+  reviewInvestigationCoverageProfileV4,
   investigationDossierCanonicalValue,
 } from "../index";
 import { RestoreReviewInvestigation } from "../application/use-cases/restore-review-investigation";
@@ -232,7 +233,14 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
 
   it("does not expire private material ahead of the database clock", async () => {
     const suffix = `db-material-expiry-fence-${randomUUID()}`;
-    const seed = createInvestigationStoreContractSeed(suffix);
+    const base = createInvestigationStoreContractSeed(suffix);
+    const seed = {
+      ...base,
+      contract: {
+        ...reviewInvestigationCoverageProfileV4,
+        producerReleaseId: base.contract.producerReleaseId,
+      },
+    };
     const harness = await createHarness(seed);
     const store = harness.store as PrismaInvestigationStore;
     const expiresAt = new Date(Date.now() + 60_000);
@@ -334,6 +342,7 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       await expect(
         restarted.findById(seed.investigationId),
       ).resolves.toMatchObject({
+        contract: reviewInvestigationCoverageProfileV4,
         totalUsageTokens: 110,
         turnProvenance: [provenance],
       });

@@ -31,6 +31,7 @@ export type ReviewInvestigationContract = Readonly<{
   producerReleaseId: string;
   runtimeProfileVersion: string;
   searchPolicyVersion: string;
+  turnPromptContractHash?: string;
 }>;
 
 export const reviewInvestigationProbePolicyV1 =
@@ -42,6 +43,7 @@ export enum ReviewInvestigationCoverageProfileGeneration {
   V1 = 1,
   V2 = 2,
   V3 = 3,
+  V4 = 4,
 }
 
 export const reviewInvestigationCoverageProfileV1 = Object.freeze({
@@ -69,26 +71,22 @@ export const reviewInvestigationCoverageProfileV3 = Object.freeze({
   expansionRulesVersion: "review-investigation-expansion.v3",
 } as const);
 
+export const reviewInvestigationCoverageProfileV4 = Object.freeze({
+  ...reviewInvestigationCoverageProfileV3,
+  turnPromptContractHash:
+    "41ad2e193eb96dfe8d091a76051652d4db4eb90a48560a33d07b31ef7f46b3d0",
+} as const);
+
 export function resolveReviewInvestigationCoverageProfileGeneration(
   contract: ReviewInvestigationContract,
 ): ReviewInvestigationCoverageProfileGeneration | null {
   if (
     contract.coverageContractVersion !==
-    reviewInvestigationCoverageProfileV3.coverageContractVersion
+    reviewInvestigationCoverageProfileV4.coverageContractVersion
   ) {
     return null;
   }
-  const expectedKeys = [
-    ...Object.keys(reviewInvestigationCoverageProfileV3),
-    "producerReleaseId",
-  ].sort();
   const actualKeys = Object.keys(contract).sort();
-  if (
-    actualKeys.length !== expectedKeys.length ||
-    actualKeys.some((key, index) => key !== expectedKeys[index])
-  ) {
-    throw new Error("investigation_coverage_profile_unsupported");
-  }
   for (const [generation, profile] of [
     [
       ReviewInvestigationCoverageProfileGeneration.V1,
@@ -102,13 +100,18 @@ export function resolveReviewInvestigationCoverageProfileGeneration(
       ReviewInvestigationCoverageProfileGeneration.V3,
       reviewInvestigationCoverageProfileV3,
     ],
+    [
+      ReviewInvestigationCoverageProfileGeneration.V4,
+      reviewInvestigationCoverageProfileV4,
+    ],
   ] as const) {
+    const expectedKeys = [...Object.keys(profile), "producerReleaseId"].sort();
     if (
+      actualKeys.length === expectedKeys.length &&
+      actualKeys.every((key, index) => key === expectedKeys[index]) &&
       Object.entries(profile).every(
         ([field, expected]) =>
-          contract[
-            field as keyof typeof reviewInvestigationCoverageProfileV3
-          ] === expected,
+          contract[field as keyof ReviewInvestigationContract] === expected,
       )
     ) {
       return generation;
@@ -124,7 +127,8 @@ export function isTypedReviewInvestigationCoverageProfile(
     resolveReviewInvestigationCoverageProfileGeneration(contract);
   return (
     generation === ReviewInvestigationCoverageProfileGeneration.V2 ||
-    generation === ReviewInvestigationCoverageProfileGeneration.V3
+    generation === ReviewInvestigationCoverageProfileGeneration.V3 ||
+    generation === ReviewInvestigationCoverageProfileGeneration.V4
   );
 }
 
@@ -189,14 +193,22 @@ export function assertInvestigationContract(
     "searchPolicyVersion",
   ].sort();
   const actual = Object.keys(contract).sort();
-  if (
-    actual.length !== expected.length ||
-    actual.some((field, index) => field !== expected[index])
-  ) {
+  const expectedWithTurnPromptContractHash = [
+    ...expected,
+    "turnPromptContractHash",
+  ].sort();
+  const matches = (shape: readonly string[]) =>
+    actual.length === shape.length &&
+    actual.every((field, index) => field === shape[index]);
+  if (!matches(expected) && !matches(expectedWithTurnPromptContractHash)) {
     throw new Error("investigation_contract_shape_invalid");
   }
   for (const [field, value] of Object.entries(contract)) {
-    assertIdentifier(value, field);
+    if (field === "turnPromptContractHash") {
+      assertDigest(value, field);
+    } else {
+      assertIdentifier(value, field);
+    }
   }
 }
 

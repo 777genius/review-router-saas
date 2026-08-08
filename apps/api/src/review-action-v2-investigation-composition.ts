@@ -1038,14 +1038,14 @@ async function assertRegisteredInvestigationReleaseProfile(input: {
       "investigation_release_profile_unavailable",
     );
   }
+  const { producerReleaseId, ...coverageProfile } = input.contract;
   const profile = release?.reviewInvestigationProfile ?? null;
   if (
     !release ||
     release.state !== ProducerReleaseState.Registered ||
     profile === null ||
     profile.capability !== reviewInvestigationCapabilityV1 ||
-    input.contract.producerReleaseId !==
-      input.authorization.producerReleaseId ||
+    producerReleaseId !== input.authorization.producerReleaseId ||
     input.policyHash !== profile.policyHash
   ) {
     throw failure(
@@ -1055,15 +1055,7 @@ async function assertRegisteredInvestigationReleaseProfile(input: {
     );
   }
   const coverageProfileHash = await input.dependencies.digest.digestUtf8(
-    canonicalJson({
-      coverageContractVersion: input.contract.coverageContractVersion,
-      expansionRulesVersion: input.contract.expansionRulesVersion,
-      criticPolicyVersion: input.contract.criticPolicyVersion,
-      gatewayPolicyVersion: input.contract.gatewayPolicyVersion,
-      probePolicyVersion: input.contract.probePolicyVersion,
-      runtimeProfileVersion: input.contract.runtimeProfileVersion,
-      searchPolicyVersion: input.contract.searchPolicyVersion,
-    }),
+    canonicalJson(coverageProfile),
   );
   if (
     coverageProfileHash !== profile.coverageProfileHash ||

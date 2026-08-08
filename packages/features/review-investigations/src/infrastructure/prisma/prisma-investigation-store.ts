@@ -1109,6 +1109,9 @@ async function loadAggregate(
       producerReleaseId: record.producerReleaseId,
       runtimeProfileVersion: record.runtimeProfileVersion,
       searchPolicyVersion: record.searchPolicyVersion,
+      ...(record.turnPromptContractHash === null
+        ? {}
+        : { turnPromptContractHash: record.turnPromptContractHash }),
     },
     policyCanonicalVersion,
     policy,
@@ -1527,6 +1530,8 @@ function toMainCreate(
     producerReleaseId: investigation.contract.producerReleaseId,
     runtimeProfileVersion: investigation.contract.runtimeProfileVersion,
     searchPolicyVersion: investigation.contract.searchPolicyVersion,
+    turnPromptContractHash:
+      investigation.contract.turnPromptContractHash ?? null,
     policyCanonicalVersion: investigation.policyCanonicalVersion,
     version: BigInt(investigation.version),
     policy: investigation.policy as unknown as Prisma.InputJsonValue,
@@ -1633,7 +1638,10 @@ function assertUpdate(
     next.contract.probePolicyVersion !== current.contract.probePolicyVersion ||
     next.contract.runtimeProfileVersion !==
       current.contract.runtimeProfileVersion ||
-    next.contract.searchPolicyVersion !== current.contract.searchPolicyVersion
+    next.contract.searchPolicyVersion !==
+      current.contract.searchPolicyVersion ||
+    next.contract.turnPromptContractHash !==
+      current.contract.turnPromptContractHash
   ) {
     throw new Error("investigation_immutable_identity_changed");
   }
