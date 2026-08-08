@@ -21,7 +21,7 @@ import {
   canonicalStandardTextSearchOperationInput,
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
-  reviewInvestigationCoverageProfileV2,
+  reviewInvestigationCoverageProfileV3,
   type OpenReviewInvestigationCommand,
 } from "../index";
 import { HydrateInvestigationTurnObligations } from "../application/use-cases/hydrate-investigation-turn-obligations";
@@ -403,7 +403,7 @@ function command(commandId: string): OpenReviewInvestigationCommand {
     investigationManifestHash: sha256("{}"),
     runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
     contract: {
-      ...reviewInvestigationCoverageProfileV2,
+      ...reviewInvestigationCoverageProfileV3,
       producerReleaseId: "producer-private-material",
     },
     policy: {
@@ -465,7 +465,7 @@ function command(commandId: string): OpenReviewInvestigationCommand {
           revision: InvestigationOperationRevision.Head,
           sourcePathHash,
           searchPolicyVersion:
-            reviewInvestigationCoverageProfileV2.searchPolicyVersion,
+            reviewInvestigationCoverageProfileV3.searchPolicyVersion,
         }),
         riskPriority: 80,
       },

@@ -10,7 +10,7 @@ import {
   parseInvestigationEvidenceRequirement,
 } from "../domain/obligation-closure-policy";
 import type { ReviewInvestigation } from "../domain/review-investigation";
-import { reviewInvestigationCoverageProfileV2 } from "../domain/coverage-contract";
+import { resolveReviewInvestigationCoverageProfileGeneration } from "../domain/coverage-contract";
 
 export function validateInvestigationPrivateMaterialCommit(input: {
   readonly investigation: ReviewInvestigation;
@@ -21,8 +21,9 @@ export function validateInvestigationPrivateMaterialCommit(input: {
 }): readonly EncryptedInvestigationPrivateMaterial[] {
   persistedSearchQueryPrivateMaterialObligationIds(input.investigation);
   if (
-    input.investigation.contract.expansionRulesVersion !==
-    reviewInvestigationCoverageProfileV2.expansionRulesVersion
+    resolveReviewInvestigationCoverageProfileGeneration(
+      input.investigation.contract,
+    ) === null
   ) {
     if (input.privateMaterials.length > 0) {
       throw new Error("investigation_private_material_transition_invalid");
@@ -146,8 +147,9 @@ function persistedSearchQueryPrivateMaterialObligationIds(
   investigation: ReviewInvestigation,
 ): ReadonlySet<string> {
   if (
-    investigation.contract.expansionRulesVersion !==
-    reviewInvestigationCoverageProfileV2.expansionRulesVersion
+    resolveReviewInvestigationCoverageProfileGeneration(
+      investigation.contract,
+    ) === null
   ) {
     return new Set();
   }

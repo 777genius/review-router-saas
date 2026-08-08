@@ -33,7 +33,7 @@ import {
   obligationEvidenceRequirementVersionV2,
   InvestigationTextSearchMatchMode,
   parseInvestigationTurnObservation,
-  reviewInvestigationCoverageProfileV2,
+  reviewInvestigationCoverageProfileV3,
   type InvestigationTurnEvidencePort,
   type InvestigationTurnObservation,
   type ReviewInvestigation,
@@ -120,7 +120,7 @@ describe("CommitAttestedInvestigationTurn", () => {
         "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
       contract: {
-        ...reviewInvestigationCoverageProfileV2,
+        ...reviewInvestigationCoverageProfileV3,
         producerReleaseId: "release-1",
       },
       policy: {
@@ -205,7 +205,7 @@ describe("CommitAttestedInvestigationTurn", () => {
           acceptedAttestationHash: hash("8"),
           terminalOutcomeHash: inventoryTerminalOutcomeHash,
           gatewayPolicyVersion:
-            reviewInvestigationCoverageProfileV2.gatewayPolicyVersion,
+            reviewInvestigationCoverageProfileV3.gatewayPolicyVersion,
           actualProviderKind: InvestigationTurnProviderKind.Codex,
           operations: [
             inventoryOperationEvidence({
@@ -285,7 +285,7 @@ describe("CommitAttestedInvestigationTurn", () => {
           acceptedAttestationHash: hash("8"),
           terminalOutcomeHash,
           gatewayPolicyVersion:
-            reviewInvestigationCoverageProfileV2.gatewayPolicyVersion,
+            reviewInvestigationCoverageProfileV3.gatewayPolicyVersion,
           actualProviderKind: InvestigationTurnProviderKind.Codex,
           operations: [
             inventoryOperationEvidence({
@@ -1223,7 +1223,7 @@ describe("CommitAttestedInvestigationTurn", () => {
         "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
       contract: {
-        ...reviewInvestigationCoverageProfileV2,
+        ...reviewInvestigationCoverageProfileV3,
         producerReleaseId: "release-1",
       },
       policy: {
@@ -1278,7 +1278,7 @@ describe("CommitAttestedInvestigationTurn", () => {
             revision: InvestigationOperationRevision.Head,
             sourcePathHash: pathHash,
             searchPolicyVersion:
-              reviewInvestigationCoverageProfileV2.searchPolicyVersion,
+              reviewInvestigationCoverageProfileV3.searchPolicyVersion,
           }),
           riskPriority: 800_000,
         },
@@ -1318,7 +1318,7 @@ describe("CommitAttestedInvestigationTurn", () => {
             canonicalInvestigationTerminalObservation(inventoryObservation),
           ),
           gatewayPolicyVersion:
-            reviewInvestigationCoverageProfileV2.gatewayPolicyVersion,
+            reviewInvestigationCoverageProfileV3.gatewayPolicyVersion,
           actualProviderKind: InvestigationTurnProviderKind.Codex,
           operations: [
             inventoryOperationEvidence({
@@ -1566,7 +1566,7 @@ describe("CommitAttestedInvestigationTurn", () => {
         "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
       contract: {
-        ...reviewInvestigationCoverageProfileV2,
+        ...reviewInvestigationCoverageProfileV3,
         producerReleaseId: "release-1",
       },
       policy: {
@@ -1627,7 +1627,7 @@ describe("CommitAttestedInvestigationTurn", () => {
             revision: InvestigationOperationRevision.Head,
             sourcePathHash,
             searchPolicyVersion:
-              reviewInvestigationCoverageProfileV2.searchPolicyVersion,
+              reviewInvestigationCoverageProfileV3.searchPolicyVersion,
           }),
           riskPriority: 800_000,
         },

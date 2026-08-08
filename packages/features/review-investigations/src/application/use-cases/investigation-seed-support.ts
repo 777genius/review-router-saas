@@ -3,7 +3,7 @@ import type {
   ReviewInvestigationRevision,
   SeedInvestigationObligation,
 } from "../../domain/coverage-contract";
-import { reviewInvestigationCoverageProfileV2 } from "../../domain/coverage-contract";
+import { resolveReviewInvestigationCoverageProfileGeneration } from "../../domain/coverage-contract";
 import type { CoverageSeedPolicy } from "../../domain/coverage-policies";
 import {
   createInvestigationObligation,
@@ -40,8 +40,8 @@ export async function prepareInvestigationSeed(input: {
   readonly digest: InvestigationDigestPort;
 }): Promise<PreparedInvestigationSeed> {
   if (
-    input.contract.expansionRulesVersion ===
-      reviewInvestigationCoverageProfileV2.expansionRulesVersion &&
+    resolveReviewInvestigationCoverageProfileGeneration(input.contract) !==
+      null &&
     input.initialReceipts.length > 0
   ) {
     throw new Error("investigation_initial_receipts_unverified");
@@ -97,8 +97,9 @@ export async function prepareInvestigationSeedPrivateMaterials(input: {
   readonly preparer: PrepareInvestigationSearchQueryPrivateMaterial | undefined;
 }): Promise<readonly EncryptedInvestigationPrivateMaterial[]> {
   if (
-    input.investigation.contract.expansionRulesVersion !==
-    reviewInvestigationCoverageProfileV2.expansionRulesVersion
+    resolveReviewInvestigationCoverageProfileGeneration(
+      input.investigation.contract,
+    ) === null
   ) {
     return Object.freeze([]);
   }
@@ -140,8 +141,7 @@ async function validateCoverageSeedDigestBindings(input: {
   readonly digest: InvestigationDigestPort;
 }): Promise<ReadonlyMap<string, string>> {
   if (
-    input.contract.expansionRulesVersion !==
-    reviewInvestigationCoverageProfileV2.expansionRulesVersion
+    resolveReviewInvestigationCoverageProfileGeneration(input.contract) === null
   ) {
     return new Map();
   }

@@ -23,7 +23,7 @@ import {
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
   obligationIdentity,
-  reviewInvestigationCoverageProfileV2,
+  reviewInvestigationCoverageProfileV3,
   type InvestigationObligation,
   type InvestigationPageEvidence,
   type ReviewInvestigation,
@@ -312,7 +312,7 @@ function investigationFixture(
     providerStrategyId: "codex-primary",
     runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
     contract: {
-      ...reviewInvestigationCoverageProfileV2,
+      ...reviewInvestigationCoverageProfileV3,
       producerReleaseId: "release-1",
     },
     policy: {
@@ -400,7 +400,7 @@ function searchObligation(input: {
       revision: InvestigationOperationRevision.Head,
       sourcePathHash: input.sourcePathHash,
       searchPolicyVersion:
-        reviewInvestigationCoverageProfileV2.searchPolicyVersion,
+        reviewInvestigationCoverageProfileV3.searchPolicyVersion,
     }),
     origin: InvestigationObligationOrigin.DeterministicExpansion,
   });
@@ -417,7 +417,7 @@ function obligation(input: {
     obligationId: input.obligationId,
     identity: obligationIdentity({
       coverageContractVersion:
-        reviewInvestigationCoverageProfileV2.coverageContractVersion,
+        reviewInvestigationCoverageProfileV3.coverageContractVersion,
       stableReviewUnitKey: "review-unit-1",
       kind: input.kind,
       canonicalSubject: input.canonicalSubject,
