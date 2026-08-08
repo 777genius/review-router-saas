@@ -5,7 +5,12 @@ import {
   trustedReviewCommandLedgerAuthorsFromEnv,
   type GitHubGraphqlClient,
 } from "../infrastructure/github/github-review-publication-lifecycle";
-import { LiveReviewPublicationLifecycleStatus } from "../application/ports/review-publication-ports";
+import {
+  CurrentPublicationLifecycleStatus,
+  LiveReviewPublicationLifecycleStatus,
+  ReviewPublicationLifecycleExpectationStatus,
+} from "../application/ports/review-publication-ports";
+import { ResolveCurrentPublicationLifecycle } from "../application/use-cases/resolve-current-publication-lifecycle";
 import type { ReviewPublicationScope } from "../domain/review-publication-attempt";
 import { canonicalReviewPublicationJson } from "../domain/canonical-review-publication-json";
 import { HmacReviewCommandLedgerVerifier } from "../infrastructure/hmac-review-command-ledger-verifier";
@@ -146,6 +151,16 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
       name: "pending review creation",
       timestamps: { publishedAt: null },
       expectedInteraction: false,
+      expectedLastRelevantChangeAt: "2026-07-23T10:00:00.000Z",
+    },
+    {
+      name: "unexplained pending review update",
+      timestamps: {
+        publishedAt: null,
+        updatedAt: "2026-07-23T10:00:11Z",
+      },
+      expectedInteraction: true,
+      expectedLastRelevantChangeAt: "2026-07-23T10:00:11.000Z",
     },
     {
       name: "pending-to-submitted review transition",
@@ -154,6 +169,7 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
         updatedAt: "2026-07-23T10:00:11Z",
       },
       expectedInteraction: false,
+      expectedLastRelevantChangeAt: "2026-07-23T10:00:00.000Z",
     },
     {
       name: "parent comment edit",
@@ -163,14 +179,16 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
         lastEditedAt: "2026-07-23T10:00:11Z",
       },
       expectedInteraction: true,
+      expectedLastRelevantChangeAt: "2026-07-23T10:00:11.000Z",
     },
     {
-      name: "unexplained update after publication",
+      name: "pending-to-submitted propagation lag",
       timestamps: {
         publishedAt: "2026-07-23T10:00:05Z",
         updatedAt: "2026-07-23T10:00:11Z",
       },
-      expectedInteraction: true,
+      expectedInteraction: false,
+      expectedLastRelevantChangeAt: "2026-07-23T10:00:00.000Z",
     },
   ])("classifies $name without weakening freshness", async (testCase) => {
     const result = await resolveSingleTarget(testCase.timestamps);
@@ -178,9 +196,42 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
     expect(result).toMatchObject({
       status: LiveReviewPublicationLifecycleStatus.Available,
       targets: [
-        { hasRelevantInteractionAfterParent: testCase.expectedInteraction },
+        {
+          hasRelevantInteractionAfterParent: testCase.expectedInteraction,
+          lastRelevantChangeAt: new Date(testCase.expectedLastRelevantChangeAt),
+        },
       ],
     });
+  });
+
+  it("keeps a submitted publication current through GitHub timestamp propagation lag", async () => {
+    const live = await resolveSingleTarget({
+      publishedAt: "2026-07-23T10:00:05Z",
+      updatedAt: "2026-07-23T10:00:11Z",
+    });
+    const result = await new ResolveCurrentPublicationLifecycle({
+      expectations: {
+        async resolve() {
+          return {
+            status: ReviewPublicationLifecycleExpectationStatus.Available,
+            reviewedHeadSha: headSha,
+            lifecycleStateHash: "lifecycle-hash",
+            commandLedgerWatermark: 0n,
+            observedNotAfter: new Date("2026-07-23T09:59:59.000Z"),
+            lifecycleObservationVersion: null,
+            targets: [],
+            createdTargetFingerprints: [lineageFingerprint],
+          };
+        },
+      },
+      live: {
+        async resolve() {
+          return live;
+        },
+      },
+    }).resolve(scope);
+
+    expect(result.status).toBe(CurrentPublicationLifecycleStatus.Current);
   });
 
   it("fails closed on reversed GitHub publication timestamps", async () => {

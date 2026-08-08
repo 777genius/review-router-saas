@@ -275,17 +275,20 @@ async function loadInventory(
         parent.createdAt,
         "github_parent_created_at",
       );
-      const parentHasRelevantTimestampChange = hasRelevantParentTimestampChange(
+      const parentTimestampChange = relevantParentTimestampChange(
         parent,
         parentCreatedAt,
       );
       let lastRelevantChangeAt = parentCreatedAt;
-      for (const comment of comments) {
-        const changedAt = laterDate(
-          comment.createdAt,
-          comment.updatedAt,
-          comment.lastEditedAt,
-        );
+      for (const [index, comment] of comments.entries()) {
+        const changedAt =
+          index === 0
+            ? parentTimestampChange.relevantChangeAt
+            : laterDate(
+                comment.createdAt,
+                comment.updatedAt,
+                comment.lastEditedAt,
+              );
         if (changedAt > lastRelevantChangeAt) {
           lastRelevantChangeAt = changedAt;
         }
@@ -310,7 +313,7 @@ async function loadInventory(
         isResolved: thread.isResolved,
         parentOwnedByIntegration,
         hasRelevantInteractionAfterParent:
-          comments.length > 1 || parentHasRelevantTimestampChange,
+          comments.length > 1 || parentTimestampChange.hasRelevantChange,
         parentCreatedAt,
         lastRelevantChangeAt,
       });
@@ -664,11 +667,15 @@ function laterDate(
   );
 }
 
-function hasRelevantParentTimestampChange(
+function relevantParentTimestampChange(
   parent: ValidReviewComment,
   createdAt: Date,
-): boolean {
-  // GitHub advances updatedAt when a pending review is submitted without editing its body.
+): Readonly<{
+  hasRelevantChange: boolean;
+  relevantChangeAt: Date;
+}> {
+  // GitHub can advance updatedAt after publishedAt while finalizing a pending
+  // review. lastEditedAt is the authoritative body-edit signal.
   const updatedAt = timestamp(
     parent.updatedAt ?? parent.createdAt,
     "github_comment_updated_at",
@@ -690,10 +697,15 @@ function hasRelevantParentTimestampChange(
   ) {
     throw new Error("github_comment_timestamp_order_invalid");
   }
-  if (lastEditedAt !== null) return true;
-  return publishedAt === null
-    ? updatedAt.getTime() !== createdAt.getTime()
-    : updatedAt.getTime() !== publishedAt.getTime();
+  const hasRelevantChange =
+    lastEditedAt !== null ||
+    (publishedAt === null && updatedAt.getTime() !== createdAt.getTime());
+  return Object.freeze({
+    hasRelevantChange,
+    relevantChangeAt: hasRelevantChange
+      ? new Date(Math.max(updatedAt.getTime(), lastEditedAt?.getTime() ?? 0))
+      : createdAt,
+  });
 }
 
 function timestamp(value: string | null | undefined, field: string): Date {
