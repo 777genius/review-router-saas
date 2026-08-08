@@ -8,7 +8,9 @@ import {
   type PrismaClient,
 } from "@prisma/client";
 import {
+  ReviewPublicationAttemptState,
   ReviewPublicationCorrectionReason,
+  ReviewPublicationOperationAttemptState,
   ReviewPublicationOperationRole,
   ReviewPublicationOperationState,
   ReviewPublicationReceiptStatus,
@@ -17,20 +19,28 @@ import {
   assertReviewPublicationAttemptCandidate,
   claimCapabilityFacts,
   hasEveryRequiredCanonicalReceipt,
+  hasPublicationExternalEffectRisk,
+  isActiveReviewPublicationOperation,
+  isAttemptLevelNoEffectOutcome,
+  isExactPublicationSiblingTerminalizationPlan,
   operationCapabilityFacts,
+  publicationOperationsWithExternalEffectRisk,
   selectCanonicalExternalEffect,
   type ReviewPublicationAttempt,
   type ReviewPublicationAuditTombstone,
   type ReviewPublicationExternalEffect,
   type ReviewPublicationOperation,
+  type ReviewPublicationOperationAttempt,
   type ReviewPublicationOutcomeCorrection,
   type ReviewPublicationReceipt,
 } from "../../domain/review-publication-attempt";
+import { reviewPublicationNoEffectProofHash } from "../review-publication-no-effect-proof";
 import {
   AdjudicateReviewPublicationOutcomeStatus,
   BeginReviewPublicationOperationStatus,
   ClaimReviewPublicationStatus,
   CompleteReviewPublicationOperationStatus,
+  ProveReviewPublicationNoEffectStatus,
   RecordReviewExternalEffectStatus,
   RenewReviewPublicationClaimStatus,
   RequestReviewPublicationStatus,
@@ -47,6 +57,9 @@ import {
   type CompleteReviewPublicationOperationCommand,
   type CompleteReviewPublicationOperationCommandPort,
   type CompleteReviewPublicationOperationResult,
+  type ProveReviewPublicationNoEffectCommand,
+  type ProveReviewPublicationNoEffectCommandPort,
+  type ProveReviewPublicationNoEffectResult,
   type RecordReviewExternalEffectCommand,
   type RecordReviewExternalEffectCommandPort,
   type RecordReviewExternalEffectResult,
@@ -91,6 +104,7 @@ export class PrismaReviewPublicationRepository
     RenewReviewPublicationClaimCommandPort,
     BeginReviewPublicationOperationCommandPort,
     RecordReviewExternalEffectCommandPort,
+    ProveReviewPublicationNoEffectCommandPort,
     CompleteReviewPublicationOperationCommandPort,
     TerminalizeUnknownReviewPublicationCommandPort,
     AdjudicateReviewPublicationOutcomeCommandPort
@@ -604,8 +618,13 @@ export class PrismaReviewPublicationRepository
           await transaction.reviewPublicationOperationAttemptV2.findFirst({
             where: {
               publicationOperationId: operationRow.publicationOperationId,
-              claimId: claimRow.claimId,
-              state: { not: DbOperationAttemptState.stale },
+              OR: [
+                { state: DbOperationAttemptState.no_effect_proven },
+                {
+                  claimId: claimRow.claimId,
+                  state: { not: DbOperationAttemptState.stale },
+                },
+              ],
             },
             select: { operationAttemptId: true },
           });
@@ -715,6 +734,154 @@ export class PrismaReviewPublicationRepository
     });
   }
 
+  async proveNoEffect(
+    command: ProveReviewPublicationNoEffectCommand,
+  ): Promise<ProveReviewPublicationNoEffectResult> {
+    return this.withSerializableTransaction(async (transaction) => {
+      if (
+        !(await lockAttempt(
+          transaction,
+          command.capability.publicationAttemptId,
+        ))
+      ) {
+        return { status: ProveReviewPublicationNoEffectStatus.Missing };
+      }
+      const attempt = await requiredAttempt(
+        transaction,
+        command.capability.publicationAttemptId,
+      );
+      if (
+        command.noEffectProofHash !==
+        reviewPublicationNoEffectProofHash(command)
+      ) {
+        return { status: ProveReviewPublicationNoEffectStatus.RequestConflict };
+      }
+      const operationRow =
+        await transaction.reviewPublicationOperationV2.findUnique({
+          where: {
+            publicationOperationId: command.capability.publicationOperationId,
+          },
+        });
+      const operationAttemptRow =
+        await transaction.reviewPublicationOperationAttemptV2.findUnique({
+          where: { operationAttemptId: command.capability.operationAttemptId },
+        });
+      if (
+        operationRow === null ||
+        operationAttemptRow === null ||
+        operationRow.publicationAttemptId !== attempt.publicationAttemptId ||
+        operationAttemptRow.publicationAttemptId !==
+          attempt.publicationAttemptId ||
+        operationAttemptRow.publicationOperationId !==
+          operationRow.publicationOperationId
+      ) {
+        return { status: ProveReviewPublicationNoEffectStatus.Missing };
+      }
+      const operation = toDomainOperation(operationRow);
+      const operationAttempt = toDomainOperationAttempt(operationAttemptRow);
+      const targetExternalObjectId = await dependencyExternalObjectIdFromDb(
+        transaction,
+        operationRow.dependsOnOperationId,
+      );
+      try {
+        assertOperationCapabilityMatches(
+          command.capability,
+          attempt,
+          operation,
+          operationAttempt,
+        );
+        if (
+          command.capability.targetExternalObjectId !== targetExternalObjectId
+        ) {
+          throw new Error("publication_operation_capability_mismatch");
+        }
+      } catch {
+        return {
+          status: ProveReviewPublicationNoEffectStatus.CapabilityMismatch,
+        };
+      }
+      if (
+        operationAttempt.state ===
+        ReviewPublicationOperationAttemptState.NoEffectProven
+      ) {
+        return sameNoEffectProof(operationAttempt, command)
+          ? {
+              status: ProveReviewPublicationNoEffectStatus.Restored,
+              attempt,
+              operation,
+              operationAttempt,
+            }
+          : { status: ProveReviewPublicationNoEffectStatus.RequestConflict };
+      }
+      const duplicateProof =
+        await transaction.reviewPublicationOperationAttemptV2.findUnique({
+          where: { noEffectProofId: command.noEffectProofId },
+          select: { operationAttemptId: true },
+        });
+      if (duplicateProof !== null) {
+        return { status: ProveReviewPublicationNoEffectStatus.RequestConflict };
+      }
+      if (attempt.state === ReviewPublicationAttemptState.Terminal) {
+        return { status: ProveReviewPublicationNoEffectStatus.Terminal };
+      }
+      const now = await databaseNow(transaction);
+      const claim = await transaction.reviewPublicationClaimTermV2.findUnique({
+        where: { claimId: command.capability.claimId },
+      });
+      if (
+        claim === null ||
+        claim.publicationAttemptId !== attempt.publicationAttemptId ||
+        claim.state !== DbClaimState.active ||
+        claim.fencingToken !== command.capability.claimFencingToken ||
+        claim.expiresAt <= now ||
+        attempt.activeClaimId !== claim.claimId
+      ) {
+        return { status: ProveReviewPublicationNoEffectStatus.StaleClaim };
+      }
+      const effect =
+        await transaction.reviewPublicationExternalEffectV2.findFirst({
+          where: { operationAttemptId: operationAttempt.operationAttemptId },
+          select: { effectId: true },
+        });
+      if (
+        operationAttempt.state !==
+          ReviewPublicationOperationAttemptState.Active ||
+        effect !== null
+      ) {
+        return {
+          status: ProveReviewPublicationNoEffectStatus.ExternalEffectExists,
+        };
+      }
+      const updated =
+        await transaction.reviewPublicationOperationAttemptV2.updateMany({
+          where: {
+            operationAttemptId: operationAttempt.operationAttemptId,
+            state: DbOperationAttemptState.active,
+          },
+          data: {
+            state: DbOperationAttemptState.no_effect_proven,
+            noEffectProofId: command.noEffectProofId,
+            noEffectProofHash: command.noEffectProofHash,
+            noEffectReason: command.noEffectReason,
+            noEffectProvenAt: now,
+          },
+        });
+      ensureUpdatedOnce(updated.count, "publication_no_effect_proof_conflict");
+      const provenRow =
+        await transaction.reviewPublicationOperationAttemptV2.findUniqueOrThrow(
+          {
+            where: { operationAttemptId: operationAttempt.operationAttemptId },
+          },
+        );
+      return {
+        status: ProveReviewPublicationNoEffectStatus.Proven,
+        attempt,
+        operation,
+        operationAttempt: toDomainOperationAttempt(provenRow),
+      };
+    });
+  }
+
   async record(
     command: RecordReviewExternalEffectCommand,
   ): Promise<RecordReviewExternalEffectResult> {
@@ -776,6 +943,12 @@ export class PrismaReviewPublicationRepository
         return {
           status: RecordReviewExternalEffectStatus.CapabilityMismatch,
         };
+      }
+      if (
+        operationAttempt.state ===
+        ReviewPublicationOperationAttemptState.NoEffectProven
+      ) {
+        return { status: RecordReviewExternalEffectStatus.RequestConflict };
       }
       const now = await databaseNow(transaction);
       if (now > operationAttemptRow.effectReportUntil) {
@@ -999,13 +1172,17 @@ export class PrismaReviewPublicationRepository
         "publication_operation_cas_conflict",
       );
       await transaction.reviewPublicationOperationAttemptV2.updateMany({
-        where: { publicationOperationId: command.publicationOperationId },
+        where: {
+          publicationOperationId: command.publicationOperationId,
+          state: { not: DbOperationAttemptState.no_effect_proven },
+        },
         data: { state: DbOperationAttemptState.stale },
       });
       await transaction.reviewPublicationOperationAttemptV2.updateMany({
         where: {
           publicationOperationId: command.publicationOperationId,
           claimId: command.claimId,
+          state: { not: DbOperationAttemptState.no_effect_proven },
         },
         data: { state: DbOperationAttemptState.completed },
       });
@@ -1068,7 +1245,10 @@ export class PrismaReviewPublicationRepository
           where: { publicationOperationId: command.publicationOperationId },
         });
       if (existing !== null) {
-        if (!sameTombstone(toDomainTombstone(existing), command)) {
+        if (
+          !sameTombstone(toDomainTombstone(existing), command) ||
+          !(await sameTerminalizationTombstonePlan(transaction, command))
+        ) {
           return { status: TerminalizeUnknownReviewPublicationStatus.Conflict };
         }
         return {
@@ -1126,45 +1306,176 @@ export class PrismaReviewPublicationRepository
       ) {
         return { status: TerminalizeUnknownReviewPublicationStatus.Missing };
       }
+      const [operationRows, operationAttemptRows, effectRows, receiptRows] =
+        await Promise.all([
+          transaction.reviewPublicationOperationV2.findMany({
+            where: { publicationAttemptId: command.publicationAttemptId },
+          }),
+          transaction.reviewPublicationOperationAttemptV2.findMany({
+            where: { publicationAttemptId: command.publicationAttemptId },
+          }),
+          transaction.reviewPublicationExternalEffectV2.findMany({
+            where: { publicationAttemptId: command.publicationAttemptId },
+          }),
+          transaction.reviewPublicationReceiptV2.findMany({
+            where: { publicationAttemptId: command.publicationAttemptId },
+          }),
+        ]);
+      const domainOperations = operationRows.map(toDomainOperation);
+      const domainOperationAttempts = operationAttemptRows.map(
+        toDomainOperationAttempt,
+      );
+      const domainEffects = effectRows.map(toDomainEffect);
+      const domainReceipts = receiptRows.map(toDomainReceipt);
+      const riskOperations = publicationOperationsWithExternalEffectRisk({
+        operations: domainOperations,
+        operationAttempts: domainOperationAttempts,
+        effects: domainEffects,
+        receipts: domainReceipts,
+      });
       if (
         finalOutcome === ReviewPublicationTerminalOutcome.TerminalUnknown &&
-        now < operationRow.reconcileUntil
+        [toDomainOperation(operationRow), ...riskOperations].some(
+          (candidate) => now < candidate.reconcileUntil,
+        )
       ) {
         return { status: TerminalizeUnknownReviewPublicationStatus.TooEarly };
       }
-      const tombstoneById =
-        await transaction.reviewPublicationAuditTombstoneV2.findUnique({
-          where: { tombstoneId: command.tombstoneId },
-          select: { tombstoneId: true },
+      if (
+        isAttemptLevelNoEffectOutcome(finalOutcome) &&
+        hasPublicationExternalEffectRisk({
+          operations: domainOperations,
+          operationAttempts: domainOperationAttempts,
+          effects: domainEffects,
+          receipts: domainReceipts,
+        })
+      ) {
+        return {
+          status: TerminalizeUnknownReviewPublicationStatus.ExternalEffectRisk,
+        };
+      }
+      if (
+        !isExactPublicationSiblingTerminalizationPlan({
+          publicationOperationId: command.publicationOperationId,
+          attemptOutcome: finalOutcome,
+          operations: domainOperations,
+          operationAttempts: domainOperationAttempts,
+          effects: domainEffects,
+          receipts: domainReceipts,
+          supplied: command.siblingTombstones,
+        })
+      ) {
+        return { status: TerminalizeUnknownReviewPublicationStatus.Conflict };
+      }
+      const terminalOutcomeByOperation = new Map([
+        [command.publicationOperationId, finalOutcome],
+        ...command.siblingTombstones.map(
+          (sibling) =>
+            [sibling.publicationOperationId, sibling.finalOutcome] as const,
+        ),
+      ]);
+      const operationRowsToTerminalize =
+        await transaction.reviewPublicationOperationV2.findMany({
+          where: {
+            publicationAttemptId: command.publicationAttemptId,
+            publicationOperationId: {
+              in: [...terminalOutcomeByOperation.keys()],
+            },
+          },
         });
-      if (tombstoneById !== null) {
+      const tombstoneIdByOperation = new Map([
+        [command.publicationOperationId, command.tombstoneId],
+        ...command.siblingTombstones.map(
+          (sibling) =>
+            [sibling.publicationOperationId, sibling.tombstoneId] as const,
+        ),
+      ]);
+      if (
+        tombstoneIdByOperation.size !== operationRowsToTerminalize.length ||
+        operationRowsToTerminalize.some(
+          (candidate) =>
+            !tombstoneIdByOperation.has(candidate.publicationOperationId),
+        ) ||
+        [...tombstoneIdByOperation.keys()].some(
+          (operationId) =>
+            !operationRowsToTerminalize.some(
+              (candidate) => candidate.publicationOperationId === operationId,
+            ),
+        ) ||
+        (
+          await transaction.reviewPublicationOperationV2.findMany({
+            where: {
+              publicationAttemptId: command.publicationAttemptId,
+              publicationOperationId: {
+                notIn: [...tombstoneIdByOperation.keys()],
+              },
+            },
+          })
+        )
+          .map(toDomainOperation)
+          .some(isActiveReviewPublicationOperation)
+      ) {
+        return { status: TerminalizeUnknownReviewPublicationStatus.Conflict };
+      }
+      const tombstoneIds = [...tombstoneIdByOperation.values()];
+      if (
+        new Set(tombstoneIds).size !== tombstoneIds.length ||
+        (await transaction.reviewPublicationAuditTombstoneV2.findFirst({
+          where: { tombstoneId: { in: tombstoneIds } },
+          select: { tombstoneId: true },
+        })) !== null
+      ) {
         return { status: TerminalizeUnknownReviewPublicationStatus.Conflict };
       }
       const externalObjects =
         await transaction.reviewPublicationExternalEffectV2.findMany({
-          where: { publicationOperationId: command.publicationOperationId },
-          distinct: ["externalObjectId"],
-          orderBy: { externalObjectId: "asc" },
-          select: { externalObjectId: true },
+          where: {
+            publicationOperationId: {
+              in: operationRowsToTerminalize.map(
+                (candidate) => candidate.publicationOperationId,
+              ),
+            },
+          },
+          distinct: ["publicationOperationId", "externalObjectId"],
+          orderBy: [
+            { publicationOperationId: "asc" },
+            { externalObjectId: "asc" },
+          ],
+          select: { publicationOperationId: true, externalObjectId: true },
         });
-      const tombstoneRow =
+      for (const candidate of operationRowsToTerminalize) {
         await transaction.reviewPublicationAuditTombstoneV2.create({
           data: {
-            tombstoneId: command.tombstoneId,
+            tombstoneId: tombstoneIdByOperation.get(
+              candidate.publicationOperationId,
+            )!,
             publicationAttemptId: command.publicationAttemptId,
-            publicationOperationId: command.publicationOperationId,
-            reviewRevisionHash: operationRow.reviewRevisionHash,
-            markerHash: operationRow.markerHash,
-            bodyHash: operationRow.bodyHash,
-            knownExternalObjectIds: externalObjects.map(
-              ({ externalObjectId }) => externalObjectId,
+            publicationOperationId: candidate.publicationOperationId,
+            reviewRevisionHash: candidate.reviewRevisionHash,
+            markerHash: candidate.markerHash,
+            bodyHash: candidate.bodyHash,
+            knownExternalObjectIds: externalObjects
+              .filter(
+                (effect) =>
+                  effect.publicationOperationId ===
+                  candidate.publicationOperationId,
+              )
+              .map(({ externalObjectId }) => externalObjectId),
+            finalOutcome: toDbTerminalOutcome(
+              terminalOutcomeByOperation.get(candidate.publicationOperationId)!,
             ),
-            finalOutcome: toDbTerminalOutcome(finalOutcome),
             finalReason: command.finalReason,
             lastErrorCode: command.lastErrorCode,
             terminalizedBy: command.terminalizedBy,
             terminalizedAt: command.terminalizedAt,
             retainUntil: command.retainUntil,
+          },
+        });
+      }
+      const tombstoneRow =
+        await transaction.reviewPublicationAuditTombstoneV2.findUniqueOrThrow({
+          where: {
+            publicationOperationId: command.publicationOperationId,
           },
         });
       const operationUpdate =
@@ -1180,6 +1491,24 @@ export class PrismaReviewPublicationRepository
         operationUpdate.count,
         "publication_operation_cas_conflict",
       );
+      for (const sibling of command.siblingTombstones) {
+        const siblingUpdate =
+          await transaction.reviewPublicationOperationV2.updateMany({
+            where: {
+              publicationOperationId: sibling.publicationOperationId,
+              publicationAttemptId: command.publicationAttemptId,
+            },
+            data: {
+              state: toDbOperationState(
+                operationStateFor(sibling.finalOutcome),
+              ),
+            },
+          });
+        ensureUpdatedOnce(
+          siblingUpdate.count,
+          "publication_operation_cas_conflict",
+        );
+      }
       if (command.claimId !== null && command.claimFencingToken !== null) {
         await transaction.reviewPublicationClaimTermV2.updateMany({
           where: {
@@ -1190,18 +1519,26 @@ export class PrismaReviewPublicationRepository
           data: { state: DbClaimState.released },
         });
       }
-      await transaction.reviewPublicationOperationAttemptV2.updateMany({
-        where: {
-          publicationOperationId: command.publicationOperationId,
-          state: { not: DbOperationAttemptState.completed },
-        },
-        data: {
-          state:
-            finalOutcome === ReviewPublicationTerminalOutcome.TerminalUnknown
-              ? DbOperationAttemptState.terminal_unknown
-              : DbOperationAttemptState.stale,
-        },
-      });
+      for (const [operationId, outcome] of terminalOutcomeByOperation) {
+        await transaction.reviewPublicationOperationAttemptV2.updateMany({
+          where: {
+            publicationAttemptId: command.publicationAttemptId,
+            publicationOperationId: operationId,
+            state: {
+              notIn: [
+                DbOperationAttemptState.completed,
+                DbOperationAttemptState.no_effect_proven,
+              ],
+            },
+          },
+          data: {
+            state:
+              outcome === ReviewPublicationTerminalOutcome.TerminalUnknown
+                ? DbOperationAttemptState.terminal_unknown
+                : DbOperationAttemptState.stale,
+          },
+        });
+      }
       await exactAttemptUpdate(transaction, {
         publicationAttemptId: command.publicationAttemptId,
         expectedVersion: command.expectedAttemptVersion,
@@ -1648,6 +1985,7 @@ async function expireClaimAndWork(
         state: {
           notIn: [
             DbOperationAttemptState.completed,
+            DbOperationAttemptState.no_effect_proven,
             DbOperationAttemptState.stale,
           ],
         },
@@ -1661,6 +1999,7 @@ async function expireClaimAndWork(
       state: {
         notIn: [
           DbOperationAttemptState.completed,
+          DbOperationAttemptState.no_effect_proven,
           DbOperationAttemptState.stale,
         ],
       },
@@ -1725,17 +2064,62 @@ function sameEffect(
 function sameTombstone(
   tombstone: ReviewPublicationAuditTombstone,
   command: TerminalizeUnknownReviewPublicationCommand,
+  expected: {
+    readonly publicationOperationId: string;
+    readonly tombstoneId: string;
+    readonly finalOutcome?: Exclude<
+      ReviewPublicationTerminalOutcome,
+      ReviewPublicationTerminalOutcome.Succeeded
+    >;
+  } = command,
 ): boolean {
   return (
-    tombstone.tombstoneId === command.tombstoneId &&
+    tombstone.tombstoneId === expected.tombstoneId &&
     tombstone.publicationAttemptId === command.publicationAttemptId &&
+    tombstone.publicationOperationId === expected.publicationOperationId &&
     tombstone.finalOutcome ===
-      (command.finalOutcome ??
+      (expected.finalOutcome ??
+        command.finalOutcome ??
         ReviewPublicationTerminalOutcome.TerminalUnknown) &&
     tombstone.finalReason === command.finalReason &&
     tombstone.lastErrorCode === command.lastErrorCode &&
     tombstone.terminalizedBy === command.terminalizedBy &&
     tombstone.retainUntil.getTime() === command.retainUntil.getTime()
+  );
+}
+
+async function sameTerminalizationTombstonePlan(
+  transaction: Transaction,
+  command: TerminalizeUnknownReviewPublicationCommand,
+): Promise<boolean> {
+  const expectedTombstones = [
+    {
+      publicationOperationId: command.publicationOperationId,
+      tombstoneId: command.tombstoneId,
+      finalOutcome:
+        command.finalOutcome ??
+        ReviewPublicationTerminalOutcome.TerminalUnknown,
+    },
+    ...command.siblingTombstones,
+  ];
+  const tombstones =
+    await transaction.reviewPublicationAuditTombstoneV2.findMany({
+      where: {
+        publicationAttemptId: command.publicationAttemptId,
+      },
+    });
+  return (
+    tombstones.length === expectedTombstones.length &&
+    expectedTombstones.every((expected) => {
+      const tombstone = tombstones.find(
+        (candidate) =>
+          candidate.publicationOperationId === expected.publicationOperationId,
+      );
+      return (
+        tombstone !== undefined &&
+        sameTombstone(toDomainTombstone(tombstone), command, expected)
+      );
+    })
   );
 }
 
@@ -1804,6 +2188,17 @@ function sameProvenReceipt(
     receipt.canonicalExternalObjectId === proof.canonicalExternalObjectId &&
     receipt.receiptHash === proof.receiptHash &&
     receipt.updatedAt.getTime() === proof.provenAt.getTime()
+  );
+}
+
+function sameNoEffectProof(
+  operationAttempt: ReviewPublicationOperationAttempt,
+  command: ProveReviewPublicationNoEffectCommand,
+): boolean {
+  return (
+    operationAttempt.noEffectProofId === command.noEffectProofId &&
+    operationAttempt.noEffectProofHash === command.noEffectProofHash &&
+    operationAttempt.noEffectReason === command.noEffectReason
   );
 }
 

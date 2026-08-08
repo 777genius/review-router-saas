@@ -303,6 +303,57 @@ export interface RecordReviewExternalEffectCommandPort {
   ): Promise<RecordReviewExternalEffectResult>;
 }
 
+export type ProveReviewPublicationNoEffectCommand = {
+  readonly capability: ReviewPublicationOperationCapabilityFacts;
+  readonly noEffectProofId: string;
+  readonly noEffectProofHash: string;
+  readonly noEffectReason: string;
+  readonly provenAt: Date;
+};
+
+export interface ReviewPublicationNoEffectProofHashPort {
+  hash(
+    input: Omit<
+      ProveReviewPublicationNoEffectCommand,
+      "noEffectProofHash" | "provenAt"
+    >,
+  ): string;
+}
+
+export enum ProveReviewPublicationNoEffectStatus {
+  Proven = "proven",
+  Restored = "restored",
+  Missing = "missing",
+  StaleClaim = "stale_claim",
+  CapabilityMismatch = "capability_mismatch",
+  ExternalEffectExists = "external_effect_exists",
+  RequestConflict = "request_conflict",
+  Terminal = "terminal",
+}
+
+export type ProveReviewPublicationNoEffectResult =
+  | {
+      readonly status:
+        | ProveReviewPublicationNoEffectStatus.Proven
+        | ProveReviewPublicationNoEffectStatus.Restored;
+      readonly attempt: ReviewPublicationAttempt;
+      readonly operation: ReviewPublicationOperation;
+      readonly operationAttempt: ReviewPublicationOperationAttempt;
+    }
+  | {
+      readonly status: Exclude<
+        ProveReviewPublicationNoEffectStatus,
+        | ProveReviewPublicationNoEffectStatus.Proven
+        | ProveReviewPublicationNoEffectStatus.Restored
+      >;
+    };
+
+export interface ProveReviewPublicationNoEffectCommandPort {
+  proveNoEffect(
+    command: ProveReviewPublicationNoEffectCommand,
+  ): Promise<ProveReviewPublicationNoEffectResult>;
+}
+
 export type CompleteReviewPublicationOperationCommand = {
   readonly publicationAttemptId: string;
   readonly publicationOperationId: string;
@@ -362,6 +413,14 @@ export type TerminalizeUnknownReviewPublicationCommand = {
   readonly claimId: string | null;
   readonly claimFencingToken: bigint | null;
   readonly tombstoneId: string;
+  readonly siblingTombstones: readonly {
+    readonly publicationOperationId: string;
+    readonly tombstoneId: string;
+    readonly finalOutcome:
+      | ReviewPublicationTerminalOutcome.SupersededNoEffect
+      | ReviewPublicationTerminalOutcome.FailedNoEffect
+      | ReviewPublicationTerminalOutcome.TerminalUnknown;
+  }[];
   readonly finalOutcome?:
     | ReviewPublicationTerminalOutcome.SupersededNoEffect
     | ReviewPublicationTerminalOutcome.FailedNoEffect
@@ -382,6 +441,7 @@ export enum TerminalizeUnknownReviewPublicationStatus {
   VersionConflict = "version_conflict",
   StaleClaim = "stale_claim",
   TooEarly = "too_early",
+  ExternalEffectRisk = "external_effect_risk",
   Conflict = "conflict",
 }
 

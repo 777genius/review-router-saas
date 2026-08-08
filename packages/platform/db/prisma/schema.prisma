@@ -1637,6 +1637,10 @@ model ReviewPublicationOperationAttemptV2 {
   effectReportId         String                                   @unique
   claimFencingToken      BigInt
   state                  ReviewPublicationOperationAttemptStateV2 @default(active)
+  noEffectProofId        String?                                  @unique
+  noEffectProofHash      String?
+  noEffectReason         String?
+  noEffectProvenAt       DateTime?
   startedAt              DateTime
   effectReportUntil      DateTime
   retainUntil            DateTime
@@ -2462,6 +2466,7 @@ enum ReviewPublicationOperationRoleV2 {
 enum ReviewPublicationOperationAttemptStateV2 {
   active
   effect_observed
+  no_effect_proven
   completed
   stale
   terminal_unknown

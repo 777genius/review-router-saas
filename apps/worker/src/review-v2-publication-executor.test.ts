@@ -6,6 +6,7 @@ import {
   ReviewPublicationKind,
   ReviewPublicationOperationRole,
   ReviewPublicationReceiptStatus,
+  ReviewPublicationTerminalOutcome,
   type ReviewPublicationGatewayObject,
   type ReviewPublicationOperationPlan,
   type ReviewPublicationPermitIdentity,
@@ -342,6 +343,76 @@ describe("protocol v2 publication executor", () => {
     expect(fixture.gateway.applyCalls).toBe(1);
   });
 
+  it("persists no-effect proof before terminalizing a nonretryable definitely-no-effect mutation", async () => {
+    const fixture = await createFixture();
+    fixture.gateway.applyError = new ReviewV2ScmMutationError(
+      "github_mutation_http_422",
+      ReviewV2ScmMutationFailureOutcome.DefinitelyNoEffect,
+      false,
+    );
+
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Terminalized,
+        safeReason: "scm_mutation_rejected_no_effect",
+        terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+      },
+    );
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      attempt: {
+        state: "terminal",
+        terminalOutcome: "failed_no_effect",
+      },
+      operationAttempts: [
+        {
+          state: "no_effect_proven",
+          noEffectProofId: expect.any(String),
+          noEffectProofHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          noEffectReason: "definitely_no_effect:github_mutation_http_422",
+          noEffectProvenAt: initialTime,
+        },
+      ],
+      tombstones: [
+        {
+          finalReason: "scm_mutation_rejected_no_effect",
+          lastErrorCode: "github_mutation_http_422",
+        },
+      ],
+    });
+    expect(fixture.gateway.applyCalls).toBe(1);
+  });
+
+  it("replays a persisted no-effect proof without repeating the SCM mutation", async () => {
+    const fixture = await createFixture({ claimDurationMs: 1_000 });
+    fixture.gateway.applyError = new ReviewV2ScmMutationError(
+      "github_mutation_http_422",
+      ReviewV2ScmMutationFailureOutcome.DefinitelyNoEffect,
+      false,
+    );
+    const terminalization = vi
+      .spyOn(fixture.application, "terminalizeUnknown")
+      .mockRejectedValueOnce(new Error("terminalization_ack_lost"));
+
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Retryable,
+        safeReason: "publication_terminal_outcome_ack_unknown",
+      },
+    );
+    fixture.gateway.applyError = null;
+    fixture.clock.set(at("2026-07-23T12:00:02.000Z"));
+    fixture.freshness.current = changedFreshness();
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Terminalized,
+        safeReason: "scm_mutation_rejected_no_effect",
+        terminalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+      },
+    );
+    expect(terminalization).toHaveBeenCalledTimes(2);
+    expect(fixture.gateway.applyCalls).toBe(1);
+  });
+
   it("does not report no-effect when freshness changes before cleanup after a persisted mutation attempt", async () => {
     const fixture = await createFixture({
       operations: pendingReviewOperationPlans(),
@@ -440,13 +511,16 @@ describe("protocol v2 publication executor", () => {
 
     await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
       {
-        status: ReviewV2PublicationExecutionStatus.Terminalized,
+        status: ReviewV2PublicationExecutionStatus.Retryable,
         safeReason: "publication_effect_gate_disabled",
-        terminalOutcome: "failed_no_effect",
       },
     );
     expect(fixture.effectGate.calls).toBe(1);
     expect(fixture.gateway.applyCalls).toBe(0);
+    expect(
+      (await fixture.repository.findById("publication-1"))?.attempt
+        .terminalOutcome,
+    ).toBeNull();
   });
 
   it("fails closed without retrying internally when the effect gate is unavailable", async () => {
@@ -704,6 +778,250 @@ describe("protocol v2 publication executor", () => {
     expect(view?.attempt.terminalOutcome).toBeNull();
     expect(fixture.gateway.applyCalls).toBe(1);
   });
+
+  it("keeps sibling no-effect terminalization retryable after an ambiguous operation", async () => {
+    const fixture = await createFixture({
+      claimDurationMs: 1_000,
+      operations: pendingReviewOperationPlans(),
+    });
+    fixture.gateway.applyError = new ReviewV2ScmMutationError(
+      "scm_timeout",
+      ReviewV2ScmMutationFailureOutcome.EffectMayExist,
+      true,
+    );
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Retryable,
+        safeReason: "scm_timeout",
+      },
+    );
+
+    fixture.clock.set(at("2026-07-23T12:00:02.000Z"));
+    fixture.freshness.current = changedFreshness();
+    await expect(
+      fixture.executor.execute(executionCommand("operation-2")),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationExecutionStatus.Retryable,
+      safeReason: "publication_live_facts_changed",
+    });
+
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      attempt: {
+        state: "publishing",
+        terminalOutcome: null,
+        operations: [
+          { publicationOperationId: "operation-1", state: "reconciling" },
+          { publicationOperationId: "operation-2", state: "planned" },
+        ],
+      },
+      tombstones: [],
+    });
+  });
+
+  it("executes the requested planned operation when a completed sibling is still current", async () => {
+    const fixture = await createFixture({
+      operations: independentOperationPlans(),
+    });
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Completed,
+        safeReason: "publication_operation_completed",
+        receiptStatus: ReviewPublicationReceiptStatus.Succeeded,
+      },
+    );
+    fixture.gateway.pages = [{ objects: [], nextCursor: null }];
+
+    await expect(
+      fixture.executor.execute(executionCommand("operation-2")),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationExecutionStatus.Completed,
+      safeReason: "publication_operation_completed",
+      receiptStatus: ReviewPublicationReceiptStatus.Succeeded,
+    });
+    expect(fixture.gateway.applyCalls).toBe(2);
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      attempt: {
+        state: "terminal",
+        terminalOutcome: "succeeded",
+        operations: [
+          { publicationOperationId: "operation-1", state: "completed" },
+          { publicationOperationId: "operation-2", state: "completed" },
+        ],
+      },
+      receipts: [
+        { publicationOperationId: "operation-1" },
+        { publicationOperationId: "operation-2" },
+      ],
+    });
+  });
+
+  it("keeps a planned operation untouched when freshness changes after aggregate routing", async () => {
+    const fixture = await createFixture({
+      operations: pendingReviewOperationPlans(),
+    });
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Completed,
+        safeReason: "publication_operation_completed",
+        receiptStatus: ReviewPublicationReceiptStatus.Succeeded,
+      },
+    );
+    fixture.freshness.sequence = [currentFreshness(), changedFreshness()];
+
+    await expect(
+      fixture.executor.execute(executionCommand("operation-2")),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationExecutionStatus.Retryable,
+      safeReason: "publication_live_facts_changed",
+    });
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      attempt: {
+        state: "publishing",
+        terminalOutcome: null,
+        operations: [
+          { publicationOperationId: "operation-1", state: "completed" },
+          { publicationOperationId: "operation-2", state: "planned" },
+        ],
+      },
+      tombstones: [],
+    });
+    expect(fixture.gateway.applyCalls).toBe(1);
+  });
+
+  it("reconciles and compensates a completed sibling before closing the attempt", async () => {
+    const fixture = await createFixture({
+      operations: pendingReviewOperationPlans(),
+    });
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Completed,
+        safeReason: "publication_operation_completed",
+        receiptStatus: ReviewPublicationReceiptStatus.Succeeded,
+      },
+    );
+
+    fixture.compensation.decision =
+      ReviewV2PublicationCompensationDecision.Allowed;
+    fixture.freshness.current = changedFreshness();
+    await expect(
+      fixture.executor.execute(executionCommand("operation-2")),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationExecutionStatus.Terminalized,
+      safeReason: "stale_effect_compensated",
+      terminalOutcome: ReviewPublicationTerminalOutcome.StaleCompensated,
+    });
+
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      attempt: {
+        state: "terminal",
+        terminalOutcome: "stale_compensated",
+        operations: [
+          { publicationOperationId: "operation-1", state: "stale_compensated" },
+          {
+            publicationOperationId: "operation-2",
+            state: "superseded_no_effect",
+          },
+        ],
+      },
+      tombstones: [
+        {
+          publicationOperationId: "operation-1",
+          finalOutcome: "stale_compensated",
+        },
+        {
+          publicationOperationId: "operation-2",
+          finalOutcome: "superseded_no_effect",
+        },
+      ],
+      operationAttempts: [
+        {
+          publicationOperationId: "operation-1",
+          state: "completed",
+        },
+      ],
+    });
+    expect(fixture.gateway.compensationCalls).toBe(1);
+    expect(fixture.credentials.purposes.at(-1)).toBe(
+      ReviewV2ScmCredentialPurpose.ReconcileOnly,
+    );
+    expect(fixture.gateway.applyCalls).toBe(1);
+    const aggregateReplay = {
+      status: ReviewV2PublicationExecutionStatus.Terminalized,
+      safeReason: "publication_stale_compensated",
+      terminalOutcome: ReviewPublicationTerminalOutcome.StaleCompensated,
+    } as const;
+    await expect(
+      fixture.executor.execute(executionCommand("operation-1")),
+    ).resolves.toEqual(aggregateReplay);
+    await expect(
+      fixture.executor.execute(executionCommand("operation-2")),
+    ).resolves.toEqual(aggregateReplay);
+  });
+
+  it("terminalizes completed sibling ambiguity after the reconcile deadline", async () => {
+    const fixture = await createFixture({
+      operations: pendingReviewOperationPlans().map((operation) => ({
+        ...operation,
+        reconcileUntil: at("2026-07-23T12:00:11.000Z"),
+      })),
+    });
+    await fixture.executor.execute(executionCommand());
+    fixture.clock.set(at("2026-07-23T12:00:12.000Z"));
+    fixture.freshness.current = changedFreshness();
+
+    await expect(
+      fixture.executor.execute(executionCommand("operation-2")),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationExecutionStatus.TerminalUnknown,
+      safeReason: "publication_terminal_unknown_manual_review_required",
+    });
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      attempt: {
+        state: "terminal",
+        terminalOutcome: "terminal_unknown",
+        operations: [
+          { publicationOperationId: "operation-1", state: "terminal_unknown" },
+          {
+            publicationOperationId: "operation-2",
+            state: "superseded_no_effect",
+          },
+        ],
+      },
+      tombstones: [
+        {
+          publicationOperationId: "operation-1",
+          finalOutcome: "terminal_unknown",
+        },
+        {
+          publicationOperationId: "operation-2",
+          finalOutcome: "superseded_no_effect",
+        },
+      ],
+    });
+  });
+
+  it("keeps a sibling retryable while another replica owns the active claim", async () => {
+    const fixture = await createFixture({
+      operations: pendingReviewOperationPlans(),
+    });
+    fixture.gateway.applyError = new ReviewV2ScmMutationError(
+      "scm_timeout",
+      ReviewV2ScmMutationFailureOutcome.EffectMayExist,
+      true,
+    );
+    await fixture.executor.execute(executionCommand());
+
+    await expect(
+      fixture.executor.execute(executionCommand("operation-2", hash("9"))),
+    ).resolves.toEqual({
+      status: ReviewV2PublicationExecutionStatus.Busy,
+      safeReason: "publication_claim_owned_elsewhere",
+    });
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      attempt: { state: "publishing", terminalOutcome: null },
+      tombstones: [],
+    });
+  });
 });
 
 async function createFixture(
@@ -878,13 +1196,19 @@ class FakeGateway implements ReviewV2ProviderPublicationClientPort {
     return this.pages[index] ?? { objects: [], nextCursor: null };
   }
 
-  async applyOperation() {
+  async applyOperation(input: {
+    readonly operation: ReviewPublicationOperationPlan;
+  }) {
     this.applyCalls += 1;
     if (this.applyError) {
       this.pages = [{ objects: this.objectsOnApplyError, nextCursor: null }];
       throw this.applyError;
     }
-    const object = gatewayObject("object-1");
+    const object = {
+      ...gatewayObject("object-1"),
+      markerHash: input.operation.markerHash,
+      bodyHash: input.operation.bodyHash,
+    };
     this.pages = [
       { objects: [...this.postApplyObjects, object], nextCursor: null },
     ];
@@ -900,12 +1224,15 @@ class FakeGateway implements ReviewV2ProviderPublicationClientPort {
   }
 }
 
-function executionCommand() {
+function executionCommand(
+  publicationOperationId = "operation-1",
+  commandOwnerIdHash = ownerIdHash,
+) {
   return {
     publicationAttemptId: "publication-1",
-    publicationOperationId: "operation-1",
+    publicationOperationId,
     provider: ReviewV2ScmProvider.GitHub,
-    ownerIdHash,
+    ownerIdHash: commandOwnerIdHash,
   } as const;
 }
 
@@ -965,6 +1292,20 @@ function pendingReviewOperationPlans(): readonly ReviewPublicationOperationPlan[
       markerHash: hash("5"),
       bodyHash: hash("6"),
       dependsOnOperationId: create.publicationOperationId,
+    },
+  ];
+}
+
+function independentOperationPlans(): readonly ReviewPublicationOperationPlan[] {
+  const first = operationPlan();
+  return [
+    first,
+    {
+      ...first,
+      publicationOperationId: "operation-2",
+      chunkIndex: 1,
+      markerHash: hash("5"),
+      bodyHash: hash("6"),
     },
   ];
 }

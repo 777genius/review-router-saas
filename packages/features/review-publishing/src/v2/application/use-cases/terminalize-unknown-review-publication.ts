@@ -34,6 +34,24 @@ export async function terminalizeUnknownReviewPublication(
     throw new Error("publication_claim_fence_invalid");
   }
   assertIdentifier(command.tombstoneId, "publication_tombstone_id_invalid");
+  const siblingOperationIds = new Set<string>();
+  const siblingTombstoneIds = new Set([command.tombstoneId]);
+  for (const sibling of command.siblingTombstones) {
+    assertIdentifier(
+      sibling.publicationOperationId,
+      "publication_operation_id_invalid",
+    );
+    assertIdentifier(sibling.tombstoneId, "publication_tombstone_id_invalid");
+    if (
+      sibling.publicationOperationId === command.publicationOperationId ||
+      siblingOperationIds.has(sibling.publicationOperationId) ||
+      siblingTombstoneIds.has(sibling.tombstoneId)
+    ) {
+      throw new Error("publication_terminal_tombstone_plan_invalid");
+    }
+    siblingOperationIds.add(sibling.publicationOperationId);
+    siblingTombstoneIds.add(sibling.tombstoneId);
+  }
   assertIdentifier(command.finalReason, "publication_terminal_reason_invalid");
   assertIdentifier(command.lastErrorCode, "publication_last_error_invalid");
   assertIdentifier(

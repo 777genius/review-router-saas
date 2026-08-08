@@ -39,6 +39,7 @@ export enum ReviewPublicationClaimState {
 export enum ReviewPublicationOperationAttemptState {
   Active = "active",
   EffectObserved = "effect_observed",
+  NoEffectProven = "no_effect_proven",
   Completed = "completed",
   Stale = "stale",
   TerminalUnknown = "terminal_unknown",
@@ -183,6 +184,10 @@ export type ReviewPublicationOperationAttempt = {
   readonly effectReportId: string;
   readonly claimFencingToken: bigint;
   readonly state: ReviewPublicationOperationAttemptState;
+  readonly noEffectProofId: string | null;
+  readonly noEffectProofHash: string | null;
+  readonly noEffectReason: string | null;
+  readonly noEffectProvenAt: Date | null;
   readonly startedAt: Date;
   readonly effectReportUntil: Date;
   readonly retainUntil: Date;
@@ -205,6 +210,21 @@ export type ReviewPublicationOperationCapabilityFacts = {
   readonly targetExternalObjectId: string | null;
   readonly effectReportUntil: Date;
 };
+
+export function canonicalReviewPublicationNoEffectProof(input: {
+  readonly capability: ReviewPublicationOperationCapabilityFacts;
+  readonly noEffectProofId: string;
+  readonly noEffectReason: string;
+}): string {
+  return JSON.stringify(
+    normalizeNoEffectProofValue({
+      proofVersion: 1,
+      noEffectProofId: input.noEffectProofId,
+      noEffectReason: input.noEffectReason,
+      capability: input.capability,
+    }),
+  );
+}
 
 export type ReviewPublicationExternalEffect = {
   readonly effectId: string;
@@ -266,6 +286,195 @@ export type ReviewPublicationOutcomeCorrection = {
   readonly correctedAt: Date;
   readonly retainUntil: Date;
 };
+
+const externalEffectRiskOperationStates =
+  new Set<ReviewPublicationOperationState>([
+    ReviewPublicationOperationState.EffectObserved,
+    ReviewPublicationOperationState.Reconciling,
+    ReviewPublicationOperationState.Completed,
+    ReviewPublicationOperationState.StaleCompensated,
+    ReviewPublicationOperationState.StaleVisible,
+    ReviewPublicationOperationState.TerminalUnknown,
+  ]);
+
+export function isAttemptLevelNoEffectOutcome(
+  outcome: ReviewPublicationTerminalOutcome,
+): outcome is
+  | ReviewPublicationTerminalOutcome.SupersededNoEffect
+  | ReviewPublicationTerminalOutcome.FailedNoEffect {
+  return (
+    outcome === ReviewPublicationTerminalOutcome.SupersededNoEffect ||
+    outcome === ReviewPublicationTerminalOutcome.FailedNoEffect
+  );
+}
+
+export function isActiveReviewPublicationOperation(
+  operation: ReviewPublicationOperation,
+): boolean {
+  return (
+    operation.state === ReviewPublicationOperationState.Planned ||
+    operation.state === ReviewPublicationOperationState.InFlight ||
+    operation.state === ReviewPublicationOperationState.EffectObserved ||
+    operation.state === ReviewPublicationOperationState.Reconciling
+  );
+}
+
+export function publicationOperationsWithExternalEffectRisk(input: {
+  readonly operations: readonly ReviewPublicationOperation[];
+  readonly operationAttempts: readonly ReviewPublicationOperationAttempt[];
+  readonly effects: readonly ReviewPublicationExternalEffect[];
+  readonly receipts: readonly ReviewPublicationReceipt[];
+}): readonly ReviewPublicationOperation[] {
+  const attemptedOperationIds = new Set(
+    input.operationAttempts.map((attempt) => attempt.publicationOperationId),
+  );
+  const evidenceOperationIds = new Set([
+    ...input.operationAttempts
+      .filter(
+        (attempt) =>
+          attempt.state !==
+          ReviewPublicationOperationAttemptState.NoEffectProven,
+      )
+      .map((attempt) => attempt.publicationOperationId),
+    ...input.effects.map((effect) => effect.publicationOperationId),
+    ...input.receipts.map((receipt) => receipt.publicationOperationId),
+  ]);
+  return input.operations.filter(
+    (operation) =>
+      externalEffectRiskOperationStates.has(operation.state) ||
+      evidenceOperationIds.has(operation.publicationOperationId) ||
+      (operation.state === ReviewPublicationOperationState.InFlight &&
+        !attemptedOperationIds.has(operation.publicationOperationId)),
+  );
+}
+
+export function hasPublicationExternalEffectRisk(
+  input: Parameters<typeof publicationOperationsWithExternalEffectRisk>[0],
+): boolean {
+  return publicationOperationsWithExternalEffectRisk(input).length > 0;
+}
+
+export function planPublicationSiblingTerminalizations(input: {
+  readonly publicationOperationId: string;
+  readonly attemptOutcome:
+    | ReviewPublicationTerminalOutcome.SupersededNoEffect
+    | ReviewPublicationTerminalOutcome.FailedNoEffect
+    | ReviewPublicationTerminalOutcome.StaleCompensated
+    | ReviewPublicationTerminalOutcome.StaleVisible
+    | ReviewPublicationTerminalOutcome.TerminalUnknown;
+  readonly operations: readonly ReviewPublicationOperation[];
+  readonly operationAttempts: readonly ReviewPublicationOperationAttempt[];
+  readonly effects: readonly ReviewPublicationExternalEffect[];
+  readonly receipts: readonly ReviewPublicationReceipt[];
+}): readonly {
+  readonly publicationOperationId: string;
+  readonly finalOutcome:
+    | ReviewPublicationTerminalOutcome.SupersededNoEffect
+    | ReviewPublicationTerminalOutcome.FailedNoEffect
+    | ReviewPublicationTerminalOutcome.TerminalUnknown;
+}[] {
+  const riskOperationIds = new Set(
+    publicationOperationsWithExternalEffectRisk(input).map(
+      (operation) => operation.publicationOperationId,
+    ),
+  );
+  const provenNoEffectOperationIds = new Set(
+    input.operationAttempts
+      .filter(
+        (attempt) =>
+          attempt.state ===
+          ReviewPublicationOperationAttemptState.NoEffectProven,
+      )
+      .map((attempt) => attempt.publicationOperationId),
+  );
+  const planned: Array<{
+    readonly publicationOperationId: string;
+    readonly finalOutcome:
+      | ReviewPublicationTerminalOutcome.SupersededNoEffect
+      | ReviewPublicationTerminalOutcome.FailedNoEffect
+      | ReviewPublicationTerminalOutcome.TerminalUnknown;
+  }> = [];
+  for (const operation of input.operations) {
+    if (operation.publicationOperationId === input.publicationOperationId) {
+      continue;
+    }
+    if (operation.state === ReviewPublicationOperationState.Planned) {
+      planned.push({
+        publicationOperationId: operation.publicationOperationId,
+        finalOutcome: isAttemptLevelNoEffectOutcome(input.attemptOutcome)
+          ? input.attemptOutcome
+          : ReviewPublicationTerminalOutcome.SupersededNoEffect,
+      });
+      continue;
+    }
+    if (
+      operation.state === ReviewPublicationOperationState.InFlight &&
+      provenNoEffectOperationIds.has(operation.publicationOperationId) &&
+      !riskOperationIds.has(operation.publicationOperationId)
+    ) {
+      planned.push({
+        publicationOperationId: operation.publicationOperationId,
+        finalOutcome: ReviewPublicationTerminalOutcome.FailedNoEffect,
+      });
+      continue;
+    }
+    if (
+      input.attemptOutcome ===
+        ReviewPublicationTerminalOutcome.TerminalUnknown &&
+      riskOperationIds.has(operation.publicationOperationId)
+    ) {
+      planned.push({
+        publicationOperationId: operation.publicationOperationId,
+        finalOutcome: ReviewPublicationTerminalOutcome.TerminalUnknown,
+      });
+    }
+  }
+  return planned;
+}
+
+export function isExactPublicationSiblingTerminalizationPlan(input: {
+  readonly publicationOperationId: string;
+  readonly attemptOutcome:
+    | ReviewPublicationTerminalOutcome.SupersededNoEffect
+    | ReviewPublicationTerminalOutcome.FailedNoEffect
+    | ReviewPublicationTerminalOutcome.StaleCompensated
+    | ReviewPublicationTerminalOutcome.StaleVisible
+    | ReviewPublicationTerminalOutcome.TerminalUnknown;
+  readonly operations: readonly ReviewPublicationOperation[];
+  readonly operationAttempts: readonly ReviewPublicationOperationAttempt[];
+  readonly effects: readonly ReviewPublicationExternalEffect[];
+  readonly receipts: readonly ReviewPublicationReceipt[];
+  readonly supplied: readonly {
+    readonly publicationOperationId: string;
+    readonly finalOutcome:
+      | ReviewPublicationTerminalOutcome.SupersededNoEffect
+      | ReviewPublicationTerminalOutcome.FailedNoEffect
+      | ReviewPublicationTerminalOutcome.TerminalUnknown;
+  }[];
+}): boolean {
+  const riskOperations = publicationOperationsWithExternalEffectRisk(input);
+  if (
+    (input.attemptOutcome ===
+      ReviewPublicationTerminalOutcome.StaleCompensated ||
+      input.attemptOutcome === ReviewPublicationTerminalOutcome.StaleVisible) &&
+    (riskOperations.length !== 1 ||
+      riskOperations[0]?.publicationOperationId !==
+        input.publicationOperationId)
+  ) {
+    return false;
+  }
+  const expected = planPublicationSiblingTerminalizations(input);
+  return (
+    expected.length === input.supplied.length &&
+    expected.every((planned) =>
+      input.supplied.some(
+        (supplied) =>
+          supplied.publicationOperationId === planned.publicationOperationId &&
+          supplied.finalOutcome === planned.finalOutcome,
+      ),
+    )
+  );
+}
 
 export function assertReviewPublicationAttemptCandidate(input: {
   readonly publicationAttemptId: string;
@@ -456,6 +665,20 @@ export function assertOperationCapabilityMatches(
   ) {
     throw new Error("publication_operation_capability_mismatch");
   }
+}
+
+function normalizeNoEffectProofValue(value: unknown): unknown {
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(normalizeNoEffectProofValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, normalizeNoEffectProofValue(entry)]),
+    );
+  }
+  return value;
 }
 
 function assertPermit(permit: ReviewPublicationPermitIdentity): void {
