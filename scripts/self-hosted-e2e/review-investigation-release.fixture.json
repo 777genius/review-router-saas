@@ -6,7 +6,7 @@
   },
   "reviewInvestigation": {
     "capability": "review_investigation_v1",
-    "coverageProfileHash": "76226b3d40021a3bb938283f5b983df3f304b2494b8335a8f751f752fa3d0c95",
+    "coverageProfileHash": "d3bcd60414edeaac73973fc9c8ffa18612b1baec1755f2071192e28c3bc15714",
     "policy": {
       "maxCriticCycles": 2,
       "maxExpansionDepth": 4,
