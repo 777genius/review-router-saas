@@ -15,8 +15,9 @@ import { InvestigationObligationKind } from "./review-investigation-types";
 
 export const obligationEvidenceRequirementVersion = 1 as const;
 export const obligationEvidenceRequirementVersionV2 = 2 as const;
+export const relationSearchProofVersion = 1 as const;
 export const obligationClosurePolicyVersion =
-  "review-investigation-obligation-closure.v1" as const;
+  "review-investigation-obligation-closure.v2" as const;
 export const investigationDiscoveryQueryMaximumLength = 1_024;
 export const investigationRelationPathMaximumCount = 512;
 
@@ -184,6 +185,8 @@ export type CompleteRelationContextRequirementV2 = Readonly<{
   requiredPathCount: number;
   requiredPathSetHash: string;
   requiredPathHashes: readonly string[];
+  searchProofVersion?: typeof relationSearchProofVersion;
+  /** @deprecated Session-keyed digest retained only as a search-proof marker. */
   requiredQueryDigest?: string;
   sourcePathHash: string;
   revision: InvestigationOperationRevision.Head;
@@ -763,6 +766,9 @@ function parseRequirement(
           ...(Object.hasOwn(root, "requiredQueryDigest")
             ? ["requiredQueryDigest"]
             : []),
+          ...(Object.hasOwn(root, "searchProofVersion")
+            ? ["searchProofVersion"]
+            : []),
           "revision",
           "searchPolicyVersion",
           "sourceObligationId",
@@ -774,6 +780,12 @@ function parseRequirement(
           throw invalidRequirement();
         }
         if (root.revision !== InvestigationOperationRevision.Head) {
+          throw invalidRequirement();
+        }
+        if (
+          Object.hasOwn(root, "searchProofVersion") &&
+          root.searchProofVersion !== relationSearchProofVersion
+        ) {
           throw invalidRequirement();
         }
         requirement = Object.freeze({
@@ -788,6 +800,9 @@ function parseRequirement(
           requiredPathHashes,
           ...(Object.hasOwn(root, "requiredQueryDigest")
             ? { requiredQueryDigest: sha256(root.requiredQueryDigest) }
+            : {}),
+          ...(Object.hasOwn(root, "searchProofVersion")
+            ? { searchProofVersion: relationSearchProofVersion }
             : {}),
           sourcePathHash: sha256(root.sourcePathHash),
           revision: InvestigationOperationRevision.Head,
@@ -1011,7 +1026,9 @@ function proveRelationContextV2(
   if (
     files.length === 0 ||
     searches.length + files.length !== operations.length ||
-    (requirement.requiredQueryDigest !== undefined && searches.length === 0)
+    ((requirement.searchProofVersion === relationSearchProofVersion ||
+      requirement.requiredQueryDigest !== undefined) &&
+      searches.length === 0)
   ) {
     throw invalidClosure();
   }
@@ -1022,12 +1039,6 @@ function proveRelationContextV2(
       InvestigationOperationKind.TextSearch,
       requirement.initialOperationInputHash,
     );
-    if (
-      requirement.requiredQueryDigest !== undefined &&
-      firstSearch.queryDigest !== requirement.requiredQueryDigest
-    ) {
-      throw invalidClosure();
-    }
     searchTreeOid = firstSearch.treeOid;
     const terminal = [...searches]
       .sort((left, right) => left.pageOrdinal - right.pageOrdinal)

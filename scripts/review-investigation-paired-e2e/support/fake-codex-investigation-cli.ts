@@ -263,11 +263,16 @@ async function investigateObligation(
       );
       break;
     case "complete_relation_context":
-      operationReceiptIds = await readRequiredRelationFiles(
-        client,
-        requirement,
-        scenario,
-      );
+      operationReceiptIds = Object.freeze([
+        ...(await collectPaginatedReceipts(client, "review_search_text", {
+          query: stringField(requirement, "query"),
+          paths: ["."],
+          revision: "head",
+          caseSensitive: true,
+          pageSize: 500,
+        })),
+        ...(await readRequiredRelationFiles(client, requirement, scenario)),
+      ]);
       break;
     default:
       throw new Error(

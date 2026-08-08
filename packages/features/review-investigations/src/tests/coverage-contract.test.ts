@@ -38,6 +38,6 @@ describe("review investigation coverage profile", () => {
       createHash("sha256")
         .update(canonicalJson(reviewInvestigationCoverageProfileV2), "utf8")
         .digest("hex"),
-    ).toBe("4462900f2e610b2649101987f1131158312b2ad8d453e1fb5f048174f9fbfdc9");
+    ).toBe("76226b3d40021a3bb938283f5b983df3f304b2494b8335a8f751f752fa3d0c95");
   });
 });

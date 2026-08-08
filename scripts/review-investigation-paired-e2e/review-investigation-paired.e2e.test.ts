@@ -153,8 +153,9 @@ describeWithDatabase.sequential(
             },
           });
         expect(receipt.kind).toBe("relation");
+        expect(requirement.searchProofVersion).toBe(1);
         expect(receipt.operationReceiptIds).toHaveLength(
-          Number(requirement.requiredPathCount),
+          Number(requirement.requiredPathCount) + 1,
         );
       }
       expect(turns.map((turn) => turn.purpose)).toContain("critic");
@@ -261,31 +262,40 @@ describeWithDatabase.sequential(
       await expect(fixture.prisma.reviewInvestigation.count()).resolves.toBe(0);
     }, 120_000);
 
-    it("rejects an attested relation closure that omits one required path", async () => {
+    it("stays inconclusive when an attested relation closure omits one required path", async () => {
       const fixture = requireHarness(harness);
       const action = await fixture.run(
         PairedActionScenario.IncompletePathChain,
       );
 
       expect(action).toMatchObject({
-        ok: false,
+        ok: true,
         scenario: PairedActionScenario.IncompletePathChain,
         releaseManifestHash: fixture.releaseManifestHash,
+        observation: {
+          qualityFlags: expect.arrayContaining(["investigation_inconclusive"]),
+        },
       });
-      expectExactDiagnostic(fixture, {
-        operationId: "review_investigation_turn_commit",
-        protocolErrorCode: "invariant_violation",
-        protocolIssues: ["investigation_obligation_evidence_mismatch"],
-        statusCode: 422,
-      });
+      expect(fixture.diagnostics).toEqual([]);
       const investigation =
         await fixture.prisma.reviewInvestigation.findFirstOrThrow({
           where: {
             reviewRevisionHash: fixture.repository.reviewRevisionHash,
           },
-          select: { investigationId: true, certificateId: true },
+          select: {
+            investigationId: true,
+            certificateId: true,
+            conclusion: true,
+            criticDecision: true,
+            state: true,
+          },
         });
-      expect(investigation.certificateId).toBeNull();
+      expect(investigation).toMatchObject({
+        certificateId: expect.any(String),
+        conclusion: "inconclusive",
+        criticDecision: null,
+        state: "inconclusive",
+      });
       await expect(
         fixture.prisma.reviewInvestigationObligation.count({
           where: {
@@ -296,10 +306,14 @@ describeWithDatabase.sequential(
         }),
       ).resolves.toBeGreaterThan(0);
       await expect(
-        fixture.prisma.reviewInvestigationCertificate.count({
+        fixture.prisma.reviewInvestigationCertificate.findFirstOrThrow({
           where: { investigationId: investigation.investigationId },
+          select: { conclusion: true, criticDecision: true },
         }),
-      ).resolves.toBe(0);
+      ).resolves.toEqual({
+        conclusion: "inconclusive",
+        criticDecision: null,
+      });
     }, 180_000);
 
     it("replays prepared evidence from a certified source into a new revision", async () => {

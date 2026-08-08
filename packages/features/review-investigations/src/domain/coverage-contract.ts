@@ -40,7 +40,7 @@ export const reviewInvestigationSearchPolicyV1 =
 
 export const reviewInvestigationCoverageProfileV2 = Object.freeze({
   coverageContractVersion: "review-investigation-coverage.v1",
-  expansionRulesVersion: "review-investigation-expansion.v2",
+  expansionRulesVersion: "review-investigation-expansion.v3",
   criticPolicyVersion: reviewInvestigationCriticPolicyV1,
   gatewayPolicyVersion: "context-gateway-v4",
   probePolicyVersion: reviewInvestigationProbePolicyV1,

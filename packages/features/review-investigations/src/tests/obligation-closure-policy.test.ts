@@ -17,6 +17,7 @@ import {
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
   obligationIdentity,
+  relationSearchProofVersion,
   type InvestigationFileReadEvidence,
   type InvestigationPageEvidence,
   parseInvestigationEvidenceRequirement,
@@ -321,7 +322,9 @@ describe("VersionedObligationClosurePolicy", () => {
   });
 
   it("accepts the authenticated relation search chain with its complete file evidence", () => {
-    const obligation = relationObligation(hash("4"));
+    const obligation = relationObligation({
+      searchProofVersion: relationSearchProofVersion,
+    });
     const search = pageEvidence({
       inputHash: hash("a"),
       complete: true,
@@ -354,6 +357,28 @@ describe("VersionedObligationClosurePolicy", () => {
     ).toThrow("investigation_obligation_evidence_mismatch");
   });
 
+  it("accepts a session-keyed query digest change when the stable search input matches", () => {
+    expect(
+      policy.prove({
+        obligation: relationObligation({ requiredQueryDigest: hash("4") }),
+        operations: [
+          {
+            ...pageEvidence({ inputHash: hash("a"), complete: true }),
+            queryDigest: hash("b"),
+          },
+          fileEvidence({
+            receipt: "2",
+            startByte: 0,
+            byteCount: 15,
+            eof: true,
+            pathHash: hash("7"),
+          }),
+        ],
+        revision: { reviewRevisionHash: hash("f") },
+      }),
+    ).toMatchObject({ receiptKind: "relation" });
+  });
+
   it.each([
     [
       "a different relation query",
@@ -369,13 +394,6 @@ describe("VersionedObligationClosurePolicy", () => {
       }),
     ],
     [
-      "a relation search with a different authenticated query digest",
-      {
-        ...pageEvidence({ inputHash: hash("a"), complete: true }),
-        queryDigest: hash("b"),
-      },
-    ],
-    [
       "a relation search from a different tree",
       {
         ...pageEvidence({ inputHash: hash("a"), complete: true }),
@@ -385,7 +403,9 @@ describe("VersionedObligationClosurePolicy", () => {
   ])("rejects %s even when the required file was read", (_label, search) => {
     expect(() =>
       policy.prove({
-        obligation: relationObligation(hash("4")),
+        obligation: relationObligation({
+          searchProofVersion: relationSearchProofVersion,
+        }),
         operations: [
           search,
           fileEvidence({
@@ -456,7 +476,12 @@ function searchObligation(inputHash: string) {
   });
 }
 
-function relationObligation(requiredQueryDigest?: string) {
+function relationObligation(
+  input: {
+    readonly requiredQueryDigest?: string;
+    readonly searchProofVersion?: typeof relationSearchProofVersion;
+  } = {},
+) {
   const canonicalRequirement = canonicalInvestigationEvidenceRequirement({
     requirementVersion: obligationEvidenceRequirementVersionV2,
     kind: InvestigationEvidenceRequirementKind.CompleteRelationContext,
@@ -466,7 +491,12 @@ function relationObligation(requiredQueryDigest?: string) {
     requiredPathCount: 1,
     requiredPathSetHash: hash("8"),
     requiredPathHashes: [hash("7")],
-    ...(requiredQueryDigest === undefined ? {} : { requiredQueryDigest }),
+    ...(input.requiredQueryDigest === undefined
+      ? {}
+      : { requiredQueryDigest: input.requiredQueryDigest }),
+    ...(input.searchProofVersion === undefined
+      ? {}
+      : { searchProofVersion: input.searchProofVersion }),
     sourcePathHash: hash("9"),
     revision: InvestigationOperationRevision.Head,
     searchPolicyVersion: "review-investigation-fixed-string-search.v1",
