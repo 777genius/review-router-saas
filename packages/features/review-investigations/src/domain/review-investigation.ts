@@ -35,6 +35,7 @@ import {
 } from "./investigation-policy";
 import { isValidInvestigationTokenUsage } from "./investigation-token-usage";
 import {
+  assertInvestigationTurnObligationClaimScope,
   findingCanonicalValue,
   turnCanonicalValue,
   type InvestigationFinding,
@@ -267,6 +268,11 @@ export function commitInvestigationTurn(input: {
   ) {
     throw new ReviewInvestigationDomainError("turn_commit_invalid");
   }
+  assertInvestigationTurnObligationClaimScope({
+    turn,
+    closureClaims: input.commit.closureClaims,
+    unresolvableClaims: input.commit.unresolvableDecisions,
+  });
   validateTurnBounds(current, input.commit);
   if (
     (turn.purpose === ReviewInvestigationTurnPurpose.Discovery &&

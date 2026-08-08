@@ -2,7 +2,11 @@ import type {
   InvestigationEvidenceReceipt,
   InvestigationObligation,
 } from "./investigation-obligation";
-import { canonicalJson, type CanonicalValue } from "./canonicalization";
+import {
+  canonicalJson,
+  ReviewInvestigationDomainError,
+  type CanonicalValue,
+} from "./canonicalization";
 import type { InvestigationTokenUsage } from "./investigation-token-usage";
 import {
   ContextCriticDecision,
@@ -54,6 +58,25 @@ export type InvestigationTurnCommit = Readonly<{
   durationMs: number;
   provenance: InvestigationTurnProvenance | null;
 }>;
+
+type InvestigationTurnObligationClaim = Readonly<{
+  obligationId: string;
+}>;
+
+export function assertInvestigationTurnObligationClaimScope(input: {
+  readonly turn: InvestigationTurn;
+  readonly closureClaims: readonly InvestigationTurnObligationClaim[];
+  readonly unresolvableClaims: readonly InvestigationTurnObligationClaim[];
+}): void {
+  const assigned = new Set(input.turn.obligationIds);
+  const claimed = new Set<string>();
+  for (const claim of [...input.closureClaims, ...input.unresolvableClaims]) {
+    if (!assigned.has(claim.obligationId) || claimed.has(claim.obligationId)) {
+      throw new ReviewInvestigationDomainError("turn_obligation_claim_invalid");
+    }
+    claimed.add(claim.obligationId);
+  }
+}
 
 export type InvestigationTurnProvenance = Readonly<{
   turnId: string;

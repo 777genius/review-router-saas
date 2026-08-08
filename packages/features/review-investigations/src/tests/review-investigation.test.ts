@@ -835,6 +835,70 @@ describe("review investigation in-memory vertical slice", () => {
     ).toBe(discovery.version);
   });
 
+  it("rejects obligation claims outside or duplicated within the active turn", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(
+      openCommand("open-obligation-claim-scope"),
+    );
+    const discovery = await planDiscovery(harness, opened);
+    const obligationId = discovery.turn!.obligationIds[0]!;
+    const cases = [
+      {
+        commandId: "commit-unknown-obligation-claim",
+        closureClaims: [
+          {
+            obligationId: "f".repeat(64),
+            receipt: receipt("receipt-unknown-claim", changedSubject),
+          },
+        ],
+        unresolvableDecisions: [],
+      },
+      {
+        commandId: "commit-duplicate-obligation-claim",
+        closureClaims: [
+          {
+            obligationId,
+            receipt: receipt("receipt-duplicate-claim-1", changedSubject),
+          },
+          {
+            obligationId,
+            receipt: receipt("receipt-duplicate-claim-2", changedSubject),
+          },
+        ],
+        unresolvableDecisions: [],
+      },
+      {
+        commandId: "commit-contradictory-obligation-claim",
+        closureClaims: [
+          {
+            obligationId,
+            receipt: receipt("receipt-contradictory-claim", changedSubject),
+          },
+        ],
+        unresolvableDecisions: [
+          {
+            obligationId,
+            reason: "provider reported a contradiction",
+            deterministicPolicy: true,
+          },
+        ],
+      },
+    ] as const;
+
+    for (const invalid of cases) {
+      await expect(
+        harness.commit.execute({
+          ...emptyCommit(discovery, invalid.commandId),
+          closureClaims: invalid.closureClaims,
+          unresolvableDecisions: invalid.unresolvableDecisions,
+        }),
+      ).rejects.toThrow("turn_obligation_claim_invalid");
+      expect(
+        (await harness.store.findById(opened.investigationId))?.version,
+      ).toBe(discovery.version);
+    }
+  });
+
   it("concludes with findings only after supporting evidence closes coverage", async () => {
     const harness = createHarness();
     const opened = await harness.open.execute(openCommand("open-findings"));

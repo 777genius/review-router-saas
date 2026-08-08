@@ -936,6 +936,46 @@ describe("CommitAttestedInvestigationTurn", () => {
     ).toBe(fixture.planned.version);
   });
 
+  it("rejects an out-of-turn obligation claim before evidence verification", async () => {
+    const fixture = await createFixture();
+    const observation: InvestigationTurnObservation = {
+      ...observationFixture({
+        turnId: fixture.turnId,
+        dossierVersion: fixture.planned.version,
+        obligationId: fixture.obligationId,
+        operationReceiptId: hash("9"),
+      }),
+      closureClaims: [
+        {
+          obligationId: hash("f"),
+          operationReceiptIds: [hash("9")],
+        },
+      ],
+    };
+
+    await expect(
+      fixture.commit.execute({
+        commandId: "commit-out-of-turn-obligation-claim",
+        investigationId: fixture.planned.investigationId,
+        expectedVersion: fixture.planned.version,
+        turnId: fixture.turnId,
+        sourceAttemptId: "attempt-1",
+        sourceLeaseId: "lease-1",
+        sourceFencingToken: "1",
+        acceptedAttestationId: "attestation-1",
+        acceptedAttestationHash: hash("8"),
+        turnObservationHash: await fixture.digest.digestUtf8(
+          canonicalInvestigationTurnObservation(observation),
+        ),
+        observation,
+      }),
+    ).rejects.toThrow("turn_obligation_claim_invalid");
+    expect(fixture.evidence.verify).not.toHaveBeenCalled();
+    expect(
+      (await fixture.store.findById(fixture.planned.investigationId))?.version,
+    ).toBe(fixture.planned.version);
+  });
+
   it("rejects a provider kind claimed by the agent that differs from the trusted session", async () => {
     const fixture = await createFixture();
     const observation = observationFixture({
@@ -1132,6 +1172,14 @@ describe("CommitAttestedInvestigationTurn", () => {
     const matchedPathSetHash = await digest.digestUtf8(
       JSON.stringify([matchedPathHash]),
     );
+    const inventoryPathSetHash = await digest.digestUtf8(
+      JSON.stringify([pathHash]),
+    );
+    const inventorySeed = inventorySeedV2({
+      reviewRevisionHash: revisionHash,
+      aggregatePathCount: 1,
+      aggregatePathSetHash: inventoryPathSetHash,
+    });
     const opened = await new OpenReviewInvestigation(
       store,
       authority,
@@ -1183,7 +1231,7 @@ describe("CommitAttestedInvestigationTurn", () => {
         maxSeedProbesOverall: 384,
       },
       seedObligations: [
-        inventorySeedV2({ reviewRevisionHash: revisionHash }),
+        inventorySeed,
         {
           kind: InvestigationObligationKind.ChangedContent,
           canonicalSubject: canonicalFileObligationSubject({
@@ -1228,15 +1276,90 @@ describe("CommitAttestedInvestigationTurn", () => {
       ],
       initialReceipts: [],
     });
+    const inventoryPlanned = await new PlanNextInvestigationTurn(
+      store,
+      authority,
+      digest,
+      clock,
+    ).execute({
+      commandId: "plan-expansion-inventory",
+      investigationId: opened.investigationId,
+      expectedVersion: opened.version,
+      leaseDurationMs: 300_000,
+      maxObligationsForTurn: 16,
+    });
+    const inventoryAggregate = (await store.findById(opened.investigationId))!;
+    const inventory = inventoryAggregate.obligations.find(
+      (item) => item.kind === InvestigationObligationKind.InventoryWitness,
+    )!;
+    const inventoryReceiptId = hash("1");
+    const inventoryObservation = observationFixture({
+      turnId: inventoryPlanned.turn!.turnId,
+      dossierVersion: inventoryPlanned.version,
+      obligationId: inventory.obligationId,
+      operationReceiptId: inventoryReceiptId,
+    });
+    const inventoryEvidence = {
+      verify: vi
+        .fn<InvestigationTurnEvidencePort["verify"]>()
+        .mockResolvedValue({
+          acceptedAttestationId: "attestation-1",
+          acceptedAttestationHash: hash("8"),
+          terminalOutcomeHash: await digest.digestUtf8(
+            canonicalInvestigationTerminalObservation(inventoryObservation),
+          ),
+          gatewayPolicyVersion:
+            reviewInvestigationCoverageProfileV2.gatewayPolicyVersion,
+          actualProviderKind: InvestigationTurnProviderKind.Codex,
+          operations: [
+            inventoryOperationEvidence({
+              operationReceiptId: inventoryReceiptId,
+              pathHash,
+              pathSetHash: inventoryPathSetHash,
+              requirement: {
+                treeOid: "3".repeat(40),
+                aggregateItemCount: 1,
+                aggregateHash: hash("2"),
+                aggregatePathCount: 1,
+                aggregatePathSetHash: inventoryPathSetHash,
+              },
+            }),
+          ],
+        }),
+    };
+    const inventoryFence = await acquireTestLease(store, inventoryAggregate, {
+      leaseId: "lease-inventory",
+      attemptId: "attempt-inventory",
+    });
+    const afterInventory = await new CommitAttestedInvestigationTurn(
+      store,
+      inventoryEvidence,
+      digest,
+      new CommitInvestigationTurn(store, authority, digest, clock),
+    ).execute({
+      commandId: "commit-expansion-inventory",
+      investigationId: opened.investigationId,
+      expectedVersion: inventoryPlanned.version,
+      turnId: inventoryPlanned.turn!.turnId,
+      sourceAttemptId: "attempt-inventory",
+      sourceLeaseId: "lease-inventory",
+      sourceFencingToken: inventoryFence,
+      acceptedAttestationId: "attestation-1",
+      acceptedAttestationHash: hash("8"),
+      turnObservationHash: await digest.digestUtf8(
+        canonicalInvestigationTurnObservation(inventoryObservation),
+      ),
+      observation: inventoryObservation,
+    });
     const planned = await new PlanNextInvestigationTurn(
       store,
       authority,
       digest,
       clock,
     ).execute({
-      commandId: "plan-expansion-1",
+      commandId: "plan-expansion-search",
       investigationId: opened.investigationId,
-      expectedVersion: opened.version,
+      expectedVersion: afterInventory.version,
       leaseDurationMs: 300_000,
       maxObligationsForTurn: 16,
     });
@@ -1293,6 +1416,10 @@ describe("CommitAttestedInvestigationTurn", () => {
       new CommitInvestigationTurn(store, authority, digest, clock),
     );
 
+    const fence = await acquireTestLease(store, aggregate, {
+      leaseId: "lease-1",
+      attemptId: "attempt-1",
+    });
     const command = {
       commandId: "commit-expansion-1",
       investigationId: opened.investigationId,
@@ -1300,7 +1427,7 @@ describe("CommitAttestedInvestigationTurn", () => {
       turnId: planned.turn!.turnId,
       sourceAttemptId: "attempt-1",
       sourceLeaseId: "lease-1",
-      sourceFencingToken: "1",
+      sourceFencingToken: fence,
       acceptedAttestationId: "attestation-1",
       acceptedAttestationHash: hash("8"),
       turnObservationHash: await digest.digestUtf8(
@@ -1308,10 +1435,6 @@ describe("CommitAttestedInvestigationTurn", () => {
       ),
       observation,
     } as const;
-    await acquireTestLease(store, aggregate, {
-      leaseId: command.sourceLeaseId,
-      attemptId: command.sourceAttemptId,
-    });
     const firstResult = await commit.execute(command);
 
     const committed = (await store.findById(opened.investigationId))!;
@@ -1327,7 +1450,7 @@ describe("CommitAttestedInvestigationTurn", () => {
     await expect(
       commit.restoreCommittedCommand({
         ...command,
-        sourceFencingToken: "2",
+        sourceFencingToken: "999",
       }),
     ).rejects.toThrow("investigation_idempotency_conflict");
     expect(await commit.execute(command)).toEqual(firstResult);
