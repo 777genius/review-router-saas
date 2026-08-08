@@ -33,6 +33,7 @@ import {
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
   reviewInvestigationCoverageProfileV3,
+  reviewInvestigationCoverageProfileV4,
   investigationDossierCanonicalValue,
 } from "../index";
 import { RestoreReviewInvestigation } from "../application/use-cases/restore-review-investigation";
@@ -275,7 +276,9 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
 
   it("round-trips token usage with reasoning included in output", async () => {
     const suffix = `token-usage-${randomUUID()}`;
-    const seed = createInvestigationStoreContractSeed(suffix);
+    const seed = await withCoverageProfileV4(
+      createInvestigationStoreContractSeed(suffix),
+    );
     const harness = await createHarness(seed);
     const store = harness.store as PrismaInvestigationStore;
     try {
@@ -334,6 +337,7 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       await expect(
         restarted.findById(seed.investigationId),
       ).resolves.toMatchObject({
+        contract: reviewInvestigationCoverageProfileV4,
         totalUsageTokens: 110,
         turnProvenance: [provenance],
       });
@@ -1697,6 +1701,39 @@ async function withValidTestDossierDigest(
       canonicalJson(investigationDossierCanonicalValue(investigation)),
     ),
   };
+}
+
+async function withCoverageProfileV4(
+  investigation: ReviewInvestigation,
+): Promise<ReviewInvestigation> {
+  const canonicalRequirement = canonicalInvestigationEvidenceRequirement({
+    requirementVersion: obligationEvidenceRequirementVersion,
+    kind: InvestigationEvidenceRequirementKind.CompleteInventory,
+    reviewRevisionHash: investigation.revision.reviewRevisionHash,
+  });
+  const obligation = createInvestigationObligation({
+    obligationId: investigation.obligations[0]!.obligationId,
+    identity: obligationIdentity({
+      coverageContractVersion:
+        reviewInvestigationCoverageProfileV4.coverageContractVersion,
+      stableReviewUnitKey: investigation.stableReviewUnitKey,
+      kind: InvestigationObligationKind.InventoryWitness,
+      canonicalSubject: canonicalInventoryObligationSubject(
+        investigation.revision.reviewRevisionHash,
+      ),
+      canonicalRequirement,
+    }),
+    riskPriority: investigation.obligations[0]!.riskPriority,
+    origin: investigation.obligations[0]!.origin,
+  });
+  return withValidTestDossierDigest({
+    ...investigation,
+    contract: {
+      ...reviewInvestigationCoverageProfileV4,
+      producerReleaseId: investigation.contract.producerReleaseId,
+    },
+    obligations: [obligation],
+  });
 }
 
 async function plan(

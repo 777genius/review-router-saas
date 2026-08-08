@@ -1181,6 +1181,7 @@ model ReviewInvestigation {
   producerReleaseId                  String
   runtimeProfileVersion              String
   searchPolicyVersion                String                                        @default("review-investigation-fixed-string-search.v1")
+  turnPromptContractHash             String?
   policyCanonicalVersion             String                                        @default("review-investigation-policy.v1")
   policy                             Json
   state                              ReviewInvestigationStateV1

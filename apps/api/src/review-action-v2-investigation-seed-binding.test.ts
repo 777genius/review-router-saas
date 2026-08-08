@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ReviewInvestigationNextActionKind,
   ReviewInvestigationState,
-  reviewInvestigationCoverageProfileV3,
+  reviewInvestigationCoverageProfileV4,
 } from "@reviewrouter/features-review-investigations";
 import {
   ProviderExecutionProfile,
@@ -393,11 +393,11 @@ function harnessFor(input: {
         findProducerReleaseById: vi.fn().mockResolvedValue({
           state: ProducerReleaseState.Registered,
           contextGatewayPolicyVersion:
-            reviewInvestigationCoverageProfileV3.gatewayPolicyVersion,
+            reviewInvestigationCoverageProfileV4.gatewayPolicyVersion,
           reviewInvestigationProfile: {
             capability: "review_investigation_v1",
             coverageProfileHash: sha(
-              canonicalJson(reviewInvestigationCoverageProfileV3),
+              canonicalJson(reviewInvestigationCoverageProfileV4),
             ),
             policyHash: sha(canonicalJson(policy)),
           },
@@ -460,7 +460,7 @@ async function openRequest(
     providerVoteIdentityHash: sha("lane"),
   });
   const contract = {
-    ...reviewInvestigationCoverageProfileV3,
+    ...reviewInvestigationCoverageProfileV4,
     producerReleaseId: authorization.producerReleaseId,
   };
   return withBodyHash(ReviewActionV2OperationId.ReviewInvestigationOpenV2, {

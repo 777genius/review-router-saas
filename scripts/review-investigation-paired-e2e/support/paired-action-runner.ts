@@ -263,6 +263,7 @@ async function executeScenario(
     provider: "codex",
     requestedModel,
     reviewPrompt,
+    investigationContextPrompt: reviewPrompt,
     immutableRequest: Object.freeze({ pairedE2E: true }),
     manifestFacts: Object.freeze({
       taskKindSet: Object.freeze([ReviewTaskKind.FindingDiscovery]),

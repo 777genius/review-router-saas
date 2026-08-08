@@ -49,7 +49,7 @@ import {
   obligationEvidenceRequirementVersionV2,
   parseSuppliedInvestigationEvidenceRequirement,
   relationSearchProofVersion,
-  reviewInvestigationCoverageProfileV3,
+  reviewInvestigationCoverageProfileV4,
   type InvestigationTurnObservation,
   type ReviewInvestigationPolicy,
   type SeedInvestigationObligation,
@@ -259,7 +259,7 @@ export class ReviewInvestigationProductionE2EHarness {
   ): Promise<ReviewInvestigationProductionE2EHarness> {
     const policyHash = sha256(canonicalJson(productionInvestigationPolicy));
     const coverageProfileHash = sha256(
-      canonicalJson(reviewInvestigationCoverageProfileV3),
+      canonicalJson(reviewInvestigationCoverageProfileV4),
     );
     const base = await createReviewActionV2E2EHarness(databaseUrl, {
       investigationProfile: {
@@ -768,7 +768,7 @@ export class ReviewInvestigationProductionE2EHarness {
     label: string,
   ) {
     const contract = Object.freeze({
-      ...reviewInvestigationCoverageProfileV3,
+      ...reviewInvestigationCoverageProfileV4,
       producerReleaseId: this.base.producerReleaseId,
     });
     const seedEnvelope = investigationSeedEnvelope(
@@ -1272,7 +1272,7 @@ function seeds(
         revision: InvestigationOperationRevision.Head,
         sourcePathHash,
         searchPolicyVersion:
-          reviewInvestigationCoverageProfileV3.searchPolicyVersion,
+          reviewInvestigationCoverageProfileV4.searchPolicyVersion,
       }),
       riskPriority: 90,
     }),

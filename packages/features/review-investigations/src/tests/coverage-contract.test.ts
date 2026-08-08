@@ -7,6 +7,7 @@ import {
   reviewInvestigationCoverageProfileV1,
   reviewInvestigationCoverageProfileV2,
   reviewInvestigationCoverageProfileV3,
+  reviewInvestigationCoverageProfileV4,
 } from "../domain/coverage-contract";
 import { canonicalJson } from "../domain/canonicalization";
 
@@ -20,15 +21,15 @@ describe("review investigation coverage profile", () => {
     ).not.toThrow();
     expect(() =>
       assertSupportedReviewInvestigationCoverageProfile({
-        ...reviewInvestigationCoverageProfileV3,
+        ...reviewInvestigationCoverageProfileV4,
         producerReleaseId: "release-1",
       }),
     ).not.toThrow();
 
-    for (const field of Object.keys(reviewInvestigationCoverageProfileV3)) {
+    for (const field of Object.keys(reviewInvestigationCoverageProfileV4)) {
       expect(() =>
         assertSupportedReviewInvestigationCoverageProfile({
-          ...reviewInvestigationCoverageProfileV3,
+          ...reviewInvestigationCoverageProfileV4,
           producerReleaseId: "release-1",
           [field]: `${field}.unsupported`,
         }),
@@ -36,7 +37,7 @@ describe("review investigation coverage profile", () => {
     }
     expect(() =>
       assertSupportedReviewInvestigationCoverageProfile({
-        ...reviewInvestigationCoverageProfileV3,
+        ...reviewInvestigationCoverageProfileV4,
         producerReleaseId: "release-1",
         unknownPolicyVersion: "unknown.v1",
       } as never),
@@ -68,6 +69,12 @@ describe("review investigation coverage profile", () => {
     ).toBe(ReviewInvestigationCoverageProfileGeneration.V3);
     expect(
       resolveReviewInvestigationCoverageProfileGeneration({
+        ...reviewInvestigationCoverageProfileV4,
+        producerReleaseId: "release-current-v4",
+      }),
+    ).toBe(ReviewInvestigationCoverageProfileGeneration.V4);
+    expect(
+      resolveReviewInvestigationCoverageProfileGeneration({
         ...reviewInvestigationCoverageProfileV2,
         coverageContractVersion: "legacy-coverage.v0",
         producerReleaseId: "release-legacy",
@@ -93,7 +100,7 @@ describe("review investigation coverage profile", () => {
     ).toThrow("investigation_coverage_profile_unsupported");
     expect(() =>
       resolveReviewInvestigationCoverageProfileGeneration({
-        ...reviewInvestigationCoverageProfileV3,
+        ...reviewInvestigationCoverageProfileV4,
         expansionRulesVersion: "review-investigation-expansion.v4",
         producerReleaseId: "release-unsupported-v4",
       }),
@@ -103,8 +110,8 @@ describe("review investigation coverage profile", () => {
   it("matches the public Action capability golden vector", () => {
     expect(
       createHash("sha256")
-        .update(canonicalJson(reviewInvestigationCoverageProfileV3), "utf8")
+        .update(canonicalJson(reviewInvestigationCoverageProfileV4), "utf8")
         .digest("hex"),
-    ).toBe("76226b3d40021a3bb938283f5b983df3f304b2494b8335a8f751f752fa3d0c95");
+    ).toBe("d3bcd60414edeaac73973fc9c8ffa18612b1baec1755f2071192e28c3bc15714");
   });
 });
