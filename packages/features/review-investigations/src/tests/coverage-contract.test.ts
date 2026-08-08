@@ -62,6 +62,20 @@ describe("review investigation coverage profile", () => {
         producerReleaseId: "release-legacy",
       }),
     ).toBeNull();
+    expect(
+      resolveReviewInvestigationCoverageProfileGeneration({
+        ...reviewInvestigationCoverageProfileV2,
+        expansionRulesVersion: "review-investigation-expansion.v1",
+        producerReleaseId: "release-historical-v1",
+      }),
+    ).toBeNull();
+    expect(() =>
+      resolveReviewInvestigationCoverageProfileGeneration({
+        ...reviewInvestigationCoverageProfileV3,
+        expansionRulesVersion: "review-investigation-expansion.v4",
+        producerReleaseId: "release-unsupported-v4",
+      }),
+    ).toThrow("investigation_coverage_profile_unsupported");
   });
 
   it("matches the public Action capability golden vector", () => {

@@ -9,15 +9,22 @@ import {
   InvestigationObligationKind,
   InvestigationObligationOrigin,
   InvestigationObligationState,
+  InvestigationEvidenceRequirementKind,
+  InvestigationOperationKind,
+  InvestigationOperationRevision,
+  InvestigationProbeKind,
+  InvestigationTextSearchMatchMode,
   ReviewInvestigationConclusion,
   ReviewInvestigationNextActionKind,
   ReviewInvestigationRuntimeProfile,
   ReviewInvestigationState,
   ReviewInvestigationTurnPurpose,
   ReviewInvestigationDomainError,
+  canonicalInvestigationEvidenceRequirement,
   canonicalInvestigationCertificateCandidate,
   canonicalInvestigationTurnObservation,
-  reviewInvestigationCoverageProfileV2,
+  obligationEvidenceRequirementVersionV2,
+  reviewInvestigationCoverageProfileV3,
   type ReviewInvestigation,
   type ReviewInvestigationLease,
   type ReviewInvestigationReadModel,
@@ -157,7 +164,7 @@ describe("Review Action v2 investigation composition", () => {
       },
     });
     const unsupportedContract = {
-      ...reviewInvestigationCoverageProfileV2,
+      ...reviewInvestigationCoverageProfileV3,
       gatewayPolicyVersion: "context-gateway-v999",
       producerReleaseId: authorization.producerReleaseId,
     };
@@ -800,6 +807,101 @@ describe("Review Action v2 investigation composition", () => {
     });
   });
 
+  it("fails closed when a V3 turn requires a private query without a hydrator", async () => {
+    const base = activeInvestigation();
+    const aggregate = {
+      ...base,
+      contract: {
+        ...reviewInvestigationCoverageProfileV3,
+        producerReleaseId: authorization.producerReleaseId,
+      },
+      obligations: [
+        {
+          ...base.obligations[0]!,
+          canonicalRequirement: canonicalInvestigationEvidenceRequirement({
+            requirementVersion: obligationEvidenceRequirementVersionV2,
+            kind: InvestigationEvidenceRequirementKind.CompletePageChain,
+            operationKind: InvestigationOperationKind.TextSearch,
+            initialOperationInputHash: sha("v3-search-input"),
+            matchMode: InvestigationTextSearchMatchMode.FixedString,
+            queryHash: sha("v3-search-query"),
+            probeKind: InvestigationProbeKind.DeclarationIdentifier,
+            paths: ["."],
+            pageSize: 500,
+            revision: InvestigationOperationRevision.Head,
+            sourcePathHash: sha("v3-source-path"),
+            searchPolicyVersion:
+              reviewInvestigationCoverageProfileV3.searchPolicyVersion,
+          }),
+        },
+      ],
+    } as ReviewInvestigation;
+    const readModel = {
+      ...activeReadModel(),
+      turn: aggregate.activeTurn,
+    };
+    const routes = composeReviewActionV2InvestigationRoutes({
+      enabled: true,
+      runtime: {
+        readServerTime: async () => now,
+        createRequestId: () => "request-generated",
+      },
+      handlers: {
+        ...investigationLeaseHandlerStubs,
+        authorizations: authorizationResolver(),
+        authorizationQueries: {} as never,
+        executionQueries: {
+          findExecution: vi.fn().mockResolvedValue(executionSnapshot()),
+        } as never,
+        investigations: {
+          open: {} as never,
+          restore: {
+            snapshot: vi.fn().mockResolvedValue(aggregate),
+            execute: vi.fn().mockResolvedValue(readModel),
+          } as never,
+          planTurn: { execute: vi.fn() } as never,
+          acquireLease: {} as never,
+          renewLease: {} as never,
+          releaseLease: {} as never,
+          commitTurn: {} as never,
+          abortTurn: {} as never,
+          conclude: {} as never,
+          replay: {} as never,
+          prepareReplay: vi.fn() as never,
+          hydrateTurnObligations: null,
+        },
+        capabilities: {
+          issueInvestigationTurn: vi.fn(),
+        } as never,
+        digest,
+        now: () => now,
+        rollout: allowingRollout,
+        terminalShadowEvidence: { execute: vi.fn() } as never,
+        crossRevisionReplayEnabled: false,
+        replayPreparation: vi.fn() as never,
+      },
+    });
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvestigationTurnPlan,
+      {
+        ...envelope("plan-v3-without-hydrator"),
+        authorizationToken: "authorization-token",
+        idempotencyKey: "plan-v3-without-hydrator-1",
+        requestBodyHash: sha("placeholder"),
+        investigationId: aggregate.investigationId,
+        expectedVersion: String(aggregate.version),
+        dossierDigest: aggregate.dossierDigest,
+        leaseDurationMs: 60_000,
+        maxObligationsForTurn: 4,
+        turnBudgetHash: sha("turn-budget"),
+      } satisfies ReviewInvestigationTurnPlanRequest,
+    );
+
+    await expect(routes.planTurn!.execute(request)).rejects.toThrow(
+      "investigation_private_material_unavailable",
+    );
+  });
+
   it("binds aggregate semantic risk to an empty critic turn brief", async () => {
     const base = activeInvestigation();
     const changed = {
@@ -908,7 +1010,7 @@ describe("Review Action v2 investigation composition", () => {
   it("binds replay to the authorized target revision and source scope", async () => {
     const targetPolicy = activeInvestigation().policy;
     const targetContract = {
-      ...reviewInvestigationCoverageProfileV2,
+      ...reviewInvestigationCoverageProfileV3,
       producerReleaseId: authorization.producerReleaseId,
     };
     const targetSeedEnvelope = {
@@ -1047,11 +1149,11 @@ describe("Review Action v2 investigation composition", () => {
           findProducerReleaseById: vi.fn().mockResolvedValue({
             state: ProducerReleaseState.Registered,
             contextGatewayPolicyVersion:
-              reviewInvestigationCoverageProfileV2.gatewayPolicyVersion,
+              reviewInvestigationCoverageProfileV3.gatewayPolicyVersion,
             reviewInvestigationProfile: {
               capability: "review_investigation_v1",
               coverageProfileHash: sha(
-                canonicalJson(reviewInvestigationCoverageProfileV2),
+                canonicalJson(reviewInvestigationCoverageProfileV3),
               ),
               policyHash: sha(canonicalJson(targetPolicy)),
             },

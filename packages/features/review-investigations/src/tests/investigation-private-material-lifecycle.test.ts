@@ -18,6 +18,7 @@ import {
   canonicalInventoryObligationSubjectV2,
   canonicalInvestigationEvidenceRequirement,
   canonicalPageObligationSubjectV2,
+  canonicalRelationObligationSubjectV2,
   canonicalStandardTextSearchOperationInput,
   obligationEvidenceRequirementVersion,
   obligationEvidenceRequirementVersionV2,
@@ -182,6 +183,65 @@ describe("investigation search-query private material lifecycle", () => {
         searchObligation,
       ),
     ).rejects.toThrow("investigation_private_material_invalid");
+  });
+
+  it("leaves a historical markerless V2 relation unchanged without private material", async () => {
+    const clock = new FixedInvestigationClock(
+      new Date("2026-08-04T10:00:00.000Z"),
+    );
+    const cipher = configuredCipher();
+    const digest = new NodeSha256InvestigationDigest();
+    const store = new InMemoryInvestigationStore();
+    const opened = await openInvestigation({ store, cipher, digest, clock });
+    const aggregate = (await store.findById(opened.investigationId))!;
+    const source = aggregate.obligations.find(
+      (obligation) =>
+        obligation.kind === InvestigationObligationKind.ChangedContent,
+    )!;
+    const requirement = canonicalInvestigationEvidenceRequirement({
+      requirementVersion: obligationEvidenceRequirementVersionV2,
+      kind: InvestigationEvidenceRequirementKind.CompleteRelationContext,
+      sourceObligationId: source.obligationId,
+      initialOperationInputHash: operationInputHash,
+      queryHash,
+      requiredPathCount: 1,
+      requiredPathSetHash: sha256("markerless-path-set"),
+      requiredPathHashes: [sha256("markerless-path")],
+      sourcePathHash,
+      revision: InvestigationOperationRevision.Head,
+      searchPolicyVersion:
+        reviewInvestigationCoverageProfileV3.searchPolicyVersion,
+    });
+    const markerless = {
+      ...source,
+      obligationId: sha256("markerless-relation"),
+      kind: InvestigationObligationKind.DirectCaller,
+      canonicalSubject: canonicalRelationObligationSubjectV2({
+        obligationKind: InvestigationObligationKind.DirectCaller,
+        sourceObligationId: source.obligationId,
+        initialOperationInputHash: operationInputHash,
+        queryHash,
+        requiredPathSetHash: sha256("markerless-path-set"),
+      }),
+      canonicalRequirement: requirement,
+    };
+
+    await expect(
+      new HydrateInvestigationTurnObligations(
+        store,
+        cipher,
+        digest,
+        clock,
+      ).execute({
+        investigation: {
+          ...aggregate,
+          obligations: [...aggregate.obligations, markerless],
+        },
+        obligationIds: [markerless.obligationId],
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ canonicalRequirement: requirement }),
+    ]);
   });
 
   it("does not create an aggregate or command when private material is unavailable", async () => {

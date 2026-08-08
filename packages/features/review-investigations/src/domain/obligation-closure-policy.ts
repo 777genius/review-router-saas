@@ -220,6 +220,27 @@ export type SuppliedInvestigationEvidenceRequirement =
   | SuppliedCompletePageChainRequirementV2
   | SuppliedCompleteRelationContextRequirementV2;
 
+export function requiresInvestigationSearchQueryPrivateMaterial(
+  requirement: InvestigationEvidenceRequirement,
+): boolean {
+  if (
+    requirement.requirementVersion !== obligationEvidenceRequirementVersionV2
+  ) {
+    return false;
+  }
+  if (
+    requirement.kind === InvestigationEvidenceRequirementKind.CompletePageChain
+  ) {
+    return true;
+  }
+  return (
+    requirement.kind ===
+      InvestigationEvidenceRequirementKind.CompleteRelationContext &&
+    (requirement.searchProofVersion === relationSearchProofVersion ||
+      requirement.requiredQueryDigest !== undefined)
+  );
+}
+
 export type ObligationClosureProof = Readonly<{
   closurePolicyVersion: typeof obligationClosurePolicyVersion;
   canonicalSubject: string;

@@ -41,7 +41,7 @@ import {
   maximumSemanticRiskPriority,
   obligationEvidenceRequirementVersionV2,
   parseInvestigationEvidenceRequirement,
-  reviewInvestigationCoverageProfileV2,
+  requiresInvestigationSearchQueryPrivateMaterial,
   parseInvestigationTurnObservation,
   type InvestigationClockPort,
   type InvestigationExecutionAuthorityPort,
@@ -2319,8 +2319,6 @@ async function canonicalTurnBrief(
   if (!aggregate.activeTurn || !readModel.turn) return canonicalJson(null);
   if (
     !hydrator &&
-    aggregate.contract.expansionRulesVersion ===
-      reviewInvestigationCoverageProfileV2.expansionRulesVersion &&
     readModel.turn.obligationIds.some((obligationId) => {
       const obligation = aggregate.obligations.find(
         (candidate) => candidate.obligationId === obligationId,
@@ -2329,14 +2327,7 @@ async function canonicalTurnBrief(
       const requirement = parseInvestigationEvidenceRequirement(
         obligation.canonicalRequirement,
       );
-      return (
-        requirement.requirementVersion ===
-          obligationEvidenceRequirementVersionV2 &&
-        (requirement.kind ===
-          InvestigationEvidenceRequirementKind.CompletePageChain ||
-          requirement.kind ===
-            InvestigationEvidenceRequirementKind.CompleteRelationContext)
-      );
+      return requiresInvestigationSearchQueryPrivateMaterial(requirement);
     })
   ) {
     throw new Error("investigation_private_material_unavailable");

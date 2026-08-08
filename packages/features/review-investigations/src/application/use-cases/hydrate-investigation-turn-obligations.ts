@@ -11,6 +11,7 @@ import {
   InvestigationEvidenceRequirementKind,
   obligationEvidenceRequirementVersionV2,
   parseInvestigationEvidenceRequirement,
+  requiresInvestigationSearchQueryPrivateMaterial,
 } from "../../domain/obligation-closure-policy";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
 import { ResolveInvestigationSearchQueryPrivateMaterial } from "./resolve-investigation-search-query-private-material";
@@ -72,14 +73,7 @@ export class HydrateInvestigationTurnObligations {
     const requirement = parseInvestigationEvidenceRequirement(
       obligation.canonicalRequirement,
     );
-    if (
-      requirement.requirementVersion !==
-        obligationEvidenceRequirementVersionV2 ||
-      (requirement.kind !==
-        InvestigationEvidenceRequirementKind.CompletePageChain &&
-        requirement.kind !==
-          InvestigationEvidenceRequirementKind.CompleteRelationContext)
-    ) {
+    if (!requiresInvestigationSearchQueryPrivateMaterial(requirement)) {
       return briefObligation(obligation, obligation.canonicalRequirement);
     }
     const query = await this.resolveQuery({

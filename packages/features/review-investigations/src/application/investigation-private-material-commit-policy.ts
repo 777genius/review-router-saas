@@ -8,6 +8,7 @@ import {
   InvestigationEvidenceRequirementKind,
   obligationEvidenceRequirementVersionV2,
   parseInvestigationEvidenceRequirement,
+  requiresInvestigationSearchQueryPrivateMaterial,
 } from "../domain/obligation-closure-policy";
 import type { ReviewInvestigation } from "../domain/review-investigation";
 import { resolveReviewInvestigationCoverageProfileGeneration } from "../domain/coverage-contract";
@@ -129,7 +130,9 @@ function newlyAddedRelationObligationIds(
     if (
       requirement.kind ===
         InvestigationEvidenceRequirementKind.CompleteRelationContext &&
-      requirement.requirementVersion === obligationEvidenceRequirementVersionV2
+      requirement.requirementVersion ===
+        obligationEvidenceRequirementVersionV2 &&
+      requiresInvestigationSearchQueryPrivateMaterial(requirement)
     ) {
       ids.add(obligation.obligationId);
     }
@@ -177,12 +180,7 @@ function persistedSearchQueryPrivateMaterialObligationIds(
       ) {
         throw new Error("investigation_persisted_search_query_forbidden");
       }
-      if (
-        requirement.kind ===
-          InvestigationEvidenceRequirementKind.CompletePageChain ||
-        requirement.kind ===
-          InvestigationEvidenceRequirementKind.CompleteRelationContext
-      ) {
+      if (requiresInvestigationSearchQueryPrivateMaterial(requirement)) {
         requiredObligationIds.add(obligation.obligationId);
       }
     }

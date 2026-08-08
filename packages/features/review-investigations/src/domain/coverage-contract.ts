@@ -67,6 +67,17 @@ export function resolveReviewInvestigationCoverageProfileGeneration(
   ) {
     return null;
   }
+  if (contract.expansionRulesVersion === "review-investigation-expansion.v1") {
+    return null;
+  }
+  if (
+    contract.expansionRulesVersion !==
+      reviewInvestigationCoverageProfileV2.expansionRulesVersion &&
+    contract.expansionRulesVersion !==
+      reviewInvestigationCoverageProfileV3.expansionRulesVersion
+  ) {
+    throw new Error("investigation_coverage_profile_unsupported");
+  }
   const expectedKeys = [
     ...Object.keys(reviewInvestigationCoverageProfileV3),
     "producerReleaseId",
