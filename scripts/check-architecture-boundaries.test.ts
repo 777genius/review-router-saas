@@ -68,6 +68,49 @@ describe("review-investigations architecture ratchet", () => {
     );
   });
 
+  it("rejects aliased transaction clients passed through helpers", () => {
+    const root = createFixture(
+      'export enum InvestigationState { Open = "open" }\n',
+    );
+    writeFile(
+      root,
+      "packages/features/review-investigations/src/infrastructure/prisma-store.ts",
+      `export async function load(prisma: any) {
+  return prisma.$transaction(async (tx: any) => {
+    const db = tx;
+    return Promise.all([loadAuthorization(db), loadSlot(db)]);
+  });
+}
+`,
+    );
+
+    expect(() => runChecker(root)).toThrow(
+      /Prisma interactive transaction clients use one database connection/,
+    );
+  });
+
+  it("rejects named transaction callbacks and prebuilt query arrays", () => {
+    const root = createFixture(
+      'export enum InvestigationState { Open = "open" }\n',
+    );
+    writeFile(
+      root,
+      "packages/features/review-investigations/src/infrastructure/prisma-store.ts",
+      `export async function load(prisma: any) {
+  const operation = async (tx: any) => {
+    const queries = [tx.authorization.findUnique(), tx.slot.findUnique()];
+    return Promise.all(queries);
+  };
+  return prisma.$transaction(operation);
+}
+`,
+    );
+
+    expect(() => runChecker(root)).toThrow(
+      /Prisma interactive transaction clients use one database connection/,
+    );
+  });
+
   it("accepts sequential queries through a Prisma transaction client", () => {
     const root = createFixture(
       'export enum InvestigationState { Open = "open" }\n',

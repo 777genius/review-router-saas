@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
+import ts from "typescript";
 
 const root = process.env.REVIEWROUTER_ARCHITECTURE_ROOT
   ? resolve(process.env.REVIEWROUTER_ARCHITECTURE_ROOT)
@@ -291,55 +292,193 @@ async function checkPrismaTransactionQuerySerialization(violations) {
       continue;
     }
     const source = readFileSync(file, "utf8");
-    for (const body of promiseAllArrayBodies(source)) {
-      if (/\btransaction\s*\./u.test(body)) {
-        violations.push({
-          file,
-          imported: "Promise.all(transaction.*)",
-          reason:
-            "Prisma interactive transaction clients use one database connection; issue their queries sequentially",
-        });
+    const sourceFile = ts.createSourceFile(
+      file,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+    const aliases = concurrentPrismaTransactionAliases(sourceFile);
+    if (aliases.length > 0) {
+      violations.push({
+        file,
+        imported: `Promise.all(${aliases.join("|")}.*)`,
+        reason:
+          "Prisma interactive transaction clients use one database connection; issue their queries sequentially",
+      });
+    }
+  }
+}
+
+function concurrentPrismaTransactionAliases(sourceFile) {
+  const transactionCallbackNames = new Set();
+  visit(sourceFile, (node) => {
+    if (!isPrismaTransactionCall(node)) return;
+    const callback = node.arguments[0];
+    if (callback && ts.isIdentifier(callback)) {
+      transactionCallbackNames.add(callback.text);
+    }
+  });
+
+  const unsafeAliases = new Set();
+  visit(sourceFile, (node) => {
+    if (!ts.isFunctionLike(node) || !node.body) return;
+    const aliases = transactionAliasesForFunction(
+      node,
+      sourceFile,
+      transactionCallbackNames,
+    );
+    if (aliases.size === 0) return;
+    collectDirectAliases(node.body, aliases);
+    const bindings = variableInitializers(node.body);
+    visit(node.body, (candidate) => {
+      if (!isPromiseAllCall(candidate)) return;
+      const input = candidate.arguments[0];
+      for (const alias of aliases) {
+        if (
+          input &&
+          nodeOrBoundInitializerReferencesIdentifier(
+            input,
+            alias,
+            bindings,
+            new Set(),
+          )
+        ) {
+          unsafeAliases.add(alias);
+        }
       }
+    });
+  });
+  return [...unsafeAliases].sort();
+}
+
+function transactionAliasesForFunction(
+  node,
+  sourceFile,
+  transactionCallbackNames,
+) {
+  const aliases = new Set();
+  const bindingName = functionBindingName(node);
+  const namedCallback =
+    bindingName !== null && transactionCallbackNames.has(bindingName);
+  const inlineCallback =
+    ts.isCallExpression(node.parent) &&
+    node.parent.arguments[0] === node &&
+    isPrismaTransactionCall(node.parent);
+  for (const [index, parameter] of node.parameters.entries()) {
+    if (!ts.isIdentifier(parameter.name)) continue;
+    const type = parameter.type?.getText(sourceFile) ?? "";
+    if (
+      parameter.name.text === "transaction" ||
+      /(?:^|\.)TransactionClient\b/u.test(type) ||
+      (index === 0 && (inlineCallback || namedCallback))
+    ) {
+      aliases.add(parameter.name.text);
     }
+  }
+  return aliases;
+}
+
+function functionBindingName(node) {
+  if (node.name && ts.isIdentifier(node.name)) return node.name.text;
+  if (
+    ts.isVariableDeclaration(node.parent) &&
+    node.parent.initializer === node &&
+    ts.isIdentifier(node.parent.name)
+  ) {
+    return node.parent.name.text;
+  }
+  return null;
+}
+
+function collectDirectAliases(node, aliases) {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    visit(node, (candidate) => {
+      if (
+        !ts.isVariableDeclaration(candidate) ||
+        !ts.isIdentifier(candidate.name) ||
+        !candidate.initializer ||
+        !ts.isIdentifier(candidate.initializer) ||
+        !aliases.has(candidate.initializer.text) ||
+        aliases.has(candidate.name.text)
+      ) {
+        return;
+      }
+      aliases.add(candidate.name.text);
+      changed = true;
+    });
   }
 }
 
-function promiseAllArrayBodies(source) {
-  const bodies = [];
-  const startPattern = /\bPromise\s*\.\s*all\s*\(\s*\[/gu;
-  for (const match of source.matchAll(startPattern)) {
-    const openingBracket = match.index + match[0].lastIndexOf("[");
-    const closingBracket = findClosingBracket(source, openingBracket);
-    if (closingBracket !== -1) {
-      bodies.push(source.slice(openingBracket + 1, closingBracket));
-    }
-  }
-  return bodies;
+function isPrismaTransactionCall(node) {
+  return (
+    ts.isCallExpression(node) &&
+    (ts.isPropertyAccessExpression(node.expression) ||
+      ts.isPropertyAccessChain(node.expression)) &&
+    node.expression.name.text === "$transaction"
+  );
 }
 
-function findClosingBracket(source, openingBracket) {
-  let depth = 0;
-  let quote = null;
-  let escaped = false;
-  for (let index = openingBracket; index < source.length; index += 1) {
-    const character = source[index];
-    if (quote !== null) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === quote) quote = null;
-      continue;
+function isPromiseAllCall(node) {
+  return (
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    ts.isIdentifier(node.expression.expression) &&
+    node.expression.expression.text === "Promise" &&
+    node.expression.name.text === "all" &&
+    node.arguments.length > 0
+  );
+}
+
+function variableInitializers(node) {
+  const bindings = new Map();
+  visit(node, (candidate) => {
+    if (
+      ts.isVariableDeclaration(candidate) &&
+      ts.isIdentifier(candidate.name) &&
+      candidate.initializer
+    ) {
+      bindings.set(candidate.name.text, candidate.initializer);
     }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      continue;
+  });
+  return bindings;
+}
+
+function nodeOrBoundInitializerReferencesIdentifier(
+  node,
+  identifier,
+  bindings,
+  visitedBindings,
+) {
+  if (nodeReferencesIdentifier(node, identifier)) return true;
+  if (!ts.isIdentifier(node) || visitedBindings.has(node.text)) return false;
+  const initializer = bindings.get(node.text);
+  if (!initializer) return false;
+  visitedBindings.add(node.text);
+  return nodeOrBoundInitializerReferencesIdentifier(
+    initializer,
+    identifier,
+    bindings,
+    visitedBindings,
+  );
+}
+
+function nodeReferencesIdentifier(node, identifier) {
+  let found = false;
+  visit(node, (candidate) => {
+    if (ts.isIdentifier(candidate) && candidate.text === identifier) {
+      found = true;
     }
-    if (character === "[") depth += 1;
-    if (character === "]") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return -1;
+  });
+  return found;
+}
+
+function visit(node, visitor) {
+  visitor(node);
+  ts.forEachChild(node, (child) => visit(child, visitor));
 }
 
 async function checkRevisionAwareReviewRatchet(violations) {

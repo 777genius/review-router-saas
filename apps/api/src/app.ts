@@ -542,6 +542,8 @@ export async function createApiApp(
           readonly protocolIssues: readonly string[];
           readonly requestId: string;
           readonly statusCode: number;
+          readonly internalFailureClass?: string;
+          readonly internalFailureCode?: string;
         }) => logger.warn("Review Action v2 request rejected", diagnostic),
       }
     : undefined;

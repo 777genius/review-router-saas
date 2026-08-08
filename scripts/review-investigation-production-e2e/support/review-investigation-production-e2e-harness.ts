@@ -406,17 +406,16 @@ export class ReviewInvestigationProductionE2EHarness {
         label: `${input.label}-discovery-${discoveryOrdinal}`,
         expandRelations: input.expandRelations,
         critic: false,
+        concurrentDuplicate: discoveryOrdinal === 1,
       });
       if (discoveryOrdinal === 1) {
-        const replay = await requiredHandler(
-          this.routes.investigation.commitTurn,
-        ).execute(commit.request);
-        duplicateCommitVersion = requiredString(
-          replay.result.investigationVersion,
-        );
+        duplicateCommitVersion = requiredValue(
+          commit.concurrentDuplicateRead,
+          "concurrent_duplicate_commit_missing",
+        ).investigationVersion;
         ensure(
           duplicateCommitVersion === commit.read.investigationVersion,
-          "duplicate_commit_not_idempotent",
+          "concurrent_duplicate_commit_not_idempotent",
         );
         await expectFailure(
           requiredHandler(this.routes.investigation.commitTurn).execute(
@@ -885,6 +884,7 @@ export class ReviewInvestigationProductionE2EHarness {
     label: string;
     expandRelations: boolean;
     critic: boolean;
+    concurrentDuplicate?: boolean;
   }) {
     const prepared = prepareTurnObservation({
       investigationId: input.current.investigationId,
@@ -926,15 +926,42 @@ export class ReviewInvestigationProductionE2EHarness {
         turnObservationHash: sha256(canonicalObservation),
       } satisfies ReviewInvestigationTurnCommitRequest,
     );
-    const response = await requiredHandler(
-      this.routes.investigation.commitTurn,
-    ).execute(request);
-    ensure(
-      response.result.status ===
-        ReviewInvestigationMutationResultStatus.Applied,
-      "investigation_turn_commit_failed",
-    );
-    return Object.freeze({ request, read: readInvestigation(response.result) });
+    const handler = requiredHandler(this.routes.investigation.commitTurn);
+    const responses = input.concurrentDuplicate
+      ? await Promise.all([handler.execute(request), handler.execute(request)])
+      : [await handler.execute(request)];
+    const reads = responses.map((response) => {
+      ensure(
+        response.result.status ===
+          ReviewInvestigationMutationResultStatus.Applied,
+        "investigation_turn_commit_failed",
+      );
+      return readInvestigation(response.result);
+    });
+    if (input.concurrentDuplicate) {
+      const first = requiredValue(
+        reads[0],
+        "investigation_turn_commit_read_missing",
+      );
+      ensure(
+        BigInt(first.investigationVersion) ===
+          BigInt(input.current.investigationVersion) + 1n,
+        "concurrent_duplicate_commit_version_drift",
+      );
+      const receiptCount =
+        await this.prisma.reviewInvestigationCommandReceipt.count({
+          where: {
+            investigationId: input.current.investigationId,
+            commandId: request.idempotencyKey,
+          },
+        });
+      ensure(receiptCount === 1, "concurrent_duplicate_commit_receipt_drift");
+    }
+    return Object.freeze({
+      request,
+      read: requiredValue(reads[0], "investigation_turn_commit_read_missing"),
+      concurrentDuplicateRead: reads[1] ?? null,
+    });
   }
 
   private async conclude(
