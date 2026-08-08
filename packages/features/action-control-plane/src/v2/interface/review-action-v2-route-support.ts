@@ -9,7 +9,10 @@ import {
   type ReviewActionV2RequestMap,
   type ReviewActionV2ResultMap,
 } from "@reviewrouter/protocol-review-action-v2";
-import { toSafeReviewActionV2RouteFailure } from "./review-action-v2-route-failure.js";
+import {
+  ReviewActionV2RouteFailure,
+  toSafeReviewActionV2RouteFailure,
+} from "./review-action-v2-route-failure.js";
 
 export type ReviewActionV2RouteRuntimeDependencies = {
   readonly readServerTime: () => Promise<Date>;
@@ -20,8 +23,39 @@ export type ReviewActionV2RouteRuntimeDependencies = {
     readonly protocolIssues: readonly string[];
     readonly requestId: string;
     readonly statusCode: number;
+    readonly internalFailureClass?: string;
+    readonly internalFailureCode?: string;
   }) => void;
 };
+
+const safeInternalFailureClasses = new Set([
+  "AggregateError",
+  "Error",
+  "PrismaClientInitializationError",
+  "PrismaClientKnownRequestError",
+  "PrismaClientRustPanicError",
+  "PrismaClientUnknownRequestError",
+  "PrismaClientValidationError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "TypeError",
+  "URIError",
+]);
+
+const safeInternalFailureCodes = new Map<string, string>([
+  ["P2024", "prisma_connection_pool_timeout"],
+  ["P2028", "prisma_transaction_failed"],
+  ["P2034", "prisma_transaction_conflict"],
+  [
+    "investigation_command_restore_invalid",
+    "investigation_command_restore_invalid",
+  ],
+  ["investigation_concurrency_conflict", "investigation_concurrency_conflict"],
+  ["investigation_idempotency_conflict", "investigation_idempotency_conflict"],
+  ["investigation_lease_fencing_stale", "investigation_lease_fencing_stale"],
+  ["store_snapshot_missing", "investigation_store_snapshot_missing"],
+]);
 
 export type ReviewActionV2EnabledHandler<
   Operation extends ReviewActionV2OperationId,
@@ -105,6 +139,9 @@ export function registerReviewActionV2Operation<
           protocolIssues: failure.issues,
           requestId,
           statusCode: failure.statusCode,
+          ...(error instanceof ReviewActionV2RouteFailure
+            ? {}
+            : internalFailureDiagnostic(error)),
         };
         try {
           if (dependencies.recordProtocolRejection) {
@@ -127,4 +164,39 @@ export function registerReviewActionV2Operation<
       }
     },
   );
+}
+
+function internalFailureDiagnostic(error: unknown): Readonly<{
+  internalFailureClass: string;
+  internalFailureCode: string;
+}> {
+  if (error instanceof Error) {
+    return Object.freeze({
+      internalFailureClass: safeInternalFailureClass(error.name),
+      internalFailureCode: safeInternalFailureCode(error),
+    });
+  }
+  return Object.freeze({
+    internalFailureClass: "non_error_throwable",
+    internalFailureCode: "unclassified_internal_error",
+  });
+}
+
+function safeInternalFailureClass(value: string): string {
+  const normalized = value.trim();
+  return safeInternalFailureClasses.has(normalized) ? normalized : "Error";
+}
+
+function safeInternalFailureCode(error: Error): string {
+  const rawCode = (error as Error & { code?: unknown }).code;
+  const candidates = [
+    typeof rawCode === "string" ? rawCode : null,
+    error.message,
+  ];
+  for (const candidate of candidates) {
+    if (candidate === null) continue;
+    const safeCode = safeInternalFailureCodes.get(candidate);
+    if (safeCode !== undefined) return safeCode;
+  }
+  return "unclassified_internal_error";
 }

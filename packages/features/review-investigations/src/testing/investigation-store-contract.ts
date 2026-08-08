@@ -136,6 +136,7 @@ export function defineInvestigationStoreContract(
 
 export function createInvestigationStoreContractSeed(
   suffix: string,
+  options: Readonly<{ trustDomain?: string }> = {},
 ): ReviewInvestigation {
   const identity = obligationIdentity({
     coverageContractVersion: "coverage-v1",
@@ -158,7 +159,7 @@ export function createInvestigationStoreContractSeed(
       repositoryConnectionId: `connection-${suffix}`,
       scmRepositoryIdentityId: `repository-${suffix}`,
       pullRequestNumber: 42,
-      trustDomain: "trusted-local",
+      trustDomain: options.trustDomain ?? "trusted-local",
       authorizationScopeHash: digest(`authorization-scope-${suffix}`),
     },
     revision: {

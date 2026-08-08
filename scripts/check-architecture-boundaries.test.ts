@@ -46,6 +46,88 @@ describe("review-investigations architecture ratchet", () => {
       /strict domain code may depend only on its own domain/,
     );
   });
+
+  it("rejects concurrent queries through one Prisma transaction client", () => {
+    const root = createFixture(
+      'export enum InvestigationState { Open = "open" }\n',
+    );
+    writeFile(
+      root,
+      "packages/features/review-investigations/src/infrastructure/prisma-store.ts",
+      `export async function load(transaction: any) {
+  return Promise.all([
+    transaction.reviewRunAuthorization.findUnique(),
+    transaction.reviewExecutionWorkSlotV2.findUnique(),
+  ]);
+}
+`,
+    );
+
+    expect(() => runChecker(root)).toThrow(
+      /Prisma interactive transaction clients use one database connection/,
+    );
+  });
+
+  it("rejects aliased transaction clients passed through helpers", () => {
+    const root = createFixture(
+      'export enum InvestigationState { Open = "open" }\n',
+    );
+    writeFile(
+      root,
+      "packages/features/review-investigations/src/infrastructure/prisma-store.ts",
+      `export async function load(prisma: any) {
+  return prisma.$transaction(async (tx: any) => {
+    const db = tx;
+    return Promise.all([loadAuthorization(db), loadSlot(db)]);
+  });
+}
+`,
+    );
+
+    expect(() => runChecker(root)).toThrow(
+      /Prisma interactive transaction clients use one database connection/,
+    );
+  });
+
+  it("rejects named transaction callbacks and prebuilt query arrays", () => {
+    const root = createFixture(
+      'export enum InvestigationState { Open = "open" }\n',
+    );
+    writeFile(
+      root,
+      "packages/features/review-investigations/src/infrastructure/prisma-store.ts",
+      `export async function load(prisma: any) {
+  const operation = async (tx: any) => {
+    const queries = [tx.authorization.findUnique(), tx.slot.findUnique()];
+    return Promise.all(queries);
+  };
+  return prisma.$transaction(operation);
+}
+`,
+    );
+
+    expect(() => runChecker(root)).toThrow(
+      /Prisma interactive transaction clients use one database connection/,
+    );
+  });
+
+  it("accepts sequential queries through a Prisma transaction client", () => {
+    const root = createFixture(
+      'export enum InvestigationState { Open = "open" }\n',
+    );
+    writeFile(
+      root,
+      "packages/features/review-investigations/src/infrastructure/prisma-store.ts",
+      `export async function load(transaction: any) {
+  const authorization = await transaction.reviewRunAuthorization.findUnique();
+  const slot = await transaction.reviewExecutionWorkSlotV2.findUnique();
+  return { authorization, slot };
+}
+`,
+    );
+
+    expect(runChecker(root)).toContain("Architecture boundary check passed");
+  });
 });
 
 function createFixture(domainSource: string): string {

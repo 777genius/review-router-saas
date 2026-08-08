@@ -200,9 +200,11 @@ export function createInvestigationLeaseStoreContractCandidate(
 
 export function createInvestigationLeaseBindingSeed(
   candidate: Omit<CreateReviewInvestigationLeaseInput, "fencingToken">,
+  options: Readonly<{ trustDomain?: string }> = {},
 ): Readonly<{ base: ReviewInvestigation; planned: ReviewInvestigation }> {
   const fixture = createInvestigationStoreContractSeed(
     `lease-${candidate.investigationId}`,
+    options,
   );
   const base: ReviewInvestigation = {
     ...fixture,

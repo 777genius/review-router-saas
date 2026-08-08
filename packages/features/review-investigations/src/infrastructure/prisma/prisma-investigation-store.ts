@@ -164,21 +164,7 @@ export class PrismaInvestigationStore
     readonly commandId: string;
     readonly commandHash: string;
   }): Promise<InvestigationStoreCommitResult | null> {
-    const command =
-      await this.prisma.reviewInvestigationCommandReceipt.findUnique({
-        where: { commandId: input.commandId },
-      });
-    if (!command) return null;
-    if (command.commandHash !== input.commandHash) {
-      return result(InvestigationStoreCommitStatus.IdempotencyConflict, null);
-    }
-    const investigation = await loadAggregate(
-      this.prisma,
-      command.investigationId,
-    );
-    if (!investigation)
-      throw new Error("investigation_command_snapshot_missing");
-    return result(InvestigationStoreCommitStatus.Restored, investigation);
+    return restoreCommitResult(this.prisma, input);
   }
 
   async findById(investigationId: string): Promise<ReviewInvestigation | null> {
@@ -469,26 +455,8 @@ export class PrismaInvestigationStore
     try {
       return await this.prisma.$transaction(
         async (transaction) => {
-          const command =
-            await transaction.reviewInvestigationCommandReceipt.findUnique({
-              where: { commandId: input.commandId },
-            });
-          if (command) {
-            if (command.commandHash !== input.commandHash) {
-              return result(
-                InvestigationStoreCommitStatus.IdempotencyConflict,
-                null,
-              );
-            }
-            const restored = await loadAggregate(
-              transaction,
-              command.investigationId,
-            );
-            if (!restored) {
-              throw new Error("investigation_command_snapshot_missing");
-            }
-            return result(InvestigationStoreCommitStatus.Restored, restored);
-          }
+          const fastRestore = await restoreCommitResult(transaction, input);
+          if (fastRestore !== null) return fastRestore;
 
           const privateMaterials = validateInvestigationPrivateMaterialCommit({
             investigation: input.investigation,
@@ -519,6 +487,8 @@ export class PrismaInvestigationStore
             WHERE "investigationId" = ${input.investigation.investigationId}
             FOR UPDATE
           `);
+          const lockedRestore = await restoreCommitResult(transaction, input);
+          if (lockedRestore !== null) return lockedRestore;
           const current = await loadAggregate(
             transaction,
             input.investigation.investigationId,
@@ -1018,6 +988,27 @@ export class PrismaInvestigationStore
     if (!stored) throw new Error("investigation_open_snapshot_missing");
     return result(InvestigationStoreCommitStatus.Committed, stored);
   }
+}
+
+async function restoreCommitResult(
+  database: InvestigationDb,
+  input: Pick<
+    Parameters<InvestigationStorePort["commit"]>[0],
+    "commandId" | "commandHash"
+  >,
+): Promise<InvestigationStoreCommitResult | null> {
+  const command = await database.reviewInvestigationCommandReceipt.findUnique({
+    where: { commandId: input.commandId },
+  });
+  if (command === null) return null;
+  if (command.commandHash !== input.commandHash) {
+    return result(InvestigationStoreCommitStatus.IdempotencyConflict, null);
+  }
+  const restored = await loadAggregate(database, command.investigationId);
+  if (restored === null) {
+    throw new Error("investigation_command_snapshot_missing");
+  }
+  return result(InvestigationStoreCommitStatus.Restored, restored);
 }
 
 async function loadAggregate(
@@ -2535,31 +2526,28 @@ async function executionAuthorityVerdict(
   if (execution === null) {
     return InvestigationExecutionAuthorityVerdict.Missing;
   }
-  const [authorization, slot, stream] = await Promise.all([
-    transaction.reviewRunAuthorization.findUnique({
-      where: { authorizationId: execution.authorizationId },
-    }),
-    transaction.reviewExecutionWorkSlotV2.findUnique({
-      where: {
-        executionId_workSlotId: {
-          executionId: investigation.executionId,
-          workSlotId: investigation.workSlotId,
+  const authorization = await transaction.reviewRunAuthorization.findUnique({
+    where: { authorizationId: execution.authorizationId },
+  });
+  const slot = await transaction.reviewExecutionWorkSlotV2.findUnique({
+    where: {
+      executionId_workSlotId: {
+        executionId: investigation.executionId,
+        workSlotId: investigation.workSlotId,
+      },
+    },
+  });
+  const stream = await transaction.reviewExecutionStreamV2.findUnique({
+    where: {
+      workspaceId_repositoryConnectionId_scmRepositoryIdentityId_pullRequestNumber:
+        {
+          workspaceId: investigation.scope.workspaceId,
+          repositoryConnectionId: investigation.scope.repositoryConnectionId,
+          scmRepositoryIdentityId: investigation.scope.scmRepositoryIdentityId,
+          pullRequestNumber: investigation.scope.pullRequestNumber,
         },
-      },
-    }),
-    transaction.reviewExecutionStreamV2.findUnique({
-      where: {
-        workspaceId_repositoryConnectionId_scmRepositoryIdentityId_pullRequestNumber:
-          {
-            workspaceId: investigation.scope.workspaceId,
-            repositoryConnectionId: investigation.scope.repositoryConnectionId,
-            scmRepositoryIdentityId:
-              investigation.scope.scmRepositoryIdentityId,
-            pullRequestNumber: investigation.scope.pullRequestNumber,
-          },
-      },
-    }),
-  ]);
+    },
+  });
   if (
     authorization === null ||
     slot === null ||

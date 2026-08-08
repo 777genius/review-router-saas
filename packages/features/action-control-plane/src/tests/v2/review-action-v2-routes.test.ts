@@ -321,6 +321,80 @@ describe("Review Action v2 route registrars", () => {
     await app.close();
   });
 
+  it("records a sanitized internal code for unexpected handler failures", async () => {
+    const diagnostics: unknown[] = [];
+    const app = Fastify({ logger: false });
+    await registerReviewContextAttestationV2Routes(app, {
+      ...runtime,
+      recordProtocolRejection: (diagnostic) => diagnostics.push(diagnostic),
+      openGateway: {
+        capabilityEnabled: true,
+        execute: async () => {
+          throw new Error("investigation_concurrency_conflict");
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-context/gateway/open",
+      payload: reviewActionV2GoldenFixtures.review_context_gateway_open.request,
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toMatchObject({
+      error: {
+        errorCode: ReviewActionV2ProtocolErrorCode.AmbiguousOutcome,
+        details: { issues: ["handler_failed"] },
+      },
+    });
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        internalFailureClass: "Error",
+        internalFailureCode: "investigation_concurrency_conflict",
+      }),
+    ]);
+    expect(JSON.stringify(response.json())).not.toContain(
+      "investigation_concurrency_conflict",
+    );
+    await app.close();
+  });
+
+  it("redacts unsafe unexpected handler messages from diagnostics", async () => {
+    const diagnostics: unknown[] = [];
+    const app = Fastify({ logger: false });
+    await registerReviewContextAttestationV2Routes(app, {
+      ...runtime,
+      recordProtocolRejection: (diagnostic) => diagnostics.push(diagnostic),
+      openGateway: {
+        capabilityEnabled: true,
+        execute: async () => {
+          const error = new Error("authorization_secret_value") as Error & {
+            code: string;
+          };
+          error.name = "AuthorizationSecretError";
+          error.code = "authorization_secret_code";
+          throw error;
+        },
+      },
+    });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-context/gateway/open",
+      payload: reviewActionV2GoldenFixtures.review_context_gateway_open.request,
+    });
+
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        internalFailureClass: "Error",
+        internalFailureCode: "unclassified_internal_error",
+      }),
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain("authorization_secret");
+    await app.close();
+  });
+
   it("preserves the protocol response when the diagnostic sink fails", async () => {
     const app = Fastify({ logger: false });
     await registerReviewContextAttestationV2Routes(app, {

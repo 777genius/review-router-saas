@@ -24,6 +24,7 @@ import {
   InvestigationStoreCommitGuardKind,
   InvestigationStoreCommitStatus,
   InvestigationStoreTransitionKind,
+  TurnResultAdmissionKind,
   canonicalInvestigationEvidenceRequirement,
   canonicalJson,
   canonicalInventoryObligationSubject,
@@ -464,6 +465,93 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       ).resolves.toMatchObject({
         status: InvestigationStoreCommitStatus.Committed,
       });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("restores concurrent duplicate guarded turn commits", async () => {
+    const suffix = `commit-idempotency-${randomUUID()}`;
+    const startedAt = Date.now();
+    const seedCandidate =
+      createInvestigationLeaseStoreContractCandidate(suffix);
+    const candidate = {
+      ...seedCandidate,
+      authorizationId: `authorization-${seedCandidate.investigationId}`,
+      acquiredAt: new Date(startedAt).toISOString(),
+      expiresAt: new Date(startedAt + 5 * 60_000).toISOString(),
+      resultReportUntil: new Date(startedAt + 10 * 60_000).toISOString(),
+      retainUntil: new Date(startedAt + 86_400_000).toISOString(),
+    };
+    const { base, planned } = createInvestigationLeaseBindingSeed(candidate, {
+      trustDomain: "trusted_local",
+    });
+    const harness = await createHarness(base);
+    const store = harness.store as PrismaInvestigationStore;
+    try {
+      await open(store, base, `idempotency-open-${suffix}`);
+      await plan(store, planned, `idempotency-plan-${suffix}`);
+      const lease = (await store.acquireLease(candidate)).lease!;
+      const next = commitInvestigationTurn({
+        investigation: planned,
+        commit: {
+          turnId: planned.activeTurn!.turnId,
+          closureClaims: [],
+          unresolvableDecisions: [],
+          proposedObligations: [],
+          findings: [],
+          criticDecision: null,
+          usageTokens: 1,
+          durationMs: 1,
+          provenance: null,
+        },
+        committedAt: new Date(startedAt + 60_000).toISOString(),
+      });
+      const command = {
+        investigation: next,
+        expectedVersion: planned.version,
+        commandId: `idempotency-commit-${suffix}`,
+        commandHash: "d".repeat(64),
+        transition: {
+          kind: InvestigationStoreTransitionKind.TurnCommitted,
+          turnId: planned.activeTurn!.turnId,
+          acceptedAttestationId: null,
+          sanitizedOutcomeHash: null,
+        },
+        guard: {
+          kind: InvestigationStoreCommitGuardKind.LeaseFence,
+          leaseId: lease.leaseId,
+          attemptId: lease.attemptId,
+          turnId: lease.turnId,
+          fencingToken: lease.fencingToken.toString(10),
+          leaseCapabilityId: lease.leaseCapabilityId,
+          resultAdmission: TurnResultAdmissionKind.Current,
+          admittedAt: new Date(startedAt + 60_000).toISOString(),
+          effectiveDeadline: candidate.resultReportUntil,
+        },
+      } as const;
+
+      const outcomes = await Promise.all([
+        store.commit(command),
+        store.commit(command),
+      ]);
+
+      expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(
+        [
+          InvestigationStoreCommitStatus.Committed,
+          InvestigationStoreCommitStatus.Restored,
+        ].sort(),
+      );
+      expect(
+        outcomes.every(
+          (outcome) => outcome.investigation?.version === next.version,
+        ),
+      ).toBe(true);
+      await expect(
+        harness.prisma.reviewInvestigationCommandReceipt.count({
+          where: { commandId: command.commandId },
+        }),
+      ).resolves.toBe(1);
     } finally {
       await harness.dispose();
     }
@@ -1412,8 +1500,8 @@ async function seedExecution(
       tokenIssuer: "reviewrouter-test",
       tokenAudience: "review-run",
       state: "active",
-      expiresAt: new Date(now.getTime() + 3_600_000),
-      maxExpiresAt: new Date(now.getTime() + 7_200_000),
+      expiresAt: new Date(Date.now() + 3_600_000),
+      maxExpiresAt: new Date(Date.now() + 7_200_000),
       createdAt: now,
     },
   });
@@ -1434,6 +1522,7 @@ async function seedExecution(
       planHash: "1".repeat(64),
       startIdentityHash: "2".repeat(64),
       canonicalStartHash: "3".repeat(64),
+      state: "running",
       authorizationId,
       producerReleaseId,
       mutationEpoch: 1n,
@@ -1455,11 +1544,28 @@ async function seedExecution(
       planOrdinal: 1,
       taskKind: ReviewTaskKindV2.finding_discovery,
       providerKind: ReviewProviderKindV2.codex,
-      providerVoteIdentityHash: "5".repeat(64),
+      providerVoteIdentityHash: seed.providerVoteLaneId,
       shardKey: seed.stableReviewUnitKey,
       required: true,
       attemptBudget: 3,
       retryPolicyVersion: "retry-v1",
+    },
+  });
+  await prisma.reviewExecutionStreamV2.create({
+    data: {
+      workspaceId: seed.scope.workspaceId,
+      repositoryConnectionId: seed.scope.repositoryConnectionId,
+      scmRepositoryIdentityId: seed.scope.scmRepositoryIdentityId,
+      pullRequestNumber: seed.scope.pullRequestNumber,
+      version: 1n,
+      activeExecutionId: seed.executionId,
+      preparedExecutionId: null,
+      lastAllocatedGeneration: 1n,
+      currentBaseSha: seed.revision.baseSha,
+      currentMergeBaseSha: seed.revision.mergeBaseSha,
+      currentHeadSha: seed.revision.headSha,
+      currentReviewRevisionHash: seed.revision.reviewRevisionHash,
+      updatedAt: now,
     },
   });
 }
@@ -1509,6 +1615,14 @@ async function cleanup(
   });
   await prisma.reviewExecutionWorkSlotV2.deleteMany({
     where: { executionId: seed.executionId },
+  });
+  await prisma.reviewExecutionStreamV2.deleteMany({
+    where: {
+      workspaceId: seed.scope.workspaceId,
+      repositoryConnectionId: seed.scope.repositoryConnectionId,
+      scmRepositoryIdentityId: seed.scope.scmRepositoryIdentityId,
+      pullRequestNumber: seed.scope.pullRequestNumber,
+    },
   });
   await prisma.reviewExecutionV2.deleteMany({
     where: { executionId: seed.executionId },
