@@ -1306,21 +1306,23 @@ export class PrismaReviewPublicationRepository
       ) {
         return { status: TerminalizeUnknownReviewPublicationStatus.Missing };
       }
-      const [operationRows, operationAttemptRows, effectRows, receiptRows] =
-        await Promise.all([
-          transaction.reviewPublicationOperationV2.findMany({
-            where: { publicationAttemptId: command.publicationAttemptId },
-          }),
-          transaction.reviewPublicationOperationAttemptV2.findMany({
-            where: { publicationAttemptId: command.publicationAttemptId },
-          }),
-          transaction.reviewPublicationExternalEffectV2.findMany({
-            where: { publicationAttemptId: command.publicationAttemptId },
-          }),
-          transaction.reviewPublicationReceiptV2.findMany({
-            where: { publicationAttemptId: command.publicationAttemptId },
-          }),
-        ]);
+      const operationRows =
+        await transaction.reviewPublicationOperationV2.findMany({
+          where: { publicationAttemptId: command.publicationAttemptId },
+        });
+      const operationAttemptRows =
+        await transaction.reviewPublicationOperationAttemptV2.findMany({
+          where: { publicationAttemptId: command.publicationAttemptId },
+        });
+      const effectRows =
+        await transaction.reviewPublicationExternalEffectV2.findMany({
+          where: { publicationAttemptId: command.publicationAttemptId },
+        });
+      const receiptRows = await transaction.reviewPublicationReceiptV2.findMany(
+        {
+          where: { publicationAttemptId: command.publicationAttemptId },
+        },
+      );
       const domainOperations = operationRows.map(toDomainOperation);
       const domainOperationAttempts = operationAttemptRows.map(
         toDomainOperationAttempt,

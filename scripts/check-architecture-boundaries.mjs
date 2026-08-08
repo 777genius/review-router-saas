@@ -82,6 +82,7 @@ if (
 
 await checkReviewActionV2ProtocolBoundaries(violations);
 await checkRevisionAwareReviewRatchet(violations);
+await checkPrismaTransactionQuerySerialization(violations);
 
 if (violations.length > 0) {
   console.error("Architecture boundary violations found:");
@@ -269,6 +270,76 @@ async function collectAllSourceFiles(directory) {
     }
   }
   return collected.sort();
+}
+
+async function checkPrismaTransactionQuerySerialization(violations) {
+  const sourceRoots = [join(root, "apps"), join(root, "packages")].filter(
+    (directory) => existsSync(directory),
+  );
+  const sourceFiles = (
+    await Promise.all(
+      sourceRoots.map((directory) => collectAllSourceFiles(directory)),
+    )
+  ).flat();
+  for (const file of sourceFiles) {
+    const repositoryPath = relative(root, file).replaceAll("\\", "/");
+    if (
+      repositoryPath.includes("/tests/") ||
+      repositoryPath.endsWith(".test.ts") ||
+      repositoryPath.endsWith(".test.tsx")
+    ) {
+      continue;
+    }
+    const source = readFileSync(file, "utf8");
+    for (const body of promiseAllArrayBodies(source)) {
+      if (/\btransaction\s*\./u.test(body)) {
+        violations.push({
+          file,
+          imported: "Promise.all(transaction.*)",
+          reason:
+            "Prisma interactive transaction clients use one database connection; issue their queries sequentially",
+        });
+      }
+    }
+  }
+}
+
+function promiseAllArrayBodies(source) {
+  const bodies = [];
+  const startPattern = /\bPromise\s*\.\s*all\s*\(\s*\[/gu;
+  for (const match of source.matchAll(startPattern)) {
+    const openingBracket = match.index + match[0].lastIndexOf("[");
+    const closingBracket = findClosingBracket(source, openingBracket);
+    if (closingBracket !== -1) {
+      bodies.push(source.slice(openingBracket + 1, closingBracket));
+    }
+  }
+  return bodies;
+}
+
+function findClosingBracket(source, openingBracket) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = openingBracket; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "[") depth += 1;
+    if (character === "]") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
 }
 
 async function checkRevisionAwareReviewRatchet(violations) {

@@ -469,6 +469,77 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
     }
   });
 
+  it("restores concurrent duplicate guarded turn commits", async () => {
+    const suffix = `commit-idempotency-${randomUUID()}`;
+    const candidate = createInvestigationLeaseStoreContractCandidate(suffix);
+    const { base, planned } = createInvestigationLeaseBindingSeed(candidate);
+    const harness = await createHarness(base);
+    const store = harness.store as PrismaInvestigationStore;
+    try {
+      await open(store, base, `idempotency-open-${suffix}`);
+      await plan(store, planned, `idempotency-plan-${suffix}`);
+      const lease = (await store.acquireLease(candidate)).lease!;
+      const next = commitInvestigationTurn({
+        investigation: planned,
+        commit: {
+          turnId: planned.activeTurn!.turnId,
+          closureClaims: [],
+          unresolvableDecisions: [],
+          proposedObligations: [],
+          findings: [],
+          criticDecision: null,
+          usageTokens: 1,
+          durationMs: 1,
+          provenance: null,
+        },
+        committedAt: "2026-08-05T10:01:02.000Z",
+      });
+      const command = {
+        investigation: next,
+        expectedVersion: planned.version,
+        commandId: `idempotency-commit-${suffix}`,
+        commandHash: "d".repeat(64),
+        transition: {
+          kind: InvestigationStoreTransitionKind.TurnCommitted,
+          turnId: planned.activeTurn!.turnId,
+          acceptedAttestationId: null,
+          sanitizedOutcomeHash: null,
+        },
+        guard: {
+          kind: InvestigationStoreCommitGuardKind.LeaseFence,
+          leaseId: lease.leaseId,
+          attemptId: lease.attemptId,
+          turnId: lease.turnId,
+          fencingToken: lease.fencingToken.toString(10),
+        },
+      } as const;
+
+      const outcomes = await Promise.all([
+        store.commit(command),
+        store.commit(command),
+      ]);
+
+      expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(
+        [
+          InvestigationStoreCommitStatus.Committed,
+          InvestigationStoreCommitStatus.Restored,
+        ].sort(),
+      );
+      expect(
+        outcomes.every(
+          (outcome) => outcome.investigation?.version === next.version,
+        ),
+      ).toBe(true);
+      await expect(
+        harness.prisma.reviewInvestigationCommandReceipt.count({
+          where: { commandId: command.commandId },
+        }),
+      ).resolves.toBe(1);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("atomically rejects a turn commit when the persisted lease binding is stale", async () => {
     const suffix = `commit-binding-${randomUUID()}`;
     const candidate = createInvestigationLeaseStoreContractCandidate(suffix);
