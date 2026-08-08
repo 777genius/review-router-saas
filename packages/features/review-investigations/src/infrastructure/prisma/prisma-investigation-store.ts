@@ -164,21 +164,7 @@ export class PrismaInvestigationStore
     readonly commandId: string;
     readonly commandHash: string;
   }): Promise<InvestigationStoreCommitResult | null> {
-    const command =
-      await this.prisma.reviewInvestigationCommandReceipt.findUnique({
-        where: { commandId: input.commandId },
-      });
-    if (!command) return null;
-    if (command.commandHash !== input.commandHash) {
-      return result(InvestigationStoreCommitStatus.IdempotencyConflict, null);
-    }
-    const investigation = await loadAggregate(
-      this.prisma,
-      command.investigationId,
-    );
-    if (!investigation)
-      throw new Error("investigation_command_snapshot_missing");
-    return result(InvestigationStoreCommitStatus.Restored, investigation);
+    return restoreCommitResult(this.prisma, input);
   }
 
   async findById(investigationId: string): Promise<ReviewInvestigation | null> {
