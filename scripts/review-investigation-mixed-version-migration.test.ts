@@ -74,6 +74,8 @@ describeRehearsal("review investigation mixed-version migrations", () => {
   let prisma: PrismaClient;
   let store: PrismaContextAttestationStore;
   let databaseCreated = false;
+  let preTurnPromptMigrationContracts: readonly PersistedContractSnapshot[] =
+    [];
 
   beforeAll(async () => {
     const baseUrlValue =
@@ -103,6 +105,28 @@ describeRehearsal("review investigation mixed-version migrations", () => {
     applyMigration("000054_review_config_investigation_rollout");
     applyMigration("000055_review_investigation_shadow_leases");
     applyMigration("000056_review_investigation_policy_canonical_version");
+    applyMigration("000057_review_investigation_replay_evidence_checkpoint");
+    applyMigration("000058_review_publication_no_effect_proof");
+    runPsqlSql(
+      rehearsalDatabase,
+      `
+        SET session_replication_role = replica;
+        ${typedInvestigationInsertSql({
+          investigationId: "mixed-version-investigation-v2-before-000059",
+          naturalIdentitySeed: "mixed-version-natural-v2-before-000059",
+          expansionRulesVersion: "review-investigation-expansion.v2",
+        })}
+        ${typedInvestigationInsertSql({
+          investigationId: "mixed-version-investigation-v3-before-000059",
+          naturalIdentitySeed: "mixed-version-natural-v3-before-000059",
+          expansionRulesVersion: "review-investigation-expansion.v3",
+        })}
+        SET session_replication_role = origin;
+      `,
+    );
+    preTurnPromptMigrationContracts =
+      readPreTurnPromptMigrationContracts(rehearsalDatabase);
+    applyMigration("000059_review_investigation_turn_prompt_contract");
 
     prisma = createPrismaClient({
       databaseUrl: rehearsalDatabaseUrl,
@@ -119,6 +143,37 @@ describeRehearsal("review investigation mixed-version migrations", () => {
       adminDatabase,
       `DROP DATABASE IF EXISTS ${quoteIdentifier(rehearsalDatabaseName)} WITH (FORCE)`,
     );
+  });
+
+  it("preserves populated V2/V3 contracts across the turn prompt migration", async () => {
+    const ids = preTurnPromptMigrationContracts.map(
+      ({ investigationId }) => investigationId,
+    );
+    const afterMigration = await readTurnPromptMigrationContracts(prisma, ids);
+
+    expect(preTurnPromptMigrationContracts).toHaveLength(2);
+    expect(
+      afterMigration.map(({ turnPromptContractHash: _hash, ...row }) => row),
+    ).toEqual(preTurnPromptMigrationContracts);
+    expect(
+      afterMigration.map(
+        ({ turnPromptContractHash }) => turnPromptContractHash,
+      ),
+    ).toEqual([null, null]);
+
+    await prisma.reviewInvestigation.updateMany({
+      where: { investigationId: { in: ids } },
+      data: { updatedAt: new Date(legacyOpenedAtMs + 1_000) },
+    });
+    await prisma.$disconnect();
+    prisma = createPrismaClient({
+      databaseUrl: rehearsalDatabaseUrl,
+      poolMax: 8,
+    });
+    store = new PrismaContextAttestationStore(prisma);
+
+    const afterRestart = await readTurnPromptMigrationContracts(prisma, ids);
+    expect(afterRestart).toEqual(afterMigration);
   });
 
   it("upgrades populated 000050 data and preserves legacy writer defaults", async () => {
@@ -497,6 +552,101 @@ function legacyInvestigationInsertSql(
       ${sqlLiteral(now)}::timestamptz, ${sqlLiteral(now)}::timestamptz,
       ${sqlLiteral(retainUntil)}::timestamptz
     );
+  `;
+}
+
+function typedInvestigationInsertSql(input: {
+  readonly investigationId: string;
+  readonly naturalIdentitySeed: string;
+  readonly expansionRulesVersion:
+    | "review-investigation-expansion.v2"
+    | "review-investigation-expansion.v3";
+}): string {
+  return `
+    ${legacyInvestigationInsertSql(
+      input.investigationId,
+      input.naturalIdentitySeed,
+    )}
+    UPDATE "ReviewInvestigation"
+    SET
+      "expansionRulesVersion" = ${sqlLiteral(input.expansionRulesVersion)},
+      "gatewayPolicyVersion" = 'context-gateway-v4',
+      "runtimeProfileVersion" = 'gateway-attested-agent.v1'
+    WHERE "investigationId" = ${sqlLiteral(input.investigationId)};
+  `;
+}
+
+type PersistedContractSnapshot = Readonly<{
+  investigationId: string;
+  coverageContractVersion: string;
+  expansionRulesVersion: string;
+  criticPolicyVersion: string;
+  gatewayPolicyVersion: string;
+  probePolicyVersion: string;
+  producerReleaseId: string;
+  runtimeProfileVersion: string;
+  searchPolicyVersion: string;
+  dossierDigest: string;
+}>;
+
+type PersistedTurnPromptContractSnapshot = PersistedContractSnapshot &
+  Readonly<{ turnPromptContractHash: string | null }>;
+
+function readPreTurnPromptMigrationContracts(
+  connection: PostgresConnection,
+): readonly PersistedContractSnapshot[] {
+  const result = runPsql(connection, [
+    "-t",
+    "-A",
+    "-c",
+    `
+      SELECT json_build_object(
+        'investigationId', "investigationId",
+        'coverageContractVersion', "coverageContractVersion",
+        'expansionRulesVersion', "expansionRulesVersion",
+        'criticPolicyVersion', "criticPolicyVersion",
+        'gatewayPolicyVersion', "gatewayPolicyVersion",
+        'probePolicyVersion', "probePolicyVersion",
+        'producerReleaseId', "producerReleaseId",
+        'runtimeProfileVersion', "runtimeProfileVersion",
+        'searchPolicyVersion', "searchPolicyVersion",
+        'dossierDigest', "dossierDigest"
+      )::text
+      FROM "ReviewInvestigation"
+      WHERE "investigationId" IN (
+        'mixed-version-investigation-v2-before-000059',
+        'mixed-version-investigation-v3-before-000059'
+      )
+      ORDER BY "investigationId"
+    `,
+  ]);
+  return result.stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as PersistedContractSnapshot);
+}
+
+async function readTurnPromptMigrationContracts(
+  prisma: PrismaClient,
+  ids: readonly string[],
+): Promise<readonly PersistedTurnPromptContractSnapshot[]> {
+  return prisma.$queryRaw<PersistedTurnPromptContractSnapshot[]>`
+    SELECT
+      "investigationId",
+      "coverageContractVersion",
+      "expansionRulesVersion",
+      "criticPolicyVersion",
+      "gatewayPolicyVersion",
+      "probePolicyVersion",
+      "producerReleaseId",
+      "runtimeProfileVersion",
+      "searchPolicyVersion",
+      "dossierDigest",
+      "turnPromptContractHash"
+    FROM "ReviewInvestigation"
+    WHERE "investigationId" IN (${Prisma.join(ids)})
+    ORDER BY "investigationId"
   `;
 }
 

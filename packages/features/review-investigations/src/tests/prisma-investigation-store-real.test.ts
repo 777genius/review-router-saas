@@ -233,14 +233,7 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
 
   it("does not expire private material ahead of the database clock", async () => {
     const suffix = `db-material-expiry-fence-${randomUUID()}`;
-    const base = createInvestigationStoreContractSeed(suffix);
-    const seed = {
-      ...base,
-      contract: {
-        ...reviewInvestigationCoverageProfileV4,
-        producerReleaseId: base.contract.producerReleaseId,
-      },
-    };
+    const seed = createInvestigationStoreContractSeed(suffix);
     const harness = await createHarness(seed);
     const store = harness.store as PrismaInvestigationStore;
     const expiresAt = new Date(Date.now() + 60_000);
@@ -283,7 +276,9 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
 
   it("round-trips token usage with reasoning included in output", async () => {
     const suffix = `token-usage-${randomUUID()}`;
-    const seed = createInvestigationStoreContractSeed(suffix);
+    const seed = await withCoverageProfileV4(
+      createInvestigationStoreContractSeed(suffix),
+    );
     const harness = await createHarness(seed);
     const store = harness.store as PrismaInvestigationStore;
     try {
@@ -1706,6 +1701,39 @@ async function withValidTestDossierDigest(
       canonicalJson(investigationDossierCanonicalValue(investigation)),
     ),
   };
+}
+
+async function withCoverageProfileV4(
+  investigation: ReviewInvestigation,
+): Promise<ReviewInvestigation> {
+  const canonicalRequirement = canonicalInvestigationEvidenceRequirement({
+    requirementVersion: obligationEvidenceRequirementVersion,
+    kind: InvestigationEvidenceRequirementKind.CompleteInventory,
+    reviewRevisionHash: investigation.revision.reviewRevisionHash,
+  });
+  const obligation = createInvestigationObligation({
+    obligationId: investigation.obligations[0]!.obligationId,
+    identity: obligationIdentity({
+      coverageContractVersion:
+        reviewInvestigationCoverageProfileV4.coverageContractVersion,
+      stableReviewUnitKey: investigation.stableReviewUnitKey,
+      kind: InvestigationObligationKind.InventoryWitness,
+      canonicalSubject: canonicalInventoryObligationSubject(
+        investigation.revision.reviewRevisionHash,
+      ),
+      canonicalRequirement,
+    }),
+    riskPriority: investigation.obligations[0]!.riskPriority,
+    origin: investigation.obligations[0]!.origin,
+  });
+  return withValidTestDossierDigest({
+    ...investigation,
+    contract: {
+      ...reviewInvestigationCoverageProfileV4,
+      producerReleaseId: investigation.contract.producerReleaseId,
+    },
+    obligations: [obligation],
+  });
 }
 
 async function plan(
