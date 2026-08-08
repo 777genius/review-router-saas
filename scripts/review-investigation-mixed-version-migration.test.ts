@@ -152,9 +152,9 @@ describeRehearsal("review investigation mixed-version migrations", () => {
     const afterMigration = await readTurnPromptMigrationContracts(prisma, ids);
 
     expect(preTurnPromptMigrationContracts).toHaveLength(2);
-    expect(
-      afterMigration.map(({ turnPromptContractHash: _hash, ...row }) => row),
-    ).toEqual(preTurnPromptMigrationContracts);
+    expect(afterMigration.map(toPersistedContractSnapshot)).toEqual(
+      preTurnPromptMigrationContracts,
+    );
     expect(
       afterMigration.map(
         ({ turnPromptContractHash }) => turnPromptContractHash,
@@ -591,6 +591,23 @@ type PersistedContractSnapshot = Readonly<{
 
 type PersistedTurnPromptContractSnapshot = PersistedContractSnapshot &
   Readonly<{ turnPromptContractHash: string | null }>;
+
+function toPersistedContractSnapshot(
+  row: PersistedTurnPromptContractSnapshot,
+): PersistedContractSnapshot {
+  return {
+    investigationId: row.investigationId,
+    coverageContractVersion: row.coverageContractVersion,
+    expansionRulesVersion: row.expansionRulesVersion,
+    criticPolicyVersion: row.criticPolicyVersion,
+    gatewayPolicyVersion: row.gatewayPolicyVersion,
+    probePolicyVersion: row.probePolicyVersion,
+    producerReleaseId: row.producerReleaseId,
+    runtimeProfileVersion: row.runtimeProfileVersion,
+    searchPolicyVersion: row.searchPolicyVersion,
+    dossierDigest: row.dossierDigest,
+  };
+}
 
 function readPreTurnPromptMigrationContracts(
   connection: PostgresConnection,
