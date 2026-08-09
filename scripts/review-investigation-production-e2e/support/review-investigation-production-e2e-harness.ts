@@ -31,6 +31,7 @@ import {
 import {
   ContextCriticDecision,
   InvestigationEvidenceRequirementKind,
+  InvestigationFindingSeverity,
   InvestigationObligationKind,
   InvestigationOperationKind,
   InvestigationOperationRevision,
@@ -215,6 +216,15 @@ export type CompletedInvestigationFlow = Readonly<{
   duplicateConcludeVersion: string;
 }>;
 
+type InvestigationFlowInput = Readonly<{
+  label: string;
+  expandRelations: boolean;
+  terminalSource:
+    | InvestigationTelemetrySource.Shadow
+    | InvestigationTelemetrySource.DisposableFixture;
+  restartAfterFirstCommit?: boolean;
+}>;
+
 export class ReviewInvestigationProductionE2EHarness {
   readonly base: ReviewActionV2E2EHarness;
   readonly databaseUrl: string;
@@ -338,14 +348,21 @@ export class ReviewInvestigationProductionE2EHarness {
     this.routes = this.composeRoutes(this.prisma);
   }
 
-  async runVerifiedClean(input: {
-    label: string;
-    expandRelations: boolean;
-    terminalSource:
-      | InvestigationTelemetrySource.Shadow
-      | InvestigationTelemetrySource.DisposableFixture;
-    restartAfterFirstCommit?: boolean;
-  }): Promise<CompletedInvestigationFlow> {
+  async runVerifiedClean(
+    input: InvestigationFlowInput,
+  ): Promise<CompletedInvestigationFlow> {
+    return this.runTerminal({ ...input, includeFinding: false });
+  }
+
+  async runWithFinding(
+    input: InvestigationFlowInput,
+  ): Promise<CompletedInvestigationFlow> {
+    return this.runTerminal({ ...input, includeFinding: true });
+  }
+
+  private async runTerminal(
+    input: InvestigationFlowInput & Readonly<{ includeFinding: boolean }>,
+  ): Promise<CompletedInvestigationFlow> {
     const execution = await this.createExecution();
     const { opened: open, duplicateOpenVersion } = await (async () => {
       const lease = await this.acquireTurnLease(
@@ -384,6 +401,7 @@ export class ReviewInvestigationProductionE2EHarness {
     let current = open.read;
     let discoveryOrdinal = 0;
     let duplicateCommitVersion = "";
+    let findingCommitted = false;
     while (current.nextAction === ReviewInvestigationNextAction.RunTurn) {
       discoveryOrdinal += 1;
       const plan = await this.planTurn(
@@ -407,8 +425,10 @@ export class ReviewInvestigationProductionE2EHarness {
         label: `${input.label}-discovery-${discoveryOrdinal}`,
         expandRelations: input.expandRelations,
         critic: false,
+        finding: input.includeFinding && !findingCommitted,
         concurrentDuplicate: discoveryOrdinal === 1,
       });
+      findingCommitted ||= commit.findingCount > 0;
       if (discoveryOrdinal === 1) {
         duplicateCommitVersion = requiredValue(
           commit.concurrentDuplicateRead,
@@ -436,38 +456,42 @@ export class ReviewInvestigationProductionE2EHarness {
       }
     }
     ensure(
-      current.nextAction === ReviewInvestigationNextAction.RunCritic,
-      "critic_not_requested",
+      !input.includeFinding || findingCommitted,
+      "investigation_finding_fixture_not_committed",
     );
-    const criticPlan = await this.planTurn(
-      execution,
-      current,
-      `${input.label}-critic`,
-    );
-    const criticLease = await this.acquireInvestigationTurnLease(
-      execution,
-      criticPlan.read,
-      criticPlan.brief,
-      criticPlan.turnCapability,
-      `${input.label}-critic`,
-    );
-    const critic = await this.commitTurn({
-      execution,
-      current: criticPlan.read,
-      brief: criticPlan.brief,
-      turnCapability: criticPlan.turnCapability,
-      lease: criticLease,
-      label: `${input.label}-critic`,
-      expandRelations: false,
-      critic: true,
-    });
-    await this.releaseInvestigationTurnLease(
-      execution,
-      criticLease,
-      `${input.label}-critic`,
-    );
+    if (current.nextAction === ReviewInvestigationNextAction.RunCritic) {
+      const criticPlan = await this.planTurn(
+        execution,
+        current,
+        `${input.label}-critic`,
+      );
+      const criticLease = await this.acquireInvestigationTurnLease(
+        execution,
+        criticPlan.read,
+        criticPlan.brief,
+        criticPlan.turnCapability,
+        `${input.label}-critic`,
+      );
+      const critic = await this.commitTurn({
+        execution,
+        current: criticPlan.read,
+        brief: criticPlan.brief,
+        turnCapability: criticPlan.turnCapability,
+        lease: criticLease,
+        label: `${input.label}-critic`,
+        expandRelations: false,
+        critic: true,
+        finding: false,
+      });
+      await this.releaseInvestigationTurnLease(
+        execution,
+        criticLease,
+        `${input.label}-critic`,
+      );
+      current = critic.read;
+    }
     ensure(
-      critic.read.nextAction === ReviewInvestigationNextAction.Conclude,
+      current.nextAction === ReviewInvestigationNextAction.Conclude,
       "investigation_not_ready_to_conclude",
     );
     if (
@@ -480,7 +504,7 @@ export class ReviewInvestigationProductionE2EHarness {
     }
     const concluded = await this.conclude(
       execution,
-      critic.read,
+      current,
       `${input.label}-conclude`,
     );
     const concludeReplay = await requiredHandler(
@@ -885,6 +909,7 @@ export class ReviewInvestigationProductionE2EHarness {
     label: string;
     expandRelations: boolean;
     critic: boolean;
+    finding: boolean;
     concurrentDuplicate?: boolean;
   }) {
     const prepared = prepareTurnObservation({
@@ -895,6 +920,7 @@ export class ReviewInvestigationProductionE2EHarness {
       label: input.label,
       expandRelations: input.expandRelations,
       critic: input.critic,
+      finding: input.finding,
     });
     const accepted = await persistAcceptedAttestation({
       prisma: this.prisma,
@@ -962,6 +988,7 @@ export class ReviewInvestigationProductionE2EHarness {
       request,
       read: requiredValue(reads[0], "investigation_turn_commit_read_missing"),
       concurrentDuplicateRead: reads[1] ?? null,
+      findingCount: prepared.observation.findings.length,
     });
   }
 
@@ -1305,6 +1332,7 @@ function prepareTurnObservation(input: {
   label: string;
   expandRelations: boolean;
   critic: boolean;
+  finding: boolean;
 }): Readonly<{
   observation: InvestigationTurnObservation;
   events: readonly ContextGatewayV4Event[];
@@ -1319,6 +1347,7 @@ function prepareTurnObservation(input: {
     query: string;
     operationReceiptIds: readonly string[];
   }> = [];
+  let findingEvidenceReceiptId: string | null = null;
   if (input.critic) {
     events.push(fileEvent(input.label, events.length + 1, sourcePathHash));
   } else {
@@ -1351,7 +1380,11 @@ function prepareTurnObservation(input: {
             requirement.pathHash,
           );
           events.push(event);
-          receiptIds.push(requiredString(event.operationReceiptId));
+          const operationReceiptId = requiredString(event.operationReceiptId);
+          receiptIds.push(operationReceiptId);
+          if (requirement.pathHash === sourcePathHash) {
+            findingEvidenceReceiptId = operationReceiptId;
+          }
           break;
         }
         case InvestigationEvidenceRequirementKind.CompletePageChain: {
@@ -1421,9 +1454,23 @@ function prepareTurnObservation(input: {
     }
   }
   chainEvents(events, sha256(`${input.label}:event-chain-seed`));
+  const findingReceiptId = input.finding ? findingEvidenceReceiptId : null;
   const observation: InvestigationTurnObservation = Object.freeze({
     outputVersion: 2,
-    findings: Object.freeze([]),
+    findings: Object.freeze(
+      findingReceiptId === null
+        ? []
+        : [
+            Object.freeze({
+              severity: InvestigationFindingSeverity.Major,
+              title: "Persisted operation evidence regression",
+              body: "The finding remains bound after a database restart.",
+              path: sourcePath,
+              line: 1,
+              evidenceOperationReceiptIds: Object.freeze([findingReceiptId]),
+            }),
+          ],
+    ),
     obligationProposals: Object.freeze([]) as readonly [],
     closureClaims: Object.freeze(claims),
     operationBackedDiscoveryClaims: Object.freeze(discoveryClaims),
@@ -1636,6 +1683,8 @@ function fileEvent(
       mode: "100644",
       blobOid: sha256(`${label}:blob`).slice(0, 40),
       contentHash: sha256(`${label}:content`),
+      contentKind: "text",
+      lineCount: 3,
       startByte: 0,
       byteCount: 64,
       eof: true,

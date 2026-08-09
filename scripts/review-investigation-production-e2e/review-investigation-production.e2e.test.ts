@@ -169,6 +169,58 @@ describeWithDatabase.sequential(
       expect(fixture.base.fakeGitHub.comments).toHaveLength(0);
       expect(fixture.base.fakeGitHub.checkRuns).toHaveLength(0);
     }, 120_000);
+
+    it("persists attested finding evidence across restart and certificate acceptance", async () => {
+      const fixture = requiredHarness(harness);
+      const flow = await fixture.runWithFinding({
+        label: "finding-restart",
+        expandRelations: false,
+        terminalSource: InvestigationTelemetrySource.Shadow,
+        restartAfterFirstCommit: true,
+      });
+      const investigation =
+        await fixture.client.reviewInvestigation.findUniqueOrThrow({
+          where: { investigationId: flow.investigationId },
+          select: {
+            state: true,
+            conclusion: true,
+            findings: true,
+            turnProvenance: true,
+          },
+        });
+      const findings = investigation.findings as Array<{
+        evidenceReceiptIds: string[];
+      }>;
+      const provenance = investigation.turnProvenance as Array<{
+        acceptedOperationReceiptIds?: string[];
+      }>;
+      const acceptedOperationReceiptIds = new Set(
+        provenance.flatMap((turn) => turn.acceptedOperationReceiptIds ?? []),
+      );
+
+      expect(investigation).toMatchObject({
+        state: "concluded",
+        conclusion: "findings",
+      });
+      expect(findings).toHaveLength(1);
+      expect(findings[0]!.evidenceReceiptIds.length).toBeGreaterThan(0);
+      expect(
+        findings[0]!.evidenceReceiptIds.every((receiptId) =>
+          acceptedOperationReceiptIds.has(receiptId),
+        ),
+      ).toBe(true);
+      await expect(
+        fixture.client.reviewInvestigationShadowEvidence.findFirstOrThrow({
+          where: {
+            investigationId: flow.investigationId,
+            certificateHash: flow.certificateHash,
+          },
+        }),
+      ).resolves.toMatchObject({
+        sourceKind: "terminal_certificate",
+        authority: "non_authoritative",
+      });
+    }, 120_000);
   },
 );
 
