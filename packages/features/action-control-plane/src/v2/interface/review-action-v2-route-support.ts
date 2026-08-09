@@ -25,8 +25,22 @@ export type ReviewActionV2RouteRuntimeDependencies = {
     readonly statusCode: number;
     readonly internalFailureClass?: string;
     readonly internalFailureCode?: string;
+    readonly internalFailureCauseCode?: string;
+    readonly internalFailureStage?: ReviewActionV2InternalFailureStage;
   }) => void;
 };
+
+export enum ReviewActionV2InternalFailureStage {
+  InvestigationTurnCommitObservation = "investigation_turn_commit_observation",
+  InvestigationTurnCommitRestore = "investigation_turn_commit_restore",
+  InvestigationTurnCommitAggregate = "investigation_turn_commit_aggregate",
+  InvestigationTurnCommitMutation = "investigation_turn_commit_mutation",
+}
+
+const internalFailureStages = new WeakMap<
+  Error,
+  ReviewActionV2InternalFailureStage
+>();
 
 const safeInternalFailureClasses = new Set([
   "AggregateError",
@@ -44,7 +58,15 @@ const safeInternalFailureClasses = new Set([
 ]);
 
 const safeInternalFailureCodes = new Map<string, string>([
+  ["P2000", "prisma_value_too_long"],
+  ["P2002", "prisma_unique_constraint"],
+  ["P2003", "prisma_foreign_key_constraint"],
+  ["P2011", "prisma_null_constraint"],
+  ["P2012", "prisma_required_value_missing"],
+  ["P2021", "prisma_table_missing"],
+  ["P2022", "prisma_column_missing"],
   ["P2024", "prisma_connection_pool_timeout"],
+  ["P2025", "prisma_record_missing"],
   ["P2028", "prisma_transaction_failed"],
   ["P2034", "prisma_transaction_conflict"],
   [
@@ -57,6 +79,7 @@ const safeInternalFailureCodes = new Map<string, string>([
   ["store_snapshot_missing", "investigation_store_snapshot_missing"],
   ...[
     "investigation_conclusion_persistence_invalid",
+    "investigation_finding_evidence_binding_corrupt",
     "investigation_finding_evidence_invalid",
     "investigation_finding_evidence_line_invalid",
     "investigation_finding_evidence_path_invalid",
@@ -209,11 +232,17 @@ export function registerReviewActionV2Operation<
 function internalFailureDiagnostic(error: unknown): Readonly<{
   internalFailureClass: string;
   internalFailureCode: string;
+  internalFailureCauseCode?: string;
+  internalFailureStage?: ReviewActionV2InternalFailureStage;
 }> {
   if (error instanceof Error) {
+    const causeCode = safeInternalFailureCauseCode(error);
+    const stage = safeInternalFailureStage(error);
     return Object.freeze({
       internalFailureClass: safeInternalFailureClass(error.name),
       internalFailureCode: safeInternalFailureCode(error),
+      ...(causeCode === null ? {} : { internalFailureCauseCode: causeCode }),
+      ...(stage === null ? {} : { internalFailureStage: stage }),
     });
   }
   return Object.freeze({
@@ -239,4 +268,34 @@ function safeInternalFailureCode(error: Error): string {
     if (safeCode !== undefined) return safeCode;
   }
   return "unclassified_internal_error";
+}
+
+function safeInternalFailureCauseCode(error: Error): string | null {
+  const seen = new Set<unknown>([error]);
+  let cause: unknown = error.cause;
+  for (let depth = 0; depth < 4 && cause instanceof Error; depth += 1) {
+    if (seen.has(cause)) return null;
+    seen.add(cause);
+    const code = safeInternalFailureCode(cause);
+    if (code !== "unclassified_internal_error") return code;
+    cause = cause.cause;
+  }
+  return null;
+}
+
+function safeInternalFailureStage(
+  error: Error,
+): ReviewActionV2InternalFailureStage | null {
+  return internalFailureStages.get(error) ?? null;
+}
+
+export function annotateReviewActionV2InternalFailure(
+  error: unknown,
+  stage: ReviewActionV2InternalFailureStage,
+): unknown {
+  if (!(error instanceof Error) || safeInternalFailureStage(error) !== null) {
+    return error;
+  }
+  internalFailureStages.set(error, stage);
+  return error;
 }

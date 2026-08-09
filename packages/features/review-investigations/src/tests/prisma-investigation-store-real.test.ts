@@ -15,6 +15,7 @@ import {
   InvestigationOperationRevision,
   InvestigationProbeKind,
   InvestigationTextSearchMatchMode,
+  InvestigationFindingSeverity,
   InvestigationTurnProviderKind,
   InvestigationPrivateMaterialExpiryReason,
   InvestigationObligationState,
@@ -299,6 +300,7 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
         durationMs: 1_000,
         acceptedAttestationId: `attestation-${suffix}`,
         acceptedAttestationHash: "a".repeat(64),
+        acceptedOperationReceiptIds: [],
         terminalOutcomeHash: "b".repeat(64),
       } as const;
       const committed = commitInvestigationTurn({
@@ -333,12 +335,103 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
         status: InvestigationStoreCommitStatus.Committed,
       });
 
+      const { acceptedOperationReceiptIds, ...legacyProvenance } = provenance;
+      void acceptedOperationReceiptIds;
+      await harness.prisma.reviewInvestigation.update({
+        where: { investigationId: seed.investigationId },
+        data: { turnProvenance: [legacyProvenance] },
+      });
+
       const restarted = (await harness.restart()) as PrismaInvestigationStore;
       await expect(
         restarted.findById(seed.investigationId),
       ).resolves.toMatchObject({
         contract: reviewInvestigationCoverageProfileV4,
         totalUsageTokens: 110,
+        turnProvenance: [provenance],
+      });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("round-trips future operation receipt bindings through the compatibility reader", async () => {
+    const suffix = `finding-operation-receipt-${randomUUID()}`;
+    const seed = await withCoverageProfileV4(
+      createInvestigationStoreContractSeed(suffix),
+    );
+    const harness = await createHarness(seed);
+    const store = harness.store as PrismaInvestigationStore;
+    const operationReceiptId = "c".repeat(64);
+    try {
+      await open(store, seed, `finding-operation-receipt-open-${suffix}`);
+      const leased = planned(seed, `turn-finding-operation-receipt-${suffix}`);
+      await plan(store, leased, `finding-operation-receipt-plan-${suffix}`);
+      const provenance = {
+        turnId: leased.activeTurn!.turnId,
+        purpose: leased.activeTurn!.purpose,
+        actualProviderKind: InvestigationTurnProviderKind.Codex,
+        actualModel: "gpt-5.6-sol",
+        runtimeProfile: leased.runtimeProfile,
+        inputTokens: 100,
+        cachedInputTokens: 50,
+        outputTokens: 10,
+        reasoningOutputTokens: 5,
+        totalTokens: 110,
+        durationMs: 1_000,
+        acceptedAttestationId: `attestation-${suffix}`,
+        acceptedAttestationHash: "a".repeat(64),
+        acceptedOperationReceiptIds: [operationReceiptId],
+        terminalOutcomeHash: "b".repeat(64),
+      } as const;
+      const finding = {
+        fingerprint: "d".repeat(64),
+        severity: InvestigationFindingSeverity.Major,
+        title: "Gateway-backed finding",
+        body: "The finding is proven by an accepted gateway file read.",
+        path: "src/service.ts",
+        line: 2,
+        evidenceReceiptIds: [operationReceiptId],
+      } as const;
+      const committed = commitInvestigationTurn({
+        investigation: leased,
+        commit: {
+          turnId: leased.activeTurn!.turnId,
+          closureClaims: [],
+          unresolvableDecisions: [],
+          proposedObligations: [],
+          findings: [finding],
+          acceptedEvidenceReceiptIds: [operationReceiptId],
+          criticDecision: null,
+          usageTokens: 110,
+          durationMs: 1_000,
+          provenance,
+        },
+        committedAt: "2026-08-02T10:03:00.000Z",
+      });
+
+      await expect(
+        store.commit({
+          investigation: committed,
+          expectedVersion: leased.version,
+          commandId: `finding-operation-receipt-commit-${suffix}`,
+          commandHash: "8".repeat(64),
+          transition: {
+            kind: InvestigationStoreTransitionKind.TurnCommitted,
+            turnId: leased.activeTurn!.turnId,
+            acceptedAttestationId: null,
+            sanitizedOutcomeHash: provenance.terminalOutcomeHash,
+          },
+        }),
+      ).resolves.toMatchObject({
+        status: InvestigationStoreCommitStatus.Committed,
+      });
+
+      const restarted = (await harness.restart()) as PrismaInvestigationStore;
+      await expect(
+        restarted.findById(seed.investigationId),
+      ).resolves.toMatchObject({
+        findings: [finding],
         turnProvenance: [provenance],
       });
     } finally {

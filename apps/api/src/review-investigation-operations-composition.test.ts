@@ -471,6 +471,7 @@ function terminalInvestigation(): ReviewInvestigation {
     durationMs: 1_000,
     acceptedAttestationId: "attestation-discovery",
     acceptedAttestationHash: "d".repeat(64),
+    acceptedOperationReceiptIds: [],
     terminalOutcomeHash: "e".repeat(64),
   } as const;
   return {

@@ -248,6 +248,8 @@ export class CommitAttestedInvestigationTurn {
         durationMs: command.observation.durationMs,
         acceptedAttestationId: command.acceptedAttestationId,
         acceptedAttestationHash: command.acceptedAttestationHash,
+        // Phase one installs downgrade-safe readers before bindings are emitted.
+        acceptedOperationReceiptIds: Object.freeze([]),
         terminalOutcomeHash,
       },
       idempotencyHash,

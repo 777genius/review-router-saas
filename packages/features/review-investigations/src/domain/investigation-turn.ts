@@ -87,6 +87,7 @@ export type InvestigationTurnProvenance = Readonly<{
   durationMs: number;
   acceptedAttestationId: string;
   acceptedAttestationHash: string;
+  acceptedOperationReceiptIds: readonly string[];
   terminalOutcomeHash: string;
 }> &
   InvestigationTokenUsage;
@@ -94,7 +95,14 @@ export type InvestigationTurnProvenance = Readonly<{
 export function turnProvenanceCanonicalValue(
   provenance: InvestigationTurnProvenance,
 ): CanonicalValue {
-  return { ...provenance };
+  const { acceptedOperationReceiptIds, ...legacyCanonicalValue } = provenance;
+  if (acceptedOperationReceiptIds.length === 0) {
+    return legacyCanonicalValue;
+  }
+  return {
+    ...legacyCanonicalValue,
+    acceptedOperationReceiptIds: [...acceptedOperationReceiptIds],
+  };
 }
 
 export function canonicalTurnProvenanceSet(

@@ -1787,6 +1787,14 @@ function assertRehydratedAggregate(investigation: ReviewInvestigation): void {
     );
     assertDigest(provenance.terminalOutcomeHash, "terminal_outcome_hash");
     if (
+      provenance.acceptedOperationReceiptIds.some((receiptId, index, ids) => {
+        assertDigest(receiptId, "accepted_operation_receipt_id");
+        return index > 0 && receiptId <= ids[index - 1]!;
+      })
+    ) {
+      throw new Error("investigation_turn_provenance_binding_corrupt");
+    }
+    if (
       provenance.runtimeProfile !== investigation.runtimeProfile ||
       !isValidInvestigationTokenUsage(provenance)
     ) {
@@ -1822,7 +1830,11 @@ function assertRehydratedAggregate(investigation: ReviewInvestigation): void {
   ) {
     throw new Error("investigation_replay_checkpoint_binding_corrupt");
   }
-  const acceptedReceipts = new Set<string>();
+  const acceptedReceipts = new Set(
+    investigation.turnProvenance.flatMap(
+      (provenance) => provenance.acceptedOperationReceiptIds,
+    ),
+  );
   let inventoryWitnessCount = 0;
   for (const obligation of investigation.obligations) {
     if (obligation.kind === InvestigationObligationKind.InventoryWitness) {
@@ -2207,6 +2219,15 @@ function toTurnProvenance(
       durationMs: numberField(item, "durationMs"),
       acceptedAttestationId: stringField(item, "acceptedAttestationId"),
       acceptedAttestationHash: stringField(item, "acceptedAttestationHash"),
+      acceptedOperationReceiptIds:
+        item.acceptedOperationReceiptIds === undefined
+          ? Object.freeze([])
+          : Object.freeze(
+              toStringArray(
+                item.acceptedOperationReceiptIds,
+                "accepted_operation_receipt_ids",
+              ),
+            ),
       terminalOutcomeHash: stringField(item, "terminalOutcomeHash"),
     };
   });

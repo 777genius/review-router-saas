@@ -920,7 +920,15 @@ function validateTurnProvenance(
   commit: InvestigationTurnCommit,
 ): void {
   const provenance = commit.provenance;
-  if (provenance === null) return;
+  const acceptedEvidenceReceiptIds = [
+    ...new Set(commit.acceptedEvidenceReceiptIds ?? []),
+  ].sort();
+  if (provenance === null) {
+    if (acceptedEvidenceReceiptIds.length > 0) {
+      throw new ReviewInvestigationDomainError("turn_provenance_invalid");
+    }
+    return;
+  }
   if (
     provenance.turnId !== turn.turnId ||
     provenance.purpose !== turn.purpose ||
