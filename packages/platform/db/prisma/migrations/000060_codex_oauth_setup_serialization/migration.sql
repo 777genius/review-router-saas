@@ -1,5 +1,8 @@
 BEGIN;
 
+SET LOCAL lock_timeout = '15s';
+SET LOCAL statement_timeout = '5min';
+
 LOCK TABLE "CodexOAuthSetupManifest" IN ACCESS EXCLUSIVE MODE;
 
 ALTER TABLE "CodexOAuthSetupManifest"

@@ -33,6 +33,8 @@ describe("Codex rotating setup schema guard", () => {
       'CREATE UNIQUE INDEX "CodexOAuthSetupManifest_one_active_provider_key"',
     );
     expect(migration).toContain("BEGIN;");
+    expect(migration).toContain("SET LOCAL lock_timeout = '15s';");
+    expect(migration).toContain("SET LOCAL statement_timeout = '5min';");
     expect(migration).toContain(
       'LOCK TABLE "CodexOAuthSetupManifest" IN ACCESS EXCLUSIVE MODE;',
     );

@@ -35,6 +35,50 @@ env:
   REVIEW_ROUTER_PG_RESTORE: /usr/lib/postgresql/17/bin/pg_restore
 
 jobs:
+  codex-rotating-installer-portability:
+    name: Rotating installer lock (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Assert native lock implementation
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin command -v flock
+          else
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin command -v shlock
+            if PATH=/usr/bin:/bin:/usr/sbin:/sbin command -v flock >/dev/null 2>&1; then
+              echo "macOS system path must exercise native shlock, not flock"
+              exit 1
+            fi
+          fi
+
+      - name: Install dependencies
+        env:
+          SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
+        run: node scripts/install-private-dependencies.mjs --frozen-lockfile
+
+      - name: Prove live rejection, release, and stale recovery
+        env:
+          REVIEW_ROUTER_TEST_NATIVE_LOCK_PATH: /usr/bin:/bin:/usr/sbin:/sbin
+        run: pnpm codex-rotating:installer-portability
+
   self-hosted-e2e:
     name: Self-hosted E2E
     runs-on: ubuntu-latest
@@ -119,11 +163,20 @@ jobs:
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci'
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci_test'
 
+      - name: Rotating Codex exact migration rehearsal
+        run: pnpm codex-rotating:migration-rehearsal
+
+      - name: Rotating Codex rollout evidence verifier
+        run: pnpm codex-rotating:rollout-proof
+
       - name: Apply dev database migrations
         run: pnpm db:migrate:deploy
 
       - name: Apply test database migrations
         run: DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
+
+      - name: Rotating Codex dropped-response loopback proof
+        run: pnpm codex-rotating:loopback-proof
 
       - name: Migration smoke test
         run: pnpm db:migrate:smoke

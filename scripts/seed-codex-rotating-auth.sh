@@ -509,7 +509,7 @@ const path = require("node:path");
 const authPath = process.argv[2];
 const codexHome = process.argv[3];
 function fail(message) {
-  console.error(message);
+  fs.writeSync(2, `${message}\n`);
   process.exit(1);
 }
 let authRealPath;

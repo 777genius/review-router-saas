@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   resolveCodexReseedInstallRedirect,
   resolveCodexRotatingInstallRedirect,
@@ -201,7 +201,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
       },
     );
 
-    expect(result.status).toBe(0);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("[dry-run] gh secret set");
   });
 
@@ -445,8 +445,9 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     );
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("outside dedicated CODEX_HOME");
-    expect(result.stderr).toContain(
+    const output = `${result.stdout}${result.stderr}`;
+    expect(output).toContain("outside dedicated CODEX_HOME");
+    expect(output).toContain(
       "Do not reuse one rotating auth.json across repositories",
     );
   });
@@ -933,8 +934,8 @@ function createRotatingInstallerFixture(
     join(bin, "sha256sum"),
     [
       "#!/usr/bin/env node",
-      'const crypto = require("node:crypto");',
-      'const fs = require("node:fs");',
+      'import crypto from "node:crypto";',
+      'import fs from "node:fs";',
       "const file = process.argv[2];",
       'const hash = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");',
       "console.log(`${hash}  ${file}`);",
@@ -1016,7 +1017,7 @@ function createRotatingInstallerFixture(
     installerUrl,
     installerVersion,
     manifestBase64,
-    path: `${bin}:${process.env.PATH ?? ""}`,
+    path: `${bin}:${dirname(process.execPath)}:${process.env.REVIEW_ROUTER_TEST_NATIVE_LOCK_PATH ?? process.env.PATH ?? ""}`,
     scriptPath,
   };
 }
