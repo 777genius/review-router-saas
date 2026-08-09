@@ -257,7 +257,7 @@ describe("CommitAttestedInvestigationTurn", () => {
     const boundary = current.obligations.find(
       (item) => item.kind === InvestigationObligationKind.BinaryArtifact,
     )!;
-    const receiptId = hash("binary-receipt");
+    const receiptId = await digest.digestUtf8("binary-receipt");
     const observation = {
       ...observationFixture({
         turnId: planned.turn!.turnId,

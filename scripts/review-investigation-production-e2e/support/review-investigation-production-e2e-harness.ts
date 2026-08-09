@@ -24,13 +24,17 @@ import {
 } from "../../../packages/features/review-context-attestation/src/index.js";
 import { PrismaContextAttestationStore } from "../../../packages/features/review-context-attestation/src/composition/index.js";
 import {
+  InvestigationCertificateConclusion,
+  InvestigationCertificateVerificationStatus,
   ProviderExecutionProfile,
+  ReviewProviderKind,
   buildProviderInvocationIdentity,
   serializeProviderInvocationManifestCanonicalWireJson,
 } from "../../../packages/features/review-evidence/src/index.js";
 import {
   ContextCriticDecision,
   InvestigationEvidenceRequirementKind,
+  InvestigationFindingSeverity,
   InvestigationObligationKind,
   InvestigationOperationKind,
   InvestigationOperationRevision,
@@ -54,7 +58,10 @@ import {
   type ReviewInvestigationPolicy,
   type SeedInvestigationObligation,
 } from "../../../packages/features/review-investigations/src/index.js";
-import { PrismaInvestigationStore } from "../../../packages/features/review-investigations/src/composition/index.js";
+import {
+  NodeSha256InvestigationDigest,
+  PrismaInvestigationStore,
+} from "../../../packages/features/review-investigations/src/composition/index.js";
 import {
   InvestigationEvaluationAttestationVersion,
   InvestigationEvaluationSignatureAlgorithm,
@@ -103,6 +110,7 @@ import {
   reviewInvestigationPrivateMaterialTtlEnv,
   type ReviewActionV2ProductionRoutes,
 } from "../../../apps/api/src/review-action-v2-production-composition.js";
+import { ReviewInvestigationCertificateVerificationAdapter } from "../../../apps/api/src/review-investigation-certificate-verification-adapter.js";
 import {
   StoredReviewInvestigationTerminalTelemetrySamples,
   composePrismaReviewInvestigationOperations,
@@ -213,6 +221,16 @@ export type CompletedInvestigationFlow = Readonly<{
   duplicateOpenVersion: string;
   duplicateCommitVersion: string;
   duplicateConcludeVersion: string;
+}>;
+
+type InvestigationFlowInput = Readonly<{
+  label: string;
+  expandRelations: boolean;
+  terminalSource:
+    | InvestigationTelemetrySource.Shadow
+    | InvestigationTelemetrySource.DisposableFixture;
+  restartAfterFirstCommit?: boolean;
+  restartAfterFindingCommit?: boolean;
 }>;
 
 export class ReviewInvestigationProductionE2EHarness {
@@ -338,14 +356,21 @@ export class ReviewInvestigationProductionE2EHarness {
     this.routes = this.composeRoutes(this.prisma);
   }
 
-  async runVerifiedClean(input: {
-    label: string;
-    expandRelations: boolean;
-    terminalSource:
-      | InvestigationTelemetrySource.Shadow
-      | InvestigationTelemetrySource.DisposableFixture;
-    restartAfterFirstCommit?: boolean;
-  }): Promise<CompletedInvestigationFlow> {
+  async runVerifiedClean(
+    input: InvestigationFlowInput,
+  ): Promise<CompletedInvestigationFlow> {
+    return this.runTerminal({ ...input, includeFinding: false });
+  }
+
+  async runWithFinding(
+    input: InvestigationFlowInput,
+  ): Promise<CompletedInvestigationFlow> {
+    return this.runTerminal({ ...input, includeFinding: true });
+  }
+
+  private async runTerminal(
+    input: InvestigationFlowInput & Readonly<{ includeFinding: boolean }>,
+  ): Promise<CompletedInvestigationFlow> {
     const execution = await this.createExecution();
     const { opened: open, duplicateOpenVersion } = await (async () => {
       const lease = await this.acquireTurnLease(
@@ -384,6 +409,8 @@ export class ReviewInvestigationProductionE2EHarness {
     let current = open.read;
     let discoveryOrdinal = 0;
     let duplicateCommitVersion = "";
+    let findingCommitted = false;
+    let restartedAfterFindingCommit = false;
     while (current.nextAction === ReviewInvestigationNextAction.RunTurn) {
       discoveryOrdinal += 1;
       const plan = await this.planTurn(
@@ -407,8 +434,10 @@ export class ReviewInvestigationProductionE2EHarness {
         label: `${input.label}-discovery-${discoveryOrdinal}`,
         expandRelations: input.expandRelations,
         critic: false,
+        finding: input.includeFinding && !findingCommitted,
         concurrentDuplicate: discoveryOrdinal === 1,
       });
+      findingCommitted ||= commit.findingCount > 0;
       if (discoveryOrdinal === 1) {
         duplicateCommitVersion = requiredValue(
           commit.concurrentDuplicateRead,
@@ -434,40 +463,56 @@ export class ReviewInvestigationProductionE2EHarness {
       if (discoveryOrdinal === 1 && input.restartAfterFirstCommit) {
         await this.restartControlPlane();
       }
+      if (
+        commit.findingCount > 0 &&
+        input.restartAfterFindingCommit &&
+        !restartedAfterFindingCommit
+      ) {
+        await this.restartControlPlane();
+        restartedAfterFindingCommit = true;
+      }
     }
     ensure(
-      current.nextAction === ReviewInvestigationNextAction.RunCritic,
-      "critic_not_requested",
-    );
-    const criticPlan = await this.planTurn(
-      execution,
-      current,
-      `${input.label}-critic`,
-    );
-    const criticLease = await this.acquireInvestigationTurnLease(
-      execution,
-      criticPlan.read,
-      criticPlan.brief,
-      criticPlan.turnCapability,
-      `${input.label}-critic`,
-    );
-    const critic = await this.commitTurn({
-      execution,
-      current: criticPlan.read,
-      brief: criticPlan.brief,
-      turnCapability: criticPlan.turnCapability,
-      lease: criticLease,
-      label: `${input.label}-critic`,
-      expandRelations: false,
-      critic: true,
-    });
-    await this.releaseInvestigationTurnLease(
-      execution,
-      criticLease,
-      `${input.label}-critic`,
+      !input.includeFinding || findingCommitted,
+      "investigation_finding_fixture_not_committed",
     );
     ensure(
-      critic.read.nextAction === ReviewInvestigationNextAction.Conclude,
+      !input.restartAfterFindingCommit || restartedAfterFindingCommit,
+      "investigation_finding_restart_not_exercised",
+    );
+    if (current.nextAction === ReviewInvestigationNextAction.RunCritic) {
+      const criticPlan = await this.planTurn(
+        execution,
+        current,
+        `${input.label}-critic`,
+      );
+      const criticLease = await this.acquireInvestigationTurnLease(
+        execution,
+        criticPlan.read,
+        criticPlan.brief,
+        criticPlan.turnCapability,
+        `${input.label}-critic`,
+      );
+      const critic = await this.commitTurn({
+        execution,
+        current: criticPlan.read,
+        brief: criticPlan.brief,
+        turnCapability: criticPlan.turnCapability,
+        lease: criticLease,
+        label: `${input.label}-critic`,
+        expandRelations: false,
+        critic: true,
+        finding: false,
+      });
+      await this.releaseInvestigationTurnLease(
+        execution,
+        criticLease,
+        `${input.label}-critic`,
+      );
+      current = critic.read;
+    }
+    ensure(
+      current.nextAction === ReviewInvestigationNextAction.Conclude,
       "investigation_not_ready_to_conclude",
     );
     if (
@@ -480,7 +525,7 @@ export class ReviewInvestigationProductionE2EHarness {
     }
     const concluded = await this.conclude(
       execution,
-      critic.read,
+      current,
       `${input.label}-conclude`,
     );
     const concludeReplay = await requiredHandler(
@@ -529,6 +574,40 @@ export class ReviewInvestigationProductionE2EHarness {
         concludeReplay.result.investigationVersion,
       ),
     });
+  }
+
+  async verifyAcceptedCertificate(flow: CompletedInvestigationFlow) {
+    const store = new PrismaInvestigationStore(this.prisma);
+    const investigation = requiredValue(
+      await store.findById(flow.investigationId),
+      "investigation_for_certificate_verification_missing",
+    );
+    const certificate = requiredValue(
+      investigation.certificate,
+      "investigation_certificate_missing",
+    );
+    const verifier = new ReviewInvestigationCertificateVerificationAdapter(
+      store,
+      new NodeSha256InvestigationDigest(),
+      { async assertAllowed() {} },
+    );
+    const decision = await verifier.verifyAcceptedCertificate({
+      certificateId: flow.certificateId,
+      certificateHash: flow.certificateHash,
+      scope: investigation.scope,
+      revision: investigation.revision,
+      providerKind: ReviewProviderKind.Codex,
+      providerVoteIdentityHash: investigation.providerVoteLaneId,
+      terminalOutcomeHash: certificate.terminalOutcomeHash,
+      expectedConclusion: InvestigationCertificateConclusion.Findings,
+      producerReleaseId: certificate.producerReleaseId,
+      nowMs: Date.now(),
+    });
+    ensure(
+      decision.status === InvestigationCertificateVerificationStatus.Accepted,
+      `investigation_certificate_not_accepted:${decision.reason}`,
+    );
+    return decision;
   }
 
   async importEvaluation(flow: CompletedInvestigationFlow, label: string) {
@@ -885,6 +964,7 @@ export class ReviewInvestigationProductionE2EHarness {
     label: string;
     expandRelations: boolean;
     critic: boolean;
+    finding: boolean;
     concurrentDuplicate?: boolean;
   }) {
     const prepared = prepareTurnObservation({
@@ -895,6 +975,7 @@ export class ReviewInvestigationProductionE2EHarness {
       label: input.label,
       expandRelations: input.expandRelations,
       critic: input.critic,
+      finding: input.finding,
     });
     const accepted = await persistAcceptedAttestation({
       prisma: this.prisma,
@@ -962,6 +1043,7 @@ export class ReviewInvestigationProductionE2EHarness {
       request,
       read: requiredValue(reads[0], "investigation_turn_commit_read_missing"),
       concurrentDuplicateRead: reads[1] ?? null,
+      findingCount: prepared.observation.findings.length,
     });
   }
 
@@ -1305,6 +1387,7 @@ function prepareTurnObservation(input: {
   label: string;
   expandRelations: boolean;
   critic: boolean;
+  finding: boolean;
 }): Readonly<{
   observation: InvestigationTurnObservation;
   events: readonly ContextGatewayV4Event[];
@@ -1319,6 +1402,7 @@ function prepareTurnObservation(input: {
     query: string;
     operationReceiptIds: readonly string[];
   }> = [];
+  let findingEvidenceReceiptId: string | null = null;
   if (input.critic) {
     events.push(fileEvent(input.label, events.length + 1, sourcePathHash));
   } else {
@@ -1351,7 +1435,11 @@ function prepareTurnObservation(input: {
             requirement.pathHash,
           );
           events.push(event);
-          receiptIds.push(requiredString(event.operationReceiptId));
+          const operationReceiptId = requiredString(event.operationReceiptId);
+          receiptIds.push(operationReceiptId);
+          if (requirement.pathHash === sourcePathHash) {
+            findingEvidenceReceiptId = operationReceiptId;
+          }
           break;
         }
         case InvestigationEvidenceRequirementKind.CompletePageChain: {
@@ -1421,9 +1509,23 @@ function prepareTurnObservation(input: {
     }
   }
   chainEvents(events, sha256(`${input.label}:event-chain-seed`));
+  const findingReceiptId = input.finding ? findingEvidenceReceiptId : null;
   const observation: InvestigationTurnObservation = Object.freeze({
     outputVersion: 2,
-    findings: Object.freeze([]),
+    findings: Object.freeze(
+      findingReceiptId === null
+        ? []
+        : [
+            Object.freeze({
+              severity: InvestigationFindingSeverity.Major,
+              title: "Persisted operation evidence regression",
+              body: "The finding remains bound after a database restart.",
+              path: sourcePath,
+              line: 1,
+              evidenceOperationReceiptIds: Object.freeze([findingReceiptId]),
+            }),
+          ],
+    ),
     obligationProposals: Object.freeze([]) as readonly [],
     closureClaims: Object.freeze(claims),
     operationBackedDiscoveryClaims: Object.freeze(discoveryClaims),
@@ -1636,6 +1738,8 @@ function fileEvent(
       mode: "100644",
       blobOid: sha256(`${label}:blob`).slice(0, 40),
       contentHash: sha256(`${label}:content`),
+      contentKind: "text",
+      lineCount: 3,
       startByte: 0,
       byteCount: 64,
       eof: true,

@@ -1,4 +1,5 @@
 import {
+  assertDigest,
   canonicalJson,
   ReviewInvestigationDomainError,
   type CanonicalValue,
@@ -929,12 +930,23 @@ function validateTurnProvenance(
     }
     return;
   }
+  for (const receiptId of acceptedEvidenceReceiptIds) {
+    assertDigest(receiptId, "accepted_operation_receipt_id");
+  }
+  for (const receiptId of provenance.acceptedOperationReceiptIds) {
+    assertDigest(receiptId, "accepted_operation_receipt_id");
+  }
   if (
     provenance.turnId !== turn.turnId ||
     provenance.purpose !== turn.purpose ||
     provenance.runtimeProfile !== investigation.runtimeProfile ||
     provenance.totalTokens !== commit.usageTokens ||
     provenance.durationMs !== commit.durationMs ||
+    provenance.acceptedOperationReceiptIds.length !==
+      acceptedEvidenceReceiptIds.length ||
+    provenance.acceptedOperationReceiptIds.some(
+      (receiptId, index) => receiptId !== acceptedEvidenceReceiptIds[index],
+    ) ||
     !isValidInvestigationTokenUsage(provenance) ||
     investigation.turnProvenance.some((item) => item.turnId === turn.turnId)
   ) {

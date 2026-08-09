@@ -132,6 +132,29 @@ source, credentials, or raw provider output.
 
 ## Emergency rollback
 
+### Evidence provenance rollback floor
+
+Once a deployment containing the evidence-provenance writer has accepted a
+turn with non-empty `acceptedOperationReceiptIds`, the oldest compatible
+rollback target is commit
+`a7b8d62824869d674c51d2effd14021b104e9181`. That reader-first release accepts
+both legacy dossiers without the field and new dossiers with bound operation
+receipt digests. Do not use Render native rollback, redeploy, or a manual image
+pin below this SHA after the writer is enabled.
+
+Before a code rollback, verify that the candidate contains the compatibility
+floor:
+
+```bash
+git merge-base --is-ancestor \
+  a7b8d62824869d674c51d2effd14021b104e9181 <candidate-sha>
+```
+
+A non-zero result denies the rollback. Code running below the floor cannot
+protect itself from data written after its release, so this is a deployment
+control-plane invariant rather than an application feature flag. Flag-first
+rollback remains the incident response path.
+
 Emergency disable has precedence over flags and selectors. The general review
 authorization remains independent so disabling investigations cannot stop the
 legacy reviewer. Investigation admission happens at `open`; every later turn
