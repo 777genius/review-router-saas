@@ -921,12 +921,20 @@ function validateTurnProvenance(
 ): void {
   const provenance = commit.provenance;
   if (provenance === null) return;
+  const acceptedEvidenceReceiptIds = [
+    ...new Set(commit.acceptedEvidenceReceiptIds ?? []),
+  ].sort();
   if (
     provenance.turnId !== turn.turnId ||
     provenance.purpose !== turn.purpose ||
     provenance.runtimeProfile !== investigation.runtimeProfile ||
     provenance.totalTokens !== commit.usageTokens ||
     provenance.durationMs !== commit.durationMs ||
+    provenance.acceptedOperationReceiptIds.length !==
+      acceptedEvidenceReceiptIds.length ||
+    provenance.acceptedOperationReceiptIds.some(
+      (receiptId, index) => receiptId !== acceptedEvidenceReceiptIds[index],
+    ) ||
     !isValidInvestigationTokenUsage(provenance) ||
     investigation.turnProvenance.some((item) => item.turnId === turn.turnId)
   ) {

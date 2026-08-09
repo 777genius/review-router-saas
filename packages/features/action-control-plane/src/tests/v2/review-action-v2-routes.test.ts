@@ -366,6 +366,7 @@ describe("Review Action v2 route registrars", () => {
     "investigation_turn_attestation_invalid",
     "investigation_private_material_binding_invalid",
     "investigation_commit_snapshot_missing",
+    "investigation_finding_evidence_binding_corrupt",
   ])(
     "records allowlisted investigation failure %s without exposing it to the client",
     async (failureCode) => {

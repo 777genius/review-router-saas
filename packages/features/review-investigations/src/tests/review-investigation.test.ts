@@ -21,6 +21,7 @@ import {
   InvestigationTurnProviderKind,
   investigationDossierCanonicalValue,
   canonicalJson,
+  canonicalTurnProvenanceSet,
   canonicalInvestigationEvidenceRequirement,
   canonicalRelationObligationSubjectV2,
   independentCriticRiskPriorityV1,
@@ -143,6 +144,7 @@ describe("review investigation in-memory vertical slice", () => {
       durationMs: 1,
       acceptedAttestationId: "attestation-1",
       acceptedAttestationHash: "b".repeat(64),
+      acceptedOperationReceiptIds: [],
       terminalOutcomeHash: "c".repeat(64),
     } as const;
     expect(() =>
@@ -151,6 +153,44 @@ describe("review investigation in-memory vertical slice", () => {
         { ...base, turnId: "turn-2", actualModel: "gpt-two" },
       ]),
     ).toThrow("investigation_terminal_provenance_ambiguous");
+  });
+
+  it("preserves legacy provenance hashes while binding accepted operation receipts", () => {
+    const provenance = {
+      turnId: "turn-canonical-provenance",
+      purpose: ReviewInvestigationTurnPurpose.Discovery,
+      actualProviderKind: InvestigationTurnProviderKind.Codex,
+      actualModel: "gpt-test",
+      runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
+      inputTokens: 1,
+      cachedInputTokens: 0,
+      outputTokens: 1,
+      reasoningOutputTokens: 0,
+      totalTokens: 2,
+      durationMs: 1,
+      acceptedAttestationId: "attestation-canonical-provenance",
+      acceptedAttestationHash: "b".repeat(64),
+      acceptedOperationReceiptIds: [],
+      terminalOutcomeHash: "c".repeat(64),
+    } as const;
+    const { acceptedOperationReceiptIds, ...legacyCanonicalValue } = provenance;
+    void acceptedOperationReceiptIds;
+
+    expect(canonicalTurnProvenanceSet([provenance])).toBe(
+      canonicalJson([legacyCanonicalValue]),
+    );
+    expect(
+      canonicalTurnProvenanceSet([
+        { ...provenance, acceptedOperationReceiptIds: ["d".repeat(64)] },
+      ]),
+    ).toBe(
+      canonicalJson([
+        {
+          ...legacyCanonicalValue,
+          acceptedOperationReceiptIds: ["d".repeat(64)],
+        },
+      ]),
+    );
   });
 
   it("keeps runner inventory provisional until the first authenticated witness", async () => {
@@ -1963,6 +2003,7 @@ function provenance(
     durationMs,
     acceptedAttestationId: `attestation-${planned.turn!.turnId}`,
     acceptedAttestationHash: "b".repeat(64),
+    acceptedOperationReceiptIds: [],
     terminalOutcomeHash: "c".repeat(64),
   } as const;
 }

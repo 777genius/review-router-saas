@@ -248,6 +248,9 @@ export class CommitAttestedInvestigationTurn {
         durationMs: command.observation.durationMs,
         acceptedAttestationId: command.acceptedAttestationId,
         acceptedAttestationHash: command.acceptedAttestationHash,
+        acceptedOperationReceiptIds: Object.freeze(
+          [...operationEvidence.operationReceiptIds].sort(),
+        ),
         terminalOutcomeHash,
       },
       idempotencyHash,

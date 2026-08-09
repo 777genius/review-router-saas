@@ -334,6 +334,7 @@ async function certificateBackedInvestigation(): Promise<ReviewInvestigation> {
       durationMs: 100,
       acceptedAttestationId: "attestation-1",
       acceptedAttestationHash: h("8"),
+      acceptedOperationReceiptIds: [],
       terminalOutcomeHash: h("9"),
     },
     {
@@ -350,6 +351,7 @@ async function certificateBackedInvestigation(): Promise<ReviewInvestigation> {
       durationMs: 80,
       acceptedAttestationId: "attestation-critic",
       acceptedAttestationHash: h("2"),
+      acceptedOperationReceiptIds: [],
       terminalOutcomeHash: h("3"),
     },
   ] as const;

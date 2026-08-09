@@ -79,6 +79,7 @@ const safeInternalFailureCodes = new Map<string, string>([
   ["store_snapshot_missing", "investigation_store_snapshot_missing"],
   ...[
     "investigation_conclusion_persistence_invalid",
+    "investigation_finding_evidence_binding_corrupt",
     "investigation_finding_evidence_invalid",
     "investigation_finding_evidence_line_invalid",
     "investigation_finding_evidence_path_invalid",
