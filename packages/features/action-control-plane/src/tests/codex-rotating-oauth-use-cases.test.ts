@@ -11,6 +11,7 @@ import {
   codexRotatingCommentTokenRefreshTtlMs,
 } from "../index";
 import { parseReviewConfiguration } from "@reviewrouter/features-review-config";
+import { computeEncryptedPayloadDigest } from "@reviewrouter/features-codex-oauth-rotating";
 
 const now = new Date("2026-05-25T12:00:00.000Z");
 const workflowSha = "0123456789abcdef0123456789abcdef01234567";
@@ -217,6 +218,27 @@ describe("Codex rotating OAuth action control plane", () => {
         dependencies,
       ),
     ).resolves.toEqual({ protocolVersion: 1, status: "accepted" });
+
+    await expect(
+      writebackCodexRotatingOAuth(
+        {
+          body: {
+            protocolVersion: 1,
+            leaseId: prelease.leaseId,
+            providerInstanceId: "codex-rotating:123456",
+            generation: finalized.nextGeneration,
+            latestGenerationHash: "latest-generation-hash-value-0123456789",
+            encryptedValue: Buffer.from("ciphertext").toString("base64"),
+            keyId: "github-key",
+            idempotencyKey: "idem:9001:1",
+          },
+        },
+        dependencies,
+      ),
+    ).resolves.toEqual({ protocolVersion: 1, status: "idempotent_replay" });
+    expect(
+      dependencies.codexRotatingSecretWriter.putEncryptedRepositorySecret,
+    ).toHaveBeenCalledOnce();
 
     await expect(
       codexRotatingOAuth.authorizeReviewExecutionCheckpointAccess({
@@ -922,6 +944,93 @@ describe("Codex rotating OAuth action control plane", () => {
     ).rejects.toThrow("codex_rotating_lease_not_active");
   });
 
+  it("never calls the provider after a response is dropped with a durable claim", async () => {
+    const dependencies = buildRotatingDependencies();
+    const prelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    );
+    const finalized = await finalizeCodexRotatingOAuthLease(
+      {
+        leaseId: prelease.leaseId,
+        providerInstanceId: "codex-rotating:123456",
+        restoredGenerationHash: "restored-generation-hash-value",
+      },
+      dependencies,
+    );
+    await preflightCodexRotatingOAuthWriteback(
+      {
+        leaseId: prelease.leaseId,
+        providerInstanceId: "codex-rotating:123456",
+        githubKeyId: "github-key",
+      },
+      dependencies,
+    );
+    const body = {
+      protocolVersion: 1 as const,
+      leaseId: prelease.leaseId,
+      providerInstanceId: "codex-rotating:123456",
+      generation: finalized.nextGeneration,
+      latestGenerationHash: "latest-generation-hash-value-0123456789",
+      encryptedValue: Buffer.from("ciphertext").toString("base64"),
+      keyId: "github-key",
+      idempotencyKey: "idem:dropped-after-claim",
+    };
+    const digest = computeEncryptedPayloadDigest({
+      encryptedValue: body.encryptedValue,
+      hmacKey: dependencies.codexRotatingWritebackHmacKey,
+    });
+
+    const prepare = () =>
+      dependencies.codexRotatingOAuth.prepareEncryptedWriteback({
+        request: body,
+        encryptedPayloadDigest: digest,
+        now,
+      });
+    const inMemoryRace = await Promise.all([prepare(), prepare()]);
+    expect(inMemoryRace.map((result) => result.status).sort()).toEqual([
+      "ready",
+      "writeback_recovery_required",
+    ]);
+
+    await expect(
+      writebackCodexRotatingOAuth({ body }, dependencies),
+    ).resolves.toEqual({
+      protocolVersion: 1,
+      status: "writeback_recovery_required",
+    });
+    expect(
+      dependencies.codexRotatingSecretWriter.putEncryptedRepositorySecret,
+    ).not.toHaveBeenCalled();
+
+    await expect(
+      writebackCodexRotatingOAuth(
+        {
+          body: {
+            ...body,
+            encryptedValue: Buffer.from("different-ciphertext").toString(
+              "base64",
+            ),
+          },
+        },
+        dependencies,
+      ),
+    ).resolves.toEqual({
+      protocolVersion: 1,
+      status: "writeback_idempotency_conflict",
+    });
+    expect(
+      dependencies.codexRotatingSecretWriter.putEncryptedRepositorySecret,
+    ).not.toHaveBeenCalled();
+  });
+
   it("moves failed encrypted writeback into unknown auth state before another refresh can start", async () => {
     const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
       {
@@ -1001,8 +1110,32 @@ describe("Codex rotating OAuth action control plane", () => {
       ),
     ).resolves.toEqual({
       protocolVersion: 1,
-      status: "github_put_failed",
+      status: "writeback_recovery_required",
     });
+
+    await expect(
+      writebackCodexRotatingOAuth(
+        {
+          body: {
+            protocolVersion: 1,
+            leaseId: prelease.leaseId,
+            providerInstanceId: "codex-rotating:123456",
+            generation: finalized.nextGeneration,
+            latestGenerationHash: "latest-generation-hash-value-0123456789",
+            encryptedValue: Buffer.from("ciphertext").toString("base64"),
+            keyId: "github-key",
+            idempotencyKey: "idem:failed-writeback",
+          },
+        },
+        dependencies,
+      ),
+    ).resolves.toEqual({
+      protocolVersion: 1,
+      status: "writeback_recovery_required",
+    });
+    expect(
+      dependencies.codexRotatingSecretWriter.putEncryptedRepositorySecret,
+    ).toHaveBeenCalledOnce();
 
     await expect(
       preleaseCodexRotatingOAuth(
@@ -1077,12 +1210,16 @@ describe("Codex rotating OAuth action control plane", () => {
       },
       dependencies,
     );
-    vi.spyOn(
-      dependencies.codexRotatingOAuth,
-      "confirmEncryptedWriteback",
-    ).mockResolvedValue({
-      status: "recovery_required",
-      reason: "stale_epoch",
+    vi.mocked(
+      dependencies.codexRotatingSecretWriter.putEncryptedRepositorySecret,
+    ).mockImplementation(async () => {
+      await dependencies.codexRotatingOAuth.abandonLease({
+        leaseId: prelease.leaseId,
+        providerInstanceId: "codex-rotating:123456",
+        reason: "unknown_auth_state",
+        now,
+      });
+      return { status: "accepted", statusCode: 204 };
     });
 
     await expect(
@@ -1101,7 +1238,34 @@ describe("Codex rotating OAuth action control plane", () => {
         },
         dependencies,
       ),
-    ).resolves.toEqual({ protocolVersion: 1, status: "github_put_failed" });
+    ).resolves.toEqual({
+      protocolVersion: 1,
+      status: "writeback_recovery_required",
+    });
+    expect(
+      dependencies.codexRotatingSecretWriter.putEncryptedRepositorySecret,
+    ).toHaveBeenCalledOnce();
+
+    await expect(
+      writebackCodexRotatingOAuth(
+        {
+          body: {
+            protocolVersion: 1,
+            leaseId: prelease.leaseId,
+            providerInstanceId: "codex-rotating:123456",
+            generation: finalized.nextGeneration,
+            latestGenerationHash: "latest-generation-hash-value-0123456789",
+            encryptedValue: Buffer.from("ciphertext").toString("base64"),
+            keyId: "github-key",
+            idempotencyKey: "idem:stale-post-put",
+          },
+        },
+        dependencies,
+      ),
+    ).resolves.toEqual({
+      protocolVersion: 1,
+      status: "writeback_recovery_required",
+    });
     expect(
       dependencies.codexRotatingSecretWriter.putEncryptedRepositorySecret,
     ).toHaveBeenCalledOnce();

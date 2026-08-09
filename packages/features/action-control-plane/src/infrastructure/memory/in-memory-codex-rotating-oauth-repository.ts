@@ -13,6 +13,14 @@ import {
   codexRotatingReviewSnapshotAccessTtlMs,
   isCodexRotatingCompletedLeasePostingWindowActive,
 } from "../../domain/codex-rotating-oauth-posting-window.js";
+import {
+  blocksCodexRotatingProviderMutation,
+  codexRotatingWritebackClaimMarker,
+  decideCodexRotatingWritebackConfirmation,
+  decideCodexRotatingWritebackPreparation,
+  mayFailCodexRotatingWritebackClaim,
+  type CodexRotatingWritebackIntentStatus,
+} from "../../domain/codex-rotating-writeback-policy.js";
 import type {
   CodexRotatingOAuthRepositoryPort,
   CodexRotatingPreleaseRecord,
@@ -38,7 +46,8 @@ type WritebackRecord = {
   readonly intentId: string;
   readonly request: CodexRotatingEncryptedWritebackRequest;
   readonly encryptedPayloadDigest: string;
-  readonly status: "pending" | "completed" | "failed";
+  readonly status: CodexRotatingWritebackIntentStatus;
+  readonly safeErrorCode?: string;
   readonly completedAt?: Date;
 };
 
@@ -189,7 +198,7 @@ export class InMemoryCodexRotatingOAuthRepository
       [...this.writebacks.values()].some(
         (record) =>
           record.request.providerInstanceId === input.providerInstanceId &&
-          record.status === "pending",
+          blocksCodexRotatingProviderMutation(record.status),
       )
     ) {
       throw new Error("codex_rotating_mutation_fence_conflict");
@@ -388,33 +397,19 @@ export class InMemoryCodexRotatingOAuthRepository
         };
       }
     | {
-        readonly status: "idempotent_replay" | "writeback_idempotency_conflict";
+        readonly status:
+          | "idempotent_replay"
+          | "writeback_recovery_required"
+          | "writeback_idempotency_conflict";
       }
   > {
     const key = `${input.request.providerInstanceId}:${input.request.idempotencyKey}`;
     const existing = this.writebacks.get(key);
-    if (existing) {
-      if (existing.status === "pending") {
-        const provider = this.providers.get(input.request.providerInstanceId);
-        if (
-          existing.encryptedPayloadDigest === input.encryptedPayloadDigest &&
-          provider?.repository
-        ) {
-          return {
-            status: "ready",
-            intentId: existing.intentId,
-            writeTarget: toWriteTarget(provider.repository),
-          };
-        }
-      }
-      return {
-        status:
-          existing.encryptedPayloadDigest === input.encryptedPayloadDigest &&
-          existing.status === "completed"
-            ? "idempotent_replay"
-            : "writeback_idempotency_conflict",
-      };
-    }
+    const decision = decideCodexRotatingWritebackPreparation({
+      existing,
+      encryptedPayloadDigest: input.encryptedPayloadDigest,
+    });
+    if (decision.status !== "claim") return decision;
     const provider = this.providers.get(input.request.providerInstanceId);
     if (
       !provider?.repository ||
@@ -427,12 +422,23 @@ export class InMemoryCodexRotatingOAuthRepository
     ) {
       throw new Error("codex_rotating_lease_not_active");
     }
+    if (
+      [...this.writebacks.values()].some(
+        (record) =>
+          record.request.providerInstanceId ===
+            input.request.providerInstanceId &&
+          blocksCodexRotatingProviderMutation(record.status),
+      )
+    ) {
+      return { status: "writeback_recovery_required" };
+    }
     const intentId = `intent:${key}`;
     this.writebacks.set(key, {
       intentId,
       request: input.request,
       encryptedPayloadDigest: input.encryptedPayloadDigest,
       status: "pending",
+      safeErrorCode: codexRotatingWritebackClaimMarker,
     });
     return {
       status: "ready",
@@ -581,10 +587,30 @@ export class InMemoryCodexRotatingOAuthRepository
       throw new Error("codex_rotating_writeback_intent_not_found");
     }
     const [key, record] = recordEntry;
-    if (record.status === "completed") {
+    const confirmationDecision =
+      decideCodexRotatingWritebackConfirmation(record);
+    if (confirmationDecision === "idempotent") {
       return {
         status: "idempotent" as const,
         generation: record.request.generation,
+      };
+    }
+    if (confirmationDecision === "recovery_required") {
+      const fencedProvider = this.providers.get(
+        record.request.providerInstanceId,
+      );
+      if (fencedProvider) {
+        this.providers.set(record.request.providerInstanceId, {
+          ...fencedProvider,
+          state: "unknown_auth_state",
+          mutationEpoch: fencedProvider.mutationEpoch + 1n,
+          mutationOwner: "recovery",
+          mutationOwnerId: record.intentId,
+        });
+      }
+      return {
+        status: "recovery_required" as const,
+        reason: "owner_mismatch" as const,
       };
     }
     const fencedProvider = this.providers.get(
@@ -612,7 +638,9 @@ export class InMemoryCodexRotatingOAuthRepository
       };
     }
     this.writebacks.set(key, {
-      ...record,
+      intentId: record.intentId,
+      request: record.request,
+      encryptedPayloadDigest: record.encryptedPayloadDigest,
       status: "completed",
       completedAt: input.now,
     });
@@ -645,7 +673,12 @@ export class InMemoryCodexRotatingOAuthRepository
     );
     if (!recordEntry) return;
     const [key, record] = recordEntry;
-    this.writebacks.set(key, { ...record, status: "failed" });
+    if (!mayFailCodexRotatingWritebackClaim(record)) return;
+    this.writebacks.set(key, {
+      ...record,
+      status: "failed",
+      safeErrorCode: input.safeErrorCode,
+    });
     const provider = this.providers.get(record.request.providerInstanceId);
     if (provider) {
       this.providers.set(record.request.providerInstanceId, {

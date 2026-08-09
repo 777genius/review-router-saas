@@ -24,6 +24,7 @@ export async function writebackCodexRotatingOAuth(
     | "accepted"
     | "idempotent_replay"
     | "github_put_failed"
+    | "writeback_recovery_required"
     | "writeback_idempotency_conflict";
 }> {
   const request = parseCodexRotatingEncryptedWritebackRequest(input.body);
@@ -53,7 +54,7 @@ export async function writebackCodexRotatingOAuth(
       safeErrorCode: "github_put_failed",
       now: dependencies.clock.now(),
     });
-    return { protocolVersion: 1, status: "github_put_failed" };
+    return { protocolVersion: 1, status: "writeback_recovery_required" };
   }
 
   let confirmation;
@@ -69,10 +70,10 @@ export async function writebackCodexRotatingOAuth(
       safeErrorCode: "writeback_confirmation_ambiguous",
       now: dependencies.clock.now(),
     });
-    return { protocolVersion: 1, status: "github_put_failed" };
+    return { protocolVersion: 1, status: "writeback_recovery_required" };
   }
   if (confirmation.status === "recovery_required") {
-    return { protocolVersion: 1, status: "github_put_failed" };
+    return { protocolVersion: 1, status: "writeback_recovery_required" };
   }
   return { protocolVersion: 1, status: "accepted" };
 }

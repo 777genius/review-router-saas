@@ -201,6 +201,7 @@ type WritebackResponse = {
     | "accepted"
     | "idempotent_replay"
     | "github_put_failed"
+    | "writeback_recovery_required"
     | "writeback_idempotency_conflict";
 };
 

@@ -111,7 +111,10 @@ export interface CodexRotatingOAuthRepositoryPort {
         readonly writeTarget: CodexRotatingSecretWriteTarget;
       }
     | {
-        readonly status: "idempotent_replay" | "writeback_idempotency_conflict";
+        readonly status:
+          | "idempotent_replay"
+          | "writeback_recovery_required"
+          | "writeback_idempotency_conflict";
       }
   >;
 

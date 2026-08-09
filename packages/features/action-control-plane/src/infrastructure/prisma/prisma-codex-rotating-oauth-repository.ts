@@ -14,6 +14,12 @@ import {
   codexRotatingReviewSnapshotAccessTtlMs,
   isCodexRotatingCompletedLeasePostingWindowActive,
 } from "../../domain/codex-rotating-oauth-posting-window.js";
+import {
+  codexRotatingWritebackClaimMarker,
+  decideCodexRotatingWritebackConfirmation,
+  decideCodexRotatingWritebackPreparation,
+  mayFailCodexRotatingWritebackClaim,
+} from "../../domain/codex-rotating-writeback-policy.js";
 import type {
   CodexRotatingOAuthRepositoryPort,
   CodexRotatingPreleaseRecord,
@@ -217,7 +223,10 @@ export class PrismaCodexRotatingOAuthRepository
         throw new Error(`codex_rotating_provider_${provider.state}`);
       }
       const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
-        where: { providerInstanceRowId: provider.id, status: "pending" },
+        where: {
+          providerInstanceRowId: provider.id,
+          status: "pending",
+        },
         select: { id: true },
       });
       const blockingSetup = await tx.codexOAuthSetupManifest.findFirst({
@@ -639,10 +648,15 @@ export class PrismaCodexRotatingOAuthRepository
         readonly writeTarget: CodexRotatingSecretWriteTarget;
       }
     | {
-        readonly status: "idempotent_replay" | "writeback_idempotency_conflict";
+        readonly status:
+          | "idempotent_replay"
+          | "writeback_recovery_required"
+          | "writeback_idempotency_conflict";
       }
   > {
     return this.prisma.$transaction(async (tx) => {
+      await lockProviderByInstanceId(tx, input.request.providerInstanceId);
+
       const existing = await tx.codexOAuthWritebackIntent.findUnique({
         where: {
           providerInstanceId_idempotencyKey: {
@@ -654,38 +668,13 @@ export class PrismaCodexRotatingOAuthRepository
           id: true,
           encryptedPayloadDigest: true,
           status: true,
-          providerInstance: {
-            select: {
-              repository: { select: codexRotatingRepositoryContextSelect },
-            },
-          },
         },
       });
-      if (existing) {
-        if (
-          existing.encryptedPayloadDigest === input.encryptedPayloadDigest &&
-          existing.status === "pending"
-        ) {
-          return {
-            status: "ready" as const,
-            intentId: existing.id,
-            writeTarget: toSecretWriteTarget(
-              requireGitHubRepositoryContext(
-                existing.providerInstance.repository,
-              ),
-            ),
-          };
-        }
-        return {
-          status:
-            existing.encryptedPayloadDigest === input.encryptedPayloadDigest &&
-            existing.status === "completed"
-              ? "idempotent_replay"
-              : "writeback_idempotency_conflict",
-        };
-      }
-
-      await lockProviderByInstanceId(tx, input.request.providerInstanceId);
+      const decision = decideCodexRotatingWritebackPreparation({
+        existing: existing ?? undefined,
+        encryptedPayloadDigest: input.encryptedPayloadDigest,
+      });
+      if (decision.status !== "claim") return decision;
 
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.request.providerInstanceId },
@@ -730,6 +719,17 @@ export class PrismaCodexRotatingOAuthRepository
         throw new Error("codex_rotating_lease_not_active");
       }
 
+      const blockingIntent = await tx.codexOAuthWritebackIntent.findFirst({
+        where: {
+          providerInstanceRowId: provider.id,
+          status: "pending",
+        },
+        select: { id: true },
+      });
+      if (blockingIntent) {
+        return { status: "writeback_recovery_required" as const };
+      }
+
       const intent = await tx.codexOAuthWritebackIntent.create({
         data: {
           providerInstanceRowId: provider.id,
@@ -741,6 +741,7 @@ export class PrismaCodexRotatingOAuthRepository
           encryptedPayloadDigest: input.encryptedPayloadDigest,
           keyId: input.request.keyId,
           status: "pending",
+          safeErrorCode: codexRotatingWritebackClaimMarker,
           mutationEpoch: lease.mutationEpoch,
         },
         select: { id: true },
@@ -934,13 +935,15 @@ export class PrismaCodexRotatingOAuthRepository
       const currentIntent =
         await tx.codexOAuthWritebackIntent.findUniqueOrThrow({
           where: { id: intent.id },
-          select: { status: true },
+          select: { status: true, safeErrorCode: true },
         });
-      if (currentIntent.status === "completed") {
+      const confirmationDecision =
+        decideCodexRotatingWritebackConfirmation(currentIntent);
+      if (confirmationDecision === "idempotent") {
         return { status: "idempotent" as const, generation: intent.generation };
       }
       if (
-        currentIntent.status !== "pending" ||
+        confirmationDecision !== "confirm" ||
         intent.mutationEpoch === null ||
         current.activeLeaseId !== intent.leaseId ||
         current.mutationEpoch !== intent.mutationEpoch ||
@@ -948,7 +951,11 @@ export class PrismaCodexRotatingOAuthRepository
         current.mutationOwnerId !== intent.leaseId
       ) {
         await tx.codexOAuthWritebackIntent.updateMany({
-          where: { id: intent.id, status: "pending" },
+          where: {
+            id: intent.id,
+            status: "pending",
+            safeErrorCode: codexRotatingWritebackClaimMarker,
+          },
           data: { status: "failed", safeErrorCode: "stale_mutation_epoch" },
         });
         await tx.codexOAuthProviderInstance.update({
@@ -972,6 +979,7 @@ export class PrismaCodexRotatingOAuthRepository
         where: { id: intent.leaseId },
         data: {
           status: "completed",
+          safeErrorCode: null,
           completedAt: input.now,
         },
       });
@@ -1010,6 +1018,7 @@ export class PrismaCodexRotatingOAuthRepository
           id: true,
           leaseId: true,
           status: true,
+          safeErrorCode: true,
           providerInstance: {
             select: {
               id: true,
@@ -1018,17 +1027,27 @@ export class PrismaCodexRotatingOAuthRepository
           },
         },
       });
-      if (!intent || intent.status !== "pending") {
+      if (!intent || !mayFailCodexRotatingWritebackClaim(intent)) {
         return;
       }
 
-      await tx.codexOAuthWritebackIntent.update({
-        where: { id: intent.id },
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "CodexOAuthProviderInstance"
+        WHERE "id" = ${intent.providerInstance.id}
+        FOR UPDATE
+      `);
+      const failed = await tx.codexOAuthWritebackIntent.updateMany({
+        where: {
+          id: intent.id,
+          status: "pending",
+          safeErrorCode: codexRotatingWritebackClaimMarker,
+        },
         data: {
           status: "failed",
           safeErrorCode: input.safeErrorCode,
         },
       });
+      if (failed.count !== 1) return;
       await tx.codexOAuthLease.updateMany({
         where: { id: intent.leaseId },
         data: {

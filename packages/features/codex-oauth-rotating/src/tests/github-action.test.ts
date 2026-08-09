@@ -3149,7 +3149,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       if (href.endsWith("/api/action/v1/codex-oauth/writeback")) {
         return jsonResponse({
           protocolVersion: 1,
-          status: "github_put_failed",
+          status: "writeback_recovery_required",
         });
       }
       throw new Error(`unexpected_fetch:${href}`);

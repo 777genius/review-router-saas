@@ -216,7 +216,7 @@ describeDatabase("Codex rotating setup serialization", () => {
         githubKeyId: "github-key",
         now: runtimeNow,
       });
-      await firstRepository.prepareEncryptedWriteback({
+      const writebackPreparation = {
         request: {
           protocolVersion: 1,
           leaseId: runtimeWinner.leaseId,
@@ -229,7 +229,26 @@ describeDatabase("Codex rotating setup serialization", () => {
         },
         encryptedPayloadDigest: "encrypted-payload-digest",
         now: runtimeNow,
-      });
+      } as const;
+      const writebackRace = await Promise.all([
+        firstRepository.prepareEncryptedWriteback(writebackPreparation),
+        secondRepository.prepareEncryptedWriteback(writebackPreparation),
+      ]);
+      expect(writebackRace.map((result) => result.status).sort()).toEqual([
+        "ready",
+        "writeback_recovery_required",
+      ]);
+      await expect(
+        prisma.codexOAuthWritebackIntent.findMany({
+          where: {
+            providerInstanceId,
+            idempotencyKey: "pending-after-expiry",
+          },
+          select: { status: true, safeErrorCode: true },
+        }),
+      ).resolves.toEqual([
+        { status: "pending", safeErrorCode: "runtime_write_claim_v1" },
+      ]);
       await expect(
         issueCodexRotatingSetupCommand({
           prisma: concurrentPrisma[0],
