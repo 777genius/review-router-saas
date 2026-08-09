@@ -118,6 +118,9 @@ export type RegisterActionControlPlaneRoutesDependencies =
       readonly reviewThreadLifecycleResolver?: GitHubReviewThreadLifecycleResolverPort;
       readonly oidcAudience?: string;
       readonly controlPlaneEnabled?: boolean;
+      readonly codexRotatingMutationAdmission?: {
+        assertEnabled(): void;
+      };
     };
 
 const exchangeBodySchema = z
@@ -361,6 +364,7 @@ export async function registerActionControlPlaneRoutes(
         );
       }
       try {
+        dependencies.codexRotatingMutationAdmission?.assertEnabled();
         const body = codexRotatingFinalizeBodySchema.parse(request.body);
         const result = await finalizeCodexRotatingOAuthLease(
           {
@@ -396,6 +400,7 @@ export async function registerActionControlPlaneRoutes(
         );
       }
       try {
+        dependencies.codexRotatingMutationAdmission?.assertEnabled();
         const body = codexRotatingAbandonBodySchema.parse(request.body);
         const result = await abandonCodexRotatingOAuthLease(
           {
@@ -434,6 +439,7 @@ export async function registerActionControlPlaneRoutes(
         );
       }
       try {
+        dependencies.codexRotatingMutationAdmission?.assertEnabled();
         const body = codexRotatingWritebackPreflightBodySchema.parse(
           request.body,
         );
@@ -475,6 +481,7 @@ export async function registerActionControlPlaneRoutes(
         );
       }
       try {
+        dependencies.codexRotatingMutationAdmission?.assertEnabled();
         const result = await writebackCodexRotatingOAuth(
           { body: request.body },
           dependencies as WritebackCodexRotatingOAuthDependencies,

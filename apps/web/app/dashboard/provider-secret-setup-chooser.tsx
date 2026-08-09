@@ -769,6 +769,8 @@ function rotatingSetupCommandErrorText(error: string): string {
   switch (error) {
     case "codex_rotating_not_enabled":
       return "Codex OAuth rotating is not enabled for this ReviewRouter deployment.";
+    case "codex_rotating_setup_issuance_quiesced":
+      return "New Codex setup commands are temporarily paused for a database cutover. Do not retry this command; wait for the operator to reopen issuance.";
     case "repository_not_found":
     case "repository_not_selected":
       return "ReviewRouter cannot create a Codex setup command because this repository is not selected. Sync repositories, then reopen this dialog.";

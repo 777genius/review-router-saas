@@ -284,6 +284,7 @@ describe("Codex rotating OAuth local E2E", () => {
       },
     ]);
     const tokenFakes = buildTokenFakes();
+    const mutationAdmission = { assertEnabled: vi.fn() };
     const reviewSnapshots = new InMemoryReviewSnapshotRepository();
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef,
@@ -307,6 +308,7 @@ describe("Codex rotating OAuth local E2E", () => {
         recordHealthReport: vi.fn(),
       },
       codexRotatingOAuth,
+      codexRotatingMutationAdmission: mutationAdmission,
       codexRotatingReviewSnapshotAccess: codexRotatingOAuth,
       reviewSnapshots,
       codexRotatingWorkflowSourceVerifier: {
@@ -430,6 +432,7 @@ describe("Codex rotating OAuth local E2E", () => {
       protocolVersion: 1,
       status: "accepted",
     });
+    expect(mutationAdmission.assertEnabled).toHaveBeenCalledTimes(3);
     expect(
       JSON.stringify(
         tokenFakes.codexRotatingSecretWriter.putEncryptedRepositorySecret.mock
@@ -622,6 +625,24 @@ describe("Codex rotating OAuth local E2E", () => {
         retryable: false,
       },
     });
+
+    mutationAdmission.assertEnabled.mockImplementationOnce(() => {
+      throw new Error("codex_rotating_not_enabled");
+    });
+    const blockedAbandon = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/abandon",
+      payload: {
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        reason: "workflow_failed",
+      },
+    });
+    expect(blockedAbandon.statusCode).toBe(403);
+    expect(blockedAbandon.json()).toMatchObject({
+      error: { code: "codex_rotating_not_enabled", retryable: false },
+    });
+    expect(mutationAdmission.assertEnabled).toHaveBeenCalledTimes(4);
 
     await app.close();
   });

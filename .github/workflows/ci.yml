@@ -163,10 +163,12 @@ jobs:
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci'
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci_test'
 
-      - name: Rotating Codex exact migration rehearsal
+      - name: Rotating Codex PostgreSQL 17 combined migration rehearsal (no skips)
+        env:
+          REVIEW_ROUTER_MIGRATION_REHEARSAL_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci
         run: pnpm codex-rotating:migration-rehearsal
 
-      - name: Rotating Codex rollout evidence verifier
+      - name: Rotating Codex observation-backed rollout verifier
         run: pnpm codex-rotating:rollout-proof
 
       - name: Apply dev database migrations

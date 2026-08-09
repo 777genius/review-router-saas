@@ -10,7 +10,10 @@ ALTER TABLE "CodexOAuthSetupManifest"
 
 UPDATE "CodexOAuthSetupManifest"
 SET "status" = 'expired'
-WHERE "status" IN ('issued', 'fetched')
+-- A fetched row proves that the installer crossed the secret-write boundary.
+-- Its TTL is not evidence that the write did not happen, so it must remain an
+-- ambiguity marker for 000061 recovery ownership.
+WHERE "status" = 'issued'
   AND "expiresAt" <= CURRENT_TIMESTAMP;
 
 WITH ranked_active AS (

@@ -119,6 +119,17 @@ describe("Codex rotating CLI setup command route", () => {
       error: "codex_rotating_setup_lock_failed",
     });
   });
+
+  it("returns an actionable unavailable response while issuance is quiesced", async () => {
+    mocks.issueCodexRotatingSetupForRepository.mockRejectedValueOnce(
+      new Error("codex_rotating_setup_issuance_quiesced"),
+    );
+    const response = await POST(request({ reuseCurrentAuth: false }));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_setup_issuance_quiesced",
+    });
+  });
 });
 
 function request(options: { readonly reuseCurrentAuth: boolean }): Request {

@@ -14,6 +14,9 @@ describe("Codex OAuth provider mutation fence migration", () => {
       "utf8",
     );
 
+    expect(sql).toContain("SET LOCAL lock_timeout = '15s';");
+    expect(sql).toContain("SET LOCAL statement_timeout = '5min';");
+
     expect(sql).toContain(
       'ADD COLUMN "mutationEpoch" BIGINT NOT NULL DEFAULT 0',
     );
@@ -26,7 +29,14 @@ describe("Codex OAuth provider mutation fence migration", () => {
     expect(sql).toContain("to_jsonb(NEW)->>'repositoryId'");
     expect(sql).toContain("codex_oauth_provider_mutation_fence_required");
     expect(sql).toContain("'identity-quarantine:'");
+    expect(sql).toContain("l.\"status\" IN ('preleased', 'finalized')");
     expect(sql).toContain("m.\"status\" = 'fetched'");
+    expect(sql).toContain(
+      'p."mutationOwnerId" = m."id" OR m."status" IN (\'issued\', \'fetched\')',
+    );
+    expect(sql).toContain(
+      'p."mutationOwnerId" = l."id" OR l."status" IN (\'preleased\', \'finalized\')',
+    );
     expect(sql).toContain("Deliberately no down migration");
   });
 });

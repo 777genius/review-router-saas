@@ -193,7 +193,9 @@ function serviceDetails({ type, startCommand, healthCheckPath }) {
     },
     maxShutdownDelaySeconds: type === "background_worker" ? 120 : 60,
     plan: "starter",
-    preDeployCommand: "pnpm db:migrate:deploy",
+    // Database rollout is a separately observed, single-caller release step.
+    // An empty value also clears legacy per-service migration callers.
+    preDeployCommand: "",
     region: "frankfurt",
     runtime: "node",
   };
@@ -242,10 +244,12 @@ function buildServiceEnv({
     REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK:
       env.REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK ?? "1",
     REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH:
-      env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH ?? "1",
+      env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH ?? "0",
     REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "1",
     REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES:
       env.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES ?? "",
+    REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED:
+      env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED ?? "0",
     REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES:
       env.REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES ?? "",
     REVIEW_ROUTER_MAX_REPOSITORIES_PER_SYNC: "250",

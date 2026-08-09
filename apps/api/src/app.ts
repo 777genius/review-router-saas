@@ -456,6 +456,15 @@ export async function createApiApp(
                 }
               },
             },
+            codexRotatingMutationAdmission: {
+              assertEnabled() {
+                if (
+                  process.env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH !== "1"
+                ) {
+                  throw new Error("codex_rotating_not_enabled");
+                }
+              },
+            },
             ...(codexRotatingGitHubSecretGateway
               ? {
                   codexRotatingSecretsReadTokens:

@@ -78,10 +78,12 @@ export async function POST(request: Request): Promise<
       { error: code },
       {
         status:
-          code === "codex_rotating_setup_in_progress" ||
-          code === "codex_rotating_setup_lock_failed"
-            ? 409
-            : 400,
+          code === "codex_rotating_setup_issuance_quiesced"
+            ? 503
+            : code === "codex_rotating_setup_in_progress" ||
+                code === "codex_rotating_setup_lock_failed"
+              ? 409
+              : 400,
       },
     );
   }
@@ -109,6 +111,7 @@ function codexRotatingSetupCommandErrorCode(error: unknown): string {
       "repository_mutation_forbidden",
       "workspace_mutation_forbidden",
       "codex_rotating_not_enabled",
+      "codex_rotating_setup_issuance_quiesced",
       "codex_rotating_installer_missing",
       "codex_rotating_installer_descriptor_incomplete",
       "codex_rotating_setup_in_progress",

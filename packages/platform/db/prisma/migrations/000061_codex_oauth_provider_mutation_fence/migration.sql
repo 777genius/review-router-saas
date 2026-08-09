@@ -1,5 +1,8 @@
 BEGIN;
 
+SET LOCAL lock_timeout = '15s';
+SET LOCAL statement_timeout = '5min';
+
 LOCK TABLE "CodexOAuthProviderInstance" IN ACCESS EXCLUSIVE MODE;
 LOCK TABLE "CodexOAuthSetupManifest" IN ACCESS EXCLUSIVE MODE;
 LOCK TABLE "CodexOAuthLease" IN ACCESS EXCLUSIVE MODE;
@@ -58,6 +61,10 @@ SET "mutationEpoch" = 1,
        WHERE i."providerInstanceRowId" = p."id" AND i."status" = 'pending'
        ORDER BY i."createdAt" DESC, i."id" DESC LIMIT 1),
       p."activeLeaseId",
+      (SELECT l."id" FROM "CodexOAuthLease" l
+       WHERE l."providerInstanceRowId" = p."id"
+         AND l."status" IN ('preleased', 'finalized')
+       ORDER BY l."createdAt" DESC, l."id" DESC LIMIT 1),
       'identity-quarantine:' || p."id"
     ),
     "state" = 'unknown_auth_state'
@@ -66,6 +73,11 @@ WHERE EXISTS (
         WHERE q."providerInstanceRowId" = p."id"
       )
    OR p."activeLeaseId" IS NOT NULL
+   OR EXISTS (
+        SELECT 1 FROM "CodexOAuthLease" l
+        WHERE l."providerInstanceRowId" = p."id"
+          AND l."status" IN ('preleased', 'finalized')
+      )
    OR EXISTS (
         SELECT 1 FROM "CodexOAuthWritebackIntent" i
         WHERE i."providerInstanceRowId" = p."id" AND i."status" = 'pending'
@@ -100,10 +112,12 @@ FROM issued WHERE p."id" = issued."providerInstanceRowId";
 
 UPDATE "CodexOAuthSetupManifest" m SET "mutationEpoch" = p."mutationEpoch"
 FROM "CodexOAuthProviderInstance" p
-WHERE p."id" = m."providerInstanceRowId" AND p."mutationOwnerId" = m."id";
+WHERE p."id" = m."providerInstanceRowId"
+  AND (p."mutationOwnerId" = m."id" OR m."status" IN ('issued', 'fetched'));
 UPDATE "CodexOAuthLease" l SET "mutationEpoch" = p."mutationEpoch"
 FROM "CodexOAuthProviderInstance" p
-WHERE p."id" = l."providerInstanceRowId" AND p."mutationOwnerId" = l."id";
+WHERE p."id" = l."providerInstanceRowId"
+  AND (p."mutationOwnerId" = l."id" OR l."status" IN ('preleased', 'finalized'));
 UPDATE "CodexOAuthWritebackIntent" i SET "mutationEpoch" = p."mutationEpoch"
 FROM "CodexOAuthProviderInstance" p
 WHERE p."id" = i."providerInstanceRowId"
@@ -260,5 +274,6 @@ CREATE INDEX "CodexOAuthWritebackIntent_provider_epoch_idx"
 
 COMMIT;
 
--- Deliberately no down migration: application rollback is safe while these
--- additive guards remain installed.
+-- Deliberately no down migration. After this fence is installed, application
+-- rollback below the mutation-fence-aware image is unsafe; recover by rolling
+-- forward with a compatible image.

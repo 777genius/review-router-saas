@@ -39,6 +39,10 @@ describe("Codex rotating setup schema guard", () => {
       'LOCK TABLE "CodexOAuthSetupManifest" IN ACCESS EXCLUSIVE MODE;',
     );
     expect(migration).toContain('ADD COLUMN "confirmationJson" JSONB;');
+    expect(migration).toContain("WHERE \"status\" = 'issued'");
+    expect(migration).not.toContain(
+      "SET \"status\" = 'expired'\nWHERE \"status\" IN ('issued', 'fetched')",
+    );
     expect(migration).toContain(
       'ON "CodexOAuthSetupManifest"("providerInstanceRowId")',
     );
