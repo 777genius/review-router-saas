@@ -1,4 +1,5 @@
 import {
+  assertDigest,
   canonicalJson,
   ReviewInvestigationDomainError,
   type CanonicalValue,
@@ -928,6 +929,12 @@ function validateTurnProvenance(
       throw new ReviewInvestigationDomainError("turn_provenance_invalid");
     }
     return;
+  }
+  for (const receiptId of acceptedEvidenceReceiptIds) {
+    assertDigest(receiptId, "accepted_operation_receipt_id");
+  }
+  for (const receiptId of provenance.acceptedOperationReceiptIds) {
+    assertDigest(receiptId, "accepted_operation_receipt_id");
   }
   if (
     provenance.turnId !== turn.turnId ||

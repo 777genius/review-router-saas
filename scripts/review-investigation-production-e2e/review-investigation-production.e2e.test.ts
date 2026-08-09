@@ -5,6 +5,11 @@ import {
   InvestigationTelemetryEvidenceCompleteness,
   InvestigationTelemetrySource,
 } from "../../packages/features/review-investigation-operations/src/index.js";
+import {
+  InvestigationCertificateConclusion,
+  InvestigationCertificateVerificationDenialReason,
+  InvestigationCertificateVerificationStatus,
+} from "../../packages/features/review-evidence/src/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createReviewInvestigationProductionE2EHarness,
@@ -176,8 +181,10 @@ describeWithDatabase.sequential(
         label: "finding-restart",
         expandRelations: false,
         terminalSource: InvestigationTelemetrySource.Shadow,
-        restartAfterFirstCommit: true,
+        restartAfterFindingCommit: true,
       });
+      const certificateVerification =
+        await fixture.verifyAcceptedCertificate(flow);
       const investigation =
         await fixture.client.reviewInvestigation.findUniqueOrThrow({
           where: { investigationId: flow.investigationId },
@@ -203,6 +210,12 @@ describeWithDatabase.sequential(
         conclusion: "findings",
       });
       expect(findings).toHaveLength(1);
+      expect(certificateVerification).toEqual({
+        status: InvestigationCertificateVerificationStatus.Accepted,
+        reason: InvestigationCertificateVerificationDenialReason.None,
+        acceptedCertificateHash: flow.certificateHash,
+        conclusion: InvestigationCertificateConclusion.Findings,
+      });
       expect(findings[0]!.evidenceReceiptIds.length).toBeGreaterThan(0);
       expect(
         findings[0]!.evidenceReceiptIds.every((receiptId) =>

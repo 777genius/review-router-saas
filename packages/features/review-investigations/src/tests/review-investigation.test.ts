@@ -209,6 +209,30 @@ describe("review investigation in-memory vertical slice", () => {
     ).rejects.toThrow("turn_provenance_invalid");
   });
 
+  it("rejects malformed accepted operation receipt ids at the domain boundary", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(
+      openCommand("malformed-accepted-operation-receipt"),
+    );
+    const planned = await planDiscovery(harness, opened);
+    const commit = emptyCommit(
+      planned,
+      "commit-malformed-accepted-operation-receipt",
+    );
+    const malformedReceiptId = "not-a-digest";
+
+    await expect(
+      harness.commit.execute({
+        ...commit,
+        acceptedEvidenceReceiptIds: [malformedReceiptId],
+        provenance: {
+          ...commit.provenance!,
+          acceptedOperationReceiptIds: [malformedReceiptId],
+        },
+      }),
+    ).rejects.toThrow("accepted_operation_receipt_id_invalid");
+  });
+
   it("keeps runner inventory provisional until the first authenticated witness", async () => {
     const harness = createHarness();
     const opened = await harness.open.execute({

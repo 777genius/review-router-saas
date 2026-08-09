@@ -24,7 +24,10 @@ import {
 } from "../../../packages/features/review-context-attestation/src/index.js";
 import { PrismaContextAttestationStore } from "../../../packages/features/review-context-attestation/src/composition/index.js";
 import {
+  InvestigationCertificateConclusion,
+  InvestigationCertificateVerificationStatus,
   ProviderExecutionProfile,
+  ReviewProviderKind,
   buildProviderInvocationIdentity,
   serializeProviderInvocationManifestCanonicalWireJson,
 } from "../../../packages/features/review-evidence/src/index.js";
@@ -55,7 +58,10 @@ import {
   type ReviewInvestigationPolicy,
   type SeedInvestigationObligation,
 } from "../../../packages/features/review-investigations/src/index.js";
-import { PrismaInvestigationStore } from "../../../packages/features/review-investigations/src/composition/index.js";
+import {
+  NodeSha256InvestigationDigest,
+  PrismaInvestigationStore,
+} from "../../../packages/features/review-investigations/src/composition/index.js";
 import {
   InvestigationEvaluationAttestationVersion,
   InvestigationEvaluationSignatureAlgorithm,
@@ -104,6 +110,7 @@ import {
   reviewInvestigationPrivateMaterialTtlEnv,
   type ReviewActionV2ProductionRoutes,
 } from "../../../apps/api/src/review-action-v2-production-composition.js";
+import { ReviewInvestigationCertificateVerificationAdapter } from "../../../apps/api/src/review-investigation-certificate-verification-adapter.js";
 import {
   StoredReviewInvestigationTerminalTelemetrySamples,
   composePrismaReviewInvestigationOperations,
@@ -223,6 +230,7 @@ type InvestigationFlowInput = Readonly<{
     | InvestigationTelemetrySource.Shadow
     | InvestigationTelemetrySource.DisposableFixture;
   restartAfterFirstCommit?: boolean;
+  restartAfterFindingCommit?: boolean;
 }>;
 
 export class ReviewInvestigationProductionE2EHarness {
@@ -402,6 +410,7 @@ export class ReviewInvestigationProductionE2EHarness {
     let discoveryOrdinal = 0;
     let duplicateCommitVersion = "";
     let findingCommitted = false;
+    let restartedAfterFindingCommit = false;
     while (current.nextAction === ReviewInvestigationNextAction.RunTurn) {
       discoveryOrdinal += 1;
       const plan = await this.planTurn(
@@ -454,10 +463,22 @@ export class ReviewInvestigationProductionE2EHarness {
       if (discoveryOrdinal === 1 && input.restartAfterFirstCommit) {
         await this.restartControlPlane();
       }
+      if (
+        commit.findingCount > 0 &&
+        input.restartAfterFindingCommit &&
+        !restartedAfterFindingCommit
+      ) {
+        await this.restartControlPlane();
+        restartedAfterFindingCommit = true;
+      }
     }
     ensure(
       !input.includeFinding || findingCommitted,
       "investigation_finding_fixture_not_committed",
+    );
+    ensure(
+      !input.restartAfterFindingCommit || restartedAfterFindingCommit,
+      "investigation_finding_restart_not_exercised",
     );
     if (current.nextAction === ReviewInvestigationNextAction.RunCritic) {
       const criticPlan = await this.planTurn(
@@ -553,6 +574,40 @@ export class ReviewInvestigationProductionE2EHarness {
         concludeReplay.result.investigationVersion,
       ),
     });
+  }
+
+  async verifyAcceptedCertificate(flow: CompletedInvestigationFlow) {
+    const store = new PrismaInvestigationStore(this.prisma);
+    const investigation = requiredValue(
+      await store.findById(flow.investigationId),
+      "investigation_for_certificate_verification_missing",
+    );
+    const certificate = requiredValue(
+      investigation.certificate,
+      "investigation_certificate_missing",
+    );
+    const verifier = new ReviewInvestigationCertificateVerificationAdapter(
+      store,
+      new NodeSha256InvestigationDigest(),
+      { async assertAllowed() {} },
+    );
+    const decision = await verifier.verifyAcceptedCertificate({
+      certificateId: flow.certificateId,
+      certificateHash: flow.certificateHash,
+      scope: investigation.scope,
+      revision: investigation.revision,
+      providerKind: ReviewProviderKind.Codex,
+      providerVoteIdentityHash: investigation.providerVoteLaneId,
+      terminalOutcomeHash: certificate.terminalOutcomeHash,
+      expectedConclusion: InvestigationCertificateConclusion.Findings,
+      producerReleaseId: certificate.producerReleaseId,
+      nowMs: Date.now(),
+    });
+    ensure(
+      decision.status === InvestigationCertificateVerificationStatus.Accepted,
+      `investigation_certificate_not_accepted:${decision.reason}`,
+    );
+    return decision;
   }
 
   async importEvaluation(flow: CompletedInvestigationFlow, label: string) {
