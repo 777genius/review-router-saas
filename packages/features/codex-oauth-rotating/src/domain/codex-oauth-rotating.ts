@@ -2,6 +2,11 @@ import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import sodium from "libsodium-wrappers";
 import {
+  assertCanonicalCodexRotatingProviderId,
+  canonicalCodexRotatingProviderId,
+  codexRotatingProviderIdSchema,
+} from "./provider-mutation-fence";
+import {
   createReviewExecutionBudget,
   defaultReviewJobTimeoutMinutes,
   defaultReviewT0LifecycleTimeoutMinutes,
@@ -13,6 +18,7 @@ export const codexRotatingRuntimeAuthMode = "codex-oauth-rotating";
 export const codexRotatingRefreshRuntimeMode = "codex-oauth-refresh";
 export const codexForkAgenticSandboxRuntimeMode = "fork-agentic-sandbox";
 export const codexRotatingSecretName = "REVIEWROUTER_CODEX_AUTH_JSON";
+export const codexRotatingProtocolVersion = 2 as const;
 export const codexRotatingReviewDraftsVariableName =
   "REVIEW_ROUTER_REVIEW_DRAFTS";
 export const codexRotatingMaxChangedLinesVariableName =
@@ -224,7 +230,7 @@ export function createCodexRotatingSalt(): string {
 
 export const codexRotatingSetupManifestSchema = z
   .object({
-    protocolVersion: z.literal(1),
+    protocolVersion: z.union([z.literal(1), z.literal(2)]),
     repositoryFullName: z.string().regex(repoFullNamePattern),
     repositoryId: z
       .string()
@@ -246,7 +252,30 @@ export const codexRotatingSetupManifestSchema = z
     generationHashSalt: z.string().regex(base64UrlPattern),
     accountFingerprintSalt: z.string().regex(base64UrlPattern),
   })
-  .strict();
+  .strict()
+  .superRefine((manifest, context) => {
+    if (manifest.protocolVersion !== 2) return;
+    if (!manifest.repositoryId) {
+      context.addIssue({
+        code: "custom",
+        path: ["repositoryId"],
+        message: "protocol v2 requires repositoryId",
+      });
+      return;
+    }
+    if (
+      !codexRotatingProviderIdSchema.safeParse(manifest.providerInstanceId)
+        .success ||
+      manifest.providerInstanceId !==
+        canonicalCodexRotatingProviderId(manifest.repositoryId)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["providerInstanceId"],
+        message: "protocol v2 requires canonical provider identity",
+      });
+    }
+  });
 
 export type CodexRotatingSetupManifest = z.infer<
   typeof codexRotatingSetupManifestSchema
@@ -254,7 +283,7 @@ export type CodexRotatingSetupManifest = z.infer<
 
 export function buildCodexRotatingSetupManifest(input: {
   readonly repositoryFullName: string;
-  readonly repositoryId?: string;
+  readonly repositoryId: string;
   readonly providerInstanceId?: string;
   readonly setupNonce?: string;
   readonly installerUrl: string;
@@ -268,12 +297,12 @@ export function buildCodexRotatingSetupManifest(input: {
   const now = input.now ?? new Date();
   const ttlSeconds = input.ttlSeconds ?? 15 * 60;
   const manifest = {
-    protocolVersion: 1,
+    protocolVersion: codexRotatingProtocolVersion,
     repositoryFullName: input.repositoryFullName,
-    ...(input.repositoryId ? { repositoryId: input.repositoryId } : {}),
+    repositoryId: input.repositoryId,
     providerInstanceId:
       input.providerInstanceId ??
-      `codex-rotating:${input.repositoryFullName.replace("/", ":")}`,
+      canonicalCodexRotatingProviderId(input.repositoryId),
     setupNonce: input.setupNonce ?? `stp:${randomUUID()}`,
     secretName: codexRotatingSecretName,
     authMode: codexRotatingAuthMode,
@@ -1805,6 +1834,14 @@ export function validateCodexRotatingPrelease(input: {
   readonly runKey: string;
 } {
   const claims = codexRotatingOidcClaimsSchema.parse(input.claims);
+  assertCanonicalCodexRotatingProviderId({
+    providerInstanceId: input.binding.providerInstanceId,
+    githubRepositoryId: claims.repository_id,
+  });
+  assertCanonicalCodexRotatingProviderId({
+    providerInstanceId: input.requestedProviderInstanceId,
+    githubRepositoryId: claims.repository_id,
+  });
   if (claims.repository !== input.binding.repositoryFullName) {
     throw new Error("oidc_repository_mismatch");
   }
@@ -1867,6 +1904,7 @@ export class InMemoryCodexRotatingLeaseStore {
     readonly now: Date;
     readonly ttlSeconds: number;
   }): CodexRotatingLeaseRecord {
+    codexRotatingProviderIdSchema.parse(input.providerInstanceId);
     const active = [...this.records.values()].find(
       (record) =>
         record.providerInstanceId === input.providerInstanceId &&
@@ -1950,7 +1988,7 @@ export const codexRotatingEncryptedWritebackSchema = z
   .object({
     protocolVersion: z.literal(1),
     leaseId: z.string().regex(safeOpaqueIdPattern),
-    providerInstanceId: z.string().regex(safeOpaqueIdPattern),
+    providerInstanceId: codexRotatingProviderIdSchema,
     generation: z.number().int().positive(),
     latestGenerationHash: z.string().min(32).max(128),
     encryptedValue: z

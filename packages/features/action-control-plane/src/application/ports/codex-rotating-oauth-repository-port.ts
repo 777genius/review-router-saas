@@ -1,5 +1,6 @@
 import type {
   CodexRotatingEncryptedWritebackRequest,
+  CodexRotatingMutationConfirmationOutcome,
   CodexRotatingLeaseRecord,
   CodexRotatingProviderBinding,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -10,9 +11,11 @@ export type CodexRotatingPreleaseRecord = CodexRotatingLeaseRecord & {
   readonly generationHashSalt: string;
   readonly currentGeneration: number;
   readonly currentGenerationHash?: string | undefined;
+  readonly mutationEpoch: bigint;
 };
 
 export type CodexRotatingSecretWriteTarget = {
+  readonly expectedProviderInstanceId?: string;
   readonly githubInstallationId: string;
   readonly githubRepositoryId: string;
   readonly repositoryFullName: string;
@@ -28,6 +31,11 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly workflowSha: string;
     readonly workflowSchemaVersion: number;
   }): Promise<CodexRotatingProviderBinding | null>;
+
+  ensureVerifiedProviderBinding(input: {
+    readonly repository: ActionRepositoryContext;
+    readonly binding: CodexRotatingProviderBinding;
+  }): Promise<void>;
 
   acquirePrelease(input: {
     readonly repository: ActionRepositoryContext;
@@ -110,7 +118,7 @@ export interface CodexRotatingOAuthRepositoryPort {
   confirmEncryptedWriteback(input: {
     readonly intentId: string;
     readonly now: Date;
-  }): Promise<void>;
+  }): Promise<CodexRotatingMutationConfirmationOutcome>;
 
   markEncryptedWritebackFailed(input: {
     readonly intentId: string;

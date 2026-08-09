@@ -1016,6 +1016,127 @@ describe("Codex rotating OAuth action control plane", () => {
       ),
     ).rejects.toThrow("codex_rotating_provider_unknown_auth_state");
   });
+
+  it("rejects a caller-controlled provider id before verification or persistence", async () => {
+    const dependencies = buildRotatingDependencies();
+    const ensure = vi.spyOn(
+      dependencies.codexRotatingOAuth,
+      "ensureVerifiedProviderBinding",
+    );
+    const acquire = vi.spyOn(
+      dependencies.codexRotatingOAuth,
+      "acquirePrelease",
+    );
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "forged-jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:999999",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("codex_rotating_provider_identity_mismatch");
+
+    expect(ensure).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(dependencies.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+    expect(
+      dependencies.codexRotatingWorkflowSourceVerifier.verifyWorkflowSource,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the post-PUT epoch confirmation requires recovery", async () => {
+    const dependencies = buildRotatingDependencies();
+    const prelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    );
+    const finalized = await finalizeCodexRotatingOAuthLease(
+      {
+        leaseId: prelease.leaseId,
+        providerInstanceId: "codex-rotating:123456",
+        restoredGenerationHash: "restored-generation-hash-value",
+      },
+      dependencies,
+    );
+    await preflightCodexRotatingOAuthWriteback(
+      {
+        leaseId: prelease.leaseId,
+        providerInstanceId: "codex-rotating:123456",
+        githubKeyId: "github-key",
+      },
+      dependencies,
+    );
+    vi.spyOn(
+      dependencies.codexRotatingOAuth,
+      "confirmEncryptedWriteback",
+    ).mockResolvedValue({
+      status: "recovery_required",
+      reason: "stale_epoch",
+    });
+
+    await expect(
+      writebackCodexRotatingOAuth(
+        {
+          body: {
+            protocolVersion: 1,
+            leaseId: prelease.leaseId,
+            providerInstanceId: "codex-rotating:123456",
+            generation: finalized.nextGeneration,
+            latestGenerationHash: "latest-generation-hash-value-0123456789",
+            encryptedValue: Buffer.from("ciphertext").toString("base64"),
+            keyId: "github-key",
+            idempotencyKey: "idem:stale-post-put",
+          },
+        },
+        dependencies,
+      ),
+    ).resolves.toEqual({ protocolVersion: 1, status: "github_put_failed" });
+    expect(
+      dependencies.codexRotatingSecretWriter.putEncryptedRepositorySecret,
+    ).toHaveBeenCalledOnce();
+  });
+
+  it("persists the canonical binding only after workflow verification", async () => {
+    const dependencies = buildRotatingDependencies();
+    const ensure = vi.spyOn(
+      dependencies.codexRotatingOAuth,
+      "ensureVerifiedProviderBinding",
+    );
+
+    await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "jwt",
+        audience: "reviewrouter",
+        providerInstanceId: "codex-rotating:123456",
+        workflowSchemaVersion: 1,
+      },
+      dependencies,
+    );
+
+    const verify = dependencies.codexRotatingWorkflowSourceVerifier
+      .verifyWorkflowSource as ReturnType<typeof vi.fn>;
+    expect(verify.mock.invocationCallOrder[0]).toBeLessThan(
+      ensure.mock.invocationCallOrder[0]!,
+    );
+    expect(ensure).toHaveBeenCalledWith({
+      repository,
+      binding: expect.objectContaining({
+        providerInstanceId: "codex-rotating:123456",
+        githubRepositoryId: "123456",
+      }),
+    });
+  });
 });
 
 type RotatingDependencies = Parameters<typeof preleaseCodexRotatingOAuth>[1] &

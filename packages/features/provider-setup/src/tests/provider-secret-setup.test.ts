@@ -11,11 +11,11 @@ describe("provider secret setup guidance", () => {
       repoFullName: "777genius/agent-teams-ai",
       organizationLogin: "777genius",
       rotatingSetup: {
+        repositoryId: "123456",
         installerUrl: "https://reviewrouter.site/install/codex-rotating",
         installerVersion: "v1.2.3",
         installerSha256:
           "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        repositoryId: "123456",
         providerInstanceId: "codex-rotating:123456",
         setupNonce: "stp:123456789",
         now: new Date("2026-05-25T12:00:00.000Z"),

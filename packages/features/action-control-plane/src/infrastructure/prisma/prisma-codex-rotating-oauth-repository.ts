@@ -1,5 +1,6 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import {
+  assertCanonicalCodexRotatingProviderId,
   codexRotatingAuthMode,
   codexRotatingCanonicalT0WorkflowSchemaVersions,
   codexRotatingSecretName,
@@ -67,23 +68,9 @@ export class PrismaCodexRotatingOAuthRepository
     ) {
       return null;
     }
-    await this.prisma.codexOAuthProviderInstance.upsert({
-      where: { providerInstanceId: input.providerInstanceId },
-      update: {
-        workspaceId: input.repository.workspaceId,
-        repositoryId: input.repository.repositoryId,
-        authMode: codexRotatingAuthMode,
-        secretName: codexRotatingSecretName,
-      },
-      create: {
-        workspaceId: input.repository.workspaceId,
-        repositoryId: input.repository.repositoryId,
-        providerInstanceId: input.providerInstanceId,
-        authMode: codexRotatingAuthMode,
-        secretName: codexRotatingSecretName,
-        generationHashSalt: createCodexRotatingSalt(),
-        accountFingerprintSalt: createCodexRotatingSalt(),
-      },
+    assertCanonicalCodexRotatingProviderId({
+      providerInstanceId: input.providerInstanceId,
+      githubRepositoryId: input.repository.githubRepositoryId,
     });
 
     return {
@@ -102,6 +89,73 @@ export class PrismaCodexRotatingOAuthRepository
     };
   }
 
+  async ensureVerifiedProviderBinding(input: {
+    readonly repository: ActionRepositoryContext;
+    readonly binding: CodexRotatingProviderBinding;
+  }): Promise<void> {
+    if (
+      input.binding.githubRepositoryId !==
+        input.repository.githubRepositoryId ||
+      input.binding.repositoryFullName.toLowerCase() !==
+        input.repository.fullName.toLowerCase()
+    ) {
+      throw new Error("codex_rotating_provider_identity_mismatch");
+    }
+    assertCanonicalCodexRotatingProviderId({
+      providerInstanceId: input.binding.providerInstanceId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+    });
+    await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.codexOAuthProviderInstance.findUnique({
+        where: {
+          repositoryId_authMode: {
+            repositoryId: input.repository.repositoryId,
+            authMode: codexRotatingAuthMode,
+          },
+        },
+      });
+      if (existing) {
+        if (
+          existing.workspaceId !== input.repository.workspaceId ||
+          existing.repositoryId !== input.repository.repositoryId ||
+          existing.providerInstanceId !== input.binding.providerInstanceId ||
+          existing.authMode !== codexRotatingAuthMode ||
+          existing.secretName !== codexRotatingSecretName
+        ) {
+          throw new Error("codex_rotating_provider_identity_mismatch");
+        }
+        return;
+      }
+      await tx.codexOAuthProviderInstance.createMany({
+        data: {
+          workspaceId: input.repository.workspaceId,
+          repositoryId: input.repository.repositoryId,
+          providerInstanceId: input.binding.providerInstanceId,
+          authMode: codexRotatingAuthMode,
+          secretName: codexRotatingSecretName,
+          generationHashSalt: createCodexRotatingSalt(),
+          accountFingerprintSalt: createCodexRotatingSalt(),
+        },
+        skipDuplicates: true,
+      });
+      const persisted = await tx.codexOAuthProviderInstance.findUniqueOrThrow({
+        where: {
+          repositoryId_authMode: {
+            repositoryId: input.repository.repositoryId,
+            authMode: codexRotatingAuthMode,
+          },
+        },
+      });
+      if (
+        persisted.workspaceId !== input.repository.workspaceId ||
+        persisted.providerInstanceId !== input.binding.providerInstanceId ||
+        persisted.secretName !== codexRotatingSecretName
+      ) {
+        throw new Error("codex_rotating_provider_identity_mismatch");
+      }
+    });
+  }
+
   async acquirePrelease(input: {
     readonly repository: ActionRepositoryContext;
     readonly providerInstanceId: string;
@@ -110,16 +164,33 @@ export class PrismaCodexRotatingOAuthRepository
     readonly pullRequestNumber?: number | undefined;
     readonly now: Date;
   }): Promise<CodexRotatingPreleaseRecord> {
+    assertCanonicalCodexRotatingProviderId({
+      providerInstanceId: input.providerInstanceId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+    });
     const expiresAt = new Date(input.now.getTime() + 15 * 60 * 1000);
     const leaseKey = `${input.providerInstanceId}:${input.githubRunId}:${input.githubRunAttempt}`;
 
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "CodexOAuthProviderInstance"
+        WHERE "providerInstanceId" = ${input.providerInstanceId}
+        FOR UPDATE
+      `);
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.providerInstanceId },
         select: {
           id: true,
+          workspaceId: true,
+          repositoryId: true,
+          providerInstanceId: true,
+          authMode: true,
+          secretName: true,
           activeLeaseId: true,
           activeLeaseExpiresAt: true,
+          mutationEpoch: true,
+          mutationOwner: true,
+          mutationOwnerId: true,
           state: true,
           latestGeneration: true,
           latestGenerationHash: true,
@@ -130,11 +201,41 @@ export class PrismaCodexRotatingOAuthRepository
         throw new Error("codex_rotating_provider_not_found");
       }
       if (
+        provider.workspaceId !== input.repository.workspaceId ||
+        provider.repositoryId !== input.repository.repositoryId ||
+        provider.providerInstanceId !== input.providerInstanceId ||
+        provider.authMode !== codexRotatingAuthMode ||
+        provider.secretName !== codexRotatingSecretName
+      ) {
+        throw new Error("codex_rotating_provider_identity_mismatch");
+      }
+      if (
         provider.state === "unknown_auth_state" ||
         provider.state === "needs_reconnect" ||
         provider.state === "permission_required"
       ) {
         throw new Error(`codex_rotating_provider_${provider.state}`);
+      }
+      const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
+        where: { providerInstanceRowId: provider.id, status: "pending" },
+        select: { id: true },
+      });
+      const blockingSetup = await tx.codexOAuthSetupManifest.findFirst({
+        where: {
+          providerInstanceRowId: provider.id,
+          OR: [
+            { status: "fetched" },
+            { status: "issued", expiresAt: { gt: input.now } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (
+        provider.mutationOwner === "recovery" ||
+        pendingIntent ||
+        blockingSetup
+      ) {
+        throw new Error("codex_rotating_mutation_fence_conflict");
       }
       if (
         provider.activeLeaseId &&
@@ -150,6 +251,7 @@ export class PrismaCodexRotatingOAuthRepository
             pullRequestNumber: true,
             status: true,
             expiresAt: true,
+            mutationEpoch: true,
           },
         });
         if (
@@ -172,6 +274,8 @@ export class PrismaCodexRotatingOAuthRepository
               repository: input.repository,
               generationHashSalt: provider.generationHashSalt,
               currentGeneration: provider.latestGeneration,
+              mutationEpoch:
+                activeLease.mutationEpoch ?? provider.mutationEpoch,
               ...(provider.latestGenerationHash
                 ? { currentGenerationHash: provider.latestGenerationHash }
                 : {}),
@@ -199,6 +303,8 @@ export class PrismaCodexRotatingOAuthRepository
               repository: input.repository,
               generationHashSalt: provider.generationHashSalt,
               currentGeneration: provider.latestGeneration,
+              mutationEpoch:
+                activeLease.mutationEpoch ?? provider.mutationEpoch,
               ...(provider.latestGenerationHash
                 ? { currentGenerationHash: provider.latestGenerationHash }
                 : {}),
@@ -207,11 +313,21 @@ export class PrismaCodexRotatingOAuthRepository
         }
       }
 
+      const mutationEpoch = provider.mutationEpoch + 1n;
+      await tx.codexOAuthProviderInstance.update({
+        where: { id: provider.id },
+        data: {
+          mutationEpoch,
+          mutationOwner: "runtime",
+          mutationOwnerId: leaseKey,
+        },
+      });
       const lease = await tx.codexOAuthLease.upsert({
         where: { leaseKey },
         update: {
           status: "preleased",
           expiresAt,
+          mutationEpoch,
           ...(input.pullRequestNumber
             ? { pullRequestNumber: input.pullRequestNumber }
             : {}),
@@ -229,6 +345,7 @@ export class PrismaCodexRotatingOAuthRepository
           leaseKey,
           status: "preleased",
           expiresAt,
+          mutationEpoch,
         },
       });
       await tx.codexOAuthProviderInstance.update({
@@ -237,6 +354,9 @@ export class PrismaCodexRotatingOAuthRepository
           activeLeaseId: lease.id,
           activeLeaseExpiresAt: expiresAt,
           state: "setup_pending",
+          mutationEpoch,
+          mutationOwner: "runtime",
+          mutationOwnerId: lease.id,
         },
       });
 
@@ -250,6 +370,7 @@ export class PrismaCodexRotatingOAuthRepository
         repository: input.repository,
         generationHashSalt: provider.generationHashSalt,
         currentGeneration: provider.latestGeneration,
+        mutationEpoch,
         ...(provider.latestGenerationHash
           ? { currentGenerationHash: provider.latestGenerationHash }
           : {}),
@@ -269,22 +390,34 @@ export class PrismaCodexRotatingOAuthRepository
     readonly status: "finalized" | "stale_queued_secret";
   }> {
     return this.prisma.$transaction(async (tx) => {
+      await lockProviderByInstanceId(tx, input.providerInstanceId);
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.providerInstanceId },
         select: {
           id: true,
           activeLeaseId: true,
           activeLeaseExpiresAt: true,
+          mutationEpoch: true,
+          mutationOwner: true,
+          mutationOwnerId: true,
           latestGeneration: true,
           latestGenerationHash: true,
           repository: {
             select: codexRotatingRepositoryContextSelect,
+          },
+          leases: {
+            where: { id: input.leaseId },
+            take: 1,
+            select: { mutationEpoch: true },
           },
         },
       });
       if (
         !provider ||
         provider.activeLeaseId !== input.leaseId ||
+        provider.mutationOwner !== "runtime" ||
+        provider.mutationOwnerId !== input.leaseId ||
+        provider.leases[0]?.mutationEpoch !== provider.mutationEpoch ||
         !provider.activeLeaseExpiresAt ||
         provider.activeLeaseExpiresAt <= input.now
       ) {
@@ -311,6 +444,9 @@ export class PrismaCodexRotatingOAuthRepository
             state: "stale_queued_secret",
             activeLeaseId: null,
             activeLeaseExpiresAt: null,
+            mutationEpoch: { increment: 1 },
+            mutationOwner: "recovery",
+            mutationOwnerId: input.leaseId,
           },
         });
         return {
@@ -352,12 +488,16 @@ export class PrismaCodexRotatingOAuthRepository
     readonly status: "abandoned" | "lease_not_active";
   }> {
     return this.prisma.$transaction(async (tx) => {
+      await lockProviderByInstanceId(tx, input.providerInstanceId);
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.providerInstanceId },
         select: {
           id: true,
           activeLeaseId: true,
           activeLeaseExpiresAt: true,
+          mutationEpoch: true,
+          mutationOwner: true,
+          mutationOwnerId: true,
           leases: {
             where: { id: input.leaseId },
             take: 1,
@@ -365,6 +505,7 @@ export class PrismaCodexRotatingOAuthRepository
               id: true,
               status: true,
               expiresAt: true,
+              mutationEpoch: true,
             },
           },
         },
@@ -374,6 +515,9 @@ export class PrismaCodexRotatingOAuthRepository
         !provider ||
         !lease ||
         provider.activeLeaseId !== input.leaseId ||
+        provider.mutationOwner !== "runtime" ||
+        provider.mutationOwnerId !== input.leaseId ||
+        lease.mutationEpoch !== provider.mutationEpoch ||
         !provider.activeLeaseExpiresAt ||
         provider.activeLeaseExpiresAt <= input.now ||
         lease.expiresAt <= input.now ||
@@ -395,6 +539,9 @@ export class PrismaCodexRotatingOAuthRepository
           state: input.reason,
           activeLeaseId: null,
           activeLeaseExpiresAt: null,
+          mutationEpoch: { increment: 1 },
+          mutationOwner: "recovery",
+          mutationOwnerId: input.leaseId,
         },
       });
       return { status: "abandoned" as const };
@@ -419,12 +566,16 @@ export class PrismaCodexRotatingOAuthRepository
       }
   > {
     return this.prisma.$transaction(async (tx) => {
+      await lockProviderByInstanceId(tx, input.providerInstanceId);
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.providerInstanceId },
         select: {
           id: true,
           activeLeaseId: true,
           activeLeaseExpiresAt: true,
+          mutationEpoch: true,
+          mutationOwner: true,
+          mutationOwnerId: true,
           repository: { select: codexRotatingRepositoryContextSelect },
           leases: {
             where: { id: input.leaseId },
@@ -434,6 +585,7 @@ export class PrismaCodexRotatingOAuthRepository
               status: true,
               expiresAt: true,
               nextGeneration: true,
+              mutationEpoch: true,
             },
           },
         },
@@ -443,6 +595,9 @@ export class PrismaCodexRotatingOAuthRepository
         !provider ||
         !lease ||
         provider.activeLeaseId !== input.leaseId ||
+        provider.mutationOwner !== "runtime" ||
+        provider.mutationOwnerId !== input.leaseId ||
+        lease.mutationEpoch !== provider.mutationEpoch ||
         !provider.activeLeaseExpiresAt ||
         provider.activeLeaseExpiresAt <= input.now ||
         lease.expiresAt <= input.now
@@ -530,12 +685,17 @@ export class PrismaCodexRotatingOAuthRepository
         };
       }
 
+      await lockProviderByInstanceId(tx, input.request.providerInstanceId);
+
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.request.providerInstanceId },
         select: {
           id: true,
           activeLeaseId: true,
           activeLeaseExpiresAt: true,
+          mutationEpoch: true,
+          mutationOwner: true,
+          mutationOwnerId: true,
           repository: { select: codexRotatingRepositoryContextSelect },
           leases: {
             where: { id: input.request.leaseId },
@@ -546,6 +706,7 @@ export class PrismaCodexRotatingOAuthRepository
               expiresAt: true,
               nextGeneration: true,
               writebackPreflightKeyId: true,
+              mutationEpoch: true,
             },
           },
         },
@@ -560,7 +721,11 @@ export class PrismaCodexRotatingOAuthRepository
         lease.status !== "finalized" ||
         lease.expiresAt <= input.now ||
         lease.nextGeneration !== input.request.generation ||
-        lease.writebackPreflightKeyId !== input.request.keyId
+        lease.writebackPreflightKeyId !== input.request.keyId ||
+        provider.mutationOwner !== "runtime" ||
+        provider.mutationOwnerId !== input.request.leaseId ||
+        lease.mutationEpoch === null ||
+        lease.mutationEpoch !== provider.mutationEpoch
       ) {
         throw new Error("codex_rotating_lease_not_active");
       }
@@ -576,6 +741,7 @@ export class PrismaCodexRotatingOAuthRepository
           encryptedPayloadDigest: input.encryptedPayloadDigest,
           keyId: input.request.keyId,
           status: "pending",
+          mutationEpoch: lease.mutationEpoch,
         },
         select: { id: true },
       });
@@ -725,8 +891,8 @@ export class PrismaCodexRotatingOAuthRepository
   async confirmEncryptedWriteback(input: {
     readonly intentId: string;
     readonly now: Date;
-  }): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
+  }) {
+    return this.prisma.$transaction(async (tx) => {
       const intent = await tx.codexOAuthWritebackIntent.findUnique({
         where: { id: input.intentId },
         select: {
@@ -736,10 +902,14 @@ export class PrismaCodexRotatingOAuthRepository
           generation: true,
           latestGenerationHash: true,
           status: true,
+          mutationEpoch: true,
           providerInstance: {
             select: {
               id: true,
               activeLeaseId: true,
+              mutationEpoch: true,
+              mutationOwner: true,
+              mutationOwnerId: true,
             },
           },
         },
@@ -747,12 +917,56 @@ export class PrismaCodexRotatingOAuthRepository
       if (!intent) {
         throw new Error("codex_rotating_writeback_intent_not_found");
       }
-      if (intent.status === "completed") return;
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "CodexOAuthProviderInstance"
+        WHERE "id" = ${intent.providerInstance.id}
+        FOR UPDATE
+      `);
+      const current = await tx.codexOAuthProviderInstance.findUniqueOrThrow({
+        where: { id: intent.providerInstance.id },
+        select: {
+          activeLeaseId: true,
+          mutationEpoch: true,
+          mutationOwner: true,
+          mutationOwnerId: true,
+        },
+      });
+      const currentIntent =
+        await tx.codexOAuthWritebackIntent.findUniqueOrThrow({
+          where: { id: intent.id },
+          select: { status: true },
+        });
+      if (currentIntent.status === "completed") {
+        return { status: "idempotent" as const, generation: intent.generation };
+      }
       if (
-        intent.status !== "pending" ||
-        intent.providerInstance.activeLeaseId !== intent.leaseId
+        currentIntent.status !== "pending" ||
+        intent.mutationEpoch === null ||
+        current.activeLeaseId !== intent.leaseId ||
+        current.mutationEpoch !== intent.mutationEpoch ||
+        current.mutationOwner !== "runtime" ||
+        current.mutationOwnerId !== intent.leaseId
       ) {
-        throw new Error("codex_rotating_writeback_intent_not_confirmable");
+        await tx.codexOAuthWritebackIntent.updateMany({
+          where: { id: intent.id, status: "pending" },
+          data: { status: "failed", safeErrorCode: "stale_mutation_epoch" },
+        });
+        await tx.codexOAuthProviderInstance.update({
+          where: { id: intent.providerInstance.id },
+          data: {
+            state: "unknown_auth_state",
+            mutationEpoch: current.mutationEpoch + 1n,
+            mutationOwner: "recovery",
+            mutationOwnerId: intent.id,
+          },
+        });
+        return {
+          status: "recovery_required" as const,
+          reason:
+            current.mutationEpoch !== intent.mutationEpoch
+              ? ("stale_epoch" as const)
+              : ("owner_mismatch" as const),
+        };
       }
       await tx.codexOAuthLease.update({
         where: { id: intent.leaseId },
@@ -769,6 +983,8 @@ export class PrismaCodexRotatingOAuthRepository
           latestGenerationHash: intent.latestGenerationHash,
           activeLeaseId: null,
           activeLeaseExpiresAt: null,
+          mutationOwner: null,
+          mutationOwnerId: null,
         },
       });
       await tx.codexOAuthWritebackIntent.update({
@@ -778,6 +994,7 @@ export class PrismaCodexRotatingOAuthRepository
           completedAt: input.now,
         },
       });
+      return { status: "confirmed" as const, generation: intent.generation };
     });
   }
 
@@ -822,6 +1039,9 @@ export class PrismaCodexRotatingOAuthRepository
         where: { id: intent.providerInstance.id },
         data: {
           state: "unknown_auth_state",
+          mutationEpoch: { increment: 1 },
+          mutationOwner: "recovery",
+          mutationOwnerId: intent.id,
           ...(intent.providerInstance.activeLeaseId === intent.leaseId
             ? { activeLeaseId: null, activeLeaseExpiresAt: null }
             : {}),
@@ -877,6 +1097,7 @@ function toSecretWriteTarget(
   repository: GitHubCodexRotatingRepositoryContextRow,
 ): CodexRotatingSecretWriteTarget {
   return {
+    expectedProviderInstanceId: `codex-rotating:${repository.githubRepositoryId.toString()}`,
     githubInstallationId:
       repository.installation.githubInstallationId.toString(),
     githubRepositoryId: repository.githubRepositoryId.toString(),
@@ -885,4 +1106,15 @@ function toSecretWriteTarget(
     repo: repository.name,
     secretName: codexRotatingSecretName,
   };
+}
+
+async function lockProviderByInstanceId(
+  tx: Prisma.TransactionClient,
+  providerInstanceId: string,
+): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id" FROM "CodexOAuthProviderInstance"
+    WHERE "providerInstanceId" = ${providerInstanceId}
+    FOR UPDATE
+  `);
 }

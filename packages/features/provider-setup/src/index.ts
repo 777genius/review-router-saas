@@ -1,6 +1,8 @@
 export * from "./domain/provider-secret-setup";
 export {
   buildCodexRotatingSetupManifest,
+  assertCanonicalCodexRotatingProviderId,
+  canonicalCodexRotatingProviderId,
   codexRotatingAuthMode,
   codexRotatingSecretName,
   codexRotatingSetupManifestSchema,

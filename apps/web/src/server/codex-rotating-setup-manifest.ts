@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   buildCodexRotatingSetupManifest,
+  canonicalCodexRotatingProviderId,
   codexRotatingAuthMode,
   codexRotatingSecretName,
   codexRotatingSetupManifestSchema,
@@ -13,11 +14,23 @@ import {
 import { isCodexRotatingOAuthAllowedForRepository } from "@reviewrouter/platform-config";
 import { z } from "zod";
 import type { CodexRotatingSeedScriptDescriptor } from "./codex-rotating-seed-script";
+import {
+  isCodexRotatingSetupFenceOwner,
+  lockCodexRotatingProviderRow,
+  pinCodexRotatingSetupRecovery,
+  supersedeFetchedSetupForRecovery,
+} from "./codex-rotating-provider-mutation-fence";
 
 const setupManifestTtlSeconds = 15 * 60;
 const setupLockRetryIntervalMs = 100;
 const setupLockMaxAttempts = 50;
 const setupTransactionTimeoutMs = 10_000;
+
+function assertSetupIssuanceEnabled(): void {
+  if (process.env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED === "0") {
+    throw new Error("codex_rotating_setup_issuance_quiesced");
+  }
+}
 
 export enum CodexRotatingSetupManifestStatus {
   Issued = "issued",
@@ -29,7 +42,7 @@ export enum CodexRotatingSetupManifestStatus {
 
 const setupConfirmationSchema = z
   .object({
-    protocolVersion: z.literal(1),
+    protocolVersion: z.union([z.literal(1), z.literal(2)]),
     repositoryId: z.string().regex(/^[0-9]+$/),
     providerInstanceId: z.string().regex(/^[A-Za-z0-9_.:-]{8,160}$/),
     setupNonce: z.string().regex(/^[A-Za-z0-9_.:-]{8,160}$/),
@@ -54,6 +67,7 @@ type SetupManifestRow = {
   readonly expiresAt: Date;
   readonly consumedAt: Date | null;
   readonly confirmationJson: unknown | null;
+  readonly mutationEpoch: bigint | null;
 };
 
 type SetupManifestTransaction = Prisma.TransactionClient;
@@ -75,32 +89,46 @@ export async function issueCodexRotatingSetupCommand(input: {
   readonly providerInstanceId: string;
   readonly secretName: typeof codexRotatingSecretName;
 }> {
-  const providerInstanceId = `codex-rotating:${input.githubRepositoryId}`;
+  assertSetupIssuanceEnabled();
+  const providerInstanceId = canonicalCodexRotatingProviderId(
+    input.githubRepositoryId,
+  );
   return input.prisma.$transaction(
     async (tx) => {
       await lockSetupProvider(tx, providerInstanceId);
-      const provider = await tx.codexOAuthProviderInstance.upsert({
-        where: { providerInstanceId },
-        update: {
-          workspaceId: input.workspaceId,
-          repositoryId: input.repositoryId,
-          authMode: codexRotatingAuthMode,
-          secretName: codexRotatingSecretName,
+      let provider = await tx.codexOAuthProviderInstance.findUnique({
+        where: {
+          repositoryId_authMode: {
+            repositoryId: input.repositoryId,
+            authMode: codexRotatingAuthMode,
+          },
         },
-        create: {
-          workspaceId: input.workspaceId,
-          repositoryId: input.repositoryId,
-          providerInstanceId,
-          authMode: codexRotatingAuthMode,
-          secretName: codexRotatingSecretName,
-          generationHashSalt: createCodexRotatingSalt(),
-          accountFingerprintSalt: createCodexRotatingSalt(),
-        },
-        select: {
-          id: true,
-          generationHashSalt: true,
-          accountFingerprintSalt: true,
-        },
+      });
+      if (!provider) {
+        provider = await tx.codexOAuthProviderInstance.create({
+          data: {
+            workspaceId: input.workspaceId,
+            repositoryId: input.repositoryId,
+            providerInstanceId,
+            authMode: codexRotatingAuthMode,
+            secretName: codexRotatingSecretName,
+            generationHashSalt: createCodexRotatingSalt(),
+            accountFingerprintSalt: createCodexRotatingSalt(),
+          },
+        });
+      }
+      if (
+        provider.workspaceId !== input.workspaceId ||
+        provider.repositoryId !== input.repositoryId ||
+        provider.providerInstanceId !== providerInstanceId ||
+        provider.authMode !== codexRotatingAuthMode ||
+        provider.secretName !== codexRotatingSecretName
+      ) {
+        throw new Error("codex_rotating_provider_identity_mismatch");
+      }
+      await lockCodexRotatingProviderRow(tx, provider.id);
+      provider = await tx.codexOAuthProviderInstance.findUniqueOrThrow({
+        where: { id: provider.id },
       });
       const now = input.now ?? new Date();
       await expireActiveSetupManifests(tx, provider.id, now);
@@ -110,13 +138,32 @@ export async function issueCodexRotatingSetupCommand(input: {
         ? codexRotatingSetupManifestSchema.safeParse(active.manifestJson)
         : null;
       if (active?.status === CodexRotatingSetupManifestStatus.Fetched) {
-        throw new Error("codex_rotating_setup_in_progress");
+        if (provider.mutationOwner !== "recovery") {
+          throw new Error("codex_rotating_setup_in_progress");
+        }
+        await supersedeFetchedSetupForRecovery(tx, active.id);
+      }
+      const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
+        where: { providerInstanceRowId: provider.id, status: "pending" },
+        select: { id: true },
+      });
+      if (
+        pendingIntent ||
+        (provider.mutationOwner === "runtime" &&
+          provider.activeLeaseExpiresAt &&
+          provider.activeLeaseExpiresAt > now)
+      ) {
+        throw new Error("codex_rotating_mutation_fence_conflict");
       }
 
       let manifest = parsedActive?.success ? parsedActive.data : null;
       if (
         active &&
         (!manifest ||
+          active.mutationEpoch === null ||
+          active.mutationEpoch !== provider.mutationEpoch ||
+          provider.mutationOwner !== "setup" ||
+          provider.mutationOwnerId !== active.id ||
           !isReusableIssuedManifest({
             manifest,
             provider,
@@ -131,6 +178,8 @@ export async function issueCodexRotatingSetupCommand(input: {
 
       if (!manifest) {
         const setupNonce = `stp:${randomUUID()}`;
+        const manifestId = `codex_setup_${randomUUID()}`;
+        const mutationEpoch = provider.mutationEpoch + 1n;
         manifest = buildCodexRotatingSetupManifest({
           repositoryFullName: input.repositoryFullName,
           repositoryId: input.githubRepositoryId,
@@ -144,6 +193,14 @@ export async function issueCodexRotatingSetupCommand(input: {
           generationHashSalt: provider.generationHashSalt,
           accountFingerprintSalt: provider.accountFingerprintSalt,
         });
+        await tx.codexOAuthProviderInstance.update({
+          where: { id: provider.id },
+          data: {
+            mutationEpoch,
+            mutationOwner: "setup",
+            mutationOwnerId: manifestId,
+          },
+        });
         await tx.$executeRaw`
         INSERT INTO "CodexOAuthSetupManifest" (
           "id",
@@ -154,10 +211,11 @@ export async function issueCodexRotatingSetupCommand(input: {
           "setupNonce",
           "manifestJson",
           "status",
-          "expiresAt"
+          "expiresAt",
+          "mutationEpoch"
         )
         VALUES (
-          ${`codex_setup_${randomUUID()}`},
+          ${manifestId},
           ${input.workspaceId},
           ${input.repositoryId},
           ${provider.id},
@@ -165,7 +223,8 @@ export async function issueCodexRotatingSetupCommand(input: {
           ${setupNonce},
           CAST(${JSON.stringify(manifest)} AS jsonb),
           ${CodexRotatingSetupManifestStatus.Issued},
-          ${new Date(manifest.expiresAt)}
+          ${new Date(manifest.expiresAt)},
+          ${mutationEpoch}
         )
       `;
       }
@@ -192,6 +251,7 @@ export async function resolveCodexRotatingSetupManifestForNonce(input: {
     async (tx) => {
       const initial = await findSetupManifestByNonce(tx, input.setupNonce);
       await lockSetupProvider(tx, initial.providerInstanceId);
+      await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
       const now = input.now ?? new Date();
       const row = await findSetupManifestByNonce(tx, input.setupNonce);
       assertSetupManifestFetchable(row, now);
@@ -200,6 +260,9 @@ export async function resolveCodexRotatingSetupManifestForNonce(input: {
         !isCodexRotatingOAuthAllowedForRepository(manifest.repositoryFullName)
       ) {
         throw new Error("codex_rotating_not_enabled");
+      }
+      if (!(await isCodexRotatingSetupFenceOwner(tx, row))) {
+        throw new Error("codex_rotating_setup_confirmation_stale_epoch");
       }
 
       const updated = await tx.$executeRaw`
@@ -231,18 +294,14 @@ export async function confirmCodexRotatingSetupManifest(input: {
 }): Promise<{ readonly status: "accepted" }> {
   const payload = setupConfirmationSchema.parse(input.payload);
 
-  await input.prisma.$transaction(
+  const confirmation = await input.prisma.$transaction(
     async (tx) => {
       const initial = await findSetupManifestByNonce(tx, payload.setupNonce);
       await lockSetupProvider(tx, initial.providerInstanceId);
+      await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
       const now = input.now ?? new Date();
       const row = await findSetupManifestByNonce(tx, payload.setupNonce);
       const manifest = codexRotatingSetupManifestSchema.parse(row.manifestJson);
-      if (
-        !isCodexRotatingOAuthAllowedForRepository(manifest.repositoryFullName)
-      ) {
-        throw new Error("codex_rotating_not_enabled");
-      }
       if (
         manifest.repositoryId !== payload.repositoryId ||
         manifest.providerInstanceId !== payload.providerInstanceId ||
@@ -254,11 +313,24 @@ export async function confirmCodexRotatingSetupManifest(input: {
       if (row.status === CodexRotatingSetupManifestStatus.Consumed) {
         const stored = setupConfirmationSchema.safeParse(row.confirmationJson);
         if (stored.success && setupConfirmationsMatch(stored.data, payload)) {
-          return;
+          return "accepted" as const;
         }
         throw new Error("codex_rotating_setup_confirmation_mismatch");
       }
-      assertSetupManifestConfirmable(row, now);
+      if (
+        !isCodexRotatingOAuthAllowedForRepository(manifest.repositoryFullName)
+      ) {
+        throw new Error("codex_rotating_not_enabled");
+      }
+      assertSetupManifestConfirmable(row);
+      if (!(await isCodexRotatingSetupFenceOwner(tx, row))) {
+        await pinCodexRotatingSetupRecovery(
+          tx,
+          row.providerInstanceRowId,
+          row.id,
+        );
+        return "stale" as const;
+      }
 
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: payload.providerInstanceId },
@@ -268,6 +340,9 @@ export async function confirmCodexRotatingSetupManifest(input: {
           latestGenerationHash: true,
           generationHashSalt: true,
           accountFingerprintSalt: true,
+          mutationEpoch: true,
+          mutationOwner: true,
+          mutationOwnerId: true,
         },
       });
       if (
@@ -279,8 +354,13 @@ export async function confirmCodexRotatingSetupManifest(input: {
         throw new Error("codex_rotating_setup_salt_mismatch");
       }
 
-      await tx.codexOAuthProviderInstance.update({
-        where: { id: provider.id },
+      const confirmed = await tx.codexOAuthProviderInstance.updateMany({
+        where: {
+          id: provider.id,
+          mutationEpoch: row.mutationEpoch!,
+          mutationOwner: "setup",
+          mutationOwnerId: row.id,
+        },
         data: {
           latestGeneration: provider.latestGenerationHash
             ? provider.latestGeneration + 1
@@ -289,8 +369,14 @@ export async function confirmCodexRotatingSetupManifest(input: {
           state: "active",
           activeLeaseId: null,
           activeLeaseExpiresAt: null,
+          mutationOwner: null,
+          mutationOwnerId: null,
         },
       });
+      if (confirmed.count !== 1) {
+        await pinCodexRotatingSetupRecovery(tx, provider.id, row.id);
+        return "stale" as const;
+      }
       const updated = await tx.$executeRaw`
       UPDATE "CodexOAuthSetupManifest"
       SET "status" = ${CodexRotatingSetupManifestStatus.Consumed},
@@ -303,9 +389,14 @@ export async function confirmCodexRotatingSetupManifest(input: {
       if (updated !== 1) {
         throw new Error("codex_rotating_setup_manifest_reused");
       }
+      return "accepted" as const;
     },
     { timeout: setupTransactionTimeoutMs },
   );
+
+  if (confirmation === "stale") {
+    throw new Error("codex_rotating_setup_confirmation_stale_epoch");
+  }
 
   return { status: "accepted" };
 }
@@ -328,7 +419,8 @@ async function findSetupManifestByNonce(
       "status",
       "expiresAt",
       "consumedAt",
-      "confirmationJson"
+      "confirmationJson",
+      "mutationEpoch"
     FROM "CodexOAuthSetupManifest"
     WHERE "setupNonce" = ${setupNonce}
     LIMIT 1
@@ -347,11 +439,13 @@ function assertSetupManifestFetchable(row: SetupManifestRow, now: Date): void {
   }
 }
 
-function assertSetupManifestConfirmable(
-  row: SetupManifestRow,
-  now: Date,
-): void {
-  assertSetupManifestNotExpiredOrConsumed(row, now);
+function assertSetupManifestConfirmable(row: SetupManifestRow): void {
+  if (
+    row.status === CodexRotatingSetupManifestStatus.Consumed ||
+    row.consumedAt
+  ) {
+    throw new Error("codex_rotating_setup_manifest_reused");
+  }
   if (row.status !== CodexRotatingSetupManifestStatus.Fetched) {
     throw new Error("codex_rotating_setup_manifest_reused");
   }
@@ -406,10 +500,7 @@ async function expireActiveSetupManifests(
     UPDATE "CodexOAuthSetupManifest"
     SET "status" = ${CodexRotatingSetupManifestStatus.Expired}
     WHERE "providerInstanceRowId" = ${providerInstanceRowId}
-      AND "status" IN (
-        ${CodexRotatingSetupManifestStatus.Issued},
-        ${CodexRotatingSetupManifestStatus.Fetched}
-      )
+      AND "status" = ${CodexRotatingSetupManifestStatus.Issued}
       AND "expiresAt" <= ${now}
   `;
 }
@@ -429,7 +520,8 @@ async function findActiveSetupManifestForProvider(
       "status",
       "expiresAt",
       "consumedAt",
-      "confirmationJson"
+      "confirmationJson",
+      "mutationEpoch"
     FROM "CodexOAuthSetupManifest"
     WHERE "providerInstanceRowId" = ${providerInstanceRowId}
       AND "status" IN (

@@ -292,6 +292,7 @@ describe("Codex rotating auth domain", () => {
   it("renders installer command without raw curl pipe", () => {
     const manifest = buildCodexRotatingSetupManifest({
       repositoryFullName: "777genius/agent-teams-ai",
+      repositoryId: "123456",
       installerUrl: "https://reviewrouter.site/install/codex-rotating",
       installerVersion: "v1.2.3",
       installerSha256:
@@ -317,6 +318,7 @@ describe("Codex rotating auth domain", () => {
   it("renders only whitelisted reseed arguments", () => {
     const manifest = buildCodexRotatingSetupManifest({
       repositoryFullName: "777genius/agent-teams-ai",
+      repositoryId: "123456",
       installerUrl: "https://reviewrouter.site/install/codex-rotating",
       installerVersion: "v1.2.3",
       installerSha256:
@@ -413,6 +415,7 @@ exit 17
   it("renders server-backed setup nonce commands without embedding the manifest", () => {
     const manifest = buildCodexRotatingSetupManifest({
       repositoryFullName: "777genius/agent-teams-ai",
+      repositoryId: "123456",
       installerUrl: "https://reviewrouter.site/install/codex-rotating",
       installerVersion: "v1.2.3",
       installerSha256:
@@ -446,7 +449,7 @@ exit 17
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      providerInstanceId: "codex-rotating:123456",
     });
 
     expect(workflow).toContain("pull_request:");
@@ -483,7 +486,7 @@ exit 17
     expect(workflow).not.toMatch(/^\s+queue:/m);
     expect(workflow.match(/^\s+cancel-in-progress: false$/gm)).toHaveLength(2);
     expect(workflow).toContain(
-      "group: reviewrouter-codex-oauth-${{ github.repository_id }}-codex-rotating-777genius-agent-teams-ai",
+      "group: reviewrouter-codex-oauth-${{ github.repository_id }}-codex-rotating-123456",
     );
     expect(workflow).toContain("permissions: {}\n\njobs:");
     expect(workflow).toContain("    permissions:\n      id-token: write");
@@ -545,7 +548,7 @@ exit 17
     const trulyOldSchemaOneWorkflow = renderLegacySchemaOneWorkflow({
       actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      providerInstanceId: "codex-rotating:123456",
     });
     expect(
       scanCodexRotatingAdvisoryWorkflow(trulyOldSchemaOneWorkflow),
@@ -563,7 +566,7 @@ exit 17
     const historicalThirtyMinuteWorkflow = renderLegacySchemaOneWorkflow({
       actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      providerInstanceId: "codex-rotating:123456",
       refreshScheduleCron: "17 */6 * * *",
       timeoutMinutes: 30,
     }).replaceAll(
@@ -643,7 +646,7 @@ exit 17
     ).toContain("review_job_provider_concurrency_required");
 
     const wrongConcurrencyGroup = workflow.replace(
-      "group: reviewrouter-codex-oauth-${{ github.repository_id }}-codex-rotating-777genius-agent-teams-ai",
+      "group: reviewrouter-codex-oauth-${{ github.repository_id }}-codex-rotating-123456",
       "group: unrelated-provider-queue",
     );
     expect(
@@ -669,7 +672,7 @@ exit 17
     const mismatchedFixedTimeout = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:test",
+      providerInstanceId: "codex-rotating:123456",
       timeoutMinutes: 180,
       refreshScheduleCron: null,
     }).replace('review-timeout-minutes: "180"', 'review-timeout-minutes: "60"');
@@ -680,7 +683,7 @@ exit 17
     const legacyWorkflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      providerInstanceId: "codex-rotating:123456",
       refreshScheduleCron: null,
     });
     expect(scanCodexRotatingAdvisoryWorkflow(legacyWorkflow)).toEqual({
@@ -966,7 +969,7 @@ exit 17
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      providerInstanceId: "codex-rotating:123456",
     });
 
     expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
@@ -998,7 +1001,7 @@ exit 17
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      providerInstanceId: "codex-rotating:123456",
       timeoutMinutes: 180,
     });
 
@@ -1015,7 +1018,7 @@ exit 17
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      providerInstanceId: "codex-rotating:123456",
       claudeCodeOAuthTokenSecret: true,
       openRouterApiKeySecret: true,
     });
@@ -1044,7 +1047,7 @@ exit 17
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
-      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      providerInstanceId: "codex-rotating:123456",
       forkAgenticSandboxEnabled: true,
     });
 
@@ -1135,19 +1138,19 @@ exit 17
       validateCodexRotatingPrelease({
         claims,
         binding: {
-          providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+          providerInstanceId: "codex-rotating:123456",
           repositoryFullName: "777genius/agent-teams-ai",
           githubRepositoryId: "123456",
           actionRef: "777genius/review-router@main",
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
           workflowSchemaVersion: 1,
         },
-        requestedProviderInstanceId: "codex-rotating:777genius/agent-teams-ai",
+        requestedProviderInstanceId: "codex-rotating:123456",
         requestedWorkflowSchemaVersion: 1,
         now,
       }),
     ).toEqual({
-      leaseKey: "codex-rotating:777genius/agent-teams-ai:9001:1",
+      leaseKey: "codex-rotating:123456:9001:1",
       runKey: "123456:9001:1",
     });
 
@@ -1158,7 +1161,7 @@ exit 17
           repository_visibility: "public",
         },
         binding: {
-          providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+          providerInstanceId: "codex-rotating:123456",
           repositoryFullName: "777genius/agent-teams-ai",
           githubRepositoryId: "123456",
           actionRef:
@@ -1166,12 +1169,12 @@ exit 17
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
           workflowSchemaVersion: 1,
         },
-        requestedProviderInstanceId: "codex-rotating:777genius/agent-teams-ai",
+        requestedProviderInstanceId: "codex-rotating:123456",
         requestedWorkflowSchemaVersion: 1,
         now,
       }),
     ).toEqual({
-      leaseKey: "codex-rotating:777genius/agent-teams-ai:9001:1",
+      leaseKey: "codex-rotating:123456:9001:1",
       runKey: "123456:9001:1",
     });
 
@@ -1182,7 +1185,7 @@ exit 17
           actor: "dependabot[bot]",
         },
         binding: {
-          providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+          providerInstanceId: "codex-rotating:123456",
           repositoryFullName: "777genius/agent-teams-ai",
           githubRepositoryId: "123456",
           actionRef:
@@ -1190,7 +1193,7 @@ exit 17
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
           workflowSchemaVersion: 1,
         },
-        requestedProviderInstanceId: "codex-rotating:777genius/agent-teams-ai",
+        requestedProviderInstanceId: "codex-rotating:123456",
         requestedWorkflowSchemaVersion: 1,
         now,
       }),
@@ -1205,7 +1208,7 @@ exit 17
           exp: Math.floor(now.getTime() / 1000) + 570,
         },
         binding: {
-          providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+          providerInstanceId: "codex-rotating:123456",
           repositoryFullName: "777genius/agent-teams-ai",
           githubRepositoryId: "123456",
           actionRef:
@@ -1213,7 +1216,7 @@ exit 17
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
           workflowSchemaVersion: 1,
         },
-        requestedProviderInstanceId: "codex-rotating:777genius/agent-teams-ai",
+        requestedProviderInstanceId: "codex-rotating:123456",
         requestedWorkflowSchemaVersion: 1,
         now,
       }),
@@ -1228,7 +1231,7 @@ exit 17
           exp: Math.floor(now.getTime() / 1000) + 700,
         },
         binding: {
-          providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+          providerInstanceId: "codex-rotating:123456",
           repositoryFullName: "777genius/agent-teams-ai",
           githubRepositoryId: "123456",
           actionRef:
@@ -1236,7 +1239,7 @@ exit 17
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
           workflowSchemaVersion: 1,
         },
-        requestedProviderInstanceId: "codex-rotating:777genius/agent-teams-ai",
+        requestedProviderInstanceId: "codex-rotating:123456",
         requestedWorkflowSchemaVersion: 1,
         now,
       }),
@@ -1247,14 +1250,14 @@ exit 17
     const store = new InMemoryCodexRotatingLeaseStore();
     const now = new Date("2026-05-25T12:00:00.000Z");
     const first = store.acquire({
-      providerInstanceId: "codex-rotating:repo",
+      providerInstanceId: "codex-rotating:123456",
       runId: "1",
       runAttempt: "1",
       now,
       ttlSeconds: 300,
     });
     const second = store.acquire({
-      providerInstanceId: "codex-rotating:repo",
+      providerInstanceId: "codex-rotating:123456",
       runId: "2",
       runAttempt: "1",
       now,
@@ -1279,21 +1282,21 @@ exit 17
     const store = new InMemoryCodexRotatingLeaseStore();
     const now = new Date("2026-05-25T12:00:00.000Z");
     const first = store.acquire({
-      providerInstanceId: "codex-rotating:repo",
+      providerInstanceId: "codex-rotating:123456",
       runId: "1",
       runAttempt: "1",
       now,
       ttlSeconds: 300,
     });
     const rerun = store.acquire({
-      providerInstanceId: "codex-rotating:repo",
+      providerInstanceId: "codex-rotating:123456",
       runId: "1",
       runAttempt: "2",
       now,
       ttlSeconds: 300,
     });
     const otherRun = store.acquire({
-      providerInstanceId: "codex-rotating:repo",
+      providerInstanceId: "codex-rotating:123456",
       runId: "2",
       runAttempt: "1",
       now,
@@ -1319,7 +1322,7 @@ exit 17
       parseCodexRotatingEncryptedWritebackRequest({
         protocolVersion: 1,
         leaseId: "lease:abc12345",
-        providerInstanceId: "codex-rotating:repo",
+        providerInstanceId: "codex-rotating:123456",
         generation: 2,
         latestGenerationHash: "hashhashhashhashhashhashhashhashhash",
         encryptedValue: Buffer.from("ciphertext").toString("base64"),
@@ -1337,7 +1340,7 @@ exit 17
       parseCodexRotatingEncryptedWritebackRequest({
         protocolVersion: 1,
         leaseId: "lease:abc12345",
-        providerInstanceId: "codex-rotating:repo",
+        providerInstanceId: "codex-rotating:123456",
         generation: 2,
         latestGenerationHash: "hashhashhashhashhashhashhashhashhash",
         encryptedValue: '{"auth_mode":"chatgpt"}',

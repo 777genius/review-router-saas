@@ -1,5 +1,7 @@
 import {
   codexRotatingOidcClaimsSchema,
+  assertCanonicalCodexRotatingProviderId,
+  canonicalCodexRotatingProviderId,
   validateCodexRotatingPrelease,
   type CodexRotatingOidcClaims,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -83,12 +85,19 @@ export async function preleaseCodexRotatingOAuth(
   if (!repository.selected || repository.installationStatus !== "active") {
     throw new Error("repository_not_selected");
   }
+  const canonicalProviderInstanceId = canonicalCodexRotatingProviderId(
+    repository.githubRepositoryId,
+  );
+  assertCanonicalCodexRotatingProviderId({
+    providerInstanceId: input.providerInstanceId,
+    githubRepositoryId: repository.githubRepositoryId,
+  });
   await dependencies.codexRotatingRuntimeGate?.assertCodexRotatingOAuthEnabled({
     repositoryFullName: repository.fullName,
   });
   const binding = await dependencies.codexRotatingOAuth.findProviderBinding({
     repository,
-    providerInstanceId: input.providerInstanceId,
+    providerInstanceId: canonicalProviderInstanceId,
     workflowSha: claims.workflow_sha,
     workflowSchemaVersion: input.workflowSchemaVersion,
   });
@@ -103,7 +112,7 @@ export async function preleaseCodexRotatingOAuth(
         workflowSha: claims.workflow_sha,
         workflowPath: binding.workflowPath,
         expectedActionOwnerRepo,
-        expectedProviderInstanceId: input.providerInstanceId,
+        expectedProviderInstanceId: canonicalProviderInstanceId,
         expectedWorkflowSchemaVersion: input.workflowSchemaVersion,
       },
     );
@@ -116,9 +125,17 @@ export async function preleaseCodexRotatingOAuth(
   validateCodexRotatingPrelease({
     claims,
     binding: verifiedWorkflow.binding,
-    requestedProviderInstanceId: input.providerInstanceId,
+    requestedProviderInstanceId: canonicalProviderInstanceId,
     requestedWorkflowSchemaVersion: input.workflowSchemaVersion,
     now: dependencies.clock.now(),
+  });
+  assertCanonicalCodexRotatingProviderId({
+    providerInstanceId: verifiedWorkflow.binding.providerInstanceId,
+    githubRepositoryId: repository.githubRepositoryId,
+  });
+  await dependencies.codexRotatingOAuth.ensureVerifiedProviderBinding({
+    repository,
+    binding: verifiedWorkflow.binding,
   });
   const pullRequestNumber = await resolvePullRequestNumber({
     claims,
@@ -154,7 +171,7 @@ export async function preleaseCodexRotatingOAuth(
   });
   const lease = await dependencies.codexRotatingOAuth.acquirePrelease({
     repository,
-    providerInstanceId: input.providerInstanceId,
+    providerInstanceId: canonicalProviderInstanceId,
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
     ...(pullRequestNumber ? { pullRequestNumber } : {}),
@@ -166,7 +183,7 @@ export async function preleaseCodexRotatingOAuth(
   return {
     protocolVersion: 1,
     leaseId: lease.leaseId,
-    providerInstanceId: input.providerInstanceId,
+    providerInstanceId: canonicalProviderInstanceId,
     repository: repository.fullName,
     generationHashSalt: lease.generationHashSalt,
     currentGeneration: lease.currentGeneration,

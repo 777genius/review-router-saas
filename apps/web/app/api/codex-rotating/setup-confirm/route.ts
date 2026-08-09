@@ -23,9 +23,21 @@ export async function POST(
       headers: { "Cache-Control": "no-store" },
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown_error";
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "unknown_error" },
-      { status: 400, headers: { "Cache-Control": "no-store" } },
+      { error: message },
+      {
+        status: isSafeSetupConflict(message) ? 409 : 400,
+        headers: { "Cache-Control": "no-store" },
+      },
     );
   }
+}
+
+function isSafeSetupConflict(message: string): boolean {
+  return (
+    message === "codex_rotating_setup_manifest_reused" ||
+    message === "codex_rotating_setup_confirmation_stale_epoch" ||
+    message === "codex_rotating_mutation_fence_conflict"
+  );
 }

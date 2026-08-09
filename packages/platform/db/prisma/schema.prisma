@@ -326,6 +326,9 @@ model CodexOAuthProviderInstance {
   accountFingerprintSalt String
   activeLeaseId          String?
   activeLeaseExpiresAt   DateTime?
+  mutationEpoch          BigInt    @default(0)
+  mutationOwner          String?
+  mutationOwnerId        String?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
@@ -358,6 +361,7 @@ model CodexOAuthSetupManifest {
   lastFetchedAt         DateTime?
   consumedAt            DateTime?
   confirmationJson      Json?
+  mutationEpoch         BigInt?
 
   workspace        Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repository       RepositoryConnection       @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
@@ -387,6 +391,7 @@ model CodexOAuthLease {
   createdAt               DateTime  @default(now())
   finalizedAt             DateTime?
   completedAt             DateTime?
+  mutationEpoch           BigInt?
 
   providerInstance CodexOAuthProviderInstance  @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
   workspace        Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -414,6 +419,7 @@ model CodexOAuthWritebackIntent {
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
   completedAt            DateTime?
+  mutationEpoch          BigInt?
 
   providerInstance CodexOAuthProviderInstance @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
   lease            CodexOAuthLease            @relation(fields: [leaseId], references: [id], onDelete: Cascade)

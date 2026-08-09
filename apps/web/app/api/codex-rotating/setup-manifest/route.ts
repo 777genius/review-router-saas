@@ -27,9 +27,16 @@ export async function GET(
       headers: { "Cache-Control": "no-store" },
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown_error";
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "unknown_error" },
-      { status: 404, headers: { "Cache-Control": "no-store" } },
+      { error: message },
+      {
+        status:
+          message.includes("reused") || message.includes("stale_epoch")
+            ? 409
+            : 404,
+        headers: { "Cache-Control": "no-store" },
+      },
     );
   }
 }

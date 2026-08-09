@@ -5,6 +5,7 @@ import {
   createPrismaClient,
   type PrismaClient,
 } from "@reviewrouter/platform-db";
+import { PrismaCodexRotatingOAuthRepository } from "../../../../packages/features/action-control-plane/src/infrastructure/prisma/prisma-codex-rotating-oauth-repository";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   CodexRotatingSetupManifestStatus,
@@ -50,6 +51,8 @@ describeDatabase("Codex rotating setup serialization", () => {
   const suffix = randomUUID();
   const workspaceId = `codex-setup-workspace-${suffix}`;
   const repositoryId = `codex-setup-repository-${suffix}`;
+  const installationId = `codex-setup-installation-${suffix}`;
+  const githubInstallationId = BigInt(`${Date.now()}991`);
   const githubRepositoryId = `${Date.now()}${Math.floor(Math.random() * 1_000)}`;
   const repositoryFullName = "777genius/review-router-saas-e2e";
   const installer = {
@@ -71,6 +74,16 @@ describeDatabase("Codex rotating setup serialization", () => {
         name: "Codex setup serialization test",
       },
     });
+    await prisma.gitHubInstallation.create({
+      data: {
+        id: installationId,
+        workspaceId,
+        githubInstallationId,
+        accountLogin: "777genius",
+        accountType: "Organization",
+        repositorySelection: "selected",
+      },
+    });
     await prisma.repositoryConnection.create({
       data: {
         id: repositoryId,
@@ -78,6 +91,7 @@ describeDatabase("Codex rotating setup serialization", () => {
         provider: "github",
         externalRepositoryId: githubRepositoryId,
         githubRepositoryId: BigInt(githubRepositoryId),
+        installationId,
         owner: "777genius",
         name: "review-router-saas-e2e",
         fullName: repositoryFullName,
@@ -92,6 +106,243 @@ describeDatabase("Codex rotating setup serialization", () => {
     await prisma.workspace.deleteMany({ where: { id: workspaceId } });
     await Promise.all(concurrentPrisma.map((client) => client.$disconnect()));
     await prisma.$disconnect();
+  });
+
+  it("serializes separate-client runtime races and setup versus runtime ownership", async () => {
+    const raceRepositoryId = `codex-fence-repository-${randomUUID()}`;
+    const raceGithubRepositoryId = `${Date.now()}${Math.floor(Math.random() * 1_000)}`;
+    const fullName = "777genius/review-router-provider-fence";
+    await prisma.repositoryConnection.create({
+      data: {
+        id: raceRepositoryId,
+        workspaceId,
+        provider: "github",
+        externalRepositoryId: raceGithubRepositoryId,
+        githubRepositoryId: BigInt(raceGithubRepositoryId),
+        installationId,
+        owner: "777genius",
+        name: "review-router-provider-fence",
+        fullName,
+        defaultBranch: "main",
+        visibility: "private",
+      },
+    });
+    const context = {
+      workspaceId,
+      repositoryId: raceRepositoryId,
+      githubRepositoryId: raceGithubRepositoryId,
+      githubInstallationId: githubInstallationId.toString(),
+      fullName,
+      owner: "777genius",
+      selected: true,
+      installationStatus: "active" as const,
+    };
+    const providerInstanceId = `codex-rotating:${raceGithubRepositoryId}`;
+    const createRepository = (client: PrismaClient) =>
+      new PrismaCodexRotatingOAuthRepository(client, {
+        actionOwnerRepo: "777genius/review-router",
+      });
+    const firstRepository = createRepository(concurrentPrisma[0]);
+    const secondRepository = createRepository(concurrentPrisma[1]);
+
+    try {
+      await firstRepository.ensureVerifiedProviderBinding({
+        repository: context,
+        binding: {
+          providerInstanceId,
+          repositoryFullName: fullName,
+          githubRepositoryId: raceGithubRepositoryId,
+          actionRef: `777genius/review-router@${"a".repeat(40)}`,
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+          workflowSchemaVersion: 2,
+        },
+      });
+      const legacyIdentityRace = await Promise.allSettled([
+        prisma.$executeRawUnsafe(
+          'UPDATE "CodexOAuthProviderInstance" SET "providerInstanceId" = $1 WHERE "providerInstanceId" = $2',
+          "codex-rotating:999999999",
+          providerInstanceId,
+        ),
+        secondRepository.ensureVerifiedProviderBinding({
+          repository: context,
+          binding: {
+            providerInstanceId,
+            repositoryFullName: fullName,
+            githubRepositoryId: raceGithubRepositoryId,
+            actionRef: `777genius/review-router@${"c".repeat(40)}`,
+            workflowPath: ".github/workflows/reviewrouter-codex.yml",
+            workflowSchemaVersion: 2,
+          },
+        }),
+      ]);
+      expect(legacyIdentityRace[0]!.status).toBe("rejected");
+      expect(legacyIdentityRace[1]!.status).toBe("fulfilled");
+
+      const runtimeNow = new Date("2026-06-01T12:00:00.000Z");
+      const runtimeRace = await Promise.all([
+        firstRepository.acquirePrelease({
+          repository: context,
+          providerInstanceId,
+          githubRunId: "runtime-race-a",
+          githubRunAttempt: "1",
+          now: runtimeNow,
+        }),
+        secondRepository.acquirePrelease({
+          repository: context,
+          providerInstanceId,
+          githubRunId: "runtime-race-b",
+          githubRunAttempt: "1",
+          now: runtimeNow,
+        }),
+      ]);
+      expect(runtimeRace.map((result) => result.status).sort()).toEqual([
+        "conflict",
+        "preleased",
+      ]);
+      const runtimeWinner = runtimeRace.find(
+        (result) => result.status === "preleased",
+      )!;
+      const finalized = await firstRepository.finalizeLease({
+        leaseId: runtimeWinner.leaseId,
+        providerInstanceId,
+        restoredGenerationHash: "restored-generation-hash",
+        now: runtimeNow,
+      });
+      await firstRepository.preflightWriteback({
+        leaseId: runtimeWinner.leaseId,
+        providerInstanceId,
+        githubKeyId: "github-key",
+        now: runtimeNow,
+      });
+      await firstRepository.prepareEncryptedWriteback({
+        request: {
+          protocolVersion: 1,
+          leaseId: runtimeWinner.leaseId,
+          providerInstanceId,
+          generation: finalized.nextGeneration,
+          latestGenerationHash: "latest-generation-hash-value-0123456789",
+          encryptedValue: Buffer.from("ciphertext").toString("base64"),
+          keyId: "github-key",
+          idempotencyKey: "pending-after-expiry",
+        },
+        encryptedPayloadDigest: "encrypted-payload-digest",
+        now: runtimeNow,
+      });
+      await expect(
+        issueCodexRotatingSetupCommand({
+          prisma: concurrentPrisma[0],
+          workspaceId,
+          repositoryId: raceRepositoryId,
+          repositoryFullName: fullName,
+          githubRepositoryId: raceGithubRepositoryId,
+          installer,
+          setupManifestUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+          setupConfirmUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+          now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
+        }),
+      ).rejects.toThrow("codex_rotating_mutation_fence_conflict");
+
+      await prisma.codexOAuthLease.deleteMany({
+        where: { repositoryId: raceRepositoryId },
+      });
+      await prisma.codexOAuthProviderInstance.update({
+        where: { providerInstanceId },
+        data: {
+          state: "setup_pending",
+          activeLeaseId: null,
+          activeLeaseExpiresAt: null,
+          mutationEpoch: { increment: 1 },
+          mutationOwner: "recovery",
+          mutationOwnerId: "test-reset",
+        },
+      });
+      await prisma.codexOAuthProviderInstance.delete({
+        where: { providerInstanceId },
+      });
+      await firstRepository.ensureVerifiedProviderBinding({
+        repository: context,
+        binding: {
+          providerInstanceId,
+          repositoryFullName: fullName,
+          githubRepositoryId: raceGithubRepositoryId,
+          actionRef: `777genius/review-router@${"b".repeat(40)}`,
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+          workflowSchemaVersion: 2,
+        },
+      });
+
+      const setupRuntimeRace = await Promise.allSettled([
+        issueCodexRotatingSetupCommand({
+          prisma: concurrentPrisma[0],
+          workspaceId,
+          repositoryId: raceRepositoryId,
+          repositoryFullName: fullName,
+          githubRepositoryId: raceGithubRepositoryId,
+          installer,
+          setupManifestUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+          setupConfirmUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+        }),
+        secondRepository.acquirePrelease({
+          repository: context,
+          providerInstanceId,
+          githubRunId: "setup-runtime-race",
+          githubRunAttempt: "1",
+          now: new Date(),
+        }),
+      ]);
+      expect(
+        setupRuntimeRace.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
+
+      await prisma.codexOAuthProviderInstance.deleteMany({
+        where: { repositoryId: raceRepositoryId },
+      });
+      const fetchedAt = new Date("2026-06-02T12:00:00.000Z");
+      const fetchedSetup = await issueCodexRotatingSetupCommand({
+        prisma: concurrentPrisma[0],
+        workspaceId,
+        repositoryId: raceRepositoryId,
+        repositoryFullName: fullName,
+        githubRepositoryId: raceGithubRepositoryId,
+        installer,
+        setupManifestUrl:
+          "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+        setupConfirmUrl:
+          "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+        now: fetchedAt,
+      });
+      const fetchedManifest =
+        await prisma.codexOAuthSetupManifest.findFirstOrThrow({
+          where: { providerInstanceId: fetchedSetup.providerInstanceId },
+          select: { setupNonce: true },
+        });
+      await withRotatingRepositoryAllowed(
+        () =>
+          resolveCodexRotatingSetupManifestForNonce({
+            prisma: concurrentPrisma[0],
+            setupNonce: fetchedManifest.setupNonce,
+            now: new Date(fetchedAt.getTime() + 1_000),
+          }),
+        fullName,
+      );
+      await expect(
+        secondRepository.acquirePrelease({
+          repository: context,
+          providerInstanceId,
+          githubRunId: "runtime-after-fetched-expiry",
+          githubRunAttempt: "1",
+          now: new Date(fetchedAt.getTime() + 60 * 60 * 1000),
+        }),
+      ).rejects.toThrow("codex_rotating_mutation_fence_conflict");
+    } finally {
+      await prisma.repositoryConnection.delete({
+        where: { id: raceRepositoryId },
+      });
+    }
   });
 
   it("reuses one issued manifest, fences fetched setup, and advances only confirmed generations", async () => {
@@ -354,13 +605,14 @@ function confirmation(
 
 async function withRotatingRepositoryAllowed<T>(
   run: () => Promise<T>,
+  allowedRepository = "777genius/review-router-saas-e2e",
 ): Promise<T> {
   const previousEnabled = process.env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH;
   const previousAllowlist =
     process.env.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES;
   process.env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH = "1";
   process.env.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES =
-    "777genius/review-router-saas-e2e";
+    allowedRepository;
   try {
     return await run();
   } finally {

@@ -1,4 +1,5 @@
 import {
+  assertCanonicalCodexRotatingProviderId,
   type CodexRotatingProviderState,
   codexRotatingCanonicalT0WorkflowSchemaVersions,
   codexRotatingSecretName,
@@ -28,6 +29,9 @@ type ProviderRecord = {
   readonly repository?: ActionRepositoryContext;
   readonly activeLeaseId?: string;
   readonly preflightKeyId?: string;
+  readonly mutationEpoch: bigint;
+  readonly mutationOwner?: "runtime" | "setup" | "recovery";
+  readonly mutationOwnerId?: string;
 };
 
 type WritebackRecord = {
@@ -62,6 +66,7 @@ export class InMemoryCodexRotatingOAuthRepository
   private readonly providers = new Map<string, ProviderRecord>();
   private readonly writebacks = new Map<string, WritebackRecord>();
   private readonly leaseExpiresAtById = new Map<string, Date>();
+  private readonly leaseEpochById = new Map<string, bigint>();
   private readonly leaseSourceById = new Map<
     string,
     {
@@ -81,6 +86,7 @@ export class InMemoryCodexRotatingOAuthRepository
         latestGeneration: 1,
         latestGenerationHash: null,
         state: "setup_pending",
+        mutationEpoch: 0n,
       });
     }
   }
@@ -100,16 +106,10 @@ export class InMemoryCodexRotatingOAuthRepository
     }
     const existing = this.providers.get(input.providerInstanceId);
     if (existing) {
-      const binding = {
+      return {
         ...existing.binding,
         workflowSchemaVersion: input.workflowSchemaVersion,
       };
-      this.providers.set(input.providerInstanceId, {
-        ...existing,
-        binding,
-        repository: input.repository,
-      });
-      return binding;
     }
 
     const binding: CodexRotatingProviderBinding = {
@@ -120,15 +120,52 @@ export class InMemoryCodexRotatingOAuthRepository
       workflowPath: ".github/workflows/reviewrouter-codex.yml",
       workflowSchemaVersion: input.workflowSchemaVersion,
     };
-    this.providers.set(input.providerInstanceId, {
-      binding,
+    return binding;
+  }
+
+  async ensureVerifiedProviderBinding(input: {
+    readonly repository: ActionRepositoryContext;
+    readonly binding: CodexRotatingProviderBinding;
+  }): Promise<void> {
+    if (
+      input.binding.githubRepositoryId !==
+        input.repository.githubRepositoryId ||
+      input.binding.repositoryFullName.toLowerCase() !==
+        input.repository.fullName.toLowerCase()
+    ) {
+      throw new Error("codex_rotating_provider_identity_mismatch");
+    }
+    assertCanonicalCodexRotatingProviderId({
+      providerInstanceId: input.binding.providerInstanceId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+    });
+    const existing = this.providers.get(input.binding.providerInstanceId);
+    if (existing) {
+      if (
+        existing.binding.githubRepositoryId !==
+          input.repository.githubRepositoryId ||
+        (existing.repository &&
+          (existing.repository.repositoryId !== input.repository.repositoryId ||
+            existing.repository.workspaceId !== input.repository.workspaceId))
+      ) {
+        throw new Error("codex_rotating_provider_identity_mismatch");
+      }
+      this.providers.set(input.binding.providerInstanceId, {
+        ...existing,
+        binding: input.binding,
+        repository: input.repository,
+      });
+      return;
+    }
+    this.providers.set(input.binding.providerInstanceId, {
+      binding: input.binding,
       generationHashSalt: testGenerationHashSalt,
       latestGeneration: 1,
       latestGenerationHash: null,
       state: "setup_pending",
       repository: input.repository,
+      mutationEpoch: 0n,
     });
-    return binding;
   }
 
   async acquirePrelease(input: {
@@ -146,6 +183,16 @@ export class InMemoryCodexRotatingOAuthRepository
       provider?.state === "permission_required"
     ) {
       throw new Error(`codex_rotating_provider_${provider.state}`);
+    }
+    if (
+      provider?.mutationOwner === "recovery" ||
+      [...this.writebacks.values()].some(
+        (record) =>
+          record.request.providerInstanceId === input.providerInstanceId &&
+          record.status === "pending",
+      )
+    ) {
+      throw new Error("codex_rotating_mutation_fence_conflict");
     }
     const lease = this.leases.acquire({
       providerInstanceId: input.providerInstanceId,
@@ -167,10 +214,16 @@ export class InMemoryCodexRotatingOAuthRepository
       });
     }
     if (provider && lease.status !== "conflict") {
+      const mutationEpoch =
+        this.leaseEpochById.get(lease.leaseId) ?? provider.mutationEpoch + 1n;
+      this.leaseEpochById.set(lease.leaseId, mutationEpoch);
       this.providers.set(input.providerInstanceId, {
         ...provider,
         repository: input.repository,
         activeLeaseId: lease.leaseId,
+        mutationEpoch,
+        mutationOwner: "runtime",
+        mutationOwnerId: lease.leaseId,
       });
     }
     const latest = this.providers.get(input.providerInstanceId) ?? provider;
@@ -179,6 +232,7 @@ export class InMemoryCodexRotatingOAuthRepository
       repository: input.repository,
       generationHashSalt: latest?.generationHashSalt ?? testGenerationHashSalt,
       currentGeneration: latest?.latestGeneration ?? 1,
+      mutationEpoch: latest?.mutationEpoch ?? 1n,
       ...(latest?.latestGenerationHash
         ? { currentGenerationHash: latest.latestGenerationHash }
         : {}),
@@ -197,8 +251,23 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly status: "finalized" | "stale_queued_secret";
   }> {
     const provider = this.providers.get(input.providerInstanceId);
+    if (
+      !provider ||
+      provider.mutationOwner !== "runtime" ||
+      provider.mutationOwnerId !== input.leaseId ||
+      this.leaseEpochById.get(input.leaseId) !== provider.mutationEpoch
+    ) {
+      throw new Error("codex_rotating_lease_not_active");
+    }
     if (provider?.latestGenerationHash) {
       if (provider.latestGenerationHash !== input.restoredGenerationHash) {
+        this.providers.set(input.providerInstanceId, {
+          ...provider,
+          state: "stale_queued_secret",
+          mutationEpoch: provider.mutationEpoch + 1n,
+          mutationOwner: "recovery",
+          mutationOwnerId: input.leaseId,
+        });
         const response = {
           leaseId: input.leaseId,
           nextGeneration: provider.latestGeneration + 1,
@@ -248,6 +317,9 @@ export class InMemoryCodexRotatingOAuthRepository
       latestGeneration: provider.latestGeneration,
       latestGenerationHash: provider.latestGenerationHash,
       state: input.reason,
+      mutationEpoch: provider.mutationEpoch + 1n,
+      mutationOwner: "recovery",
+      mutationOwnerId: input.leaseId,
       ...(provider.repository ? { repository: provider.repository } : {}),
     });
     this.leaseExpiresAtById.set(input.leaseId, input.now);
@@ -279,7 +351,13 @@ export class InMemoryCodexRotatingOAuthRepository
       }
   > {
     const provider = this.providers.get(input.providerInstanceId);
-    if (!provider?.repository || provider.activeLeaseId !== input.leaseId) {
+    if (
+      !provider?.repository ||
+      provider.activeLeaseId !== input.leaseId ||
+      provider.mutationOwner !== "runtime" ||
+      provider.mutationOwnerId !== input.leaseId ||
+      this.leaseEpochById.get(input.leaseId) !== provider.mutationEpoch
+    ) {
       return { status: "lease_not_active" };
     }
     this.providers.set(input.providerInstanceId, {
@@ -341,6 +419,10 @@ export class InMemoryCodexRotatingOAuthRepository
     if (
       !provider?.repository ||
       provider.activeLeaseId !== input.request.leaseId ||
+      provider.mutationOwner !== "runtime" ||
+      provider.mutationOwnerId !== input.request.leaseId ||
+      this.leaseEpochById.get(input.request.leaseId) !==
+        provider.mutationEpoch ||
       provider.preflightKeyId !== input.request.keyId
     ) {
       throw new Error("codex_rotating_lease_not_active");
@@ -491,7 +573,7 @@ export class InMemoryCodexRotatingOAuthRepository
   async confirmEncryptedWriteback(input: {
     readonly intentId: string;
     readonly now: Date;
-  }): Promise<void> {
+  }) {
     const recordEntry = [...this.writebacks.entries()].find(
       ([, record]) => record.intentId === input.intentId,
     );
@@ -499,6 +581,36 @@ export class InMemoryCodexRotatingOAuthRepository
       throw new Error("codex_rotating_writeback_intent_not_found");
     }
     const [key, record] = recordEntry;
+    if (record.status === "completed") {
+      return {
+        status: "idempotent" as const,
+        generation: record.request.generation,
+      };
+    }
+    const fencedProvider = this.providers.get(
+      record.request.providerInstanceId,
+    );
+    if (
+      !fencedProvider ||
+      fencedProvider.mutationOwner !== "runtime" ||
+      fencedProvider.mutationOwnerId !== record.request.leaseId ||
+      this.leaseEpochById.get(record.request.leaseId) !==
+        fencedProvider.mutationEpoch
+    ) {
+      if (fencedProvider) {
+        this.providers.set(record.request.providerInstanceId, {
+          ...fencedProvider,
+          state: "unknown_auth_state",
+          mutationEpoch: fencedProvider.mutationEpoch + 1n,
+          mutationOwner: "recovery",
+          mutationOwnerId: record.intentId,
+        });
+      }
+      return {
+        status: "recovery_required" as const,
+        reason: "owner_mismatch" as const,
+      };
+    }
     this.writebacks.set(key, {
       ...record,
       status: "completed",
@@ -512,10 +624,15 @@ export class InMemoryCodexRotatingOAuthRepository
         latestGeneration: record.request.generation,
         latestGenerationHash: record.request.latestGenerationHash,
         state: "active",
+        mutationEpoch: provider.mutationEpoch,
         ...(provider.repository ? { repository: provider.repository } : {}),
       });
     }
     this.leases.complete({ leaseId: record.request.leaseId, now: input.now });
+    return {
+      status: "confirmed" as const,
+      generation: record.request.generation,
+    };
   }
 
   async markEncryptedWritebackFailed(input: {
@@ -541,6 +658,9 @@ export class InMemoryCodexRotatingOAuthRepository
           ? { preflightKeyId: provider.preflightKeyId }
           : {}),
         state: "unknown_auth_state",
+        mutationEpoch: provider.mutationEpoch + 1n,
+        mutationOwner: "recovery",
+        mutationOwnerId: record.intentId,
       });
     }
   }
@@ -548,6 +668,7 @@ export class InMemoryCodexRotatingOAuthRepository
 
 function toWriteTarget(repository: ActionRepositoryContext) {
   return {
+    expectedProviderInstanceId: `codex-rotating:${repository.githubRepositoryId}`,
     githubInstallationId: repository.githubInstallationId,
     githubRepositoryId: repository.githubRepositoryId,
     repositoryFullName: repository.fullName,

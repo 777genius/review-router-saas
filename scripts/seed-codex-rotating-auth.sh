@@ -270,7 +270,7 @@ const required = [
 for (const key of required) {
   if (!(key in manifest)) fail(`setup manifest missing ${key}`);
 }
-if (manifest.protocolVersion !== 1) fail("setup manifest protocol version is unsupported");
+if (manifest.protocolVersion !== 1 && manifest.protocolVersion !== 2) fail("setup manifest protocol version is unsupported");
 if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(manifest.repositoryFullName)) fail("setup manifest repository is invalid");
 if (expectedRepo && manifest.repositoryFullName !== expectedRepo) fail("setup manifest repository does not match --repo");
 if (expectedProviderInstanceId && manifest.providerInstanceId !== expectedProviderInstanceId) fail("setup manifest provider does not match installer command");
@@ -869,7 +869,8 @@ confirm_setup_success() {
   setup_nonce="$(manifest_value setupNonce)"
   size_bucket="$(auth_size_bucket "$AUTH_BYTE_LENGTH")"
   SETUP_CONFIRM_PAYLOAD_FILE="$(mktemp)"
-  node - "$SETUP_CONFIRM_PAYLOAD_FILE" "$repository_id" "$provider_instance_id" "$setup_nonce" "$SECRET_NAME" "$AUTH_GENERATION_HASH" "$AUTH_ACCOUNT_FINGERPRINT" "$size_bucket" "$INSTALLER_VERSION" <<'NODE'
+  setup_protocol_version="$(manifest_value protocolVersion)"
+  node - "$SETUP_CONFIRM_PAYLOAD_FILE" "$repository_id" "$provider_instance_id" "$setup_nonce" "$SECRET_NAME" "$AUTH_GENERATION_HASH" "$AUTH_ACCOUNT_FINGERPRINT" "$size_bucket" "$INSTALLER_VERSION" "$setup_protocol_version" <<'NODE'
 const fs = require("node:fs");
 const [
   path,
@@ -881,11 +882,12 @@ const [
   accountFingerprint,
   authByteSizeBucket,
   installerVersion,
+  protocolVersion,
 ] = process.argv.slice(2);
 fs.writeFileSync(
   path,
   JSON.stringify({
-    protocolVersion: 1,
+    protocolVersion: Number(protocolVersion),
     repositoryId,
     providerInstanceId,
     setupNonce,

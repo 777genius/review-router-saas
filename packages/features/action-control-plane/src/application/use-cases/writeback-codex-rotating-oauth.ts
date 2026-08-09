@@ -56,9 +56,23 @@ export async function writebackCodexRotatingOAuth(
     return { protocolVersion: 1, status: "github_put_failed" };
   }
 
-  await dependencies.codexRotatingOAuth.confirmEncryptedWriteback({
-    intentId: prepared.intentId,
-    now: dependencies.clock.now(),
-  });
+  let confirmation;
+  try {
+    confirmation =
+      await dependencies.codexRotatingOAuth.confirmEncryptedWriteback({
+        intentId: prepared.intentId,
+        now: dependencies.clock.now(),
+      });
+  } catch {
+    await dependencies.codexRotatingOAuth.markEncryptedWritebackFailed({
+      intentId: prepared.intentId,
+      safeErrorCode: "writeback_confirmation_ambiguous",
+      now: dependencies.clock.now(),
+    });
+    return { protocolVersion: 1, status: "github_put_failed" };
+  }
+  if (confirmation.status === "recovery_required") {
+    return { protocolVersion: 1, status: "github_put_failed" };
+  }
   return { protocolVersion: 1, status: "accepted" };
 }

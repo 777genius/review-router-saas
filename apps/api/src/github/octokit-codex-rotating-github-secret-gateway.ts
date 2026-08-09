@@ -2,6 +2,8 @@ import { App } from "@octokit/app";
 import { request as githubRequest } from "@octokit/request";
 import { createHash } from "node:crypto";
 import {
+  assertCanonicalCodexRotatingProviderId,
+  canonicalCodexRotatingProviderId,
   areWorkflowDocumentsSemanticallyEqual,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
   readCodexRotatingWorkflowSourceMetadata,
@@ -169,6 +171,12 @@ export class OctokitCodexRotatingGitHubSecretGateway
   async assertCanWriteRepositorySecret(
     input: CodexRotatingSecretWriteTarget,
   ): Promise<{ readonly status: "ready" }> {
+    assertCanonicalCodexRotatingProviderId({
+      providerInstanceId:
+        input.expectedProviderInstanceId ??
+        canonicalCodexRotatingProviderId(input.githubRepositoryId),
+      githubRepositoryId: input.githubRepositoryId,
+    });
     await this.mintRepositorySecretsToken({
       githubInstallationId: input.githubInstallationId,
       githubRepositoryId: input.githubRepositoryId,
@@ -210,6 +218,12 @@ export class OctokitCodexRotatingGitHubSecretGateway
     readonly status: "accepted";
     readonly statusCode: 201 | 204;
   }> {
+    assertCanonicalCodexRotatingProviderId({
+      providerInstanceId:
+        input.expectedProviderInstanceId ??
+        canonicalCodexRotatingProviderId(input.githubRepositoryId),
+      githubRepositoryId: input.githubRepositoryId,
+    });
     const token = await this.mintRepositorySecretsToken({
       githubInstallationId: input.githubInstallationId,
       githubRepositoryId: input.githubRepositoryId,
@@ -248,6 +262,10 @@ export class OctokitCodexRotatingGitHubSecretGateway
     readonly expectedProviderInstanceId: string;
     readonly expectedWorkflowSchemaVersion: number;
   }) {
+    assertCanonicalCodexRotatingProviderId({
+      providerInstanceId: input.expectedProviderInstanceId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+    });
     const token = await this.mintRepositoryToken({
       githubInstallationId: input.repository.githubInstallationId,
       githubRepositoryId: input.repository.githubRepositoryId,
