@@ -893,8 +893,6 @@ function rotatingSetupCommandErrorText(error: string): string {
       return "The previous setup was fetched, so the GitHub secret may already have changed. It will stay blocked until an authorized repository operator explicitly recovers it.";
     case "codex_rotating_identity_quarantined":
       return "This provider identity is quarantined. An operator must inspect and repair the repository/provider binding; recovery will not rewrite the immutable identity.";
-    case "codex_rotating_setup_issuance_quiesced":
-      return "New Codex setup commands are temporarily paused by an operator. Existing exact confirmations remain accepted; retry after issuance resumes.";
     case "codex_rotating_mutation_fence_conflict":
       return "A runtime credential mutation is still fenced for this repository. Wait for it to finish or use the documented recovery path if its outcome is unknown.";
     case "codex_rotating_setup_lock_failed":
