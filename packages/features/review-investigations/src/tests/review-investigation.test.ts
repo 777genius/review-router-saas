@@ -193,6 +193,22 @@ describe("review investigation in-memory vertical slice", () => {
     );
   });
 
+  it("rejects accepted transient evidence when turn provenance is absent", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(
+      openCommand("transient-evidence-without-provenance"),
+    );
+    const planned = await planDiscovery(harness, opened);
+
+    await expect(
+      harness.commit.execute({
+        ...emptyCommit(planned, "commit-transient-evidence-without-provenance"),
+        acceptedEvidenceReceiptIds: ["d".repeat(64)],
+        provenance: null,
+      }),
+    ).rejects.toThrow("turn_provenance_invalid");
+  });
+
   it("keeps runner inventory provisional until the first authenticated witness", async () => {
     const harness = createHarness();
     const opened = await harness.open.execute({

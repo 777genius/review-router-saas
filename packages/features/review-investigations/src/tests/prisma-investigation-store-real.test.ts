@@ -355,7 +355,7 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
     }
   });
 
-  it("round-trips findings backed only by accepted gateway operation receipts", async () => {
+  it("round-trips future operation receipt bindings through the compatibility reader", async () => {
     const suffix = `finding-operation-receipt-${randomUUID()}`;
     const seed = await withCoverageProfileV4(
       createInvestigationStoreContractSeed(suffix),
