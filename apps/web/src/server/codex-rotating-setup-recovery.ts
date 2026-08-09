@@ -20,7 +20,7 @@ export async function recoverAndIssueCodexRotatingSetup(input: {
   readonly acknowledgement: string;
 }) {
   assertCodexRotatingSetupRepository(input.repository);
-  if (process.env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED === "0") {
+  if (process.env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED !== "1") {
     throw new Error("codex_rotating_setup_issuance_quiesced");
   }
   const recovery = await recoverCodexRotatingSetup(

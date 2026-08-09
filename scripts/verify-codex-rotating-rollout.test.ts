@@ -39,9 +39,14 @@ describe("observation-backed Codex rotating rollout verifier", () => {
 
   it("rejects a fully invented v2 bundle even when its artifact byte digests match", () => {
     const artifacts = Object.fromEntries(
-      ["database", "deployments", "compatibilityProbe", "events"].map(
-        (name) => [name, { succeeded: true, passed: true }],
-      ),
+      [
+        "database",
+        "deployments",
+        "compatibilityProbe",
+        "events",
+        "canaryRuntime",
+        "workflowRuns",
+      ].map((name) => [name, { succeeded: true, passed: true }]),
     );
     const evidence: any = { version: 2, artifacts: {} };
     for (const [name, value] of Object.entries(artifacts)) {
@@ -73,7 +78,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
     expect(result.ok).toBe(false);
     expect(result.failures).toEqual(
       expect.arrayContaining([
-        "database observation version is invalid",
+        "database observation must come from the actual production writer",
         "deployments must be captured from the Render API",
         "compatibility probe did not execute successfully",
         "events artifact source is invalid",
@@ -138,6 +143,93 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       }),
     ).toBe(1);
   });
+
+  it.each([
+    [
+      "canary with one flag off",
+      (fixture: any) => {
+        fixture.artifacts.canaryRuntime.flags.newWorkAdmission = "0";
+      },
+      "canary runtime did not observe all cutover flags enabled",
+    ],
+    [
+      "canary with setup issuance off",
+      (fixture: any) => {
+        fixture.artifacts.canaryRuntime.flags.setupIssuance = "0";
+      },
+      "canary runtime did not observe all cutover flags enabled",
+    ],
+    [
+      "canary allowlist wider than one target",
+      (fixture: any) => {
+        fixture.artifacts.canaryRuntime.approvedRepositories.push(
+          "reviewrouter/other",
+        );
+      },
+      "canary runtime was not restricted to exactly one disposable target",
+    ],
+    [
+      "allowlist deletion before flags close",
+      (fixture: any) => {
+        const entry = fixture.artifacts.events.events.find(
+          (candidate: any) => candidate.type === "canary_allowlist_deleted",
+        );
+        entry.runtimeFlag = "1";
+      },
+      "clearing the canary allowlist while admission is on is prohibited",
+    ],
+    [
+      "empty widening cohort",
+      (fixture: any) => {
+        const entry = fixture.artifacts.events.events.find(
+          (candidate: any) => candidate.type === "widening_approved",
+        );
+        entry.approvedRepositories = [];
+      },
+      "widening requires a nonempty explicit approved cohort",
+    ],
+    [
+      "new workflow arrival",
+      (fixture: any) => {
+        fixture.artifacts.workflowRuns.observations[1].runs.push({
+          runId: "101",
+          status: "queued",
+          workflowSchemaVersion: 2,
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+          headSha: "6".repeat(40),
+        });
+      },
+      "new queued/in-progress v1/v2 work arrived between observations",
+    ],
+    [
+      "non-production database artifact",
+      (fixture: any) => {
+        fixture.artifacts.database.rehearsal = true;
+      },
+      "database observation must come from the actual production writer",
+    ],
+    [
+      "operator-authored database artifact generator",
+      (fixture: any) => {
+        fixture.evidence.artifacts.database.sourceFile =
+          "scripts/check-codex-rotating-migration-rehearsal.mjs";
+      },
+      "production database capture executable source digest mismatched",
+    ],
+    [
+      "unidentified database caller",
+      (fixture: any) => {
+        fixture.artifacts.database.callerIdentity.applicationName = "psql";
+      },
+      "production migration caller identity is not one immutable release caller",
+    ],
+  ])("rejects terminal transition: %s", (_name, mutate, expected) => {
+    const fixture = observedFixture();
+    mutate(fixture);
+    expect(
+      verifyCodexRotatingRollout(fixture.evidence, fixture.options).failures,
+    ).toContain(expected);
+  });
 });
 
 function observedFixture(): any {
@@ -148,6 +240,39 @@ function observedFixture(): any {
   const artifacts: any = {
     database: {
       observationVersion: 2,
+      source: "production-postgresql-writer",
+      captureKind: "database-query",
+      rehearsal: false,
+      databaseIdentity: {
+        currentDatabase: "review_router",
+        serverAddress: "10.0.0.10:5432",
+        systemIdentifier: "7612345678901234567",
+      },
+      callerIdentity: {
+        id: "release-migration",
+        kind: "immutable-release-migration",
+        commit,
+        imageDigest,
+        databaseRole: "reviewrouter_release",
+        sessionUser: "reviewrouter_release",
+        applicationName: "reviewrouter-release-migration",
+      },
+      drainObservations: [
+        {
+          activeLeases: 0,
+          fetchedSetups: 0,
+          pendingIntents: 0,
+          writerInFlight: 0,
+          observedAt: "2026-08-09T00:03:10Z",
+        },
+        {
+          activeLeases: 0,
+          fetchedSetups: 0,
+          pendingIntents: 0,
+          writerInFlight: 0,
+          observedAt: "2026-08-09T00:03:40Z",
+        },
+      ],
       postgresVersion: "17.6",
       unsafeWork: {
         activeLeasesWithoutPositiveEpoch: 0,
@@ -364,6 +489,54 @@ function observedFixture(): any {
         ),
       })),
     },
+    canaryRuntime: {
+      observationVersion: 1,
+      source: "canary-runtime",
+      disposable: true,
+      repositoryFullName: "reviewrouter/disposable-canary",
+      approvedRepositories: ["reviewrouter/disposable-canary"],
+      flags: {
+        runtime: "1",
+        newWorkAdmission: "1",
+        setupIssuance: "1",
+      },
+      runtimeCommit: commit,
+      runtimeImageDigest: imageDigest,
+      installerV1Digest: `sha256:${"1".repeat(64)}`,
+      installerV2Digest: `sha256:${"2".repeat(64)}`,
+      workflowV2Digest: `sha256:${"3".repeat(64)}`,
+      runtimePublicationDigest: `sha256:${"4".repeat(64)}`,
+    },
+    workflowRuns: {
+      observationVersion: 1,
+      source: "github-actions-api",
+      observations: [
+        {
+          observedAt: "2026-08-09T00:03:05Z",
+          runs: [
+            {
+              runId: "100",
+              status: "queued",
+              workflowSchemaVersion: 1,
+              workflowPath: ".github/workflows/reviewrouter.yml",
+              headSha: "5".repeat(40),
+            },
+          ],
+        },
+        {
+          observedAt: "2026-08-09T00:03:35Z",
+          runs: [
+            {
+              runId: "100",
+              status: "in_progress",
+              workflowSchemaVersion: 1,
+              workflowPath: ".github/workflows/reviewrouter.yml",
+              headSha: "5".repeat(40),
+            },
+          ],
+        },
+      ],
+    },
     events: {
       observationVersion: 1,
       source: "operator-command-log",
@@ -447,13 +620,45 @@ function observedFixture(): any {
           observedAt: "2026-08-09T00:08:00Z",
           scope: "single-disposable-repository",
           allowlistCount: 1,
+          runtimeFlag: "1",
+          newWorkAdmissionFlag: "1",
+          setupIssuanceFlag: "1",
         },
         {
           type: "canary_passed",
           observedAt: "2026-08-09T00:09:00Z",
           compatibilityArtifactSha256: "set-below",
+          runtimePublicationDigest: `sha256:${"4".repeat(64)}`,
         },
-        { type: "widening_approved", observedAt: "2026-08-09T00:10:00Z" },
+        {
+          type: "canary_admission_closed",
+          observedAt: "2026-08-09T00:09:10Z",
+          runtimeFlag: "0",
+          newWorkAdmissionFlag: "0",
+          setupIssuanceFlag: "0",
+          allowlistCount: 1,
+        },
+        {
+          type: "canary_allowlist_deleted",
+          observedAt: "2026-08-09T00:09:20Z",
+          runtimeFlag: "0",
+          newWorkAdmissionFlag: "0",
+          setupIssuanceFlag: "0",
+          allowlistCount: 0,
+        },
+        {
+          type: "widening_approved",
+          observedAt: "2026-08-09T00:10:00Z",
+          approvedRepositories: ["reviewrouter/approved-one"],
+        },
+        {
+          type: "widening_admission_opened",
+          observedAt: "2026-08-09T00:10:10Z",
+          runtimeFlag: "1",
+          newWorkAdmissionFlag: "1",
+          setupIssuanceFlag: "1",
+          allowlistCount: 1,
+        },
       ],
     },
   };
@@ -479,6 +684,11 @@ function observedFixture(): any {
     "apps/web/src/server/codex-rotating-dropped-response.real.test.ts";
   evidence.artifacts.compatibilityProbe.sourceFileSha256 = sourceDigest(
     evidence.artifacts.compatibilityProbe.sourceFile,
+  );
+  evidence.artifacts.database.sourceFile =
+    "scripts/capture-codex-rotating-production-writer.mjs";
+  evidence.artifacts.database.sourceFileSha256 = sourceDigest(
+    evidence.artifacts.database.sourceFile,
   );
   return {
     artifacts,

@@ -13,6 +13,8 @@ import {
   PrismaCodexRotatingOAuthRepository,
   registerActionControlPlaneRoutes,
   StaticActionRuntimeCompatibilityPolicy,
+  assertCodexRotatingNewWorkAdmitted,
+  normalizeApprovedRepositories,
   type RegisterActionControlPlaneRoutesDependencies,
 } from "@reviewrouter/features-action-control-plane";
 import {
@@ -463,6 +465,22 @@ export async function createApiApp(
                 ) {
                   throw new Error("codex_rotating_not_enabled");
                 }
+              },
+            },
+            codexRotatingNewWorkAdmission: {
+              assertAdmitted(input: { readonly repositoryFullName: string }) {
+                assertCodexRotatingNewWorkAdmitted({
+                  enabledValue:
+                    process.env
+                      .REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED,
+                  approvedRepositories: normalizeApprovedRepositories(
+                    parseCommaSeparatedEnv(
+                      process.env
+                        .REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES,
+                    ),
+                  ),
+                  repositoryFullName: input.repositoryFullName,
+                });
               },
             },
             ...(codexRotatingGitHubSecretGateway

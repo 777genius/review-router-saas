@@ -33,6 +33,9 @@ export type PreleaseCodexRotatingOAuthDependencies = {
   readonly replayNonces: ActionOidcReplayNonceStorePort;
   readonly hostedReviewPreleaseGate?: HostedReviewPreleaseGatePort;
   readonly reviewIntentAdmissionRequired?: boolean;
+  readonly codexRotatingNewWorkAdmission: {
+    assertAdmitted(input: { readonly repositoryFullName: string }): void;
+  };
   readonly clock: Clock;
 };
 
@@ -164,6 +167,11 @@ export async function preleaseCodexRotatingOAuth(
       throw new Error("review_request_intent_required");
     }
   }
+  const assertNewWorkAdmitted = () =>
+    dependencies.codexRotatingNewWorkAdmission.assertAdmitted({
+      repositoryFullName: repository.fullName,
+    });
+  assertNewWorkAdmitted();
   await consumeCodexRotatingOidcReplayNonce({
     claims,
     now: dependencies.clock.now(),
@@ -176,6 +184,9 @@ export async function preleaseCodexRotatingOAuth(
     githubRunAttempt: claims.run_attempt,
     ...(pullRequestNumber ? { pullRequestNumber } : {}),
     now: dependencies.clock.now(),
+    newWorkAdmissionBarrier: {
+      assertAdmitted: assertNewWorkAdmitted,
+    },
   });
   if (lease.status === "conflict") {
     throw new Error("codex_rotating_lease_conflict");

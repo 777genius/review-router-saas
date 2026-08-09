@@ -9,8 +9,10 @@ Never apply only one migration as a completed production rollout.
 
 Production starts with both
 `REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH=0` and
-`REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED=0`. Do not change either
-flag during build or migration verification.
+`REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED=0`, with
+`REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED=0`. Setup issuance accepts
+only the exact value `1`; missing, misspelled, and truthy alternatives remain
+closed. Do not change any flag during build or migration verification.
 
 ## Required offline proof
 
@@ -62,8 +64,12 @@ rolling mixed-version deploy is prohibited.
    until operators reopen issuance. Keep confirmation available temporarily so
    already-fetched commands can finish, and wait until the drain queries below
    are zero.
-4. Set `REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH=0` on API, web, and worker.
-   This is the all-mutation kill switch. Exact replay of an already-consumed
+4. Set `REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED=0` on API, web,
+   and worker. This independent fence blocks new preleases without disabling
+   confirmation. The final policy assertion occurs while the provider row is
+   locked in the lease-creation transaction, closing the check-to-lease race.
+   The writer-database `writerInFlight` count is the observable barrier. Then
+   keep `REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH=0` for convergence. Exact replay of an already-consumed
    confirmation remains acceptable; no new setup, lease, finalize, writeback,
    recovery, or non-consumed confirmation mutation is admitted. Re-run the
    drain queries and require zeros again. A fetched row never ages out of this
@@ -79,16 +85,34 @@ rolling mixed-version deploy is prohibited.
    final fence-aware commit and image digest. The minimum rollback floor after
    000061 is this final fence-aware commit. Database rollback is prohibited.
    **`e642d1ed` is not a safe application rollback after 000061.**
-7. While global admission is still off, configure an allowlist containing one
-   disposable canary repository. Verify the allowlist count is exactly one,
-   then deliberately open admission and issuance for that allowlisted scope.
+7. While runtime, new-work admission, and setup issuance are all still off,
+   configure an allowlist containing one disposable canary repository. Verify
+   the allowlist count is exactly one, then deliberately set all three flags to
+   exact `1` for that allowlisted scope.
    Prove v1 queued-workflow rejection/compatibility and v2 issuance/fetch/write/
-   confirmation/replay using the published artifacts, then remove the canary.
-   Only after the artifact-backed proof passes may operators widen the allowlist.
+   confirmation/replay using the published artifacts. Return all three flags to
+   `0` before deleting the canary allowlist. Only after the artifact-backed proof
+   passes may operators configure a nonempty explicitly approved widening
+   cohort and reopen both flags. Clearing the allowlist while either admission
+   flag is on is a terminal abort.
 
 The drain query must be executed on the writer database and captured as an
 artifact. Every count, including queued old workflows from the GitHub workflow
 inventory, must be zero:
+
+Run the checked-in capture executable from the one immutable release-migration
+runtime. The database connection must set
+`application_name=reviewrouter-release-migration`; loopback/rehearsal databases
+and missing exact commit/image bindings are rejected. Redirect stdout directly
+to the artifact file without editing it:
+
+```bash
+REVIEW_ROUTER_PRODUCTION_WRITER_OBSERVATION=1 \
+REVIEW_ROUTER_PRODUCTION_WRITER_DATABASE_URL="$PRODUCTION_WRITER_URL" \
+REVIEW_ROUTER_RELEASE_COMMIT_SHA="$EXACT_RELEASE_SHA" \
+REVIEW_ROUTER_RELEASE_IMAGE_DIGEST="$EXACT_RELEASE_IMAGE_DIGEST" \
+pnpm codex-rotating:production-writer-observation > production-writer.json
+```
 
 ```sql
 SELECT
@@ -97,7 +121,13 @@ SELECT
   (SELECT count(*) FROM "CodexOAuthSetupManifest"
     WHERE "status" = 'fetched') AS fetched_setups,
   (SELECT count(*) FROM "CodexOAuthWritebackIntent"
-    WHERE "status" = 'pending') AS pending_intents;
+    WHERE "status" = 'pending') AS pending_intents,
+  (SELECT count(*) FROM pg_locks
+    WHERE locktype = 'advisory'
+      AND classid = 1381126735
+      AND objid = 1129271119
+      AND mode = 'ShareLock'
+      AND granted) AS writer_in_flight;
 ```
 
 Also capture identity mismatches against `RepositoryConnection`, provider
@@ -107,15 +137,22 @@ recovery ownership, `_prisma_migrations`, `pg_trigger`, `pg_constraint`,
 ## Observation-backed rollout proof
 
 `scripts/verify-codex-rotating-rollout.mjs` accepts only evidence version 2 with
-four SHA-256-bound JSON artifacts: database observations, Render API deployment
-observations, compatibility-probe output, and the append-only operator command
-event log. It derives the result from those observations. Self-reported
+six SHA-256-bound JSON artifacts: production-writer database observations,
+Render API deployments, compatibility-probe output, two GitHub Actions run
+inventories, canary-runtime evidence, and the append-only transition log. It
+derives the result from those observations. Self-reported
 `succeeded`, `passed`, commit, or migration booleans at the top level are
 rejected.
 
-The database artifact must contain both migration IDs, checked-in source
+The database artifact must identify the actual database (`current_database`,
+server address, and system identifier), identify the one immutable
+`release-migration` caller, and contain two time-separated stable zero drain
+observations. It must also contain both migration IDs, checked-in source
 digests, one current successful runner-history record for each source checksum,
 PostgreSQL 17 catalog output, zero unsafe work, and the fetched recovery owner.
+Its descriptor must bind the exact checked-in production-writer capture
+executable and source digest; rehearsal output or an operator-authored success
+boolean is not accepted.
 The Render API artifact must report API/web/worker exact commits and immutable
 image digests with mutation admission off, a null `preDeployCommand`, and no
 service-level migration caller. The compatibility artifact is the actual probe
@@ -128,11 +165,17 @@ recomputes; a `passed` boolean or arbitrary digest is rejected:
 - a queued v1 workflow after v2 installer/workflow publication;
 - a fence-aware v2 workflow against the candidate image.
 
+The GitHub inventory must list every queued/in-progress schema-v1 and schema-v2
+run with run ID, workflow path, workflow schema, and head SHA twice and prove no
+new arrival. Canary runtime evidence binds the exact installer-v1, installer-v2,
+workflow-v2, runtime-publication, commit, and image digests.
+
 The event artifact records the bridge's pre-000061 schema compatibility,
 publication-before-issuance, the separate issuance-503 probe, both zero-drain
 observations around the full kill switch (including queued old workflows), the
 single Render migration caller, ordered migrations, exact service convergence,
-canary allowlist/pass, widening, and the rollback floor. The migration and
+canary allowlist/pass/close/delete, an explicit nonempty widening cohort, and
+the rollback floor. The migration and
 canary events carry the exact database and compatibility artifact digests
 respectively. The publication observation must show zero v2 issuances at the
 time the immutable v1 installer, v2 installer, and v2 workflow digests were

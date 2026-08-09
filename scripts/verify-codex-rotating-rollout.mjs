@@ -4,6 +4,14 @@ import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
+/**
+ * Runtime validators below are the trust boundary for observation data. Their
+ * compile-time producer contracts live in codex-rotating-rollout-observations.ts.
+ * @typedef {import("./codex-rotating-rollout-observations.js").ProductionWriterObservation} ProductionWriterObservation
+ * @typedef {import("./codex-rotating-rollout-observations.js").WorkflowRunInventoryObservation} WorkflowRunInventoryObservation
+ * @typedef {import("./codex-rotating-rollout-observations.js").CanaryRuntimeObservation} CanaryRuntimeObservation
+ */
+
 const checkoutRoot = resolve(import.meta.dirname, "..");
 const migrations = [
   {
@@ -99,10 +107,12 @@ export function verifyCodexRotatingRollout(evidence, options = {}) {
   );
   need(
     hasExactKeys(evidence?.artifacts, [
+      "canaryRuntime",
       "compatibilityProbe",
       "database",
       "deployments",
       "events",
+      "workflowRuns",
     ]),
     "all four observed artifacts are required",
   );
@@ -113,12 +123,14 @@ export function verifyCodexRotatingRollout(evidence, options = {}) {
     "deployments",
     "compatibilityProbe",
     "events",
+    "canaryRuntime",
+    "workflowRuns",
   ]) {
     const descriptor = evidence?.artifacts?.[name];
     need(
       hasExactKeys(
         descriptor,
-        name === "compatibilityProbe"
+        name === "compatibilityProbe" || name === "database"
           ? ["path", "sha256", "sourceFile", "sourceFileSha256"]
           : ["path", "sha256"],
       ),
@@ -130,8 +142,18 @@ export function verifyCodexRotatingRollout(evidence, options = {}) {
     loaded[name] = artifact.value;
   }
 
-  verifyDatabase(loaded.database, need, options);
+  const databaseFacts = verifyDatabase(
+    loaded.database,
+    evidence?.artifacts?.database,
+    need,
+    options,
+  );
   const deploymentFacts = verifyDeployments(loaded.deployments, need);
+  need(
+    databaseFacts?.callerCommit === deploymentFacts.commit &&
+      databaseFacts?.callerImageDigest === deploymentFacts.imageDigest,
+    "release-migration caller is not bound to the deployed immutable release",
+  );
   const compatibilityFacts = verifyCompatibility(
     loaded.compatibilityProbe,
     evidence?.artifacts?.compatibilityProbe,
@@ -139,10 +161,24 @@ export function verifyCodexRotatingRollout(evidence, options = {}) {
     need,
     options,
   );
-  verifyEvents(loaded.events, deploymentFacts, compatibilityFacts, need, {
-    database: evidence?.artifacts?.database?.sha256,
-    compatibilityProbe: evidence?.artifacts?.compatibilityProbe?.sha256,
-  });
+  const workflowFacts = verifyWorkflowRuns(loaded.workflowRuns, need);
+  const canaryFacts = verifyCanaryRuntime(
+    loaded.canaryRuntime,
+    deploymentFacts,
+    need,
+  );
+  verifyEvents(
+    loaded.events,
+    deploymentFacts,
+    compatibilityFacts,
+    need,
+    {
+      database: evidence?.artifacts?.database?.sha256,
+      compatibilityProbe: evidence?.artifacts?.compatibilityProbe?.sha256,
+    },
+    canaryFacts,
+    workflowFacts,
+  );
 
   return {
     ok: failures.length === 0,
@@ -151,8 +187,58 @@ export function verifyCodexRotatingRollout(evidence, options = {}) {
   };
 }
 
-function verifyDatabase(db, need, options) {
-  need(db?.observationVersion === 2, "database observation version is invalid");
+function verifyDatabase(db, descriptor, need, options) {
+  const captureSource = readCheckout(descriptor?.sourceFile, options);
+  need(
+    descriptor?.sourceFile ===
+      "scripts/capture-codex-rotating-production-writer.mjs" &&
+      captureSource !== null &&
+      sha256(captureSource) === descriptor?.sourceFileSha256,
+    "production database capture executable source digest mismatched",
+  );
+  need(
+    db?.observationVersion === 2 &&
+      db?.source === "production-postgresql-writer" &&
+      db?.captureKind === "database-query" &&
+      db?.rehearsal === false,
+    "database observation must come from the actual production writer",
+  );
+  need(
+    hasExactKeys(db?.databaseIdentity, [
+      "currentDatabase",
+      "serverAddress",
+      "systemIdentifier",
+    ]) &&
+      [
+        db?.databaseIdentity?.currentDatabase,
+        db?.databaseIdentity?.serverAddress,
+        db?.databaseIdentity?.systemIdentifier,
+      ].every((value) => typeof value === "string" && value.length > 0),
+    "production database identity is incomplete",
+  );
+  need(
+    hasExactKeys(db?.callerIdentity, [
+      "applicationName",
+      "commit",
+      "databaseRole",
+      "id",
+      "imageDigest",
+      "kind",
+      "sessionUser",
+    ]) &&
+      db?.callerIdentity?.kind === "immutable-release-migration" &&
+      db?.callerIdentity?.id === "release-migration" &&
+      db?.callerIdentity?.applicationName ===
+        "reviewrouter-release-migration" &&
+      typeof db?.callerIdentity?.databaseRole === "string" &&
+      db.callerIdentity.databaseRole.length > 0 &&
+      typeof db?.callerIdentity?.sessionUser === "string" &&
+      db.callerIdentity.sessionUser.length > 0 &&
+      /^[a-f0-9]{40}$/u.test(db?.callerIdentity?.commit ?? "") &&
+      /^sha256:[a-f0-9]{64}$/u.test(db?.callerIdentity?.imageDigest ?? ""),
+    "production migration caller identity is not one immutable release caller",
+  );
+  verifyDrainObservations(db?.drainObservations, db?.databaseIdentity, need);
   need(
     /^17\./u.test(db?.postgresVersion ?? ""),
     "database observation is not PostgreSQL 17",
@@ -241,6 +327,44 @@ function verifyDatabase(db, need, options) {
   need(
     db?.catalog?.indexes?.every((entry) => exactIndexDefinition(entry)),
     "database index definitions/flags are not exact",
+  );
+  return {
+    callerCommit: db?.callerIdentity?.commit,
+    callerImageDigest: db?.callerIdentity?.imageDigest,
+  };
+}
+
+function verifyDrainObservations(observations, databaseIdentity, need) {
+  need(
+    Array.isArray(observations) && observations.length === 2,
+    "exactly two production drain observations are required",
+  );
+  if (!Array.isArray(observations) || observations.length !== 2) return;
+  need(
+    observations.every(
+      (entry) =>
+        hasExactKeys(entry, [
+          "activeLeases",
+          "fetchedSetups",
+          "observedAt",
+          "pendingIntents",
+          "writerInFlight",
+        ]) &&
+        [
+          entry.activeLeases,
+          entry.fetchedSetups,
+          entry.pendingIntents,
+          entry.writerInFlight,
+        ].every((value) => value === 0) &&
+        Number.isFinite(Date.parse(entry.observedAt ?? "")),
+    ) &&
+      Date.parse(observations[1].observedAt) >
+        Date.parse(observations[0].observedAt),
+    "production in-flight barrier was not stably zero across two observations",
+  );
+  need(
+    databaseIdentity && Object.keys(databaseIdentity).length === 3,
+    "drain observations are not bound to one database identity",
   );
 }
 
@@ -500,12 +624,96 @@ function exactCompatibilityObservations(cases) {
   );
 }
 
+function verifyWorkflowRuns(observation, need) {
+  need(
+    observation?.observationVersion === 1 &&
+      observation?.source === "github-actions-api",
+    "workflow-run inventory must be captured from the GitHub Actions API",
+  );
+  const samples = observation?.observations;
+  need(
+    Array.isArray(samples) && samples.length === 2,
+    "workflow-run inventory requires two observations",
+  );
+  if (!Array.isArray(samples) || samples.length !== 2) return null;
+  const validRun = (run) =>
+    hasExactKeys(run, [
+      "headSha",
+      "runId",
+      "status",
+      "workflowPath",
+      "workflowSchemaVersion",
+    ]) &&
+    ["queued", "in_progress"].includes(run.status) &&
+    [1, 2].includes(run.workflowSchemaVersion) &&
+    /^[a-f0-9]{40}$/u.test(run.headSha ?? "") &&
+    typeof run.workflowPath === "string" &&
+    String(run.runId).length > 0;
+  need(
+    samples.every(
+      (sample) =>
+        Number.isFinite(Date.parse(sample?.observedAt ?? "")) &&
+        Array.isArray(sample?.runs) &&
+        sample.runs.every(validRun),
+    ),
+    "queued/in-progress v1/v2 run inventory is incomplete",
+  );
+  const firstIds = new Set(samples[0]?.runs?.map((run) => String(run.runId)));
+  const arrivals = (samples[1]?.runs ?? []).filter(
+    (run) => !firstIds.has(String(run.runId)),
+  );
+  need(
+    Date.parse(samples[1]?.observedAt ?? "") >
+      Date.parse(samples[0]?.observedAt ?? "") && arrivals.length === 0,
+    "new queued/in-progress v1/v2 work arrived between observations",
+  );
+  return { secondObservedAt: Date.parse(samples[1]?.observedAt ?? "") };
+}
+
+function verifyCanaryRuntime(observation, deployment, need) {
+  need(
+    observation?.observationVersion === 1 &&
+      observation?.source === "canary-runtime" &&
+      observation?.disposable === true,
+    "canary evidence must come from the disposable runtime",
+  );
+  need(
+    observation?.flags?.runtime === "1" &&
+      observation?.flags?.newWorkAdmission === "1" &&
+      observation?.flags?.setupIssuance === "1",
+    "canary runtime did not observe all cutover flags enabled",
+  );
+  need(
+    Array.isArray(observation?.approvedRepositories) &&
+      observation.approvedRepositories.length === 1 &&
+      observation.approvedRepositories[0] === observation.repositoryFullName,
+    "canary runtime was not restricted to exactly one disposable target",
+  );
+  need(
+    observation?.runtimeCommit === deployment.commit &&
+      observation?.runtimeImageDigest === deployment.imageDigest,
+    "canary runtime is not bound to the deployed commit and image",
+  );
+  need(
+    [
+      observation?.installerV1Digest,
+      observation?.installerV2Digest,
+      observation?.workflowV2Digest,
+      observation?.runtimePublicationDigest,
+    ].every((digest) => /^sha256:[a-f0-9]{64}$/u.test(digest ?? "")),
+    "canary publication digests are incomplete",
+  );
+  return observation;
+}
+
 function verifyEvents(
   events,
   deployment,
   compatibility,
   need,
   artifactDigests,
+  canaryRuntime,
+  workflowFacts,
 ) {
   need(
     events?.observationVersion === 1 &&
@@ -525,7 +733,10 @@ function verifyEvents(
     "canary_allowlisted",
     "canary_admission_opened",
     "canary_passed",
+    "canary_admission_closed",
+    "canary_allowlist_deleted",
     "widening_approved",
+    "widening_admission_opened",
   ];
   need(
     sequence.map((entry) => entry.type).join(",") === expected.join(","),
@@ -563,6 +774,12 @@ function verifyEvents(
     "v1/v2 installer and v2 workflow publication digests are missing",
   );
   need(
+    publication?.installerV1Digest === canaryRuntime?.installerV1Digest &&
+      publication?.installerV2Digest === canaryRuntime?.installerV2Digest &&
+      publication?.workflowV2Digest === canaryRuntime?.workflowV2Digest,
+    "published installer/workflow digests are not bound to canary runtime evidence",
+  );
+  need(
     publication?.v2IssuanceCount === 0,
     "v2 issuance was observed before v1/v2 installer and workflow publication",
   );
@@ -598,6 +815,13 @@ function verifyEvents(
       `${type} observation is not zero, including queued old workflows`,
     );
   }
+  need(
+    Date.parse(
+      sequence.find((entry) => entry.type === "post_kill_switch_drain_zero")
+        ?.observedAt ?? "",
+    ) >= (workflowFacts?.secondObservedAt ?? Number.POSITIVE_INFINITY),
+    "drain event precedes the second no-arrival workflow observation",
+  );
   const migration = sequence.find(
     (entry) => entry.type === "migrations_completed",
   );
@@ -607,10 +831,8 @@ function verifyEvents(
     "event log does not prove ordered combined migration IDs",
   );
   need(
-    migration?.singleCaller === true &&
-      migration?.caller === "release-migration" &&
-      migration?.databaseArtifactSha256 === artifactDigests.database,
-    "Render migration callers were not reduced to one controlled caller",
+    migration?.databaseArtifactSha256 === artifactDigests.database,
+    "migration event is not bound to the production database artifact",
   );
   const convergence = sequence.find(
     (entry) => entry.type === "services_converged",
@@ -632,14 +854,68 @@ function verifyEvents(
   );
   need(
     canaryAdmission?.scope === "single-disposable-repository" &&
-      canaryAdmission?.allowlistCount === 1,
+      canaryAdmission?.allowlistCount === 1 &&
+      canaryAdmission?.runtimeFlag === "1" &&
+      canaryAdmission?.newWorkAdmissionFlag === "1" &&
+      canaryAdmission?.setupIssuanceFlag === "1",
     "canary admission was not restricted to one disposable repository",
   );
   const canaryPassed = sequence.find((entry) => entry.type === "canary_passed");
   need(
     canaryPassed?.compatibilityArtifactSha256 ===
-      artifactDigests.compatibilityProbe,
+      artifactDigests.compatibilityProbe &&
+      canaryPassed?.runtimePublicationDigest ===
+        canaryRuntime?.runtimePublicationDigest,
     "canary pass is not bound to the compatibility-probe artifact digest",
+  );
+  const canaryClosed = sequence.find(
+    (entry) => entry.type === "canary_admission_closed",
+  );
+  const canaryDeleted = sequence.find(
+    (entry) => entry.type === "canary_allowlist_deleted",
+  );
+  need(
+    canaryClosed?.runtimeFlag === "0" &&
+      canaryClosed?.newWorkAdmissionFlag === "0" &&
+      canaryClosed?.setupIssuanceFlag === "0" &&
+      Date.parse(canaryClosed?.observedAt ?? "") <
+        Date.parse(canaryDeleted?.observedAt ?? ""),
+    "canary flags did not return to zero before allowlist deletion",
+  );
+  need(
+    canaryDeleted?.allowlistCount === 0 &&
+      canaryDeleted?.runtimeFlag === "0" &&
+      canaryDeleted?.newWorkAdmissionFlag === "0" &&
+      canaryDeleted?.setupIssuanceFlag === "0",
+    "clearing the canary allowlist while admission is on is prohibited",
+  );
+  const widening = sequence.find((entry) => entry.type === "widening_approved");
+  const wideningOpened = sequence.find(
+    (entry) => entry.type === "widening_admission_opened",
+  );
+  need(
+    Array.isArray(widening?.approvedRepositories) &&
+      widening.approvedRepositories.length > 0,
+    "widening requires a nonempty explicit approved cohort",
+  );
+  need(
+    wideningOpened?.runtimeFlag === "1" &&
+      wideningOpened?.newWorkAdmissionFlag === "1" &&
+      wideningOpened?.setupIssuanceFlag === "1" &&
+      wideningOpened?.allowlistCount ===
+        widening?.approvedRepositories?.length &&
+      wideningOpened.allowlistCount > 0,
+    "widening admission did not retain a nonempty approved cohort",
+  );
+  need(
+    sequence.every(
+      (entry) =>
+        entry.allowlistCount !== 0 ||
+        (entry.runtimeFlag !== "1" &&
+          entry.newWorkAdmissionFlag !== "1" &&
+          entry.setupIssuanceFlag !== "1"),
+    ),
+    "allowlist was cleared while admission was enabled",
   );
   need(
     events?.rollbackFloorCommit === deployment.commit,

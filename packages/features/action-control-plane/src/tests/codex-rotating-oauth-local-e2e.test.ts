@@ -28,6 +28,9 @@ const workflowSha = "0123456789abcdef0123456789abcdef01234567";
 const actionRef = `777genius/review-router@${workflowSha}`;
 const providerInstanceId = "codex-rotating:123456";
 const generationHashSalt = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
+const allowNewWorkAdmission = {
+  assertAdmitted: () => undefined,
+};
 
 const repository = {
   workspaceId: "workspace_1",
@@ -127,6 +130,7 @@ describe("Codex rotating OAuth local E2E", () => {
           };
         }),
       },
+      codexRotatingNewWorkAdmission: allowNewWorkAdmission,
       replayNonces: {
         tryConsumeNonce: vi.fn().mockResolvedValue(true),
       },
@@ -325,6 +329,7 @@ describe("Codex rotating OAuth local E2E", () => {
             "workflow-source-sha256-012345678901234567890123456789",
         }),
       },
+      codexRotatingNewWorkAdmission: allowNewWorkAdmission,
       replayNonces: {
         tryConsumeNonce: vi
           .fn()
@@ -370,6 +375,7 @@ describe("Codex rotating OAuth local E2E", () => {
       githubRunId: "9004",
       githubRunAttempt: "1",
       now: firstRunAt,
+      newWorkAdmissionBarrier: allowNewWorkAdmission,
     });
     expect(conflictingLease).toMatchObject({
       leaseId: preleaseBody.leaseId,
@@ -683,6 +689,7 @@ describe("Codex rotating OAuth local E2E", () => {
             ),
           ),
       },
+      codexRotatingNewWorkAdmission: allowNewWorkAdmission,
       replayNonces: {
         tryConsumeNonce: vi.fn().mockResolvedValue(true),
       },
@@ -869,6 +876,7 @@ describe("Codex rotating OAuth local E2E", () => {
             "workflow-source-sha256-012345678901234567890123456789",
         }),
       },
+      codexRotatingNewWorkAdmission: allowNewWorkAdmission,
       replayNonces: {
         tryConsumeNonce: vi.fn().mockResolvedValue(true),
       },

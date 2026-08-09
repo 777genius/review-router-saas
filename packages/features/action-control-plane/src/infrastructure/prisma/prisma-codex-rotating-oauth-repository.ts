@@ -169,6 +169,9 @@ export class PrismaCodexRotatingOAuthRepository
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
     readonly now: Date;
+    readonly newWorkAdmissionBarrier: Readonly<{
+      assertAdmitted(): void;
+    }>;
   }): Promise<CodexRotatingPreleaseRecord> {
     assertCanonicalCodexRotatingProviderId({
       providerInstanceId: input.providerInstanceId,
@@ -178,6 +181,13 @@ export class PrismaCodexRotatingOAuthRepository
     const leaseKey = `${input.providerInstanceId}:${input.githubRunId}:${input.githubRunAttempt}`;
 
     return this.prisma.$transaction(async (tx) => {
+      // A shared transaction-scoped advisory lock makes every admitted
+      // prelease attempt observable in pg_locks until the lease transaction
+      // commits or aborts. Drain tooling can take the matching exclusive lock
+      // to establish a hard zero-in-flight barrier.
+      await tx.$queryRaw(Prisma.sql`
+        SELECT pg_advisory_xact_lock_shared(1381126735, 1129271119)
+      `);
       await tx.$queryRaw(Prisma.sql`
         SELECT "id" FROM "CodexOAuthProviderInstance"
         WHERE "providerInstanceId" = ${input.providerInstanceId}
@@ -215,6 +225,10 @@ export class PrismaCodexRotatingOAuthRepository
       ) {
         throw new Error("codex_rotating_provider_identity_mismatch");
       }
+      // The final policy assertion deliberately runs after the provider row is
+      // locked and in the same transaction that creates the lease. This is the
+      // admission barrier: a closed or malformed fence cannot race a lease.
+      input.newWorkAdmissionBarrier.assertAdmitted();
       if (
         provider.state === "unknown_auth_state" ||
         provider.state === "needs_reconnect" ||

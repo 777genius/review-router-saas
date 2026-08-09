@@ -121,6 +121,8 @@ envVarGroups:
         value: reviewrouter
       - key: REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH
         value: "0"
+      - key: REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED
+        value: "0"
       - key: REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED
         value: "0"
       # Revision-aware review v2 deploys additively. Writer capabilities are

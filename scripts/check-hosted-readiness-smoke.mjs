@@ -53,6 +53,20 @@ try {
   );
   expectStatus(localhostEnv, 1, "localhost public API URL should fail");
 
+  for (const key of [
+    "REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH",
+    "REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED",
+    "REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED",
+  ]) {
+    const activeCutoverEnv = join(tempDir, `${key}.env`);
+    writeFileSync(activeCutoverEnv, hostedEnv({ [key]: "1" }));
+    expectStatus(
+      activeCutoverEnv,
+      1,
+      `${key} must remain dormant during release readiness`,
+    );
+  }
+
   console.log("Hosted readiness smoke passed.");
 } finally {
   rmSync(tempDir, { force: true, recursive: true });
@@ -110,7 +124,9 @@ function hostedEnv(overrides = {}) {
     REVIEW_ROUTER_ALLOWED_ACTION_REFS:
       "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
     REVIEW_ROUTER_ACTION_VERSION: "main",
-    REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
+    REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "0",
+    REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED: "0",
+    REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED: "0",
     ...overrides,
   };
 

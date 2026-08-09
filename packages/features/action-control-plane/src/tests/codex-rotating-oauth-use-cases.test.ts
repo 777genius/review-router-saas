@@ -91,6 +91,7 @@ describe("Codex rotating OAuth action control plane", () => {
         }),
         resolveWorkflowRunPullRequest: vi.fn().mockResolvedValue(240),
       },
+      codexRotatingNewWorkAdmission: allowNewWorkAdmission,
       replayNonces: {
         tryConsumeNonce: vi.fn().mockResolvedValue(true),
       },
@@ -350,6 +351,7 @@ describe("Codex rotating OAuth action control plane", () => {
             "workflow-source-sha256-012345678901234567890123456789",
         }),
       },
+      codexRotatingNewWorkAdmission: allowNewWorkAdmission,
       replayNonces: {
         tryConsumeNonce: vi.fn().mockResolvedValue(true),
       },
@@ -421,6 +423,7 @@ describe("Codex rotating OAuth action control plane", () => {
             "workflow-source-sha256-012345678901234567890123456789",
         }),
       },
+      codexRotatingNewWorkAdmission: allowNewWorkAdmission,
       replayNonces: {
         tryConsumeNonce: vi.fn().mockResolvedValue(true),
       },
@@ -517,6 +520,81 @@ describe("Codex rotating OAuth action control plane", () => {
     expect(
       dependencies.codexRotatingWorkflowSourceVerifier.verifyWorkflowSource,
     ).not.toHaveBeenCalled();
+  });
+
+  it("checks the separate fail-closed new-work fence immediately before lease acquisition", async () => {
+    const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
+      {
+        providerInstanceId: "codex-rotating:123456",
+        repositoryFullName: "777genius/agent-teams-ai",
+        githubRepositoryId: "123456",
+        actionRef: `777genius/review-router@${workflowSha}`,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 1,
+      },
+    ]);
+    const acquire = vi.spyOn(codexRotatingOAuth, "acquirePrelease");
+    const dependencies = buildRotatingDependencies({
+      codexRotatingOAuth,
+      codexRotatingNewWorkAdmission: {
+        assertAdmitted: () => {
+          throw new Error("codex_rotating_new_work_admission_closed");
+        },
+      },
+    });
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("codex_rotating_new_work_admission_closed");
+    expect(acquire).not.toHaveBeenCalled();
+    expect(dependencies.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the live fence inside lease acquisition after the precheck", async () => {
+    const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
+      {
+        providerInstanceId: "codex-rotating:123456",
+        repositoryFullName: "777genius/agent-teams-ai",
+        githubRepositoryId: "123456",
+        actionRef: `777genius/review-router@${workflowSha}`,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 1,
+      },
+    ]);
+    const assertAdmitted = vi
+      .fn()
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw new Error("codex_rotating_new_work_admission_closed");
+      });
+    const acquire = vi.spyOn(codexRotatingOAuth, "acquirePrelease");
+    const dependencies = buildRotatingDependencies({
+      codexRotatingOAuth,
+      codexRotatingNewWorkAdmission: { assertAdmitted },
+    });
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("codex_rotating_new_work_admission_closed");
+    expect(assertAdmitted).toHaveBeenCalledTimes(2);
+    expect(dependencies.replayNonces.tryConsumeNonce).toHaveBeenCalledOnce();
+    expect(acquire).toHaveBeenCalledOnce();
   });
 
   it("returns a policy skip before consuming the OIDC nonce or OAuth lease", async () => {
@@ -1336,6 +1414,11 @@ function buildRotatingDependencies(
       recordHealthReport: vi.fn(),
     },
     codexRotatingOAuth,
+    codexRotatingNewWorkAdmission:
+      overrides.codexRotatingNewWorkAdmission ??
+      ({
+        assertAdmitted: () => undefined,
+      } satisfies RotatingDependencies["codexRotatingNewWorkAdmission"]),
     ...(overrides.codexRotatingRuntimeGate
       ? { codexRotatingRuntimeGate: overrides.codexRotatingRuntimeGate }
       : {}),
@@ -1402,6 +1485,10 @@ function buildRotatingDependencies(
     codexRotatingOAuth,
   };
 }
+
+const allowNewWorkAdmission = {
+  assertAdmitted: () => undefined,
+};
 
 async function completeRotatingWriteback(dependencies: RotatingDependencies) {
   const prelease = requireLease(

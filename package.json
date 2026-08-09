@@ -64,6 +64,7 @@
     "codex-rotating:installer-portability": "vitest run apps/web/src/server/codex-rotating-seed-script.test.ts",
     "codex-rotating:loopback-proof": "REVIEW_ROUTER_CODEX_ROTATING_LOOPBACK_PROOF=1 vitest run apps/web/src/server/codex-rotating-dropped-response.real.test.ts",
     "codex-rotating:rollout-proof": "vitest run scripts/verify-codex-rotating-rollout.test.ts",
+    "codex-rotating:production-writer-observation": "node scripts/capture-codex-rotating-production-writer.mjs",
     "review-v2:e2e": "REVIEW_ROUTER_REVIEW_V2_E2E=1 vitest run scripts/review-action-v2-production-e2e/review-action-v2-production.e2e.test.ts",
     "review-investigation:e2e": "REVIEW_ROUTER_REVIEW_INVESTIGATION_E2E=1 vitest run scripts/review-investigation-production-e2e/review-investigation-production.e2e.test.ts",
     "review-investigation:paired-e2e": "REVIEW_ROUTER_REVIEW_INVESTIGATION_PAIRED_E2E=1 vitest run scripts/review-investigation-paired-e2e/review-investigation-paired.e2e.test.ts",

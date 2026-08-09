@@ -184,7 +184,11 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
     readonly now: Date;
+    readonly newWorkAdmissionBarrier: Readonly<{
+      assertAdmitted(): void;
+    }>;
   }): Promise<CodexRotatingPreleaseRecord> {
+    input.newWorkAdmissionBarrier.assertAdmitted();
     const provider = this.providers.get(input.providerInstanceId);
     if (
       provider?.state === "unknown_auth_state" ||

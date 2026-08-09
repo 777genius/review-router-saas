@@ -24,8 +24,8 @@ import {
 const setupManifestTtlSeconds = 15 * 60;
 const setupTransactionTimeoutMs = 10_000;
 
-function assertSetupIssuanceEnabled(): void {
-  if (process.env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED === "0") {
+export function assertSetupIssuanceEnabled(): void {
+  if (process.env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED !== "1") {
     throw new Error("codex_rotating_setup_issuance_quiesced");
   }
 }

@@ -42,7 +42,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       workspaceId,
       repositoryId,
       issuanceEnabled:
-        process.env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED !== "0",
+        process.env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED === "1",
     });
     return NextResponse.json(
       status.status === "identity_quarantined"

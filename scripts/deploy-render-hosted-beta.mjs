@@ -3,6 +3,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { reviewV2ContextEnvForRole } from "./review-v2-render-env.mjs";
 
 const renderApi = "https://api.render.com/v1";
@@ -31,7 +32,7 @@ function readOptionalDotenv(filePath) {
   return parseDotenv(fs.readFileSync(filePath, "utf8"));
 }
 
-function requiredEnv(name, source) {
+export function requiredEnv(name, source) {
   const value = source[name] ?? process.env[name];
   if (!value) throw new Error(`Missing required value: ${name}`);
   return value;
@@ -144,7 +145,7 @@ function readOptionalEnvVars(env, keys) {
   return values;
 }
 
-class RenderClient {
+export class RenderClient {
   constructor(apiKey) {
     this.apiKey = apiKey;
   }
@@ -167,10 +168,7 @@ class RenderClient {
       data = text;
     }
     if (!response.ok) {
-      const message = typeof data === "string" ? data : JSON.stringify(data);
-      throw new Error(
-        `${method} ${endpoint} failed ${response.status}: ${message}`,
-      );
+      throw new Error(`${method} ${endpoint} failed ${response.status}`);
     }
     return data;
   }
@@ -184,7 +182,7 @@ class RenderClient {
   }
 }
 
-function serviceDetails({ type, startCommand, healthCheckPath }) {
+export function serviceDetails({ type, startCommand, healthCheckPath }) {
   const details = {
     envSpecificDetails: {
       buildCommand:
@@ -193,9 +191,9 @@ function serviceDetails({ type, startCommand, healthCheckPath }) {
     },
     maxShutdownDelaySeconds: type === "background_worker" ? 120 : 60,
     plan: "starter",
-    // Database rollout is a separately observed, single-caller release step.
-    // An empty value also clears legacy per-service migration callers.
-    preDeployCommand: "",
+    // Database rollout is a separately observed, immutable release-migration
+    // caller. Per-service callers must be represented canonically as null.
+    preDeployCommand: null,
     region: "frankfurt",
     runtime: "node",
   };
@@ -203,7 +201,7 @@ function serviceDetails({ type, startCommand, healthCheckPath }) {
   return details;
 }
 
-function buildServiceEnv({
+export function buildServiceEnv({
   databaseUrl,
   env,
   privateKey,
@@ -243,13 +241,14 @@ function buildServiceEnv({
     REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS: "1",
     REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK:
       env.REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK ?? "1",
-    REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH:
-      env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH ?? "0",
+    // Deploy convergence is always dormant. Cutover is a separate observed
+    // operation and stale local/example values are intentionally ignored.
+    REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "0",
+    REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED: "0",
     REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "1",
     REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES:
       env.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES ?? "",
-    REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED:
-      env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED ?? "0",
+    REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED: "0",
     REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES:
       env.REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES ?? "",
     REVIEW_ROUTER_MAX_REPOSITORIES_PER_SYNC: "250",
@@ -268,6 +267,11 @@ function buildServiceEnv({
     Object.assign(values, readOptionalEnvVars(env, apiOnlyGitLabEnvKeys));
   }
   Object.assign(values, reviewV2ContextEnvForRole(env, role));
+  Object.assign(values, {
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "0",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED: "0",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "0",
+  });
   if (role !== "worker") values.PORT = "10000";
   return asEnvVars(values);
 }
@@ -338,7 +342,7 @@ async function ensureService(client, spec, common) {
 
   console.log(`creating service ${spec.name}`);
   const created = await client.request("POST", "/services", {
-    autoDeployTrigger: "commit",
+    autoDeployTrigger: "off",
     branch: common.branch,
     envVars: buildServiceEnv({ ...common, role: spec.role }),
     name: spec.name,
@@ -359,84 +363,195 @@ async function syncService(client, service, spec, common) {
   );
 }
 
-async function triggerDeploy(client, service) {
-  console.log(`triggering deploy for ${service.name}`);
-  await client.request("POST", `/services/${service.id}/deploys`, {
-    clearCache: "do_not_clear",
+export async function disableAndVerifyPreDeployCommand(client, service) {
+  await client.request("PATCH", `/services/${service.id}`, {
+    serviceDetails: { preDeployCommand: null },
   });
+  const observed = await client.request("GET", `/services/${service.id}`);
+  const details = (observed.service ?? observed).serviceDetails;
+  if (details?.preDeployCommand !== null) {
+    throw new Error(
+      `Render service ${service.name} preDeployCommand is not canonical null`,
+    );
+  }
 }
 
-const envFile = process.env.REVIEW_ROUTER_RENDER_ENV_FILE ?? ".env.production";
-const env = { ...readOptionalDotenv(envFile), ...process.env };
-const ownerId = requiredEnv("RENDER_OWNER_ID", env);
-const environmentId = requiredEnv("RENDER_ENVIRONMENT_ID", env);
-const repo = requiredEnv("RENDER_REPO", env);
-const branch = env.RENDER_BRANCH ?? "main";
-const webUrl = env.REVIEW_ROUTER_WEB_URL ?? "https://reviewrouter.site";
-const apiUrl = env.REVIEW_ROUTER_API_URL ?? "https://api.reviewrouter.site";
-assertHostedDeployEnv({ apiUrl, env, envFile, webUrl });
-const privateKey = readGithubPrivateKey(env);
-const client = new RenderClient(readRenderApiKey());
-
-const database = await ensureDatabase(client, { environmentId, ownerId });
-const readyDatabase = await waitForDatabase(client, database.id);
-const common = {
-  apiUrl,
-  branch,
-  databaseUrl: readyDatabase.internalConnectionString,
-  env,
-  ownerId,
-  privateKey,
-  repo,
-  webUrl,
-};
-const serviceSpecs = [
-  {
-    healthCheckPath: "/",
-    name: "reviewrouter-web",
-    role: "web",
-    startCommand: "pnpm web:start",
-    type: "web_service",
-  },
-  {
-    healthCheckPath: "/health",
-    name: "reviewrouter-api",
-    role: "api",
-    startCommand: "HOST=0.0.0.0 pnpm api:start",
-    type: "web_service",
-  },
-  {
-    name: "reviewrouter-worker",
-    role: "worker",
-    startCommand: "pnpm worker:start",
-    type: "background_worker",
-  },
-];
-
-const services = [];
-for (const spec of serviceSpecs) {
-  const service = await ensureService(client, spec, common);
-  services.push({ service, spec });
+function resolvedDeployFacts(deploy) {
+  const value = deploy.deploy ?? deploy;
+  return {
+    id: value.id ?? null,
+    status: value.status ?? null,
+    commit:
+      value.commit?.id ??
+      value.commitId ??
+      value.commit?.sha ??
+      value.sha ??
+      null,
+    imageDigest:
+      value.image?.digest ??
+      value.imageDigest ??
+      value.build?.imageDigest ??
+      null,
+  };
 }
-await addToEnvironment(client, environmentId, [
-  readyDatabase.id,
-  ...services.map(({ service }) => service.id),
-]);
-for (const { service, spec } of services)
-  await syncService(client, service, spec, common);
-for (const { service } of services) await triggerDeploy(client, service);
 
-console.log(
-  JSON.stringify(
+export async function triggerAndVerifyDeploy(
+  client,
+  service,
+  {
+    commit,
+    imageDigest,
+    poll = async () => new Promise((resolve) => setTimeout(resolve, 10_000)),
+    maxAttempts = 180,
+  },
+) {
+  console.log(`triggering deploy for ${service.name}`);
+  const created = await client.request(
+    "POST",
+    `/services/${service.id}/deploys`,
     {
-      database: { id: readyDatabase.id, status: readyDatabase.status },
-      services: services.map(({ service }) => ({
-        id: service.id,
-        name: service.name,
-        url: service.serviceDetails?.url ?? null,
-      })),
+      clearCache: "do_not_clear",
+      commitId: commit,
     },
-    null,
-    2,
-  ),
-);
+  );
+  const createdId = resolvedDeployFacts(created).id;
+  if (!createdId)
+    throw new Error(
+      `Render service ${service.name} did not return a deploy id`,
+    );
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const observed = await client.request(
+      "GET",
+      `/services/${service.id}/deploys/${createdId}`,
+    );
+    const facts = resolvedDeployFacts(observed);
+    if (
+      ["build_failed", "update_failed", "canceled", "deactivated"].includes(
+        facts.status,
+      )
+    ) {
+      throw new Error(
+        `Render service ${service.name} deploy terminated as ${facts.status}`,
+      );
+    }
+    if (facts.status === "live") {
+      if (facts.commit !== commit) {
+        throw new Error(
+          `Render service ${service.name} resolved commit mismatch`,
+        );
+      }
+      if (facts.imageDigest !== imageDigest) {
+        throw new Error(
+          `Render service ${service.name} resolved image digest mismatch`,
+        );
+      }
+      return facts;
+    }
+    await poll();
+  }
+  throw new Error(`Render service ${service.name} deploy did not resolve`);
+}
+
+export async function main() {
+  const envFile =
+    process.env.REVIEW_ROUTER_RENDER_ENV_FILE ?? ".env.production";
+  const env = { ...readOptionalDotenv(envFile), ...process.env };
+  const ownerId = requiredEnv("RENDER_OWNER_ID", env);
+  const environmentId = requiredEnv("RENDER_ENVIRONMENT_ID", env);
+  const repo = requiredEnv("RENDER_REPO", env);
+  const branch = env.RENDER_BRANCH ?? "main";
+  const commit = requiredEnv("REVIEW_ROUTER_RENDER_COMMIT_SHA", env);
+  const imageDigest = requiredEnv("REVIEW_ROUTER_RENDER_IMAGE_DIGEST", env);
+  if (!/^[a-f0-9]{40}$/u.test(commit))
+    throw new Error(
+      "REVIEW_ROUTER_RENDER_COMMIT_SHA must be an exact 40-character lowercase SHA",
+    );
+  if (!/^sha256:[a-f0-9]{64}$/u.test(imageDigest))
+    throw new Error(
+      "REVIEW_ROUTER_RENDER_IMAGE_DIGEST must be an exact sha256 digest",
+    );
+  const webUrl = env.REVIEW_ROUTER_WEB_URL ?? "https://reviewrouter.site";
+  const apiUrl = env.REVIEW_ROUTER_API_URL ?? "https://api.reviewrouter.site";
+  assertHostedDeployEnv({ apiUrl, env, envFile, webUrl });
+  const privateKey = readGithubPrivateKey(env);
+  const client = new RenderClient(readRenderApiKey());
+
+  const database = await ensureDatabase(client, { environmentId, ownerId });
+  const readyDatabase = await waitForDatabase(client, database.id);
+  const common = {
+    apiUrl,
+    branch,
+    databaseUrl: readyDatabase.internalConnectionString,
+    env,
+    ownerId,
+    privateKey,
+    repo,
+    webUrl,
+  };
+  const serviceSpecs = [
+    {
+      healthCheckPath: "/",
+      name: "reviewrouter-web",
+      role: "web",
+      startCommand: "pnpm web:start",
+      type: "web_service",
+    },
+    {
+      healthCheckPath: "/health",
+      name: "reviewrouter-api",
+      role: "api",
+      startCommand: "HOST=0.0.0.0 pnpm api:start",
+      type: "web_service",
+    },
+    {
+      name: "reviewrouter-worker",
+      role: "worker",
+      startCommand: "pnpm worker:start",
+      type: "background_worker",
+    },
+  ];
+
+  const services = [];
+  for (const spec of serviceSpecs) {
+    const service = await ensureService(client, spec, common);
+    services.push({ service, spec });
+  }
+  await addToEnvironment(client, environmentId, [
+    readyDatabase.id,
+    ...services.map(({ service }) => service.id),
+  ]);
+  for (const { service, spec } of services)
+    await syncService(client, service, spec, common);
+  // Every existing service hook is cleared and GET-verified before the first
+  // deploy is allowed to start.
+  for (const { service } of services)
+    await disableAndVerifyPreDeployCommand(client, service);
+  const resolvedDeploys = [];
+  for (const { service } of services)
+    resolvedDeploys.push(
+      await triggerAndVerifyDeploy(client, service, { commit, imageDigest }),
+    );
+
+  console.log(
+    JSON.stringify(
+      {
+        database: { id: readyDatabase.id, status: readyDatabase.status },
+        services: services.map(({ service }, index) => ({
+          id: service.id,
+          name: service.name,
+          url: service.serviceDetails?.url ?? null,
+          deploy: resolvedDeploys[index]?.id ?? null,
+        })),
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  await main();
+}

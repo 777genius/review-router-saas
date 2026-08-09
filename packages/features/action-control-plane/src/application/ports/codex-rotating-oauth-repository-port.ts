@@ -44,6 +44,9 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
     readonly now: Date;
+    readonly newWorkAdmissionBarrier: Readonly<{
+      assertAdmitted(): void;
+    }>;
   }): Promise<CodexRotatingPreleaseRecord>;
 
   finalizeLease(input: {

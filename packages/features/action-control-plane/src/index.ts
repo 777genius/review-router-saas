@@ -1,5 +1,6 @@
 export * from "./domain/action-control-plane.js";
 export * from "./domain/codex-rotating-oauth-posting-window.js";
+export * from "./domain/codex-rotating-new-work-admission.js";
 export * from "./application/ports/action-oidc-replay-nonce-store-port.js";
 export * from "./application/ports/action-entitlement-policy-port.js";
 export * from "./application/ports/action-ledger-key-port.js";

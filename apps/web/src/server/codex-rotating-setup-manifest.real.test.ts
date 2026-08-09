@@ -21,6 +21,7 @@ import { PrismaCodexRotatingSetupRecovery } from "./prisma-codex-rotating-setup-
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
+const admitTestNewWork = { assertAdmitted: () => undefined };
 
 describe("Codex rotating setup schema guard", () => {
   it("keeps one active setup manifest per provider", () => {
@@ -197,6 +198,7 @@ describeDatabase("Codex rotating setup serialization", () => {
           githubRunId: "runtime-race-a",
           githubRunAttempt: "1",
           now: runtimeNow,
+          newWorkAdmissionBarrier: admitTestNewWork,
         }),
         secondRepository.acquirePrelease({
           repository: context,
@@ -204,6 +206,7 @@ describeDatabase("Codex rotating setup serialization", () => {
           githubRunId: "runtime-race-b",
           githubRunAttempt: "1",
           now: runtimeNow,
+          newWorkAdmissionBarrier: admitTestNewWork,
         }),
       ]);
       expect(runtimeRace.map((result) => result.status).sort()).toEqual([
@@ -322,6 +325,7 @@ describeDatabase("Codex rotating setup serialization", () => {
           githubRunId: "setup-runtime-race",
           githubRunAttempt: "1",
           now: new Date(),
+          newWorkAdmissionBarrier: admitTestNewWork,
         }),
       ]);
       expect(
@@ -366,6 +370,7 @@ describeDatabase("Codex rotating setup serialization", () => {
           githubRunId: "runtime-after-fetched-expiry",
           githubRunAttempt: "1",
           now: new Date(fetchedAt.getTime() + 60 * 60 * 1000),
+          newWorkAdmissionBarrier: admitTestNewWork,
         }),
       ).rejects.toThrow("codex_rotating_mutation_fence_conflict");
     } finally {
@@ -733,6 +738,7 @@ describeDatabase("Codex rotating setup serialization", () => {
           githubRunId: "runtime-during-setup-recovery",
           githubRunAttempt: "1",
           now: new Date(),
+          newWorkAdmissionBarrier: admitTestNewWork,
         }),
       ]);
       if (recoverRuntimeRace[0]!.status === "rejected") {
