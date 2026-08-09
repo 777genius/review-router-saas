@@ -115,6 +115,8 @@ import {
   reviewInvestigationCapabilityV1,
 } from "@reviewrouter/features-review-run-control";
 import {
+  annotateReviewActionV2InternalFailure,
+  ReviewActionV2InternalFailureStage,
   ReviewActionV2RouteFailure,
   type ReviewActionV2RouteFailureStatus,
   type RegisterReviewInvestigationV2RoutesDependencies,
@@ -1434,7 +1436,10 @@ async function commitTurn(
     request,
     dependencies: d,
   });
-  const observation = await parseCanonicalObservation(request, d);
+  const observation = await withTurnCommitDiagnosticStage(
+    ReviewActionV2InternalFailureStage.InvestigationTurnCommitObservation,
+    () => parseCanonicalObservation(request, d),
+  );
   const command = {
     commandId: request.idempotencyKey,
     investigationId: request.investigationId,
@@ -1454,8 +1459,10 @@ async function commitTurn(
     capabilityDeadline: leaseAuthority.resultReportUntil.toISOString(),
     drainDeadline: leaseAuthority.resultReportUntil.toISOString(),
   } as const;
-  const restored =
-    await d.investigations.commitTurn.restoreCommittedCommand(command);
+  const restored = await withTurnCommitDiagnosticStage(
+    ReviewActionV2InternalFailureStage.InvestigationTurnCommitRestore,
+    () => d.investigations.commitTurn.restoreCommittedCommand(command),
+  );
   if (restored !== null) {
     return {
       statusCode: 200 as const,
@@ -1465,10 +1472,9 @@ async function commitTurn(
       ),
     };
   }
-  const aggregate = await requireAggregate(
-    request.investigationId,
-    authorization,
-    d,
+  const aggregate = await withTurnCommitDiagnosticStage(
+    ReviewActionV2InternalFailureStage.InvestigationTurnCommitAggregate,
+    () => requireAggregate(request.investigationId, authorization, d),
   );
   await assertAggregateRollout(
     aggregate.activeTurn?.purpose === ReviewInvestigationTurnPurpose.Critic
@@ -1499,7 +1505,10 @@ async function commitTurn(
         "investigation_lease_attempt_stale",
       );
     }
-    result = await d.investigations.commitTurn.execute(command);
+    result = await withTurnCommitDiagnosticStage(
+      ReviewActionV2InternalFailureStage.InvestigationTurnCommitMutation,
+      () => d.investigations.commitTurn.execute(command),
+    );
   } catch (error) {
     if (
       error instanceof Error &&
@@ -1524,6 +1533,17 @@ async function commitTurn(
     statusCode: 201 as const,
     result: present(result, ReviewInvestigationMutationResultStatus.Applied),
   };
+}
+
+async function withTurnCommitDiagnosticStage<T>(
+  stage: ReviewActionV2InternalFailureStage,
+  execute: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await execute();
+  } catch (error) {
+    throw annotateReviewActionV2InternalFailure(error, stage);
+  }
 }
 
 async function abortTurn(

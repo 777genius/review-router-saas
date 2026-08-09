@@ -17,6 +17,8 @@ import {
   registerReviewPublicationRequestV2Routes,
   registerReviewRunControlV2Routes,
   registerReviewSnapshotReadV2Routes,
+  annotateReviewActionV2InternalFailure,
+  ReviewActionV2InternalFailureStage,
   ReviewActionV2RouteFailure,
 } from "../../v2/interface/index.js";
 
@@ -431,6 +433,80 @@ describe("Review Action v2 route registrars", () => {
       }),
     ]);
     expect(JSON.stringify(diagnostics)).not.toContain("authorization_secret");
+    await app.close();
+  });
+
+  it("records only allowlisted commit stage and nested failure codes", async () => {
+    const diagnostics: unknown[] = [];
+    const app = Fastify({ logger: false });
+    await registerReviewContextAttestationV2Routes(app, {
+      ...runtime,
+      recordProtocolRejection: (diagnostic) => diagnostics.push(diagnostic),
+      openGateway: {
+        capabilityEnabled: true,
+        execute: async () => {
+          const cause = new Error("authorization_secret_value");
+          const error = new Error("investigation_private_material_invalid", {
+            cause,
+          });
+          throw annotateReviewActionV2InternalFailure(
+            error,
+            ReviewActionV2InternalFailureStage.InvestigationTurnCommitMutation,
+          );
+        },
+      },
+    });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-context/gateway/open",
+      payload: reviewActionV2GoldenFixtures.review_context_gateway_open.request,
+    });
+
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        internalFailureClass: "Error",
+        internalFailureCode: "investigation_private_material_invalid",
+        internalFailureStage:
+          ReviewActionV2InternalFailureStage.InvestigationTurnCommitMutation,
+      }),
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain("authorization_secret");
+    await app.close();
+  });
+
+  it("records an allowlisted nested persistence code without exposing messages", async () => {
+    const diagnostics: unknown[] = [];
+    const app = Fastify({ logger: false });
+    await registerReviewContextAttestationV2Routes(app, {
+      ...runtime,
+      recordProtocolRejection: (diagnostic) => diagnostics.push(diagnostic),
+      openGateway: {
+        capabilityEnabled: true,
+        execute: async () => {
+          const cause = new Error("database connection details") as Error & {
+            code: string;
+          };
+          cause.code = "P2002";
+          throw new Error("wrapped persistence failure", { cause });
+        },
+      },
+    });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-context/gateway/open",
+      payload: reviewActionV2GoldenFixtures.review_context_gateway_open.request,
+    });
+
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        internalFailureClass: "Error",
+        internalFailureCode: "unclassified_internal_error",
+        internalFailureCauseCode: "prisma_unique_constraint",
+      }),
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain("database connection");
     await app.close();
   });
 
