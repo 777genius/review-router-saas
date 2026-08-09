@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertCanonicalCodexRotatingProviderId,
   canonicalCodexRotatingProviderId,
+  classifyCodexRotatingMutationOwnership,
   parseCodexRotatingMutationEpoch,
 } from "../index";
 
@@ -24,5 +25,57 @@ describe("rotating provider identity and mutation fence", () => {
     expect(() => parseCodexRotatingMutationEpoch(0n)).toThrow(
       "codex_rotating_mutation_epoch_invalid",
     );
+  });
+
+  it("keeps fetched installers active through the external PUT grace", () => {
+    const fetchedAt = new Date("2026-08-09T12:00:00.000Z");
+    const classify = (now: string) =>
+      classifyCodexRotatingMutationOwnership({
+        owner: "setup",
+        ownerId: "manifest_1",
+        now: new Date(now),
+        setup: {
+          id: "manifest_1",
+          status: "fetched",
+          expiresAt: fetchedAt,
+          lastFetchedAt: fetchedAt,
+        },
+      }).classification;
+    expect(classify("2026-08-09T12:14:59.999Z")).toBe("active");
+    expect(classify("2026-08-09T12:15:00.000Z")).toBe("recoverable");
+    expect(
+      classifyCodexRotatingMutationOwnership({
+        owner: "recovery",
+        ownerId: "late_manifest_1",
+        now: new Date("2026-08-09T12:14:59.999Z"),
+        setup: {
+          id: "manifest_1",
+          status: "fetched",
+          expiresAt: fetchedAt,
+          lastFetchedAt: fetchedAt,
+        },
+      }).classification,
+    ).toBe("active");
+  });
+
+  it("models a runtime claim through lease expiry plus grace", () => {
+    const result = classifyCodexRotatingMutationOwnership({
+      owner: "runtime",
+      ownerId: "lease_1",
+      now: new Date("2026-08-09T12:20:00.000Z"),
+      writeback: {
+        id: "intent_1",
+        leaseId: "lease_1",
+        status: "pending",
+        claimedAt: new Date("2026-08-09T12:00:00.000Z"),
+        claimMarker: true,
+      },
+      runtimeLease: {
+        id: "lease_1",
+        status: "finalized",
+        expiresAt: new Date("2026-08-09T12:10:00.000Z"),
+      },
+    });
+    expect(result).toMatchObject({ classification: "active" });
   });
 });

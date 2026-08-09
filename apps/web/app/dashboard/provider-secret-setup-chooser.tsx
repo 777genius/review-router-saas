@@ -499,9 +499,10 @@ export function ProviderSecretSetupChooser({
                     className="mt-1 h-4 w-4 accent-cyan-300"
                   />
                   <span>
-                    I understand the GitHub secret may already have changed and
-                    recovery will abandon the unknown setup result before
-                    issuing one forced reseed command.
+                    I confirm every prior installer and runtime writer is
+                    stopped. The GitHub secret may already have changed;
+                    recovery will wait for the external-write grace deadline
+                    before issuing a forced reseed command.
                   </span>
                 </label>
                 <Button
@@ -518,7 +519,7 @@ export function ProviderSecretSetupChooser({
                     formData.set("repositoryId", repositoryId);
                     formData.set(
                       "acknowledgement",
-                      "github_secret_may_have_changed",
+                      "all_prior_installers_and_writers_are_stopped",
                     );
                     const recoveryRequestId =
                       setupRecoveryRequestId ?? crypto.randomUUID();
@@ -895,6 +896,12 @@ function rotatingSetupCommandErrorText(error: string): string {
       return "This provider identity is quarantined. An operator must inspect and repair the repository/provider binding; recovery will not rewrite the immutable identity.";
     case "codex_rotating_mutation_fence_conflict":
       return "A runtime credential mutation is still fenced for this repository. Wait for it to finish or use the documented recovery path if its outcome is unknown.";
+    case "codex_rotating_mutation_still_active":
+      return "A prior installer or runtime writer is still inside its external-write deadline. Stop it and wait for the recovery grace period before retrying.";
+    case "codex_rotating_mutation_ownership_ambiguous":
+      return "ReviewRouter cannot prove which installer or writer owns this mutation. Keep setup blocked and use the operator recovery procedure.";
+    case "codex_rotating_setup_recovery_request_conflict":
+      return "Another recovery request already owns this repository. Retry the original recovery request instead of starting a new one.";
     case "codex_rotating_setup_lock_failed":
       return "ReviewRouter could not reserve this repository for Codex setup because another request held the setup lock. Wait a few seconds, then retry.";
     case "codex_rotating_installer_missing":

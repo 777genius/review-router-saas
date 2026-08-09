@@ -262,6 +262,22 @@ describeDatabase("Codex rotating setup serialization", () => {
         { status: "pending", safeErrorCode: "runtime_write_claim_v1" },
       ]);
       await expect(
+        recoverCodexRotatingSetup(
+          {
+            workspaceId,
+            repositoryId: raceRepositoryId,
+            githubRepositoryId: raceGithubRepositoryId,
+            recoveryRequestId: `recovery:${randomUUID()}`,
+            actor: "user:github:operator",
+            acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+            now: runtimeNow,
+          },
+          {
+            recovery: new PrismaCodexRotatingSetupRecovery(concurrentPrisma[0]),
+          },
+        ),
+      ).rejects.toThrow("codex_rotating_mutation_still_active");
+      await expect(
         issueCodexRotatingSetupCommand({
           prisma: concurrentPrisma[0],
           workspaceId,
@@ -276,6 +292,73 @@ describeDatabase("Codex rotating setup serialization", () => {
           now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
         }),
       ).rejects.toThrow("codex_rotating_mutation_fence_conflict");
+      const claimedIntent =
+        await prisma.codexOAuthWritebackIntent.findFirstOrThrow({
+          where: {
+            providerInstanceId,
+            idempotencyKey: "pending-after-expiry",
+          },
+          select: { id: true },
+        });
+      const elapsedRecoveryRequestId = `recovery:${randomUUID()}`;
+      const elapsedRecovery = await recoverCodexRotatingSetup(
+        {
+          workspaceId,
+          repositoryId: raceRepositoryId,
+          githubRepositoryId: raceGithubRepositoryId,
+          recoveryRequestId: elapsedRecoveryRequestId,
+          actor: "user:github:operator",
+          acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+          now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
+        },
+        {
+          recovery: new PrismaCodexRotatingSetupRecovery(concurrentPrisma[0]),
+        },
+      );
+      await issueCodexRotatingSetupCommand({
+        prisma: concurrentPrisma[0],
+        workspaceId,
+        repositoryId: raceRepositoryId,
+        repositoryFullName: fullName,
+        githubRepositoryId: raceGithubRepositoryId,
+        installer,
+        installerArguments: ["--force-reseed"],
+        recovery: {
+          requestId: elapsedRecoveryRequestId,
+          epoch: elapsedRecovery.recoveryEpoch,
+        },
+        setupManifestUrl:
+          "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+        setupConfirmUrl:
+          "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+        now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
+      });
+      await firstRepository.markEncryptedWritebackFailed({
+        intentId: claimedIntent.id,
+        safeErrorCode: "late_transport_failure",
+        now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
+      });
+      await expect(
+        prisma.codexOAuthProviderInstance.findUniqueOrThrow({
+          where: { providerInstanceId },
+          select: { mutationOwner: true },
+        }),
+      ).resolves.toEqual({ mutationOwner: "setup" });
+      await expect(
+        firstRepository.confirmEncryptedWriteback({
+          intentId: claimedIntent.id,
+          now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
+        }),
+      ).resolves.toMatchObject({ status: "recovery_required" });
+      await expect(
+        prisma.codexOAuthProviderInstance.findUniqueOrThrow({
+          where: { providerInstanceId },
+          select: { state: true, mutationOwner: true },
+        }),
+      ).resolves.toEqual({
+        state: "unknown_auth_state",
+        mutationOwner: "recovery",
+      });
 
       await prisma.codexOAuthLease.deleteMany({
         where: { repositoryId: raceRepositoryId },
@@ -704,9 +787,24 @@ describeDatabase("Codex rotating setup serialization", () => {
       ).rejects.toThrow("codex_rotating_setup_recovery_required");
 
       const recoveryRequestId = `recovery:${randomUUID()}`;
+      const recoveryNow = new Date(Date.now() + 16 * 60 * 1000);
       const recoveryAdapter = new PrismaCodexRotatingSetupRecovery(
         concurrentPrisma[0],
       );
+      await expect(
+        recoverCodexRotatingSetup(
+          {
+            workspaceId,
+            repositoryId: recoveryRepositoryId,
+            githubRepositoryId: recoveryGithubRepositoryId,
+            recoveryRequestId,
+            actor: "user:github:operator",
+            acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+            now: new Date(),
+          },
+          { recovery: recoveryAdapter },
+        ),
+      ).rejects.toThrow("codex_rotating_mutation_still_active");
       const runtimeRepository = new PrismaCodexRotatingOAuthRepository(
         concurrentPrisma[1],
         { actionOwnerRepo: "777genius/review-router" },
@@ -720,6 +818,7 @@ describeDatabase("Codex rotating setup serialization", () => {
             recoveryRequestId,
             actor: "user:github:operator",
             acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+            now: recoveryNow,
           },
           { recovery: recoveryAdapter },
         ),
@@ -776,6 +875,95 @@ describeDatabase("Codex rotating setup serialization", () => {
       ]);
       expect(firstReseed.command).toBe(retryReseed.command);
       expect(firstReseed.command).toContain("--force-reseed");
+      const firstForcedManifest =
+        await prisma.codexOAuthSetupManifest.findFirstOrThrow({
+          where: { repositoryId: recoveryRepositoryId, status: "issued" },
+          select: { setupNonce: true, expiresAt: true },
+        });
+      await expect(
+        issueCodexRotatingSetupCommand({
+          prisma,
+          workspaceId,
+          repositoryId: recoveryRepositoryId,
+          repositoryFullName: recoveryFullName,
+          githubRepositoryId: recoveryGithubRepositoryId,
+          installer,
+          now: new Date(firstForcedManifest.expiresAt.getTime() + 1),
+          setupManifestUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+          setupConfirmUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+        }),
+      ).rejects.toThrow("codex_rotating_setup_recovery_required");
+      const reissued = await issueCodexRotatingSetupCommand({
+        prisma,
+        workspaceId,
+        repositoryId: recoveryRepositoryId,
+        repositoryFullName: recoveryFullName,
+        githubRepositoryId: recoveryGithubRepositoryId,
+        installer,
+        installerArguments: ["--force-reseed"],
+        recovery: {
+          requestId: recoveryRequestId,
+          epoch: recovered.recoveryEpoch,
+        },
+        now: new Date(firstForcedManifest.expiresAt.getTime() + 1),
+        setupManifestUrl:
+          "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+        setupConfirmUrl:
+          "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+      });
+      expect(reissued.command).toContain("--force-reseed");
+      expect(reissued.command).not.toBe(firstReseed.command);
+      await expect(
+        prisma.codexOAuthSetupManifest.count({
+          where: { repositoryId: recoveryRepositoryId, status: "issued" },
+        }),
+      ).resolves.toBe(1);
+      const recoveryLedger = await prisma.$queryRaw<
+        Array<{
+          recoveryRequestId: string;
+          actor: string;
+          acknowledgement: string;
+          mutationEpoch: bigint;
+          mode: string;
+          state: string;
+          latestManifestId: string | null;
+          requestedAt: Date;
+          activatedAt: Date;
+          updatedAt: Date;
+          completedAt: Date | null;
+        }>
+      >`
+        SELECT "recoveryRequestId", "actor", "acknowledgement",
+               "mutationEpoch", "mode", "state", "latestManifestId",
+               "requestedAt", "activatedAt", "updatedAt", "completedAt"
+        FROM "CodexOAuthSetupRecoveryRequest"
+        WHERE "providerInstanceRowId" = (
+          SELECT "id" FROM "CodexOAuthProviderInstance"
+          WHERE "providerInstanceId" = ${original.providerInstanceId}
+        )
+          AND "recoveryRequestId" = ${recoveryRequestId}
+      `;
+      expect(recoveryLedger).toHaveLength(1);
+      expect(recoveryLedger[0]).toMatchObject({
+        recoveryRequestId,
+        actor: "user:github:operator",
+        acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+        mutationEpoch: recovered.recoveryEpoch,
+        mode: "forced_reseed",
+        state: "manifest_issued",
+        latestManifestId: expect.any(String),
+        requestedAt: expect.any(Date),
+        activatedAt: expect.any(Date),
+        updatedAt: expect.any(Date),
+        completedAt: null,
+      });
+      expect(
+        JSON.stringify(recoveryLedger, (_key, value: unknown) =>
+          typeof value === "bigint" ? value.toString(10) : value,
+        ),
+      ).not.toMatch(/AUTH_JSON|access.token|refresh.token/i);
       const replay = await recoverCodexRotatingSetup(
         {
           workspaceId,
@@ -791,6 +979,19 @@ describeDatabase("Codex rotating setup serialization", () => {
         status: "idempotent_replay",
         recoveryEpoch: recovered.recoveryEpoch,
       });
+      await expect(
+        recoverCodexRotatingSetup(
+          {
+            workspaceId,
+            repositoryId: recoveryRepositoryId,
+            githubRepositoryId: recoveryGithubRepositoryId,
+            recoveryRequestId: `recovery:${randomUUID()}`,
+            actor: "user:github:operator",
+            acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+          },
+          { recovery: recoveryAdapter },
+        ),
+      ).rejects.toThrow("codex_rotating_setup_recovery_request_conflict");
       await expect(
         prisma.codexOAuthSetupManifest.count({
           where: { repositoryId: recoveryRepositoryId, status: "issued" },
@@ -853,6 +1054,29 @@ describeDatabase("Codex rotating setup serialization", () => {
       expect(
         recoverConfirmRace.filter((result) => result.status === "fulfilled"),
       ).toHaveLength(1);
+      await expect(
+        withRotatingRepositoryAllowed(
+          () =>
+            confirmCodexRotatingSetupManifest({
+              prisma,
+              payload: confirmation(
+                firstForcedManifest.setupNonce,
+                recoveryGithubRepositoryId,
+                "e".repeat(43),
+              ),
+            }),
+          recoveryFullName,
+        ),
+      ).rejects.toThrow("codex_rotating_setup_confirmation_stale_epoch");
+      await expect(
+        prisma.codexOAuthProviderInstance.findUniqueOrThrow({
+          where: { providerInstanceId: original.providerInstanceId },
+          select: { state: true, mutationOwner: true },
+        }),
+      ).resolves.toEqual({
+        state: "unknown_auth_state",
+        mutationOwner: "recovery",
+      });
     } finally {
       await prisma.repositoryConnection.delete({
         where: { id: recoveryRepositoryId },

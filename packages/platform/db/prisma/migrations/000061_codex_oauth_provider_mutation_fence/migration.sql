@@ -59,6 +59,46 @@ CREATE TABLE "CodexOAuthChildIdentityQuarantine" (
   PRIMARY KEY ("childKind", "childId")
 );
 
+-- BEGIN durable setup recovery request ledger (kept separable for rollout review)
+CREATE TABLE "CodexOAuthSetupRecoveryRequest" (
+  "id" TEXT PRIMARY KEY,
+  "providerInstanceRowId" TEXT NOT NULL,
+  "recoveryRequestId" TEXT NOT NULL,
+  "actor" TEXT NOT NULL,
+  "acknowledgement" TEXT NOT NULL,
+  "mutationEpoch" BIGINT NOT NULL,
+  "mode" TEXT NOT NULL,
+  "state" TEXT NOT NULL,
+  "latestManifestId" TEXT,
+  "requestedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "activatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "completedAt" TIMESTAMP(3),
+  "updatedAt" TIMESTAMP(3) NOT NULL,
+  CONSTRAINT "CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey"
+    FOREIGN KEY ("providerInstanceRowId") REFERENCES "CodexOAuthProviderInstance"("id")
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT "CodexOAuthSetupRecoveryRequest_latestManifestId_fkey"
+    FOREIGN KEY ("latestManifestId") REFERENCES "CodexOAuthSetupManifest"("id")
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT "CodexOAuthSetupRecoveryRequest_epoch_check"
+    CHECK ("mutationEpoch" > 0),
+  CONSTRAINT "CodexOAuthSetupRecoveryRequest_contract_check" CHECK (
+    "acknowledgement" = 'all_prior_installers_and_writers_are_stopped'
+    AND "mode" = 'forced_reseed'
+    AND "state" IN ('active', 'manifest_issued', 'completed', 'superseded')
+  )
+);
+CREATE UNIQUE INDEX "CodexOAuthSetupRecoveryRequest_provider_request_key"
+  ON "CodexOAuthSetupRecoveryRequest"("providerInstanceRowId", "recoveryRequestId");
+CREATE UNIQUE INDEX "CodexOAuthSetupRecoveryRequest_latestManifestId_key"
+  ON "CodexOAuthSetupRecoveryRequest"("latestManifestId");
+CREATE INDEX "CodexOAuthSetupRecoveryRequest_provider_state_idx"
+  ON "CodexOAuthSetupRecoveryRequest"("providerInstanceRowId", "state");
+CREATE UNIQUE INDEX "CodexOAuthSetupRecoveryRequest_one_active_provider_key"
+  ON "CodexOAuthSetupRecoveryRequest"("providerInstanceRowId")
+  WHERE "state" IN ('active', 'manifest_issued');
+-- END durable setup recovery request ledger
+
 INSERT INTO "CodexOAuthProviderIdentityQuarantine" (
   "providerInstanceRowId", "observedWorkspaceId", "observedRepositoryId",
   "observedProviderInstanceId", "expectedProviderInstanceId", "reason", "evidenceJson"

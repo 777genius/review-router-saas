@@ -37,6 +37,17 @@ describe("Codex OAuth provider mutation fence migration", () => {
       'CREATE CONSTRAINT TRIGGER "RepositoryConnection_codex_oauth_identity_guard"',
     );
     expect(sql).toContain("DEFERRABLE INITIALLY IMMEDIATE");
+    expect(sql).toContain('CREATE TABLE "CodexOAuthSetupRecoveryRequest"');
+    expect(sql).toContain(
+      '"CodexOAuthSetupRecoveryRequest_one_active_provider_key"',
+    );
+    expect(sql).toContain(
+      '"CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey"',
+    );
+    expect(sql).toContain(
+      '"CodexOAuthSetupRecoveryRequest_latestManifestId_fkey"',
+    );
+    expect(sql).toContain("'all_prior_installers_and_writers_are_stopped'");
     expect(sql).toContain("codex_oauth_provider_identity_immutable");
     expect(sql).toContain("codex_oauth_child_mutation_epoch_mismatch");
     expect(sql).toContain("codex_oauth_child_mutation_owner_mismatch");

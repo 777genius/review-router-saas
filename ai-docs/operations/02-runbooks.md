@@ -139,15 +139,19 @@ runtime issuance remain closed with
 `codex_rotating_setup_recovery_required`.
 
 A repository operator with write, maintain, or admin access must reopen the
-Codex provider setup in the dashboard, read the warning, check the explicit
-acknowledgement that the GitHub secret may already have changed, and choose
+Codex provider setup in the dashboard, stop every prior installer and runtime
+writer, read the warning, check the explicit acknowledgement, and choose
 **Recover and issue forced reseed**. The equivalent authenticated CLI API is
 `POST /api/codex-rotating/cli/setup-recovery` with the repository, a stable
 operator-generated `recoveryRequestId`, and the exact acknowledgement
-`github_secret_may_have_changed`. Retry a dropped response with the same request
-ID. Recovery advances the mutation epoch, safely terminalizes the ambiguous
-manifest and pending intent, records only safe identifiers in the audit log,
-and issues exactly one `--force-reseed` command.
+`all_prior_installers_and_writers_are_stopped`. Recovery remains refused until
+the conservative external-write grace/deadline has elapsed. Retry a dropped
+response with the same request ID; the durable recovery ledger preserves the
+forced-reseed provenance across response loss and manifest expiry. A different
+request ID conflicts while that recovery is active. Recovery advances the
+mutation epoch, safely terminalizes the abandoned manifest or intent, records
+only safe identifiers, and maintains exactly one active `--force-reseed`
+command.
 
 Do not use setup recovery for `codex_rotating_identity_quarantined`. Authorized
 operators can inspect safe quarantine details through

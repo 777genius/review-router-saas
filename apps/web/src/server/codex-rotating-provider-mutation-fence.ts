@@ -82,6 +82,7 @@ export async function pinCodexRotatingSetupRecovery(
   providerInstanceRowId: string,
   manifestId: string,
 ): Promise<void> {
+  const now = new Date();
   await prisma.codexOAuthProviderInstance.update({
     where: { id: providerInstanceRowId },
     data: {
@@ -91,4 +92,10 @@ export async function pinCodexRotatingSetupRecovery(
       mutationOwnerId: manifestId,
     },
   });
+  await prisma.$executeRaw`
+    UPDATE "CodexOAuthSetupRecoveryRequest"
+    SET "state" = 'superseded', "completedAt" = ${now}, "updatedAt" = ${now}
+    WHERE "providerInstanceRowId" = ${providerInstanceRowId}
+      AND "state" IN ('active', 'manifest_issued')
+  `;
 }

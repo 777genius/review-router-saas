@@ -7,8 +7,7 @@ import {
 const recoverable = {
   canonicalIdentity: true,
   quarantined: false,
-  hasFetchedManifest: true,
-  hasAmbiguousWritebackIntent: false,
+  mutationOwnership: "recoverable",
   recoveryRequestAlreadyApplied: false,
 } as const;
 
@@ -42,4 +41,19 @@ describe("Codex rotating setup recovery policy", () => {
       }),
     ).toEqual({ kind: "idempotent_replay" });
   });
+
+  it.each([
+    ["active", "codex_rotating_mutation_still_active"],
+    ["ambiguous", "codex_rotating_mutation_ownership_ambiguous"],
+  ] as const)(
+    "refuses %s external mutation ownership",
+    (classification, code) => {
+      expect(() =>
+        decideCodexRotatingSetupRecovery({
+          acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+          snapshot: { ...recoverable, mutationOwnership: classification },
+        }),
+      ).toThrow(code);
+    },
+  );
 });

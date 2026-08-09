@@ -1,9 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
   canonicalCodexRotatingProviderId,
+  classifyCodexRotatingMutationOwnership,
   codexRotatingAuthMode,
+  codexRotatingSetupRecoveryAcknowledgement,
   codexRotatingSecretName,
+  codexRotatingWritebackClaimMarker,
   type CodexRotatingIdentityQuarantineReadModel,
   type CodexRotatingSetupRecoveryPort,
   type CodexRotatingSetupRecoveryResult,
@@ -15,10 +19,6 @@ import {
 } from "./codex-rotating-provider-mutation-fence";
 
 const recoveryTransactionTimeoutMs = 10_000;
-
-type RecoveredMarker = {
-  readonly mutationEpoch: bigint;
-};
 
 export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecoveryPort {
   constructor(private readonly prisma: PrismaClient) {}
@@ -102,45 +102,86 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
           input.decide({
             canonicalIdentity: false,
             quarantined: true,
-            hasFetchedManifest: false,
-            hasAmbiguousWritebackIntent: false,
+            mutationOwnership: "ambiguous",
             recoveryRequestAlreadyApplied: false,
           });
           throw new Error("codex_rotating_identity_quarantined");
         }
-        const provider = await tx.codexOAuthProviderInstance.findUnique({
+        const providerLocator = await tx.codexOAuthProviderInstance.findUnique({
           where: {
             repositoryId_authMode: {
               repositoryId: input.repositoryId,
               authMode: codexRotatingAuthMode,
             },
           },
+          select: { id: true },
+        });
+        if (!providerLocator) {
+          throw new Error("codex_rotating_provider_not_found");
+        }
+        await lockCodexRotatingProviderRow(tx, providerLocator.id);
+
+        // The row lock is the serialization point. Never decide from the
+        // locator snapshot read before it was acquired.
+        const provider = await tx.codexOAuthProviderInstance.findUniqueOrThrow({
+          where: { id: providerLocator.id },
           include: {
             repository: {
               select: { workspaceId: true, githubRepositoryId: true },
             },
           },
         });
-        if (!provider) {
-          throw new Error("codex_rotating_provider_not_found");
-        }
-        await lockCodexRotatingProviderRow(tx, provider.id);
 
         const quarantine = await findQuarantine(tx, provider.id);
-        const marker = await findRecoveredMarker(
+        const request = await findRecoveryRequest(
           tx,
           provider.id,
-          input.repositoryId,
           input.recoveryRequestId,
         );
-        const fetched = await tx.codexOAuthSetupManifest.findFirst({
-          where: { providerInstanceRowId: provider.id, status: "fetched" },
-          select: { id: true },
+        const activeOtherRequest = await findOtherActiveRecoveryRequest(
+          tx,
+          provider.id,
+          input.recoveryRequestId,
+        );
+        if (activeOtherRequest) {
+          throw new Error("codex_rotating_setup_recovery_request_conflict");
+        }
+        if (request && !["active", "manifest_issued"].includes(request.state)) {
+          throw new Error("codex_rotating_setup_recovery_already_used");
+        }
+        const setup = await tx.codexOAuthSetupManifest.findFirst({
+          where: {
+            providerInstanceRowId: provider.id,
+            status: { in: ["issued", "fetched"] },
+          },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          select: {
+            id: true,
+            status: true,
+            expiresAt: true,
+            lastFetchedAt: true,
+          },
         });
         const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
           where: { providerInstanceRowId: provider.id, status: "pending" },
-          select: { id: true },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          select: {
+            id: true,
+            leaseId: true,
+            status: true,
+            createdAt: true,
+            safeErrorCode: true,
+          },
         });
+        const runtimeLease = provider.mutationOwnerId
+          ? await tx.codexOAuthLease.findFirst({
+              where: {
+                id: provider.mutationOwnerId,
+                providerInstanceRowId: provider.id,
+              },
+              select: { id: true, status: true, expiresAt: true },
+            })
+          : null;
         const canonicalIdentity =
           provider.repository.workspaceId === input.workspaceId &&
           provider.repository.githubRepositoryId?.toString() ===
@@ -149,23 +190,43 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
           provider.providerInstanceId === expectedProviderInstanceId &&
           provider.authMode === codexRotatingAuthMode &&
           provider.secretName === codexRotatingSecretName;
+        const ownership = classifyCodexRotatingMutationOwnership({
+          owner: provider.mutationOwner,
+          ownerId: provider.mutationOwnerId,
+          now: input.now,
+          setup,
+          writeback: pendingIntent
+            ? {
+                id: pendingIntent.id,
+                leaseId: pendingIntent.leaseId,
+                status: pendingIntent.status,
+                claimedAt: pendingIntent.createdAt,
+                claimMarker:
+                  pendingIntent.safeErrorCode ===
+                  codexRotatingWritebackClaimMarker,
+              }
+            : null,
+          runtimeLease,
+        });
         const decision = input.decide({
           canonicalIdentity,
           quarantined: quarantine !== null,
-          hasFetchedManifest: fetched !== null,
-          hasAmbiguousWritebackIntent:
-            pendingIntent !== null || provider.mutationOwner === "recovery",
-          recoveryRequestAlreadyApplied: marker !== null,
+          mutationOwnership: ownership.classification,
+          recoveryRequestAlreadyApplied:
+            request?.state === "active" || request?.state === "manifest_issued",
         });
         if (decision.kind === "idempotent_replay") {
+          if (!request)
+            throw new Error("codex_rotating_setup_recovery_required");
           return {
             status: "idempotent_replay" as const,
-            recoveryEpoch: marker!.mutationEpoch,
+            recoveryEpoch: request.mutationEpoch,
           };
         }
 
         const recoveryOwnerId = `setup-recovery:${input.recoveryRequestId}`;
         const recoveryEpoch = provider.mutationEpoch + 1n;
+        const sanitizedActor = sanitizeRecoveryActor(input.actor);
         await tx.codexOAuthProviderInstance.update({
           where: { id: provider.id },
           data: {
@@ -177,8 +238,19 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
             mutationOwnerId: recoveryOwnerId,
           },
         });
+        await insertRecoveryRequest(tx, {
+          id: `codex_recovery_${randomUUID()}`,
+          providerInstanceRowId: provider.id,
+          recoveryRequestId: input.recoveryRequestId,
+          actor: sanitizedActor,
+          mutationEpoch: recoveryEpoch,
+          now: input.now,
+        });
         await tx.codexOAuthSetupManifest.updateMany({
-          where: { providerInstanceRowId: provider.id, status: "fetched" },
+          where: {
+            providerInstanceRowId: provider.id,
+            status: { in: ["issued", "fetched"] },
+          },
           data: {
             status: "recovered",
             consumedAt: input.now,
@@ -206,7 +278,7 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         await tx.auditEvent.create({
           data: {
             workspaceId: input.workspaceId,
-            actor: input.actor,
+            actor: sanitizedActor,
             action: "codex_rotating.setup_recovered",
             targetType: "repository",
             targetId: input.repositoryId,
@@ -214,8 +286,7 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
               source: "operator",
               recoveryRequestId: input.recoveryRequestId,
               recoveryEpoch: recoveryEpoch.toString(10),
-              fetchedSetupRecovered: fetched !== null,
-              pendingIntentRecovered: pendingIntent !== null,
+              previousOwnership: ownership.classification,
             },
           },
         });
@@ -224,6 +295,75 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
       { timeout: recoveryTransactionTimeoutMs },
     );
   }
+}
+
+type RecoveryRequestRow = {
+  readonly id: string;
+  readonly mutationEpoch: bigint;
+  readonly state: string;
+};
+
+async function findRecoveryRequest(
+  tx: Prisma.TransactionClient,
+  providerInstanceRowId: string,
+  recoveryRequestId: string,
+): Promise<RecoveryRequestRow | null> {
+  const rows = await tx.$queryRaw<RecoveryRequestRow[]>`
+    SELECT "id", "mutationEpoch", "state"
+    FROM "CodexOAuthSetupRecoveryRequest"
+    WHERE "providerInstanceRowId" = ${providerInstanceRowId}
+      AND "recoveryRequestId" = ${recoveryRequestId}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+async function findOtherActiveRecoveryRequest(
+  tx: Prisma.TransactionClient,
+  providerInstanceRowId: string,
+  recoveryRequestId: string,
+): Promise<{ readonly id: string } | null> {
+  const rows = await tx.$queryRaw<Array<{ readonly id: string }>>`
+    SELECT "id" FROM "CodexOAuthSetupRecoveryRequest"
+    WHERE "providerInstanceRowId" = ${providerInstanceRowId}
+      AND "recoveryRequestId" <> ${recoveryRequestId}
+      AND "state" IN ('active', 'manifest_issued')
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+async function insertRecoveryRequest(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly id: string;
+    readonly providerInstanceRowId: string;
+    readonly recoveryRequestId: string;
+    readonly actor: string;
+    readonly mutationEpoch: bigint;
+    readonly now: Date;
+  },
+): Promise<void> {
+  await tx.$executeRaw`
+    INSERT INTO "CodexOAuthSetupRecoveryRequest" (
+      "id", "providerInstanceRowId", "recoveryRequestId", "actor",
+      "acknowledgement", "mutationEpoch", "mode", "state",
+      "requestedAt", "activatedAt", "updatedAt"
+    ) VALUES (
+      ${input.id}, ${input.providerInstanceRowId}, ${input.recoveryRequestId},
+      ${input.actor}, ${codexRotatingSetupRecoveryAcknowledgement},
+      ${input.mutationEpoch}, 'forced_reseed', 'active',
+      ${input.now}, ${input.now}, ${input.now}
+    )
+  `;
+}
+
+function sanitizeRecoveryActor(actor: string): string {
+  const sanitized = actor
+    .trim()
+    .replace(/[^A-Za-z0-9_.:@+-]/g, "_")
+    .slice(0, 200);
+  return sanitized || "unknown_operator";
 }
 
 type QuarantineRow = {
@@ -267,35 +407,6 @@ async function findScopedQuarantine(
       ON repository."id" = quarantine."observedRepositoryId"
     WHERE repository."workspaceId" = ${input.workspaceId}
       AND repository."id" = ${input.repositoryId}
-    LIMIT 1
-  `;
-  return rows[0] ?? null;
-}
-
-async function findRecoveredMarker(
-  tx: Prisma.TransactionClient,
-  providerInstanceRowId: string,
-  repositoryId: string,
-  recoveryRequestId: string,
-): Promise<RecoveredMarker | null> {
-  const rows = await tx.$queryRaw<RecoveredMarker[]>`
-    SELECT marker."mutationEpoch" FROM (
-      SELECT ("confirmationJson"->>'recoveryEpoch')::bigint AS "mutationEpoch",
-             "consumedAt" AS "recordedAt"
-      FROM "CodexOAuthSetupManifest"
-      WHERE "providerInstanceRowId" = ${providerInstanceRowId}
-        AND "status" = 'recovered'
-        AND "confirmationJson"->>'recoveryRequestId' = ${recoveryRequestId}
-      UNION ALL
-      SELECT ("metadata"->>'recoveryEpoch')::bigint AS "mutationEpoch",
-             "createdAt" AS "recordedAt"
-      FROM "AuditEvent"
-      WHERE "targetType" = 'repository'
-        AND "targetId" = ${repositoryId}
-        AND "action" = 'codex_rotating.setup_recovered'
-        AND "metadata"->>'recoveryRequestId' = ${recoveryRequestId}
-    ) marker
-    ORDER BY marker."recordedAt" DESC
     LIMIT 1
   `;
   return rows[0] ?? null;

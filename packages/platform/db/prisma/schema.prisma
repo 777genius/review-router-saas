@@ -332,11 +332,12 @@ model CodexOAuthProviderInstance {
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
-  workspace        Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  repository       RepositoryConnection        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
-  leases           CodexOAuthLease[]
-  writebackIntents CodexOAuthWritebackIntent[]
-  setupManifests   CodexOAuthSetupManifest[]
+  workspace             Workspace                        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository            RepositoryConnection             @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  leases                CodexOAuthLease[]
+  writebackIntents      CodexOAuthWritebackIntent[]
+  setupManifests        CodexOAuthSetupManifest[]
+  setupRecoveryRequests CodexOAuthSetupRecoveryRequest[]
 
   @@unique([repositoryId, authMode])
   @@index([workspaceId, state])
@@ -389,14 +390,37 @@ model CodexOAuthSetupManifest {
   confirmationJson      Json?
   mutationEpoch         BigInt?
 
-  workspace        Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  repository       RepositoryConnection       @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
-  providerInstance CodexOAuthProviderInstance @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+  workspace                Workspace                       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository               RepositoryConnection            @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  providerInstance         CodexOAuthProviderInstance      @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+  latestForRecoveryRequest CodexOAuthSetupRecoveryRequest? @relation("CodexOAuthRecoveryLatestManifest")
 
   @@index([repositoryId, status])
   @@index([providerInstanceId, status])
   @@index([expiresAt])
   @@index([providerInstanceRowId, mutationEpoch], map: "CodexOAuthSetupManifest_provider_epoch_idx")
+}
+
+model CodexOAuthSetupRecoveryRequest {
+  id                    String    @id @default(cuid())
+  providerInstanceRowId String
+  recoveryRequestId     String
+  actor                 String
+  acknowledgement       String
+  mutationEpoch         BigInt
+  mode                  String
+  state                 String
+  latestManifestId      String?   @unique
+  requestedAt           DateTime  @default(now())
+  activatedAt           DateTime  @default(now())
+  completedAt           DateTime?
+  updatedAt             DateTime  @updatedAt
+
+  providerInstance CodexOAuthProviderInstance @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+  latestManifest   CodexOAuthSetupManifest?   @relation("CodexOAuthRecoveryLatestManifest", fields: [latestManifestId], references: [id], onDelete: SetNull)
+
+  @@unique([providerInstanceRowId, recoveryRequestId], map: "CodexOAuthSetupRecoveryRequest_provider_request_key")
+  @@index([providerInstanceRowId, state], map: "CodexOAuthSetupRecoveryRequest_provider_state_idx")
 }
 
 model CodexOAuthLease {

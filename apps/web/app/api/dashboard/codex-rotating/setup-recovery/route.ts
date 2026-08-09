@@ -166,6 +166,9 @@ function safeRecoveryErrorCode(error: unknown): string {
     "installation_not_active",
     "repository_mutation_forbidden",
     "workspace_mutation_forbidden",
+    "dashboard_mutation_requires_sign_in",
+    "dashboard_auth_misconfigured",
+    "dashboard_mutations_disabled",
     "codex_rotating_provider_not_found",
     "codex_rotating_provider_identity_mismatch",
     "codex_rotating_identity_quarantined",
@@ -174,6 +177,9 @@ function safeRecoveryErrorCode(error: unknown): string {
     "codex_rotating_setup_recovery_not_required",
     "codex_rotating_setup_recovery_already_used",
     "codex_rotating_setup_recovery_required",
+    "codex_rotating_setup_recovery_request_conflict",
+    "codex_rotating_mutation_still_active",
+    "codex_rotating_mutation_ownership_ambiguous",
     "codex_rotating_setup_issuance_quiesced",
     "codex_rotating_setup_lock_failed",
     "rate_limited",
@@ -184,6 +190,14 @@ function safeRecoveryErrorCode(error: unknown): string {
 function statusForRecoveryError(code: string): number {
   if (code === "repository_not_found") return 404;
   if (code === "rate_limited") return 429;
+  if (code === "codex_rotating_setup_issuance_quiesced") return 503;
+  if (code === "dashboard_mutation_requires_sign_in") return 401;
+  if (
+    code === "dashboard_auth_misconfigured" ||
+    code === "dashboard_mutations_disabled"
+  ) {
+    return 503;
+  }
   if (
     code === "repository_mutation_forbidden" ||
     code === "workspace_mutation_forbidden"
@@ -192,8 +206,8 @@ function statusForRecoveryError(code: string): number {
   }
   if (
     code.includes("recovery") ||
+    code.startsWith("codex_rotating_mutation_") ||
     code === "codex_rotating_identity_quarantined" ||
-    code === "codex_rotating_setup_issuance_quiesced" ||
     code === "codex_rotating_setup_lock_failed"
   ) {
     return 409;

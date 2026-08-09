@@ -149,6 +149,27 @@ export async function issueCodexRotatingSetupCommand(input: {
       await expireActiveSetupManifests(tx, provider.id, now);
 
       const active = await findActiveSetupManifestForProvider(tx, provider.id);
+      const recoveryRequest = input.recovery
+        ? await findSetupRecoveryRequest(
+            tx,
+            provider.id,
+            input.recovery.requestId,
+          )
+        : null;
+      const activeRecoveryRequest = await findActiveSetupRecoveryRequest(
+        tx,
+        provider.id,
+      );
+      if (
+        activeRecoveryRequest &&
+        activeRecoveryRequest.id !== recoveryRequest?.id
+      ) {
+        throw new Error(
+          input.recovery
+            ? "codex_rotating_setup_recovery_request_conflict"
+            : "codex_rotating_setup_recovery_required",
+        );
+      }
       const parsedActive = active
         ? codexRotatingSetupManifestSchema.safeParse(active.manifestJson)
         : null;
@@ -158,7 +179,9 @@ export async function issueCodexRotatingSetupCommand(input: {
       if (provider.mutationOwner === "recovery") {
         if (
           !input.recovery ||
-          input.recovery.epoch !== provider.mutationEpoch ||
+          !recoveryRequest ||
+          input.recovery.epoch !== recoveryRequest.mutationEpoch ||
+          provider.mutationEpoch !== recoveryRequest.mutationEpoch ||
           provider.mutationOwnerId !==
             `setup-recovery:${input.recovery.requestId}`
         ) {
@@ -166,11 +189,23 @@ export async function issueCodexRotatingSetupCommand(input: {
         }
       } else if (input.recovery) {
         if (
-          provider.mutationEpoch !== input.recovery.epoch + 1n ||
-          provider.mutationOwner !== "setup"
+          !recoveryRequest ||
+          recoveryRequest.mutationEpoch !== input.recovery.epoch ||
+          recoveryRequest.mode !== "forced_reseed" ||
+          !["active", "manifest_issued"].includes(recoveryRequest.state) ||
+          provider.mutationOwner !== "setup" ||
+          provider.mutationOwnerId !== recoveryRequest.latestManifestId
         ) {
           throw new Error("codex_rotating_setup_recovery_already_used");
         }
+      }
+      if (
+        input.recovery &&
+        (!recoveryRequest ||
+          recoveryRequest.mode !== "forced_reseed" ||
+          !["active", "manifest_issued"].includes(recoveryRequest.state))
+      ) {
+        throw new Error("codex_rotating_setup_recovery_already_used");
       }
       const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
         where: { providerInstanceRowId: provider.id, status: "pending" },
@@ -186,24 +221,6 @@ export async function issueCodexRotatingSetupCommand(input: {
       }
 
       let manifest = parsedActive?.success ? parsedActive.data : null;
-      if (
-        input.recovery &&
-        provider.mutationOwner === "setup" &&
-        (!active ||
-          active.status !== CodexRotatingSetupManifestStatus.Issued ||
-          !manifest ||
-          active.mutationEpoch !== provider.mutationEpoch ||
-          provider.mutationOwnerId !== active.id ||
-          !isReusableIssuedManifest({
-            manifest,
-            provider,
-            repositoryFullName: input.repositoryFullName,
-            githubRepositoryId: input.githubRepositoryId,
-            installer: input.installer,
-          }))
-      ) {
-        throw new Error("codex_rotating_setup_recovery_already_used");
-      }
       if (
         active &&
         (!manifest ||
@@ -274,6 +291,15 @@ export async function issueCodexRotatingSetupCommand(input: {
           ${mutationEpoch}
         )
       `;
+        if (recoveryRequest) {
+          await tx.$executeRaw`
+            UPDATE "CodexOAuthSetupRecoveryRequest"
+            SET "state" = 'manifest_issued', "latestManifestId" = ${manifestId},
+                "updatedAt" = ${now}
+            WHERE "id" = ${recoveryRequest.id}
+              AND "state" IN ('active', 'manifest_issued')
+          `;
+        }
       }
 
       return setupCommandResult({
@@ -369,7 +395,6 @@ export async function confirmCodexRotatingSetupManifest(input: {
       ) {
         throw new Error("codex_rotating_not_enabled");
       }
-      assertSetupManifestConfirmable(row);
       if (!(await isCodexRotatingSetupFenceOwner(tx, row))) {
         await pinCodexRotatingSetupRecovery(
           tx,
@@ -378,6 +403,7 @@ export async function confirmCodexRotatingSetupManifest(input: {
         );
         return "stale" as const;
       }
+      assertSetupManifestConfirmable(row);
 
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: payload.providerInstanceId },
@@ -427,6 +453,13 @@ export async function confirmCodexRotatingSetupManifest(input: {
           mutationOwnerId: null,
         },
       });
+      await tx.$executeRaw`
+        UPDATE "CodexOAuthSetupRecoveryRequest"
+        SET "state" = 'completed', "completedAt" = ${now}, "updatedAt" = ${now}
+        WHERE "providerInstanceRowId" = ${provider.id}
+          AND "latestManifestId" = ${row.id}
+          AND "state" IN ('active', 'manifest_issued')
+      `;
       return "accepted" as const;
     },
     { timeout: setupTransactionTimeoutMs },
@@ -468,6 +501,42 @@ async function findSetupManifestByNonce(
     throw new Error("codex_rotating_setup_manifest_not_found");
   }
   return row;
+}
+
+type SetupRecoveryRequestRow = {
+  readonly id: string;
+  readonly mutationEpoch: bigint;
+  readonly mode: string;
+  readonly state: string;
+  readonly latestManifestId: string | null;
+};
+
+async function findSetupRecoveryRequest(
+  tx: SetupManifestTransaction,
+  providerInstanceRowId: string,
+  recoveryRequestId: string,
+): Promise<SetupRecoveryRequestRow | null> {
+  const rows = await tx.$queryRaw<SetupRecoveryRequestRow[]>`
+    SELECT "id", "mutationEpoch", "mode", "state", "latestManifestId"
+    FROM "CodexOAuthSetupRecoveryRequest"
+    WHERE "providerInstanceRowId" = ${providerInstanceRowId}
+      AND "recoveryRequestId" = ${recoveryRequestId}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+async function findActiveSetupRecoveryRequest(
+  tx: SetupManifestTransaction,
+  providerInstanceRowId: string,
+): Promise<{ readonly id: string } | null> {
+  const rows = await tx.$queryRaw<Array<{ readonly id: string }>>`
+    SELECT "id" FROM "CodexOAuthSetupRecoveryRequest"
+    WHERE "providerInstanceRowId" = ${providerInstanceRowId}
+      AND "state" IN ('active', 'manifest_issued')
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
 }
 
 function assertSetupManifestFetchable(row: SetupManifestRow, now: Date): void {

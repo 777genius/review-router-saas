@@ -8,7 +8,7 @@ import { recoverAndIssueCodexRotatingSetup } from "../../../../../src/server/cod
 const requestSchema = z
   .object({
     repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-    acknowledgement: z.literal("github_secret_may_have_changed"),
+    acknowledgement: z.literal("all_prior_installers_and_writers_are_stopped"),
     recoveryRequestId: z.string().regex(/^[A-Za-z0-9_.:-]{8,160}$/),
   })
   .strict();
@@ -24,7 +24,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           ? (rawBody as { acknowledgement?: unknown }).acknowledgement
           : undefined;
       throw new Error(
-        acknowledgement === "github_secret_may_have_changed"
+        acknowledgement === "all_prior_installers_and_writers_are_stopped"
           ? "invalid_request"
           : "codex_rotating_setup_recovery_acknowledgement_required",
       );
@@ -105,6 +105,9 @@ const SAFE_ERRORS = new Set([
   "codex_rotating_setup_recovery_not_required",
   "codex_rotating_setup_recovery_already_used",
   "codex_rotating_setup_recovery_required",
+  "codex_rotating_setup_recovery_request_conflict",
+  "codex_rotating_mutation_still_active",
+  "codex_rotating_mutation_ownership_ambiguous",
   "codex_rotating_setup_issuance_quiesced",
   "codex_rotating_setup_lock_failed",
   "invalid_request",
@@ -131,6 +134,7 @@ function statusForError(code: string): number {
   if (code === "github_cli_repository_forbidden") return 403;
   if (code.includes("not_found")) return 404;
   if (code === "rate_limited") return 429;
+  if (code === "codex_rotating_setup_issuance_quiesced") return 503;
   if (code.startsWith("codex_rotating_")) return 409;
   return 400;
 }

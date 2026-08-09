@@ -1,11 +1,10 @@
 export const codexRotatingSetupRecoveryAcknowledgement =
-  "github_secret_may_have_changed" as const;
+  "all_prior_installers_and_writers_are_stopped" as const;
 
 export type CodexRotatingSetupRecoverySnapshot = {
   readonly canonicalIdentity: boolean;
   readonly quarantined: boolean;
-  readonly hasFetchedManifest: boolean;
-  readonly hasAmbiguousWritebackIntent: boolean;
+  readonly mutationOwnership: "active" | "ambiguous" | "recoverable" | "clear";
   readonly recoveryRequestAlreadyApplied: boolean;
 };
 
@@ -30,10 +29,13 @@ export function decideCodexRotatingSetupRecovery(input: {
   if (input.snapshot.recoveryRequestAlreadyApplied) {
     return { kind: "idempotent_replay" };
   }
-  if (
-    !input.snapshot.hasFetchedManifest &&
-    !input.snapshot.hasAmbiguousWritebackIntent
-  ) {
+  if (input.snapshot.mutationOwnership === "active") {
+    throw new Error("codex_rotating_mutation_still_active");
+  }
+  if (input.snapshot.mutationOwnership === "ambiguous") {
+    throw new Error("codex_rotating_mutation_ownership_ambiguous");
+  }
+  if (input.snapshot.mutationOwnership === "clear") {
     throw new Error("codex_rotating_setup_recovery_not_required");
   }
   return { kind: "recover" };

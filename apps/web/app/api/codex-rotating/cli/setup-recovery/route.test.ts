@@ -58,6 +58,28 @@ describe("Codex rotating CLI setup recovery", () => {
     expect(mocks.recoverAndIssue).not.toHaveBeenCalled();
   });
 
+  it("returns 401 when the CLI credential is missing", async () => {
+    const response = await POST(
+      new Request(
+        "https://reviewrouter.site/api/codex-rotating/cli/setup-recovery",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            repository: "owner/repo",
+            recoveryRequestId: "recovery-request-1",
+            acknowledgement: "all_prior_installers_and_writers_are_stopped",
+          }),
+        },
+      ),
+    );
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: "github_cli_token_required",
+    });
+    expect(mocks.authorize).not.toHaveBeenCalled();
+  });
+
   it("requires the exact acknowledgement", async () => {
     const response = await POST(request(false));
     expect(response.status).toBe(409);
@@ -81,6 +103,17 @@ describe("Codex rotating CLI setup recovery", () => {
       "github-token-value",
     );
   });
+
+  it.each([
+    ["codex_rotating_setup_issuance_quiesced", 503],
+    ["rate_limit_exceeded:setup-recovery", 429],
+    ["codex_rotating_mutation_still_active", 409],
+    ["codex_rotating_setup_recovery_request_conflict", 409],
+  ] as const)("maps %s to HTTP %i", async (error, status) => {
+    mocks.recoverAndIssue.mockRejectedValueOnce(new Error(error));
+    const response = await POST(request(true));
+    expect(response.status).toBe(status);
+  });
 });
 
 function request(acknowledge: boolean): Request {
@@ -96,7 +129,7 @@ function request(acknowledge: boolean): Request {
         repository: "owner/repo",
         recoveryRequestId: "recovery-request-1",
         ...(acknowledge
-          ? { acknowledgement: "github_secret_may_have_changed" }
+          ? { acknowledgement: "all_prior_installers_and_writers_are_stopped" }
           : {}),
       }),
     },

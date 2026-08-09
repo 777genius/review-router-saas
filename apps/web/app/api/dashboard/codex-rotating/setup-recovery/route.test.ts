@@ -58,6 +58,18 @@ describe("dashboard Codex setup recovery route", () => {
     expect(mocks.recoverAndIssue).not.toHaveBeenCalled();
   });
 
+  it("returns 401 when dashboard authentication is missing", async () => {
+    mocks.authorize.mockRejectedValueOnce(
+      new Error("dashboard_mutation_requires_sign_in"),
+    );
+    const response = await POST(recoveryRequest(true));
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: "dashboard_mutation_requires_sign_in",
+    });
+    expect(mocks.recoverAndIssue).not.toHaveBeenCalled();
+  });
+
   it("requires an explicit acknowledgement", async () => {
     const response = await POST(recoveryRequest(false));
     expect(response.status).toBe(409);
@@ -96,6 +108,17 @@ describe("dashboard Codex setup recovery route", () => {
     });
     expect(mocks.recoverAndIssue).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["codex_rotating_setup_issuance_quiesced", 503],
+    ["rate_limit_exceeded:setup-recovery", 429],
+    ["codex_rotating_mutation_still_active", 409],
+    ["codex_rotating_setup_recovery_request_conflict", 409],
+  ] as const)("maps %s to HTTP %i", async (error, status) => {
+    mocks.recoverAndIssue.mockRejectedValueOnce(new Error(error));
+    const response = await POST(recoveryRequest(true));
+    expect(response.status).toBe(status);
+  });
 });
 
 function recoveryRequest(acknowledge: boolean): Request {
@@ -104,7 +127,7 @@ function recoveryRequest(acknowledge: boolean): Request {
   body.set("repositoryId", "repository_1");
   body.set("recoveryRequestId", "recovery-request-1");
   if (acknowledge) {
-    body.set("acknowledgement", "github_secret_may_have_changed");
+    body.set("acknowledgement", "all_prior_installers_and_writers_are_stopped");
   }
   return new Request(
     "http://localhost/api/dashboard/codex-rotating/setup-recovery",

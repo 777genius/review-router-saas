@@ -618,7 +618,9 @@ describe("ProviderSecretSetupChooser", () => {
       "/api/dashboard/codex-rotating/setup-recovery",
     );
     const body = recoveryCall[1]?.body as FormData;
-    expect(body.get("acknowledgement")).toBe("github_secret_may_have_changed");
+    expect(body.get("acknowledgement")).toBe(
+      "all_prior_installers_and_writers_are_stopped",
+    );
     expect(String(body.get("recoveryRequestId"))).toMatch(/^[0-9a-f-]{36}$/);
   });
 
@@ -644,6 +646,26 @@ describe("ProviderSecretSetupChooser", () => {
     expect(
       await screen.findByText(/another request held the setup lock/i),
     ).toBeTruthy();
+  });
+
+  it("explains the external-write grace refusal", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          setupCommandErrorResponse("codex_rotating_mutation_still_active"),
+        ),
+    );
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+    expect(await screen.findByText(/external-write deadline/i)).toBeTruthy();
   });
 });
 
