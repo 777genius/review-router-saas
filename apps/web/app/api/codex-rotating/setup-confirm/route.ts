@@ -24,10 +24,11 @@ export async function POST(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown_error";
+    const safeError = safeSetupError(message);
     return NextResponse.json(
-      { error: message },
+      { error: safeError },
       {
-        status: isSafeSetupConflict(message) ? 409 : 400,
+        status: isSafeSetupConflict(safeError) ? 409 : 400,
         headers: { "Cache-Control": "no-store" },
       },
     );
@@ -38,6 +39,22 @@ function isSafeSetupConflict(message: string): boolean {
   return (
     message === "codex_rotating_setup_manifest_reused" ||
     message === "codex_rotating_setup_confirmation_stale_epoch" ||
-    message === "codex_rotating_mutation_fence_conflict"
+    message === "codex_rotating_mutation_fence_conflict" ||
+    message === "codex_rotating_setup_payload_claim_conflict"
   );
+}
+
+function safeSetupError(message: string): string {
+  return [
+    "codex_rotating_setup_manifest_reused",
+    "codex_rotating_setup_confirmation_stale_epoch",
+    "codex_rotating_mutation_fence_conflict",
+    "codex_rotating_setup_payload_claim_conflict",
+    "codex_rotating_setup_confirmation_mismatch",
+    "codex_rotating_setup_manifest_expired",
+    "codex_rotating_setup_manifest_not_found",
+    "codex_rotating_not_enabled",
+  ].includes(message)
+    ? message
+    : "codex_rotating_setup_confirmation_invalid";
 }

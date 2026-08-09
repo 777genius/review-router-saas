@@ -132,11 +132,13 @@ secret generation.
 
 ### Recover a fetched setup with an unknown confirmation result
 
-A setup manifest that reached `fetched` is never expired or cleared
-automatically. The installer may already have changed the GitHub Actions secret
-even when its confirmation did not reach ReviewRouter, so ordinary setup and
-runtime issuance remain closed with
-`codex_rotating_setup_recovery_required`.
+A setup manifest that reached `fetched` has a bounded 24-hour response-recovery
+window independent of its short issue/fetch TTL. Issued-never-fetched manifests
+still expire on the short TTL. Before `gh secret set`, the installer stores a
+0600 repo-scoped retry marker and ReviewRouter transactionally admits the exact
+payload metadata (generation hash, account fingerprint, exact byte size, and
+payload/installer version). The first valid claim wins; only that same claim is
+idempotent. ReviewRouter never receives plaintext auth.
 
 A repository operator with write, maintain, or admin access must reopen the
 Codex provider setup in the dashboard, stop every prior installer and runtime
@@ -144,14 +146,20 @@ writer, read the warning, check the explicit acknowledgement, and choose
 **Recover and issue forced reseed**. The equivalent authenticated CLI API is
 `POST /api/codex-rotating/cli/setup-recovery` with the repository, a stable
 operator-generated `recoveryRequestId`, and the exact acknowledgement
-`all_prior_installers_and_writers_are_stopped`. Recovery remains refused until
-the conservative external-write grace/deadline has elapsed. Retry a dropped
-response with the same request ID; the durable recovery ledger preserves the
-forced-reseed provenance across response loss and manifest expiry. A different
-request ID conflicts while that recovery is active. Recovery advances the
-mutation epoch, safely terminalizes the abandoned manifest or intent, records
-only safe identifiers, and maintains exactly one active `--force-reseed`
-command.
+`all_prior_installers_and_writers_are_stopped`. Retry a dropped fetch, prepare,
+PUT, or confirmation response with the same command and unchanged dedicated
+auth during the response-recovery window. The installer reuses the exact
+compact payload and proves the same durable claim. If local retry state/auth is
+missing or differs, or the recovery window has closed, it refuses login and
+refuses any GitHub write; use a versioned secret and manual operator recovery.
+If ReviewRouter already consumed the byte-identical confirmation, prepare
+returns `already_confirmed`; the installer closes its local retry marker without
+redispatching the old payload, because the provider may already have advanced
+to a newer generation.
+Never infer an external PUT outcome from a timeout, elapsed grace period, or
+absent response. A different request ID conflicts while recovery is active.
+The recovery ledger and payload claim store only safe identifiers and metadata,
+never plaintext.
 
 Do not use setup recovery for `codex_rotating_identity_quarantined`. Authorized
 operators can inspect safe quarantine details through

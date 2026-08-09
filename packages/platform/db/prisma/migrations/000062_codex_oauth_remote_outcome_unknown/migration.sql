@@ -30,9 +30,14 @@ SET "state" = 'unknown_auth_state',
     "mutationEpoch" = provider."mutationEpoch" + 1,
     "mutationOwner" = 'recovery',
     "mutationOwnerId" = intent."id"
-FROM "CodexOAuthWritebackIntent" intent
-WHERE intent."providerInstanceRowId" = provider."id"
-  AND intent."status" = 'remote_outcome_unknown';
+FROM (
+  SELECT DISTINCT ON ("providerInstanceRowId")
+    "providerInstanceRowId", "id"
+  FROM "CodexOAuthWritebackIntent"
+  WHERE "status" = 'remote_outcome_unknown'
+  ORDER BY "providerInstanceRowId", "updatedAt" DESC, "id" DESC
+) intent
+WHERE intent."providerInstanceRowId" = provider."id";
 
 COMMIT;
 

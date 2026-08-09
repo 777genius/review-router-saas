@@ -9,8 +9,12 @@ const dbDirectory = join(root, "packages/platform/db");
 const migrationsDirectory = join(dbDirectory, "prisma/migrations");
 const migration60Name = "000060_codex_oauth_setup_serialization";
 const migration61Name = "000061_codex_oauth_provider_mutation_fence";
+const migration62Name = "000062_codex_oauth_remote_outcome_unknown";
+const migration63Name = "000063_codex_oauth_setup_payload_claim";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
+const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
+const migration63 = join(migrationsDirectory, migration63Name, "migration.sql");
 const baseUrl = requireLocalPostgres(
   process.env.REVIEW_ROUTER_MIGRATION_REHEARSAL_DATABASE_URL ??
     process.env.REVIEW_ROUTER_TEST_DATABASE_URL ??
@@ -51,7 +55,7 @@ try {
   const observation = collectObservation(rehearsalUrl);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060+000061 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060+000061+000062+000063 rehearsal passed.\n",
   );
 } finally {
   psql(
@@ -561,6 +565,8 @@ function proveSuccessfulCombinedRelease(url) {
   ]);
   proveMigrationRunnerHistory(url, migration60Name, true);
   proveMigrationRunnerHistory(url, migration61Name, true);
+  proveMigrationRunnerHistory(url, migration62Name, true);
+  proveMigrationRunnerHistory(url, migration63Name, true);
 }
 
 function proveLegacyChildWritesRejected(url) {
@@ -693,14 +699,14 @@ function proveMigrateDeployNoOp(url) {
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence')`,
+      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim')`,
   ]).stdout.trim();
   const rerun = migrateDeploy(url);
   const after = psql(url, [
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence')`,
+      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim')`,
   ]).stdout.trim();
   assert(
     before === after,
@@ -714,13 +720,15 @@ function proveMigrateDeployNoOp(url) {
   );
   proveMigrationRunnerHistory(url, migration60Name, true);
   proveMigrationRunnerHistory(url, migration61Name, true);
+  proveMigrationRunnerHistory(url, migration62Name, true);
+  proveMigrationRunnerHistory(url, migration63Name, true);
 }
 
 function collectObservation(url) {
   const history = JSON.parse(
     psql(url, [
       "-Atc",
-      String.raw`SELECT json_agg(x ORDER BY migration_name) FROM (SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NULL AS current, applied_steps_count FROM "_prisma_migrations" WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence')) x`,
+      String.raw`SELECT json_agg(x ORDER BY migration_name) FROM (SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NULL AS current, applied_steps_count FROM "_prisma_migrations" WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim')) x`,
     ]).stdout,
   );
   const catalog = JSON.parse(
@@ -728,8 +736,9 @@ function collectObservation(url) {
       "-Atc",
       String.raw`SELECT json_build_object(
     'triggers',(SELECT json_agg(json_build_object('name',t.tgname,'table',c.relname,'function',p.proname,'type',t.tgtype) ORDER BY t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND (t.tgname LIKE 'CodexOAuth%guard' OR t.tgname='RepositoryConnection_codex_oauth_identity_guard')),
-    'checks',(SELECT json_agg(json_build_object('name',conname,'definition',pg_get_constraintdef(oid),'validated',convalidated) ORDER BY conname) FROM pg_constraint WHERE conname LIKE 'CodexOAuth%epoch_check' OR conname='CodexOAuthProviderInstance_mutation_fence_check'),
-    'indexes',(SELECT json_agg(json_build_object('name',ci.relname,'definition',pg_get_indexdef(i.indexrelid),'predicate',pg_get_expr(i.indpred,i.indrelid),'unique',i.indisunique,'valid',i.indisvalid,'ready',i.indisready) ORDER BY ci.relname) FROM pg_index i JOIN pg_class ci ON ci.oid=i.indexrelid WHERE ci.relname LIKE 'CodexOAuth%epoch_idx' OR ci.relname IN ('CodexOAuthSetupManifest_one_active_provider_key','CodexOAuthProviderInstance_mutation_owner_idx','CodexOAuthChildIdentityQuarantine_provider_idx'))
+    'checks',(SELECT json_agg(json_build_object('name',conname,'definition',pg_get_constraintdef(oid),'validated',convalidated) ORDER BY conname) FROM pg_constraint WHERE conname LIKE 'CodexOAuth%epoch_check' OR conname IN ('CodexOAuthProviderInstance_mutation_fence_check','CodexOAuthSetupRecoveryRequest_contract_check','CodexOAuthSetupManifest_payload_claim_complete_check','CodexOAuthSetupManifest_recovery_expiry_check')),
+    'indexes',(SELECT json_agg(json_build_object('name',ci.relname,'definition',pg_get_indexdef(i.indexrelid),'predicate',pg_get_expr(i.indpred,i.indrelid),'unique',i.indisunique,'valid',i.indisvalid,'ready',i.indisready) ORDER BY ci.relname) FROM pg_index i JOIN pg_class ci ON ci.oid=i.indexrelid WHERE ci.relname LIKE 'CodexOAuth%epoch_idx' OR ci.relname IN ('CodexOAuthSetupManifest_one_active_provider_key','CodexOAuthProviderInstance_mutation_owner_idx','CodexOAuthChildIdentityQuarantine_provider_idx','CodexOAuthSetupRecoveryRequest_provider_request_key','CodexOAuthSetupRecoveryRequest_latestManifestId_key','CodexOAuthSetupRecoveryRequest_provider_state_idx','CodexOAuthSetupRecoveryRequest_one_active_provider_key','CodexOAuthSetupManifest_recovery_expiry_idx')),
+    'foreignKeys',(SELECT json_agg(json_build_object('name',conname,'definition',pg_get_constraintdef(oid),'validated',convalidated) ORDER BY conname) FROM pg_constraint WHERE conname IN ('CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey','CodexOAuthSetupRecoveryRequest_latestManifestId_fkey'))
   )`,
     ]).stdout,
   );
@@ -747,10 +756,17 @@ function collectObservation(url) {
   return {
     observationVersion: 2,
     postgresVersion: psql(url, ["-Atc", "SHOW server_version"]).stdout.trim(),
-    migrationSources: [migration60, migration61].map((path, index) => ({
-      id: index === 0 ? migration60Name : migration61Name,
-      sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
-    })),
+    migrationSources: [migration60, migration61, migration62, migration63].map(
+      (path, index) => ({
+        id: [
+          migration60Name,
+          migration61Name,
+          migration62Name,
+          migration63Name,
+        ][index],
+        sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
+      }),
+    ),
     history,
     catalog,
     unsafeWork,

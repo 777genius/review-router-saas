@@ -9,6 +9,7 @@ SECRET_NAME="REVIEWROUTER_CODEX_AUTH_JSON"
 MANIFEST_B64="${REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:-}"
 SETUP_URL="${REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL:-}"
 SETUP_CONFIRM_URL="${REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:-}"
+SETUP_PREPARE_URL="${REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL:-}"
 SETUP_NONCE="${REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE:-}"
 EXPECTED_PROVIDER_INSTANCE_ID="${REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID:-}"
 INSTALLER_URL="${REVIEW_ROUTER_INSTALLER_URL:-}"
@@ -26,6 +27,10 @@ FORCE_RESEED="${REVIEW_ROUTER_FORCE_CODEX_RESEED:-0}"
 REUSE_EXISTING_AUTH="${REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT:-0}"
 CODEX_LOGIN_METHOD="${REVIEW_ROUTER_CODEX_LOGIN_METHOD:-auto}"
 LOGIN_CREATED_AUTH="0"
+RECOVERY_EXPIRES_AT=""
+REMOTE_PAYLOAD_CLAIMED="0"
+RETRY_EXISTING_PAYLOAD="0"
+SECRET_DISPATCH_REQUIRED="1"
 
 if [ -t 1 ]; then
   GREEN='\033[0;32m'
@@ -58,6 +63,7 @@ Options:
   --manifest-b64 value     Base64url setup manifest from ReviewRouter.
   --setup-url value        HTTPS URL used to fetch a short-lived setup manifest.
   --setup-confirm-url val  HTTPS URL used to confirm a successful setup.
+  --setup-prepare-url val  HTTPS URL used to claim the exact payload before dispatch.
   --setup-nonce value      Short-lived ReviewRouter setup nonce.
   --repo owner/repo        Expected repository. Must match the setup manifest.
   --auth-file path         Choose an explicit auth JSON file inside the dedicated CODEX_HOME.
@@ -150,6 +156,11 @@ parse_args() {
         require_arg "--setup-confirm-url" "${1:-}"
         SETUP_CONFIRM_URL="$1"
         ;;
+      --setup-prepare-url)
+        shift
+        require_arg "--setup-prepare-url" "${1:-}"
+        SETUP_PREPARE_URL="$1"
+        ;;
       --setup-nonce)
         shift
         require_arg "--setup-nonce" "${1:-}"
@@ -232,18 +243,16 @@ repo_slug() {
 }
 
 decode_manifest() {
-  if [ -z "$MANIFEST_B64" ]; then
-    fetch_setup_manifest
-  fi
   [ -n "$MANIFEST_B64" ] || fatal "Missing setup manifest. Reopen the ReviewRouter dashboard and copy the current rotating Codex command."
 
-  node - "$MANIFEST_B64" "$TARGET_REPO" "$INSTALLER_URL" "$INSTALLER_VERSION" "$INSTALLER_SHA256" "$EXPECTED_PROVIDER_INSTANCE_ID" <<'NODE'
+  node - "$MANIFEST_B64" "$TARGET_REPO" "$INSTALLER_URL" "$INSTALLER_VERSION" "$INSTALLER_SHA256" "$EXPECTED_PROVIDER_INSTANCE_ID" "$RECOVERY_EXPIRES_AT" <<'NODE'
 const encoded = process.argv[2];
 const expectedRepo = process.argv[3] || "";
 const installerUrl = process.argv[4] || "";
 const installerVersion = process.argv[5] || "";
 const installerSha256 = (process.argv[6] || "").toLowerCase();
 const expectedProviderInstanceId = process.argv[7] || "";
+const recoveryExpiresAt = process.argv[8] || "";
 function fail(message) {
   console.error(message);
   process.exit(1);
@@ -281,7 +290,10 @@ if (installerUrl && manifest.installer.url !== installerUrl) fail("setup manifes
 if (installerVersion && manifest.installer.version !== installerVersion) fail("setup manifest installer version mismatch");
 if (installerSha256 && String(manifest.installer.sha256).toLowerCase() !== installerSha256) fail("setup manifest installer SHA256 mismatch");
 const expiresAt = Date.parse(manifest.expiresAt);
-if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) fail("setup manifest expired; reopen the dashboard and copy a fresh command");
+const recoveryExpiry = Date.parse(recoveryExpiresAt);
+if (!Number.isFinite(expiresAt) || (expiresAt <= Date.now() && (!Number.isFinite(recoveryExpiry) || recoveryExpiry <= Date.now()))) {
+  fail("setup manifest recovery window expired; use a versioned-secret/manual recovery path");
+}
 if (!/^[A-Za-z0-9_-]{22,}$/.test(manifest.generationHashSalt)) fail("setup manifest generation salt is invalid");
 if (!/^[A-Za-z0-9_-]{22,}$/.test(manifest.accountFingerprintSalt)) fail("setup manifest account salt is invalid");
 console.log(JSON.stringify(manifest));
@@ -311,7 +323,7 @@ fetch_setup_manifest() {
     sleep "$fetch_attempt"
     fetch_attempt=$((fetch_attempt + 1))
   done
-  MANIFEST_B64="$(node - "$SETUP_RESPONSE_FILE" <<'NODE'
+  fetch_metadata="$(node - "$SETUP_RESPONSE_FILE" <<'NODE'
 const fs = require("node:fs");
 const path = process.argv[2];
 function fail(message) {
@@ -324,14 +336,90 @@ try {
 } catch {
   fail("setup manifest response is not valid JSON");
 }
-if (!parsed || typeof parsed.manifestBase64 !== "string" || parsed.manifestBase64.length === 0) {
+if (!parsed || typeof parsed.manifestBase64 !== "string" || parsed.manifestBase64.length === 0 ||
+    typeof parsed.recoveryExpiresAt !== "string" || typeof parsed.payloadClaimed !== "boolean") {
   fail("setup manifest response is missing manifestBase64");
 }
-console.log(parsed.manifestBase64);
+console.log([parsed.manifestBase64, parsed.recoveryExpiresAt, parsed.payloadClaimed ? "1" : "0"].join("\t"));
 NODE
   )"
+  IFS="$(printf '\t')" read -r MANIFEST_B64 RECOVERY_EXPIRES_AT REMOTE_PAYLOAD_CLAIMED <<EOF
+$fetch_metadata
+EOF
   rm -f "$SETUP_RESPONSE_FILE"
   SETUP_RESPONSE_FILE=""
+}
+
+payload_retry_state_path() {
+  marker_path="$(manifest_nonce_marker_path)"
+  marker_name="$(basename "$marker_path")"
+  printf '%s\n' "$CODEX_HOME_DIR/pending-secret-payloads/$marker_name"
+}
+
+inspect_payload_retry_state() {
+  PAYLOAD_RETRY_STATE="$(payload_retry_state_path)"
+  if [ ! -f "$PAYLOAD_RETRY_STATE" ]; then
+    if [ "$REMOTE_PAYLOAD_CLAIMED" = "1" ]; then
+      fatal "The server has an exact payload claim but local retry state is missing. Refusing login or secret write; use a versioned-secret/manual recovery path."
+    fi
+    RETRY_EXISTING_PAYLOAD="0"
+    return
+  fi
+  [ "$(node -e 'const fs=require("node:fs"); console.log((fs.statSync(process.argv[1]).mode & 0o777).toString(8))' "$PAYLOAD_RETRY_STATE")" = "600" ] || fatal "Local payload retry state has unsafe permissions. Refusing secret write; use a versioned-secret/manual recovery path."
+  if ! node - "$PAYLOAD_RETRY_STATE" "$MANIFEST_JSON" <<'NODE'
+const fs = require("node:fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const manifest = JSON.parse(process.argv[3]);
+if (state.stateVersion !== 1 || state.payloadVersion !== 1 ||
+    state.repositoryFullName !== manifest.repositoryFullName ||
+    state.repositoryId !== manifest.repositoryId ||
+    state.providerInstanceId !== manifest.providerInstanceId ||
+    state.setupNonce !== manifest.setupNonce ||
+    state.installerVersion !== manifest.installer.version) {
+  console.error("Local payload retry state does not match this setup manifest. Refusing secret write; use a versioned-secret/manual recovery path.");
+  process.exit(1);
+}
+NODE
+  then
+    fatal "Local payload retry state is invalid or does not match this manifest. Refusing secret write; use a versioned-secret/manual recovery path."
+  fi
+  RETRY_EXISTING_PAYLOAD="1"
+}
+
+persist_or_verify_payload_retry_state() {
+  PAYLOAD_RETRY_STATE="${PAYLOAD_RETRY_STATE:-$(payload_retry_state_path)}"
+  state_dir="$(dirname "$PAYLOAD_RETRY_STATE")"
+  mkdir -p "$state_dir"
+  chmod 700 "$state_dir"
+  if ! node - "$PAYLOAD_RETRY_STATE" "$MANIFEST_JSON" "$AUTH_GENERATION_HASH" "$AUTH_ACCOUNT_FINGERPRINT" "$AUTH_BYTE_LENGTH" <<'NODE'
+const fs = require("node:fs");
+const [statePath, manifestJson, generationHash, accountFingerprint, byteSize] = process.argv.slice(2);
+const manifest = JSON.parse(manifestJson);
+const expected = {
+  stateVersion: 1,
+  payloadVersion: 1,
+  repositoryFullName: manifest.repositoryFullName,
+  repositoryId: manifest.repositoryId,
+  providerInstanceId: manifest.providerInstanceId,
+  setupNonce: manifest.setupNonce,
+  generationHash,
+  accountFingerprint,
+  authByteSize: Number(byteSize),
+  installerVersion: manifest.installer.version,
+};
+if (fs.existsSync(statePath)) {
+  const existing = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  if (JSON.stringify(existing) !== JSON.stringify(expected)) {
+    console.error("Dedicated auth payload differs from durable local retry state. Refusing secret write; use a versioned-secret/manual recovery path.");
+    process.exit(1);
+  }
+} else {
+  fs.writeFileSync(statePath, JSON.stringify(expected), { mode: 0o600, flag: "wx" });
+}
+NODE
+  then
+    fatal "Dedicated auth payload cannot prove the durable local retry claim. Refusing secret write; use a versioned-secret/manual recovery path."
+  fi
 }
 
 manifest_value() {
@@ -406,12 +494,12 @@ assert_manifest_not_reused() {
 }
 
 assert_manifest_write_window() {
-  node - "$MANIFEST_JSON" <<'NODE'
+  node - "$MANIFEST_JSON" "$RECOVERY_EXPIRES_AT" "$RETRY_EXISTING_PAYLOAD" <<'NODE'
 const manifest = JSON.parse(process.argv[2]);
-const expiresAt = Date.parse(manifest.expiresAt);
+const expiresAt = Date.parse(process.argv[4] === "1" ? process.argv[3] : manifest.expiresAt);
 const minimumWriteWindowMs = 60_000;
 if (!Number.isFinite(expiresAt) || expiresAt - Date.now() < minimumWriteWindowMs) {
-  console.error("Setup manifest has too little time remaining for a safe secret write. Request a fresh setup command.");
+  console.error("Setup recovery window has too little time remaining for a safe exact-payload retry. Use a versioned-secret/manual recovery path.");
   process.exit(1);
 }
 NODE
@@ -437,6 +525,9 @@ const marker = {
 };
 fs.writeFileSync(markerPath, JSON.stringify(marker), { mode: 0o600, flag: "wx" });
 NODE
+  if [ -n "${PAYLOAD_RETRY_STATE:-}" ] && [ -f "$PAYLOAD_RETRY_STATE" ]; then
+    rm -f "$PAYLOAD_RETRY_STATE"
+  fi
   if [ -n "${SETUP_NONCE_LOCK_DIR:-}" ] && [ -d "$SETUP_NONCE_LOCK_DIR" ]; then
     rmdir "$SETUP_NONCE_LOCK_DIR" 2>/dev/null || true
     SETUP_NONCE_LOCK_DIR=""
@@ -858,6 +949,68 @@ write_github_secret() {
   gh secret set "$SECRET_NAME" --repo "$TARGET_REPO" --app actions < "$AUTH_COMPACT_FILE" >/dev/null
 }
 
+prepare_secret_payload() {
+  if is_true "$DRY_RUN"; then
+    return
+  fi
+  [ -n "$SETUP_PREPARE_URL" ] || fatal "Missing ReviewRouter payload prepare URL. Refusing external secret write."
+  PREPARE_PAYLOAD_FILE="$(mktemp)"
+  PREPARE_RESPONSE_FILE="$(mktemp)"
+  repository_id="$(manifest_value repositoryId)"
+  provider_instance_id="$(manifest_value providerInstanceId)"
+  setup_nonce="$(manifest_value setupNonce)"
+  node - "$PREPARE_PAYLOAD_FILE" "$repository_id" "$provider_instance_id" "$setup_nonce" "$AUTH_GENERATION_HASH" "$AUTH_ACCOUNT_FINGERPRINT" "$AUTH_BYTE_LENGTH" "$INSTALLER_VERSION" <<'NODE'
+const fs = require("node:fs");
+const [path, repositoryId, providerInstanceId, setupNonce, generationHash, accountFingerprint, authByteSize, installerVersion] = process.argv.slice(2);
+fs.writeFileSync(path, JSON.stringify({
+  payloadVersion: 1,
+  repositoryId,
+  providerInstanceId,
+  setupNonce,
+  generationHash,
+  accountFingerprint,
+  authByteSize: Number(authByteSize),
+  installerVersion,
+}), { mode: 0o600 });
+NODE
+  prepare_attempt=1
+  while [ "$prepare_attempt" -le 3 ]; do
+    if curl -fsSL --connect-timeout 10 --max-time 30 -X POST \
+      -H 'content-type: application/json' \
+      --data-binary "@$PREPARE_PAYLOAD_FILE" \
+      "$SETUP_PREPARE_URL" -o "$PREPARE_RESPONSE_FILE"; then
+      if prepare_status="$(node - "$PREPARE_RESPONSE_FILE" <<'NODE'
+const fs = require("node:fs");
+let response;
+try {
+  response = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+} catch {
+  process.exit(1);
+}
+if (!["claimed", "already_claimed", "already_confirmed"].includes(response?.status)) {
+  process.exit(1);
+}
+console.log(response.status);
+NODE
+      )"; then
+        if [ "$prepare_status" = "already_confirmed" ]; then
+          SECRET_DISPATCH_REQUIRED="0"
+        fi
+        rm -f "$PREPARE_PAYLOAD_FILE" "$PREPARE_RESPONSE_FILE"
+        PREPARE_PAYLOAD_FILE=""
+        PREPARE_RESPONSE_FILE=""
+        return
+      fi
+    fi
+    if [ "$prepare_attempt" -lt 3 ]; then
+      warn "ReviewRouter payload admission response was lost. Retrying the exact same claim."
+      sleep "$prepare_attempt"
+    fi
+    prepare_attempt=$((prepare_attempt + 1))
+  done
+  fatal "ReviewRouter did not admit this exact payload. No GitHub write was attempted; use a versioned-secret/manual recovery path if a prior attempt may exist."
+}
+
 auth_size_bucket() {
   size="$1"
   if [ "$size" -le 4096 ]; then
@@ -883,7 +1036,7 @@ confirm_setup_success() {
   size_bucket="$(auth_size_bucket "$AUTH_BYTE_LENGTH")"
   SETUP_CONFIRM_PAYLOAD_FILE="$(mktemp)"
   setup_protocol_version="$(manifest_value protocolVersion)"
-  node - "$SETUP_CONFIRM_PAYLOAD_FILE" "$repository_id" "$provider_instance_id" "$setup_nonce" "$SECRET_NAME" "$AUTH_GENERATION_HASH" "$AUTH_ACCOUNT_FINGERPRINT" "$size_bucket" "$INSTALLER_VERSION" "$setup_protocol_version" <<'NODE'
+  node - "$SETUP_CONFIRM_PAYLOAD_FILE" "$repository_id" "$provider_instance_id" "$setup_nonce" "$SECRET_NAME" "$AUTH_GENERATION_HASH" "$AUTH_ACCOUNT_FINGERPRINT" "$size_bucket" "$INSTALLER_VERSION" "$setup_protocol_version" "$AUTH_BYTE_LENGTH" <<'NODE'
 const fs = require("node:fs");
 const [
   path,
@@ -896,6 +1049,7 @@ const [
   authByteSizeBucket,
   installerVersion,
   protocolVersion,
+  authByteSize,
 ] = process.argv.slice(2);
 fs.writeFileSync(
   path,
@@ -908,6 +1062,7 @@ fs.writeFileSync(
     generationHash,
     accountFingerprint,
     authByteSizeBucket,
+    authByteSize: Number(authByteSize),
     installerVersion,
   }),
   { mode: 0o600 },
@@ -957,6 +1112,12 @@ cleanup() {
   if [ -n "${SETUP_CONFIRM_PAYLOAD_FILE:-}" ] && [ -f "$SETUP_CONFIRM_PAYLOAD_FILE" ]; then
     rm -f "$SETUP_CONFIRM_PAYLOAD_FILE"
   fi
+  if [ -n "${PREPARE_PAYLOAD_FILE:-}" ] && [ -f "$PREPARE_PAYLOAD_FILE" ]; then
+    rm -f "$PREPARE_PAYLOAD_FILE"
+  fi
+  if [ -n "${PREPARE_RESPONSE_FILE:-}" ] && [ -f "$PREPARE_RESPONSE_FILE" ]; then
+    rm -f "$PREPARE_RESPONSE_FILE"
+  fi
   if [ -n "${SETUP_NONCE_LOCK_DIR:-}" ] && [ -d "$SETUP_NONCE_LOCK_DIR" ]; then
     rmdir "$SETUP_NONCE_LOCK_DIR" 2>/dev/null || true
   fi
@@ -992,22 +1153,34 @@ main() {
 
   resolve_codex_home
   acquire_repository_setup_lock
+  if [ -z "$MANIFEST_B64" ]; then
+    fetch_setup_manifest
+    MANIFEST_JSON="$(decode_manifest)"
+    TARGET_REPO="$(manifest_value repositoryFullName)"
+    if [ -z "$EXPECTED_PROVIDER_INSTANCE_ID" ]; then
+      EXPECTED_PROVIDER_INSTANCE_ID="$(manifest_value providerInstanceId)"
+    fi
+  fi
   write_dedicated_codex_config
   assert_auth_file_is_repo_scoped
-  run_codex_login_if_needed
-  if [ -z "${MANIFEST_JSON:-}" ]; then
-    MANIFEST_JSON="$(decode_manifest)"
+  assert_manifest_not_reused
+  inspect_payload_retry_state
+  if [ "$RETRY_EXISTING_PAYLOAD" != "1" ]; then
+    run_codex_login_if_needed
   fi
   TARGET_REPO="$(manifest_value repositoryFullName)"
   verify_github_repository_identity
-  assert_manifest_not_reused
   resolved_auth_file="$(resolve_auth_file)" || fatal "Could not find a Codex auth file in $CODEX_HOME_DIR. Run codex login with the dedicated CODEX_HOME and retry."
   validate_and_compact_auth "$resolved_auth_file"
+  persist_or_verify_payload_retry_state
   confirm_secret_write
   assert_manifest_write_window
-  write_github_secret
-  mark_ci_owned_auth_state
-  confirm_setup_success
+  prepare_secret_payload
+  if [ "$SECRET_DISPATCH_REQUIRED" = "1" ]; then
+    write_github_secret
+    mark_ci_owned_auth_state
+    confirm_setup_success
+  fi
   mark_manifest_used
 
   ok "Stored $SECRET_NAME for $TARGET_REPO"

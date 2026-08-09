@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 import { getPrisma } from "../../../../src/server/prisma";
 import { resolveCodexRotatingSetupManifestForNonce } from "../../../../src/server/codex-rotating-setup-manifest";
 
-export async function GET(
-  request: Request,
-): Promise<
+export async function GET(request: Request): Promise<
   NextResponse<
-    | { readonly manifestBase64: string; readonly expiresAt: string }
+    | {
+        readonly manifestBase64: string;
+        readonly expiresAt: string;
+        readonly recoveryExpiresAt: string;
+        readonly payloadClaimed: boolean;
+      }
     | { readonly error: string }
   >
 > {

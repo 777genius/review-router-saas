@@ -53,6 +53,10 @@ export async function issueCodexRotatingSetupForRepository(input: {
       "/api/codex-rotating/setup-confirm",
       baseUrl,
     ).toString(),
+    setupPrepareUrl: new URL(
+      "/api/codex-rotating/setup-prepare",
+      baseUrl,
+    ).toString(),
     ...(input.installerArguments
       ? { installerArguments: input.installerArguments }
       : {}),

@@ -108,7 +108,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         "Render services still expose independent migration callers",
         "compatibility probe cases are missing executable observations or derived digests",
         "v2 issuance was observed before v1/v2 installer and workflow publication",
-        "000061_codex_oauth_provider_mutation_fence migration history is not exactly one current success",
+        "000063_codex_oauth_setup_payload_claim migration history is not exactly one current success",
         "rollback floor must be the fence-aware deployed commit",
       ]),
     );
@@ -294,6 +294,18 @@ function observedFixture(): any {
             "packages/platform/db/prisma/migrations/000061_codex_oauth_provider_mutation_fence/migration.sql",
           ),
         },
+        {
+          id: "000062_codex_oauth_remote_outcome_unknown",
+          sha256: sourceDigest(
+            "packages/platform/db/prisma/migrations/000062_codex_oauth_remote_outcome_unknown/migration.sql",
+          ),
+        },
+        {
+          id: "000063_codex_oauth_setup_payload_claim",
+          sha256: sourceDigest(
+            "packages/platform/db/prisma/migrations/000063_codex_oauth_setup_payload_claim/migration.sql",
+          ),
+        },
       ],
       history: [
         {
@@ -309,6 +321,24 @@ function observedFixture(): any {
           migration_name: "000061_codex_oauth_provider_mutation_fence",
           checksum: sourceDigest(
             "packages/platform/db/prisma/migrations/000061_codex_oauth_provider_mutation_fence/migration.sql",
+          ),
+          finished: true,
+          current: true,
+          applied_steps_count: 1,
+        },
+        {
+          migration_name: "000062_codex_oauth_remote_outcome_unknown",
+          checksum: sourceDigest(
+            "packages/platform/db/prisma/migrations/000062_codex_oauth_remote_outcome_unknown/migration.sql",
+          ),
+          finished: true,
+          current: true,
+          applied_steps_count: 1,
+        },
+        {
+          migration_name: "000063_codex_oauth_setup_payload_claim",
+          checksum: sourceDigest(
+            "packages/platform/db/prisma/migrations/000063_codex_oauth_setup_payload_claim/migration.sql",
           ),
           finished: true,
           current: true,
@@ -380,6 +410,22 @@ function observedFixture(): any {
             "status pending mutationEpoch",
             false,
           ],
+          ["CodexOAuthSetupRecoveryRequest_epoch_check", "mutationEpoch", true],
+          [
+            "CodexOAuthSetupRecoveryRequest_contract_check",
+            "forced_reseed manifest_issued completed",
+            true,
+          ],
+          [
+            "CodexOAuthSetupManifest_payload_claim_complete_check",
+            "payloadVersion payloadGenerationHash payloadAccountFingerprint payloadByteSize payloadClaimedAt",
+            true,
+          ],
+          [
+            "CodexOAuthSetupManifest_recovery_expiry_check",
+            "recoveryExpiresAt lastFetchedAt",
+            true,
+          ],
         ].map(([name, definition, validated]) => ({
           name,
           definition,
@@ -416,6 +462,31 @@ function observedFixture(): any {
             "providerInstanceRowId mutationEpoch",
             false,
           ],
+          [
+            "CodexOAuthSetupRecoveryRequest_provider_request_key",
+            "providerInstanceRowId recoveryRequestId",
+            true,
+          ],
+          [
+            "CodexOAuthSetupRecoveryRequest_latestManifestId_key",
+            "latestManifestId",
+            true,
+          ],
+          [
+            "CodexOAuthSetupRecoveryRequest_provider_state_idx",
+            "providerInstanceRowId state",
+            false,
+          ],
+          [
+            "CodexOAuthSetupRecoveryRequest_one_active_provider_key",
+            "providerInstanceRowId active manifest_issued",
+            true,
+          ],
+          [
+            "CodexOAuthSetupManifest_recovery_expiry_idx",
+            "status recoveryExpiresAt",
+            false,
+          ],
         ].map(([name, definition, unique]) => ({
           name,
           definition,
@@ -424,6 +495,18 @@ function observedFixture(): any {
           valid: true,
           ready: true,
         })),
+        foreignKeys: [
+          {
+            name: "CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey",
+            definition: "FOREIGN KEY providerInstanceRowId REFERENCES provider",
+            validated: true,
+          },
+          {
+            name: "CodexOAuthSetupRecoveryRequest_latestManifestId_fkey",
+            definition: "FOREIGN KEY latestManifestId REFERENCES manifest",
+            validated: true,
+          },
+        ],
       },
     },
     deployments: {
@@ -597,6 +680,8 @@ function observedFixture(): any {
           ids: [
             "000060_codex_oauth_setup_serialization",
             "000061_codex_oauth_provider_mutation_fence",
+            "000062_codex_oauth_remote_outcome_unknown",
+            "000063_codex_oauth_setup_payload_claim",
           ],
           singleCaller: true,
           caller: "release-migration",

@@ -375,20 +375,26 @@ model CodexOAuthSetupManifest {
   /// Active rows are additionally constrained by partial unique index
   /// CodexOAuthSetupManifest_one_active_provider_key on providerInstanceRowId
   /// WHERE status IN ('issued', 'fetched'), created by migration 000060.
-  id                    String    @id @default(cuid())
-  workspaceId           String
-  repositoryId          String
-  providerInstanceRowId String
-  providerInstanceId    String
-  setupNonce            String    @unique
-  manifestJson          Json
-  status                String    @default("issued")
-  expiresAt             DateTime
-  createdAt             DateTime  @default(now())
-  lastFetchedAt         DateTime?
-  consumedAt            DateTime?
-  confirmationJson      Json?
-  mutationEpoch         BigInt?
+  id                        String    @id @default(cuid())
+  workspaceId               String
+  repositoryId              String
+  providerInstanceRowId     String
+  providerInstanceId        String
+  setupNonce                String    @unique
+  manifestJson              Json
+  status                    String    @default("issued")
+  expiresAt                 DateTime
+  createdAt                 DateTime  @default(now())
+  lastFetchedAt             DateTime?
+  consumedAt                DateTime?
+  confirmationJson          Json?
+  mutationEpoch             BigInt?
+  payloadVersion            Int?
+  payloadGenerationHash     String?
+  payloadAccountFingerprint String?
+  payloadByteSize           Int?
+  payloadClaimedAt          DateTime?
+  recoveryExpiresAt         DateTime?
 
   workspace                Workspace                       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repository               RepositoryConnection            @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
@@ -399,6 +405,7 @@ model CodexOAuthSetupManifest {
   @@index([providerInstanceId, status])
   @@index([expiresAt])
   @@index([providerInstanceRowId, mutationEpoch], map: "CodexOAuthSetupManifest_provider_epoch_idx")
+  @@index([status, recoveryExpiresAt], map: "CodexOAuthSetupManifest_recovery_expiry_idx")
 }
 
 model CodexOAuthSetupRecoveryRequest {

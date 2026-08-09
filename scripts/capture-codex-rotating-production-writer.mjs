@@ -15,6 +15,14 @@ const migrationFiles = [
     "000061_codex_oauth_provider_mutation_fence",
     "packages/platform/db/prisma/migrations/000061_codex_oauth_provider_mutation_fence/migration.sql",
   ],
+  [
+    "000062_codex_oauth_remote_outcome_unknown",
+    "packages/platform/db/prisma/migrations/000062_codex_oauth_remote_outcome_unknown/migration.sql",
+  ],
+  [
+    "000063_codex_oauth_setup_payload_claim",
+    "packages/platform/db/prisma/migrations/000063_codex_oauth_setup_payload_claim/migration.sql",
+  ],
 ];
 
 const baseObservationSql = String.raw`
@@ -52,6 +60,8 @@ SELECT jsonb_build_object(
     WHERE migration_name IN (
       '000060_codex_oauth_setup_serialization',
       '000061_codex_oauth_provider_mutation_fence'
+      ,'000062_codex_oauth_remote_outcome_unknown'
+      ,'000063_codex_oauth_setup_payload_claim'
     )
   ), '[]'::jsonb),
   'catalog', jsonb_build_object(
@@ -66,7 +76,7 @@ SELECT jsonb_build_object(
       JOIN pg_class c ON c.oid = t.tgrelid
       JOIN pg_proc p ON p.oid = t.tgfoid
       WHERE NOT t.tgisinternal
-        AND c.relname IN ('CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent')
+        AND c.relname IN ('CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent','CodexOAuthSetupRecoveryRequest')
     ), '[]'::jsonb),
     'checks', coalesce((
       SELECT jsonb_agg(jsonb_build_object(
@@ -83,6 +93,10 @@ SELECT jsonb_build_object(
           'CodexOAuthSetupManifest_epoch_check',
           'CodexOAuthLease_epoch_check',
           'CodexOAuthWritebackIntent_epoch_check'
+          ,'CodexOAuthSetupRecoveryRequest_epoch_check'
+          ,'CodexOAuthSetupRecoveryRequest_contract_check'
+          ,'CodexOAuthSetupManifest_payload_claim_complete_check'
+          ,'CodexOAuthSetupManifest_recovery_expiry_check'
         )
     ), '[]'::jsonb),
     'indexes', coalesce((
@@ -102,6 +116,23 @@ SELECT jsonb_build_object(
         'CodexOAuthSetupManifest_one_active_provider_key',
         'CodexOAuthSetupManifest_provider_epoch_idx',
         'CodexOAuthWritebackIntent_provider_epoch_idx'
+        ,'CodexOAuthSetupRecoveryRequest_provider_request_key'
+        ,'CodexOAuthSetupRecoveryRequest_latestManifestId_key'
+        ,'CodexOAuthSetupRecoveryRequest_provider_state_idx'
+        ,'CodexOAuthSetupRecoveryRequest_one_active_provider_key'
+        ,'CodexOAuthSetupManifest_recovery_expiry_idx'
+      )
+    ), '[]'::jsonb),
+    'foreignKeys', coalesce((
+      SELECT jsonb_agg(jsonb_build_object(
+        'name', con.conname,
+        'definition', pg_get_constraintdef(con.oid),
+        'validated', con.convalidated
+      ) ORDER BY con.conname)
+      FROM pg_constraint con
+      WHERE con.conname IN (
+        'CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey',
+        'CodexOAuthSetupRecoveryRequest_latestManifestId_fkey'
       )
     ), '[]'::jsonb)
   )

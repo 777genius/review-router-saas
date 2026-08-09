@@ -18,6 +18,7 @@ import {
   resolveCodexRotatingSetupManifestForNonce,
 } from "./codex-rotating-setup-manifest";
 import { PrismaCodexRotatingSetupRecovery } from "./prisma-codex-rotating-setup-recovery";
+import { PrismaCodexRotatingSetupPayloadClaim } from "./prisma-codex-rotating-setup-payload-claim";
 import { lockCodexRotatingProviderRow } from "./codex-rotating-provider-mutation-fence";
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
@@ -524,6 +525,28 @@ describeDatabase("Codex rotating setup serialization", () => {
         fullName,
       );
       await expect(
+        withRotatingRepositoryAllowed(
+          () =>
+            resolveCodexRotatingSetupManifestForNonce({
+              prisma: concurrentPrisma[0],
+              setupNonce: fetchedManifest.setupNonce,
+              now: new Date(fetchedAt.getTime() + 60 * 60 * 1000),
+            }),
+          fullName,
+        ),
+      ).resolves.toMatchObject({ payloadClaimed: false });
+      await expect(
+        withRotatingRepositoryAllowed(
+          () =>
+            resolveCodexRotatingSetupManifestForNonce({
+              prisma: concurrentPrisma[0],
+              setupNonce: fetchedManifest.setupNonce,
+              now: new Date(fetchedAt.getTime() + 24 * 60 * 60 * 1000 + 2_000),
+            }),
+          fullName,
+        ),
+      ).rejects.toThrow("codex_rotating_setup_manifest_expired");
+      await expect(
         secondRepository.acquirePrelease({
           repository: context,
           providerInstanceId,
@@ -604,6 +627,27 @@ describeDatabase("Codex rotating setup serialization", () => {
       githubRepositoryId,
       "a".repeat(43),
     );
+    const claimResults = await withRotatingRepositoryAllowed(() =>
+      Promise.all(
+        concurrentPrisma.map((client) =>
+          new PrismaCodexRotatingSetupPayloadClaim(client).claim(
+            payloadClaim(firstConfirmation),
+          ),
+        ),
+      ),
+    );
+    expect(claimResults.map((result) => result.status).sort()).toEqual([
+      "already_claimed",
+      "claimed",
+    ]);
+    await expect(
+      withRotatingRepositoryAllowed(() =>
+        new PrismaCodexRotatingSetupPayloadClaim(prisma).claim({
+          ...payloadClaim(firstConfirmation),
+          generationHash: "z".repeat(43),
+        }),
+      ),
+    ).rejects.toThrow("codex_rotating_setup_payload_claim_conflict");
     const confirms = await withRotatingRepositoryAllowed(() =>
       Promise.all(
         concurrentPrisma.map((client) =>
@@ -615,6 +659,13 @@ describeDatabase("Codex rotating setup serialization", () => {
       ),
     );
     expect(confirms).toEqual([{ status: "accepted" }, { status: "accepted" }]);
+    await expect(
+      withRotatingRepositoryAllowed(() =>
+        new PrismaCodexRotatingSetupPayloadClaim(prisma).claim(
+          payloadClaim(firstConfirmation),
+        ),
+      ),
+    ).resolves.toEqual({ status: "already_confirmed" });
     await expect(
       withRotatingRepositoryDisabled(() =>
         confirmCodexRotatingSetupManifest({
@@ -670,16 +721,33 @@ describeDatabase("Codex rotating setup serialization", () => {
         setupNonce: nextManifest.setupNonce,
       }),
     );
+    const nextConfirmation = confirmation(
+      nextManifest.setupNonce,
+      githubRepositoryId,
+      "b".repeat(43),
+    );
+    await withRotatingRepositoryAllowed(() =>
+      new PrismaCodexRotatingSetupPayloadClaim(prisma).claim(
+        payloadClaim(nextConfirmation),
+      ),
+    );
     await withRotatingRepositoryAllowed(() =>
       confirmCodexRotatingSetupManifest({
         prisma,
-        payload: confirmation(
-          nextManifest.setupNonce,
-          githubRepositoryId,
-          "b".repeat(43),
-        ),
+        payload: nextConfirmation,
       }),
     );
+
+    // A retry of the prior consumed setup may prove its exact claim, but the
+    // admission result must fence the installer from redispatching old bytes
+    // after the provider has advanced to this newer generation.
+    await expect(
+      withRotatingRepositoryAllowed(() =>
+        new PrismaCodexRotatingSetupPayloadClaim(prisma).claim(
+          payloadClaim(firstConfirmation),
+        ),
+      ),
+    ).resolves.toEqual({ status: "already_confirmed" });
 
     await expect(
       withRotatingRepositoryAllowed(() =>
@@ -855,6 +923,7 @@ describeDatabase("Codex rotating setup serialization", () => {
           githubRunId: "bounded-row-lock",
           githubRunAttempt: "1",
           now: new Date(),
+          newWorkAdmissionBarrier: admitTestNewWork,
         }),
       ).rejects.toThrow(/lock timeout/i);
       expect(Date.now() - runtimeLockStartedAt).toBeGreaterThanOrEqual(1_500);
@@ -1044,8 +1113,22 @@ function confirmation(
     generationHash,
     accountFingerprint: "f".repeat(43),
     authByteSizeBucket: "0-4KiB",
+    authByteSize: 1234,
     installerVersion: "serialization-test",
   } as const;
+}
+
+function payloadClaim(payload: ReturnType<typeof confirmation>) {
+  return {
+    payloadVersion: 1 as const,
+    repositoryId: payload.repositoryId,
+    providerInstanceId: payload.providerInstanceId,
+    setupNonce: payload.setupNonce,
+    generationHash: payload.generationHash,
+    accountFingerprint: payload.accountFingerprint,
+    authByteSize: payload.authByteSize,
+    installerVersion: payload.installerVersion,
+  };
 }
 
 async function withRotatingRepositoryAllowed<T>(

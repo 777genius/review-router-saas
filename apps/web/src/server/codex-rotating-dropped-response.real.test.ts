@@ -25,6 +25,7 @@ vi.mock("./prisma", () => ({
 }));
 
 import { POST as confirmSetupRoute } from "../../app/api/codex-rotating/setup-confirm/route";
+import { POST as prepareSetupRoute } from "../../app/api/codex-rotating/setup-prepare/route";
 import {
   issueCodexRotatingSetupCommand,
   resolveCodexRotatingSetupManifestForNonce,
@@ -129,25 +130,33 @@ describeDatabase("rotating setup dropped HTTP response", () => {
       });
 
       const requestBodies: Buffer[] = [];
+      const prepareBodies: Buffer[] = [];
       const routeResults: Array<{ status: number; body: string }> = [];
       const server = createServer(async (request, response) => {
         const chunks: Buffer[] = [];
         for await (const chunk of request) chunks.push(Buffer.from(chunk));
         const body = Buffer.concat(chunks);
-        requestBodies.push(body);
-        const routeResponse = await confirmSetupRoute(
-          new Request("http://127.0.0.1/api/codex-rotating/setup-confirm", {
+        const isPrepare = request.url?.includes("setup-prepare") ?? false;
+        (isPrepare ? prepareBodies : requestBodies).push(body);
+        const routeRequest = new Request(
+          `http://127.0.0.1/api/codex-rotating/${isPrepare ? "setup-prepare" : "setup-confirm"}`,
+          {
             method: "POST",
             headers: { "content-type": "application/json" },
             body,
-          }),
+          },
         );
+        const routeResponse = await (isPrepare
+          ? prepareSetupRoute(routeRequest)
+          : confirmSetupRoute(routeRequest));
         const routeBody = Buffer.from(await routeResponse.arrayBuffer());
-        routeResults.push({
-          status: routeResponse.status,
-          body: routeBody.toString("utf8"),
-        });
-        if (requestBodies.length === 1) {
+        if (!isPrepare) {
+          routeResults.push({
+            status: routeResponse.status,
+            body: routeBody.toString("utf8"),
+          });
+        }
+        if (!isPrepare && requestBodies.length === 1) {
           process.env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH = "0";
           delete process.env.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES;
           request.socket.destroy();
@@ -216,6 +225,7 @@ describeDatabase("rotating setup dropped HTTP response", () => {
             REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
               fetched.manifestBase64,
             REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL: `http://127.0.0.1:${address.port}/api/codex-rotating/setup-confirm`,
+            REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL: `http://127.0.0.1:${address.port}/api/codex-rotating/setup-prepare`,
           },
         );
       } finally {
@@ -228,6 +238,7 @@ describeDatabase("rotating setup dropped HTTP response", () => {
 
       expect(processResult.status).toBe(0);
       expect(requestBodies).toHaveLength(2);
+      expect(prepareBodies).toHaveLength(1);
       expect(requestBodies[1]!.equals(requestBodies[0]!)).toBe(true);
       expect(
         routeResults.map((result) => ({

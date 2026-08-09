@@ -22,6 +22,7 @@ import {
 } from "./codex-rotating-provider-mutation-fence";
 
 const setupManifestTtlSeconds = 15 * 60;
+const setupFetchedRecoveryWindowMs = 24 * 60 * 60 * 1000;
 const setupTransactionTimeoutMs = 10_000;
 
 export function assertSetupIssuanceEnabled(): void {
@@ -49,6 +50,11 @@ const setupConfirmationSchema = z
     generationHash: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/),
     accountFingerprint: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/),
     authByteSizeBucket: z.enum(["0-4KiB", "4-8KiB", "8-16KiB", "16-32KiB"]),
+    authByteSize: z
+      .number()
+      .int()
+      .positive()
+      .max(32 * 1024),
     installerVersion: z.string().min(1).max(120),
   })
   .strict();
@@ -67,6 +73,12 @@ type SetupManifestRow = {
   readonly consumedAt: Date | null;
   readonly confirmationJson: unknown | null;
   readonly mutationEpoch: bigint | null;
+  readonly recoveryExpiresAt: Date | null;
+  readonly payloadVersion: number | null;
+  readonly payloadGenerationHash: string | null;
+  readonly payloadAccountFingerprint: string | null;
+  readonly payloadByteSize: number | null;
+  readonly payloadClaimedAt: Date | null;
 };
 
 type SetupManifestTransaction = Prisma.TransactionClient;
@@ -80,6 +92,7 @@ export async function issueCodexRotatingSetupCommand(input: {
   readonly installer: CodexRotatingSeedScriptDescriptor;
   readonly setupManifestUrl: string;
   readonly setupConfirmUrl: string;
+  readonly setupPrepareUrl?: string;
   readonly installerArguments?: readonly CodexRotatingInstallerArgument[];
   readonly recovery?: {
     readonly requestId: string;
@@ -309,6 +322,9 @@ export async function issueCodexRotatingSetupCommand(input: {
         manifest,
         setupManifestUrl: input.setupManifestUrl,
         setupConfirmUrl: input.setupConfirmUrl,
+        ...(input.setupPrepareUrl
+          ? { setupPrepareUrl: input.setupPrepareUrl }
+          : {}),
         ...(input.installerArguments
           ? { installerArguments: input.installerArguments }
           : {}),
@@ -322,7 +338,12 @@ export async function resolveCodexRotatingSetupManifestForNonce(input: {
   readonly prisma: PrismaClient;
   readonly setupNonce: string;
   readonly now?: Date;
-}): Promise<{ readonly manifestBase64: string; readonly expiresAt: string }> {
+}): Promise<{
+  readonly manifestBase64: string;
+  readonly expiresAt: string;
+  readonly recoveryExpiresAt: string;
+  readonly payloadClaimed: boolean;
+}> {
   return input.prisma.$transaction(
     async (tx) => {
       const initial = await findSetupManifestByNonce(tx, input.setupNonce);
@@ -336,37 +357,48 @@ export async function resolveCodexRotatingSetupManifestForNonce(input: {
       ) {
         throw new Error("codex_rotating_not_enabled");
       }
+      if (row.status === CodexRotatingSetupManifestStatus.Consumed) {
+        if (
+          !row.consumedAt ||
+          !row.payloadClaimedAt ||
+          !row.recoveryExpiresAt ||
+          row.recoveryExpiresAt <= now
+        ) {
+          throw new Error("codex_rotating_setup_manifest_expired");
+        }
+        return {
+          manifestBase64: encodeCodexRotatingSetupManifest(manifest),
+          expiresAt: manifest.expiresAt,
+          recoveryExpiresAt: row.recoveryExpiresAt.toISOString(),
+          payloadClaimed: true,
+        };
+      }
       if (!(await isCodexRotatingSetupFenceOwner(tx, row))) {
         throw new Error("codex_rotating_setup_confirmation_stale_epoch");
       }
 
       if (row.status === CodexRotatingSetupManifestStatus.Fetched) {
-        assertSetupManifestNotExpiredOrConsumed(row, now);
-        const recovery = await tx.$queryRaw<Array<{ readonly id: string }>>`
-          SELECT "id" FROM "CodexOAuthSetupRecoveryRequest"
-          WHERE "providerInstanceRowId" = ${row.providerInstanceRowId}
-            AND "latestManifestId" = ${row.id}
-            AND "state" = 'manifest_issued'
-          LIMIT 1
-        `;
-        if (recovery.length !== 1) {
-          throw new Error("codex_rotating_setup_manifest_reused");
-        }
-        // The first HTTP response may have been lost after commit. Replaying
-        // the exact forced manifest is idempotent and preserves its original
-        // fetched timestamp and recovery-ledger provenance.
+        assertFetchedRecoveryWindow(row, now);
+        // Delivery is retryable for the bounded recovery window. The durable
+        // payload claim, not the manifest bytes, fences any later PUT.
         return {
           manifestBase64: encodeCodexRotatingSetupManifest(manifest),
           expiresAt: manifest.expiresAt,
+          recoveryExpiresAt: row.recoveryExpiresAt!.toISOString(),
+          payloadClaimed: row.payloadClaimedAt !== null,
         };
       }
 
       assertSetupManifestFetchable(row, now);
+      const recoveryExpiresAt = new Date(
+        now.getTime() + setupFetchedRecoveryWindowMs,
+      );
 
       const updated = await tx.$executeRaw`
       UPDATE "CodexOAuthSetupManifest"
       SET "status" = ${CodexRotatingSetupManifestStatus.Fetched},
           "lastFetchedAt" = ${now}
+          , "recoveryExpiresAt" = ${recoveryExpiresAt}
       WHERE "id" = ${row.id}
         AND "status" = ${CodexRotatingSetupManifestStatus.Issued}
         AND "consumedAt" IS NULL
@@ -379,6 +411,8 @@ export async function resolveCodexRotatingSetupManifestForNonce(input: {
       return {
         manifestBase64: encodeCodexRotatingSetupManifest(manifest),
         expiresAt: manifest.expiresAt,
+        recoveryExpiresAt: recoveryExpiresAt.toISOString(),
+        payloadClaimed: false,
       };
     },
     { timeout: setupTransactionTimeoutMs },
@@ -429,6 +463,15 @@ export async function confirmCodexRotatingSetupManifest(input: {
         return "stale" as const;
       }
       assertSetupManifestConfirmable(row);
+      if (
+        row.payloadClaimedAt === null ||
+        row.payloadVersion !== 1 ||
+        row.payloadGenerationHash !== payload.generationHash ||
+        row.payloadAccountFingerprint !== payload.accountFingerprint ||
+        row.payloadByteSize !== payload.authByteSize
+      ) {
+        throw new Error("codex_rotating_setup_payload_claim_conflict");
+      }
 
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: payload.providerInstanceId },
@@ -516,7 +559,9 @@ async function findSetupManifestByNonce(
       "expiresAt",
       "consumedAt",
       "confirmationJson",
-      "mutationEpoch"
+      "mutationEpoch", "recoveryExpiresAt", "payloadVersion",
+      "payloadGenerationHash", "payloadAccountFingerprint", "payloadByteSize",
+      "payloadClaimedAt"
     FROM "CodexOAuthSetupManifest"
     WHERE "setupNonce" = ${setupNonce}
     LIMIT 1
@@ -601,6 +646,17 @@ function assertSetupManifestNotExpiredOrConsumed(
   }
 }
 
+function assertFetchedRecoveryWindow(row: SetupManifestRow, now: Date): void {
+  if (
+    row.status !== CodexRotatingSetupManifestStatus.Fetched ||
+    row.consumedAt ||
+    !row.recoveryExpiresAt ||
+    row.recoveryExpiresAt <= now
+  ) {
+    throw new Error("codex_rotating_setup_manifest_expired");
+  }
+}
+
 async function expireActiveSetupManifests(
   prisma: SetupManifestTransaction,
   providerInstanceRowId: string,
@@ -631,7 +687,9 @@ async function findActiveSetupManifestForProvider(
       "expiresAt",
       "consumedAt",
       "confirmationJson",
-      "mutationEpoch"
+      "mutationEpoch", "recoveryExpiresAt", "payloadVersion",
+      "payloadGenerationHash", "payloadAccountFingerprint", "payloadByteSize",
+      "payloadClaimedAt"
     FROM "CodexOAuthSetupManifest"
     WHERE "providerInstanceRowId" = ${providerInstanceRowId}
       AND "status" IN (
@@ -682,6 +740,7 @@ function setupCommandResult(input: {
   readonly manifest: ReturnType<typeof codexRotatingSetupManifestSchema.parse>;
   readonly setupManifestUrl: string;
   readonly setupConfirmUrl: string;
+  readonly setupPrepareUrl?: string;
   readonly installerArguments?: readonly CodexRotatingInstallerArgument[];
 }) {
   return {
@@ -689,6 +748,9 @@ function setupCommandResult(input: {
       manifest: input.manifest,
       setupManifestUrl: input.setupManifestUrl,
       setupConfirmUrl: input.setupConfirmUrl,
+      ...(input.setupPrepareUrl
+        ? { setupPrepareUrl: input.setupPrepareUrl }
+        : {}),
       ...(input.installerArguments
         ? { installerArguments: input.installerArguments }
         : {}),
@@ -712,6 +774,7 @@ function setupConfirmationsMatch(
     left.generationHash === right.generationHash &&
     left.accountFingerprint === right.accountFingerprint &&
     left.authByteSizeBucket === right.authByteSizeBucket &&
+    left.authByteSize === right.authByteSize &&
     left.installerVersion === right.installerVersion
   );
 }

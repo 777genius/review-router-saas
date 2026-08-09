@@ -196,6 +196,8 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT: "1",
           REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
             fixture.manifestBase64,
+          REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL:
+            "http://localhost:3000/prepare",
         },
         encoding: "utf8",
       },
@@ -273,6 +275,8 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
           REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
             fixture.manifestBase64,
+          REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL:
+            "http://localhost:3000/prepare",
         },
         encoding: "utf8",
       },
@@ -525,6 +529,8 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           "http://localhost:3000/manifest",
         REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
           "http://localhost:3000/confirm",
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL:
+          "http://localhost:3000/prepare",
         REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE: "setup-nonce-1234567890",
       },
       encoding: "utf8",
@@ -563,7 +569,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     expect(JSON.stringify(state)).not.toContain("id-token-for-fingerprint");
   });
 
-  it("acquires the server setup lease after login and before the secret write", () => {
+  it("fetches before login and claims the exact payload before the secret write", () => {
     const fixture = createRotatingInstallerFixture();
     const eventCapturePath = join(fixture.home, "events.log");
     const confirmCapturePath = join(fixture.home, "confirm.json");
@@ -590,6 +596,8 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           "http://localhost:3000/manifest",
         REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
           "http://localhost:3000/confirm",
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL:
+          "http://localhost:3000/prepare",
         REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE: "setup-nonce-1234567890",
       },
       encoding: "utf8",
@@ -604,13 +612,17 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     const writeIndex = events.findIndex((event) =>
       event.startsWith("gh:secret set"),
     );
+    const prepareIndex = events.findIndex((event) =>
+      event.includes("/prepare"),
+    );
     const confirmIndex = events.findIndex((event) =>
       event.includes("/confirm"),
     );
 
     expect(loginIndex).toBeGreaterThanOrEqual(0);
-    expect(fetchIndex).toBeGreaterThan(loginIndex);
-    expect(writeIndex).toBeGreaterThan(fetchIndex);
+    expect(fetchIndex).toBeLessThan(loginIndex);
+    expect(prepareIndex).toBeGreaterThan(loginIndex);
+    expect(writeIndex).toBeGreaterThan(prepareIndex);
     expect(confirmIndex).toBeGreaterThan(writeIndex);
   });
 
@@ -649,6 +661,8 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           "http://localhost:3000/manifest",
         REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
           "http://localhost:3000/confirm",
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL:
+          "http://localhost:3000/prepare",
         REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE: "setup-nonce-1234567890",
       },
       encoding: "utf8",
@@ -669,6 +683,198 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           event.includes("--max-time 30"),
       ),
     ).toBe(true);
+  });
+
+  it("retries a lost prepare response with the same safe claim", () => {
+    const fixture = createRotatingInstallerFixture();
+    const prepareFailure = join(fixture.home, "prepare-failed-once");
+    const events = join(fixture.home, "prepare-events.log");
+    writeFileSync(
+      join(fixture.codexHome, "auth.json"),
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { refresh_token: "prepare-retry-secret" },
+      }),
+    );
+    const result = spawnSync("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: recoveryInstallerEnv(fixture, {
+        REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT: "1",
+        REVIEW_ROUTER_TEST_EVENT_CAPTURE: events,
+        REVIEW_ROUTER_TEST_PREPARE_FAIL_ONCE_MARKER: prepareFailure,
+      }),
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    expect(
+      readFileSync(events, "utf8")
+        .split("\n")
+        .filter((event) => event.includes("/prepare")),
+    ).toHaveLength(2);
+    expect(
+      `${result.stdout}${result.stderr}${readFileSync(events, "utf8")}`,
+    ).not.toContain("prepare-retry-secret");
+  });
+
+  it("reuses exact auth after a lost PUT response and rejects rotated auth", () => {
+    const fixture = createRotatingInstallerFixture();
+    const putFailure = join(fixture.home, "put-failed-once");
+    const firstEvents = join(fixture.home, "put-first.log");
+    const first = spawnSync("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: recoveryInstallerEnv(fixture, {
+        REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+        REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH: "1",
+        REVIEW_ROUTER_TEST_EVENT_CAPTURE: firstEvents,
+        REVIEW_ROUTER_TEST_GH_FAIL_ONCE_MARKER: putFailure,
+      }),
+      encoding: "utf8",
+    });
+    expect(first.status).not.toBe(0);
+    expect(readFileSync(firstEvents, "utf8")).toContain("gh:secret set");
+
+    const retryEvents = join(fixture.home, "put-retry.log");
+    const retry = spawnSync("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: recoveryInstallerEnv(fixture, {
+        REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+        REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH: "1",
+        REVIEW_ROUTER_TEST_PAYLOAD_CLAIMED: "true",
+        REVIEW_ROUTER_TEST_EVENT_CAPTURE: retryEvents,
+      }),
+      encoding: "utf8",
+    });
+    expect(retry.status).toBe(0);
+    expect(readFileSync(retryEvents, "utf8")).not.toContain("codex:login");
+
+    const rotated = createRotatingInstallerFixture();
+    const rotatedFailure = join(rotated.home, "put-failed-once");
+    const seed = spawnSync("bash", [rotated.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: recoveryInstallerEnv(rotated, {
+        REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+        REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH: "1",
+        REVIEW_ROUTER_TEST_GH_FAIL_ONCE_MARKER: rotatedFailure,
+      }),
+      encoding: "utf8",
+    });
+    expect(seed.status).not.toBe(0);
+    writeFileSync(
+      join(rotated.codexHome, "auth.json"),
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { refresh_token: "rotated-auth-must-not-dispatch" },
+      }),
+    );
+    const rotatedEvents = join(rotated.home, "rotated-retry.log");
+    const rejected = spawnSync(
+      "bash",
+      [rotated.scriptPath, "--confirm-write"],
+      {
+        cwd: process.cwd(),
+        env: recoveryInstallerEnv(rotated, {
+          REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+          REVIEW_ROUTER_TEST_PAYLOAD_CLAIMED: "true",
+          REVIEW_ROUTER_TEST_EVENT_CAPTURE: rotatedEvents,
+        }),
+        encoding: "utf8",
+      },
+    );
+    expect(rejected.status).not.toBe(0);
+    expect(readFileSync(rotatedEvents, "utf8")).not.toContain("gh:secret set");
+    expect(`${rejected.stdout}${rejected.stderr}`).not.toContain(
+      "rotated-auth-must-not-dispatch",
+    );
+
+    const tampered = createRotatingInstallerFixture();
+    const tamperedFailure = join(tampered.home, "put-failed-once");
+    expect(
+      spawnSync("bash", [tampered.scriptPath, "--confirm-write"], {
+        cwd: process.cwd(),
+        env: recoveryInstallerEnv(tampered, {
+          REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+          REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH: "1",
+          REVIEW_ROUTER_TEST_GH_FAIL_ONCE_MARKER: tamperedFailure,
+        }),
+        encoding: "utf8",
+      }).status,
+    ).not.toBe(0);
+    const stateDirectory = join(tampered.codexHome, "pending-secret-payloads");
+    const stateFile = readdirSync(stateDirectory)[0];
+    expect(stateFile).toBeTruthy();
+    writeFileSync(join(stateDirectory, stateFile!), '{"stateVersion":99}', {
+      mode: 0o600,
+    });
+    const tamperedEvents = join(tampered.home, "tampered-retry.log");
+    const tamperedRetry = spawnSync(
+      "bash",
+      [tampered.scriptPath, "--confirm-write"],
+      {
+        cwd: process.cwd(),
+        env: recoveryInstallerEnv(tampered, {
+          REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+          REVIEW_ROUTER_TEST_PAYLOAD_CLAIMED: "true",
+          REVIEW_ROUTER_TEST_EVENT_CAPTURE: tamperedEvents,
+        }),
+        encoding: "utf8",
+      },
+    );
+    expect(tamperedRetry.status).not.toBe(0);
+    expect(`${tamperedRetry.stdout}${tamperedRetry.stderr}`).toContain(
+      "versioned-secret/manual recovery path",
+    );
+    expect(readFileSync(tamperedEvents, "utf8")).not.toContain("gh:secret set");
+  });
+
+  it("does not redispatch a payload that the server already confirmed", () => {
+    const fixture = createRotatingInstallerFixture();
+    const firstEvents = join(fixture.home, "confirmed-first.log");
+    const first = spawnSync("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: recoveryInstallerEnv(fixture, {
+        REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+        REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH: "1",
+        REVIEW_ROUTER_TEST_CONFIRM_ALWAYS_FAIL: "1",
+        REVIEW_ROUTER_TEST_EVENT_CAPTURE: firstEvents,
+      }),
+      encoding: "utf8",
+    });
+    expect(first.status).not.toBe(0);
+    expect(readFileSync(firstEvents, "utf8")).toContain("gh:secret set");
+
+    const retryEvents = join(fixture.home, "confirmed-retry.log");
+    const retry = spawnSync("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: recoveryInstallerEnv(fixture, {
+        REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+        REVIEW_ROUTER_TEST_PAYLOAD_CLAIMED: "true",
+        REVIEW_ROUTER_TEST_PREPARE_STATUS: "already_confirmed",
+        REVIEW_ROUTER_TEST_EVENT_CAPTURE: retryEvents,
+      }),
+      encoding: "utf8",
+    });
+    expect(retry.status).toBe(0);
+    expect(readFileSync(retryEvents, "utf8")).not.toContain("codex:login");
+    expect(readFileSync(retryEvents, "utf8")).not.toContain("gh:secret set");
+    expect(readFileSync(retryEvents, "utf8")).not.toContain("/confirm");
+  });
+
+  it("refuses a remote claim when local retry state is missing", () => {
+    const fixture = createRotatingInstallerFixture();
+    const events = join(fixture.home, "missing-marker.log");
+    const result = spawnSync("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: recoveryInstallerEnv(fixture, {
+        REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+        REVIEW_ROUTER_TEST_PAYLOAD_CLAIMED: "true",
+        REVIEW_ROUTER_TEST_EVENT_CAPTURE: events,
+      }),
+      encoding: "utf8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("local retry state is missing");
+    expect(readFileSync(events, "utf8")).not.toContain("codex:login");
+    expect(readFileSync(events, "utf8")).not.toContain("gh:secret set");
   });
 
   it("recovers an abandoned repository lock", () => {
@@ -738,6 +944,8 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
       REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL: "http://localhost:3000/manifest",
       REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
         "http://localhost:3000/confirm",
+      REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL:
+        "http://localhost:3000/prepare",
       REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE: "setup-nonce-1234567890",
       REVIEW_ROUTER_TEST_MANIFEST_B64: fixture.manifestBase64,
       REVIEW_ROUTER_TEST_CONFIRM_CAPTURE: confirmCapture,
@@ -809,6 +1017,8 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           "http://localhost:3000/manifest",
         REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
           "http://localhost:3000/confirm",
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL:
+          "http://localhost:3000/prepare",
         REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE: "setup-nonce-1234567890",
       },
       encoding: "utf8",
@@ -842,6 +1052,8 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
           REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
             fixture.manifestBase64,
+          REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL:
+            "http://localhost:3000/prepare",
         },
         encoding: "utf8",
       });
@@ -890,9 +1102,11 @@ function createRotatingInstallerFixture(
       "fi",
       'if [ "${1:-}" = "api" ] && [ "${2:-}" = "repos/777genius/agent-teams-ai" ]; then printf "123456\\n"; exit 0; fi',
       'if [ "${1:-}" = "secret" ] && [ "${2:-}" = "set" ]; then',
+      "  cat >/dev/null",
+      '  if [ -n "${REVIEW_ROUTER_TEST_GH_FAIL_ONCE_MARKER:-}" ] && [ ! -e "$REVIEW_ROUTER_TEST_GH_FAIL_ONCE_MARKER" ]; then : > "$REVIEW_ROUTER_TEST_GH_FAIL_ONCE_MARKER"; exit 28; fi',
       options.ghSecretSetFailsIfCalled
         ? '  echo "gh secret set should not be called" >&2; exit 43'
-        : "  cat >/dev/null; exit 0",
+        : "  exit 0",
       "fi",
       "exit 0",
       "",
@@ -960,7 +1174,20 @@ function createRotatingInstallerFixture(
       '    prev="$arg"',
       "  done",
       '  [ -n "$out" ] || out="/dev/stdout"',
-      '  printf \'{"manifestBase64":"%s"}\\n\' "$REVIEW_ROUTER_TEST_MANIFEST_B64" > "$out"',
+      '  claimed="${REVIEW_ROUTER_TEST_PAYLOAD_CLAIMED:-false}"',
+      '  printf \'{"manifestBase64":"%s","recoveryExpiresAt":"2999-01-02T00:00:00.000Z","payloadClaimed":%s}\\n\' "$REVIEW_ROUTER_TEST_MANIFEST_B64" "$claimed" > "$out"',
+      "  exit 0",
+      "fi",
+      'if [[ "$args" == *"/prepare"* ]]; then',
+      '  if [ -n "${REVIEW_ROUTER_TEST_PREPARE_FAIL_ONCE_MARKER:-}" ] && [ ! -e "$REVIEW_ROUTER_TEST_PREPARE_FAIL_ONCE_MARKER" ]; then : > "$REVIEW_ROUTER_TEST_PREPARE_FAIL_ONCE_MARKER"; exit 28; fi',
+      '  out=""',
+      '  prev=""',
+      '  for arg in "$@"; do',
+      '    if [ "$prev" = "-o" ]; then out="$arg"; fi',
+      '    prev="$arg"',
+      "  done",
+      '  [ -n "$out" ] || out="/dev/stdout"',
+      '  printf \'{"status":"%s"}\\n\' "${REVIEW_ROUTER_TEST_PREPARE_STATUS:-claimed}" > "$out"',
       "  exit 0",
       "fi",
       'if [[ "$args" == *"/confirm"* ]]; then',
@@ -971,6 +1198,7 @@ function createRotatingInstallerFixture(
       '    prev="$arg"',
       "  done",
       '  cp "$payload" "$REVIEW_ROUTER_TEST_CONFIRM_CAPTURE"',
+      '  if [ -n "${REVIEW_ROUTER_TEST_CONFIRM_ALWAYS_FAIL:-}" ]; then exit 28; fi',
       '  if [ -n "${REVIEW_ROUTER_TEST_CONFIRM_FAIL_ONCE_MARKER:-}" ] && [ ! -e "$REVIEW_ROUTER_TEST_CONFIRM_FAIL_ONCE_MARKER" ]; then',
       '    : > "$REVIEW_ROUTER_TEST_CONFIRM_FAIL_ONCE_MARKER"',
       "    exit 28",
@@ -1025,6 +1253,33 @@ function createRotatingInstallerFixture(
 function writeExecutable(path: string, content: string): void {
   writeFileSync(path, content);
   chmodSync(path, 0o755);
+}
+
+function recoveryInstallerEnv(
+  fixture: ReturnType<typeof createRotatingInstallerFixture>,
+  extra: Record<string, string>,
+): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    PATH: fixture.path,
+    HOME: fixture.home,
+    REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+    REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+    REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+    REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+    REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID:
+      "codex-rotating:777genius:agent-teams-ai",
+    REVIEW_ROUTER_REPO: "777genius/agent-teams-ai",
+    REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL: "http://localhost:3000/manifest",
+    REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL:
+      "http://localhost:3000/prepare",
+    REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
+      "http://localhost:3000/confirm",
+    REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE: "setup-nonce-1234567890",
+    REVIEW_ROUTER_TEST_MANIFEST_B64: fixture.manifestBase64,
+    REVIEW_ROUTER_TEST_CONFIRM_CAPTURE: join(fixture.home, "confirm.json"),
+    ...extra,
+  };
 }
 
 async function waitForFile(path: string): Promise<void> {

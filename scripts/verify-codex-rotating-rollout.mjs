@@ -24,6 +24,16 @@ const migrations = [
     sourceFile:
       "packages/platform/db/prisma/migrations/000061_codex_oauth_provider_mutation_fence/migration.sql",
   },
+  {
+    id: "000062_codex_oauth_remote_outcome_unknown",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000062_codex_oauth_remote_outcome_unknown/migration.sql",
+  },
+  {
+    id: "000063_codex_oauth_setup_payload_claim",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000063_codex_oauth_setup_payload_claim/migration.sql",
+  },
 ];
 const exactServices = ["api", "web", "worker"];
 const exactCases = [
@@ -44,6 +54,10 @@ const exactChecks = [
   "CodexOAuthProviderInstance_mutation_fence_check",
   "CodexOAuthSetupManifest_epoch_check",
   "CodexOAuthWritebackIntent_epoch_check",
+  "CodexOAuthSetupRecoveryRequest_epoch_check",
+  "CodexOAuthSetupRecoveryRequest_contract_check",
+  "CodexOAuthSetupManifest_payload_claim_complete_check",
+  "CodexOAuthSetupManifest_recovery_expiry_check",
 ];
 const exactIndexes = [
   "CodexOAuthChildIdentityQuarantine_provider_idx",
@@ -52,6 +66,15 @@ const exactIndexes = [
   "CodexOAuthSetupManifest_one_active_provider_key",
   "CodexOAuthSetupManifest_provider_epoch_idx",
   "CodexOAuthWritebackIntent_provider_epoch_idx",
+  "CodexOAuthSetupRecoveryRequest_provider_request_key",
+  "CodexOAuthSetupRecoveryRequest_latestManifestId_key",
+  "CodexOAuthSetupRecoveryRequest_provider_state_idx",
+  "CodexOAuthSetupRecoveryRequest_one_active_provider_key",
+  "CodexOAuthSetupManifest_recovery_expiry_idx",
+];
+const exactForeignKeys = [
+  "CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey",
+  "CodexOAuthSetupRecoveryRequest_latestManifestId_fkey",
 ];
 
 export function sha256(value) {
@@ -328,6 +351,19 @@ function verifyDatabase(db, descriptor, need, options) {
     db?.catalog?.indexes?.every((entry) => exactIndexDefinition(entry)),
     "database index definitions/flags are not exact",
   );
+  need(
+    equalSorted(
+      db?.catalog?.foreignKeys?.map((entry) => entry.name),
+      exactForeignKeys,
+    ) &&
+      db?.catalog?.foreignKeys?.every(
+        (entry) =>
+          entry.validated === true &&
+          entry.definition?.includes("FOREIGN KEY") &&
+          entry.definition?.includes("REFERENCES"),
+      ),
+    "database recovery-ledger foreign keys are not exact",
+  );
   return {
     callerCommit: db?.callerIdentity?.commit,
     callerImageDigest: db?.callerIdentity?.imageDigest,
@@ -433,9 +469,27 @@ function exactCheckDefinition(entry) {
       "pending",
       "mutationEpoch",
     ],
+    CodexOAuthSetupRecoveryRequest_epoch_check: ["mutationEpoch"],
+    CodexOAuthSetupRecoveryRequest_contract_check: [
+      "forced_reseed",
+      "manifest_issued",
+      "completed",
+    ],
+    CodexOAuthSetupManifest_payload_claim_complete_check: [
+      "payloadVersion",
+      "payloadGenerationHash",
+      "payloadAccountFingerprint",
+      "payloadByteSize",
+      "payloadClaimedAt",
+    ],
+    CodexOAuthSetupManifest_recovery_expiry_check: [
+      "recoveryExpiresAt",
+      "lastFetchedAt",
+    ],
   }[entry?.name];
   const expectedValidated =
-    entry?.name === "CodexOAuthProviderInstance_mutation_fence_check";
+    entry?.name === "CodexOAuthSetupRecoveryRequest_epoch_check" ||
+    !entry?.name?.endsWith("_epoch_check");
   return (
     Array.isArray(tokens) &&
     entry?.validated === expectedValidated &&
@@ -469,13 +523,36 @@ function exactIndexDefinition(entry) {
       "providerInstanceRowId",
       "resolvedAt",
     ],
+    CodexOAuthSetupRecoveryRequest_provider_request_key: [
+      "providerInstanceRowId",
+      "recoveryRequestId",
+    ],
+    CodexOAuthSetupRecoveryRequest_latestManifestId_key: ["latestManifestId"],
+    CodexOAuthSetupRecoveryRequest_provider_state_idx: [
+      "providerInstanceRowId",
+      "state",
+    ],
+    CodexOAuthSetupRecoveryRequest_one_active_provider_key: [
+      "providerInstanceRowId",
+      "active",
+      "manifest_issued",
+    ],
+    CodexOAuthSetupManifest_recovery_expiry_idx: [
+      "status",
+      "recoveryExpiresAt",
+    ],
   }[entry?.name];
   return (
     Array.isArray(keys) &&
     entry?.valid === true &&
     entry?.ready === true &&
     entry?.unique ===
-      (entry?.name === "CodexOAuthSetupManifest_one_active_provider_key") &&
+      [
+        "CodexOAuthSetupManifest_one_active_provider_key",
+        "CodexOAuthSetupRecoveryRequest_provider_request_key",
+        "CodexOAuthSetupRecoveryRequest_latestManifestId_key",
+        "CodexOAuthSetupRecoveryRequest_one_active_provider_key",
+      ].includes(entry?.name) &&
     keys.every((key) =>
       `${entry?.definition} ${entry?.predicate}`.includes(key),
     )

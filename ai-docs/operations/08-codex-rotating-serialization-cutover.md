@@ -1,8 +1,10 @@
-# Fenced rotating OAuth cutover (000060 + 000061)
+# Fenced rotating OAuth cutover (000060 through 000063)
 
 This is the fail-closed release gate for the ordered combined release
 `000060_codex_oauth_setup_serialization` then
-`000061_codex_oauth_provider_mutation_fence`. The general release and git-flow
+`000061_codex_oauth_provider_mutation_fence`,
+`000062_codex_oauth_remote_outcome_unknown`, then
+`000063_codex_oauth_setup_payload_claim`. The general release and git-flow
 rules remain in
 [`07-environments-and-release-management.md`](./07-environments-and-release-management.md).
 Never apply only one migration as a completed production rollout.
@@ -36,8 +38,9 @@ the Prisma migration runner for the combined release. It observes 000061's
 15-second lock timeout after 000060 commits, resolves that failed runner attempt,
 injects a late 000061 failure, proves transaction rollback, resolves it, and
 successfully reruns. It checks the exact migration-history checksums, catalog
-trigger/check/index sets and flags, backfills, zero unsafe active work, and the
-surviving fetched marker that pins setup recovery. Its final JSON line is the
+trigger/check/index/foreign-key sets and flags, deterministic historical
+unknown-outcome provenance, the recovery ledger, exact-payload claim, zero
+unsafe active work, and the bounded fetched recovery marker. Its final JSON line is the
 database observation artifact; retain it without editing.
 
 ## Full-drain bridge sequence
@@ -78,7 +81,7 @@ rolling mixed-version deploy is prohibited.
    shape had independent web, API, and worker callers; the checked-in Blueprint
    and deploy helper now clear them). Nominate exactly one `release-migration`
    job and prove no other caller can start. Apply the ordered
-   checked-in 000060+000061 batch once. A lock or statement timeout stops the
+   checked-in 000060+000061+000062+000063 batch once. A lock or statement timeout stops the
    batch; inspect it and begin a separately recorded retry, never concurrent
    retries.
 6. With both switches still off, converge API, web, and worker to the same exact
@@ -147,9 +150,11 @@ rejected.
 The database artifact must identify the actual database (`current_database`,
 server address, and system identifier), identify the one immutable
 `release-migration` caller, and contain two time-separated stable zero drain
-observations. It must also contain both migration IDs, checked-in source
+observations. It must also contain all four migration IDs, checked-in source
 digests, one current successful runner-history record for each source checksum,
-PostgreSQL 17 catalog output, zero unsafe work, and the fetched recovery owner.
+PostgreSQL 17 catalog output, zero unsafe work, recovery-ledger constraints and
+foreign keys, payload-claim/recovery-window constraints, and the fetched
+recovery owner.
 Its descriptor must bind the exact checked-in production-writer capture
 executable and source digest; rehearsal output or an operator-authored success
 boolean is not accepted.

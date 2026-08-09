@@ -102,6 +102,14 @@ describe("production-writer rollout observation capture", () => {
           id: "000061_codex_oauth_provider_mutation_fence",
           sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
         },
+        {
+          id: "000062_codex_oauth_remote_outcome_unknown",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
+        {
+          id: "000063_codex_oauth_setup_payload_claim",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
       ],
     });
     expect(query).toHaveBeenCalledTimes(3);

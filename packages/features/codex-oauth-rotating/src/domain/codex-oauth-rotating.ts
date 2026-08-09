@@ -377,6 +377,7 @@ export function renderCodexRotatingInstallerCommand(input: {
   readonly manifestBase64?: string;
   readonly setupManifestUrl?: string;
   readonly setupConfirmUrl?: string;
+  readonly setupPrepareUrl?: string;
   readonly installerArguments?: readonly CodexRotatingInstallerArgument[];
 }): string {
   const manifestBase64 =
@@ -394,6 +395,9 @@ export function renderCodexRotatingInstallerCommand(input: {
   const setupConfirmUrl = input.setupConfirmUrl
     ? shellQuote(input.setupConfirmUrl)
     : null;
+  const setupPrepareUrl = input.setupPrepareUrl
+    ? shellQuote(input.setupPrepareUrl)
+    : null;
 
   const envLines = [
     `REVIEW_ROUTER_INSTALLER_URL=${installerUrl} \\`,
@@ -407,6 +411,11 @@ export function renderCodexRotatingInstallerCommand(input: {
           ...(setupConfirmUrl
             ? [
                 `REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL=${setupConfirmUrl} \\`,
+              ]
+            : []),
+          ...(setupPrepareUrl
+            ? [
+                `REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL=${setupPrepareUrl} \\`,
               ]
             : []),
           `REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE=${setupNonce} \\`,
