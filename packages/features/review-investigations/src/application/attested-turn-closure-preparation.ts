@@ -174,7 +174,7 @@ async function assertInventoryClosureCompleteness(input: {
       return operation;
     }),
   );
-  const expectedPathHashes = [
+  const requiredUnitPathHashes = [
     ...new Set(
       input.investigation.obligations
         .filter(
@@ -197,10 +197,11 @@ async function assertInventoryClosureCompleteness(input: {
         }),
     ),
   ].sort();
+  // The gateway inventories the full revision while each investigation owns one batch.
+  const authenticatedPathHashSet = new Set(authenticatedPathHashes);
   if (
-    authenticatedPathHashes.length !== expectedPathHashes.length ||
-    authenticatedPathHashes.some(
-      (pathHash, index) => pathHash !== expectedPathHashes[index],
+    requiredUnitPathHashes.some(
+      (pathHash) => !authenticatedPathHashSet.has(pathHash),
     )
   ) {
     throw new Error("investigation_inventory_seed_mismatch");
@@ -214,9 +215,9 @@ async function assertInventoryClosureCompleteness(input: {
     ) as InvestigationPageEvidence | undefined;
   if (
     !terminal ||
-    terminal.aggregatePathCount !== expectedPathHashes.length ||
+    terminal.aggregatePathCount !== authenticatedPathHashes.length ||
     terminal.aggregatePathSetHash !==
-      (await input.digest.digestUtf8(canonicalJson(expectedPathHashes)))
+      (await input.digest.digestUtf8(canonicalJson(authenticatedPathHashes)))
   ) {
     throw new Error("investigation_inventory_seed_mismatch");
   }
