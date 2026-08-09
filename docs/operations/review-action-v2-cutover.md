@@ -7,6 +7,35 @@ For a self-hosted Compose deployment, run every `review-v2:admin` operation
 through the `rr_admin` container wrapper in the
 [self-hosted end-to-end guide](./review-router-self-hosted-end-to-end.md).
 
+For a hosted deployment, run the CLI in a dedicated one-off maintenance job
+with the exact API runtime environment. Do not launch `pnpm review-v2:admin`
+inside a serving web instance: package-manager and CLI startup can exceed a
+small instance's memory budget, recycle the web process, and briefly return
+502 responses. The maintenance job may invoke the already-built entrypoint
+directly to avoid package-manager overhead:
+
+```bash
+node scripts/run-with-env.mjs \
+  node --conditions=production \
+  apps/api/dist/review-action-v2-operator-cli.js \
+  env-preflight
+```
+
+Keep the plaintext operator credential only in the maintenance process
+environment. Require `env-preflight` to report `ready: true` before a mutating
+command, and remove the job after the operation.
+
+If the hosting platform cannot create a one-off job, the break-glass fallback is
+an ephemeral local maintenance process from a clean checkout of the exact
+deployed commit. Inject the complete API runtime environment into that process
+without printing it, reach Postgres through an authenticated SSH tunnel, run
+`env-preflight`, execute one bounded command, and then remove the environment
+snapshot and close the tunnel. Use mode `0600` for every temporary credential or
+environment file. Do not reconstruct the environment by copying individual
+signing keys, run the CLI from a different revision, or reuse the maintenance
+shell for development work. Record the deployed commit, command class, sanitized
+result, and cleanup evidence in the rollout log.
+
 ## Preconditions
 
 - API and worker contain the same release and migration. A server-dispatched
@@ -42,6 +71,26 @@ rr_admin env-preflight
 pnpm review-v2:admin env-preflight
 ```
 
+## Rotating Codex auth
+
+Seed or refresh hosted Codex auth only through the generation-aware reseed
+workflow:
+
+```bash
+scripts/reseed-codex-rotating-auth.sh --repo OWNER/REPO
+```
+
+Use `--reuse-current-auth` only when the dedicated local ReviewRouter session is
+known to be current. Do not run `gh secret set REVIEWROUTER_CODEX_AUTH_JSON`
+directly. A direct secret write bypasses the generation contract, so an older
+queued workflow can publish or consume the wrong auth generation after a token
+rotation. The reseed workflow serializes the update, preserves the dedicated
+session boundary, and verifies the repository-scoped generation before use.
+
+Never reuse the user's interactive Codex Desktop auth file as a hosted review
+secret. Keep the reviewer session isolated, and do not print auth JSON or token
+fields while diagnosing a failed refresh.
+
 ## Release bundle
 
 Generate and validate a release manifest from the exact committed Action
@@ -63,6 +112,15 @@ pnpm protocol:release-manifest:check \
   --manifest /secure/path/review-action-v2-release-manifest.json \
   --action-repo /path/to/review-router
 ```
+
+Treat the verifier output and the database registration candidate as different
+typed projections of the same release. Remove the verification-only
+`saasSourceCommit`, `supportedContextGatewayPolicyVersions`, and
+`canonicalizerDigest` fields before placing the verifier output under
+`candidate`. Keep `canonicalizerDigest` in the runtime producer attestation:
+authorization validates it there, while the `ProducerRelease` database model
+does not own that field. Never pass the verifier object to `release register`
+unchanged.
 
 `release register` accepts one JSON object containing
 `protocolLimitsProfileId`, `limits`, `operationalSloProfileId`, `thresholds`,

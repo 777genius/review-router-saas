@@ -130,6 +130,29 @@ flags. A missing policy, malformed selector, missing observation/certificate,
 or unavailable policy source denies the investigation effect without exposing
 source, credentials, or raw provider output.
 
+## Additive provenance rollout floor
+
+Treat every additive field that participates in an investigation dossier,
+finding evidence binding, replay checkpoint, or certificate hash as a
+mixed-version protocol change even when it is stored inside JSON.
+
+Use a reader-first, writer-second rollout:
+
+1. deploy a compatibility reader that accepts both the legacy representation
+   and the future field while the production writer still emits the legacy
+   representation;
+2. prove old-data-to-new-reader and future-data-to-new-reader restart tests;
+3. verify the compatibility release commit on every API and worker instance;
+4. only then deploy the writer and its strict domain invariant;
+5. keep the compatibility reader release as the rollback floor until no live or
+   retained record requires the additive representation.
+
+Do not enable the writer in the same rolling deploy that introduces its reader.
+Feature flags do not make a persisted canonical-format change downgrade-safe.
+After writer activation, rollback to a version older than the compatibility
+reader is forbidden unless all newly written records have first been drained or
+migrated back to the legacy representation.
+
 ## Emergency rollback
 
 ### Evidence provenance rollback floor
@@ -232,3 +255,108 @@ replay material, tokens, cookies, provider credentials, or raw model output.
 
 No live cohort may be enabled solely because unit tests or the disposable corpus
 pass.
+
+## 2026-08-04 pre-canary release evidence
+
+The investigation-capable pair under test is intentionally immutable:
+
+- Action commit and workflow ref:
+  `295e76f7777a995b8fd0b0bb0a36788429c89b83`;
+- producer release: `review-action-v2-295e76f7`;
+- investigation capability: `review_investigation_v1`;
+- Context Gateway policy: v4.
+
+Before opening a live sandbox canary, the SaaS release passed the full build,
+test, typecheck, architecture-boundary, generated-protocol, formatting, and
+self-hosted E2E gates. The paired-release harness then executed the exact
+committed Action checkout against disposable Postgres and passed all five
+production-path scenarios. The self-hosted E2E covered migration, OIDC action
+startup, restart/adoption, fencing, stale-head handling, partial publication,
+and log redaction.
+
+These checks establish local and composed release integrity. They do not count
+as a live hosted canary, a same-release live self-hosted canary, or promotion
+approval. Production effects, verified-clean publication, and cross-revision
+replay remain disabled. Live sandbox run IDs, sanitized database evidence, and
+emergency-disable rollback evidence must be appended before this release's E2E
+record is considered complete.
+
+## 2026-08-09 evidence-provenance compatibility floor
+
+Gateway-backed findings require accepted operation receipt IDs to survive
+aggregate persistence and restart. This additive JSON field was released in two
+phases so a rolling deploy cannot route newly written records to an older
+reader.
+
+Phase 1 is commit `a7b8d62824869d674c51d2effd14021b104e9181`.
+It accepts legacy and non-empty future bindings, preserves legacy canonical
+hashes when the list is empty, and keeps the production writer on the empty
+legacy representation. The exact commit passed Quality Gates and disposable
+self-hosted E2E, then reached `live` on:
+
+- API deploy `dep-d9ru992jnfac738f5j40`;
+- worker deploy `dep-d9ru9b710e5c738rumgg`;
+- web deploy `dep-d9ru8uuq1p3s73fbium0`.
+
+Phase 2 may emit non-empty bindings only while phase 1 remains the rollback
+floor. Production effects and verified-clean publication stay disabled until
+the phase-2 sandbox finding, clean, stale/reuse, and emergency-disable evidence
+is appended here.
+
+## 2026-08-09 hosted sandbox evidence
+
+The completed live canary used only
+`777genius/review-router-saas-e2e`. No user repository was used for agent or
+publication testing.
+
+The immutable Action pair was release
+`review-action-v2-08f6bc14-investigation` at commit
+`08f6bc1481fd284fa82adfa47cda05c76b161b00`. Phase 2 was SaaS commit
+`f5d9b657a0d31d825da309ff9664118a98a6ac76`, deployed live as API
+`dep-d9rv2lfavr4c73a51eg0`, worker `dep-d9rv2n7avr4c73a51iig`, and web
+`dep-d9rv2fb7uimc73bbcnt0`.
+
+The canary established these independent outcomes:
+
+- run `31292670868` produced a gateway-backed semantic finding with accepted
+  operation receipt IDs and one deduplicated inline publication; run
+  `31293179085` verified the fixed revision as clean;
+- run `31293309895` was superseded by a newer revision without stale findings
+  or comments, and run `31293444391` restored idempotently without duplicate
+  semantic work;
+- runs `31294278893` and `31294548314` produced certificate-backed
+  `verified_clean` outcomes while authoritative verified-clean publication was
+  still disabled;
+- run `31295477721`, attempt 2, proved the two-batch path and created a reusable
+  checkpoint for the stable README unit;
+- run `31310718760` selectively replayed two unchanged blob receipts into a new
+  revision with two unique replay proof IDs. Changed search/tree dependencies
+  were not reused and required fresh evidence, as required by the fail-closed
+  replay policy;
+- with emergency disable active on both API and worker, run `31311520702`
+  created a valid authorization but zero investigation units, executed the
+  ordinary review path, and published a typed partial outcome after provider
+  attempts were exhausted.
+
+The multi-batch canary first exposed
+`investigation_inventory_seed_mismatch`: the server compared a batch-local unit
+inventory with the authenticated full-revision inventory as if they were equal.
+Commit `0bd0c341a77b9bb62862f0a2c843cce12c5754e5` fixes the invariant to require
+every unit path to be a member of the full inventory while terminal aggregate
+validation still covers the complete authenticated path set. The fix passed 133
+focused tests plus the full Quality Gates and self-hosted E2E, then reached live
+as API `dep-d9s5fmh42hec73bodjl0`, worker `dep-d9s5fmv10e5c7398raf0`, and web
+`dep-d9s5fh3ncjis739kejlg`.
+
+After rollback proof, the sandbox repository context-reuse policy was disabled.
+The API and worker were restored with emergency disable, cross-revision replay,
+verified-clean publication, and production effects all set to `0`. Recording,
+shadow evaluation, and the context critic remain non-authoritative. The phase-1
+reader commit remains the minimum code rollback floor because phase 2 has
+already persisted non-empty evidence provenance.
+
+The final dormant configuration reached `live` on API deploy
+`dep-d9s6khn10e5c739atvl0` and worker deploy
+`dep-d9s6kkh42hec73bptlfg`. Post-deploy health reported both the API and database
+as `ok`, and operator status confirmed repository context reuse `disabled` with
+no repository emergency stop.
