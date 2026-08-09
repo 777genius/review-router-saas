@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { assertDashboardRepositoryMutationAllowed } from "../../../../../src/server/dashboard-mutations";
 import { getPrisma } from "../../../../../src/server/prisma";
 import { recoverAndIssueCodexRotatingSetup } from "../../../../../src/server/codex-rotating-setup-recovery";
-import { codexRotatingSecretName } from "@reviewrouter/features-provider-setup";
+import {
+  assertCodexRotatingSetupRecoveryHttpFields,
+  codexRotatingSecretName,
+  codexRotatingSetupRecoveryHttpStatus,
+  safeCodexRotatingSetupRecoveryErrorCode,
+} from "@reviewrouter/features-provider-setup";
 import { PrismaCodexRotatingSetupRecovery } from "../../../../../src/server/prisma-codex-rotating-setup-recovery";
 
 export async function GET(request: Request): Promise<NextResponse> {
@@ -61,11 +66,11 @@ export async function GET(request: Request): Promise<NextResponse> {
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
-    const code = safeRecoveryErrorCode(error);
+    const code = safeCodexRotatingSetupRecoveryErrorCode(error);
     return NextResponse.json(
       { error: code },
       {
-        status: statusForRecoveryError(code),
+        status: codexRotatingSetupRecoveryHttpStatus(code),
         headers: { "Cache-Control": "no-store" },
       },
     );
@@ -79,6 +84,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     const repositoryId = readFormValue(formData, "repositoryId");
     const acknowledgement = readFormValue(formData, "acknowledgement");
     const recoveryRequestId = readFormValue(formData, "recoveryRequestId");
+    assertCodexRotatingSetupRecoveryHttpFields({
+      acknowledgement,
+      recoveryRequestId,
+    });
     const prisma = getPrisma();
     const repository = await prisma.repositoryConnection.findUnique({
       where: { id: repositoryId },
@@ -133,11 +142,11 @@ export async function POST(request: Request): Promise<NextResponse> {
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
-    const code = safeRecoveryErrorCode(error);
+    const code = safeCodexRotatingSetupRecoveryErrorCode(error);
     return NextResponse.json(
       { error: code },
       {
-        status: statusForRecoveryError(code),
+        status: codexRotatingSetupRecoveryHttpStatus(code),
         headers: { "Cache-Control": "no-store" },
       },
     );
@@ -150,67 +159,10 @@ function readFormValue(formData: FormData, name: string): string {
     throw new Error(
       name === "acknowledgement"
         ? "codex_rotating_setup_recovery_acknowledgement_required"
-        : "invalid_form",
+        : name === "recoveryRequestId"
+          ? "codex_rotating_setup_recovery_request_invalid"
+          : "invalid_request",
     );
   }
   return value.trim();
-}
-
-function safeRecoveryErrorCode(error: unknown): string {
-  const message = error instanceof Error ? error.message : "unknown_error";
-  if (message.startsWith("rate_limit_exceeded:")) return "rate_limited";
-  const allowed = new Set([
-    "repository_not_found",
-    "repository_not_selected",
-    "repository_archived",
-    "installation_not_active",
-    "repository_mutation_forbidden",
-    "workspace_mutation_forbidden",
-    "dashboard_mutation_requires_sign_in",
-    "dashboard_auth_misconfigured",
-    "dashboard_mutations_disabled",
-    "codex_rotating_provider_not_found",
-    "codex_rotating_provider_identity_mismatch",
-    "codex_rotating_identity_quarantined",
-    "codex_rotating_setup_recovery_acknowledgement_required",
-    "codex_rotating_setup_recovery_request_invalid",
-    "codex_rotating_setup_recovery_not_required",
-    "codex_rotating_setup_recovery_already_used",
-    "codex_rotating_setup_recovery_required",
-    "codex_rotating_setup_recovery_request_conflict",
-    "codex_rotating_mutation_still_active",
-    "codex_rotating_mutation_ownership_ambiguous",
-    "codex_rotating_setup_issuance_quiesced",
-    "codex_rotating_setup_lock_failed",
-    "rate_limited",
-  ]);
-  return allowed.has(message) ? message : "dashboard_action_failed";
-}
-
-function statusForRecoveryError(code: string): number {
-  if (code === "repository_not_found") return 404;
-  if (code === "rate_limited") return 429;
-  if (code === "codex_rotating_setup_issuance_quiesced") return 503;
-  if (code === "dashboard_mutation_requires_sign_in") return 401;
-  if (
-    code === "dashboard_auth_misconfigured" ||
-    code === "dashboard_mutations_disabled"
-  ) {
-    return 503;
-  }
-  if (
-    code === "repository_mutation_forbidden" ||
-    code === "workspace_mutation_forbidden"
-  ) {
-    return 403;
-  }
-  if (
-    code.includes("recovery") ||
-    code.startsWith("codex_rotating_mutation_") ||
-    code === "codex_rotating_identity_quarantined" ||
-    code === "codex_rotating_setup_lock_failed"
-  ) {
-    return 409;
-  }
-  return 400;
 }

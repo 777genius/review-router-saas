@@ -79,6 +79,15 @@ describe("dashboard Codex setup recovery route", () => {
     expect(mocks.authorize).not.toHaveBeenCalled();
   });
 
+  it("maps a malformed recovery request id through the shared contract", async () => {
+    const response = await POST(recoveryRequest(true, "bad id"));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_setup_recovery_request_invalid",
+    });
+    expect(mocks.recoverAndIssue).not.toHaveBeenCalled();
+  });
+
   it("returns safe actionable quarantine details without a repair mutation", async () => {
     mocks.inspectStatus.mockResolvedValueOnce({
       status: "identity_quarantined",
@@ -109,11 +118,32 @@ describe("dashboard Codex setup recovery route", () => {
     expect(mocks.recoverAndIssue).not.toHaveBeenCalled();
   });
 
+  it("exposes only the sanitized versioned-namespace action for unknown PUTs", async () => {
+    mocks.inspectStatus.mockResolvedValueOnce({
+      status: "remote_outcome_unknown",
+      reason: "github_secret_put_may_have_completed",
+      action: "use_versioned_secret_namespace_or_prove_no_overwrite",
+    });
+    const response = await GET(
+      new Request(
+        "http://localhost/api/dashboard/codex-rotating/setup-recovery?workspaceId=workspace_1&repositoryId=repository_1",
+      ),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "remote_outcome_unknown",
+      reason: "github_secret_put_may_have_completed",
+      action: "use_versioned_secret_namespace_or_prove_no_overwrite",
+    });
+  });
+
   it.each([
     ["codex_rotating_setup_issuance_quiesced", 503],
     ["rate_limit_exceeded:setup-recovery", 429],
     ["codex_rotating_mutation_still_active", 409],
     ["codex_rotating_setup_recovery_request_conflict", 409],
+    ["codex_rotating_provider_identity_mismatch", 409],
+    ["codex_rotating_provider_not_found", 404],
   ] as const)("maps %s to HTTP %i", async (error, status) => {
     mocks.recoverAndIssue.mockRejectedValueOnce(new Error(error));
     const response = await POST(recoveryRequest(true));
@@ -121,11 +151,14 @@ describe("dashboard Codex setup recovery route", () => {
   });
 });
 
-function recoveryRequest(acknowledge: boolean): Request {
+function recoveryRequest(
+  acknowledge: boolean,
+  recoveryRequestId = "recovery-request-1",
+): Request {
   const body = new FormData();
   body.set("workspaceId", "workspace_1");
   body.set("repositoryId", "repository_1");
-  body.set("recoveryRequestId", "recovery-request-1");
+  body.set("recoveryRequestId", recoveryRequestId);
   if (acknowledge) {
     body.set("acknowledgement", "all_prior_installers_and_writers_are_stopped");
   }

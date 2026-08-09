@@ -8,6 +8,7 @@ import {
   codexRotatingSetupRecoveryAcknowledgement,
   codexRotatingSecretName,
   codexRotatingWritebackClaimMarker,
+  codexRotatingWritebackDispatchedMarker,
   type CodexRotatingIdentityQuarantineReadModel,
   type CodexRotatingSetupRecoveryPort,
   type CodexRotatingSetupRecoveryResult,
@@ -69,6 +70,11 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
       select: {
         id: true,
         mutationOwner: true,
+        writebackIntents: {
+          where: { status: "remote_outcome_unknown" },
+          take: 1,
+          select: { id: true },
+        },
         setupManifests: {
           where: { status: "fetched" },
           take: 1,
@@ -76,8 +82,12 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         },
       },
     });
-    if (provider?.setupManifests.length) {
-      return { status: "fetched_setup_recovery_required" };
+    if (provider?.setupManifests.length || provider?.writebackIntents.length) {
+      return {
+        status: "remote_outcome_unknown",
+        reason: "github_secret_put_may_have_completed",
+        action: "use_versioned_secret_namespace_or_prove_no_overwrite",
+      };
     }
     if (provider?.mutationOwner === "recovery") {
       return { status: "recovery_required" };
@@ -163,7 +173,10 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
           },
         });
         const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
-          where: { providerInstanceRowId: provider.id, status: "pending" },
+          where: {
+            providerInstanceRowId: provider.id,
+            status: { in: ["pending", "remote_outcome_unknown"] },
+          },
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
           select: {
             id: true,
@@ -203,7 +216,9 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
                 claimedAt: pendingIntent.createdAt,
                 claimMarker:
                   pendingIntent.safeErrorCode ===
-                  codexRotatingWritebackClaimMarker,
+                    codexRotatingWritebackClaimMarker ||
+                  pendingIntent.safeErrorCode ===
+                    codexRotatingWritebackDispatchedMarker,
               }
             : null,
           runtimeLease,

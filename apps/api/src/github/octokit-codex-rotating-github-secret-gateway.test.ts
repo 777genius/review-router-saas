@@ -158,6 +158,27 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     ).rejects.toThrow("codex_rotating_secret_put_unexpected_status");
   });
 
+  it("labels token-mint failure as definitively pre-dispatch", async () => {
+    mocks.auth.mockRejectedValueOnce(new Error("installation unavailable"));
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+    });
+    await expect(
+      gateway.putEncryptedRepositorySecret({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+        repo: "example",
+        secretName: "REVIEWROUTER_CODEX_AUTH_JSON",
+        encryptedValue: "YWJj",
+        keyId: "github-key-id",
+      }),
+    ).rejects.toMatchObject({ outcome: "pre_dispatch_failure" });
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
+
   it("verifies a truly old schema-1 workflow source at workflow_sha before prelease", async () => {
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef:

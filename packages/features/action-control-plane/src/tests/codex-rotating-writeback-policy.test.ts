@@ -49,11 +49,11 @@ describe("Codex rotating writeback policy", () => {
     ).toEqual({ status: "writeback_idempotency_conflict" });
   });
 
-  it("permits confirmation and failure transitions only from claimed", () => {
+  it("permits confirmation only after dispatch is durably fenced", () => {
     expect(
       decideCodexRotatingWritebackConfirmation({
-        status: "pending",
-        safeErrorCode: "runtime_write_claim_v1",
+        status: "remote_outcome_unknown",
+        safeErrorCode: "runtime_write_dispatched_v1",
       }),
     ).toBe("confirm");
     expect(
@@ -68,10 +68,19 @@ describe("Codex rotating writeback policy", () => {
         safeErrorCode: "runtime_write_claim_v1",
       }),
     ).toBe(true);
+    expect(
+      mayFailCodexRotatingWritebackClaim({
+        status: "remote_outcome_unknown",
+        safeErrorCode: "runtime_write_dispatched_v1",
+      }),
+    ).toBe(true);
     expect(mayFailCodexRotatingWritebackClaim({ status: "pending" })).toBe(
       false,
     );
     expect(blocksCodexRotatingProviderMutation("pending")).toBe(true);
+    expect(blocksCodexRotatingProviderMutation("remote_outcome_unknown")).toBe(
+      true,
+    );
     expect(blocksCodexRotatingProviderMutation("failed")).toBe(false);
   });
 });

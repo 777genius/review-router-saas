@@ -4,7 +4,12 @@ export const codexRotatingSetupRecoveryAcknowledgement =
 export type CodexRotatingSetupRecoverySnapshot = {
   readonly canonicalIdentity: boolean;
   readonly quarantined: boolean;
-  readonly mutationOwnership: "active" | "ambiguous" | "recoverable" | "clear";
+  readonly mutationOwnership:
+    | "active"
+    | "remote_outcome_unknown"
+    | "ambiguous"
+    | "recoverable"
+    | "clear";
   readonly recoveryRequestAlreadyApplied: boolean;
 };
 
@@ -34,6 +39,9 @@ export function decideCodexRotatingSetupRecovery(input: {
   }
   if (input.snapshot.mutationOwnership === "ambiguous") {
     throw new Error("codex_rotating_mutation_ownership_ambiguous");
+  }
+  if (input.snapshot.mutationOwnership === "remote_outcome_unknown") {
+    throw new Error("codex_rotating_remote_outcome_unknown");
   }
   if (input.snapshot.mutationOwnership === "clear") {
     throw new Error("codex_rotating_setup_recovery_not_required");

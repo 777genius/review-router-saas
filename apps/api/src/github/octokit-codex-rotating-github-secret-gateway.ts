@@ -17,6 +17,7 @@ import { REVIEW_ROUTER_ACTION_REPOSITORY } from "@reviewrouter/platform-config";
 import {
   managedCodexWorkflowPath,
   managedInteractionWorkflowPath,
+  CodexRotatingSecretPutPreDispatchError,
   type ActionRepositoryContext,
   type CodexRotatingGitHubSecretTokenIssuerPort,
   type CodexRotatingGitHubSecretWriterPort,
@@ -218,17 +219,24 @@ export class OctokitCodexRotatingGitHubSecretGateway
     readonly status: "accepted";
     readonly statusCode: 201 | 204;
   }> {
-    assertCanonicalCodexRotatingProviderId({
-      providerInstanceId:
-        input.expectedProviderInstanceId ??
-        canonicalCodexRotatingProviderId(input.githubRepositoryId),
-      githubRepositoryId: input.githubRepositoryId,
-    });
-    const token = await this.mintRepositorySecretsToken({
-      githubInstallationId: input.githubInstallationId,
-      githubRepositoryId: input.githubRepositoryId,
-      permission: "write",
-    });
+    let token;
+    try {
+      assertCanonicalCodexRotatingProviderId({
+        providerInstanceId:
+          input.expectedProviderInstanceId ??
+          canonicalCodexRotatingProviderId(input.githubRepositoryId),
+        githubRepositoryId: input.githubRepositoryId,
+      });
+      token = await this.mintRepositorySecretsToken({
+        githubInstallationId: input.githubInstallationId,
+        githubRepositoryId: input.githubRepositoryId,
+        permission: "write",
+      });
+    } catch {
+      // No repository-secret request has been dispatched yet, so this is the
+      // only failure class that may safely permit an in-place recovery.
+      throw new CodexRotatingSecretPutPreDispatchError();
+    }
     const response = (await githubRequest(
       "PUT /repos/{owner}/{repo}/actions/secrets/{secret_name}",
       {

@@ -44,6 +44,7 @@ describe("Codex rotating setup recovery policy", () => {
 
   it.each([
     ["active", "codex_rotating_mutation_still_active"],
+    ["remote_outcome_unknown", "codex_rotating_remote_outcome_unknown"],
     ["ambiguous", "codex_rotating_mutation_ownership_ambiguous"],
   ] as const)(
     "refuses %s external mutation ownership",

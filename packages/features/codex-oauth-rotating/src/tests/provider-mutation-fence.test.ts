@@ -27,7 +27,7 @@ describe("rotating provider identity and mutation fence", () => {
     );
   });
 
-  it("keeps fetched installers active through the external PUT grace", () => {
+  it("never makes a fetched installer recoverable by elapsed time", () => {
     const fetchedAt = new Date("2026-08-09T12:00:00.000Z");
     const classify = (now: string) =>
       classifyCodexRotatingMutationOwnership({
@@ -41,8 +41,8 @@ describe("rotating provider identity and mutation fence", () => {
           lastFetchedAt: fetchedAt,
         },
       }).classification;
-    expect(classify("2026-08-09T12:14:59.999Z")).toBe("active");
-    expect(classify("2026-08-09T12:15:00.000Z")).toBe("recoverable");
+    expect(classify("2026-08-09T12:14:59.999Z")).toBe("remote_outcome_unknown");
+    expect(classify("2036-08-09T12:15:00.000Z")).toBe("remote_outcome_unknown");
     expect(
       classifyCodexRotatingMutationOwnership({
         owner: "recovery",
@@ -55,7 +55,29 @@ describe("rotating provider identity and mutation fence", () => {
           lastFetchedAt: fetchedAt,
         },
       }).classification,
-    ).toBe("active");
+    ).toBe("remote_outcome_unknown");
+  });
+
+  it("keeps a late unknown runtime PUT blocking after every grace deadline", () => {
+    expect(
+      classifyCodexRotatingMutationOwnership({
+        owner: "recovery",
+        ownerId: "intent_1",
+        now: new Date("2036-08-09T12:00:00.000Z"),
+        writeback: {
+          id: "intent_1",
+          leaseId: "lease_1",
+          status: "remote_outcome_unknown",
+          claimedAt: new Date("2026-08-09T12:00:00.000Z"),
+          claimMarker: false,
+        },
+        runtimeLease: {
+          id: "lease_1",
+          status: "unknown_auth_state",
+          expiresAt: new Date("2026-08-09T12:15:00.000Z"),
+        },
+      }).classification,
+    ).toBe("remote_outcome_unknown");
   });
 
   it("models a runtime claim through lease expiry plus grace", () => {

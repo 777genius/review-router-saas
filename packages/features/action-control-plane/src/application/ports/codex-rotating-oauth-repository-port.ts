@@ -126,11 +126,42 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly now: Date;
   }): Promise<CodexRotatingMutationConfirmationOutcome>;
 
+  markEncryptedWritebackDispatched(input: {
+    readonly intentId: string;
+    readonly now: Date;
+  }): Promise<boolean>;
+
   markEncryptedWritebackFailed(input: {
     readonly intentId: string;
     readonly safeErrorCode: string;
     readonly now: Date;
   }): Promise<void>;
+
+  markEncryptedWritebackRemoteOutcomeUnknown(input: {
+    readonly intentId: string;
+    readonly safeErrorCode: string;
+    readonly now: Date;
+  }): Promise<void>;
+}
+
+export class CodexRotatingSecretPutPreDispatchError extends Error {
+  readonly outcome = "pre_dispatch_failure" as const;
+
+  constructor() {
+    super("codex_rotating_secret_put_pre_dispatch_failed");
+  }
+}
+
+export function isCodexRotatingSecretPutPreDispatchError(
+  error: unknown,
+): error is CodexRotatingSecretPutPreDispatchError {
+  return (
+    error instanceof CodexRotatingSecretPutPreDispatchError ||
+    (typeof error === "object" &&
+      error !== null &&
+      "outcome" in error &&
+      error.outcome === "pre_dispatch_failure")
+  );
 }
 
 export interface CodexRotatingGitHubSecretTokenIssuerPort {

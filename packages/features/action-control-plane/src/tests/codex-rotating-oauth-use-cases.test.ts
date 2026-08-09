@@ -9,6 +9,8 @@ import {
   issueCodexRotatingOAuthCheckoutToken,
   issueCodexRotatingOAuthCommentToken,
   codexRotatingCommentTokenRefreshTtlMs,
+  CodexRotatingSecretPutPreDispatchError,
+  type WritebackCodexRotatingOAuthDependencies,
 } from "../index";
 import { parseReviewConfiguration } from "@reviewrouter/features-review-config";
 import { computeEncryptedPayloadDigest } from "@reviewrouter/features-codex-oauth-rotating";
@@ -55,6 +57,66 @@ const pullRequestTargetClaims = {
 } as const;
 
 describe("Codex rotating OAuth action control plane", () => {
+  it("keeps a proven pre-dispatch PUT failure in the safe failure lane", async () => {
+    const markFailed = vi.fn().mockResolvedValue(undefined);
+    const markUnknown = vi.fn().mockResolvedValue(undefined);
+    const repositoryPort = {
+      prepareEncryptedWriteback: vi.fn().mockResolvedValue({
+        status: "ready",
+        intentId: "intent-pre-dispatch",
+        writeTarget: {
+          expectedProviderInstanceId: "codex-rotating:123456",
+          githubInstallationId: "789",
+          githubRepositoryId: "123456",
+          repositoryFullName: "777genius/agent-teams-ai",
+          owner: "777genius",
+          repo: "agent-teams-ai",
+          secretName: "REVIEWROUTER_CODEX_AUTH_JSON",
+        },
+      }),
+      markEncryptedWritebackDispatched: vi.fn().mockResolvedValue(true),
+      markEncryptedWritebackFailed: markFailed,
+      markEncryptedWritebackRemoteOutcomeUnknown: markUnknown,
+    } as unknown as WritebackCodexRotatingOAuthDependencies["codexRotatingOAuth"];
+
+    await expect(
+      writebackCodexRotatingOAuth(
+        {
+          body: {
+            protocolVersion: 1,
+            leaseId: "lease-pre-dispatch",
+            providerInstanceId: "codex-rotating:123456",
+            generation: 2,
+            latestGenerationHash: "latest-generation-hash-value-0123456789",
+            encryptedValue: Buffer.from("ciphertext").toString("base64"),
+            keyId: "github-key",
+            idempotencyKey: "idem:pre-dispatch",
+          },
+        },
+        {
+          codexRotatingOAuth: repositoryPort,
+          codexRotatingSecretWriter: {
+            assertCanWriteRepositorySecret: vi.fn(),
+            putEncryptedRepositorySecret: vi
+              .fn()
+              .mockRejectedValue(new CodexRotatingSecretPutPreDispatchError()),
+          },
+          codexRotatingWritebackHmacKey: "test-writeback-hmac-key",
+          clock: { now: () => now },
+        },
+      ),
+    ).resolves.toEqual({
+      protocolVersion: 1,
+      status: "writeback_recovery_required",
+    });
+    expect(markFailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        safeErrorCode: "github_put_pre_dispatch_failed",
+      }),
+    );
+    expect(markUnknown).not.toHaveBeenCalled();
+  });
+
   it("preleases, finalizes, and records encrypted writeback without plaintext", async () => {
     const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
       {

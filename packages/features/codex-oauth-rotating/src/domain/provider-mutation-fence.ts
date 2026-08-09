@@ -56,17 +56,21 @@ export type CodexRotatingMutationConfirmationOutcome =
 export const codexRotatingExternalMutationGraceMs = 15 * 60 * 1000;
 export const codexRotatingWritebackClaimMarker =
   "runtime_write_claim_v1" as const;
+export const codexRotatingWritebackDispatchedMarker =
+  "runtime_write_dispatched_v1" as const;
 
 export type CodexRotatingMutationOwnership =
   | { readonly classification: "clear" }
   | { readonly classification: "active"; readonly deadline: Date }
+  | { readonly classification: "remote_outcome_unknown" }
   | { readonly classification: "ambiguous" }
   | { readonly classification: "recoverable"; readonly deadline?: Date };
 
 /**
  * Shared, transport-free ownership policy for setup installers and runtime
- * writers. A database lock serializes decisions; only elapsed external-write
- * deadlines make an abandoned owner recoverable.
+ * writers. A database lock serializes decisions. Once an external secret PUT
+ * may have been dispatched, elapsed time can never prove that a late,
+ * unconditional GitHub PUT will not overwrite a replacement credential.
  */
 export function classifyCodexRotatingMutationOwnership(input: {
   readonly owner: string | null;
@@ -106,18 +110,20 @@ export function classifyCodexRotatingMutationOwnership(input: {
       return { classification: "ambiguous" };
     }
     if (input.setup) {
+      if (input.setup.status === "fetched") {
+        return { classification: "remote_outcome_unknown" };
+      }
       const deadline =
-        input.setup.status === "issued"
-          ? input.setup.expiresAt
-          : input.setup.status === "fetched" && input.setup.lastFetchedAt
-            ? new Date(input.setup.lastFetchedAt.getTime() + graceMs)
-            : null;
+        input.setup.status === "issued" ? input.setup.expiresAt : null;
       if (!deadline) return { classification: "ambiguous" };
       return deadline > input.now
         ? { classification: "active", deadline }
         : { classification: "recoverable", deadline };
     }
     if (input.writeback) {
+      if (input.writeback.status === "remote_outcome_unknown") {
+        return { classification: "remote_outcome_unknown" };
+      }
       if (
         !input.runtimeLease ||
         input.writeback.leaseId !== input.runtimeLease.id ||
@@ -149,11 +155,7 @@ export function classifyCodexRotatingMutationOwnership(input: {
         : { classification: "recoverable", deadline: input.setup.expiresAt };
     }
     if (input.setup.status === "fetched") {
-      if (!input.setup.lastFetchedAt) return { classification: "ambiguous" };
-      const deadline = new Date(input.setup.lastFetchedAt.getTime() + graceMs);
-      return deadline > input.now
-        ? { classification: "active", deadline }
-        : { classification: "recoverable", deadline };
+      return { classification: "remote_outcome_unknown" };
     }
     return { classification: "ambiguous" };
   }
@@ -168,10 +170,15 @@ export function classifyCodexRotatingMutationOwnership(input: {
     if (
       input.writeback &&
       (input.writeback.leaseId !== input.runtimeLease.id ||
-        input.writeback.status !== "pending" ||
+        !["pending", "remote_outcome_unknown"].includes(
+          input.writeback.status,
+        ) ||
         !input.writeback.claimMarker)
     ) {
       return { classification: "ambiguous" };
+    }
+    if (input.writeback?.status === "remote_outcome_unknown") {
+      return { classification: "remote_outcome_unknown" };
     }
     const claimedDeadline = input.writeback
       ? input.writeback.claimedAt.getTime() + graceMs

@@ -16,6 +16,7 @@ import {
 import {
   blocksCodexRotatingProviderMutation,
   codexRotatingWritebackClaimMarker,
+  codexRotatingWritebackDispatchedMarker,
   decideCodexRotatingWritebackConfirmation,
   decideCodexRotatingWritebackPreparation,
   mayFailCodexRotatingWritebackClaim,
@@ -672,6 +673,52 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly safeErrorCode: string;
     readonly now: Date;
   }): Promise<void> {
+    this.markEncryptedWritebackOutcome(input, "failed");
+  }
+
+  async markEncryptedWritebackDispatched(input: {
+    readonly intentId: string;
+    readonly now: Date;
+  }): Promise<boolean> {
+    const recordEntry = [...this.writebacks.entries()].find(
+      ([, record]) => record.intentId === input.intentId,
+    );
+    if (!recordEntry) return false;
+    const [key, record] = recordEntry;
+    if (!mayFailCodexRotatingWritebackClaim(record)) return false;
+    const provider = this.providers.get(record.request.providerInstanceId);
+    if (
+      !provider ||
+      provider.mutationOwner !== "runtime" ||
+      provider.mutationOwnerId !== record.request.leaseId ||
+      this.leaseEpochById.get(record.request.leaseId) !== provider.mutationEpoch
+    ) {
+      return false;
+    }
+    this.writebacks.set(key, {
+      ...record,
+      status: "remote_outcome_unknown",
+      safeErrorCode: codexRotatingWritebackDispatchedMarker,
+    });
+    return true;
+  }
+
+  async markEncryptedWritebackRemoteOutcomeUnknown(input: {
+    readonly intentId: string;
+    readonly safeErrorCode: string;
+    readonly now: Date;
+  }): Promise<void> {
+    this.markEncryptedWritebackOutcome(input, "remote_outcome_unknown");
+  }
+
+  private markEncryptedWritebackOutcome(
+    input: {
+      readonly intentId: string;
+      readonly safeErrorCode: string;
+      readonly now: Date;
+    },
+    status: "failed" | "remote_outcome_unknown",
+  ): void {
     const recordEntry = [...this.writebacks.entries()].find(
       ([, record]) => record.intentId === input.intentId,
     );
@@ -680,7 +727,7 @@ export class InMemoryCodexRotatingOAuthRepository
     if (!mayFailCodexRotatingWritebackClaim(record)) return;
     this.writebacks.set(key, {
       ...record,
-      status: "failed",
+      status,
       safeErrorCode: input.safeErrorCode,
     });
     const provider = this.providers.get(record.request.providerInstanceId);

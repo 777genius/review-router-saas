@@ -297,7 +297,20 @@ fetch_setup_manifest() {
   esac
 
   SETUP_RESPONSE_FILE="$(mktemp)"
-  curl -fsSL --connect-timeout 10 --max-time 30 --get --data-urlencode "nonce=$SETUP_NONCE" "$SETUP_URL" -o "$SETUP_RESPONSE_FILE"
+  fetch_attempt=1
+  while [ "$fetch_attempt" -le 3 ]; do
+    if curl -fsSL --connect-timeout 10 --max-time 30 --get \
+      --data-urlencode "nonce=$SETUP_NONCE" "$SETUP_URL" \
+      -o "$SETUP_RESPONSE_FILE"; then
+      break
+    fi
+    if [ "$fetch_attempt" -eq 3 ]; then
+      fatal "Could not fetch the setup manifest after retrying the same nonce."
+    fi
+    warn "ReviewRouter manifest delivery did not complete. Retrying the same idempotent fetch."
+    sleep "$fetch_attempt"
+    fetch_attempt=$((fetch_attempt + 1))
+  done
   MANIFEST_B64="$(node - "$SETUP_RESPONSE_FILE" <<'NODE'
 const fs = require("node:fs");
 const path = process.argv[2];

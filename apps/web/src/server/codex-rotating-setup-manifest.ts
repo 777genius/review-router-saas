@@ -208,7 +208,10 @@ export async function issueCodexRotatingSetupCommand(input: {
         throw new Error("codex_rotating_setup_recovery_already_used");
       }
       const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
-        where: { providerInstanceRowId: provider.id, status: "pending" },
+        where: {
+          providerInstanceRowId: provider.id,
+          status: { in: ["pending", "remote_outcome_unknown"] },
+        },
         select: { id: true },
       });
       if (
@@ -327,7 +330,6 @@ export async function resolveCodexRotatingSetupManifestForNonce(input: {
       await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
       const now = input.now ?? new Date();
       const row = await findSetupManifestByNonce(tx, input.setupNonce);
-      assertSetupManifestFetchable(row, now);
       const manifest = codexRotatingSetupManifestSchema.parse(row.manifestJson);
       if (
         !isCodexRotatingOAuthAllowedForRepository(manifest.repositoryFullName)
@@ -337,6 +339,29 @@ export async function resolveCodexRotatingSetupManifestForNonce(input: {
       if (!(await isCodexRotatingSetupFenceOwner(tx, row))) {
         throw new Error("codex_rotating_setup_confirmation_stale_epoch");
       }
+
+      if (row.status === CodexRotatingSetupManifestStatus.Fetched) {
+        assertSetupManifestNotExpiredOrConsumed(row, now);
+        const recovery = await tx.$queryRaw<Array<{ readonly id: string }>>`
+          SELECT "id" FROM "CodexOAuthSetupRecoveryRequest"
+          WHERE "providerInstanceRowId" = ${row.providerInstanceRowId}
+            AND "latestManifestId" = ${row.id}
+            AND "state" = 'manifest_issued'
+          LIMIT 1
+        `;
+        if (recovery.length !== 1) {
+          throw new Error("codex_rotating_setup_manifest_reused");
+        }
+        // The first HTTP response may have been lost after commit. Replaying
+        // the exact forced manifest is idempotent and preserves its original
+        // fetched timestamp and recovery-ledger provenance.
+        return {
+          manifestBase64: encodeCodexRotatingSetupManifest(manifest),
+          expiresAt: manifest.expiresAt,
+        };
+      }
+
+      assertSetupManifestFetchable(row, now);
 
       const updated = await tx.$executeRaw`
       UPDATE "CodexOAuthSetupManifest"

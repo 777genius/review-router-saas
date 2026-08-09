@@ -17,6 +17,7 @@ import {
 } from "../../domain/codex-rotating-oauth-posting-window.js";
 import {
   codexRotatingWritebackClaimMarker,
+  codexRotatingWritebackDispatchedMarker,
   decideCodexRotatingWritebackConfirmation,
   decideCodexRotatingWritebackPreparation,
   mayFailCodexRotatingWritebackClaim,
@@ -182,6 +183,7 @@ export class PrismaCodexRotatingOAuthRepository
     const leaseKey = `${input.providerInstanceId}:${input.githubRunId}:${input.githubRunAttempt}`;
 
     return this.prisma.$transaction(async (tx) => {
+      await setBoundedProviderRowWaits(tx);
       // A shared transaction-scoped advisory lock makes every admitted
       // prelease attempt observable in pg_locks until the lease transaction
       // commits or aborts. Drain tooling can take the matching exclusive lock
@@ -240,7 +242,7 @@ export class PrismaCodexRotatingOAuthRepository
       const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
         where: {
           providerInstanceRowId: provider.id,
-          status: "pending",
+          status: { in: ["pending", "remote_outcome_unknown"] },
         },
         select: { id: true },
       });
@@ -782,7 +784,7 @@ export class PrismaCodexRotatingOAuthRepository
       const blockingIntent = await tx.codexOAuthWritebackIntent.findFirst({
         where: {
           providerInstanceRowId: provider.id,
-          status: "pending",
+          status: { in: ["pending", "remote_outcome_unknown"] },
         },
         select: { id: true },
       });
@@ -949,6 +951,68 @@ export class PrismaCodexRotatingOAuthRepository
     };
   }
 
+  async markEncryptedWritebackDispatched(input: {
+    readonly intentId: string;
+    readonly now: Date;
+  }): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      await setBoundedProviderRowWaits(tx);
+      const locator = await tx.codexOAuthWritebackIntent.findUnique({
+        where: { id: input.intentId },
+        select: { providerInstanceRowId: true },
+      });
+      if (!locator) return false;
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "CodexOAuthProviderInstance"
+        WHERE "id" = ${locator.providerInstanceRowId}
+        FOR UPDATE
+      `);
+      const intent = await tx.codexOAuthWritebackIntent.findUnique({
+        where: { id: input.intentId },
+        select: {
+          id: true,
+          leaseId: true,
+          status: true,
+          safeErrorCode: true,
+          mutationEpoch: true,
+          providerInstance: {
+            select: {
+              activeLeaseId: true,
+              mutationEpoch: true,
+              mutationOwner: true,
+              mutationOwnerId: true,
+            },
+          },
+        },
+      });
+      if (
+        !intent ||
+        intent.status !== "pending" ||
+        intent.safeErrorCode !== codexRotatingWritebackClaimMarker ||
+        intent.mutationEpoch === null ||
+        intent.providerInstance.activeLeaseId !== intent.leaseId ||
+        intent.providerInstance.mutationEpoch !== intent.mutationEpoch ||
+        intent.providerInstance.mutationOwner !== "runtime" ||
+        intent.providerInstance.mutationOwnerId !== intent.leaseId
+      ) {
+        return false;
+      }
+      const updated = await tx.codexOAuthWritebackIntent.updateMany({
+        where: {
+          id: intent.id,
+          status: "pending",
+          safeErrorCode: codexRotatingWritebackClaimMarker,
+          mutationEpoch: intent.mutationEpoch,
+        },
+        data: {
+          status: "remote_outcome_unknown",
+          safeErrorCode: codexRotatingWritebackDispatchedMarker,
+        },
+      });
+      return updated.count === 1;
+    });
+  }
+
   async confirmEncryptedWriteback(input: {
     readonly intentId: string;
     readonly now: Date;
@@ -978,6 +1042,7 @@ export class PrismaCodexRotatingOAuthRepository
       if (!intent) {
         throw new Error("codex_rotating_writeback_intent_not_found");
       }
+      await setBoundedProviderRowWaits(tx);
       await tx.$queryRaw(Prisma.sql`
         SELECT "id" FROM "CodexOAuthProviderInstance"
         WHERE "id" = ${intent.providerInstance.id}
@@ -1010,6 +1075,16 @@ export class PrismaCodexRotatingOAuthRepository
         current.mutationOwner !== "runtime" ||
         current.mutationOwnerId !== intent.leaseId
       ) {
+        await tx.codexOAuthWritebackIntent.updateMany({
+          where: {
+            id: intent.id,
+            status: { in: ["pending", "remote_outcome_unknown"] },
+          },
+          data: {
+            status: "remote_outcome_unknown",
+            safeErrorCode: "post_put_stale_mutation_epoch",
+          },
+        });
         await tx.codexOAuthProviderInstance.update({
           where: { id: intent.providerInstance.id },
           data: {
@@ -1018,14 +1093,6 @@ export class PrismaCodexRotatingOAuthRepository
             mutationOwner: "recovery",
             mutationOwnerId: intent.id,
           },
-        });
-        await tx.codexOAuthWritebackIntent.updateMany({
-          where: {
-            id: intent.id,
-            status: "pending",
-            safeErrorCode: codexRotatingWritebackClaimMarker,
-          },
-          data: { status: "failed", safeErrorCode: "stale_mutation_epoch" },
         });
         return {
           status: "recovery_required" as const,
@@ -1071,6 +1138,25 @@ export class PrismaCodexRotatingOAuthRepository
     readonly safeErrorCode: string;
     readonly now: Date;
   }): Promise<void> {
+    await this.markEncryptedWritebackOutcome(input, "failed");
+  }
+
+  async markEncryptedWritebackRemoteOutcomeUnknown(input: {
+    readonly intentId: string;
+    readonly safeErrorCode: string;
+    readonly now: Date;
+  }): Promise<void> {
+    await this.markEncryptedWritebackOutcome(input, "remote_outcome_unknown");
+  }
+
+  private async markEncryptedWritebackOutcome(
+    input: {
+      readonly intentId: string;
+      readonly safeErrorCode: string;
+      readonly now: Date;
+    },
+    status: "failed" | "remote_outcome_unknown",
+  ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       await setBoundedProviderRowWaits(tx);
       const locator = await tx.codexOAuthWritebackIntent.findUnique({
@@ -1119,12 +1205,20 @@ export class PrismaCodexRotatingOAuthRepository
       const failed = await tx.codexOAuthWritebackIntent.updateMany({
         where: {
           id: intent.id,
-          status: "pending",
-          safeErrorCode: codexRotatingWritebackClaimMarker,
           mutationEpoch: intent.mutationEpoch,
+          OR: [
+            {
+              status: "pending",
+              safeErrorCode: codexRotatingWritebackClaimMarker,
+            },
+            {
+              status: "remote_outcome_unknown",
+              safeErrorCode: codexRotatingWritebackDispatchedMarker,
+            },
+          ],
         },
         data: {
-          status: "failed",
+          status,
           safeErrorCode: sanitizeCodexRotatingSafeErrorCode(
             input.safeErrorCode,
           ),
@@ -1223,6 +1317,7 @@ async function lockProviderByInstanceId(
   tx: Prisma.TransactionClient,
   providerInstanceId: string,
 ): Promise<void> {
+  await setBoundedProviderRowWaits(tx);
   await tx.$queryRaw(Prisma.sql`
     SELECT "id" FROM "CodexOAuthProviderInstance"
     WHERE "providerInstanceId" = ${providerInstanceId}

@@ -1,5 +1,6 @@
 import { decideCodexRotatingSetupRecovery } from "../../domain/codex-rotating-setup-recovery";
 import type { CodexRotatingSetupRecoveryPort } from "../ports/codex-rotating-setup-recovery-port";
+import { codexRotatingSetupRecoveryRequestIdSchema } from "../../domain/codex-rotating-setup-recovery-http";
 
 export async function recoverCodexRotatingSetup(
   input: {
@@ -13,7 +14,11 @@ export async function recoverCodexRotatingSetup(
   },
   dependencies: { readonly recovery: CodexRotatingSetupRecoveryPort },
 ) {
-  if (!/^[A-Za-z0-9_.:-]{8,160}$/.test(input.recoveryRequestId)) {
+  if (
+    !codexRotatingSetupRecoveryRequestIdSchema.safeParse(
+      input.recoveryRequestId,
+    ).success
+  ) {
     throw new Error("codex_rotating_setup_recovery_request_invalid");
   }
   return dependencies.recovery.recover({

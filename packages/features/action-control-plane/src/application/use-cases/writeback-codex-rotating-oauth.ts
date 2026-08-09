@@ -7,6 +7,7 @@ import type {
   CodexRotatingGitHubSecretWriterPort,
   CodexRotatingOAuthRepositoryPort,
 } from "../ports/codex-rotating-oauth-repository-port.js";
+import { isCodexRotatingSecretPutPreDispatchError } from "../ports/codex-rotating-oauth-repository-port.js";
 
 export type WritebackCodexRotatingOAuthDependencies = {
   readonly codexRotatingOAuth: CodexRotatingOAuthRepositoryPort;
@@ -42,18 +43,38 @@ export async function writebackCodexRotatingOAuth(
     return { protocolVersion: 1, status: prepared.status };
   }
 
+  const dispatched =
+    await dependencies.codexRotatingOAuth.markEncryptedWritebackDispatched({
+      intentId: prepared.intentId,
+      now: dependencies.clock.now(),
+    });
+  if (!dispatched) {
+    return { protocolVersion: 1, status: "writeback_recovery_required" };
+  }
+
   try {
     await dependencies.codexRotatingSecretWriter.putEncryptedRepositorySecret({
       ...prepared.writeTarget,
       encryptedValue: request.encryptedValue,
       keyId: request.keyId,
     });
-  } catch {
-    await dependencies.codexRotatingOAuth.markEncryptedWritebackFailed({
+  } catch (error) {
+    const failure = {
       intentId: prepared.intentId,
-      safeErrorCode: "github_put_failed",
+      safeErrorCode: isCodexRotatingSecretPutPreDispatchError(error)
+        ? "github_put_pre_dispatch_failed"
+        : "github_put_remote_outcome_unknown",
       now: dependencies.clock.now(),
-    });
+    };
+    if (isCodexRotatingSecretPutPreDispatchError(error)) {
+      await dependencies.codexRotatingOAuth.markEncryptedWritebackFailed(
+        failure,
+      );
+    } else {
+      await dependencies.codexRotatingOAuth.markEncryptedWritebackRemoteOutcomeUnknown(
+        failure,
+      );
+    }
     return { protocolVersion: 1, status: "writeback_recovery_required" };
   }
 
@@ -65,11 +86,13 @@ export async function writebackCodexRotatingOAuth(
         now: dependencies.clock.now(),
       });
   } catch {
-    await dependencies.codexRotatingOAuth.markEncryptedWritebackFailed({
-      intentId: prepared.intentId,
-      safeErrorCode: "writeback_confirmation_ambiguous",
-      now: dependencies.clock.now(),
-    });
+    await dependencies.codexRotatingOAuth.markEncryptedWritebackRemoteOutcomeUnknown(
+      {
+        intentId: prepared.intentId,
+        safeErrorCode: "writeback_confirmation_remote_outcome_unknown",
+        now: dependencies.clock.now(),
+      },
+    );
     return { protocolVersion: 1, status: "writeback_recovery_required" };
   }
   if (confirmation.status === "recovery_required") {

@@ -1,11 +1,14 @@
 export const codexRotatingWritebackClaimMarker =
   "runtime_write_claim_v1" as const;
+export const codexRotatingWritebackDispatchedMarker =
+  "runtime_write_dispatched_v1" as const;
 
 export type CodexRotatingWritebackIntentStatus =
   | "pending"
   | "completed"
   | "failed"
-  | "ambiguous";
+  | "ambiguous"
+  | "remote_outcome_unknown";
 
 export type CodexRotatingWritebackPreparationDecision =
   | { readonly status: "claim" }
@@ -42,8 +45,8 @@ export function decideCodexRotatingWritebackConfirmation(intent: {
   readonly safeErrorCode?: string | null;
 }): "confirm" | "idempotent" | "recovery_required" {
   if (
-    intent.status === "pending" &&
-    intent.safeErrorCode === codexRotatingWritebackClaimMarker
+    intent.status === "remote_outcome_unknown" &&
+    intent.safeErrorCode === codexRotatingWritebackDispatchedMarker
   ) {
     return "confirm";
   }
@@ -56,11 +59,13 @@ export function mayFailCodexRotatingWritebackClaim(intent: {
   readonly safeErrorCode?: string | null;
 }): boolean {
   return (
-    intent.status === "pending" &&
-    intent.safeErrorCode === codexRotatingWritebackClaimMarker
+    (intent.status === "pending" &&
+      intent.safeErrorCode === codexRotatingWritebackClaimMarker) ||
+    (intent.status === "remote_outcome_unknown" &&
+      intent.safeErrorCode === codexRotatingWritebackDispatchedMarker)
   );
 }
 
 export function blocksCodexRotatingProviderMutation(status: string): boolean {
-  return status === "pending";
+  return status === "pending" || status === "remote_outcome_unknown";
 }

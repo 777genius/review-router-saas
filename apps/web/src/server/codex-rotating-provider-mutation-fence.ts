@@ -39,12 +39,20 @@ export async function lockCodexRotatingProviderRow(
   prisma: FenceTransaction,
   providerInstanceRowId: string,
 ): Promise<void> {
+  await setBoundedCodexRotatingProviderRowWaits(prisma);
   const rows = await prisma.$queryRaw<Array<{ readonly id: string }>>`
     SELECT "id" FROM "CodexOAuthProviderInstance"
     WHERE "id" = ${providerInstanceRowId}
     FOR UPDATE
   `;
   if (rows.length !== 1) throw new Error("codex_rotating_provider_not_found");
+}
+
+export async function setBoundedCodexRotatingProviderRowWaits(
+  prisma: FenceTransaction,
+): Promise<void> {
+  await prisma.$executeRawUnsafe("SET LOCAL lock_timeout = '2s'");
+  await prisma.$executeRawUnsafe("SET LOCAL statement_timeout = '5s'");
 }
 
 export async function isCodexRotatingSetupFenceOwner(

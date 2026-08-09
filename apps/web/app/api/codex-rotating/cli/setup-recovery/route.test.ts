@@ -89,6 +89,28 @@ describe("Codex rotating CLI setup recovery", () => {
     expect(mocks.authorize).not.toHaveBeenCalled();
   });
 
+  it("maps a malformed recovery request id through the shared contract", async () => {
+    const body = JSON.parse(await request(true).text());
+    body.recoveryRequestId = "bad id";
+    const response = await POST(
+      new Request(
+        "https://reviewrouter.site/api/codex-rotating/cli/setup-recovery",
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer github-token-value",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        },
+      ),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_setup_recovery_request_invalid",
+    });
+  });
+
   it("audits a safe token fingerprint without returning the token", async () => {
     const response = await POST(request(true));
     expect(response.status).toBe(200);
@@ -109,6 +131,8 @@ describe("Codex rotating CLI setup recovery", () => {
     ["rate_limit_exceeded:setup-recovery", 429],
     ["codex_rotating_mutation_still_active", 409],
     ["codex_rotating_setup_recovery_request_conflict", 409],
+    ["codex_rotating_provider_identity_mismatch", 409],
+    ["codex_rotating_provider_not_found", 404],
   ] as const)("maps %s to HTTP %i", async (error, status) => {
     mocks.recoverAndIssue.mockRejectedValueOnce(new Error(error));
     const response = await POST(request(true));
