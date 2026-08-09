@@ -353,6 +353,7 @@ describeDatabase("Codex rotating setup serialization", () => {
           safeErrorCode: "runtime_write_claim_v1",
         },
       });
+      const elapsedRecoveryNow = new Date("2036-08-09T13:00:00.000Z");
       await expect(
         issueCodexRotatingSetupCommand({
           prisma: concurrentPrisma[0],
@@ -365,7 +366,7 @@ describeDatabase("Codex rotating setup serialization", () => {
             "https://reviewrouter.site/api/codex-rotating/setup-manifest",
           setupConfirmUrl:
             "https://reviewrouter.site/api/codex-rotating/setup-confirm",
-          now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
+          now: elapsedRecoveryNow,
         }),
       ).rejects.toThrow("codex_rotating_mutation_fence_conflict");
       const claimedIntent =
@@ -385,7 +386,7 @@ describeDatabase("Codex rotating setup serialization", () => {
           recoveryRequestId: elapsedRecoveryRequestId,
           actor: "user:github:operator",
           acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
-          now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
+          now: elapsedRecoveryNow,
         },
         {
           recovery: new PrismaCodexRotatingSetupRecovery(concurrentPrisma[0]),
@@ -407,12 +408,12 @@ describeDatabase("Codex rotating setup serialization", () => {
           "https://reviewrouter.site/api/codex-rotating/setup-manifest",
         setupConfirmUrl:
           "https://reviewrouter.site/api/codex-rotating/setup-confirm",
-        now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
+        now: elapsedRecoveryNow,
       });
       await firstRepository.markEncryptedWritebackFailed({
         intentId: claimedIntent.id,
         safeErrorCode: "late_transport_failure",
-        now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
+        now: elapsedRecoveryNow,
       });
       await expect(
         prisma.codexOAuthProviderInstance.findUniqueOrThrow({
@@ -423,7 +424,7 @@ describeDatabase("Codex rotating setup serialization", () => {
       await expect(
         firstRepository.confirmEncryptedWriteback({
           intentId: claimedIntent.id,
-          now: new Date(runtimeNow.getTime() + 60 * 60 * 1000),
+          now: elapsedRecoveryNow,
         }),
       ).resolves.toMatchObject({ status: "recovery_required" });
       await expect(
