@@ -354,6 +354,7 @@ model CodexOAuthSetupManifest {
   createdAt             DateTime  @default(now())
   lastFetchedAt         DateTime?
   consumedAt            DateTime?
+  confirmationJson      Json?
 
   workspace        Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repository       RepositoryConnection       @relation(fields: [repositoryId], references: [id], onDelete: Cascade)

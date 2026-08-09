@@ -435,6 +435,7 @@ exit 17
     expect(command).toContain(
       "REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID",
     );
+    expect(command).toContain("REVIEW_ROUTER_REPO=777genius/agent-teams-ai");
     expect(command).not.toContain(
       "REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64",
     );

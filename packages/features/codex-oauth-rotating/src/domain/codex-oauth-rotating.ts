@@ -358,6 +358,7 @@ export function renderCodexRotatingInstallerCommand(input: {
   const manifest = shellQuote(manifestBase64);
   const setupNonce = shellQuote(input.manifest.setupNonce);
   const providerInstanceId = shellQuote(input.manifest.providerInstanceId);
+  const repositoryFullName = shellQuote(input.manifest.repositoryFullName);
   const setupManifestUrl = input.setupManifestUrl
     ? shellQuote(input.setupManifestUrl)
     : null;
@@ -369,6 +370,7 @@ export function renderCodexRotatingInstallerCommand(input: {
     `REVIEW_ROUTER_INSTALLER_URL=${installerUrl} \\`,
     `REVIEW_ROUTER_INSTALLER_VERSION=${installerVersion} \\`,
     `REVIEW_ROUTER_INSTALLER_SHA256=${installerSha256} \\`,
+    `REVIEW_ROUTER_REPO=${repositoryFullName} \\`,
     `REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID=${providerInstanceId} \\`,
     ...(setupManifestUrl
       ? [

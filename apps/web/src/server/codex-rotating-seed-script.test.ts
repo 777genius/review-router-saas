@@ -519,6 +519,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
         REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
         REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID:
           "codex-rotating:777genius:agent-teams-ai",
+        REVIEW_ROUTER_REPO: "777genius/agent-teams-ai",
         REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL:
           "http://localhost:3000/manifest",
         REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
@@ -559,6 +560,152 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     });
     expect(JSON.stringify(state)).not.toContain("refresh-token");
     expect(JSON.stringify(state)).not.toContain("id-token-for-fingerprint");
+  });
+
+  it("acquires the server setup lease after login and before the secret write", () => {
+    const fixture = createRotatingInstallerFixture();
+    const eventCapturePath = join(fixture.home, "events.log");
+    const confirmCapturePath = join(fixture.home, "confirm.json");
+
+    const result = spawnSync("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: fixture.path,
+        HOME: fixture.home,
+        REVIEW_ROUTER_TEST_EVENT_CAPTURE: eventCapturePath,
+        REVIEW_ROUTER_TEST_MANIFEST_B64: fixture.manifestBase64,
+        REVIEW_ROUTER_TEST_CONFIRM_CAPTURE: confirmCapturePath,
+        REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH: "1",
+        REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+        REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+        REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+        REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+        REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+        REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID:
+          "codex-rotating:777genius:agent-teams-ai",
+        REVIEW_ROUTER_REPO: "777genius/agent-teams-ai",
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL:
+          "http://localhost:3000/manifest",
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
+          "http://localhost:3000/confirm",
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE: "setup-nonce-1234567890",
+      },
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(0);
+    const events = readFileSync(eventCapturePath, "utf8").trim().split("\n");
+    const loginIndex = events.findIndex((event) =>
+      event.startsWith("codex:login"),
+    );
+    const fetchIndex = events.findIndex((event) => event.includes("/manifest"));
+    const writeIndex = events.findIndex((event) =>
+      event.startsWith("gh:secret set"),
+    );
+    const confirmIndex = events.findIndex((event) =>
+      event.includes("/confirm"),
+    );
+
+    expect(loginIndex).toBeGreaterThanOrEqual(0);
+    expect(fetchIndex).toBeGreaterThan(loginIndex);
+    expect(writeIndex).toBeGreaterThan(fetchIndex);
+    expect(confirmIndex).toBeGreaterThan(writeIndex);
+  });
+
+  it("retries the same confirmation after a lost response", () => {
+    const fixture = createRotatingInstallerFixture();
+    const confirmCapturePath = join(fixture.home, "confirm-retry.json");
+    const confirmFailureMarker = join(fixture.home, "confirm-failed-once");
+    const eventCapturePath = join(fixture.home, "confirm-events.log");
+    writeFileSync(
+      join(fixture.codexHome, "auth.json"),
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { refresh_token: "refresh-token" },
+      }),
+    );
+
+    const result = spawnSync("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: fixture.path,
+        HOME: fixture.home,
+        REVIEW_ROUTER_TEST_EVENT_CAPTURE: eventCapturePath,
+        REVIEW_ROUTER_TEST_MANIFEST_B64: fixture.manifestBase64,
+        REVIEW_ROUTER_TEST_CONFIRM_CAPTURE: confirmCapturePath,
+        REVIEW_ROUTER_TEST_CONFIRM_FAIL_ONCE_MARKER: confirmFailureMarker,
+        REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+        REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT: "1",
+        REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+        REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+        REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+        REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID:
+          "codex-rotating:777genius:agent-teams-ai",
+        REVIEW_ROUTER_REPO: "777genius/agent-teams-ai",
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL:
+          "http://localhost:3000/manifest",
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
+          "http://localhost:3000/confirm",
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE: "setup-nonce-1234567890",
+      },
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "Retrying the same idempotent confirmation",
+    );
+    const confirms = readFileSync(eventCapturePath, "utf8")
+      .split("\n")
+      .filter((event) => event.includes("/confirm"));
+    expect(confirms).toHaveLength(2);
+  });
+
+  it("recovers an abandoned repository lock", () => {
+    const fixture = createRotatingInstallerFixture();
+    writeFileSync(
+      join(fixture.codexHome, "auth.json"),
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { refresh_token: "refresh-token" },
+      }),
+    );
+    const lockDirectory = join(fixture.codexHome, "active-repository-setups");
+    mkdirSync(lockDirectory, { recursive: true });
+    const lockId = createHash("sha256")
+      .update("777genius/agent-teams-ai")
+      .digest("hex");
+    writeFileSync(join(lockDirectory, `${lockId}.lock`), "2147483647\n");
+
+    const result = spawnSync(
+      "bash",
+      [
+        fixture.scriptPath,
+        "--dry-run",
+        "--confirm-write",
+        "--reuse-existing-auth-i-know-it-is-current",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: fixture.path,
+          HOME: fixture.home,
+          REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+          REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+          REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+          REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+          REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
+            fixture.manifestBase64,
+        },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("[dry-run] gh secret set");
   });
 
   it("installer checks gh auth before spending a server-backed setup nonce", () => {
@@ -656,6 +803,7 @@ function createRotatingInstallerFixture(
     join(bin, "gh"),
     [
       "#!/usr/bin/env bash",
+      'if [ -n "${REVIEW_ROUTER_TEST_EVENT_CAPTURE:-}" ]; then printf "gh:%s\\n" "$*" >> "$REVIEW_ROUTER_TEST_EVENT_CAPTURE"; fi',
       'if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then',
       options.ghAuthenticated === false
         ? '  echo "not logged in" >&2; exit 1'
@@ -676,6 +824,7 @@ function createRotatingInstallerFixture(
     [
       "#!/usr/bin/env bash",
       "set -euo pipefail",
+      'if [ -n "${REVIEW_ROUTER_TEST_EVENT_CAPTURE:-}" ]; then printf "codex:%s\\n" "$*" >> "$REVIEW_ROUTER_TEST_EVENT_CAPTURE"; fi',
       'if [ -n "${REVIEW_ROUTER_TEST_CODEX_ARGS_CAPTURE:-}" ]; then',
       '  printf "%s\\n" "$*" >> "$REVIEW_ROUTER_TEST_CODEX_ARGS_CAPTURE"',
       "fi",
@@ -715,6 +864,7 @@ function createRotatingInstallerFixture(
     [
       "#!/usr/bin/env bash",
       "set -euo pipefail",
+      'if [ -n "${REVIEW_ROUTER_TEST_EVENT_CAPTURE:-}" ]; then printf "curl:%s\\n" "$*" >> "$REVIEW_ROUTER_TEST_EVENT_CAPTURE"; fi',
       ...(options.curlFailsIfCalled
         ? ['echo "curl should not have been called" >&2', "exit 42"]
         : []),
@@ -738,6 +888,10 @@ function createRotatingInstallerFixture(
       '    prev="$arg"',
       "  done",
       '  cp "$payload" "$REVIEW_ROUTER_TEST_CONFIRM_CAPTURE"',
+      '  if [ -n "${REVIEW_ROUTER_TEST_CONFIRM_FAIL_ONCE_MARKER:-}" ] && [ ! -e "$REVIEW_ROUTER_TEST_CONFIRM_FAIL_ONCE_MARKER" ]; then',
+      '    : > "$REVIEW_ROUTER_TEST_CONFIRM_FAIL_ONCE_MARKER"',
+      "    exit 28",
+      "  fi",
       '  printf \'{"status":"accepted"}\\n\'',
       "  exit 0",
       "fi",

@@ -93,8 +93,21 @@ Use `--reuse-current-auth` only when the dedicated local ReviewRouter session is
 known to be current. Do not run `gh secret set REVIEWROUTER_CODEX_AUTH_JSON`
 directly. A direct secret write bypasses the generation contract, so an older
 queued workflow can publish or consume the wrong auth generation after a token
-rotation. The reseed workflow serializes the update, preserves the dedicated
-session boundary, and verifies the repository-scoped generation before use.
+rotation. The reseed workflow preserves the dedicated session boundary and
+verifies the repository-scoped generation before use. The setup service also
+holds one database-enforced active reservation per provider: repeated requests
+reuse the still-unfetched command, while a fetched command returns
+`codex_rotating_setup_in_progress` until it is confirmed or expires. The
+installer performs the potentially long Codex login before fetching that
+reservation, takes an automatically released repository lock in its dedicated
+`CODEX_HOME`, and rechecks the remaining manifest lifetime immediately before
+the GitHub secret write. Confirmation stores only sanitized generation metadata
+and is idempotent, so the installer can safely retry the same confirmation after
+a lost response. This serializes normal reseeds through confirmation. GitHub
+secret writes do not expose a compare-and-swap primitive, so an externally
+suspended process could still resume after its reservation expires; the
+workflow-side generation check remains the final fail-closed guard and requires
+a fresh reseed after such a mismatch.
 
 Never reuse the user's interactive Codex Desktop auth file as a hosted review
 secret. Keep the reviewer session isolated, and do not print auth JSON or token

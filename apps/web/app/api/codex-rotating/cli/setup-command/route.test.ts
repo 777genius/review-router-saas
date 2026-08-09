@@ -93,6 +93,19 @@ describe("Codex rotating CLI setup command route", () => {
     });
     expect(mocks.authorizeGitHubCliRepository).not.toHaveBeenCalled();
   });
+
+  it("reports an active provider setup as a retryable conflict", async () => {
+    mocks.issueCodexRotatingSetupForRepository.mockRejectedValueOnce(
+      new Error("codex_rotating_setup_in_progress"),
+    );
+
+    const response = await POST(request({ reuseCurrentAuth: false }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_setup_in_progress",
+    });
+  });
 });
 
 function request(options: { readonly reuseCurrentAuth: boolean }): Request {

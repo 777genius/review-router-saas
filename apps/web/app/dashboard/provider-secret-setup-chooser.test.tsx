@@ -553,6 +553,30 @@ describe("ProviderSecretSetupChooser", () => {
     expect(await screen.findByText(/retry nonce command/i)).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it("explains an active rotating setup conflict", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          setupCommandErrorResponse("codex_rotating_setup_in_progress"),
+        ),
+    );
+
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+
+    expect(
+      await screen.findByText(/Another Codex setup is already using/i),
+    ).toBeTruthy();
+  });
 });
 
 describe("ProviderSecretSetupDialog", () => {

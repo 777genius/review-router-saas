@@ -339,6 +339,44 @@ console.log(path.join(codexHome, "used-setup-nonces", `${markerId}.json`));
 NODE
 }
 
+repository_setup_lock_path() {
+  node - "$CODEX_HOME_DIR" "$TARGET_REPO" <<'NODE'
+const crypto = require("node:crypto");
+const path = require("node:path");
+const [codexHome, repository] = process.argv.slice(2);
+const lockId = crypto
+  .createHash("sha256")
+  .update(repository)
+  .digest("hex");
+console.log(path.join(codexHome, "active-repository-setups", `${lockId}.lock`));
+NODE
+}
+
+acquire_repository_setup_lock() {
+  REPOSITORY_SETUP_LOCK_PATH="$(repository_setup_lock_path)"
+  lock_parent="$(dirname "$REPOSITORY_SETUP_LOCK_PATH")"
+  mkdir -p "$lock_parent"
+  chmod 700 "$lock_parent"
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$REPOSITORY_SETUP_LOCK_PATH"
+    if ! flock -n 9; then
+      fatal "A rotating Codex setup is already running for $TARGET_REPO in this CODEX_HOME. Wait for it to finish before starting another."
+    fi
+    REPOSITORY_SETUP_LOCK_KIND="flock"
+  elif command -v shlock >/dev/null 2>&1; then
+    if ! shlock -f "$REPOSITORY_SETUP_LOCK_PATH" -p "$$"; then
+      fatal "A rotating Codex setup is already running for $TARGET_REPO in this CODEX_HOME. Wait for it to finish before starting another."
+    fi
+    REPOSITORY_SETUP_LOCK_KIND="shlock"
+  else
+    fatal "Missing an automatically released file-lock command. Install flock, or use macOS shlock."
+  fi
+  if [ ! -f "$REPOSITORY_SETUP_LOCK_PATH" ]; then
+    fatal "A rotating Codex setup is already running for $TARGET_REPO in this CODEX_HOME. Wait for it to finish before starting another."
+  fi
+  chmod 600 "$REPOSITORY_SETUP_LOCK_PATH"
+}
+
 assert_manifest_not_reused() {
   SETUP_NONCE_MARKER="$(manifest_nonce_marker_path)"
   marker_dir="$(dirname "$SETUP_NONCE_MARKER")"
@@ -352,6 +390,18 @@ assert_manifest_not_reused() {
     fatal "This rotating Codex setup command is already running for this CODEX_HOME. Wait for it to finish or copy a fresh command."
   fi
   chmod 700 "$SETUP_NONCE_LOCK_DIR"
+}
+
+assert_manifest_write_window() {
+  node - "$MANIFEST_JSON" <<'NODE'
+const manifest = JSON.parse(process.argv[2]);
+const expiresAt = Date.parse(manifest.expiresAt);
+const minimumWriteWindowMs = 60_000;
+if (!Number.isFinite(expiresAt) || expiresAt - Date.now() < minimumWriteWindowMs) {
+  console.error("Setup manifest has too little time remaining for a safe secret write. Request a fresh setup command.");
+  process.exit(1);
+}
+NODE
 }
 
 mark_manifest_used() {
@@ -848,12 +898,23 @@ fs.writeFileSync(
   { mode: 0o600 },
 );
 NODE
-  curl -fsSL -X POST \
-    -H 'content-type: application/json' \
-    --data-binary "@$SETUP_CONFIRM_PAYLOAD_FILE" \
-    "$SETUP_CONFIRM_URL" >/dev/null
-  rm -f "$SETUP_CONFIRM_PAYLOAD_FILE"
-  SETUP_CONFIRM_PAYLOAD_FILE=""
+  confirm_attempt=1
+  while [ "$confirm_attempt" -le 3 ]; do
+    if curl -fsSL -X POST \
+      -H 'content-type: application/json' \
+      --data-binary "@$SETUP_CONFIRM_PAYLOAD_FILE" \
+      "$SETUP_CONFIRM_URL" >/dev/null; then
+      rm -f "$SETUP_CONFIRM_PAYLOAD_FILE"
+      SETUP_CONFIRM_PAYLOAD_FILE=""
+      return
+    fi
+    if [ "$confirm_attempt" -lt 3 ]; then
+      warn "ReviewRouter confirmation did not complete. Retrying the same idempotent confirmation."
+      sleep "$confirm_attempt"
+    fi
+    confirm_attempt=$((confirm_attempt + 1))
+  done
+  fatal "The GitHub secret was written, but ReviewRouter could not confirm its generation. Do not write the secret directly. Request a fresh rotating Codex setup command and reseed this repository."
 }
 
 verify_github_repository_identity() {
@@ -884,6 +945,12 @@ cleanup() {
   if [ -n "${SETUP_NONCE_LOCK_DIR:-}" ] && [ -d "$SETUP_NONCE_LOCK_DIR" ]; then
     rmdir "$SETUP_NONCE_LOCK_DIR" 2>/dev/null || true
   fi
+  if [ "${REPOSITORY_SETUP_LOCK_KIND:-}" = "flock" ]; then
+    flock -u 9 2>/dev/null || true
+    exec 9>&-
+  elif [ "${REPOSITORY_SETUP_LOCK_KIND:-}" = "shlock" ] && [ -n "${REPOSITORY_SETUP_LOCK_PATH:-}" ]; then
+    rm -f "$REPOSITORY_SETUP_LOCK_PATH"
+  fi
 }
 
 main() {
@@ -898,19 +965,31 @@ main() {
   require_cmd curl
   verify_installer_self_hash
   gh auth status >/dev/null 2>&1 || fatal "gh is not authenticated. Run: gh auth login"
-  MANIFEST_JSON="$(decode_manifest)"
-  TARGET_REPO="$(manifest_value repositoryFullName)"
+  if [ -n "$MANIFEST_B64" ]; then
+    MANIFEST_JSON="$(decode_manifest)"
+    TARGET_REPO="$(manifest_value repositoryFullName)"
+    if [ -z "$EXPECTED_PROVIDER_INSTANCE_ID" ]; then
+      EXPECTED_PROVIDER_INSTANCE_ID="$(manifest_value providerInstanceId)"
+    fi
+  fi
+  [ -n "$TARGET_REPO" ] || fatal "Missing repository. Reopen the ReviewRouter dashboard and copy a fresh setup command."
   validate_repo_name "$TARGET_REPO"
-  verify_github_repository_identity
 
   resolve_codex_home
+  acquire_repository_setup_lock
   write_dedicated_codex_config
   assert_auth_file_is_repo_scoped
-  assert_manifest_not_reused
   run_codex_login_if_needed
+  if [ -z "${MANIFEST_JSON:-}" ]; then
+    MANIFEST_JSON="$(decode_manifest)"
+  fi
+  TARGET_REPO="$(manifest_value repositoryFullName)"
+  verify_github_repository_identity
+  assert_manifest_not_reused
   resolved_auth_file="$(resolve_auth_file)" || fatal "Could not find a Codex auth file in $CODEX_HOME_DIR. Run codex login with the dedicated CODEX_HOME and retry."
   validate_and_compact_auth "$resolved_auth_file"
   confirm_secret_write
+  assert_manifest_write_window
   write_github_secret
   mark_ci_owned_auth_state
   confirm_setup_success

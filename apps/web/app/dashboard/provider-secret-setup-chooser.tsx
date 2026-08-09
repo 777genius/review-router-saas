@@ -781,6 +781,8 @@ function rotatingSetupCommandErrorText(error: string): string {
       return "Your GitHub user needs repository write, maintain, or admin access to create this setup command.";
     case "rate_limited":
       return "Too many setup command requests for this repository. Wait a bit, then retry.";
+    case "codex_rotating_setup_in_progress":
+      return "Another Codex setup is already using this repository. Finish it, or wait for the short-lived command to expire, then retry.";
     case "codex_rotating_installer_missing":
     case "codex_rotating_installer_descriptor_incomplete":
     case "invalid_codex_rotating_installer_sha256":

@@ -73,9 +73,10 @@ export async function POST(request: Request): Promise<
       secretNames: [codexRotatingSecretName],
     });
   } catch (error) {
+    const code = codexRotatingSetupCommandErrorCode(error);
     return NextResponse.json(
-      { error: codexRotatingSetupCommandErrorCode(error) },
-      { status: 400 },
+      { error: code },
+      { status: code === "codex_rotating_setup_in_progress" ? 409 : 400 },
     );
   }
 }
@@ -104,6 +105,7 @@ function codexRotatingSetupCommandErrorCode(error: unknown): string {
       "codex_rotating_not_enabled",
       "codex_rotating_installer_missing",
       "codex_rotating_installer_descriptor_incomplete",
+      "codex_rotating_setup_in_progress",
       "invalid_codex_rotating_installer_sha256",
       "invalid_review_router_web_url",
     ].includes(message)
