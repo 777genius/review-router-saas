@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -661,6 +661,13 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
       .split("\n")
       .filter((event) => event.includes("/confirm"));
     expect(confirms).toHaveLength(2);
+    expect(
+      confirms.every(
+        (event) =>
+          event.includes("--connect-timeout 10") &&
+          event.includes("--max-time 30"),
+      ),
+    ).toBe(true);
   });
 
   it("recovers an abandoned repository lock", () => {
@@ -706,6 +713,77 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("[dry-run] gh secret set");
+  });
+
+  it("rejects a concurrent installer before login, manifest fetch, or secret write", async () => {
+    const fixture = createRotatingInstallerFixture();
+    const loginReady = join(fixture.home, "login-ready");
+    const releaseLogin = join(fixture.home, "release-login");
+    const firstEvents = join(fixture.home, "first-events.log");
+    const secondEvents = join(fixture.home, "second-events.log");
+    const confirmCapture = join(fixture.home, "confirm.json");
+    const commonEnv = {
+      ...process.env,
+      PATH: fixture.path,
+      HOME: fixture.home,
+      REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+      REVIEW_ROUTER_FORCE_CODEX_RESEED: "1",
+      REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+      REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+      REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+      REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID:
+        "codex-rotating:777genius:agent-teams-ai",
+      REVIEW_ROUTER_REPO: "777genius/agent-teams-ai",
+      REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL: "http://localhost:3000/manifest",
+      REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
+        "http://localhost:3000/confirm",
+      REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE: "setup-nonce-1234567890",
+      REVIEW_ROUTER_TEST_MANIFEST_B64: fixture.manifestBase64,
+      REVIEW_ROUTER_TEST_CONFIRM_CAPTURE: confirmCapture,
+      REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH: "1",
+    };
+    const first = spawn("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: {
+        ...commonEnv,
+        REVIEW_ROUTER_TEST_EVENT_CAPTURE: firstEvents,
+        REVIEW_ROUTER_TEST_CODEX_LOGIN_READY: loginReady,
+        REVIEW_ROUTER_TEST_CODEX_LOGIN_RELEASE: releaseLogin,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const firstResultPromise = collectProcess(first);
+
+    try {
+      await waitForFile(loginReady);
+      const second = spawnSync(
+        "bash",
+        [fixture.scriptPath, "--confirm-write"],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...commonEnv,
+            REVIEW_ROUTER_TEST_EVENT_CAPTURE: secondEvents,
+          },
+          encoding: "utf8",
+        },
+      );
+
+      expect(second.status).not.toBe(0);
+      expect(second.stderr).toContain(
+        "A rotating Codex setup is already running",
+      );
+      const events = readFileSync(secondEvents, "utf8");
+      expect(events).not.toContain("codex:");
+      expect(events).not.toContain("curl:");
+      expect(events).not.toContain("gh:secret set");
+    } finally {
+      writeFileSync(releaseLogin, "release\n");
+    }
+
+    const firstResult = await firstResultPromise;
+    expect(firstResult.status).toBe(0);
+    expect(firstResult.stderr).toBe("");
   });
 
   it("installer checks gh auth before spending a server-backed setup nonce", () => {
@@ -828,6 +906,10 @@ function createRotatingInstallerFixture(
       'if [ -n "${REVIEW_ROUTER_TEST_CODEX_ARGS_CAPTURE:-}" ]; then',
       '  printf "%s\\n" "$*" >> "$REVIEW_ROUTER_TEST_CODEX_ARGS_CAPTURE"',
       "fi",
+      'if [ "${1:-}" = "login" ] && [ -n "${REVIEW_ROUTER_TEST_CODEX_LOGIN_READY:-}" ]; then',
+      '  : > "$REVIEW_ROUTER_TEST_CODEX_LOGIN_READY"',
+      '  while [ ! -e "${REVIEW_ROUTER_TEST_CODEX_LOGIN_RELEASE:?}" ]; do sleep 0.05; done',
+      "fi",
       'if [ "${1:-}" = "login" ] && [ "${REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH:-}" = "1" ]; then',
       '  mkdir -p "${CODEX_HOME:?}"',
       '  printf \'{"auth_mode":"chatgpt","tokens":{"refresh_token":"fresh-refresh-token","access_token":"fresh-access-token"}}\' > "$CODEX_HOME/auth.json"',
@@ -942,4 +1024,30 @@ function createRotatingInstallerFixture(
 function writeExecutable(path: string, content: string): void {
   writeFileSync(path, content);
   chmodSync(path, 0o755);
+}
+
+async function waitForFile(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${path}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+async function collectProcess(process: ReturnType<typeof spawn>): Promise<{
+  readonly status: number | null;
+  readonly stderr: string;
+}> {
+  let stderr = "";
+  process.stderr?.setEncoding("utf8");
+  process.stderr?.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  const status = await new Promise<number | null>((resolve, reject) => {
+    process.once("error", reject);
+    process.once("close", resolve);
+  });
+  return { status, stderr };
 }

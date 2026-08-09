@@ -577,6 +577,30 @@ describe("ProviderSecretSetupChooser", () => {
       await screen.findByText(/Another Codex setup is already using/i),
     ).toBeTruthy();
   });
+
+  it("explains setup lock contention as retryable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          setupCommandErrorResponse("codex_rotating_setup_lock_failed"),
+        ),
+    );
+
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+
+    expect(
+      await screen.findByText(/another request held the setup lock/i),
+    ).toBeTruthy();
+  });
 });
 
 describe("ProviderSecretSetupDialog", () => {

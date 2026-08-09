@@ -58,6 +58,19 @@ describe("dashboard Codex rotating setup command route", () => {
       error: "codex_rotating_setup_in_progress",
     });
   });
+
+  it("reports setup lock contention as a retryable conflict", async () => {
+    mocks.issueCodexRotatingSetupForRepository.mockRejectedValueOnce(
+      new Error("codex_rotating_setup_lock_failed"),
+    );
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_setup_lock_failed",
+    });
+  });
 });
 
 function request(): Request {

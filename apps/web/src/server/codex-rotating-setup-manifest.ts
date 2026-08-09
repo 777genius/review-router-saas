@@ -15,6 +15,9 @@ import { z } from "zod";
 import type { CodexRotatingSeedScriptDescriptor } from "./codex-rotating-seed-script";
 
 const setupManifestTtlSeconds = 15 * 60;
+const setupLockRetryIntervalMs = 100;
+const setupLockMaxAttempts = 50;
+const setupTransactionTimeoutMs = 10_000;
 
 export enum CodexRotatingSetupManifestStatus {
   Issued = "issued",
@@ -73,73 +76,75 @@ export async function issueCodexRotatingSetupCommand(input: {
   readonly secretName: typeof codexRotatingSecretName;
 }> {
   const providerInstanceId = `codex-rotating:${input.githubRepositoryId}`;
-  return input.prisma.$transaction(async (tx) => {
-    await lockSetupProvider(tx, providerInstanceId);
-    const provider = await tx.codexOAuthProviderInstance.upsert({
-      where: { providerInstanceId },
-      update: {
-        workspaceId: input.workspaceId,
-        repositoryId: input.repositoryId,
-        authMode: codexRotatingAuthMode,
-        secretName: codexRotatingSecretName,
-      },
-      create: {
-        workspaceId: input.workspaceId,
-        repositoryId: input.repositoryId,
-        providerInstanceId,
-        authMode: codexRotatingAuthMode,
-        secretName: codexRotatingSecretName,
-        generationHashSalt: createCodexRotatingSalt(),
-        accountFingerprintSalt: createCodexRotatingSalt(),
-      },
-      select: {
-        id: true,
-        generationHashSalt: true,
-        accountFingerprintSalt: true,
-      },
-    });
-    const now = input.now ?? new Date();
-    await expireActiveSetupManifests(tx, provider.id, now);
-
-    const active = await findActiveSetupManifestForProvider(tx, provider.id);
-    if (active?.status === CodexRotatingSetupManifestStatus.Fetched) {
-      throw new Error("codex_rotating_setup_in_progress");
-    }
-
-    let manifest = active
-      ? codexRotatingSetupManifestSchema.parse(active.manifestJson)
-      : null;
-    if (
-      active &&
-      manifest &&
-      !isReusableIssuedManifest({
-        manifest,
-        provider,
-        repositoryFullName: input.repositoryFullName,
-        githubRepositoryId: input.githubRepositoryId,
-        installer: input.installer,
-      })
-    ) {
-      await supersedeSetupManifest(tx, active.id);
-      manifest = null;
-    }
-
-    if (!manifest) {
-      const setupNonce = `stp:${randomUUID()}`;
-      manifest = buildCodexRotatingSetupManifest({
-        repositoryFullName: input.repositoryFullName,
-        repositoryId: input.githubRepositoryId,
-        providerInstanceId,
-        setupNonce,
-        installerUrl: input.installer.url,
-        installerVersion: input.installer.version,
-        installerSha256: input.installer.sha256,
-        now,
-        ttlSeconds: setupManifestTtlSeconds,
-        generationHashSalt: provider.generationHashSalt,
-        accountFingerprintSalt: provider.accountFingerprintSalt,
+  return input.prisma.$transaction(
+    async (tx) => {
+      await lockSetupProvider(tx, providerInstanceId);
+      const provider = await tx.codexOAuthProviderInstance.upsert({
+        where: { providerInstanceId },
+        update: {
+          workspaceId: input.workspaceId,
+          repositoryId: input.repositoryId,
+          authMode: codexRotatingAuthMode,
+          secretName: codexRotatingSecretName,
+        },
+        create: {
+          workspaceId: input.workspaceId,
+          repositoryId: input.repositoryId,
+          providerInstanceId,
+          authMode: codexRotatingAuthMode,
+          secretName: codexRotatingSecretName,
+          generationHashSalt: createCodexRotatingSalt(),
+          accountFingerprintSalt: createCodexRotatingSalt(),
+        },
+        select: {
+          id: true,
+          generationHashSalt: true,
+          accountFingerprintSalt: true,
+        },
       });
-      await tx.$executeRaw`
+      const now = input.now ?? new Date();
+      await expireActiveSetupManifests(tx, provider.id, now);
+
+      const active = await findActiveSetupManifestForProvider(tx, provider.id);
+      const parsedActive = active
+        ? codexRotatingSetupManifestSchema.safeParse(active.manifestJson)
+        : null;
+      if (active?.status === CodexRotatingSetupManifestStatus.Fetched) {
+        throw new Error("codex_rotating_setup_in_progress");
+      }
+
+      let manifest = parsedActive?.success ? parsedActive.data : null;
+      if (
+        active &&
+        (!manifest ||
+          !isReusableIssuedManifest({
+            manifest,
+            provider,
+            repositoryFullName: input.repositoryFullName,
+            githubRepositoryId: input.githubRepositoryId,
+            installer: input.installer,
+          }))
+      ) {
+        await supersedeSetupManifest(tx, active.id);
+        manifest = null;
+      }
+
+      if (!manifest) {
+        const setupNonce = `stp:${randomUUID()}`;
+        manifest = buildCodexRotatingSetupManifest({
+          repositoryFullName: input.repositoryFullName,
+          repositoryId: input.githubRepositoryId,
+          providerInstanceId,
+          setupNonce,
+          installerUrl: input.installer.url,
+          installerVersion: input.installer.version,
+          installerSha256: input.installer.sha256,
+          now,
+          ttlSeconds: setupManifestTtlSeconds,
+          generationHashSalt: provider.generationHashSalt,
+          accountFingerprintSalt: provider.accountFingerprintSalt,
+        });
+        await tx.$executeRaw`
         INSERT INTO "CodexOAuthSetupManifest" (
           "id",
           "workspaceId",
@@ -163,17 +168,19 @@ export async function issueCodexRotatingSetupCommand(input: {
           ${new Date(manifest.expiresAt)}
         )
       `;
-    }
+      }
 
-    return setupCommandResult({
-      manifest,
-      setupManifestUrl: input.setupManifestUrl,
-      setupConfirmUrl: input.setupConfirmUrl,
-      ...(input.installerArguments
-        ? { installerArguments: input.installerArguments }
-        : {}),
-    });
-  });
+      return setupCommandResult({
+        manifest,
+        setupManifestUrl: input.setupManifestUrl,
+        setupConfirmUrl: input.setupConfirmUrl,
+        ...(input.installerArguments
+          ? { installerArguments: input.installerArguments }
+          : {}),
+      });
+    },
+    { timeout: setupTransactionTimeoutMs },
+  );
 }
 
 export async function resolveCodexRotatingSetupManifestForNonce(input: {
@@ -181,20 +188,21 @@ export async function resolveCodexRotatingSetupManifestForNonce(input: {
   readonly setupNonce: string;
   readonly now?: Date;
 }): Promise<{ readonly manifestBase64: string; readonly expiresAt: string }> {
-  return input.prisma.$transaction(async (tx) => {
-    const initial = await findSetupManifestByNonce(tx, input.setupNonce);
-    await lockSetupProvider(tx, initial.providerInstanceId);
-    const now = input.now ?? new Date();
-    const row = await findSetupManifestByNonce(tx, input.setupNonce);
-    assertSetupManifestFetchable(row, now);
-    const manifest = codexRotatingSetupManifestSchema.parse(row.manifestJson);
-    if (
-      !isCodexRotatingOAuthAllowedForRepository(manifest.repositoryFullName)
-    ) {
-      throw new Error("codex_rotating_not_enabled");
-    }
+  return input.prisma.$transaction(
+    async (tx) => {
+      const initial = await findSetupManifestByNonce(tx, input.setupNonce);
+      await lockSetupProvider(tx, initial.providerInstanceId);
+      const now = input.now ?? new Date();
+      const row = await findSetupManifestByNonce(tx, input.setupNonce);
+      assertSetupManifestFetchable(row, now);
+      const manifest = codexRotatingSetupManifestSchema.parse(row.manifestJson);
+      if (
+        !isCodexRotatingOAuthAllowedForRepository(manifest.repositoryFullName)
+      ) {
+        throw new Error("codex_rotating_not_enabled");
+      }
 
-    const updated = await tx.$executeRaw`
+      const updated = await tx.$executeRaw`
       UPDATE "CodexOAuthSetupManifest"
       SET "status" = ${CodexRotatingSetupManifestStatus.Fetched},
           "lastFetchedAt" = ${now}
@@ -203,15 +211,17 @@ export async function resolveCodexRotatingSetupManifestForNonce(input: {
         AND "consumedAt" IS NULL
         AND "expiresAt" > ${now}
     `;
-    if (updated !== 1) {
-      throw new Error("codex_rotating_setup_manifest_reused");
-    }
+      if (updated !== 1) {
+        throw new Error("codex_rotating_setup_manifest_reused");
+      }
 
-    return {
-      manifestBase64: encodeCodexRotatingSetupManifest(manifest),
-      expiresAt: manifest.expiresAt,
-    };
-  });
+      return {
+        manifestBase64: encodeCodexRotatingSetupManifest(manifest),
+        expiresAt: manifest.expiresAt,
+      };
+    },
+    { timeout: setupTransactionTimeoutMs },
+  );
 }
 
 export async function confirmCodexRotatingSetupManifest(input: {
@@ -221,66 +231,67 @@ export async function confirmCodexRotatingSetupManifest(input: {
 }): Promise<{ readonly status: "accepted" }> {
   const payload = setupConfirmationSchema.parse(input.payload);
 
-  await input.prisma.$transaction(async (tx) => {
-    const initial = await findSetupManifestByNonce(tx, payload.setupNonce);
-    await lockSetupProvider(tx, initial.providerInstanceId);
-    const now = input.now ?? new Date();
-    const row = await findSetupManifestByNonce(tx, payload.setupNonce);
-    const manifest = codexRotatingSetupManifestSchema.parse(row.manifestJson);
-    if (
-      !isCodexRotatingOAuthAllowedForRepository(manifest.repositoryFullName)
-    ) {
-      throw new Error("codex_rotating_not_enabled");
-    }
-    if (
-      manifest.repositoryId !== payload.repositoryId ||
-      manifest.providerInstanceId !== payload.providerInstanceId ||
-      manifest.secretName !== payload.secretName ||
-      manifest.installer.version !== payload.installerVersion
-    ) {
-      throw new Error("codex_rotating_setup_confirmation_mismatch");
-    }
-    if (row.status === CodexRotatingSetupManifestStatus.Consumed) {
-      const stored = setupConfirmationSchema.safeParse(row.confirmationJson);
-      if (stored.success && setupConfirmationsMatch(stored.data, payload)) {
-        return;
+  await input.prisma.$transaction(
+    async (tx) => {
+      const initial = await findSetupManifestByNonce(tx, payload.setupNonce);
+      await lockSetupProvider(tx, initial.providerInstanceId);
+      const now = input.now ?? new Date();
+      const row = await findSetupManifestByNonce(tx, payload.setupNonce);
+      const manifest = codexRotatingSetupManifestSchema.parse(row.manifestJson);
+      if (
+        !isCodexRotatingOAuthAllowedForRepository(manifest.repositoryFullName)
+      ) {
+        throw new Error("codex_rotating_not_enabled");
       }
-      throw new Error("codex_rotating_setup_confirmation_mismatch");
-    }
-    assertSetupManifestConfirmable(row, now);
+      if (
+        manifest.repositoryId !== payload.repositoryId ||
+        manifest.providerInstanceId !== payload.providerInstanceId ||
+        manifest.secretName !== payload.secretName ||
+        manifest.installer.version !== payload.installerVersion
+      ) {
+        throw new Error("codex_rotating_setup_confirmation_mismatch");
+      }
+      if (row.status === CodexRotatingSetupManifestStatus.Consumed) {
+        const stored = setupConfirmationSchema.safeParse(row.confirmationJson);
+        if (stored.success && setupConfirmationsMatch(stored.data, payload)) {
+          return;
+        }
+        throw new Error("codex_rotating_setup_confirmation_mismatch");
+      }
+      assertSetupManifestConfirmable(row, now);
 
-    const provider = await tx.codexOAuthProviderInstance.findUnique({
-      where: { providerInstanceId: payload.providerInstanceId },
-      select: {
-        id: true,
-        latestGeneration: true,
-        latestGenerationHash: true,
-        generationHashSalt: true,
-        accountFingerprintSalt: true,
-      },
-    });
-    if (
-      !provider ||
-      provider.id !== row.providerInstanceRowId ||
-      provider.generationHashSalt !== manifest.generationHashSalt ||
-      provider.accountFingerprintSalt !== manifest.accountFingerprintSalt
-    ) {
-      throw new Error("codex_rotating_setup_salt_mismatch");
-    }
+      const provider = await tx.codexOAuthProviderInstance.findUnique({
+        where: { providerInstanceId: payload.providerInstanceId },
+        select: {
+          id: true,
+          latestGeneration: true,
+          latestGenerationHash: true,
+          generationHashSalt: true,
+          accountFingerprintSalt: true,
+        },
+      });
+      if (
+        !provider ||
+        provider.id !== row.providerInstanceRowId ||
+        provider.generationHashSalt !== manifest.generationHashSalt ||
+        provider.accountFingerprintSalt !== manifest.accountFingerprintSalt
+      ) {
+        throw new Error("codex_rotating_setup_salt_mismatch");
+      }
 
-    await tx.codexOAuthProviderInstance.update({
-      where: { id: provider.id },
-      data: {
-        latestGeneration: provider.latestGenerationHash
-          ? provider.latestGeneration + 1
-          : provider.latestGeneration,
-        latestGenerationHash: payload.generationHash,
-        state: "active",
-        activeLeaseId: null,
-        activeLeaseExpiresAt: null,
-      },
-    });
-    const updated = await tx.$executeRaw`
+      await tx.codexOAuthProviderInstance.update({
+        where: { id: provider.id },
+        data: {
+          latestGeneration: provider.latestGenerationHash
+            ? provider.latestGeneration + 1
+            : provider.latestGeneration,
+          latestGenerationHash: payload.generationHash,
+          state: "active",
+          activeLeaseId: null,
+          activeLeaseExpiresAt: null,
+        },
+      });
+      const updated = await tx.$executeRaw`
       UPDATE "CodexOAuthSetupManifest"
       SET "status" = ${CodexRotatingSetupManifestStatus.Consumed},
           "consumedAt" = ${now},
@@ -289,10 +300,12 @@ export async function confirmCodexRotatingSetupManifest(input: {
         AND "status" = ${CodexRotatingSetupManifestStatus.Fetched}
         AND "consumedAt" IS NULL
     `;
-    if (updated !== 1) {
-      throw new Error("codex_rotating_setup_manifest_reused");
-    }
-  });
+      if (updated !== 1) {
+        throw new Error("codex_rotating_setup_manifest_reused");
+      }
+    },
+    { timeout: setupTransactionTimeoutMs },
+  );
 
   return { status: "accepted" };
 }
@@ -366,20 +379,22 @@ async function lockSetupProvider(
   prisma: SetupManifestTransaction,
   providerInstanceId: string,
 ): Promise<void> {
-  const rows = await prisma.$queryRaw<Array<{ readonly acquired: number }>>(
-    Prisma.sql`
-      WITH setup_lock AS (
-        SELECT pg_advisory_xact_lock(
-          hashtextextended(${`codex-rotating-setup:${providerInstanceId}`}, 0)
-        )
-      )
-      SELECT 1::integer AS "acquired"
-      FROM setup_lock
-    `,
-  );
-  if (rows[0]?.acquired !== 1) {
-    throw new Error("codex_rotating_setup_lock_failed");
+  for (let attempt = 1; attempt <= setupLockMaxAttempts; attempt += 1) {
+    const rows = await prisma.$queryRaw<
+      Array<{ readonly acquired: boolean }>
+    >(Prisma.sql`
+      SELECT pg_try_advisory_xact_lock(
+        hashtextextended(${`codex-rotating-setup:${providerInstanceId}`}, 0)
+      ) AS "acquired"
+    `);
+    if (rows[0]?.acquired === true) return;
+    if (attempt < setupLockMaxAttempts) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, setupLockRetryIntervalMs),
+      );
+    }
   }
+  throw new Error("codex_rotating_setup_lock_failed");
 }
 
 async function expireActiveSetupManifests(

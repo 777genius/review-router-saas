@@ -342,6 +342,9 @@ model CodexOAuthProviderInstance {
 }
 
 model CodexOAuthSetupManifest {
+  /// Active rows are additionally constrained by partial unique index
+  /// CodexOAuthSetupManifest_one_active_provider_key on providerInstanceRowId
+  /// WHERE status IN ('issued', 'fetched'), created by migration 000060.
   id                    String    @id @default(cuid())
   workspaceId           String
   repositoryId          String

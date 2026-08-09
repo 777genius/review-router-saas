@@ -297,7 +297,7 @@ fetch_setup_manifest() {
   esac
 
   SETUP_RESPONSE_FILE="$(mktemp)"
-  curl -fsSL --get --data-urlencode "nonce=$SETUP_NONCE" "$SETUP_URL" -o "$SETUP_RESPONSE_FILE"
+  curl -fsSL --connect-timeout 10 --max-time 30 --get --data-urlencode "nonce=$SETUP_NONCE" "$SETUP_URL" -o "$SETUP_RESPONSE_FILE"
   MANIFEST_B64="$(node - "$SETUP_RESPONSE_FILE" <<'NODE'
 const fs = require("node:fs");
 const path = process.argv[2];
@@ -900,7 +900,7 @@ fs.writeFileSync(
 NODE
   confirm_attempt=1
   while [ "$confirm_attempt" -le 3 ]; do
-    if curl -fsSL -X POST \
+    if curl -fsSL --connect-timeout 10 --max-time 30 -X POST \
       -H 'content-type: application/json' \
       --data-binary "@$SETUP_CONFIRM_PAYLOAD_FILE" \
       "$SETUP_CONFIRM_URL" >/dev/null; then

@@ -76,7 +76,13 @@ export async function POST(request: Request): Promise<
     const code = codexRotatingSetupCommandErrorCode(error);
     return NextResponse.json(
       { error: code },
-      { status: code === "codex_rotating_setup_in_progress" ? 409 : 400 },
+      {
+        status:
+          code === "codex_rotating_setup_in_progress" ||
+          code === "codex_rotating_setup_lock_failed"
+            ? 409
+            : 400,
+      },
     );
   }
 }
@@ -106,6 +112,7 @@ function codexRotatingSetupCommandErrorCode(error: unknown): string {
       "codex_rotating_installer_missing",
       "codex_rotating_installer_descriptor_incomplete",
       "codex_rotating_setup_in_progress",
+      "codex_rotating_setup_lock_failed",
       "invalid_codex_rotating_installer_sha256",
       "invalid_review_router_web_url",
     ].includes(message)

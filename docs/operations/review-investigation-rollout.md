@@ -183,6 +183,26 @@ The relevant cases are `round-trips token usage with reasoning included in
 output` and `round-trips future operation receipt bindings through the
 compatibility reader`.
 
+The canonical compatibility-probe result input is the UTF-8 JSON file emitted
+by the trusted floor-commit probe harness after those two cases complete. It
+must contain only the stable result object (probe policy/version, both named
+case IDs and pass conclusions, reader restart count, candidate image digest,
+and candidate source commit), serialized with `jq -S -c` and one trailing
+newline; console output, timestamps, database URLs, and candidate-supplied test
+data are not part of the digest input. Record its expected SHA-256 beside the
+candidate image digest and source commit in the rollback evidence before the
+probe runs. Compare the observed canonical result exactly with:
+
+```bash
+test "$(sha256sum compatibility-probe-result.json | awk '{print $1}')" = \
+  "$EXPECTED_COMPATIBILITY_PROBE_RESULT_SHA256"
+```
+
+On macOS, install GNU coreutils and invoke its `sha256sum`; do not silently
+substitute a differently serialized result. This result digest binds the probe
+outcome. It is distinct from the source-file SHA-256 above, which authenticates
+the trusted probe implementation itself, and both comparisons are required.
+
 Then apply commit ancestry as a secondary guard:
 
 ```bash

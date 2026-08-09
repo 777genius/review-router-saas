@@ -103,6 +103,7 @@ function safeErrorCode(error: unknown): string {
     "codex_rotating_installer_missing",
     "codex_rotating_installer_descriptor_incomplete",
     "codex_rotating_setup_in_progress",
+    "codex_rotating_setup_lock_failed",
     "invalid_codex_rotating_installer_sha256",
     "invalid_review_router_web_url",
     "rate_limited",
@@ -125,6 +126,11 @@ function statusForError(code: string): number {
     return 404;
   }
   if (code === "rate_limited") return 429;
-  if (code === "codex_rotating_setup_in_progress") return 409;
+  if (
+    code === "codex_rotating_setup_in_progress" ||
+    code === "codex_rotating_setup_lock_failed"
+  ) {
+    return 409;
+  }
   return 400;
 }

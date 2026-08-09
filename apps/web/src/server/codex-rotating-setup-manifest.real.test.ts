@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createPrismaClient,
   type PrismaClient,
@@ -19,9 +19,11 @@ const describeDatabase = databaseUrl ? describe : describe.skip;
 describe("Codex rotating setup schema guard", () => {
   it("keeps one active setup manifest per provider", () => {
     const migration = readFileSync(
-      resolve(
-        process.cwd(),
-        "packages/platform/db/prisma/migrations/000060_codex_oauth_setup_serialization/migration.sql",
+      fileURLToPath(
+        new URL(
+          "../../../../packages/platform/db/prisma/migrations/000060_codex_oauth_setup_serialization/migration.sql",
+          import.meta.url,
+        ),
       ),
       "utf8",
     );
@@ -44,6 +46,7 @@ describe("Codex rotating setup schema guard", () => {
 
 describeDatabase("Codex rotating setup serialization", () => {
   let prisma: PrismaClient;
+  let concurrentPrisma: readonly [PrismaClient, PrismaClient];
   const suffix = randomUUID();
   const workspaceId = `codex-setup-workspace-${suffix}`;
   const repositoryId = `codex-setup-repository-${suffix}`;
@@ -57,6 +60,10 @@ describeDatabase("Codex rotating setup serialization", () => {
 
   beforeAll(async () => {
     prisma = createPrismaClient({ databaseUrl: databaseUrl! });
+    concurrentPrisma = [
+      createPrismaClient({ databaseUrl: databaseUrl! }),
+      createPrismaClient({ databaseUrl: databaseUrl! }),
+    ];
     await prisma.workspace.create({
       data: {
         id: workspaceId,
@@ -83,6 +90,7 @@ describeDatabase("Codex rotating setup serialization", () => {
   afterAll(async () => {
     if (!prisma) return;
     await prisma.workspace.deleteMany({ where: { id: workspaceId } });
+    await Promise.all(concurrentPrisma.map((client) => client.$disconnect()));
     await prisma.$disconnect();
   });
 
@@ -119,10 +127,26 @@ describeDatabase("Codex rotating setup serialization", () => {
     expect(active).toHaveLength(1);
     const firstNonce = active[0]!.setupNonce;
 
-    await withRotatingRepositoryAllowed(() =>
-      resolveCodexRotatingSetupManifestForNonce({
-        prisma,
-        setupNonce: firstNonce,
+    const fetches = await withRotatingRepositoryAllowed(() =>
+      Promise.allSettled(
+        concurrentPrisma.map((client) =>
+          resolveCodexRotatingSetupManifestForNonce({
+            prisma: client,
+            setupNonce: firstNonce,
+          }),
+        ),
+      ),
+    );
+    expect(
+      fetches.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    const failedFetches = fetches.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(failedFetches).toHaveLength(1);
+    expect(failedFetches[0]!.reason).toEqual(
+      expect.objectContaining({
+        message: "codex_rotating_setup_manifest_reused",
       }),
     );
     await expect(issue()).rejects.toThrow("codex_rotating_setup_in_progress");
@@ -132,18 +156,17 @@ describeDatabase("Codex rotating setup serialization", () => {
       githubRepositoryId,
       "a".repeat(43),
     );
-    await withRotatingRepositoryAllowed(() =>
-      confirmCodexRotatingSetupManifest({
-        prisma,
-        payload: firstConfirmation,
-      }),
+    const confirms = await withRotatingRepositoryAllowed(() =>
+      Promise.all(
+        concurrentPrisma.map((client) =>
+          confirmCodexRotatingSetupManifest({
+            prisma: client,
+            payload: firstConfirmation,
+          }),
+        ),
+      ),
     );
-    await withRotatingRepositoryAllowed(() =>
-      confirmCodexRotatingSetupManifest({
-        prisma,
-        payload: firstConfirmation,
-      }),
-    );
+    expect(confirms).toEqual([{ status: "accepted" }, { status: "accepted" }]);
     await expect(
       withRotatingRepositoryAllowed(() =>
         confirmCodexRotatingSetupManifest({
@@ -208,6 +231,106 @@ describeDatabase("Codex rotating setup serialization", () => {
       latestGeneration: 2,
       latestGenerationHash: "b".repeat(43),
     });
+
+    const malformed = await issue();
+    const malformedRow = await prisma.codexOAuthSetupManifest.findFirstOrThrow({
+      where: {
+        repositoryId,
+        status: CodexRotatingSetupManifestStatus.Issued,
+      },
+      select: { id: true },
+    });
+    await prisma.codexOAuthSetupManifest.update({
+      where: { id: malformedRow.id },
+      data: { manifestJson: { protocolVersion: 999 } },
+    });
+
+    const recovered = await issue();
+
+    expect(recovered.command).not.toBe(malformed.command);
+    await expect(
+      prisma.codexOAuthSetupManifest.findUniqueOrThrow({
+        where: { id: malformedRow.id },
+        select: { status: true },
+      }),
+    ).resolves.toEqual({
+      status: CodexRotatingSetupManifestStatus.Superseded,
+    });
+
+    const incompatibleRow =
+      await prisma.codexOAuthSetupManifest.findFirstOrThrow({
+        where: {
+          repositoryId,
+          status: CodexRotatingSetupManifestStatus.Issued,
+        },
+        select: { id: true },
+      });
+    await prisma.$executeRaw`
+      UPDATE "CodexOAuthSetupManifest"
+      SET "manifestJson" = jsonb_set(
+        "manifestJson",
+        '{installer,version}',
+        '"incompatible"'::jsonb
+      )
+      WHERE "id" = ${incompatibleRow.id}
+    `;
+
+    const compatible = await issue();
+
+    expect(compatible.command).not.toBe(recovered.command);
+    await expect(
+      prisma.codexOAuthSetupManifest.findUniqueOrThrow({
+        where: { id: incompatibleRow.id },
+        select: { status: true },
+      }),
+    ).resolves.toEqual({
+      status: CodexRotatingSetupManifestStatus.Superseded,
+    });
+
+    let releaseHeldLock!: () => void;
+    let reportHeldLock!: () => void;
+    const heldLockReady = new Promise<void>((resolve) => {
+      reportHeldLock = resolve;
+    });
+    const heldLockRelease = new Promise<void>((resolve) => {
+      releaseHeldLock = resolve;
+    });
+    const providerInstanceId = `codex-rotating:${githubRepositoryId}`;
+    const heldLock = concurrentPrisma[0].$transaction(
+      async (tx) => {
+        await tx.$executeRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${`codex-rotating-setup:${providerInstanceId}`}, 0)
+          )
+        `;
+        reportHeldLock();
+        await heldLockRelease;
+      },
+      { timeout: 10_000 },
+    );
+    await heldLockReady;
+    const lockAttemptStartedAt = Date.now();
+    try {
+      await expect(
+        issueCodexRotatingSetupCommand({
+          prisma: concurrentPrisma[1],
+          workspaceId,
+          repositoryId,
+          repositoryFullName,
+          githubRepositoryId,
+          installer,
+          setupManifestUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+          setupConfirmUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+        }),
+      ).rejects.toThrow("codex_rotating_setup_lock_failed");
+      expect(Date.now() - lockAttemptStartedAt).toBeGreaterThanOrEqual(4_500);
+      expect(Date.now() - lockAttemptStartedAt).toBeLessThan(7_500);
+    } finally {
+      releaseHeldLock();
+      await heldLock;
+    }
   });
 });
 
