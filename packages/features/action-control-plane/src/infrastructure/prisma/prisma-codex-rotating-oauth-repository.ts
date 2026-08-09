@@ -188,8 +188,8 @@ export class PrismaCodexRotatingOAuthRepository
       // prelease attempt observable in pg_locks until the lease transaction
       // commits or aborts. Drain tooling can take the matching exclusive lock
       // to establish a hard zero-in-flight barrier.
-      await tx.$queryRaw(Prisma.sql`
-        SELECT pg_advisory_xact_lock_shared(1381126735, 1129271119)
+      await tx.$queryRaw<Array<{ locked: boolean }>>(Prisma.sql`
+        SELECT pg_advisory_xact_lock_shared(1381126735, 1129271119) IS NULL AS "locked"
       `);
       await tx.$queryRaw(Prisma.sql`
         SELECT "id" FROM "CodexOAuthProviderInstance"
