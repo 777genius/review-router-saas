@@ -1177,9 +1177,9 @@ describe("CommitAttestedInvestigationTurn", () => {
     const operationInputHash = await digest.digestUtf8(
       canonicalStandardTextSearchOperationInput(queryHash),
     );
-    const matchedPathHash = hash("e");
+    const matchedPathHashes = [hash("d"), hash("e")].sort();
     const matchedPathSetHash = await digest.digestUtf8(
-      JSON.stringify([matchedPathHash]),
+      JSON.stringify(matchedPathHashes),
     );
     const inventoryPathSetHash = await digest.digestUtf8(
       JSON.stringify([pathHash]),
@@ -1408,8 +1408,8 @@ describe("CommitAttestedInvestigationTurn", () => {
           pageOrdinal: 0,
           pageItemCount: 2,
           pageItemsHash: hash("c"),
-          pagePathHashes: [matchedPathHash],
-          aggregatePathCount: 1,
+          pagePathHashes: matchedPathHashes,
+          aggregatePathCount: matchedPathHashes.length,
           aggregatePathSetHash: matchedPathSetHash,
           aggregateItemCount: 2,
           aggregateHash: hash("b"),
@@ -1468,9 +1468,13 @@ describe("CommitAttestedInvestigationTurn", () => {
           InvestigationObligationOrigin.DeterministicExpansion,
     );
     expect(relation).toBeDefined();
-    expect(JSON.parse(relation!.canonicalRequirement)).not.toHaveProperty(
-      "query",
-    );
+    const relationRequirement = JSON.parse(relation!.canonicalRequirement);
+    expect(relationRequirement).toMatchObject({
+      requiredPathCount: matchedPathHashes.length,
+      requiredPathHashes: matchedPathHashes,
+      requiredPathSetHash: matchedPathSetHash,
+    });
+    expect(relationRequirement).not.toHaveProperty("query");
     const snapshot = store.exportSnapshot();
     expect(snapshot).not.toContain(query);
     const snapshotWithoutRelationMaterial = JSON.parse(snapshot) as {
