@@ -81,6 +81,9 @@ export async function POST(request: Request): Promise<
           code === "codex_rotating_setup_issuance_quiesced"
             ? 503
             : code === "codex_rotating_setup_in_progress" ||
+                code === "codex_rotating_setup_recovery_required" ||
+                code === "codex_rotating_identity_quarantined" ||
+                code === "codex_rotating_mutation_fence_conflict" ||
                 code === "codex_rotating_setup_lock_failed"
               ? 409
               : 400,
@@ -115,6 +118,10 @@ function codexRotatingSetupCommandErrorCode(error: unknown): string {
       "codex_rotating_installer_missing",
       "codex_rotating_installer_descriptor_incomplete",
       "codex_rotating_setup_in_progress",
+      "codex_rotating_setup_recovery_required",
+      "codex_rotating_identity_quarantined",
+      "codex_rotating_setup_issuance_quiesced",
+      "codex_rotating_mutation_fence_conflict",
       "codex_rotating_setup_lock_failed",
       "invalid_codex_rotating_installer_sha256",
       "invalid_review_router_web_url",

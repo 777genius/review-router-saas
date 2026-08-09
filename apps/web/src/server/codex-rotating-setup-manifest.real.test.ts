@@ -6,6 +6,10 @@ import {
   type PrismaClient,
 } from "@reviewrouter/platform-db";
 import { PrismaCodexRotatingOAuthRepository } from "../../../../packages/features/action-control-plane/src/infrastructure/prisma/prisma-codex-rotating-oauth-repository";
+import {
+  codexRotatingSetupRecoveryAcknowledgement,
+  recoverCodexRotatingSetup,
+} from "@reviewrouter/features-provider-setup";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   CodexRotatingSetupManifestStatus,
@@ -13,6 +17,7 @@ import {
   issueCodexRotatingSetupCommand,
   resolveCodexRotatingSetupManifestForNonce,
 } from "./codex-rotating-setup-manifest";
+import { PrismaCodexRotatingSetupRecovery } from "./prisma-codex-rotating-setup-recovery";
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -425,7 +430,9 @@ describeDatabase("Codex rotating setup serialization", () => {
         message: "codex_rotating_setup_manifest_reused",
       }),
     );
-    await expect(issue()).rejects.toThrow("codex_rotating_setup_in_progress");
+    await expect(issue()).rejects.toThrow(
+      "codex_rotating_setup_recovery_required",
+    );
 
     const firstConfirmation = confirmation(
       firstNonce,
@@ -443,6 +450,25 @@ describeDatabase("Codex rotating setup serialization", () => {
       ),
     );
     expect(confirms).toEqual([{ status: "accepted" }, { status: "accepted" }]);
+    await expect(
+      withRotatingRepositoryDisabled(() =>
+        confirmCodexRotatingSetupManifest({
+          prisma,
+          payload: firstConfirmation,
+        }),
+      ),
+    ).resolves.toEqual({ status: "accepted" });
+    await expect(
+      withRotatingRepositoryDisabled(() =>
+        confirmCodexRotatingSetupManifest({
+          prisma,
+          payload: {
+            ...firstConfirmation,
+            generationHash: "d".repeat(43),
+          },
+        }),
+      ),
+    ).rejects.toThrow("codex_rotating_setup_confirmation_mismatch");
     await expect(
       withRotatingRepositoryAllowed(() =>
         confirmCodexRotatingSetupManifest({
@@ -608,6 +634,225 @@ describeDatabase("Codex rotating setup serialization", () => {
       await heldLock;
     }
   });
+
+  it("explicitly recovers fetched setup once, pins its epoch, and redacts the audit", async () => {
+    const recoveryRepositoryId = `codex-recovery-repository-${randomUUID()}`;
+    const recoveryGithubRepositoryId = `${Date.now()}${Math.floor(Math.random() * 1_000)}`;
+    const recoveryFullName = "777genius/review-router-recovery-proof";
+    await prisma.repositoryConnection.create({
+      data: {
+        id: recoveryRepositoryId,
+        workspaceId,
+        provider: "github",
+        externalRepositoryId: recoveryGithubRepositoryId,
+        githubRepositoryId: BigInt(recoveryGithubRepositoryId),
+        installationId,
+        owner: "777genius",
+        name: "review-router-recovery-proof",
+        fullName: recoveryFullName,
+        defaultBranch: "main",
+        visibility: "private",
+      },
+    });
+    try {
+      const original = await issueCodexRotatingSetupCommand({
+        prisma,
+        workspaceId,
+        repositoryId: recoveryRepositoryId,
+        repositoryFullName: recoveryFullName,
+        githubRepositoryId: recoveryGithubRepositoryId,
+        installer,
+        setupManifestUrl:
+          "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+        setupConfirmUrl:
+          "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+      });
+      const originalManifest =
+        await prisma.codexOAuthSetupManifest.findFirstOrThrow({
+          where: {
+            providerInstanceId: original.providerInstanceId,
+            status: "issued",
+          },
+          select: { setupNonce: true },
+        });
+      await withRotatingRepositoryAllowed(
+        () =>
+          resolveCodexRotatingSetupManifestForNonce({
+            prisma,
+            setupNonce: originalManifest.setupNonce,
+          }),
+        recoveryFullName,
+      );
+      await expect(
+        issueCodexRotatingSetupCommand({
+          prisma,
+          workspaceId,
+          repositoryId: recoveryRepositoryId,
+          repositoryFullName: recoveryFullName,
+          githubRepositoryId: recoveryGithubRepositoryId,
+          installer,
+          setupManifestUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+          setupConfirmUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+        }),
+      ).rejects.toThrow("codex_rotating_setup_recovery_required");
+
+      const recoveryRequestId = `recovery:${randomUUID()}`;
+      const recoveryAdapter = new PrismaCodexRotatingSetupRecovery(
+        concurrentPrisma[0],
+      );
+      const runtimeRepository = new PrismaCodexRotatingOAuthRepository(
+        concurrentPrisma[1],
+        { actionOwnerRepo: "777genius/review-router" },
+      );
+      const recoverRuntimeRace = await Promise.allSettled([
+        recoverCodexRotatingSetup(
+          {
+            workspaceId,
+            repositoryId: recoveryRepositoryId,
+            githubRepositoryId: recoveryGithubRepositoryId,
+            recoveryRequestId,
+            actor: "user:github:operator",
+            acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+          },
+          { recovery: recoveryAdapter },
+        ),
+        runtimeRepository.acquirePrelease({
+          repository: {
+            workspaceId,
+            repositoryId: recoveryRepositoryId,
+            githubRepositoryId: recoveryGithubRepositoryId,
+            githubInstallationId: githubInstallationId.toString(),
+            fullName: recoveryFullName,
+            owner: "777genius",
+            selected: true,
+            installationStatus: "active",
+          },
+          providerInstanceId: original.providerInstanceId,
+          githubRunId: "runtime-during-setup-recovery",
+          githubRunAttempt: "1",
+          now: new Date(),
+        }),
+      ]);
+      if (recoverRuntimeRace[0]!.status === "rejected") {
+        throw recoverRuntimeRace[0]!.reason;
+      }
+      expect(recoverRuntimeRace[1]!.status).toBe("rejected");
+      const recovered = (
+        recoverRuntimeRace[0] as PromiseFulfilledResult<{
+          readonly status: "recovered" | "idempotent_replay";
+          readonly recoveryEpoch: bigint;
+        }>
+      ).value;
+      expect(recovered.status).toBe("recovered");
+      const reseed = () =>
+        issueCodexRotatingSetupCommand({
+          prisma,
+          workspaceId,
+          repositoryId: recoveryRepositoryId,
+          repositoryFullName: recoveryFullName,
+          githubRepositoryId: recoveryGithubRepositoryId,
+          installer,
+          installerArguments: ["--force-reseed"],
+          recovery: {
+            requestId: recoveryRequestId,
+            epoch: recovered.recoveryEpoch,
+          },
+          setupManifestUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+          setupConfirmUrl:
+            "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+        });
+      const [firstReseed, retryReseed] = await Promise.all([
+        reseed(),
+        reseed(),
+      ]);
+      expect(firstReseed.command).toBe(retryReseed.command);
+      expect(firstReseed.command).toContain("--force-reseed");
+      const replay = await recoverCodexRotatingSetup(
+        {
+          workspaceId,
+          repositoryId: recoveryRepositoryId,
+          githubRepositoryId: recoveryGithubRepositoryId,
+          recoveryRequestId,
+          actor: "user:github:operator",
+          acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+        },
+        { recovery: recoveryAdapter },
+      );
+      expect(replay).toEqual({
+        status: "idempotent_replay",
+        recoveryEpoch: recovered.recoveryEpoch,
+      });
+      await expect(
+        prisma.codexOAuthSetupManifest.count({
+          where: { repositoryId: recoveryRepositoryId, status: "issued" },
+        }),
+      ).resolves.toBe(1);
+      const audit = await prisma.auditEvent.findFirstOrThrow({
+        where: {
+          targetId: recoveryRepositoryId,
+          action: "codex_rotating.setup_recovered",
+        },
+      });
+      const serializedAudit = JSON.stringify(audit.metadata);
+      expect(serializedAudit).toContain(recoveryRequestId);
+      expect(serializedAudit).not.toContain("AUTH_JSON");
+      expect(serializedAudit).not.toContain("token");
+
+      const reseedManifest =
+        await prisma.codexOAuthSetupManifest.findFirstOrThrow({
+          where: { repositoryId: recoveryRepositoryId, status: "issued" },
+          select: { setupNonce: true },
+        });
+      await withRotatingRepositoryAllowed(
+        () =>
+          resolveCodexRotatingSetupManifestForNonce({
+            prisma,
+            setupNonce: reseedManifest.setupNonce,
+          }),
+        recoveryFullName,
+      );
+      const secondRecoveryRequestId = `recovery:${randomUUID()}`;
+      const recoverConfirmRace = await withRotatingRepositoryAllowed(
+        () =>
+          Promise.allSettled([
+            recoverCodexRotatingSetup(
+              {
+                workspaceId,
+                repositoryId: recoveryRepositoryId,
+                githubRepositoryId: recoveryGithubRepositoryId,
+                recoveryRequestId: secondRecoveryRequestId,
+                actor: "user:github:operator",
+                acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+              },
+              {
+                recovery: new PrismaCodexRotatingSetupRecovery(
+                  concurrentPrisma[0],
+                ),
+              },
+            ),
+            confirmCodexRotatingSetupManifest({
+              prisma: concurrentPrisma[1],
+              payload: confirmation(
+                reseedManifest.setupNonce,
+                recoveryGithubRepositoryId,
+                "f".repeat(43),
+              ),
+            }),
+          ]),
+        recoveryFullName,
+      );
+      expect(
+        recoverConfirmRace.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
+    } finally {
+      await prisma.repositoryConnection.delete({
+        where: { id: recoveryRepositoryId },
+      });
+    }
+  });
 });
 
 function confirmation(
@@ -648,6 +893,35 @@ async function withRotatingRepositoryAllowed<T>(
     restoreEnvironment(
       "REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES",
       previousAllowlist,
+    );
+  }
+}
+
+async function withRotatingRepositoryDisabled<T>(
+  run: () => Promise<T>,
+): Promise<T> {
+  const previousEnabled = process.env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH;
+  const previousAllowlist =
+    process.env.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES;
+  const previousSetupIssuance =
+    process.env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED;
+  process.env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH = "0";
+  process.env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED = "0";
+  delete process.env.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES;
+  try {
+    return await run();
+  } finally {
+    restoreEnvironment(
+      "REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH",
+      previousEnabled,
+    );
+    restoreEnvironment(
+      "REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES",
+      previousAllowlist,
+    );
+    restoreEnvironment(
+      "REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED",
+      previousSetupIssuance,
     );
   }
 }

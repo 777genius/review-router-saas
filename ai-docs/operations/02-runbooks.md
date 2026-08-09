@@ -130,6 +130,32 @@ REVIEWROUTER_CODEX_AUTH_JSON` directly. Use the generated setup command or
 newer than the confirmed generation and live review can fail as an older queued
 secret generation.
 
+### Recover a fetched setup with an unknown confirmation result
+
+A setup manifest that reached `fetched` is never expired or cleared
+automatically. The installer may already have changed the GitHub Actions secret
+even when its confirmation did not reach ReviewRouter, so ordinary setup and
+runtime issuance remain closed with
+`codex_rotating_setup_recovery_required`.
+
+A repository operator with write, maintain, or admin access must reopen the
+Codex provider setup in the dashboard, read the warning, check the explicit
+acknowledgement that the GitHub secret may already have changed, and choose
+**Recover and issue forced reseed**. The equivalent authenticated CLI API is
+`POST /api/codex-rotating/cli/setup-recovery` with the repository, a stable
+operator-generated `recoveryRequestId`, and the exact acknowledgement
+`github_secret_may_have_changed`. Retry a dropped response with the same request
+ID. Recovery advances the mutation epoch, safely terminalizes the ambiguous
+manifest and pending intent, records only safe identifiers in the audit log,
+and issues exactly one `--force-reseed` command.
+
+Do not use setup recovery for `codex_rotating_identity_quarantined`. Authorized
+operators can inspect safe quarantine details through
+`GET /api/dashboard/codex-rotating/setup-recovery?workspaceId=...&repositoryId=...`.
+Repair the repository/provider binding through the identity migration operator
+lane; recovery deliberately cannot rewrite the provider's immutable workspace,
+repository, canonical provider ID, auth mode, or secret name.
+
 If a live smoke fails with a provider usage-limit or capacity error, do not
 rewrite the GitHub secret manually. Reseed through the generated command using a
 known non-limited Codex session, then rerun the smoke. Quota-limited sessions

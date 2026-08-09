@@ -117,6 +117,12 @@ export function ProviderSecretSetupChooser({
   const [rotatingSetupCommand, setRotatingSetupCommand] =
     useState<RotatingSetupCommandState>({ status: "idle" });
   const [setupCommandRefreshKey, setSetupCommandRefreshKey] = useState(0);
+  const [setupRecoveryAcknowledged, setSetupRecoveryAcknowledged] =
+    useState(false);
+  const [setupRecoverySubmitting, setSetupRecoverySubmitting] = useState(false);
+  const [setupRecoveryRequestId, setSetupRecoveryRequestId] = useState<
+    string | null
+  >(null);
   const [submitStatus, setSubmitStatus] = useState<SubmitStatus>("idle");
   const [confirmedProviderModes, setConfirmedProviderModes] = useState<
     Partial<Record<ProviderChoice, "verified" | "manual">>
@@ -480,6 +486,104 @@ export function ProviderSecretSetupChooser({
           rotatingSetupCommand.status === "error" ? (
           <div className="mt-4 rounded-xl border border-red-300/20 bg-red-300/[0.08] p-3 text-sm leading-6 text-red-100">
             <p>{rotatingSetupCommandErrorText(rotatingSetupCommand.error)}</p>
+            {rotatingSetupCommand.error ===
+            "codex_rotating_setup_recovery_required" ? (
+              <div className="mt-3 border-t border-red-200/15 pt-3">
+                <label className="flex items-start gap-3 text-sm text-red-50">
+                  <input
+                    type="checkbox"
+                    checked={setupRecoveryAcknowledged}
+                    onChange={(event) =>
+                      setSetupRecoveryAcknowledged(event.target.checked)
+                    }
+                    className="mt-1 h-4 w-4 accent-cyan-300"
+                  />
+                  <span>
+                    I understand the GitHub secret may already have changed and
+                    recovery will abandon the unknown setup result before
+                    issuing one forced reseed command.
+                  </span>
+                </label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="mt-3 min-h-10 rounded-xl px-4"
+                  disabled={
+                    !setupRecoveryAcknowledged || setupRecoverySubmitting
+                  }
+                  onClick={() => {
+                    const formData = new FormData();
+                    formData.set("workspaceId", workspaceId);
+                    formData.set("repositoryId", repositoryId);
+                    formData.set(
+                      "acknowledgement",
+                      "github_secret_may_have_changed",
+                    );
+                    const recoveryRequestId =
+                      setupRecoveryRequestId ?? crypto.randomUUID();
+                    setSetupRecoveryRequestId(recoveryRequestId);
+                    formData.set("recoveryRequestId", recoveryRequestId);
+                    setSetupRecoverySubmitting(true);
+                    void fetch("/api/dashboard/codex-rotating/setup-recovery", {
+                      method: "POST",
+                      body: formData,
+                    })
+                      .then(async (response) => {
+                        const body: unknown = await response.json();
+                        if (
+                          !response.ok ||
+                          !isRotatingSetupCommandResponse(body)
+                        ) {
+                          const error =
+                            body && typeof body === "object" && "error" in body
+                              ? String(
+                                  (body as { readonly error?: unknown }).error,
+                                )
+                              : "dashboard_action_failed";
+                          throw new Error(error);
+                        }
+                        setRotatingSetupCommand({
+                          status: "ready",
+                          expiresAt: body.expiresAt,
+                          providerInstanceId: body.providerInstanceId,
+                          command: {
+                            scope: "repository",
+                            title: "Recovered repository secret setup",
+                            description:
+                              "Runs one forced reseed after the unknown GitHub secret result was fenced.",
+                            command: body.command,
+                            storesSecretIn: "github_repository_secret",
+                            targetLabel: `${repositoryFullName} repository secret`,
+                            secretNames: body.secretNames,
+                            selectedRepositories: [repositoryFullName],
+                            validatesBeforeWrite: true,
+                            failureRecovery:
+                              "If this command is fetched but not confirmed, return here and explicitly recover again.",
+                            sendsSecretToReviewRouter: false,
+                          },
+                        });
+                        setSetupRecoveryAcknowledged(false);
+                        setSetupRecoveryRequestId(null);
+                      })
+                      .catch((error: unknown) =>
+                        setRotatingSetupCommand({
+                          status: "error",
+                          error:
+                            error instanceof Error
+                              ? error.message
+                              : "dashboard_action_failed",
+                        }),
+                      )
+                      .finally(() => setSetupRecoverySubmitting(false));
+                  }}
+                >
+                  {setupRecoverySubmitting
+                    ? "Recovering setup..."
+                    : "Recover and issue forced reseed"}
+                </Button>
+              </div>
+            ) : null}
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <Button
                 type="button"
@@ -784,7 +888,15 @@ function rotatingSetupCommandErrorText(error: string): string {
     case "rate_limited":
       return "Too many setup command requests for this repository. Wait a bit, then retry.";
     case "codex_rotating_setup_in_progress":
-      return "Another Codex setup is already using this repository. Finish it, or wait for the short-lived command to expire, then retry.";
+      return "Another unfetched Codex setup is already using this repository. Finish it or wait for the short-lived command to expire, then retry.";
+    case "codex_rotating_setup_recovery_required":
+      return "The previous setup was fetched, so the GitHub secret may already have changed. It will stay blocked until an authorized repository operator explicitly recovers it.";
+    case "codex_rotating_identity_quarantined":
+      return "This provider identity is quarantined. An operator must inspect and repair the repository/provider binding; recovery will not rewrite the immutable identity.";
+    case "codex_rotating_setup_issuance_quiesced":
+      return "New Codex setup commands are temporarily paused by an operator. Existing exact confirmations remain accepted; retry after issuance resumes.";
+    case "codex_rotating_mutation_fence_conflict":
+      return "A runtime credential mutation is still fenced for this repository. Wait for it to finish or use the documented recovery path if its outcome is unknown.";
     case "codex_rotating_setup_lock_failed":
       return "ReviewRouter could not reserve this repository for Codex setup because another request held the setup lock. Wait a few seconds, then retry.";
     case "codex_rotating_installer_missing":

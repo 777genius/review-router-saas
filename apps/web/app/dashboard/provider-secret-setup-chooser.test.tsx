@@ -574,8 +574,52 @@ describe("ProviderSecretSetupChooser", () => {
     });
 
     expect(
-      await screen.findByText(/Another Codex setup is already using/i),
+      await screen.findByText(/Another unfetched Codex setup/i),
     ).toBeTruthy();
+  });
+
+  it("requires acknowledgement and requests one forced recovery command", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        setupCommandErrorResponse("codex_rotating_setup_recovery_required"),
+      )
+      .mockResolvedValueOnce(
+        setupCommandResponse({
+          command: "set -euo pipefail\n# recovered forced reseed",
+          expiresAt: "2026-05-25T12:15:00.000Z",
+          providerInstanceId: "codex-rotating:123456",
+          secretNames: ["REVIEWROUTER_CODEX_AUTH_JSON"],
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+
+    const recoverButton = await screen.findByRole("button", {
+      name: "Recover and issue forced reseed",
+    });
+    expect((recoverButton as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(
+      screen.getByLabelText(/GitHub secret may already have changed/i),
+    );
+    fireEvent.click(recoverButton);
+
+    expect(await screen.findByText(/recovered forced reseed/i)).toBeTruthy();
+    const recoveryCall = fetchMock.mock.calls[1]!;
+    expect(recoveryCall[0]).toBe(
+      "/api/dashboard/codex-rotating/setup-recovery",
+    );
+    const body = recoveryCall[1]?.body as FormData;
+    expect(body.get("acknowledgement")).toBe("github_secret_may_have_changed");
+    expect(String(body.get("recoveryRequestId"))).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it("explains setup lock contention as retryable", async () => {

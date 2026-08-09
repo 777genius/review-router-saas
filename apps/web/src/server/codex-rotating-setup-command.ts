@@ -23,6 +23,10 @@ export async function issueCodexRotatingSetupForRepository(input: {
   readonly prisma: PrismaClient;
   readonly repository: CodexRotatingSetupRepository;
   readonly installerArguments?: readonly CodexRotatingInstallerArgument[];
+  readonly recovery?: {
+    readonly requestId: string;
+    readonly epoch: bigint;
+  };
 }) {
   assertCodexRotatingSetupRepository(input.repository);
 
@@ -52,6 +56,7 @@ export async function issueCodexRotatingSetupForRepository(input: {
     ...(input.installerArguments
       ? { installerArguments: input.installerArguments }
       : {}),
+    ...(input.recovery ? { recovery: input.recovery } : {}),
   });
 }
 

@@ -342,6 +342,17 @@ model CodexOAuthProviderInstance {
   @@index([workspaceId, state])
   @@index([repositoryId, state])
   @@index([activeLeaseExpiresAt])
+  @@index([mutationOwner, mutationEpoch], map: "CodexOAuthProviderInstance_mutation_owner_idx")
+}
+
+model CodexOAuthProviderIdentityQuarantine {
+  providerInstanceRowId       String   @id
+  observedWorkspaceId         String
+  observedRepositoryId        String
+  observedProviderInstanceId  String
+  expectedProviderInstanceId  String?
+  reason                      String
+  quarantinedAt               DateTime @default(now())
 }
 
 model CodexOAuthSetupManifest {
@@ -370,6 +381,7 @@ model CodexOAuthSetupManifest {
   @@index([repositoryId, status])
   @@index([providerInstanceId, status])
   @@index([expiresAt])
+  @@index([providerInstanceRowId, mutationEpoch], map: "CodexOAuthSetupManifest_provider_epoch_idx")
 }
 
 model CodexOAuthLease {
@@ -402,6 +414,7 @@ model CodexOAuthLease {
   @@index([workspaceId, status])
   @@index([repositoryId, status])
   @@index([expiresAt])
+  @@index([providerInstanceRowId, mutationEpoch], map: "CodexOAuthLease_provider_epoch_idx")
 }
 
 model CodexOAuthWritebackIntent {
@@ -427,6 +440,7 @@ model CodexOAuthWritebackIntent {
   @@unique([providerInstanceId, idempotencyKey])
   @@index([providerInstanceId, status])
   @@index([leaseId, status])
+  @@index([providerInstanceRowId, mutationEpoch], map: "CodexOAuthWritebackIntent_provider_epoch_idx")
 }
 
 model ActionRunHealthReport {

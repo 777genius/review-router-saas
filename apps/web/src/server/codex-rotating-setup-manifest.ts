@@ -17,13 +17,11 @@ import type { CodexRotatingSeedScriptDescriptor } from "./codex-rotating-seed-sc
 import {
   isCodexRotatingSetupFenceOwner,
   lockCodexRotatingProviderRow,
+  lockCodexRotatingSetupProvider,
   pinCodexRotatingSetupRecovery,
-  supersedeFetchedSetupForRecovery,
 } from "./codex-rotating-provider-mutation-fence";
 
 const setupManifestTtlSeconds = 15 * 60;
-const setupLockRetryIntervalMs = 100;
-const setupLockMaxAttempts = 50;
 const setupTransactionTimeoutMs = 10_000;
 
 function assertSetupIssuanceEnabled(): void {
@@ -38,6 +36,7 @@ export enum CodexRotatingSetupManifestStatus {
   Consumed = "consumed",
   Expired = "expired",
   Superseded = "superseded",
+  Recovered = "recovered",
 }
 
 const setupConfirmationSchema = z
@@ -82,6 +81,10 @@ export async function issueCodexRotatingSetupCommand(input: {
   readonly setupManifestUrl: string;
   readonly setupConfirmUrl: string;
   readonly installerArguments?: readonly CodexRotatingInstallerArgument[];
+  readonly recovery?: {
+    readonly requestId: string;
+    readonly epoch: bigint;
+  };
   readonly now?: Date;
 }): Promise<{
   readonly command: string;
@@ -90,12 +93,15 @@ export async function issueCodexRotatingSetupCommand(input: {
   readonly secretName: typeof codexRotatingSecretName;
 }> {
   assertSetupIssuanceEnabled();
+  if (input.recovery && !input.installerArguments?.includes("--force-reseed")) {
+    throw new Error("codex_rotating_setup_recovery_force_required");
+  }
   const providerInstanceId = canonicalCodexRotatingProviderId(
     input.githubRepositoryId,
   );
   return input.prisma.$transaction(
     async (tx) => {
-      await lockSetupProvider(tx, providerInstanceId);
+      await lockCodexRotatingSetupProvider(tx, providerInstanceId);
       let provider = await tx.codexOAuthProviderInstance.findUnique({
         where: {
           repositoryId_authMode: {
@@ -130,6 +136,15 @@ export async function issueCodexRotatingSetupCommand(input: {
       provider = await tx.codexOAuthProviderInstance.findUniqueOrThrow({
         where: { id: provider.id },
       });
+      const quarantine = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "providerInstanceRowId" AS "id"
+        FROM "CodexOAuthProviderIdentityQuarantine"
+        WHERE "providerInstanceRowId" = ${provider.id}
+        LIMIT 1
+      `;
+      if (quarantine.length > 0) {
+        throw new Error("codex_rotating_identity_quarantined");
+      }
       const now = input.now ?? new Date();
       await expireActiveSetupManifests(tx, provider.id, now);
 
@@ -138,10 +153,24 @@ export async function issueCodexRotatingSetupCommand(input: {
         ? codexRotatingSetupManifestSchema.safeParse(active.manifestJson)
         : null;
       if (active?.status === CodexRotatingSetupManifestStatus.Fetched) {
-        if (provider.mutationOwner !== "recovery") {
-          throw new Error("codex_rotating_setup_in_progress");
+        throw new Error("codex_rotating_setup_recovery_required");
+      }
+      if (provider.mutationOwner === "recovery") {
+        if (
+          !input.recovery ||
+          input.recovery.epoch !== provider.mutationEpoch ||
+          provider.mutationOwnerId !==
+            `setup-recovery:${input.recovery.requestId}`
+        ) {
+          throw new Error("codex_rotating_setup_recovery_required");
         }
-        await supersedeFetchedSetupForRecovery(tx, active.id);
+      } else if (input.recovery) {
+        if (
+          provider.mutationEpoch !== input.recovery.epoch + 1n ||
+          provider.mutationOwner !== "setup"
+        ) {
+          throw new Error("codex_rotating_setup_recovery_already_used");
+        }
       }
       const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
         where: { providerInstanceRowId: provider.id, status: "pending" },
@@ -157,6 +186,24 @@ export async function issueCodexRotatingSetupCommand(input: {
       }
 
       let manifest = parsedActive?.success ? parsedActive.data : null;
+      if (
+        input.recovery &&
+        provider.mutationOwner === "setup" &&
+        (!active ||
+          active.status !== CodexRotatingSetupManifestStatus.Issued ||
+          !manifest ||
+          active.mutationEpoch !== provider.mutationEpoch ||
+          provider.mutationOwnerId !== active.id ||
+          !isReusableIssuedManifest({
+            manifest,
+            provider,
+            repositoryFullName: input.repositoryFullName,
+            githubRepositoryId: input.githubRepositoryId,
+            installer: input.installer,
+          }))
+      ) {
+        throw new Error("codex_rotating_setup_recovery_already_used");
+      }
       if (
         active &&
         (!manifest ||
@@ -250,7 +297,7 @@ export async function resolveCodexRotatingSetupManifestForNonce(input: {
   return input.prisma.$transaction(
     async (tx) => {
       const initial = await findSetupManifestByNonce(tx, input.setupNonce);
-      await lockSetupProvider(tx, initial.providerInstanceId);
+      await lockCodexRotatingSetupProvider(tx, initial.providerInstanceId);
       await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
       const now = input.now ?? new Date();
       const row = await findSetupManifestByNonce(tx, input.setupNonce);
@@ -297,7 +344,7 @@ export async function confirmCodexRotatingSetupManifest(input: {
   const confirmation = await input.prisma.$transaction(
     async (tx) => {
       const initial = await findSetupManifestByNonce(tx, payload.setupNonce);
-      await lockSetupProvider(tx, initial.providerInstanceId);
+      await lockCodexRotatingSetupProvider(tx, initial.providerInstanceId);
       await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
       const now = input.now ?? new Date();
       const row = await findSetupManifestByNonce(tx, payload.setupNonce);
@@ -467,28 +514,6 @@ function assertSetupManifestNotExpiredOrConsumed(
   ) {
     throw new Error("codex_rotating_setup_manifest_expired");
   }
-}
-
-async function lockSetupProvider(
-  prisma: SetupManifestTransaction,
-  providerInstanceId: string,
-): Promise<void> {
-  for (let attempt = 1; attempt <= setupLockMaxAttempts; attempt += 1) {
-    const rows = await prisma.$queryRaw<
-      Array<{ readonly acquired: boolean }>
-    >(Prisma.sql`
-      SELECT pg_try_advisory_xact_lock(
-        hashtextextended(${`codex-rotating-setup:${providerInstanceId}`}, 0)
-      ) AS "acquired"
-    `);
-    if (rows[0]?.acquired === true) return;
-    if (attempt < setupLockMaxAttempts) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, setupLockRetryIntervalMs),
-      );
-    }
-  }
-  throw new Error("codex_rotating_setup_lock_failed");
 }
 
 async function expireActiveSetupManifests(

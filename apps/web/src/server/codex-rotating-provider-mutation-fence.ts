@@ -3,12 +3,37 @@ import { assertCanonicalCodexRotatingProviderId } from "@reviewrouter/features-p
 
 type FenceTransaction = Prisma.TransactionClient;
 
+const setupLockRetryIntervalMs = 100;
+const setupLockMaxAttempts = 50;
+
 export type CodexRotatingSetupFenceRow = {
   readonly id: string;
   readonly providerInstanceRowId: string;
   readonly providerInstanceId: string;
   readonly mutationEpoch: bigint | null;
 };
+
+export async function lockCodexRotatingSetupProvider(
+  prisma: FenceTransaction,
+  providerInstanceId: string,
+): Promise<void> {
+  for (let attempt = 1; attempt <= setupLockMaxAttempts; attempt += 1) {
+    const rows = await prisma.$queryRaw<
+      Array<{ readonly acquired: boolean }>
+    >(Prisma.sql`
+      SELECT pg_try_advisory_xact_lock(
+        hashtextextended(${`codex-rotating-setup:${providerInstanceId}`}, 0)
+      ) AS "acquired"
+    `);
+    if (rows[0]?.acquired === true) return;
+    if (attempt < setupLockMaxAttempts) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, setupLockRetryIntervalMs),
+      );
+    }
+  }
+  throw new Error("codex_rotating_setup_lock_failed");
+}
 
 export async function lockCodexRotatingProviderRow(
   prisma: FenceTransaction,
@@ -66,17 +91,4 @@ export async function pinCodexRotatingSetupRecovery(
       mutationOwnerId: manifestId,
     },
   });
-}
-
-export async function supersedeFetchedSetupForRecovery(
-  prisma: FenceTransaction,
-  id: string,
-): Promise<void> {
-  const updated = await prisma.$executeRaw`
-    UPDATE "CodexOAuthSetupManifest"
-    SET "status" = 'superseded'
-    WHERE "id" = ${id}
-      AND "status" = 'fetched'
-  `;
-  if (updated !== 1) throw new Error("codex_rotating_setup_in_progress");
 }
