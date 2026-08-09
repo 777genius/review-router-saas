@@ -149,9 +149,13 @@ Use a reader-first, writer-second rollout:
 
 Do not enable the writer in the same rolling deploy that introduces its reader.
 Feature flags do not make a persisted canonical-format change downgrade-safe.
-After writer activation, rollback to a version older than the compatibility
-reader is forbidden unless all newly written records have first been drained or
-migrated back to the legacy representation.
+After writer activation, first disable the writer and wait for every in-flight
+write lease to terminate. Record the last aggregate ID, version, update time,
+and sanitized outcome hash containing a non-empty additive value. Rollback to a
+version older than the compatibility reader remains forbidden until those
+records are drained or migrated back to the legacy representation and a final
+query, taken after the recorded quiescence boundary, proves that no newer
+non-empty write exists. Start the older reader only after that final check.
 
 ## Emergency rollback
 
@@ -165,18 +169,32 @@ both legacy dossiers without the field and new dossiers with bound operation
 receipt digests. Do not use Render native rollback, redeploy, or a manual image
 pin below this SHA after the writer is enabled.
 
-Before a code rollback, verify that the candidate contains the compatibility
-floor:
+Before a code rollback, verify reader behavior in the immutable candidate
+artifact. Run the trusted compatibility probe sourced from the floor commit,
+not a test supplied by the rollback candidate, against a disposable Postgres
+database. The trusted probe must prove both legacy provenance without
+`acceptedOperationReceiptIds` and future provenance with a non-empty list can be
+restored after a reader restart. Bind the passing probe result to the candidate
+artifact image digest and source commit. The phase-1 probe source is
+`packages/features/review-investigations/src/tests/prisma-investigation-store-real.test.ts`
+at the floor commit; its SHA-256 is
+`457690a77952ba0530eecefbbf7117fea3c5cf97626bcf6deb10dc9afc33721a`.
+The relevant cases are `round-trips token usage with reasoning included in
+output` and `round-trips future operation receipt bindings through the
+compatibility reader`.
+
+Then apply commit ancestry as a secondary guard:
 
 ```bash
 git merge-base --is-ancestor \
   a7b8d62824869d674c51d2effd14021b104e9181 <candidate-sha>
 ```
 
-A non-zero result denies the rollback. Code running below the floor cannot
-protect itself from data written after its release, so this is a deployment
-control-plane invariant rather than an application feature flag. Flag-first
-rollback remains the incident response path.
+A failed compatibility probe, artifact/source identity mismatch, unexpected
+probe digest, or non-zero ancestry result denies the rollback. Code running
+below the floor cannot protect itself from data written after its release, so
+this is a deployment control-plane invariant rather than an application feature
+flag. Flag-first rollback remains the incident response path.
 
 Emergency disable has precedence over flags and selectors. The general review
 authorization remains independent so disabling investigations cannot stop the
@@ -305,7 +323,7 @@ is appended here.
 
 ## 2026-08-09 hosted sandbox evidence
 
-The completed live canary used only
+The bounded live canary used only
 `777genius/review-router-saas-e2e`. No user repository was used for agent or
 publication testing.
 
@@ -327,28 +345,44 @@ The canary established these independent outcomes:
 - runs `31294278893` and `31294548314` produced certificate-backed
   `verified_clean` outcomes while authoritative verified-clean publication was
   still disabled;
-- run `31295477721`, attempt 2, proved the two-batch path and created a reusable
-  checkpoint for the stable README unit;
+- run `31295477721`, attempt 2, completed and checkpointed the stable README
+  unit in a two-batch plan, then ended `required_provider_lane_busy` before the
+  second batch. This proves the first batch boundary and checkpoint durability,
+  not full two-batch completion;
 - run `31310718760` selectively replayed two unchanged blob receipts into a new
   revision with two unique replay proof IDs. Changed search/tree dependencies
   were not reused and required fresh evidence, as required by the fail-closed
-  replay policy;
+  replay policy. The replay receipts survived retry, but the run later reported
+  gateway seal/cleanup process failures and ended `required_provider_lane_busy`;
 - with emergency disable active on both API and worker, run `31311520702`
   created a valid authorization but zero investigation units, executed the
   ordinary review path, and published a typed partial outcome after provider
-  attempts were exhausted.
+  attempts were exhausted, ending `required_work_exhausted`. This proves
+  admission-time fallback only; authoritative effects were disabled, so it does
+  not claim interruption of an in-flight authoritative mutation.
+
+These run IDs and sanitized database projections are the evidence record for
+the independent boundaries above. No promotion report was generated, and no
+promotion report hash is claimed: the cohort remains dormant and this evidence
+is not production promotion approval.
 
 The multi-batch canary first exposed
 `investigation_inventory_seed_mismatch`: the server compared a batch-local unit
 inventory with the authenticated full-revision inventory as if they were equal.
 Commit `0bd0c341a77b9bb62862f0a2c843cce12c5754e5` fixes the invariant to require
 every unit path to be a member of the full inventory while terminal aggregate
-validation still covers the complete authenticated path set. The fix passed 133
-focused tests plus the full Quality Gates and self-hosted E2E, then reached live
-as API `dep-d9s5fmh42hec73bodjl0`, worker `dep-d9s5fmv10e5c7398raf0`, and web
-`dep-d9s5fh3ncjis739kejlg`.
+validation still covers the complete authenticated path set. Duplicate-free,
+exactly-once partitioning is owned by the immutable Action batch planner: it
+rejects duplicate route keys, canonical identities, and scheduling priorities,
+and its `never duplicates or loses review units` test covers a 503-unit plan.
+The 50,000-unit corpus E2E covers the same planner at scale. The SaaS membership
+check does not claim to prove cross-batch multiplicity by itself. The fix passed
+133 focused tests plus the full Quality Gates and self-hosted E2E, then reached
+live as API `dep-d9s5fmh42hec73bodjl0`, worker
+`dep-d9s5fmv10e5c7398raf0`, and web `dep-d9s5fh3ncjis739kejlg`.
 
-After rollback proof, the sandbox repository context-reuse policy was disabled.
+After the admission-time emergency fallback check, the sandbox repository
+context-reuse policy was disabled.
 The API and worker were restored with emergency disable, cross-revision replay,
 verified-clean publication, and production effects all set to `0`. Recording,
 shadow evaluation, and the context critic remain non-authoritative. The phase-1

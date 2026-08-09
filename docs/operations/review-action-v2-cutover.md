@@ -8,7 +8,14 @@ through the `rr_admin` container wrapper in the
 [self-hosted end-to-end guide](./review-router-self-hosted-end-to-end.md).
 
 For a hosted deployment, run the CLI in a dedicated one-off maintenance job
-with the exact API runtime environment. Do not launch `pnpm review-v2:admin`
+created from the same immutable image digest or source commit as the API deploy
+that is currently serving. Before the process starts, read the expected identity
+from the live deploy metadata and compare it with the one-off job artifact
+identity. Abort on a missing value or mismatch. A platform's generic "latest
+successful build" is not an acceptable substitute because it can differ from a
+live deploy after rollback. If the platform cannot select and attest the exact
+live artifact, use the break-glass procedure below instead. Do not launch
+`pnpm review-v2:admin`
 inside a serving web instance: package-manager and CLI startup can exceed a
 small instance's memory budget, recycle the web process, and briefly return
 502 responses. The maintenance job may invoke the already-built entrypoint
@@ -22,8 +29,10 @@ node scripts/run-with-env.mjs \
 ```
 
 Keep the plaintext operator credential only in the maintenance process
-environment. Require `env-preflight` to report `ready: true` before a mutating
-command, and remove the job after the operation.
+environment. `env-preflight` validates runtime configuration, not code identity;
+run it only after the external artifact-identity comparison and require it to
+report `ready: true` before a mutating command. Remove the job after the
+operation.
 
 If the hosting platform cannot create a one-off job, the break-glass fallback is
 an ephemeral local maintenance process from a clean checkout of the exact
@@ -114,13 +123,19 @@ pnpm protocol:release-manifest:check \
 ```
 
 Treat the verifier output and the database registration candidate as different
-typed projections of the same release. Remove the verification-only
-`saasSourceCommit`, `supportedContextGatewayPolicyVersions`, and
-`canonicalizerDigest` fields before placing the verifier output under
-`candidate`. Keep `canonicalizerDigest` in the runtime producer attestation:
-authorization validates it there, while the `ProducerRelease` database model
-does not own that field. Never pass the verifier object to `release register`
-unchanged.
+typed projections of the same release. Construct a separate normalized
+`candidate` from an allowlist of validated manifest values plus the explicit
+operator-owned release ID and capability profile. The only candidate fields are
+`producerReleaseId`, `distributionKind`, `actionCommitSha`, `runtimeCommitSha`,
+`wrapperEntrypointDigest`, `runtimeEntrypointDigest`,
+`contextGatewayPolicyVersion`, `contextGatewayEntrypointDigest`,
+`reviewInvestigationProfile`, `schemaDigest`, and `capabilityProfile`. Do not
+filter or nest the verifier object as `candidate` and never pass it unchanged to
+`release register`. In particular, `saasSourceCommit` and
+`supportedContextGatewayPolicyVersions` are verification evidence, not release
+candidate fields. Keep `canonicalizerDigest` only in the runtime producer
+attestation: authorization validates it there, while the `ProducerRelease`
+database model does not own that field.
 
 `release register` accepts one JSON object containing
 `protocolLimitsProfileId`, `limits`, `operationalSloProfileId`, `thresholds`,
