@@ -34,7 +34,7 @@ const revisionHash = hash("4");
 const digest = new NodeSha256InvestigationDigest();
 
 describe("AttestedTurnClosurePreparation", () => {
-  it("builds an immutable verified receipt and requires exact inventory coverage", async () => {
+  it("builds an immutable verified receipt and requires every unit path in the inventory", async () => {
     const firstPathHash = hash("a");
     const secondPathHash = hash("b");
     const investigation = investigationFixture([
@@ -78,6 +78,29 @@ describe("AttestedTurnClosurePreparation", () => {
     expect(Object.isFrozen(prepared.closureClaims)).toBe(true);
     expect(Object.isFrozen(prepared.closureClaims[0]!.receipt)).toBe(true);
 
+    const fullRevisionOperation = await pageEvidence({
+      operationReceiptId: hash("6"),
+      operationKind: InvestigationOperationKind.CanonicalInventory,
+      operationInputHash: hash("5"),
+      pathHashes: [secondPathHash, hash("c"), firstPathHash],
+    });
+    await expect(
+      new AttestedTurnClosurePreparation(digest).prepare({
+        investigation,
+        closureClaims: [
+          {
+            obligationId: hash("1"),
+            operationReceiptIds: [fullRevisionOperation.operationReceiptId],
+          },
+        ],
+        operationEvidence: createVerifiedOperationEvidenceIndex([
+          fullRevisionOperation,
+        ]),
+        acceptedAttestationId: "attestation-1",
+        acceptedAttestationHash: hash("8"),
+      }),
+    ).resolves.toMatchObject({ closureClaims: [{ obligationId: hash("1") }] });
+
     const incompleteOperation = await pageEvidence({
       operationReceiptId: hash("7"),
       operationKind: InvestigationOperationKind.CanonicalInventory,
@@ -100,6 +123,29 @@ describe("AttestedTurnClosurePreparation", () => {
         acceptedAttestationHash: hash("8"),
       }),
     ).rejects.toThrow("investigation_inventory_seed_mismatch");
+
+    const inconsistentAggregateOperation = Object.freeze({
+      ...fullRevisionOperation,
+      aggregatePathCount: fullRevisionOperation.aggregatePathCount - 1,
+    });
+    await expect(
+      new AttestedTurnClosurePreparation(digest).prepare({
+        investigation,
+        closureClaims: [
+          {
+            obligationId: hash("1"),
+            operationReceiptIds: [
+              inconsistentAggregateOperation.operationReceiptId,
+            ],
+          },
+        ],
+        operationEvidence: createVerifiedOperationEvidenceIndex([
+          inconsistentAggregateOperation,
+        ]),
+        acceptedAttestationId: "attestation-1",
+        acceptedAttestationHash: hash("8"),
+      }),
+    ).resolves.toMatchObject({ closureClaims: [] });
   });
 
   it("matches one inventory path to modified base and head obligations", async () => {
