@@ -401,29 +401,6 @@ export async function confirmCodexRotatingSetupManifest(input: {
         throw new Error("codex_rotating_setup_salt_mismatch");
       }
 
-      const confirmed = await tx.codexOAuthProviderInstance.updateMany({
-        where: {
-          id: provider.id,
-          mutationEpoch: row.mutationEpoch!,
-          mutationOwner: "setup",
-          mutationOwnerId: row.id,
-        },
-        data: {
-          latestGeneration: provider.latestGenerationHash
-            ? provider.latestGeneration + 1
-            : provider.latestGeneration,
-          latestGenerationHash: payload.generationHash,
-          state: "active",
-          activeLeaseId: null,
-          activeLeaseExpiresAt: null,
-          mutationOwner: null,
-          mutationOwnerId: null,
-        },
-      });
-      if (confirmed.count !== 1) {
-        await pinCodexRotatingSetupRecovery(tx, provider.id, row.id);
-        return "stale" as const;
-      }
       const updated = await tx.$executeRaw`
       UPDATE "CodexOAuthSetupManifest"
       SET "status" = ${CodexRotatingSetupManifestStatus.Consumed},
@@ -436,6 +413,20 @@ export async function confirmCodexRotatingSetupManifest(input: {
       if (updated !== 1) {
         throw new Error("codex_rotating_setup_manifest_reused");
       }
+      await tx.codexOAuthProviderInstance.update({
+        where: { id: provider.id },
+        data: {
+          latestGeneration: provider.latestGenerationHash
+            ? provider.latestGeneration + 1
+            : provider.latestGeneration,
+          latestGenerationHash: payload.generationHash,
+          state: "active",
+          activeLeaseId: null,
+          activeLeaseExpiresAt: null,
+          mutationOwner: null,
+          mutationOwnerId: null,
+        },
+      });
       return "accepted" as const;
     },
     { timeout: setupTransactionTimeoutMs },

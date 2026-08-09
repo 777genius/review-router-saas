@@ -29,6 +29,7 @@ const exactTriggers = [
   "CodexOAuthProviderInstance_mutation_transition_guard",
   "CodexOAuthSetupManifest_identity_fence_guard",
   "CodexOAuthWritebackIntent_identity_fence_guard",
+  "RepositoryConnection_codex_oauth_identity_guard",
 ];
 const exactChecks = [
   "CodexOAuthLease_epoch_check",
@@ -37,6 +38,7 @@ const exactChecks = [
   "CodexOAuthWritebackIntent_epoch_check",
 ];
 const exactIndexes = [
+  "CodexOAuthChildIdentityQuarantine_provider_idx",
   "CodexOAuthLease_provider_epoch_idx",
   "CodexOAuthProviderInstance_mutation_owner_idx",
   "CodexOAuthSetupManifest_one_active_provider_key",
@@ -150,7 +152,7 @@ export function verifyCodexRotatingRollout(evidence, options = {}) {
 }
 
 function verifyDatabase(db, need, options) {
-  need(db?.observationVersion === 1, "database observation version is invalid");
+  need(db?.observationVersion === 2, "database observation version is invalid");
   need(
     /^17\./u.test(db?.postgresVersion ?? ""),
     "database observation is not PostgreSQL 17",
@@ -158,9 +160,10 @@ function verifyDatabase(db, need, options) {
   const unsafeWork = db?.unsafeWork;
   need(
     hasExactKeys(unsafeWork, [
-      "activeLeasesWithoutEpoch",
-      "activeManifestsWithoutEpoch",
+      "activeLeasesWithoutPositiveEpoch",
+      "activeManifestsWithoutPositiveEpoch",
       "pendingIntents",
+      "pendingIntentsWithoutPositiveEpoch",
     ]) &&
       Object.values(unsafeWork).every(
         (value) => Number.isInteger(value) && value >= 0,
@@ -268,6 +271,11 @@ function exactTriggerBinding(entry) {
       "codex_oauth_child_identity_fence_guard",
       23,
     ],
+    RepositoryConnection_codex_oauth_identity_guard: [
+      "RepositoryConnection",
+      "codex_oauth_repository_identity_guard",
+      17,
+    ],
   };
   return (
     JSON.stringify([entry?.table, entry?.function, entry?.type]) ===
@@ -332,6 +340,10 @@ function exactIndexDefinition(entry) {
     CodexOAuthWritebackIntent_provider_epoch_idx: [
       "providerInstanceRowId",
       "mutationEpoch",
+    ],
+    CodexOAuthChildIdentityQuarantine_provider_idx: [
+      "providerInstanceRowId",
+      "resolvedAt",
     ],
   }[entry?.name];
   return (

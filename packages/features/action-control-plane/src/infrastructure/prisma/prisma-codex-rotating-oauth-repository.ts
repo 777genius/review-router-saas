@@ -950,14 +950,6 @@ export class PrismaCodexRotatingOAuthRepository
         current.mutationOwner !== "runtime" ||
         current.mutationOwnerId !== intent.leaseId
       ) {
-        await tx.codexOAuthWritebackIntent.updateMany({
-          where: {
-            id: intent.id,
-            status: "pending",
-            safeErrorCode: codexRotatingWritebackClaimMarker,
-          },
-          data: { status: "failed", safeErrorCode: "stale_mutation_epoch" },
-        });
         await tx.codexOAuthProviderInstance.update({
           where: { id: intent.providerInstance.id },
           data: {
@@ -966,6 +958,14 @@ export class PrismaCodexRotatingOAuthRepository
             mutationOwner: "recovery",
             mutationOwnerId: intent.id,
           },
+        });
+        await tx.codexOAuthWritebackIntent.updateMany({
+          where: {
+            id: intent.id,
+            status: "pending",
+            safeErrorCode: codexRotatingWritebackClaimMarker,
+          },
+          data: { status: "failed", safeErrorCode: "stale_mutation_epoch" },
         });
         return {
           status: "recovery_required" as const,
@@ -983,6 +983,13 @@ export class PrismaCodexRotatingOAuthRepository
           completedAt: input.now,
         },
       });
+      await tx.codexOAuthWritebackIntent.update({
+        where: { id: intent.id },
+        data: {
+          status: "completed",
+          completedAt: input.now,
+        },
+      });
       await tx.codexOAuthProviderInstance.update({
         where: { id: intent.providerInstance.id },
         data: {
@@ -993,13 +1000,6 @@ export class PrismaCodexRotatingOAuthRepository
           activeLeaseExpiresAt: null,
           mutationOwner: null,
           mutationOwnerId: null,
-        },
-      });
-      await tx.codexOAuthWritebackIntent.update({
-        where: { id: intent.id },
-        data: {
-          status: "completed",
-          completedAt: input.now,
         },
       });
       return { status: "confirmed" as const, generation: intent.generation };

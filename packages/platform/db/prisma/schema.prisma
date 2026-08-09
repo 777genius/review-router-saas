@@ -346,13 +346,28 @@ model CodexOAuthProviderInstance {
 }
 
 model CodexOAuthProviderIdentityQuarantine {
-  providerInstanceRowId       String   @id
-  observedWorkspaceId         String
-  observedRepositoryId        String
-  observedProviderInstanceId  String
-  expectedProviderInstanceId  String?
-  reason                      String
-  quarantinedAt               DateTime @default(now())
+  providerInstanceRowId      String    @id
+  observedWorkspaceId        String
+  observedRepositoryId       String
+  observedProviderInstanceId String
+  expectedProviderInstanceId String?
+  reason                     String
+  evidenceJson               Json
+  quarantinedAt              DateTime  @default(now())
+  resolvedAt                 DateTime?
+}
+
+model CodexOAuthChildIdentityQuarantine {
+  childKind             String
+  childId               String
+  providerInstanceRowId String
+  reason                String
+  evidenceJson          Json
+  quarantinedAt         DateTime  @default(now())
+  resolvedAt            DateTime?
+
+  @@id([childKind, childId])
+  @@index([providerInstanceRowId, resolvedAt], map: "CodexOAuthChildIdentityQuarantine_provider_idx")
 }
 
 model CodexOAuthSetupManifest {

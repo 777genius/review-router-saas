@@ -31,15 +31,23 @@ try {
   );
   applyBaselineThrough59(rehearsalUrl);
   seedDirtyFixtures(rehearsalUrl);
+  await proveMigration60LockTimeout(rehearsalUrl);
+  migrateResolve(rehearsalUrl, "--rolled-back", migration60Name);
   await proveCombinedLockTimeout(rehearsalUrl);
   proveMigrationRunnerHistory(rehearsalUrl, migration60Name, true);
   proveFetchedAmbiguityStillPresent(rehearsalUrl);
+  await proveTtlCrossedAfter60(rehearsalUrl);
 
+  proveStatementTimeoutConfiguration(rehearsalUrl);
   proveInjected61Rollback(rehearsalUrl);
   migrateResolve(rehearsalUrl, "--rolled-back", migration61Name);
   migrateDeploy(rehearsalUrl);
 
   proveSuccessfulCombinedRelease(rehearsalUrl);
+  proveLegacyChildWritesRejected(rehearsalUrl);
+  proveParentIdentityWriteRejected(rehearsalUrl);
+  proveQuarantineCleanupPath(rehearsalUrl);
+  proveMigrateDeployNoOp(rehearsalUrl);
   const observation = collectObservation(rehearsalUrl);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
@@ -102,7 +110,13 @@ function seedDirtyFixtures(url) {
       )
       SELECT 'repo-' || n, 'ws-proof', 900000 + n, (900000 + n)::text,
         'local', 'proof-' || n, 'local/proof-' || n, 'main', 'private', CURRENT_TIMESTAMP
-      FROM generate_series(1, 9) n;
+      FROM generate_series(1, 13) n;
+      UPDATE "RepositoryConnection"
+      SET "provider" = 'gitlab', "githubRepositoryId" = NULL
+      WHERE "id" = 'repo-12';
+      UPDATE "RepositoryConnection"
+      SET "externalRepositoryId" = 'dirty-external-id'
+      WHERE "id" = 'repo-13';
 
       INSERT INTO "CodexOAuthProviderInstance" (
         "id", "workspaceId", "repositoryId", "providerInstanceId", "authMode",
@@ -121,7 +135,11 @@ function seedDirtyFixtures(url) {
         "id", "workspaceId", "repositoryId", "providerInstanceId", "authMode",
         "secretName", "state", "generationHashSalt", "accountFingerprintSalt", "updatedAt"
       ) VALUES
-        ('p-stray-lease', 'ws-proof', 'repo-9', 'codex-rotating:900009', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', now());
+        ('p-stray-lease', 'ws-proof', 'repo-9', 'codex-rotating:900009', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', now()),
+        ('p-dirty-child', 'ws-proof', 'repo-10', 'codex-rotating:900010', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', now()),
+        ('p-crossing', 'ws-proof', 'repo-11', 'codex-rotating:900011', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'setup_pending', 'salt', 'salt', now()),
+        ('p-parent-dirty', 'ws-proof', 'repo-12', 'legacy-parent-id', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', now()),
+        ('p-parent-external-dirty', 'ws-proof', 'repo-13', 'codex-rotating:900013', 'codex_subscription_oauth_rotating', 'REVIEWROUTER_CODEX_AUTH_JSON', 'active', 'salt', 'salt', now());
 
       INSERT INTO "CodexOAuthSetupManifest" (
         "id", "workspaceId", "repositoryId", "providerInstanceRowId", "providerInstanceId",
@@ -131,7 +149,9 @@ function seedDirtyFixtures(url) {
         ('fetched-new', 'ws-proof', 'repo-1', 'p-fetched', 'codex-rotating:900001', 'nonce-fetched-new', '{}', 'fetched', now() - interval '1 hour', '2026-01-02'),
         ('issued-expired', 'ws-proof', 'repo-2', 'p-issued', 'codex-rotating:900002', 'nonce-issued-expired', '{}', 'issued', now() - interval '1 second', '2026-01-01'),
         ('issued-old', 'ws-proof', 'repo-2', 'p-issued', 'codex-rotating:900002', 'nonce-issued-old', '{}', 'issued', now() + interval '1 hour', '2026-01-02'),
-        ('issued-new', 'ws-proof', 'repo-2', 'p-issued', 'codex-rotating:900002', 'nonce-issued-new', '{}', 'issued', now() + interval '1 hour', '2026-01-03');
+        ('issued-new', 'ws-proof', 'repo-2', 'p-issued', 'codex-rotating:900002', 'nonce-issued-new', '{}', 'issued', now() + interval '1 hour', '2026-01-03'),
+        ('issued-crossing', 'ws-proof', 'repo-11', 'p-crossing', 'codex-rotating:900011', 'nonce-crossing', '{}', 'issued', now() + interval '5 minutes', '2026-01-05'),
+        ('manifest-dirty', 'ws-proof', 'repo-9', 'p-dirty-child', 'wrong-provider-id', 'nonce-dirty', '{}', 'issued', now() + interval '1 hour', '2026-01-06');
       INSERT INTO "CodexOAuthSetupManifest" (
         "id", "workspaceId", "repositoryId", "providerInstanceRowId", "providerInstanceId",
         "setupNonce", "manifestJson", "status", "expiresAt", "createdAt"
@@ -146,15 +166,87 @@ function seedDirtyFixtures(url) {
         ('lease-expired', 'p-expired-lease', 'codex-rotating:900004', 'ws-proof', 'repo-4', 'run-4', '1', 'key-4', 'finalized', now() - interval '1 minute'),
         ('lease-pending', 'p-pending', 'codex-rotating:900005', 'ws-proof', 'repo-5', 'run-5', '1', 'key-5', 'preleased', now() + interval '1 minute'),
         ('lease-recovery', 'p-recovery', 'codex-rotating:900008', 'ws-proof', 'repo-8', 'run-8', '1', 'key-8', 'preleased', now() + interval '1 minute'),
-        ('lease-stray', 'p-stray-lease', 'codex-rotating:900009', 'ws-proof', 'repo-9', 'run-9', '1', 'key-9', 'preleased', now() + interval '1 minute');
+        ('lease-stray', 'p-stray-lease', 'codex-rotating:900009', 'ws-proof', 'repo-9', 'run-9', '1', 'key-9', 'preleased', now() + interval '1 minute'),
+        ('lease-provider-dirty', 'p-quarantine', 'legacy-wrong-id', 'ws-proof', 'repo-6', 'run-6', '1', 'key-6', 'preleased', now() + interval '1 minute'),
+        ('lease-dirty', 'p-dirty-child', 'wrong-provider-id', 'ws-proof', 'repo-9', 'run-10', '1', 'key-10', 'preleased', now() + interval '1 minute');
       INSERT INTO "CodexOAuthWritebackIntent" (
         "id", "providerInstanceRowId", "leaseId", "providerInstanceId", "idempotencyKey",
         "generation", "latestGenerationHash", "encryptedPayloadDigest", "keyId", "status", "updatedAt"
       ) VALUES
         ('intent-pending', 'p-pending', 'lease-pending', 'codex-rotating:900005', 'intent-key', 2, 'hash', 'digest', 'kid', 'pending', now()),
-        ('intent-history', 'p-pending', 'lease-pending', 'codex-rotating:900005', 'history-key', 1, 'hash', 'digest', 'kid', 'completed', now());
+        ('intent-history', 'p-pending', 'lease-pending', 'codex-rotating:900005', 'history-key', 1, 'hash', 'digest', 'kid', 'completed', now()),
+        ('intent-dirty', 'p-dirty-child', 'lease-dirty', 'wrong-provider-id', 'dirty-key', 1, 'hash', 'digest', 'kid', 'pending', now());
     `,
   ]);
+}
+
+async function proveMigration60LockTimeout(url) {
+  const applicationName = `rr_setup_lock_${process.pid}`;
+  const holder = spawn(
+    psqlBinary,
+    [
+      url,
+      "-X",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-c",
+      'BEGIN; LOCK TABLE "CodexOAuthSetupManifest" IN ACCESS SHARE MODE; SELECT pg_sleep(60);',
+    ],
+    { stdio: "ignore", env: { ...process.env, PGAPPNAME: applicationName } },
+  );
+  try {
+    await waitForLock(url, applicationName, '"CodexOAuthSetupManifest"');
+    const directStartedAt = Date.now();
+    const directFailure = psql(url, ["-f", migration60], false);
+    const directElapsedMs = Date.now() - directStartedAt;
+    const directOutput = `${directFailure.stdout}${directFailure.stderr}`;
+    assert(
+      directFailure.status !== 0,
+      "held manifest lock must reject direct 000060",
+    );
+    assert(
+      directOutput.toLowerCase().includes("lock timeout"),
+      `direct 000060 must expose lock timeout: ${directOutput}`,
+    );
+    assert(
+      directElapsedMs >= 14_000 && directElapsedMs < 30_000,
+      `direct 000060 lock timeout was not bounded near 15s (${directElapsedMs}ms)`,
+    );
+
+    const runnerStartedAt = Date.now();
+    const runnerFailure = migrateDeploy(url, false);
+    const runnerElapsedMs = Date.now() - runnerStartedAt;
+    const runnerOutput = `${runnerFailure.stdout}${runnerFailure.stderr}`;
+    assert(
+      runnerFailure.status !== 0,
+      "held manifest lock must reject runner 000060",
+    );
+    assert(
+      runnerElapsedMs >= 14_000 && runnerElapsedMs < 30_000,
+      `Prisma 000060 lock timeout was not bounded near 15s (${runnerElapsedMs}ms): ${runnerOutput}`,
+    );
+    proveMigrationRunnerHistory(url, migration60Name, false);
+    psql(url, [
+      "-c",
+      String.raw`DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'CodexOAuthSetupManifest' AND column_name = 'confirmationJson')
+          OR to_regclass('public."CodexOAuthSetupManifest_one_active_provider_key"') IS NOT NULL
+        THEN RAISE EXCEPTION '000060 lock timeout leaked schema state'; END IF;
+        IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id = 'issued-expired') <> 'issued'
+        THEN RAISE EXCEPTION '000060 lock timeout leaked data state'; END IF;
+      END $$;`,
+    ]);
+  } finally {
+    await terminateChild(holder);
+    psql(
+      url,
+      [
+        "-Atc",
+        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = ${quoteLiteral(applicationName)}`,
+      ],
+      false,
+    );
+  }
 }
 
 async function proveCombinedLockTimeout(url) {
@@ -210,10 +302,11 @@ async function proveCombinedLockTimeout(url) {
       String.raw`DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name IN ('CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent') AND column_name = 'mutationEpoch')
         OR to_regclass('public."CodexOAuthProviderIdentityQuarantine"') IS NOT NULL
+        OR to_regclass('public."CodexOAuthChildIdentityQuarantine"') IS NOT NULL
         OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgname LIKE 'CodexOAuth%fence%guard' OR tgname LIKE 'CodexOAuth%identity%guard' OR tgname LIKE 'CodexOAuth%transition%guard')
         OR EXISTS (SELECT 1 FROM pg_constraint WHERE conname LIKE 'CodexOAuth%epoch_check' OR conname = 'CodexOAuthProviderInstance_mutation_fence_check')
         OR EXISTS (SELECT 1 FROM pg_indexes WHERE indexname LIKE 'CodexOAuth%epoch_idx' OR indexname = 'CodexOAuthProviderInstance_mutation_owner_idx')
-        OR EXISTS (SELECT 1 FROM pg_proc WHERE proname IN ('codex_oauth_provider_identity_guard','codex_oauth_provider_mutation_transition_guard','codex_oauth_child_identity_fence_guard'))
+        OR EXISTS (SELECT 1 FROM pg_proc WHERE proname IN ('codex_oauth_repository_identity_guard','codex_oauth_provider_identity_guard','codex_oauth_provider_mutation_transition_guard','codex_oauth_child_identity_fence_guard','codex_oauth_repair_quarantined_child','codex_oauth_repair_quarantined_provider'))
       THEN RAISE EXCEPTION 'lock-timeout failure leaked 000061 state'; END IF;
     END $$;`,
     ]);
@@ -266,7 +359,8 @@ function proveInjected61Rollback(url) {
     String.raw`DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'CodexOAuthProviderInstance' AND column_name = 'mutationEpoch')
         OR to_regclass('public."CodexOAuthProviderIdentityQuarantine"') IS NOT NULL
-        OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'CodexOAuthProviderInstance_identity_guard')
+        OR to_regclass('public."CodexOAuthChildIdentityQuarantine"') IS NOT NULL
+        OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgname IN ('CodexOAuthProviderInstance_identity_guard','RepositoryConnection_codex_oauth_identity_guard'))
       THEN RAISE EXCEPTION '000061 schema leaked after injected rollback'; END IF;
     END $$;
     DROP INDEX "CodexOAuthProviderInstance_mutation_owner_idx";`,
@@ -289,6 +383,81 @@ function proveFetchedAmbiguityStillPresent(url) {
   ]);
 }
 
+async function proveTtlCrossedAfter60(url) {
+  psql(url, [
+    "-c",
+    String.raw`DO $$ BEGIN
+      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') <> 'issued'
+      THEN RAISE EXCEPTION '000060 did not leave the future-TTL crossing fixture issued'; END IF;
+    END $$;
+    UPDATE "CodexOAuthSetupManifest"
+    SET "expiresAt" = clock_timestamp() + interval '250 milliseconds'
+    WHERE id = 'issued-crossing';`,
+  ]);
+  await delay(350);
+  psql(url, [
+    "-c",
+    String.raw`DO $$ BEGIN
+      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') <> 'issued'
+        OR (SELECT "expiresAt" FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') > CURRENT_TIMESTAMP
+      THEN RAISE EXCEPTION 'TTL-crossing fixture did not remain issued after committed 000060'; END IF;
+    END $$;`,
+  ]);
+}
+
+function proveStatementTimeoutConfiguration(url) {
+  psql(url, [
+    "-c",
+    String.raw`
+      CREATE FUNCTION rr_observe_61_statement_timeout() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF current_setting('statement_timeout')::interval <> interval '5 minutes' THEN
+          RAISE EXCEPTION 'rr_000061_wrong_statement_timeout:%', current_setting('statement_timeout');
+        END IF;
+        RAISE EXCEPTION 'rr_000061_statement_timeout_observed_5min';
+      END $$;
+      CREATE TRIGGER rr_observe_61_statement_timeout
+      BEFORE UPDATE ON "CodexOAuthProviderInstance"
+      FOR EACH STATEMENT EXECUTE FUNCTION rr_observe_61_statement_timeout();
+    `,
+  ]);
+  const before = databaseFingerprintBefore61(url);
+  const failed = psql(url, ["-f", migration61], false);
+  const output = `${failed.stdout}${failed.stderr}`;
+  assert(failed.status !== 0, "statement-timeout observer must abort 000061");
+  assert(
+    output.includes("rr_000061_statement_timeout_observed_5min"),
+    `000061 did not expose its transaction-local 5m statement timeout: ${output}`,
+  );
+  assert(
+    databaseFingerprintBefore61(url) === before,
+    "statement-timeout observation failure did not roll 000061 back atomically",
+  );
+  psql(url, [
+    "-c",
+    'DROP TRIGGER rr_observe_61_statement_timeout ON "CodexOAuthProviderInstance"; DROP FUNCTION rr_observe_61_statement_timeout();',
+  ]);
+
+  const startedAt = Date.now();
+  const timeout = psql(
+    url,
+    ["-c", "SET statement_timeout = '250ms'; SELECT pg_sleep(2)"],
+    false,
+  );
+  const elapsedMs = Date.now() - startedAt;
+  assert(timeout.status !== 0, "PostgreSQL statement_timeout must cancel work");
+  assert(
+    `${timeout.stdout}${timeout.stderr}`
+      .toLowerCase()
+      .includes("statement timeout"),
+    "PostgreSQL statement timeout cancellation was not observable",
+  );
+  assert(
+    elapsedMs >= 200 && elapsedMs < 2_000,
+    `statement timeout was not bounded (${elapsedMs}ms)`,
+  );
+}
+
 function proveSuccessfulCombinedRelease(url) {
   psql(url, [
     "-c",
@@ -308,22 +477,36 @@ function proveSuccessfulCombinedRelease(url) {
         OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-stray-lease') <> 'lease-stray'
         OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-clean') IS NOT NULL
       THEN RAISE EXCEPTION 'setup/lease/clean-provider backfills are wrong'; END IF;
+      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') <> 'expired'
+        OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') IS NOT NULL
+        OR (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 0
+        OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') IS NOT NULL
+      THEN RAISE EXCEPTION '000061 did not re-expire the TTL-crossing issued manifest safely'; END IF;
       IF (SELECT status FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 'failed'
         OR (SELECT "safeErrorCode" FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 'legacy_ambiguous_recovery'
         OR (SELECT "mutationEpoch" FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 1
       THEN RAISE EXCEPTION 'pending intent recovery backfill is wrong'; END IF;
       IF NOT EXISTS (SELECT 1 FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId" = 'p-quarantine' AND reason = 'canonical_id_mismatch')
         OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-quarantine') <> 'recovery'
+        OR NOT EXISTS (SELECT 1 FROM "CodexOAuthChildIdentityQuarantine" WHERE "childKind"='lease' AND "childId"='lease-provider-dirty' AND reason='provider_identity_quarantined')
+        OR (SELECT status FROM "CodexOAuthLease" WHERE id='lease-provider-dirty') <> 'identity_quarantined'
       THEN RAISE EXCEPTION 'dirty identity was not quarantined and recovery-owned'; END IF;
+      IF (SELECT count(*) FROM "CodexOAuthChildIdentityQuarantine" WHERE "providerInstanceRowId" = 'p-dirty-child' AND "resolvedAt" IS NULL) <> 3
+        OR (SELECT status FROM "CodexOAuthSetupManifest" WHERE id = 'manifest-dirty') <> 'identity_quarantined'
+        OR (SELECT status FROM "CodexOAuthLease" WHERE id = 'lease-dirty') <> 'identity_quarantined'
+        OR (SELECT status FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-dirty') <> 'failed'
+        OR (SELECT "safeErrorCode" FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-dirty') <> 'identity_quarantined'
+        OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-dirty-child') <> 'recovery'
+      THEN RAISE EXCEPTION 'dirty children were not evidence-preserved, terminalized, and recovery-owned'; END IF;
       IF EXISTS (
-        SELECT 1 FROM "CodexOAuthSetupManifest" WHERE status IN ('issued','fetched') AND "mutationEpoch" IS NULL
-        UNION ALL SELECT 1 FROM "CodexOAuthLease" WHERE status IN ('preleased','finalized') AND "mutationEpoch" IS NULL
-        UNION ALL SELECT 1 FROM "CodexOAuthWritebackIntent" WHERE status = 'pending'
+        SELECT 1 FROM "CodexOAuthSetupManifest" WHERE status IN ('issued','fetched') AND COALESCE("mutationEpoch",0) <= 0
+        UNION ALL SELECT 1 FROM "CodexOAuthLease" WHERE status IN ('preleased','finalized') AND COALESCE("mutationEpoch",0) <= 0
+        UNION ALL SELECT 1 FROM "CodexOAuthWritebackIntent" WHERE status = 'pending' AND COALESCE("mutationEpoch",0) <= 0
       ) THEN RAISE EXCEPTION 'unsafe active OAuth work remains'; END IF;
 
       SELECT array_agg(tgname ORDER BY tgname) INTO actual FROM pg_trigger
-      WHERE NOT tgisinternal AND tgname LIKE 'CodexOAuth%guard';
-      expected := ARRAY['CodexOAuthLease_identity_fence_guard','CodexOAuthProviderInstance_identity_guard','CodexOAuthProviderInstance_mutation_transition_guard','CodexOAuthSetupManifest_identity_fence_guard','CodexOAuthWritebackIntent_identity_fence_guard'];
+      WHERE NOT tgisinternal AND (tgname LIKE 'CodexOAuth%guard' OR tgname = 'RepositoryConnection_codex_oauth_identity_guard');
+      expected := ARRAY['CodexOAuthLease_identity_fence_guard','CodexOAuthProviderInstance_identity_guard','CodexOAuthProviderInstance_mutation_transition_guard','CodexOAuthSetupManifest_identity_fence_guard','CodexOAuthWritebackIntent_identity_fence_guard','RepositoryConnection_codex_oauth_identity_guard'];
       IF actual <> expected THEN RAISE EXCEPTION 'trigger catalog mismatch: %', actual; END IF;
       IF EXISTS (
         SELECT 1 FROM (VALUES
@@ -331,7 +514,8 @@ function proveSuccessfulCombinedRelease(url) {
           ('CodexOAuthProviderInstance_mutation_transition_guard','CodexOAuthProviderInstance','codex_oauth_provider_mutation_transition_guard',19::smallint),
           ('CodexOAuthSetupManifest_identity_fence_guard','CodexOAuthSetupManifest','codex_oauth_child_identity_fence_guard',23::smallint),
           ('CodexOAuthLease_identity_fence_guard','CodexOAuthLease','codex_oauth_child_identity_fence_guard',23::smallint),
-          ('CodexOAuthWritebackIntent_identity_fence_guard','CodexOAuthWritebackIntent','codex_oauth_child_identity_fence_guard',23::smallint)
+          ('CodexOAuthWritebackIntent_identity_fence_guard','CodexOAuthWritebackIntent','codex_oauth_child_identity_fence_guard',23::smallint),
+          ('RepositoryConnection_codex_oauth_identity_guard','RepositoryConnection','codex_oauth_repository_identity_guard',17::smallint)
         ) wanted(trigger_name, table_name, function_name, trigger_type)
         WHERE NOT EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid
           WHERE t.tgname=wanted.trigger_name AND c.relname=wanted.table_name AND p.proname=wanted.function_name AND t.tgtype=wanted.trigger_type)
@@ -353,8 +537,9 @@ function proveSuccessfulCombinedRelease(url) {
 
       SELECT array_agg(indexname ORDER BY indexname) INTO actual FROM pg_indexes WHERE indexname IN (
         'CodexOAuthSetupManifest_one_active_provider_key','CodexOAuthProviderInstance_mutation_owner_idx',
-        'CodexOAuthSetupManifest_provider_epoch_idx','CodexOAuthLease_provider_epoch_idx','CodexOAuthWritebackIntent_provider_epoch_idx');
-      expected := ARRAY['CodexOAuthLease_provider_epoch_idx','CodexOAuthProviderInstance_mutation_owner_idx','CodexOAuthSetupManifest_one_active_provider_key','CodexOAuthSetupManifest_provider_epoch_idx','CodexOAuthWritebackIntent_provider_epoch_idx'];
+        'CodexOAuthSetupManifest_provider_epoch_idx','CodexOAuthLease_provider_epoch_idx','CodexOAuthWritebackIntent_provider_epoch_idx',
+        'CodexOAuthChildIdentityQuarantine_provider_idx');
+      expected := ARRAY['CodexOAuthChildIdentityQuarantine_provider_idx','CodexOAuthLease_provider_epoch_idx','CodexOAuthProviderInstance_mutation_owner_idx','CodexOAuthSetupManifest_one_active_provider_key','CodexOAuthSetupManifest_provider_epoch_idx','CodexOAuthWritebackIntent_provider_epoch_idx'];
       IF actual <> expected THEN RAISE EXCEPTION 'index catalog mismatch: %', actual; END IF;
       IF pg_get_indexdef('"CodexOAuthProviderInstance_mutation_owner_idx"'::regclass, 1, true) <> '"mutationOwner"'
         OR pg_get_indexdef('"CodexOAuthProviderInstance_mutation_owner_idx"'::regclass, 2, true) <> '"mutationEpoch"'
@@ -364,6 +549,8 @@ function proveSuccessfulCombinedRelease(url) {
         OR pg_get_indexdef('"CodexOAuthLease_provider_epoch_idx"'::regclass, 2, true) <> '"mutationEpoch"'
         OR pg_get_indexdef('"CodexOAuthWritebackIntent_provider_epoch_idx"'::regclass, 1, true) <> '"providerInstanceRowId"'
         OR pg_get_indexdef('"CodexOAuthWritebackIntent_provider_epoch_idx"'::regclass, 2, true) <> '"mutationEpoch"'
+        OR pg_get_indexdef('"CodexOAuthChildIdentityQuarantine_provider_idx"'::regclass, 1, true) <> '"providerInstanceRowId"'
+        OR pg_get_indexdef('"CodexOAuthChildIdentityQuarantine_provider_idx"'::regclass, 2, true) <> '"resolvedAt"'
       THEN RAISE EXCEPTION 'index key definition mismatch'; END IF;
       IF pg_get_expr((SELECT indpred FROM pg_index WHERE indexrelid = '"CodexOAuthSetupManifest_one_active_provider_key"'::regclass), '"CodexOAuthSetupManifest"'::regclass)
          <> '(status = ANY (ARRAY[''issued''::text, ''fetched''::text]))'
@@ -372,6 +559,159 @@ function proveSuccessfulCombinedRelease(url) {
       THEN RAISE EXCEPTION 'active-manifest index flags mismatch'; END IF;
     END $$;`,
   ]);
+  proveMigrationRunnerHistory(url, migration60Name, true);
+  proveMigrationRunnerHistory(url, migration61Name, true);
+}
+
+function proveLegacyChildWritesRejected(url) {
+  const setup = psql(
+    url,
+    [
+      "-c",
+      `UPDATE "CodexOAuthSetupManifest" SET status = 'consumed', "consumedAt" = now() WHERE id = 'fetched-recovery'`,
+    ],
+    false,
+  );
+  assert(
+    setup.status !== 0,
+    "legacy setup transition under recovery ownership must fail",
+  );
+  assert(
+    `${setup.stdout}${setup.stderr}`.includes(
+      "codex_oauth_child_mutation_owner_mismatch",
+    ),
+    "legacy setup rejection must identify the owner fence",
+  );
+  const lease = psql(
+    url,
+    [
+      "-c",
+      `UPDATE "CodexOAuthLease" SET status = 'finalized' WHERE id = 'lease-recovery'`,
+    ],
+    false,
+  );
+  assert(
+    lease.status !== 0,
+    "legacy lease transition under recovery ownership must fail",
+  );
+  assert(
+    `${lease.stdout}${lease.stderr}`.includes(
+      "codex_oauth_child_mutation_owner_mismatch",
+    ),
+    "legacy lease rejection must identify the owner fence",
+  );
+  psql(url, [
+    "-c",
+    String.raw`DO $$ BEGIN
+      IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id='fetched-recovery') <> 'fetched'
+        OR (SELECT status FROM "CodexOAuthLease" WHERE id='lease-recovery') <> 'preleased'
+      THEN RAISE EXCEPTION 'rejected legacy child write changed data'; END IF;
+    END $$;`,
+  ]);
+}
+
+function proveParentIdentityWriteRejected(url) {
+  const parent = psql(
+    url,
+    [
+      "-c",
+      `UPDATE "RepositoryConnection" SET "githubRepositoryId" = 990001, "externalRepositoryId" = '990001' WHERE id = 'repo-1'`,
+    ],
+    false,
+  );
+  assert(parent.status !== 0, "bound repository identity update must fail");
+  assert(
+    `${parent.stdout}${parent.stderr}`.includes(
+      "codex_oauth_repository_identity_bound",
+    ),
+    "parent identity rejection must identify the rotating binding",
+  );
+  assert(
+    psql(url, [
+      "-Atc",
+      `SELECT "githubRepositoryId" FROM "RepositoryConnection" WHERE id='repo-1'`,
+    ]).stdout.trim() === "900001",
+    "rejected parent identity update changed the repository",
+  );
+  const externalIdentity = psql(
+    url,
+    [
+      "-c",
+      `UPDATE "RepositoryConnection" SET "externalRepositoryId" = 'drifted-external-id' WHERE id = 'repo-1'`,
+    ],
+    false,
+  );
+  assert(
+    externalIdentity.status !== 0,
+    "bound repository external identity update must fail",
+  );
+  assert(
+    `${externalIdentity.stdout}${externalIdentity.stderr}`.includes(
+      "codex_oauth_repository_identity_bound",
+    ),
+    "external repository identity rejection must identify the rotating binding",
+  );
+}
+
+function proveQuarantineCleanupPath(url) {
+  psql(url, [
+    "-c",
+    String.raw`
+      SELECT codex_oauth_repair_quarantined_provider('p-quarantine');
+      SELECT codex_oauth_repair_quarantined_provider('p-parent-dirty',900012);
+      SELECT codex_oauth_repair_quarantined_provider('p-parent-external-dirty');
+      SELECT codex_oauth_repair_quarantined_child('lease','lease-provider-dirty');
+      SELECT codex_oauth_repair_quarantined_child('setup_manifest','manifest-dirty');
+      SELECT codex_oauth_repair_quarantined_child('lease','lease-dirty');
+      SELECT codex_oauth_repair_quarantined_child('writeback_intent','intent-dirty','lease-dirty');
+      DO $$ BEGIN
+        IF (SELECT "providerInstanceId" FROM "CodexOAuthProviderInstance" WHERE id='p-quarantine') <> 'codex-rotating:900006'
+          OR (SELECT "resolvedAt" FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId"='p-quarantine') IS NULL
+          OR (SELECT "resolvedAt" FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId"='p-parent-dirty') IS NULL
+          OR (SELECT "provider"::text FROM "RepositoryConnection" WHERE id='repo-12') <> 'github'
+          OR (SELECT "githubRepositoryId" FROM "RepositoryConnection" WHERE id='repo-12') <> 900012
+          OR (SELECT "providerInstanceId" FROM "CodexOAuthProviderInstance" WHERE id='p-parent-dirty') <> 'codex-rotating:900012'
+          OR (SELECT "resolvedAt" FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId"='p-parent-external-dirty') IS NULL
+          OR (SELECT "externalRepositoryId" FROM "RepositoryConnection" WHERE id='repo-13') <> '900013'
+          OR (SELECT "resolvedAt" FROM "CodexOAuthChildIdentityQuarantine" WHERE "childKind"='lease' AND "childId"='lease-provider-dirty') IS NULL
+          OR (SELECT "providerInstanceId" FROM "CodexOAuthLease" WHERE id='lease-provider-dirty') <> 'codex-rotating:900006'
+          OR (SELECT count(*) FROM "CodexOAuthChildIdentityQuarantine" WHERE "providerInstanceRowId"='p-dirty-child' AND "resolvedAt" IS NULL) <> 0
+          OR (SELECT count(*) FROM "CodexOAuthChildIdentityQuarantine" WHERE "providerInstanceRowId"='p-dirty-child' AND "evidenceJson" IS NOT NULL) <> 3
+          OR (SELECT "providerInstanceId" FROM "CodexOAuthSetupManifest" WHERE id='manifest-dirty') <> 'codex-rotating:900010'
+          OR (SELECT "repositoryId" FROM "CodexOAuthSetupManifest" WHERE id='manifest-dirty') <> 'repo-10'
+          OR (SELECT "providerInstanceId" FROM "CodexOAuthLease" WHERE id='lease-dirty') <> 'codex-rotating:900010'
+          OR (SELECT "repositoryId" FROM "CodexOAuthLease" WHERE id='lease-dirty') <> 'repo-10'
+          OR (SELECT "providerInstanceId" FROM "CodexOAuthWritebackIntent" WHERE id='intent-dirty') <> 'codex-rotating:900010'
+        THEN RAISE EXCEPTION 'quarantine cleanup did not repair identities while preserving evidence'; END IF;
+      END $$;
+    `,
+  ]);
+}
+
+function proveMigrateDeployNoOp(url) {
+  const before = psql(url, [
+    "-Atc",
+    String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
+      FROM "_prisma_migrations" m
+      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence')`,
+  ]).stdout.trim();
+  const rerun = migrateDeploy(url);
+  const after = psql(url, [
+    "-Atc",
+    String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
+      FROM "_prisma_migrations" m
+      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence')`,
+  ]).stdout.trim();
+  assert(
+    before === after,
+    "post-success migrate deploy changed migration history",
+  );
+  assert(
+    `${rerun.stdout}${rerun.stderr}`
+      .toLowerCase()
+      .includes("no pending migrations"),
+    "post-success migrate deploy did not report a no-op",
+  );
   proveMigrationRunnerHistory(url, migration60Name, true);
   proveMigrationRunnerHistory(url, migration61Name, true);
 }
@@ -387,9 +727,9 @@ function collectObservation(url) {
     psql(url, [
       "-Atc",
       String.raw`SELECT json_build_object(
-    'triggers',(SELECT json_agg(json_build_object('name',t.tgname,'table',c.relname,'function',p.proname,'type',t.tgtype) ORDER BY t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND t.tgname LIKE 'CodexOAuth%guard'),
+    'triggers',(SELECT json_agg(json_build_object('name',t.tgname,'table',c.relname,'function',p.proname,'type',t.tgtype) ORDER BY t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND (t.tgname LIKE 'CodexOAuth%guard' OR t.tgname='RepositoryConnection_codex_oauth_identity_guard')),
     'checks',(SELECT json_agg(json_build_object('name',conname,'definition',pg_get_constraintdef(oid),'validated',convalidated) ORDER BY conname) FROM pg_constraint WHERE conname LIKE 'CodexOAuth%epoch_check' OR conname='CodexOAuthProviderInstance_mutation_fence_check'),
-    'indexes',(SELECT json_agg(json_build_object('name',ci.relname,'definition',pg_get_indexdef(i.indexrelid),'predicate',pg_get_expr(i.indpred,i.indrelid),'unique',i.indisunique,'valid',i.indisvalid,'ready',i.indisready) ORDER BY ci.relname) FROM pg_index i JOIN pg_class ci ON ci.oid=i.indexrelid WHERE ci.relname LIKE 'CodexOAuth%epoch_idx' OR ci.relname IN ('CodexOAuthSetupManifest_one_active_provider_key','CodexOAuthProviderInstance_mutation_owner_idx'))
+    'indexes',(SELECT json_agg(json_build_object('name',ci.relname,'definition',pg_get_indexdef(i.indexrelid),'predicate',pg_get_expr(i.indpred,i.indrelid),'unique',i.indisunique,'valid',i.indisvalid,'ready',i.indisready) ORDER BY ci.relname) FROM pg_index i JOIN pg_class ci ON ci.oid=i.indexrelid WHERE ci.relname LIKE 'CodexOAuth%epoch_idx' OR ci.relname IN ('CodexOAuthSetupManifest_one_active_provider_key','CodexOAuthProviderInstance_mutation_owner_idx','CodexOAuthChildIdentityQuarantine_provider_idx'))
   )`,
     ]).stdout,
   );
@@ -397,14 +737,15 @@ function collectObservation(url) {
     psql(url, [
       "-Atc",
       String.raw`SELECT json_build_object(
-        'activeManifestsWithoutEpoch', (SELECT count(*) FROM "CodexOAuthSetupManifest" WHERE status IN ('issued','fetched') AND "mutationEpoch" IS NULL),
-        'activeLeasesWithoutEpoch', (SELECT count(*) FROM "CodexOAuthLease" WHERE status IN ('preleased','finalized') AND "mutationEpoch" IS NULL),
+        'activeManifestsWithoutPositiveEpoch', (SELECT count(*) FROM "CodexOAuthSetupManifest" WHERE status IN ('issued','fetched') AND COALESCE("mutationEpoch",0) <= 0),
+        'activeLeasesWithoutPositiveEpoch', (SELECT count(*) FROM "CodexOAuthLease" WHERE status IN ('preleased','finalized') AND COALESCE("mutationEpoch",0) <= 0),
+        'pendingIntentsWithoutPositiveEpoch', (SELECT count(*) FROM "CodexOAuthWritebackIntent" WHERE status = 'pending' AND COALESCE("mutationEpoch",0) <= 0),
         'pendingIntents', (SELECT count(*) FROM "CodexOAuthWritebackIntent" WHERE status = 'pending')
       )`,
     ]).stdout,
   );
   return {
-    observationVersion: 1,
+    observationVersion: 2,
     postgresVersion: psql(url, ["-Atc", "SHOW server_version"]).stdout.trim(),
     migrationSources: [migration60, migration61].map((path, index) => ({
       id: index === 0 ? migration60Name : migration61Name,
@@ -443,8 +784,8 @@ function databaseFingerprintBefore61(url) {
       'columns',(SELECT jsonb_agg(to_jsonb(c) ORDER BY table_name,column_name) FROM information_schema.columns c WHERE table_schema='public' AND table_name IN ('CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent')),
       'constraints',(SELECT jsonb_agg(jsonb_build_array(conname,contype,convalidated,pg_get_constraintdef(oid)) ORDER BY conname) FROM pg_constraint WHERE connamespace='public'::regnamespace AND conrelid IN ('"CodexOAuthProviderInstance"'::regclass,'"CodexOAuthSetupManifest"'::regclass,'"CodexOAuthLease"'::regclass,'"CodexOAuthWritebackIntent"'::regclass)),
       'indexes',(SELECT jsonb_agg(jsonb_build_array(indexname,indexdef) ORDER BY indexname) FROM pg_indexes WHERE schemaname='public' AND tablename IN ('CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent')),
-      'triggers',(SELECT jsonb_agg(jsonb_build_array(t.tgname,c.relname,p.proname,t.tgtype) ORDER BY t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND c.relname IN ('CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent')),
-      'guardFunctions',(SELECT jsonb_agg(jsonb_build_array(proname,pg_get_functiondef(oid)) ORDER BY proname) FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname LIKE 'codex_oauth%guard')
+      'triggers',(SELECT jsonb_agg(jsonb_build_array(t.tgname,c.relname,p.proname,t.tgtype) ORDER BY t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND c.relname IN ('RepositoryConnection','CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent')),
+      'guardFunctions',(SELECT jsonb_agg(jsonb_build_array(proname,pg_get_functiondef(oid)) ORDER BY proname) FROM pg_proc WHERE pronamespace='public'::regnamespace AND (proname LIKE 'codex_oauth%guard' OR proname LIKE 'codex_oauth_repair_quarantined%'))
     )::text)`,
   ]).stdout.trim();
 }

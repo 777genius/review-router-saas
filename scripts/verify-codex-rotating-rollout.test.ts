@@ -147,12 +147,13 @@ function observedFixture(): any {
     digest(readFileSync(join(process.cwd(), path)));
   const artifacts: any = {
     database: {
-      observationVersion: 1,
+      observationVersion: 2,
       postgresVersion: "17.6",
       unsafeWork: {
-        activeLeasesWithoutEpoch: 0,
-        activeManifestsWithoutEpoch: 0,
+        activeLeasesWithoutPositiveEpoch: 0,
+        activeManifestsWithoutPositiveEpoch: 0,
         pendingIntents: 0,
+        pendingIntentsWithoutPositiveEpoch: 0,
       },
       fetchedRecoveryOwner: "setup:fetched-new",
       migrationSources: [
@@ -221,6 +222,12 @@ function observedFixture(): any {
             "codex_oauth_child_identity_fence_guard",
             23,
           ],
+          [
+            "RepositoryConnection_codex_oauth_identity_guard",
+            "RepositoryConnection",
+            "codex_oauth_repository_identity_guard",
+            17,
+          ],
         ].map(([name, table, fn, type]) => ({
           name,
           table,
@@ -254,6 +261,11 @@ function observedFixture(): any {
           validated,
         })),
         indexes: [
+          [
+            "CodexOAuthChildIdentityQuarantine_provider_idx",
+            "providerInstanceRowId resolvedAt",
+            false,
+          ],
           [
             "CodexOAuthLease_provider_epoch_idx",
             "providerInstanceRowId mutationEpoch",
