@@ -130,6 +130,20 @@ There are two mutually exclusive entry paths:
   has never issued a legacy mutation capability and the canonical schema-2 or
   schema-3 workflow inventory and all other proof facts pass.
 
+Inspect the repository before choosing an initialization path:
+
+```bash
+pnpm review-v2:admin status --repo OWNER/REPO
+```
+
+- No authority: choose exactly one initializer below.
+- `v1_open`: do not initialize again; stage the cohort, verify workflow
+  inventory, then begin the drain.
+- `v1_draining`: do not restart the drain; wait until `drainNotBefore`, then
+  activate.
+- `v2_active`: cutover is complete; run validation only.
+- `paused`: follow v2 recovery and never reopen v1.
+
 Use an exact `OWNER/REPO` confirmation on every mutation:
 
 ```bash
