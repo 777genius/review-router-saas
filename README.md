@@ -136,15 +136,18 @@ REVIEW_ROUTER_API_URL=https://api.reviewrouter.site pnpm hosted:api-demo:check
 
 ## Codex OAuth Reseed
 
-Reconnect a repository-scoped rotating Codex session without signing in to the
-ReviewRouter dashboard:
+Reconnect a repository-scoped rotating Codex session from **Dashboard → Enable
+review → Codex**. Choose the repository, request a fresh or recovery setup
+command, then copy and run that complete command on your trusted machine.
 
-```bash
-curl -fsSL https://reviewrouter.site/install/codex-reseed | bash -s -- \
-  --repo OWNER/REPOSITORY
-```
+The dashboard command pins the installer to the exact 40-character Action
+commit configured for that repository, downloads it to a private temporary
+file with ambient curl configuration disabled, refuses redirects and non-HTTPS
+URLs, enforces connection and total deadlines with retries disabled, verifies
+the independently issued SHA-256, and only then executes it. Do not replace it
+with a `curl | bash` command or a URL containing `main`, a branch, or a tag.
 
-The bootstrap uses the current `gh auth` token only for a request-scoped GitHub
+The setup uses the current `gh auth` token only for a request-scoped GitHub
 repository permission check. It performs a fresh Codex login in the dedicated
 `~/.reviewrouter/codex/OWNER-REPOSITORY` home, writes `auth.json` directly to
 the repository GitHub Actions secret, and confirms the new rotating generation.
@@ -281,9 +284,23 @@ App-first Codex rotating live E2E in a disposable repository:
 REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E=1 \
 REVIEW_ROUTER_CODEX_ROTATING_E2E_OWNER=owner \
 REVIEW_ROUTER_CODEX_ROTATING_E2E_REPO_NAME=rr-codex-rotating-e2e \
+REVIEW_ROUTER_CODEX_ROTATING_E2E_DISPOSABLE_REPOSITORY_ID=123456789 \
 REVIEW_ROUTER_CODEX_ROTATING_E2E_ACTION_REF=owner/review-router@FULL_40_CHAR_SHA \
 pnpm subscription-runtime:live-e2e
 ```
+
+Before the run, create the private disposable repository, install the configured
+GitHub App on it, record its immutable numeric GitHub repository ID, and pin
+that ID with `REVIEW_ROUTER_CODEX_ROTATING_E2E_DISPOSABLE_REPOSITORY_ID`.
+`--check-only` verifies the pinned owner, name, ID, App installation, and other
+prerequisites without mutating the repository. The live harness neither creates
+an absent repository nor chooses a replacement repository.
+
+Reuse that pinned disposable repository for the coherent smoke-test batch.
+Create another only when isolation is required, record why it exists, and pin
+its own numeric ID before use. The harness does not delete repositories; after
+the batch, remove the disposable repository manually (or retain the named test
+repository deliberately for the next batch).
 
 This gate verifies the rotating workflow, real writeback, and the exact GitHub
 App comment author. The historical `spike:github:fresh-repo:e2e` direct workflow
@@ -295,8 +312,8 @@ The same real GitHub smokes can be included in `beta:check`:
 REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=codex-rotating pnpm beta:check
 ```
 
-The fresh E2E script creates real GitHub repositories and does not delete them
-automatically. Use a disposable owner/repo name and clean up manually when done.
+The historical fresh-repository E2E may create GitHub repositories and does not
+delete them automatically. It is not the App-first live E2E or rollout proof.
 
 ## Architecture Boundary
 

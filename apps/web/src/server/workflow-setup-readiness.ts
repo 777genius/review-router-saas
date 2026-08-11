@@ -3,6 +3,7 @@ import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
   type CodexRotatingReviewActionV2Mode,
   type CodexRotatingT0WorkflowSchemaVersion,
+  type VersionedProviderSecretNamespace,
   defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
   getCodexRotatingWorkflowSetupContentMarkerGroups,
@@ -25,6 +26,7 @@ export type WorkflowSetupReadinessInput = {
   readonly codexRotatingOpenRouterApiKeySecret?: boolean;
   readonly codexRotatingReviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
   readonly codexRotatingWorkflowSchemaVersion?: CodexRotatingT0WorkflowSchemaVersion;
+  readonly codexRotatingWorkflowSecretNamespace?: VersionedProviderSecretNamespace;
 };
 
 export async function isWorkflowSetupAlreadyCurrent(
@@ -59,6 +61,12 @@ export async function isWorkflowSetupAlreadyCurrent(
                 input.forkAgenticSandboxEnabled === true,
               reviewActionV2Mode: input.codexRotatingReviewActionV2Mode,
               workflowSchemaVersion: input.codexRotatingWorkflowSchemaVersion,
+              ...(input.codexRotatingWorkflowSecretNamespace
+                ? {
+                    activeSecretNamespace:
+                      input.codexRotatingWorkflowSecretNamespace,
+                  }
+                : {}),
             }),
         }
       : input.providerKind || input.conflictReviewFallbackEnabled === true

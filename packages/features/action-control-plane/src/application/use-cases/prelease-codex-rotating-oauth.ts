@@ -1,6 +1,10 @@
 import {
   codexRotatingOidcClaimsSchema,
+  assertCanonicalCodexRotatingProviderId,
+  canonicalCodexRotatingProviderId,
   validateCodexRotatingPrelease,
+  assertActiveVersionedSecretWorkflowAttestation,
+  assertSameVersionedProviderSecretNamespace,
   type CodexRotatingOidcClaims,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { Clock } from "@reviewrouter/shared";
@@ -31,6 +35,9 @@ export type PreleaseCodexRotatingOAuthDependencies = {
   readonly replayNonces: ActionOidcReplayNonceStorePort;
   readonly hostedReviewPreleaseGate?: HostedReviewPreleaseGatePort;
   readonly reviewIntentAdmissionRequired?: boolean;
+  readonly codexRotatingNewWorkAdmission: {
+    assertAdmitted(input: { readonly repositoryFullName: string }): void;
+  };
   readonly clock: Clock;
 };
 
@@ -47,6 +54,7 @@ export type CodexRotatingPreleaseLeaseResponse = {
   readonly providerInstanceId: string;
   readonly repository: string;
   readonly generationHashSalt: string;
+  readonly accountFingerprintSalt: string;
   readonly currentGeneration: number;
   readonly currentGenerationHash?: string | undefined;
   readonly expiresAt: string;
@@ -83,42 +91,89 @@ export async function preleaseCodexRotatingOAuth(
   if (!repository.selected || repository.installationStatus !== "active") {
     throw new Error("repository_not_selected");
   }
+  const canonicalProviderInstanceId = canonicalCodexRotatingProviderId(
+    repository.githubRepositoryId,
+  );
+  assertCanonicalCodexRotatingProviderId({
+    providerInstanceId: input.providerInstanceId,
+    githubRepositoryId: repository.githubRepositoryId,
+  });
   await dependencies.codexRotatingRuntimeGate?.assertCodexRotatingOAuthEnabled({
     repositoryFullName: repository.fullName,
   });
   const binding = await dependencies.codexRotatingOAuth.findProviderBinding({
     repository,
-    providerInstanceId: input.providerInstanceId,
+    providerInstanceId: canonicalProviderInstanceId,
     workflowSha: claims.workflow_sha,
     workflowSchemaVersion: input.workflowSchemaVersion,
   });
   if (!binding) {
     throw new Error("codex_rotating_provider_binding_not_found");
   }
+  const trustedActionRefs = new Set(
+    [binding.actionRef, ...(binding.allowedActionRefs ?? [])].map((ref) => {
+      if (!isImmutableActionRef(ref)) {
+        throw new Error("codex_rotating_workflow_action_ref_not_allowed");
+      }
+      return ref.toLowerCase();
+    }),
+  );
   const expectedActionOwnerRepo = binding.actionRef.split("@")[0]!;
   const verifiedWorkflow =
     await dependencies.codexRotatingWorkflowSourceVerifier.verifyWorkflowSource(
       {
         repository,
         workflowSha: claims.workflow_sha,
+        workflowRef: claims.workflow_ref,
         workflowPath: binding.workflowPath,
         expectedActionOwnerRepo,
-        expectedProviderInstanceId: input.providerInstanceId,
+        expectedProviderInstanceId: canonicalProviderInstanceId,
         expectedWorkflowSchemaVersion: input.workflowSchemaVersion,
       },
     );
   if (
+    !isImmutableActionRef(verifiedWorkflow.binding.actionRef) ||
     verifiedWorkflow.binding.actionRef.split("@")[0]!.toLowerCase() !==
-    expectedActionOwnerRepo.toLowerCase()
+      expectedActionOwnerRepo.toLowerCase() ||
+    !trustedActionRefs.has(verifiedWorkflow.binding.actionRef.toLowerCase())
   ) {
     throw new Error("codex_rotating_workflow_action_ref_not_allowed");
+  }
+  if (binding.activeSecretNamespace) {
+    if (
+      !binding.activeWorkflowSource ||
+      !verifiedWorkflow.attestation ||
+      !verifiedWorkflow.binding.activeSecretNamespace
+    ) {
+      throw new Error("workflow_source_attestation_missing");
+    }
+    assertActiveVersionedSecretWorkflowAttestation({
+      attestation: verifiedWorkflow.attestation,
+      repositoryId: repository.githubRepositoryId,
+      workflowPath: binding.workflowPath,
+      workflowSourceCommitSha: claims.workflow_sha,
+      activeSecretNamespace: binding.activeSecretNamespace,
+      expectedWorkflowSource: binding.activeWorkflowSource,
+    });
+    assertSameVersionedProviderSecretNamespace({
+      expected: binding.activeSecretNamespace,
+      actual: verifiedWorkflow.binding.activeSecretNamespace,
+    });
   }
   validateCodexRotatingPrelease({
     claims,
     binding: verifiedWorkflow.binding,
-    requestedProviderInstanceId: input.providerInstanceId,
+    requestedProviderInstanceId: canonicalProviderInstanceId,
     requestedWorkflowSchemaVersion: input.workflowSchemaVersion,
     now: dependencies.clock.now(),
+  });
+  assertCanonicalCodexRotatingProviderId({
+    providerInstanceId: verifiedWorkflow.binding.providerInstanceId,
+    githubRepositoryId: repository.githubRepositoryId,
+  });
+  await dependencies.codexRotatingOAuth.ensureVerifiedProviderBinding({
+    repository,
+    binding: verifiedWorkflow.binding,
   });
   const pullRequestNumber = await resolvePullRequestNumber({
     claims,
@@ -147,6 +202,11 @@ export async function preleaseCodexRotatingOAuth(
       throw new Error("review_request_intent_required");
     }
   }
+  const assertNewWorkAdmitted = () =>
+    dependencies.codexRotatingNewWorkAdmission.assertAdmitted({
+      repositoryFullName: repository.fullName,
+    });
+  assertNewWorkAdmitted();
   await consumeCodexRotatingOidcReplayNonce({
     claims,
     now: dependencies.clock.now(),
@@ -154,11 +214,13 @@ export async function preleaseCodexRotatingOAuth(
   });
   const lease = await dependencies.codexRotatingOAuth.acquirePrelease({
     repository,
-    providerInstanceId: input.providerInstanceId,
+    providerInstanceId: canonicalProviderInstanceId,
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
     ...(pullRequestNumber ? { pullRequestNumber } : {}),
-    now: dependencies.clock.now(),
+    newWorkAdmissionBarrier: {
+      assertAdmitted: assertNewWorkAdmitted,
+    },
   });
   if (lease.status === "conflict") {
     throw new Error("codex_rotating_lease_conflict");
@@ -166,15 +228,20 @@ export async function preleaseCodexRotatingOAuth(
   return {
     protocolVersion: 1,
     leaseId: lease.leaseId,
-    providerInstanceId: input.providerInstanceId,
+    providerInstanceId: canonicalProviderInstanceId,
     repository: repository.fullName,
     generationHashSalt: lease.generationHashSalt,
+    accountFingerprintSalt: lease.accountFingerprintSalt,
     currentGeneration: lease.currentGeneration,
     ...(lease.currentGenerationHash
       ? { currentGenerationHash: lease.currentGenerationHash }
       : {}),
     expiresAt: lease.expiresAt.toISOString(),
   };
+}
+
+function isImmutableActionRef(value: string): boolean {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/u.test(value);
 }
 
 function reviewIntentRequired(input: {

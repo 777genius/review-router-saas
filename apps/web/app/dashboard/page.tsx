@@ -4,6 +4,7 @@ import {
   isCodexRotatingOAuthAllowedForRepository,
   isCodexRotatingOAuthAllowedForWorkspaceDefault,
   isClaudeCodeProviderEnabled,
+  requireReviewRouterDatabaseRecoveryWitness,
   resolveReviewRouterActionRef,
 } from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
@@ -101,6 +102,8 @@ import {
   buildProviderSetupMismatchRepositoryIds,
   repositoryHealthStatusWithProviderSetupReadiness,
 } from "../../src/server/dashboard-provider-setup-readiness";
+import { deriveDashboardProviderSetupReadiness } from "../../src/server/dashboard-codex-rotating-setup-readiness";
+import { PrismaCodexRotatingSetupReadiness } from "../../src/server/prisma-codex-rotating-setup-readiness";
 import {
   getReviewModelOptions,
   type ReviewModelOption,
@@ -399,7 +402,7 @@ async function loadDashboardData(
           },
           { provisioning: new PrismaWorkflowProvisioningQuery(prisma) },
         );
-        const providerSetup = await prisma.providerSetupState.findMany({
+        const cachedProviderSetup = await prisma.providerSetupState.findMany({
           where: {
             workspaceId: workspace.id,
             repositoryId: {
@@ -413,6 +416,15 @@ async function loadDashboardData(
             state: true,
             updatedAt: true,
           },
+        });
+        const providerSetup = await deriveDashboardProviderSetupReadiness({
+          providerSetup: cachedProviderSetup,
+          repositories: visibleRepositories,
+          workspaceId: workspace.id,
+          readiness: new PrismaCodexRotatingSetupReadiness(
+            prisma,
+            requireReviewRouterDatabaseRecoveryWitness(),
+          ),
         });
         const supportDiagnostics = hasWorkspaceWideAccess
           ? await getWorkspaceSupportDiagnostics(
@@ -3163,6 +3175,9 @@ function RepositorySetupProgressPanel({
 }): React.ReactElement {
   const canManage =
     mutationsEnabled && repository.selected && !repository.archived;
+  const providerSetupBeforeWorkflow = effectiveConfig.providers.some(
+    (provider) => provider.authMode === "codex_subscription_oauth_rotating",
+  );
   const installation = findInstallationForRepository(workspace, repository);
   const enableReviewAction = installation ? (
     <RepositoryProviderSecretsAction
@@ -3173,6 +3188,10 @@ function RepositorySetupProgressPanel({
       claudeCodeProviderEnabled={claudeCodeProviderEnabled}
       allowOrganizationSecrets={allowOrganizationSecrets}
       triggerVariant="outline"
+      triggerLabel={
+        providerSetupBeforeWorkflow ? "Set up provider" : "Enable review"
+      }
+      rotatingPreparationOnly={providerSetupBeforeWorkflow && currentStep === 1}
       triggerClassName="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
     />
   ) : null;
@@ -3194,6 +3213,7 @@ function RepositorySetupProgressPanel({
         (provider) => provider.authMode,
       )}
       enableReviewAction={canManage ? enableReviewAction : null}
+      providerSetupBeforeWorkflow={providerSetupBeforeWorkflow}
     />
   );
 }
@@ -3221,6 +3241,8 @@ function RepositoryProviderSecretsAction({
   allowOrganizationSecrets,
   triggerVariant,
   triggerClassName,
+  triggerLabel = "Enable review",
+  rotatingPreparationOnly = false,
 }: {
   readonly workspace: DashboardWorkspace;
   readonly repository: DashboardWorkspaceData["repositories"][number];
@@ -3230,6 +3252,8 @@ function RepositoryProviderSecretsAction({
   readonly allowOrganizationSecrets: boolean;
   readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
   readonly triggerClassName?: string;
+  readonly triggerLabel?: string;
+  readonly rotatingPreparationOnly?: boolean;
 }): React.ReactElement | null {
   const installation = findInstallationForRepository(workspace, repository);
   if (!installation) {
@@ -3251,7 +3275,8 @@ function RepositoryProviderSecretsAction({
       allowOrganizationSecrets={allowOrganizationSecrets}
       claudeCodeProviderEnabled={claudeCodeProviderEnabled}
       disabled={disabled}
-      triggerLabel="Enable review"
+      triggerLabel={triggerLabel}
+      rotatingPreparationOnly={rotatingPreparationOnly}
       triggerVariant={
         triggerVariant ??
         (setupStatus === "setup_pr_open" ? "solid" : "outline")
@@ -3279,6 +3304,7 @@ function RepositoryProviderSecretsDialog({
   triggerSize = "sm",
   triggerClassName,
   disabled = false,
+  rotatingPreparationOnly = false,
 }: {
   readonly workspaceId: string;
   readonly repositoryId: string;
@@ -3293,6 +3319,7 @@ function RepositoryProviderSecretsDialog({
   readonly triggerSize?: "sm" | "md" | "lg";
   readonly triggerClassName?: string;
   readonly disabled?: boolean;
+  readonly rotatingPreparationOnly?: boolean;
 }): React.ReactElement {
   const organizationLogin =
     allowOrganizationSecrets && installation.accountType === "Organization"
@@ -3334,6 +3361,7 @@ function RepositoryProviderSecretsDialog({
       triggerSize={triggerSize}
       triggerClassName={triggerClassName}
       disabled={disabled}
+      rotatingPreparationOnly={rotatingPreparationOnly}
     />
   );
 }

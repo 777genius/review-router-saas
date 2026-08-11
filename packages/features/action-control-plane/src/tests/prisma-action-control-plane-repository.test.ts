@@ -1,4 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
+import {
+  allocateVersionedProviderSecretNamespace,
+  createVersionedSecretWorkflowSourceAttestation,
+  fingerprintDatabaseRecoveryWitness,
+  WorkflowSourceTrust,
+} from "@reviewrouter/features-codex-oauth-rotating";
 import { describe, expect, it, vi } from "vitest";
 import {
   codexRotatingCommentTokenRefreshTtlMs,
@@ -10,6 +16,444 @@ import {
   PrismaActionControlPlaneRepository,
 } from "../infrastructure/prisma/prisma-action-control-plane-repository.js";
 import { PrismaCodexRotatingOAuthRepository } from "../infrastructure/prisma/prisma-codex-rotating-oauth-repository.js";
+
+const databaseRecoveryWitness = "witness_generation_one_12345678901234567890";
+
+describe("completed versioned writeback replay fencing", () => {
+  it("fails restored W1 terminal evidence closed under W2 without mutating it", async () => {
+    const databaseIncarnation = "7612345678901234567";
+    const completedIntent = {
+      id: "intent:completed-replay",
+      providerInstanceRowId: "provider:completed-replay",
+      leaseId: "lease:completed-replay",
+      providerInstanceId: "codex-rotating:123456",
+      idempotencyKey: "idem:completed-replay",
+      encryptedPayloadDigest: "encrypted-digest",
+      keyId: "github-key",
+      latestGenerationHash: "latest-generation-hash",
+      generation: 2,
+      status: "completed",
+      mutationEpoch: 4n,
+      dispatchAttemptId: "attempt:completed-replay",
+      secretNamespaceId: "namespace:completed-replay",
+      databaseIncarnation,
+      databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+        databaseRecoveryWitness,
+      ),
+      executorOwner: "executor:lock-order",
+      executorLeaseExpiresAt: new Date("2026-08-10T00:05:00.000Z"),
+      accountIdentityHash: "account-identity-hash",
+      accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
+    };
+    const tx = {
+      $executeRawUnsafe: vi.fn(async () => 0),
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([{ id: completedIntent.providerInstanceRowId }])
+        .mockResolvedValueOnce([{ databaseIncarnation }]),
+      codexOAuthWritebackIntent: {
+        findFirst: vi.fn(async () => completedIntent),
+        findUnique: vi.fn(),
+        update: vi.fn(),
+        updateMany: vi.fn(),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) =>
+        operation(tx),
+      ),
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
+      actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness: "witness_generation_two_12345678901234567890",
+      transactionClock: fixedClock("2026-08-10T00:00:00.000Z"),
+    });
+
+    await expect(
+      repository.prepareVersionedWriteback({
+        request: {
+          protocolVersion: 1,
+          leaseId: completedIntent.leaseId,
+          providerInstanceId: completedIntent.providerInstanceId,
+          generation: completedIntent.generation,
+          latestGenerationHash: completedIntent.latestGenerationHash,
+          accountIdentityHash: completedIntent.accountIdentityHash,
+          accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
+          encryptedValue: "Y2lwaGVydGV4dA==",
+          keyId: completedIntent.keyId,
+          idempotencyKey: completedIntent.idempotencyKey,
+        },
+        encryptedPayloadDigest: completedIntent.encryptedPayloadDigest,
+      }),
+    ).rejects.toThrow("codex_rotating_database_recovery_witness_mismatch");
+
+    expect(tx.codexOAuthWritebackIntent.update).not.toHaveBeenCalled();
+    expect(tx.codexOAuthWritebackIntent.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("validates the current database incarnation before replaying completed evidence", async () => {
+    const completedIntent = {
+      id: "intent:completed-incarnation",
+      providerInstanceRowId: "provider:completed-incarnation",
+      leaseId: "lease:completed-incarnation",
+      providerInstanceId: "codex-rotating:123456",
+      idempotencyKey: "idem:completed-incarnation",
+      encryptedPayloadDigest: "encrypted-digest",
+      keyId: "github-key",
+      latestGenerationHash: "latest-generation-hash",
+      generation: 2,
+      status: "completed",
+      mutationEpoch: 4n,
+      dispatchAttemptId: "attempt:completed-incarnation",
+      secretNamespaceId: "namespace:completed-incarnation",
+      databaseIncarnation: "7612345678901234567",
+      databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+        databaseRecoveryWitness,
+      ),
+      accountIdentityHash: "account-identity-hash",
+      accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
+    };
+    const tx = {
+      $executeRawUnsafe: vi.fn(async () => 0),
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([{ id: completedIntent.providerInstanceRowId }])
+        .mockResolvedValueOnce([
+          { databaseIncarnation: "7999999999999999999" },
+        ]),
+      codexOAuthWritebackIntent: {
+        findFirst: vi.fn(async () => completedIntent),
+        findUnique: vi.fn(),
+        update: vi.fn(),
+        updateMany: vi.fn(),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) =>
+        operation(tx),
+      ),
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
+      actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness,
+      transactionClock: fixedClock("2026-08-10T00:00:00.000Z"),
+    });
+
+    await expect(
+      repository.prepareVersionedWriteback({
+        request: {
+          protocolVersion: 1,
+          leaseId: completedIntent.leaseId,
+          providerInstanceId: completedIntent.providerInstanceId,
+          generation: completedIntent.generation,
+          latestGenerationHash: completedIntent.latestGenerationHash,
+          accountIdentityHash: completedIntent.accountIdentityHash,
+          accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
+          encryptedValue: "Y2lwaGVydGV4dA==",
+          keyId: completedIntent.keyId,
+          idempotencyKey: completedIntent.idempotencyKey,
+        },
+        encryptedPayloadDigest: completedIntent.encryptedPayloadDigest,
+      }),
+    ).rejects.toThrow("codex_rotating_database_incarnation_mismatch");
+
+    expect(tx.codexOAuthWritebackIntent.update).not.toHaveBeenCalled();
+    expect(tx.codexOAuthWritebackIntent.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("ambiguous versioned writeback lock ordering", () => {
+  it("locks the provider before reading and retiring namespace children", async () => {
+    const order: string[] = [];
+    const intent = {
+      providerInstanceRowId: "provider:lock-order",
+      providerInstanceId: "codex-rotating:123456",
+      leaseId: "lease:lock-order",
+      dispatchAttemptId: "attempt:lock-order",
+      secretNamespaceId: "namespace:lock-order",
+      status: "pending",
+      mutationEpoch: 7n,
+      generation: 2,
+      latestGenerationHash: "generation-hash-lock-order",
+      accountIdentityHash: "account-identity-hash-lock-order",
+      databaseIncarnation: "7612345678901234567",
+      databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+        databaseRecoveryWitness,
+      ),
+      executorOwner: "executor:lock-order",
+      executorLeaseExpiresAt: new Date("2026-08-10T00:05:00.000Z"),
+      providerInstance: {
+        mutationOwner: "runtime",
+        mutationOwnerId: "lease:lock-order",
+        mutationEpoch: 7n,
+        activeAccountIdentityHash: "account-identity-hash-lock-order",
+      },
+    };
+    const tx = {
+      codexOAuthWritebackIntent: {
+        findUnique: vi
+          .fn()
+          .mockImplementationOnce(async () => {
+            order.push("intent_locator");
+            return {
+              providerInstanceRowId: intent.providerInstanceRowId,
+              dispatchAttemptId: intent.dispatchAttemptId,
+            };
+          })
+          .mockImplementationOnce(async () => {
+            order.push("intent_locked_read");
+            return intent;
+          }),
+        updateMany: vi.fn(async () => {
+          order.push("intent_update");
+          return { count: 1 };
+        }),
+      },
+      codexOAuthSecretNamespace: {
+        updateMany: vi.fn(async () => {
+          order.push("namespace_update");
+          return { count: 1 };
+        }),
+      },
+      codexOAuthProviderInstance: {
+        updateMany: vi.fn(async () => {
+          order.push("provider_cas");
+          return { count: 1 };
+        }),
+      },
+      codexOAuthLease: {
+        updateMany: vi.fn(async () => {
+          order.push("lease_update");
+          return { count: 1 };
+        }),
+      },
+      $queryRaw: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          order.push("provider_lock");
+          return [{ id: intent.providerInstanceRowId }];
+        })
+        .mockImplementationOnce(async () => {
+          order.push("database_incarnation_read");
+          return [{ databaseIncarnation: intent.databaseIncarnation }];
+        }),
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) =>
+        operation(tx),
+      ),
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
+      actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness,
+      transactionClock: fixedClock(intent.executorLeaseExpiresAt),
+    });
+
+    await repository.retireAmbiguousVersionedWriteback({
+      intentId: "intent:lock-order",
+      attemptId: intent.dispatchAttemptId,
+      executorOwner: intent.executorOwner,
+      retirementIdentity: {
+        providerInstanceId: intent.providerInstanceId,
+        mutationOwner: "runtime",
+        mutationOwnerId: intent.leaseId,
+        mutationEpoch: intent.mutationEpoch,
+        namespaceId: intent.secretNamespaceId,
+        generation: intent.generation,
+        latestGenerationHash: intent.latestGenerationHash,
+        accountIdentityHash: intent.accountIdentityHash,
+      },
+      safeErrorCode: "provider_response_unknown",
+    });
+
+    expect(order).toEqual([
+      "intent_locator",
+      "provider_lock",
+      "intent_locked_read",
+      "database_incarnation_read",
+      "namespace_update",
+      "intent_update",
+      "provider_cas",
+      "lease_update",
+    ]);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts an exact repeated retirement idempotently long after executor expiry", async () => {
+    const executorLeaseExpiresAt = new Date("2026-08-10T00:05:00.000Z");
+    const intent = {
+      providerInstanceRowId: "provider:retired",
+      providerInstanceId: "codex-rotating:123456",
+      leaseId: "lease:retired",
+      dispatchAttemptId: "attempt:retired",
+      secretNamespaceId: "namespace:retired",
+      status: "remote_outcome_unknown",
+      mutationEpoch: 7n,
+      generation: 2,
+      latestGenerationHash: "generation-hash-retired",
+      accountIdentityHash: "account-identity-hash-retired",
+      databaseIncarnation: "7612345678901234567",
+      databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+        databaseRecoveryWitness,
+      ),
+      executorOwner: "executor:retired",
+      executorLeaseExpiresAt,
+      providerInstance: {
+        mutationOwner: "recovery",
+        mutationOwnerId: "intent:retired",
+        mutationEpoch: 8n,
+        activeAccountIdentityHash: "account-identity-hash-retired",
+      },
+    };
+    const tx = {
+      codexOAuthWritebackIntent: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValueOnce({
+            providerInstanceRowId: intent.providerInstanceRowId,
+            dispatchAttemptId: intent.dispatchAttemptId,
+          })
+          .mockResolvedValueOnce(intent),
+        updateMany: vi.fn(),
+      },
+      codexOAuthSecretNamespace: { updateMany: vi.fn() },
+      codexOAuthProviderInstance: { updateMany: vi.fn() },
+      codexOAuthLease: { updateMany: vi.fn() },
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([{ id: intent.providerInstanceRowId }])
+        .mockResolvedValueOnce([
+          { databaseIncarnation: intent.databaseIncarnation },
+        ]),
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) =>
+        operation(tx),
+      ),
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
+      actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness,
+      transactionClock: fixedClock("2026-08-10T01:00:00.000Z"),
+    });
+
+    await expect(
+      repository.retireAmbiguousVersionedWriteback({
+        intentId: "intent:retired",
+        attemptId: intent.dispatchAttemptId,
+        executorOwner: intent.executorOwner,
+        retirementIdentity: {
+          providerInstanceId: intent.providerInstanceId,
+          mutationOwner: "runtime",
+          mutationOwnerId: intent.leaseId,
+          mutationEpoch: intent.mutationEpoch,
+          namespaceId: intent.secretNamespaceId,
+          generation: intent.generation,
+          latestGenerationHash: intent.latestGenerationHash,
+          accountIdentityHash: intent.accountIdentityHash,
+        },
+        safeErrorCode: "versioned_provider_put_outcome_unknown",
+      }),
+    ).resolves.toBeUndefined();
+    expect(tx.codexOAuthSecretNamespace.updateMany).not.toHaveBeenCalled();
+    expect(tx.codexOAuthWritebackIntent.updateMany).not.toHaveBeenCalled();
+    expect(tx.codexOAuthProviderInstance.updateMany).not.toHaveBeenCalled();
+    expect(tx.codexOAuthLease.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("retires a definite pre-dispatch failure without unknown-outcome evidence", async () => {
+    const now = new Date("2026-08-10T00:00:00.000Z");
+    const intent = {
+      providerInstanceRowId: "provider:predispatch",
+      leaseId: "lease:predispatch",
+      dispatchAttemptId: "attempt:predispatch",
+      secretNamespaceId: "namespace:predispatch",
+      status: "pending",
+      providerConfirmedAt: null,
+      mutationEpoch: 7n,
+      databaseIncarnation: "7612345678901234567",
+      databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+        databaseRecoveryWitness,
+      ),
+      executorOwner: "executor:predispatch",
+      executorLeaseExpiresAt: new Date(now.getTime() + 60_000),
+    };
+    const tx = {
+      codexOAuthWritebackIntent: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValueOnce({
+            providerInstanceRowId: intent.providerInstanceRowId,
+            dispatchAttemptId: intent.dispatchAttemptId,
+          })
+          .mockResolvedValueOnce(intent),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      codexOAuthSecretNamespace: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      codexOAuthProviderInstance: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      codexOAuthLease: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([{ id: intent.providerInstanceRowId }])
+        .mockResolvedValueOnce([
+          { databaseIncarnation: intent.databaseIncarnation },
+        ]),
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) =>
+        operation(tx),
+      ),
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
+      actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness,
+      transactionClock: fixedClock(now),
+    });
+
+    await repository.retirePreDispatchVersionedWriteback({
+      intentId: "intent:predispatch",
+      attemptId: intent.dispatchAttemptId,
+      executorOwner: intent.executorOwner,
+      safeErrorCode: "versioned_provider_pre_dispatch_failed_v1",
+    });
+
+    expect(tx.codexOAuthSecretNamespace.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "retired_predispatch" }),
+      }),
+    );
+    expect(tx.codexOAuthWritebackIntent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "failed",
+          safeErrorCode: "versioned_provider_pre_dispatch_failed_v1",
+        }),
+      }),
+    );
+    expect(tx.codexOAuthWritebackIntent.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "remote_outcome_unknown" }),
+      }),
+    );
+    expect(tx.codexOAuthProviderInstance.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        data: expect.objectContaining({ state: "active" }),
+      }),
+    );
+    expect(tx.codexOAuthLease.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { status: "failed", expiresAt: now },
+      }),
+    );
+  });
+});
 
 describe("PrismaActionControlPlaneRepository helpers", () => {
   it("does not trust org ruleset workflows for the source repository itself", () => {
@@ -133,6 +577,8 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
         repositoryFullName: "777genius/example",
         owner: "777genius",
         repo: "example",
+        secretName:
+          "REVIEWROUTER_CODEX_AUTH_JSON_R123456_P0123456789abcdef_E1_0123456789abcdef0123456789abcdef",
       },
     });
     await expect(
@@ -372,6 +818,151 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
       }),
     ).resolves.toEqual({ status: "lease_not_active" });
   });
+
+  it("rejects an old completed lease after a later activation advances the provider namespace", async () => {
+    const { repository } = buildCodexRotatingRepository({
+      status: "completed",
+      expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
+      completedAt: new Date(now.getTime() - 20 * 60 * 1000),
+      leaseSecretNamespaceEpoch: 2n,
+    });
+
+    await expect(
+      repository.findCompletedLeaseWriteTarget({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+  });
+
+  it("completes and rebinds a changed-generation lease inside the activation transaction", async () => {
+    const allocatedNamespace = allocateVersionedProviderSecretNamespace({
+      scope: {
+        repositoryId: "123456",
+        providerInstanceId: "codex-rotating:123456",
+      },
+      epoch: 2n,
+      randomBytes: () => new Uint8Array(16).fill(17),
+    });
+    const namespace = {
+      id: allocatedNamespace.namespaceId,
+      githubRepositoryId: "123456",
+      namespaceEpoch: allocatedNamespace.epoch,
+      secretName: allocatedNamespace.name,
+      status: "confirmed_candidate",
+    };
+    const leaseUpdate = vi.fn(async () => ({ count: 1 }));
+    const tx = {
+      $executeRaw: vi.fn(async (query: unknown) => {
+        void query;
+        return 1;
+      }),
+      $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) =>
+        (Array.isArray(query)
+          ? Array.from(query).join("")
+          : query.strings?.join("")
+        )?.includes("codex_oauth_database_authority_challenge")
+          ? [{ challenge: '["reviewrouter_api",1,2,"effect","owner",0]' }]
+          : query.strings?.join("").includes("pg_control_system")
+            ? [{ databaseIncarnation: "7777777777777777777" }]
+            : [],
+      ),
+      codexOAuthWritebackIntent: {
+        findUniqueOrThrow: vi
+          .fn()
+          .mockResolvedValueOnce({ providerInstanceRowId: "provider-row-1" })
+          .mockResolvedValueOnce({
+            id: "intent-1",
+            leaseId: "lease-1",
+            generation: 2,
+            latestGenerationHash: "generation-hash-2",
+            accountIdentityHash: "account-identity-hash",
+            accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
+            mutationEpoch: 4n,
+            dispatchAttemptId: "attempt-1",
+            providerResponseCode: 204,
+            providerConfirmedAt: new Date(now.getTime() - 1_000),
+            databaseIncarnation: "7777777777777777777",
+            databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+              databaseRecoveryWitness,
+            ),
+            executorOwner: "executor-1",
+            executorLeaseExpiresAt: new Date(now.getTime() + 60_000),
+            secretNamespace: namespace,
+            providerInstance: {
+              id: "provider-row-1",
+              providerInstanceId: "codex-rotating:123456",
+              activeLeaseId: "lease-1",
+              activeLeaseExpiresAt: new Date(now.getTime() + 60_000),
+              mutationEpoch: 4n,
+              mutationOwner: "runtime",
+              mutationOwnerId: "lease-1",
+            },
+            lease: {
+              status: "finalized",
+              expiresAt: new Date(now.getTime() + 60_000),
+            },
+          }),
+        update: vi.fn(async () => ({})),
+      },
+      codexOAuthSecretNamespace: {
+        updateMany: vi.fn(async () => ({ count: 1 })),
+        update: vi.fn(async () => ({})),
+      },
+      codexOAuthProviderInstance: {
+        update: vi.fn(async () => ({})),
+        updateMany: vi.fn(async () => ({ count: 1 })),
+      },
+      codexOAuthLease: { updateMany: leaseUpdate },
+    };
+    const prisma = {
+      $queryRaw: vi.fn(async () => [{ signature: "a".repeat(64) }]),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) =>
+        callback(tx),
+      ),
+    } as unknown as PrismaClient;
+    const repository = new PrismaCodexRotatingOAuthRepository(prisma, {
+      actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness,
+      transactionClock: fixedClock(now),
+      databaseEffectAuthority: prisma,
+    });
+    const attestation = createVersionedSecretWorkflowSourceAttestation({
+      repositoryId: "123456",
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      workflowSourceCommitSha: "a".repeat(40),
+      workflowSourceBlobSha: "b".repeat(40),
+      workflowSourceSha256: "c".repeat(64),
+      workflowSemanticSha256: "d".repeat(64),
+      sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+      secretNamespace: allocatedNamespace,
+    });
+
+    await expect(
+      repository.activateVersionedWriteback({
+        intentId: "intent-1",
+        attemptId: "attempt-1",
+        executorOwner: "executor-1",
+        attestation,
+      }),
+    ).resolves.toEqual({ generation: 2 });
+    expect(leaseUpdate).toHaveBeenCalledWith({
+      where: { id: "lease-1", status: "finalized", mutationEpoch: 4n },
+      data: {
+        status: "completed",
+        completedAt: now,
+        secretNamespaceId: namespace.id,
+        secretNamespaceEpoch: namespace.namespaceEpoch,
+      },
+    });
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(
+      Array.from(tx.$executeRaw.mock.calls[0]?.[0] as readonly string[]).join(
+        "?",
+      ),
+    ).toContain("codex_oauth_authorize_runtime_completion");
+  });
 });
 
 function buildCodexRotatingRepository(lease: {
@@ -379,7 +970,12 @@ function buildCodexRotatingRepository(lease: {
   readonly expiresAt: Date;
   readonly completedAt: Date | null;
   readonly leaseWorkspaceId?: string;
+  readonly leaseSecretNamespaceEpoch?: bigint;
 }) {
+  const namespaceId = "namespace_1";
+  const namespaceEpoch = 1n;
+  const namespaceName =
+    "REVIEWROUTER_CODEX_AUTH_JSON_R123456_P0123456789abcdef_E1_0123456789abcdef0123456789abcdef";
   const leaseRecord = {
     workspaceId: lease.leaseWorkspaceId ?? "workspace_1",
     repository: {
@@ -400,6 +996,20 @@ function buildCodexRotatingRepository(lease: {
     githubRunId: "9001",
     githubRunAttempt: "2",
     pullRequestNumber: 240,
+    secretNamespaceId: namespaceId,
+    secretNamespaceEpoch: lease.leaseSecretNamespaceEpoch ?? namespaceEpoch,
+    providerInstance: {
+      activeSecretNamespaceId: namespaceId,
+      activeSecretNamespaceEpoch: namespaceEpoch,
+      activeSecretNamespaceName: namespaceName,
+      activeSecretNamespace: {
+        secretName: namespaceName,
+        status: "active",
+        databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+          databaseRecoveryWitness,
+        ),
+      },
+    },
   };
   const prisma = {
     codexOAuthLease: {
@@ -422,6 +1032,58 @@ function buildCodexRotatingRepository(lease: {
     prisma,
     repository: new PrismaCodexRotatingOAuthRepository(prisma, {
       actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness,
     }),
   };
+}
+
+describe("durable runtime database clock", () => {
+  it("writes nothing when the authoritative clock query fails", async () => {
+    const namespaceCreate = vi.fn();
+    const intentCreate = vi.fn();
+    const tx = {
+      $executeRawUnsafe: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "provider-row-1" }]),
+      codexOAuthSecretNamespace: { create: namespaceCreate },
+      codexOAuthWritebackIntent: { create: intentCreate },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) =>
+        callback(tx),
+      ),
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
+      actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness,
+      transactionClock: {
+        now: async () => {
+          throw new Error("database_clock_unavailable");
+        },
+      },
+    });
+
+    await expect(
+      repository.prepareVersionedWriteback({
+        request: {
+          protocolVersion: 1,
+          leaseId: "lease:clock-failure",
+          providerInstanceId: "codex-rotating:123456",
+          generation: 2,
+          latestGenerationHash: "generation-hash-clock-failure",
+          accountIdentityHash: "account-identity-clock-failure",
+          accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
+          encryptedValue: "Y2lwaGVydGV4dA==",
+          keyId: "key-clock-failure",
+          idempotencyKey: "writeback:clock-failure",
+        },
+        encryptedPayloadDigest: "digest-clock-failure",
+      }),
+    ).rejects.toThrow("database_clock_unavailable");
+    expect(namespaceCreate).not.toHaveBeenCalled();
+    expect(intentCreate).not.toHaveBeenCalled();
+  });
+});
+
+function fixedClock(instant: Date | string) {
+  return { now: async () => new Date(instant) };
 }

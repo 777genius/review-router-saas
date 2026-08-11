@@ -15,8 +15,11 @@ import {
   parseConflictReviewFallbackRepositoryAllowlist,
   parseReviewRouterActionRefList,
   readGitHubAppPrivateKey,
+  requireReviewRouterDatabaseRecoveryWitness,
   requireGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
+  resolveReviewRouterCodexRotatingActionRef,
+  resolveReviewRouterCodexRotatingTrustedActionRefs,
   resolveReviewRouterPublicApiUrl,
   resolveReviewRouterTrustedActionRefs,
 } from "./index";
@@ -48,13 +51,41 @@ describe("platform config", () => {
   it("resolves the public API endpoint used by managed workflows", () => {
     expect(
       resolveReviewRouterPublicApiUrl({
+        NODE_ENV: "production",
         REVIEW_ROUTER_API_URL: "https://internal.example.test/",
         REVIEW_ROUTER_PUBLIC_API_URL: "https://api.example.test/",
       }),
     ).toBe("https://api.example.test");
-    expect(resolveReviewRouterPublicApiUrl({})).toBe(
-      "https://api.reviewrouter.site",
-    );
+    expect(resolveReviewRouterPublicApiUrl({})).toBe("http://localhost:4000");
+    expect(() =>
+      resolveReviewRouterPublicApiUrl({ NODE_ENV: "production" }),
+    ).toThrow("missing_env:REVIEW_ROUTER_PUBLIC_API_URL");
+    expect(() =>
+      resolveReviewRouterPublicApiUrl({
+        NODE_ENV: "production",
+        REVIEW_ROUTER_PUBLIC_API_URL: "not-a-url",
+      }),
+    ).toThrow("invalid_workflow_api_url");
+  });
+
+  it("rejects every production loopback origin regardless of HTTPS", () => {
+    for (const origin of [
+      "https://localhost",
+      "https://127.0.0.1",
+      "https://127.1",
+      "https://[::1]",
+      "https://[::ffff:127.0.0.1]",
+      "https://[::ffff:7f00:1]",
+    ]) {
+      expect(
+        () =>
+          resolveReviewRouterPublicApiUrl({
+            NODE_ENV: "production",
+            REVIEW_ROUTER_PUBLIC_API_URL: origin,
+          }),
+        origin,
+      ).toThrow("invalid_workflow_api_url");
+    }
   });
 
   it("builds a unique full-SHA trusted action ref rollout window", () => {
@@ -80,6 +111,79 @@ describe("platform config", () => {
     expect(() =>
       parseReviewRouterActionRefList("777genius/review-router@main"),
     ).toThrow("invalid_env:REVIEW_ROUTER_ALLOWED_ACTION_REFS");
+  });
+
+  it("requires a separate exact-SHA release for rotating Codex workflows", () => {
+    expect(
+      resolveReviewRouterCodexRotatingActionRef({
+        REVIEW_ROUTER_ACTION_REF: "777genius/review-router@main",
+        REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
+          "777genius/review-router@AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      }),
+    ).toBe("777genius/review-router@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    expect(() =>
+      resolveReviewRouterCodexRotatingActionRef({
+        REVIEW_ROUTER_ACTION_REF: "777genius/review-router@main",
+      }),
+    ).toThrow("missing_env:REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF");
+    for (const value of [
+      "777genius/review-router@main",
+      "777genius/review-router@v1",
+      "777genius/review-router@abc123",
+    ]) {
+      expect(() =>
+        resolveReviewRouterCodexRotatingActionRef({
+          REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: value,
+        }),
+      ).toThrow("invalid_env:REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF");
+    }
+  });
+
+  it("trusts the rotating primary plus an explicit same-repository SHA overlap", () => {
+    expect(
+      resolveReviewRouterCodexRotatingTrustedActionRefs({
+        REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
+          "777genius/review-router@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS:
+          "777genius/review-router@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 777genius/review-router@AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      }),
+    ).toEqual([
+      "777genius/review-router@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "777genius/review-router@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    ]);
+
+    expect(() =>
+      resolveReviewRouterCodexRotatingTrustedActionRefs({
+        REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
+          "777genius/review-router@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS:
+          "attacker/review-router@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      }),
+    ).toThrow("invalid_env:REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS");
+  });
+
+  it("requires a strong recovery witness without exposing it in errors", () => {
+    const witness = "A".repeat(43);
+    expect(
+      requireReviewRouterDatabaseRecoveryWitness({
+        REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: ` ${witness} `,
+      }),
+    ).toBe(witness);
+    expect(() => requireReviewRouterDatabaseRecoveryWitness({})).toThrow(
+      "missing_env:REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+    );
+    try {
+      requireReviewRouterDatabaseRecoveryWitness({
+        REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "too-short-secret",
+      });
+      throw new Error("expected invalid witness");
+    } catch (error) {
+      expect(String(error)).toBe(
+        "Error: invalid_env:REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+      );
+      expect(String(error)).not.toContain("too-short-secret");
+    }
   });
 
   it("keeps runtime env default aligned with the resolver", () => {

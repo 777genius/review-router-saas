@@ -14,6 +14,22 @@ const repoRoot = path.resolve(
 const seedScript = path.join(repoRoot, "scripts/seed-codex-auth.sh");
 
 describe("seed-codex-auth.sh", () => {
+  it("refuses fixed-name seeding without an explicit legacy recovery flag", async () => {
+    const fixture = await createFixture();
+
+    await expect(
+      runSeedScript(
+        fixture,
+        { REVIEW_ROUTER_ENABLE_LEGACY_CODEX_AUTH_SEED: "0" },
+        ["--dry-run", "--repo", "777genius/example"],
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "Legacy fixed-name CODEX_AUTH_JSON seeding is disabled",
+      ),
+    });
+  });
+
   it("prints a repository secret dry-run without leaking auth JSON", async () => {
     const fixture = await createFixture();
 
@@ -208,7 +224,11 @@ describe("seed-codex-auth.sh", () => {
   it("prints help without requiring gh or auth.json", async () => {
     const fixture = await createFixture();
 
-    const result = await runSeedScript(fixture, {}, ["--help"]);
+    const result = await runSeedScript(
+      fixture,
+      { REVIEW_ROUTER_ENABLE_LEGACY_CODEX_AUTH_SEED: "0" },
+      ["--help"],
+    );
 
     expect(result.stdout).toContain("Usage:");
     expect(result.stdout).toContain("--dry-run");
@@ -288,6 +308,7 @@ async function runSeedScript(
     cwd: repoRoot,
     env: {
       ...process.env,
+      REVIEW_ROUTER_ENABLE_LEGACY_CODEX_AUTH_SEED: "1",
       ...env,
       HOME: fixture.root,
       REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,

@@ -16,7 +16,6 @@ import {
   Zap,
 } from "lucide-react";
 import { Badge, CodeBlock, LinkButton } from "@reviewrouter/ui";
-import { resolveCodexSeedScriptUrl } from "@/server/codex-seed-script-url";
 import { LogoMark } from "../logo-mark";
 import { createPublicPageMetadata } from "../seo";
 
@@ -27,11 +26,10 @@ export const metadata: Metadata = createPublicPageMetadata({
   path: "/getting-started",
 });
 
-const seedScriptUrl = resolveCodexSeedScriptUrl();
-
-const codexRepoCommand = `# Copy the full repo-scoped command from Dashboard -> Enable review -> Codex.
-# It uses ${seedScriptUrl}, a short-lived setup nonce, and REVIEWROUTER_CODEX_AUTH_JSON.
-curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL="..." REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE="..." REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID="..." bash -s -- --confirm-write`;
+const codexRepoCommand = `# Open Dashboard -> Enable review -> Codex for the repository.
+# Copy and run the complete command generated there.
+# It downloads an immutable installer to a temporary file, verifies its SHA-256,
+# and only then executes it with a short-lived, repository-scoped setup nonce.`;
 
 const claudeCommand = `claude setup-token
 gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo owner/repo --app actions`;
@@ -118,10 +116,10 @@ const workflowRows = [
 const providerRows = [
   {
     name: "Codex",
-    auth: "REVIEWROUTER_CODEX_AUTH_JSON",
+    auth: "Server-issued versioned namespace",
     model: "gpt-5.5 default",
     setup:
-      "Copy the dashboard-generated command. It writes encrypted GitHub secret payloads directly to GitHub and refreshes in GitHub-hosted Actions.",
+      "Copy the dashboard-generated command. It claims one exact versioned setup attempt, writes its encrypted payload directly to GitHub, and confirms activation before readiness.",
     icon: "openai",
     badge: "OAuth refresh",
   },

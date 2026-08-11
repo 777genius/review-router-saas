@@ -1219,6 +1219,27 @@ describe("renderReviewRouterWorkflow", () => {
     ).not.toThrow();
   });
 
+  it("rejects HTTPS loopback origins during workflow-domain validation", () => {
+    for (const origin of [
+      "https://localhost",
+      "https://127.0.0.1",
+      "https://127.1",
+      "https://[::1]",
+      "https://[::ffff:127.0.0.1]",
+      "https://[::ffff:7f00:1]",
+    ]) {
+      expect(
+        () =>
+          renderReviewRouterWorkflow({
+            actionRef: "777genius/review-router@v1",
+            apiUrl: origin,
+            runtimeConfigMode: "oidc",
+          }),
+        origin,
+      ).toThrow("invalid_workflow_api_url");
+    }
+  });
+
   it("rejects unsafe workflow template inputs before rendering YAML", () => {
     expect(() =>
       renderReviewRouterWorkflow({

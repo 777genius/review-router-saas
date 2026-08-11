@@ -17,6 +17,14 @@ RUN apt-get update \
   && corepack prepare pnpm@10.33.0 --activate
 
 FROM base AS build
+ARG REVIEW_ROUTER_WEB_URL
+ARG REVIEW_ROUTER_API_URL
+ARG REVIEW_ROUTER_PUBLIC_WEB_URL
+ARG REVIEW_ROUTER_PUBLIC_API_URL
+ENV REVIEW_ROUTER_WEB_URL=${REVIEW_ROUTER_WEB_URL} \
+    REVIEW_ROUTER_API_URL=${REVIEW_ROUTER_API_URL} \
+    REVIEW_ROUTER_PUBLIC_WEB_URL=${REVIEW_ROUTER_PUBLIC_WEB_URL} \
+    REVIEW_ROUTER_PUBLIC_API_URL=${REVIEW_ROUTER_PUBLIC_API_URL}
 COPY . .
 RUN pnpm --filter @reviewrouter/api... --filter @reviewrouter/worker... --filter @reviewrouter/web... install --frozen-lockfile \
   && pnpm --filter @reviewrouter/platform-db db:generate \

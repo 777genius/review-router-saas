@@ -12,12 +12,12 @@ describe("resolveCodexSeedScriptUrl", () => {
     );
   });
 
-  it("defaults to hosted URL in production when Render env is incomplete", () => {
-    expect(
+  it("fails closed when the production web URL is missing", () => {
+    expect(() =>
       resolveCodexSeedScriptUrl({
         NODE_ENV: "production",
       } as NodeJS.ProcessEnv),
-    ).toBe("https://reviewrouter.site/install/codex");
+    ).toThrowError(new Error("missing_review_router_web_url"));
   });
 
   it("uses the configured hosted web URL", () => {
@@ -38,13 +38,23 @@ describe("resolveCodexSeedScriptUrl", () => {
     ).toBe("https://reviewrouter.site/install/codex");
   });
 
-  it("does not expose localhost from production env mistakes", () => {
-    expect(
-      resolveCodexSeedScriptUrl({
-        NODE_ENV: "production",
-        REVIEW_ROUTER_WEB_URL: "http://localhost:3000",
-      } as NodeJS.ProcessEnv),
-    ).toBe("https://reviewrouter.site/install/codex");
+  it("rejects localhost and loopback production URLs", () => {
+    for (const url of [
+      "http://localhost:3000",
+      "https://localhost:3000",
+      "https://127.0.0.1",
+      "https://127.1",
+      "https://[::1]",
+      "https://[::ffff:127.0.0.1]",
+      "https://[::ffff:7f00:1]",
+    ]) {
+      expect(() =>
+        resolveCodexSeedScriptUrl({
+          NODE_ENV: "production",
+          REVIEW_ROUTER_WEB_URL: url,
+        } as NodeJS.ProcessEnv),
+      ).toThrowError(new Error("invalid_review_router_web_url"));
+    }
   });
 
   it("rejects non-local http URLs", () => {
@@ -56,18 +66,20 @@ describe("resolveCodexSeedScriptUrl", () => {
     ).toThrow("invalid_review_router_web_url");
   });
 
-  it("rejects URL credentials, query, or fragment", () => {
+  it("rejects malformed, credentialed, query, fragment, and path URLs", () => {
     for (const url of [
+      "not-a-url",
       "https://token@app.reviewrouter.dev",
       "https://app.reviewrouter.dev?x=1",
       "https://app.reviewrouter.dev#setup",
+      "https://app.reviewrouter.dev/setup",
     ]) {
       expect(() =>
         resolveCodexSeedScriptUrl({
           NODE_ENV: "test",
           REVIEW_ROUTER_WEB_URL: url,
         } as NodeJS.ProcessEnv),
-      ).toThrow("invalid_review_router_web_url");
+      ).toThrowError(new Error("invalid_review_router_web_url"));
     }
   });
 });

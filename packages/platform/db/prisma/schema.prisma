@@ -13,26 +13,27 @@ model Workspace {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members                    WorkspaceMember[]
-  installations              GitHubInstallation[]
-  gitLabInstallations        GitLabInstallation[]
-  repositories               RepositoryConnection[]
-  provisioning               WorkflowProvisioning[]
-  orgRulesets                OrgRulesetProvisioning[]
-  reviewConfigs              ReviewConfiguration[]
-  providerSetup              ProviderSetupState[]
-  actionHealth               ActionRunHealthReport[]
-  conflictReviewAttempts     ConflictReviewAttempt[]
-  auditEvents                AuditEvent[]
-  entitlement                WorkspaceEntitlement?
-  memoryItems                MemoryItem[]
-  memorySuggestions          MemorySuggestion[]
-  memoryUsageEvents          MemoryUsageEvent[]
-  codexOAuthProviders        CodexOAuthProviderInstance[]
-  codexOAuthLeases           CodexOAuthLease[]
-  codexOAuthSetupManifests   CodexOAuthSetupManifest[]
-  reviewSnapshots            ReviewSnapshot[]
-  reviewExecutionCheckpoints ReviewExecutionCheckpoint[]
+  members                      WorkspaceMember[]
+  installations                GitHubInstallation[]
+  gitLabInstallations          GitLabInstallation[]
+  repositories                 RepositoryConnection[]
+  provisioning                 WorkflowProvisioning[]
+  orgRulesets                  OrgRulesetProvisioning[]
+  reviewConfigs                ReviewConfiguration[]
+  providerSetup                ProviderSetupState[]
+  actionHealth                 ActionRunHealthReport[]
+  conflictReviewAttempts       ConflictReviewAttempt[]
+  auditEvents                  AuditEvent[]
+  entitlement                  WorkspaceEntitlement?
+  memoryItems                  MemoryItem[]
+  memorySuggestions            MemorySuggestion[]
+  memoryUsageEvents            MemoryUsageEvent[]
+  codexOAuthProviders          CodexOAuthProviderInstance[]
+  codexOAuthLeases             CodexOAuthLease[]
+  codexOAuthSetupManifests     CodexOAuthSetupManifest[]
+  codexOAuthSetupPayloadClaims CodexOAuthSetupPayloadClaim[]
+  reviewSnapshots              ReviewSnapshot[]
+  reviewExecutionCheckpoints   ReviewExecutionCheckpoint[]
 }
 
 model User {
@@ -177,24 +178,25 @@ model RepositoryConnection {
   createdAt               DateTime              @default(now())
   updatedAt               DateTime              @updatedAt
 
-  workspace                  Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  installation               GitHubInstallation?          @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  gitlabInstallation         GitLabInstallation?          @relation(fields: [gitlabInstallationId], references: [id], onDelete: Cascade)
-  provisioning               WorkflowProvisioning[]
-  reviewConfigs              ReviewConfiguration[]
-  providerSetup              ProviderSetupState[]
-  actionHealth               ActionRunHealthReport[]
-  conflictReviewAttempts     ConflictReviewAttempt[]
-  rulesetSources             OrgRulesetProvisioning[]     @relation("OrgRulesetSourceRepository")
-  permissionCache            RepositoryPermissionCache[]
-  memoryItems                MemoryItem[]
-  memorySuggestions          MemorySuggestion[]
-  memoryUsageEvents          MemoryUsageEvent[]
-  codexOAuthProviders        CodexOAuthProviderInstance[]
-  codexOAuthLeases           CodexOAuthLease[]
-  codexOAuthSetupManifests   CodexOAuthSetupManifest[]
-  reviewSnapshots            ReviewSnapshot[]
-  reviewExecutionCheckpoints ReviewExecutionCheckpoint[]
+  workspace                    Workspace                     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation                 GitHubInstallation?           @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  gitlabInstallation           GitLabInstallation?           @relation(fields: [gitlabInstallationId], references: [id], onDelete: Cascade)
+  provisioning                 WorkflowProvisioning[]
+  reviewConfigs                ReviewConfiguration[]
+  providerSetup                ProviderSetupState[]
+  actionHealth                 ActionRunHealthReport[]
+  conflictReviewAttempts       ConflictReviewAttempt[]
+  rulesetSources               OrgRulesetProvisioning[]      @relation("OrgRulesetSourceRepository")
+  permissionCache              RepositoryPermissionCache[]
+  memoryItems                  MemoryItem[]
+  memorySuggestions            MemorySuggestion[]
+  memoryUsageEvents            MemoryUsageEvent[]
+  codexOAuthProviders          CodexOAuthProviderInstance[]
+  codexOAuthLeases             CodexOAuthLease[]
+  codexOAuthSetupManifests     CodexOAuthSetupManifest[]
+  codexOAuthSetupPayloadClaims CodexOAuthSetupPayloadClaim[]
+  reviewSnapshots              ReviewSnapshot[]
+  reviewExecutionCheckpoints   ReviewExecutionCheckpoint[]
 
   @@unique([provider, externalRepositoryId, sourceBaseUrl])
   @@unique([workspaceId, provider, fullName, sourceBaseUrl])
@@ -313,55 +315,256 @@ model ProviderSetupState {
 }
 
 model CodexOAuthProviderInstance {
-  id                     String    @id @default(cuid())
-  workspaceId            String
-  repositoryId           String
-  providerInstanceId     String    @unique
-  authMode               String
-  secretName             String
-  state                  String    @default("setup_pending")
-  latestGeneration       Int       @default(1)
-  latestGenerationHash   String?
-  generationHashSalt     String
-  accountFingerprintSalt String
-  activeLeaseId          String?
-  activeLeaseExpiresAt   DateTime?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  id                         String    @id @default(cuid())
+  workspaceId                String
+  repositoryId               String
+  providerInstanceId         String    @unique
+  authMode                   String
+  secretName                 String
+  state                      String    @default("setup_pending")
+  latestGeneration           Int       @default(1)
+  latestGenerationHash       String?
+  generationHashSalt         String
+  accountFingerprintSalt     String
+  activeLeaseId              String?
+  activeLeaseExpiresAt       DateTime?
+  mutationEpoch              BigInt    @default(0)
+  mutationOwner              String?
+  mutationOwnerId            String?
+  activeSecretNamespaceId    String?   @unique
+  activeSecretNamespaceEpoch BigInt?
+  activeSecretNamespaceName  String?
+  activeAccountIdentityHash  String?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
-  workspace        Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  repository       RepositoryConnection        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
-  leases           CodexOAuthLease[]
-  writebackIntents CodexOAuthWritebackIntent[]
-  setupManifests   CodexOAuthSetupManifest[]
+  workspace             Workspace                        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository            RepositoryConnection             @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  leases                CodexOAuthLease[]
+  writebackIntents      CodexOAuthWritebackIntent[]
+  setupManifests        CodexOAuthSetupManifest[]
+  setupRecoveryRequests CodexOAuthSetupRecoveryRequest[]
+  payloadClaims         CodexOAuthSetupPayloadClaim[]
+  secretNamespaces      CodexOAuthSecretNamespace[]
+  activeSecretNamespace CodexOAuthSecretNamespace?       @relation("CodexOAuthActiveSecretNamespace", fields: [activeSecretNamespaceId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthProviderInstance_active_namespace_fkey")
 
   @@unique([repositoryId, authMode])
   @@index([workspaceId, state])
   @@index([repositoryId, state])
   @@index([activeLeaseExpiresAt])
+  @@index([mutationOwner, mutationEpoch], map: "CodexOAuthProviderInstance_mutation_owner_idx")
+}
+
+model CodexOAuthSetupPayloadClaim {
+  id                       String    @id
+  providerInstanceRowId    String
+  workspaceId              String
+  repositoryId             String
+  githubRepositoryId       String
+  manifestId               String
+  manifestDigest           String
+  recoveryRequestId        String?
+  recoveryEpoch            BigInt
+  operationId              String
+  payloadVersion           Int
+  canonicalizationVersion  Int
+  generationHash           String
+  accountIdentityHash      String
+  accountIdentityAlgorithm String
+  authByteSize             Int
+  installerVersion         String
+  installerDigest          String
+  databaseIncarnation      String
+  databaseRecoveryWitness  String
+  status                   String
+  claimVersion             Int       @default(1)
+  prepareReplayExpiresAt   DateTime  @db.Timestamptz(3)
+  recoveryExpiresAt        DateTime  @db.Timestamptz(3)
+  confirmedAttemptId       String?   @unique
+  createdAt                DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime  @updatedAt @db.Timestamptz(3)
+  confirmedAt              DateTime? @db.Timestamptz(3)
+  activatedAt              DateTime? @db.Timestamptz(3)
+
+  providerInstance CodexOAuthProviderInstance       @relation(fields: [providerInstanceRowId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthSetupPayloadClaim_provider_fkey")
+  workspace        Workspace                        @relation(fields: [workspaceId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthSetupPayloadClaim_workspace_fkey")
+  repository       RepositoryConnection             @relation(fields: [repositoryId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthSetupPayloadClaim_repository_fkey")
+  manifest         CodexOAuthSetupManifest          @relation(fields: [manifestId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthSetupPayloadClaim_manifest_fkey")
+  recoveryRequest  CodexOAuthSetupRecoveryRequest?  @relation(fields: [providerInstanceRowId, recoveryRequestId], references: [providerInstanceRowId, recoveryRequestId], onDelete: Restrict, onUpdate: Cascade, map: "CodexOAuthSetupPayloadClaim_recovery_request_fkey")
+  attempts         CodexOAuthSetupDispatchAttempt[] @relation("CodexOAuthClaimAttempts")
+  confirmedAttempt CodexOAuthSetupDispatchAttempt?  @relation("CodexOAuthConfirmedAttempt", fields: [confirmedAttemptId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthSetupPayloadClaim_confirmed_attempt_fkey")
+
+  @@unique([providerInstanceRowId, operationId], map: "CodexOAuthSetupPayloadClaim_provider_operation_key")
+  @@unique([providerInstanceRowId, recoveryEpoch], map: "CodexOAuthSetupPayloadClaim_provider_epoch_key")
+  @@index([providerInstanceRowId, status], map: "CodexOAuthSetupPayloadClaim_provider_status_idx")
+}
+
+model CodexOAuthSecretNamespace {
+  id                      String    @id
+  providerInstanceRowId   String
+  githubRepositoryId      String
+  namespaceEpoch          BigInt
+  secretName              String    @unique
+  databaseRecoveryWitness String
+  status                  String
+  permanentlyRetired      Boolean   @default(false)
+  workflowPath            String?
+  workflowSourceCommitSha String?
+  workflowSourceBlobSha   String?
+  workflowSourceSha256    String?
+  workflowSemanticSha256  String?
+  workflowSourceTrust     String?
+  attestedRepositoryId    String?
+  createdAt               DateTime  @default(now()) @db.Timestamptz(3)
+  confirmedAt             DateTime? @db.Timestamptz(3)
+  activatedAt             DateTime? @db.Timestamptz(3)
+  retiredAt               DateTime? @db.Timestamptz(3)
+
+  providerInstance  CodexOAuthProviderInstance      @relation(fields: [providerInstanceRowId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthSecretNamespace_provider_fkey")
+  activeForProvider CodexOAuthProviderInstance?     @relation("CodexOAuthActiveSecretNamespace")
+  dispatchAttempt   CodexOAuthSetupDispatchAttempt?
+  runtimeWriteback  CodexOAuthWritebackIntent?
+
+  @@unique([providerInstanceRowId, namespaceEpoch], map: "CodexOAuthSecretNamespace_provider_epoch_key")
+  @@index([providerInstanceRowId, status], map: "CodexOAuthSecretNamespace_provider_status_idx")
+}
+
+model CodexOAuthSetupDispatchAttempt {
+  id                   String    @id
+  claimId              String
+  namespaceId          String    @unique
+  ordinal              Int
+  idempotencyKey       String
+  status               String
+  authorizedAt         DateTime  @db.Timestamptz(3)
+  dispatchExpiresAt    DateTime  @db.Timestamptz(3)
+  definiteResponseCode Int?
+  confirmedAt          DateTime? @db.Timestamptz(3)
+  retiredAt            DateTime? @db.Timestamptz(3)
+  createdAt            DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime  @updatedAt @db.Timestamptz(3)
+
+  claim             CodexOAuthSetupPayloadClaim  @relation("CodexOAuthClaimAttempts", fields: [claimId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthSetupDispatchAttempt_claim_fkey")
+  namespace         CodexOAuthSecretNamespace    @relation(fields: [namespaceId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthSetupDispatchAttempt_namespace_fkey")
+  confirmedForClaim CodexOAuthSetupPayloadClaim? @relation("CodexOAuthConfirmedAttempt")
+
+  @@unique([claimId, idempotencyKey], map: "CodexOAuthSetupDispatchAttempt_claim_idempotency_key")
+  @@unique([claimId, ordinal], map: "CodexOAuthSetupDispatchAttempt_claim_ordinal_key")
+  @@index([claimId, status], map: "CodexOAuthSetupDispatchAttempt_claim_status_idx")
+}
+
+/// Private database-authority receipts are minted and consumed only by the
+/// migration-owned SECURITY DEFINER contract. They are intentionally absent
+/// from Prisma Client so application code cannot treat them as ordinary data.
+model CodexOAuthDatabaseAuthorityKey {
+  singleton   Boolean  @id @default(true)
+  keyMaterial String
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  @@ignore
+}
+
+model CodexOAuthDatabaseAuthorityReceipt {
+  databaseRole  String
+  backendPid    Int
+  transactionId BigInt
+  effect        String
+  ownerId       String
+  effectCode    Int
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  consumedAt    DateTime? @db.Timestamptz(3)
+
+  @@id([databaseRole, backendPid, transactionId, effect, ownerId, effectCode], map: "CodexOAuthDatabaseAuthorityReceipt_pkey")
+  @@ignore
+}
+
+model CodexOAuthProviderIdentityQuarantine {
+  providerInstanceRowId      String    @id
+  observedWorkspaceId        String
+  observedRepositoryId       String
+  observedProviderInstanceId String
+  expectedProviderInstanceId String?
+  reason                     String
+  evidenceJson               Json
+  quarantinedAt              DateTime  @default(now())
+  resolvedAt                 DateTime?
+}
+
+model CodexOAuthChildIdentityQuarantine {
+  childKind             String
+  childId               String
+  providerInstanceRowId String
+  reason                String
+  evidenceJson          Json
+  quarantinedAt         DateTime  @default(now())
+  resolvedAt            DateTime?
+
+  @@id([childKind, childId])
+  @@index([providerInstanceRowId, resolvedAt], map: "CodexOAuthChildIdentityQuarantine_provider_idx")
 }
 
 model CodexOAuthSetupManifest {
-  id                    String    @id @default(cuid())
-  workspaceId           String
-  repositoryId          String
-  providerInstanceRowId String
-  providerInstanceId    String
-  setupNonce            String    @unique
-  manifestJson          Json
-  status                String    @default("issued")
-  expiresAt             DateTime
-  createdAt             DateTime  @default(now())
-  lastFetchedAt         DateTime?
-  consumedAt            DateTime?
+  /// Active rows are additionally constrained by partial unique index
+  /// CodexOAuthSetupManifest_one_active_provider_key on providerInstanceRowId
+  /// WHERE status IN ('issued', 'fetched'), created by migration 000060.
+  id                        String    @id @default(cuid())
+  workspaceId               String
+  repositoryId              String
+  providerInstanceRowId     String
+  providerInstanceId        String
+  setupNonce                String    @unique
+  manifestJson              Json
+  status                    String    @default("issued")
+  expiresAt                 DateTime
+  createdAt                 DateTime  @default(now())
+  lastFetchedAt             DateTime?
+  consumedAt                DateTime?
+  confirmationJson          Json?
+  mutationEpoch             BigInt?
+  databaseRecoveryWitness   String?
+  payloadVersion            Int?
+  payloadGenerationHash     String?
+  payloadAccountFingerprint String?
+  payloadByteSize           Int?
+  payloadClaimedAt          DateTime? @db.Timestamptz(3)
+  recoveryExpiresAt         DateTime? @db.Timestamptz(3)
 
-  workspace        Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  repository       RepositoryConnection       @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
-  providerInstance CodexOAuthProviderInstance @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+  workspace                Workspace                       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository               RepositoryConnection            @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  providerInstance         CodexOAuthProviderInstance      @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+  latestForRecoveryRequest CodexOAuthSetupRecoveryRequest? @relation("CodexOAuthRecoveryLatestManifest")
+  payloadClaims            CodexOAuthSetupPayloadClaim[]
 
   @@index([repositoryId, status])
   @@index([providerInstanceId, status])
   @@index([expiresAt])
+  @@index([providerInstanceRowId, mutationEpoch], map: "CodexOAuthSetupManifest_provider_epoch_idx")
+  @@index([status, recoveryExpiresAt], map: "CodexOAuthSetupManifest_recovery_expiry_idx")
+}
+
+model CodexOAuthSetupRecoveryRequest {
+  id                      String    @id @default(cuid())
+  providerInstanceRowId   String
+  recoveryRequestId       String
+  actor                   String
+  acknowledgement         String
+  mutationEpoch           BigInt
+  databaseRecoveryWitness String?
+  mode                    String
+  state                   String
+  latestManifestId        String?   @unique
+  requestedAt             DateTime  @default(now())
+  activatedAt             DateTime  @default(now())
+  completedAt             DateTime?
+  updatedAt               DateTime  @updatedAt
+
+  providerInstance CodexOAuthProviderInstance    @relation(fields: [providerInstanceRowId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey")
+  latestManifest   CodexOAuthSetupManifest?      @relation("CodexOAuthRecoveryLatestManifest", fields: [latestManifestId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "CodexOAuthSetupRecoveryRequest_latestManifestId_fkey")
+  writebackIntents CodexOAuthWritebackIntent[]
+  payloadClaims    CodexOAuthSetupPayloadClaim[]
+
+  @@unique([providerInstanceRowId, recoveryRequestId], map: "CodexOAuthSetupRecoveryRequest_provider_request_key")
+  @@index([providerInstanceRowId, state], map: "CodexOAuthSetupRecoveryRequest_provider_state_idx")
 }
 
 model CodexOAuthLease {
@@ -383,6 +586,9 @@ model CodexOAuthLease {
   createdAt               DateTime  @default(now())
   finalizedAt             DateTime?
   completedAt             DateTime?
+  mutationEpoch           BigInt?
+  secretNamespaceId       String?
+  secretNamespaceEpoch    BigInt?
 
   providerInstance CodexOAuthProviderInstance  @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
   workspace        Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -393,30 +599,52 @@ model CodexOAuthLease {
   @@index([workspaceId, status])
   @@index([repositoryId, status])
   @@index([expiresAt])
+  @@index([providerInstanceRowId, mutationEpoch], map: "CodexOAuthLease_provider_epoch_idx")
 }
 
 model CodexOAuthWritebackIntent {
-  id                     String    @id @default(cuid())
-  providerInstanceRowId  String
-  leaseId                String
-  providerInstanceId     String
-  idempotencyKey         String
-  generation             Int
-  latestGenerationHash   String
-  encryptedPayloadDigest String
-  keyId                  String
-  status                 String    @default("pending")
-  safeErrorCode          String?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
-  completedAt            DateTime?
+  /// Migration 000064 enforces one V4 intent per lease with the partial unique
+  /// index CodexOAuthWritebackIntent_versioned_lease_key. Prisma cannot model
+  /// a unique index whose predicate is databaseIncarnation IS NOT NULL.
+  id                       String    @id @default(cuid())
+  providerInstanceRowId    String
+  leaseId                  String
+  providerInstanceId       String
+  idempotencyKey           String
+  generation               Int
+  latestGenerationHash     String
+  encryptedPayloadDigest   String
+  keyId                    String
+  status                   String    @default("pending")
+  safeErrorCode            String?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  completedAt              DateTime?
+  mutationEpoch            BigInt?
+  dispatchAttemptId        String?   @unique
+  secretNamespaceId        String?   @unique
+  dispatchAuthorizedAt     DateTime? @db.Timestamptz(3)
+  providerResponseCode     Int?
+  providerConfirmedAt      DateTime? @db.Timestamptz(3)
+  namespaceRetiredAt       DateTime? @db.Timestamptz(3)
+  databaseIncarnation      String?
+  databaseRecoveryWitness  String?
+  accountIdentityHash      String?
+  accountIdentityAlgorithm String?
+  recoveryRequestRowId     String?
+  recoveryResolvedAt       DateTime? @db.Timestamptz(3)
+  executorOwner            String?
+  executorLeaseExpiresAt   DateTime? @db.Timestamptz(3)
 
-  providerInstance CodexOAuthProviderInstance @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
-  lease            CodexOAuthLease            @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  providerInstance CodexOAuthProviderInstance      @relation(fields: [providerInstanceRowId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthWritebackIntent_providerInstanceRowId_fkey")
+  lease            CodexOAuthLease                 @relation(fields: [leaseId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthWritebackIntent_leaseId_fkey")
+  secretNamespace  CodexOAuthSecretNamespace?      @relation(fields: [secretNamespaceId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthWritebackIntent_secret_namespace_fkey")
+  recoveryRequest  CodexOAuthSetupRecoveryRequest? @relation(fields: [recoveryRequestRowId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "CodexOAuthWritebackIntent_recovery_request_fkey")
 
   @@unique([providerInstanceId, idempotencyKey])
   @@index([providerInstanceId, status])
   @@index([leaseId, status])
+  @@index([providerInstanceRowId, mutationEpoch], map: "CodexOAuthWritebackIntent_provider_epoch_idx")
 }
 
 model ActionRunHealthReport {

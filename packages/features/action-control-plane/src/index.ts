@@ -1,5 +1,6 @@
 export * from "./domain/action-control-plane.js";
 export * from "./domain/codex-rotating-oauth-posting-window.js";
+export * from "./domain/codex-rotating-new-work-admission.js";
 export * from "./application/ports/action-oidc-replay-nonce-store-port.js";
 export * from "./application/ports/action-entitlement-policy-port.js";
 export * from "./application/ports/action-ledger-key-port.js";
@@ -26,6 +27,7 @@ export * from "./application/use-cases/finalize-codex-rotating-oauth-lease.js";
 export * from "./application/use-cases/abandon-codex-rotating-oauth-lease.js";
 export * from "./application/use-cases/preflight-codex-rotating-oauth-writeback.js";
 export * from "./application/use-cases/writeback-codex-rotating-oauth.js";
+export * from "./application/services/codex-rotating-versioned-writeback-dispatcher.js";
 export * from "./application/use-cases/issue-codex-rotating-oauth-checkout-token.js";
 export * from "./application/use-cases/issue-codex-rotating-oauth-comment-token.js";
 export * from "./application/use-cases/issue-codex-rotating-review-snapshot-head-token.js";

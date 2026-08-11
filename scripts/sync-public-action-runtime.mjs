@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   statSync,
+  writeSync,
 } from "node:fs";
 import path from "node:path";
 
@@ -25,7 +26,14 @@ const syncedFiles = [
   "action-dist/index.cjs",
   "action-dist/codex/linux-x64/codex-linux-x64.tgz",
   "action-dist/codex/linux-x64/manifest.json",
+  "scripts/seed-codex-rotating-auth.sh",
+  "scripts/reseed-codex-rotating-auth.sh",
 ];
+
+if (isTrue(args.printFiles)) {
+  writeSync(1, `${syncedFiles.join("\n")}\n`);
+  process.exit(0);
+}
 
 assertGitRepo("saas", saasRepo);
 assertGitRepo("action", actionRepo);

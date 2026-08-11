@@ -118,6 +118,9 @@ export type RegisterActionControlPlaneRoutesDependencies =
       readonly reviewThreadLifecycleResolver?: GitHubReviewThreadLifecycleResolverPort;
       readonly oidcAudience?: string;
       readonly controlPlaneEnabled?: boolean;
+      readonly codexRotatingMutationAdmission?: {
+        assertEnabled(): void;
+      };
     };
 
 const exchangeBodySchema = z
@@ -264,13 +267,14 @@ export async function registerActionControlPlaneRoutes(
       }
       try {
         const body = exchangeBodySchema.parse(request.body);
+        const audience = resolveServerOwnedOidcAudience(
+          body.audience,
+          dependencies.oidcAudience,
+        );
         const result = await exchangeGitHubOidcToken(
           {
             oidcToken: body.oidcToken,
-            audience:
-              body.audience ??
-              dependencies.oidcAudience ??
-              defaultActionOidcAudience,
+            audience,
             ...(body.conflictDispatch
               ? { conflictDispatchPayload: body.conflictDispatch }
               : {}),
@@ -315,13 +319,14 @@ export async function registerActionControlPlaneRoutes(
       }
       try {
         const body = codexRotatingPreleaseBodySchema.parse(request.body);
+        const audience = resolveServerOwnedOidcAudience(
+          body.audience,
+          dependencies.oidcAudience,
+        );
         const result = await preleaseCodexRotatingOAuth(
           {
             oidcToken: body.oidcToken,
-            audience:
-              body.audience ??
-              dependencies.oidcAudience ??
-              defaultActionOidcAudience,
+            audience,
             providerInstanceId: body.providerInstanceId,
             workflowSchemaVersion: body.workflowSchemaVersion,
           },
@@ -361,6 +366,7 @@ export async function registerActionControlPlaneRoutes(
         );
       }
       try {
+        dependencies.codexRotatingMutationAdmission?.assertEnabled();
         const body = codexRotatingFinalizeBodySchema.parse(request.body);
         const result = await finalizeCodexRotatingOAuthLease(
           {
@@ -396,6 +402,7 @@ export async function registerActionControlPlaneRoutes(
         );
       }
       try {
+        dependencies.codexRotatingMutationAdmission?.assertEnabled();
         const body = codexRotatingAbandonBodySchema.parse(request.body);
         const result = await abandonCodexRotatingOAuthLease(
           {
@@ -434,6 +441,7 @@ export async function registerActionControlPlaneRoutes(
         );
       }
       try {
+        dependencies.codexRotatingMutationAdmission?.assertEnabled();
         const body = codexRotatingWritebackPreflightBodySchema.parse(
           request.body,
         );
@@ -463,8 +471,7 @@ export async function registerActionControlPlaneRoutes(
         );
       }
       if (
-        !dependencies.codexRotatingOAuth ||
-        !dependencies.codexRotatingSecretWriter ||
+        !dependencies.codexRotatingVersionedWriteback ||
         !dependencies.codexRotatingWritebackHmacKey
       ) {
         return sendActionErrorCode(
@@ -475,6 +482,7 @@ export async function registerActionControlPlaneRoutes(
         );
       }
       try {
+        dependencies.codexRotatingMutationAdmission?.assertEnabled();
         const result = await writebackCodexRotatingOAuth(
           { body: request.body },
           dependencies as WritebackCodexRotatingOAuthDependencies,
@@ -1000,6 +1008,17 @@ export async function registerActionControlPlaneRoutes(
   );
 }
 
+function resolveServerOwnedOidcAudience(
+  echoedAudience: string | undefined,
+  configuredAudience: string | undefined,
+): string {
+  const audience = configuredAudience ?? defaultActionOidcAudience;
+  if (echoedAudience !== undefined && echoedAudience !== audience) {
+    throw new Error("oidc_audience_mismatch");
+  }
+  return audience;
+}
+
 function readBearerToken(request: FastifyRequest): string {
   const authorization = request.headers.authorization;
   if (typeof authorization !== "string") {
@@ -1266,6 +1285,9 @@ function safeActionErrorCode(message: string): string {
   }
   if (isCodexRotatingWorkflowSourceError(message)) {
     return "workflow_schema_mismatch";
+  }
+  if (message === "oidc_audience_mismatch") {
+    return "invalid_action_token";
   }
   if (message.includes("mismatch")) {
     return "action_repository_mismatch";

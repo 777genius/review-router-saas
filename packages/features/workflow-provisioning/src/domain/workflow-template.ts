@@ -1,4 +1,5 @@
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
+import { isLoopbackHostname } from "@reviewrouter/shared";
 import {
   legacyReviewRouterWorkflowPath,
   managedCodexWorkflowPath,
@@ -13,6 +14,7 @@ import {
   CodexRotatingReviewActionV2Mode,
   CodexRotatingT0WorkflowSchemaVersion,
   isClientTriggeredT0WorkflowSchemaVersion,
+  type VersionedProviderSecretNamespace,
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -33,6 +35,7 @@ export type ReviewRouterWorkflowOptions = {
   readonly codexRotatingProviderInstanceId?: string;
   readonly codexRotatingReviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
   readonly codexRotatingWorkflowSchemaVersion?: CodexRotatingT0WorkflowSchemaVersion;
+  readonly codexRotatingActiveSecretNamespace?: VersionedProviderSecretNamespace;
   readonly discussionMode?: ReviewRouterDiscussionMode;
 };
 
@@ -894,6 +897,7 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
   readonly workflowSchemaVersion?:
     | CodexRotatingT0WorkflowSchemaVersion
     | undefined;
+  readonly activeSecretNamespace?: VersionedProviderSecretNamespace;
 }): readonly (readonly string[])[] {
   if (
     input.reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
@@ -904,7 +908,9 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
       workflowSchemaVersion,
     );
     const markers = [
-      "name: ReviewRouter Codex OAuth",
+      input.activeSecretNamespace
+        ? `name: ReviewRouter Codex OAuth [namespace=${input.activeSecretNamespace.namespaceId};epoch=${input.activeSecretNamespace.epoch};secret=${input.activeSecretNamespace.name}]`
+        : "name: ReviewRouter Codex OAuth",
       "run-name: ${{ format('ReviewRouter review PR {0} at {1}'",
       "pull_request:",
       "permissions: {}\n\njobs:",
@@ -915,7 +921,7 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
       `workflow_schema_version: ${workflowSchemaVersion}`,
       `max_changed_lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}`,
       `review_timeout_minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '${defaultTimeoutMinutes}') }}`,
-      `CODEX_AUTH_JSON: \${{ secrets.${codexRotatingSecretName} }}`,
+      `CODEX_AUTH_JSON: \${{ secrets.${input.activeSecretNamespace?.name ?? codexRotatingSecretName} }}`,
     ];
 
     if (input.claudeCodeOAuthTokenSecret === true) {
@@ -931,7 +937,9 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
   }
 
   const markers = [
-    "name: ReviewRouter Codex OAuth",
+    input.activeSecretNamespace
+      ? `name: ReviewRouter Codex OAuth [namespace=${input.activeSecretNamespace.namespaceId};epoch=${input.activeSecretNamespace.epoch};secret=${input.activeSecretNamespace.name}]`
+      : "name: ReviewRouter Codex OAuth",
     "permissions: {}\n\njobs:",
     "pull_request_target:",
     "    permissions:\n      id-token: write",
@@ -942,7 +950,7 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
     `timeout-minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '60') }}`,
     `review-timeout-minutes: \${{ vars.${codexRotatingTimeoutMinutesVariableName} || '60' }}`,
     `provider-instance-id: ${JSON.stringify(input.providerInstanceId)}`,
-    "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+    `auth-json: \${{ secrets.${input.activeSecretNamespace?.name ?? codexRotatingSecretName} }}`,
   ];
 
   if (input.claudeCodeOAuthTokenSecret === true) {
@@ -1256,6 +1264,12 @@ export function renderReviewRouterWorkflowFiles(
           actionRef: options.actionRef,
           apiUrl: options.apiUrl,
           providerInstanceId: options.codexRotatingProviderInstanceId,
+          ...(options.codexRotatingActiveSecretNamespace
+            ? {
+                activeSecretNamespace:
+                  options.codexRotatingActiveSecretNamespace,
+              }
+            : {}),
           ...(options.codexRotatingWorkflowSchemaVersion !== undefined
             ? {
                 workflowSchemaVersion:
@@ -1466,29 +1480,15 @@ function assertSafeApiUrl(apiUrl: string): void {
   ) {
     throw new Error("invalid_workflow_api_url");
   }
-  if (parsed.protocol === "https:") {
+  const local = isLoopbackHostname(parsed.hostname);
+  if (parsed.protocol === "https:" && !local) {
     return;
   }
-  if (parsed.protocol === "http:" && isLocalhost(parsed.hostname)) {
+  if (parsed.protocol === "http:" && local) {
     return;
   }
 
   throw new Error("invalid_workflow_api_url");
-}
-
-function isLocalhost(hostname: string): boolean {
-  if (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname === "::1" ||
-    hostname === "[::1]"
-  ) {
-    return true;
-  }
-  if (hostname.endsWith(".localhost")) {
-    return true;
-  }
-  return false;
 }
 
 function assertSafeEnvKey(key: string): void {

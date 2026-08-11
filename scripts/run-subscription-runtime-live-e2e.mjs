@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { isLoopbackHostname } from "../packages/shared/src/validation/loopback-hostname.mjs";
 import { loadEnvFile } from "./lib/env-file.mjs";
 
 const args = new Set(process.argv.slice(2));
@@ -50,6 +51,7 @@ for (const target of targets) {
   requireSafeGitHubName(target.repoName, "repository");
   requireDisposableRepository(`${target.owner}/${target.repoName}`);
   requireRepositoryAllowlisted(`${target.owner}/${target.repoName}`);
+  requireRepositoryProvenance(`${target.owner}/${target.repoName}`);
 }
 
 requireActionArtifactsFetchable();
@@ -243,7 +245,7 @@ function requireApiUrl() {
   if (parsed.protocol !== "https:") {
     errors.push("Live E2E API URL must use https://.");
   }
-  if (isLocalhost(parsed.hostname)) {
+  if (isLoopbackHostname(parsed.hostname)) {
     errors.push(
       "Live E2E API URL must not be localhost because GitHub-hosted runners must reach it.",
     );
@@ -253,10 +255,10 @@ function requireApiUrl() {
 function requirePinnedActionRef() {
   const ref =
     read("REVIEW_ROUTER_CODEX_ROTATING_E2E_ACTION_REF") ||
-    read("REVIEW_ROUTER_ACTION_REF");
+    read("REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF");
   if (!ref) {
     errors.push(
-      "Set REVIEW_ROUTER_CODEX_ROTATING_E2E_ACTION_REF or REVIEW_ROUTER_ACTION_REF to owner/repo@40-char-sha.",
+      "Set REVIEW_ROUTER_CODEX_ROTATING_E2E_ACTION_REF or REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF to owner/repo@40-char-sha.",
     );
     return;
   }
@@ -270,7 +272,7 @@ function requirePinnedActionRef() {
 function requireActionArtifactsFetchable() {
   const ref =
     read("REVIEW_ROUTER_CODEX_ROTATING_E2E_ACTION_REF") ||
-    read("REVIEW_ROUTER_ACTION_REF");
+    read("REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(ref)) {
     return;
   }
@@ -357,18 +359,53 @@ function requireRepositoryAllowlisted(repository) {
     .split(/[\s,]+/)
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
-  if (allowlist.length > 0 && !allowlist.includes(repository.toLowerCase())) {
+  if (allowlist.length !== 1) {
+    errors.push(
+      "REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES must contain exactly one disposable live-E2E target.",
+    );
+  } else if (!allowlist.includes(repository.toLowerCase())) {
     errors.push(
       `Repository ${repository} is not in REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES.`,
     );
   }
 }
 
-function isLocalhost(hostname) {
-  return (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname === "::1" ||
-    hostname.endsWith(".localhost")
+function requireRepositoryProvenance(repository) {
+  const expectedId = read(
+    "REVIEW_ROUTER_CODEX_ROTATING_E2E_DISPOSABLE_REPOSITORY_ID",
+  );
+  const result = spawnSync(
+    "gh",
+    ["api", `repos/${repository}`, "--jq", ".id"],
+    { encoding: "utf8", env },
+  );
+  if (result.status === 0) {
+    const observedId = result.stdout.trim();
+    if (!/^[1-9][0-9]*$/u.test(observedId)) {
+      errors.push(
+        `GitHub returned an invalid immutable repository ID for ${repository}.`,
+      );
+    } else if (!expectedId) {
+      errors.push(
+        `Existing repository ${repository} requires REVIEW_ROUTER_CODEX_ROTATING_E2E_DISPOSABLE_REPOSITORY_ID=${observedId}.`,
+      );
+    } else if (expectedId !== observedId) {
+      errors.push(
+        `Existing repository ${repository} immutable ID mismatch: expected ${expectedId}, observed ${observedId}.`,
+      );
+    }
+    return;
+  }
+  const diagnostic = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  if (/\bHTTP 404\b|\bNot Found\b/iu.test(diagnostic)) {
+    errors.push(
+      expectedId
+        ? `Repository ${repository} is absent but immutable repository ID ${expectedId} was supplied; it may have been deleted.`
+        : `Repository ${repository} is absent. Create the disposable repository first, then pin its REST numeric ID in REVIEW_ROUTER_CODEX_ROTATING_E2E_DISPOSABLE_REPOSITORY_ID.`,
+    );
+    return;
+  }
+  errors.push(
+    `Could not verify immutable GitHub repository provenance for ${repository}.`,
   );
 }

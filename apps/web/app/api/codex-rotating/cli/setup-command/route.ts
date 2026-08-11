@@ -100,8 +100,15 @@ function safeErrorCode(error: unknown): string {
     "repository_archived",
     "installation_not_active",
     "codex_rotating_not_enabled",
+    "codex_rotating_setup_issuance_quiesced",
     "codex_rotating_installer_missing",
     "codex_rotating_installer_descriptor_incomplete",
+    "codex_rotating_setup_in_progress",
+    "codex_rotating_setup_recovery_required",
+    "codex_rotating_identity_quarantined",
+    "codex_rotating_setup_issuance_quiesced",
+    "codex_rotating_mutation_fence_conflict",
+    "codex_rotating_setup_lock_failed",
     "invalid_codex_rotating_installer_sha256",
     "invalid_review_router_web_url",
     "rate_limited",
@@ -110,6 +117,7 @@ function safeErrorCode(error: unknown): string {
 }
 
 function statusForError(code: string): number {
+  if (code === "codex_rotating_setup_issuance_quiesced") return 503;
   if (
     code === "github_cli_token_required" ||
     code === "github_cli_token_invalid"
@@ -124,5 +132,15 @@ function statusForError(code: string): number {
     return 404;
   }
   if (code === "rate_limited") return 429;
+  if (
+    code === "codex_rotating_setup_in_progress" ||
+    code === "codex_rotating_setup_recovery_required" ||
+    code === "codex_rotating_identity_quarantined" ||
+    code === "codex_rotating_setup_issuance_quiesced" ||
+    code === "codex_rotating_mutation_fence_conflict" ||
+    code === "codex_rotating_setup_lock_failed"
+  ) {
+    return 409;
+  }
   return 400;
 }

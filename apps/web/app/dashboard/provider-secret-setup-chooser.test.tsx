@@ -47,10 +47,12 @@ describe("ProviderSecretSetupChooser", () => {
 
     renderProviderSecretSetupChooser();
 
-    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Verify versioned setup" }),
+    );
 
     const loadingButton = await screen.findByRole("button", {
-      name: "Checking secrets...",
+      name: "Checking versioned setup...",
     });
     expect((loadingButton as HTMLButtonElement).disabled).toBe(true);
     expect(loadingButton.getAttribute("aria-busy")).toBe("true");
@@ -68,7 +70,7 @@ describe("ProviderSecretSetupChooser", () => {
     );
 
     expect(
-      await screen.findByText(/Provider secret metadata was verified/i),
+      await screen.findByText(/Authorized versioned setup is active/i),
     ).toBeTruthy();
   });
 
@@ -87,6 +89,7 @@ describe("ProviderSecretSetupChooser", () => {
       .mockReturnValueOnce(pendingResponse.promise);
 
     renderProviderSecretSetupChooser();
+    fireEvent.click(screen.getByTestId("provider-choice-openrouter-api-key"));
 
     fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
     fireEvent.click(
@@ -122,7 +125,9 @@ describe("ProviderSecretSetupChooser", () => {
 
     renderProviderSecretSetupChooser();
 
-    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Verify versioned setup" }),
+    );
 
     expect(
       await screen.findByText(
@@ -130,7 +135,7 @@ describe("ProviderSecretSetupChooser", () => {
       ),
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "I ran this script" }),
+      screen.getByRole("button", { name: "Verify versioned setup" }),
     ).toBeTruthy();
     expect(routerMock.replace).not.toHaveBeenCalled();
     expect(routerMock.refresh).not.toHaveBeenCalled();
@@ -148,6 +153,7 @@ describe("ProviderSecretSetupChooser", () => {
     );
 
     renderProviderSecretSetupChooser();
+    fireEvent.click(screen.getByTestId("provider-choice-openrouter-api-key"));
 
     fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
 
@@ -164,6 +170,28 @@ describe("ProviderSecretSetupChooser", () => {
     expect(routerMock.replace).not.toHaveBeenCalled();
   });
 
+  it("never offers manual confirmation for rotating readiness", async () => {
+    mockProviderSetupFetch().mockResolvedValueOnce(
+      providerSetupResponse({
+        params: {
+          error: "repository_not_visible_to_github_app",
+          workspace: "workspace_1",
+          section: "repositories",
+        },
+      }),
+    );
+
+    renderProviderSecretSetupChooser();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Verify versioned setup" }),
+    );
+
+    await screen.findByText(/could not save provider setup/i);
+    expect(
+      screen.queryByRole("button", { name: "Confirm manually" }),
+    ).toBeNull();
+  });
+
   it("keeps verification mode when the repository secret is missing", async () => {
     mockProviderSetupFetch().mockResolvedValueOnce(
       providerSetupResponse({
@@ -176,6 +204,7 @@ describe("ProviderSecretSetupChooser", () => {
     );
 
     renderProviderSecretSetupChooser();
+    fireEvent.click(screen.getByTestId("provider-choice-openrouter-api-key"));
 
     fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
 
@@ -189,7 +218,6 @@ describe("ProviderSecretSetupChooser", () => {
         /was not found in 777genius\/plugin-kit-ai-starter-claude-python repository Actions secrets/i,
       ),
     ).toBeTruthy();
-    expect(screen.getByText(/copy a fresh command/i)).toBeTruthy();
     expect(
       screen.queryByRole("button", { name: "Confirm manually" }),
     ).toBeNull();
@@ -292,6 +320,7 @@ describe("ProviderSecretSetupChooser", () => {
       );
 
     renderProviderSecretSetupChooser();
+    fireEvent.click(screen.getByTestId("provider-choice-openrouter-api-key"));
 
     fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
     fireEvent.click(
@@ -332,14 +361,14 @@ describe("ProviderSecretSetupChooser", () => {
       renderProviderSecretSetupChooser();
 
       fireEvent.click(
-        screen.getByRole("button", { name: "I ran this script" }),
+        screen.getByRole("button", { name: "Verify versioned setup" }),
       );
 
       expect(
-        await screen.findByText(/Provider secret metadata was verified/i),
+        await screen.findByText(/Authorized versioned setup is active/i),
       ).toBeTruthy();
       expect(
-        screen.getByText(/verified the GitHub secret metadata it can read/i),
+        screen.getByText(/matched the active provider, claim/i),
       ).toBeTruthy();
       expect(
         (screen.getByRole("button", { name: "Confirmed" }) as HTMLButtonElement)
@@ -377,9 +406,11 @@ describe("ProviderSecretSetupChooser", () => {
     );
 
     renderProviderSecretSetupChooser();
-    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Verify versioned setup" }),
+    );
 
-    await screen.findByText(/Provider secret metadata was verified/i);
+    await screen.findByText(/Authorized versioned setup is active/i);
     expect(
       screen.getByTestId("provider-choice-codex-oauth-rotating-confirmed"),
     ).toBeTruthy();
@@ -434,8 +465,10 @@ describe("ProviderSecretSetupChooser", () => {
       .mockResolvedValue({ status: "available_repository" });
 
     renderProviderSecretSetupChooser();
-    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
-    await screen.findByText(/Provider secret metadata was verified/i);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Verify versioned setup" }),
+    );
+    await screen.findByText(/Authorized versioned setup is active/i);
 
     await expect(
       checkProviderSecretStatusWithCache({
@@ -477,9 +510,41 @@ describe("ProviderSecretSetupChooser", () => {
     ).toBeTruthy();
     expect(screen.queryByTestId("provider-choice-codex-oauth")).toBeNull();
     expect(screen.queryByTestId("provider-choice-codex-api-key")).toBeNull();
-    expect(pageText()).toContain("REVIEWROUTER_CODEX_AUTH_JSON");
+    expect(pageText()).toContain("Server-authorized versioned secret");
+    expect(pageText()).not.toContain("REVIEWROUTER_CODEX_AUTH_JSON");
     expect(pageText()).not.toContain("gh secret set CODEX_AUTH_JSON");
     expect(pageText()).not.toContain("OPENAI_API_KEY");
+  });
+
+  it("orders rotating preparation before its workflow while generic setup stays PR-first", () => {
+    renderProviderSecretSetupChooser();
+
+    expect(pageText()).toContain(
+      "write the exact server-authorized versioned credential",
+    );
+    expect(pageText()).toContain("Create and merge the setup PR");
+    expect(pageText()).toContain(
+      "Verify versioned setup to confirm the merged namespace is active",
+    );
+
+    fireEvent.click(screen.getByTestId("provider-choice-openrouter-api-key"));
+    expect(pageText()).toContain(
+      "Merge the setup PR for 777genius/plugin-kit-ai-starter-claude-python",
+    );
+  });
+
+  it("limits the pre-workflow phase to rotating Codex", () => {
+    renderProviderSecretSetupChooser({ rotatingPreparationOnly: true });
+
+    expect(
+      screen.getByTestId("provider-choice-codex-oauth-rotating"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByTestId("provider-choice-claude-code-oauth"),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId("provider-choice-openrouter-api-key"),
+    ).toBeNull();
   });
 
   it("mints rotating setup commands on demand when dashboard guidance has no serialized command", async () => {
@@ -488,7 +553,6 @@ describe("ProviderSecretSetupChooser", () => {
         command: "set -euo pipefail\n# server nonce command",
         expiresAt: "2026-05-25T12:15:00.000Z",
         providerInstanceId: "codex-rotating:123456",
-        secretNames: ["REVIEWROUTER_CODEX_AUTH_JSON"],
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -520,7 +584,6 @@ describe("ProviderSecretSetupChooser", () => {
           command: "set -euo pipefail\n# retry nonce command",
           expiresAt: "2026-05-25T12:15:00.000Z",
           providerInstanceId: "codex-rotating:123456",
-          secretNames: ["REVIEWROUTER_CODEX_AUTH_JSON"],
         }),
       );
     vi.stubGlobal("fetch", fetchMock);
@@ -541,7 +604,7 @@ describe("ProviderSecretSetupChooser", () => {
     expect(
       (
         screen.getByRole("button", {
-          name: "I ran this script",
+          name: "Verify versioned setup",
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
@@ -552,6 +615,119 @@ describe("ProviderSecretSetupChooser", () => {
 
     expect(await screen.findByText(/retry nonce command/i)).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("explains an active rotating setup conflict", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          setupCommandErrorResponse("codex_rotating_setup_in_progress"),
+        ),
+    );
+
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+
+    expect(
+      await screen.findByText(/Another unfetched Codex setup/i),
+    ).toBeTruthy();
+  });
+
+  it("requires acknowledgement and requests one forced recovery command", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        setupCommandErrorResponse("codex_rotating_setup_recovery_required"),
+      )
+      .mockResolvedValueOnce(
+        setupCommandResponse({
+          command: "set -euo pipefail\n# recovered forced reseed",
+          expiresAt: "2026-05-25T12:15:00.000Z",
+          providerInstanceId: "codex-rotating:123456",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+
+    const recoverButton = await screen.findByRole("button", {
+      name: "Recover and issue forced reseed",
+    });
+    expect((recoverButton as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(
+      screen.getByLabelText(/GitHub secret may already have changed/i),
+    );
+    fireEvent.click(recoverButton);
+
+    expect(await screen.findByText(/recovered forced reseed/i)).toBeTruthy();
+    const recoveryCall = fetchMock.mock.calls[1]!;
+    expect(recoveryCall[0]).toBe(
+      "/api/dashboard/codex-rotating/setup-recovery",
+    );
+    const body = recoveryCall[1]?.body as FormData;
+    expect(body.get("acknowledgement")).toBe(
+      "all_prior_installers_and_writers_are_stopped",
+    );
+    expect(String(body.get("recoveryRequestId"))).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("explains setup lock contention as retryable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          setupCommandErrorResponse("codex_rotating_setup_lock_failed"),
+        ),
+    );
+
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+
+    expect(
+      await screen.findByText(/another request held the setup lock/i),
+    ).toBeTruthy();
+  });
+
+  it("explains the external-write grace refusal", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          setupCommandErrorResponse("codex_rotating_mutation_still_active"),
+        ),
+    );
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+    expect(await screen.findByText(/external-write deadline/i)).toBeTruthy();
   });
 });
 
@@ -583,10 +759,12 @@ describe("ProviderSecretSetupDialog", () => {
     renderProviderSecretSetupDialog();
 
     fireEvent.click(screen.getByRole("button", { name: "Enable review" }));
-    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Verify versioned setup" }),
+    );
 
     expect(
-      await screen.findByText(/Provider secret metadata was verified/i),
+      await screen.findByText(/Authorized versioned setup is active/i),
     ).toBeTruthy();
     expect(routerMock.refresh).not.toHaveBeenCalled();
 
@@ -605,6 +783,7 @@ function renderProviderSecretSetupChooser(input?: {
   readonly codexOAuthRotatingGuidance?: ProviderSecretSetupGuidance;
   readonly codexRotatingOAuthEnabled?: boolean;
   readonly claudeCodeProviderEnabled?: boolean;
+  readonly rotatingPreparationOnly?: boolean;
 }): void {
   const organizationLogin = input?.organizationLogin ?? null;
   render(
@@ -616,8 +795,7 @@ function renderProviderSecretSetupChooser(input?: {
       organizationLogin={organizationLogin}
       organizationSecretPolicy={input?.organizationSecretPolicy ?? null}
       codexOAuthRotatingGuidance={
-        input?.codexOAuthRotatingGuidance ??
-        guidance("REVIEWROUTER_CODEX_AUTH_JSON", null)
+        input?.codexOAuthRotatingGuidance ?? rotatingGuidance()
       }
       codexOAuthGuidance={guidance("CODEX_AUTH_JSON", organizationLogin)}
       codexApiKeyGuidance={guidance("OPENAI_API_KEY", organizationLogin)}
@@ -631,6 +809,7 @@ function renderProviderSecretSetupChooser(input?: {
       )}
       codexRotatingOAuthEnabled={input?.codexRotatingOAuthEnabled ?? true}
       claudeCodeProviderEnabled={input?.claudeCodeProviderEnabled ?? true}
+      rotatingPreparationOnly={input?.rotatingPreparationOnly ?? false}
     />,
   );
 }
@@ -645,7 +824,7 @@ function renderProviderSecretSetupDialog(): void {
       organizationLogin={null}
       organizationSecretPolicy={null}
       guidanceSet={{
-        codexOAuthRotating: guidance("REVIEWROUTER_CODEX_AUTH_JSON"),
+        codexOAuthRotating: rotatingGuidance(),
         codexOAuth: guidance("CODEX_AUTH_JSON"),
         codexApiKey: guidance("OPENAI_API_KEY"),
         claudeCodeOAuth: guidance("CLAUDE_CODE_OAUTH_TOKEN"),
@@ -690,12 +869,35 @@ function setupCommandResponse(body: {
   readonly command: string;
   readonly expiresAt: string;
   readonly providerInstanceId: string;
-  readonly secretNames: readonly string[];
 }): Response {
   return {
     ok: true,
     json: async () => body,
   } as Response;
+}
+
+function rotatingGuidance(): ProviderSecretSetupGuidance {
+  return {
+    provider: "codex_oauth_rotating",
+    recommendedScope: "repository",
+    commands: [
+      {
+        scope: "repository",
+        title: "Versioned repository secret",
+        description: "Allocates one server-authorized versioned secret.",
+        command: "set -euo pipefail\n# versioned rotating installer",
+        storesSecretIn: "github_repository_secret",
+        targetLabel:
+          "777genius/plugin-kit-ai-starter-claude-python repository secret",
+        secretNames: ["Server-authorized versioned secret"],
+        selectedRepositories: ["777genius/plugin-kit-ai-starter-claude-python"],
+        validatesBeforeWrite: true,
+        failureRecovery: "Recover through the versioned setup flow.",
+        sendsSecretToReviewRouter: false,
+      },
+    ],
+    warnings: [],
+  };
 }
 
 function setupCommandErrorResponse(error: string): Response {
@@ -726,15 +928,13 @@ function guidance(
 
   return {
     provider:
-      secretName === "REVIEWROUTER_CODEX_AUTH_JSON"
-        ? "codex_oauth_rotating"
-        : secretName === "CODEX_AUTH_JSON"
-          ? "codex_oauth"
-          : secretName === "OPENAI_API_KEY"
-            ? "openai_api_key"
-            : secretName === "CLAUDE_CODE_OAUTH_TOKEN"
-              ? "claude_code_oauth"
-              : "openrouter_api_key",
+      secretName === "CODEX_AUTH_JSON"
+        ? "codex_oauth"
+        : secretName === "OPENAI_API_KEY"
+          ? "openai_api_key"
+          : secretName === "CLAUDE_CODE_OAUTH_TOKEN"
+            ? "claude_code_oauth"
+            : "openrouter_api_key",
     recommendedScope: organizationLogin
       ? "organization_selected_repositories"
       : "repository",

@@ -14,7 +14,8 @@ Implemented so far:
 - GitHub App/OIDC spike and real smoke helpers under `spikes/github-oidc/`
 - GitHub webhook ingestion with signature verification, normalized metadata storage, idempotent delivery handling, and outbox sync requests
 - repository sync, dashboard repository health, workflow provisioning PR rendering, review config, provider setup guidance, action control-plane OIDC exchange, safe action health reports, entitlements, audit/outbox maintenance, and worker loop baseline
-- Codex OAuth secret seeding helper under `scripts/seed-codex-auth.sh`
+- fenced, versioned Codex OAuth setup/recovery under the dashboard and rotating
+  installer contracts
 - unit, integration-style, and local DB E2E checks for the implemented beta paths
 
 Still not production-complete:
@@ -30,10 +31,12 @@ The current implementation focus is beta hardening across [Iteration 08](./itera
 
 For the full end-to-end build sequence, follow [Implementation Playbook](./IMPLEMENTATION_PLAYBOOK.md).
 
-For local/private beta completion, demo, and validation work, follow
-[Beta Runbook](./BETA_RUNBOOK.md). It contains the definition of done, first
-tester checklist, validation commands, launch blockers, and the current honest
-status wording.
+For operational setup and recovery, follow [Operations runbooks](./operations/02-runbooks.md).
+For releases and deployment, follow
+[Environment and release management](./operations/07-environments-and-release-management.md)
+and [Render hosted deployment](../deploy/render.md). The former
+[Beta Runbook](./BETA_RUNBOOK.md) is a superseded compatibility landing page,
+not an operational source.
 
 If blocked, follow [Blocker Handling](./appendices/blocker-handling.md) and continue with unblocked tests, contracts, mocks, docs, or adjacent tasks instead of waiting silently.
 
@@ -57,7 +60,7 @@ Read these first:
 1. [Root Plan](./ROOT_PLAN.md)
 2. [Context Summary](./context-summary.md)
 3. [Implementation Playbook](./IMPLEMENTATION_PLAYBOOK.md)
-4. [Beta Runbook](./BETA_RUNBOOK.md)
+4. [Operations Runbooks](./operations/02-runbooks.md)
 5. [Implementation Principles](./appendices/implementation-principles.md)
 6. [Blocker Handling](./appendices/blocker-handling.md)
 7. [Iteration Roadmap](./iterations/00-roadmap.md)
@@ -267,7 +270,17 @@ Workflow provisioning must:
 Codex OAuth:
 
 - SaaS never receives `auth.json`
-- user seeds `CODEX_AUTH_JSON` directly to GitHub repo/org Actions secrets or uses persistent trusted runner `CODEX_HOME`
+- never write a stable or versioned GitHub Actions secret directly and never
+  assemble an installer from a mutable URL
+- use only the dashboard-issued command for the exact repository/provider; it
+  carries the immutable installer URL/version/SHA-256 tuple, short-lived setup
+  manifest, exact Action commit, mutation epoch, and never-reused namespace
+- for a dropped response, external drift, account switch, restore, or writer
+  promotion, stop prior writers and use the dashboard's acknowledged
+  **Recover and issue forced reseed** flow; ordinary setup cannot mint recovery
+  authority
+- follow the full replay, tombstone, and witness transition contract in
+  [Operations runbooks](./operations/02-runbooks.md)
 
 OpenAI/OpenRouter API keys:
 

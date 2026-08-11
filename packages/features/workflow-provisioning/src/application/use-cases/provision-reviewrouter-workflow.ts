@@ -80,6 +80,12 @@ export async function provisionReviewRouterWorkflow(
         ? {
             codexRotatingProviderInstanceId:
               plan.codexRotatingProviderInstanceId,
+            ...(plan.codexRotatingWorkflowSecretNamespace
+              ? {
+                  codexRotatingActiveSecretNamespace:
+                    plan.codexRotatingWorkflowSecretNamespace,
+                }
+              : {}),
           }
         : {}),
       ...(plan.codexRotatingReviewActionV2Mode

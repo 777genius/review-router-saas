@@ -2,7 +2,6 @@ import { z } from "zod";
 import {
   actionConflictReviewDispatchPayloadSchema,
   actionRuntimeConfigResponseSchema,
-  defaultActionOidcAudience,
   type ActionConflictReviewRuntimeConfig,
   type ActionRuntimeConfigResponse,
 } from "@reviewrouter/features-action-control-plane";
@@ -23,7 +22,6 @@ type FetchLike = (
 
 export type ActionControlPlaneRuntimeConfigClientOptions = {
   readonly apiUrl: string;
-  readonly audience?: string | undefined;
   readonly actionVersion?: string | undefined;
   readonly fetch?: FetchLike | undefined;
 };
@@ -54,13 +52,11 @@ const actionErrorResponseSchema = z.union([
 
 export class ActionControlPlaneRuntimeConfigClient {
   private readonly apiUrl: URL;
-  private readonly audience: string;
   private readonly actionVersion: string | undefined;
   private readonly fetchImpl: FetchLike;
 
   constructor(options: ActionControlPlaneRuntimeConfigClientOptions) {
     this.apiUrl = parseTrustedApiUrl(options.apiUrl);
-    this.audience = options.audience ?? defaultActionOidcAudience;
     this.actionVersion = options.actionVersion?.trim() || undefined;
     this.fetchImpl =
       options.fetch ??
@@ -91,7 +87,6 @@ export class ActionControlPlaneRuntimeConfigClient {
       bearerToken: null,
       body: {
         oidcToken,
-        audience: this.audience,
         conflictDispatch,
       },
     });

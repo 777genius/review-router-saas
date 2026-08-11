@@ -22,10 +22,16 @@ env:
   AUTH_TRUST_HOST: "true"
   GITHUB_WEBHOOK_SECRET: ci-webhook-secret-not-used-for-production
   REVIEW_ROUTER_WEB_URL: http://localhost:3000
+  REVIEW_ROUTER_PUBLIC_WEB_URL: https://web.reviewrouter.test
   REVIEW_ROUTER_API_URL: http://localhost:4000
-  REVIEW_ROUTER_PUBLIC_API_URL: http://localhost:4000
+  REVIEW_ROUTER_PUBLIC_API_URL: https://api.reviewrouter.test
   REVIEW_ROUTER_ACTION_REF: 777genius/review-router@main
   REVIEW_ROUTER_ACTION_VERSION: main
+  REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: 777genius/review-router@08f6bc1481fd284fa82adfa47cda05c76b161b00
+  REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS: ""
+  # Public test fixture only; production uses one secret-manager value shared
+  # by every database writer.
+  REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: ci_database_recovery_witness_not_for_production_000000000000
   REVIEW_ROUTER_DEFAULT_MODEL: gpt-5.5
   REVIEW_ROUTER_DEFAULT_EFFORT: xhigh
   REVIEW_ROUTER_PAIRED_ACTION_REF: 062ed02f3b24b905fc09236b76ed0ffb2000d1d3
@@ -35,6 +41,50 @@ env:
   REVIEW_ROUTER_PG_RESTORE: /usr/lib/postgresql/17/bin/pg_restore
 
 jobs:
+  codex-rotating-installer-portability:
+    name: Rotating installer lock (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Assert native lock implementation
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin command -v flock
+          else
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin command -v shlock
+            if PATH=/usr/bin:/bin:/usr/sbin:/sbin command -v flock >/dev/null 2>&1; then
+              echo "macOS system path must exercise native shlock, not flock"
+              exit 1
+            fi
+          fi
+
+      - name: Install dependencies
+        env:
+          SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
+        run: node scripts/install-private-dependencies.mjs --frozen-lockfile
+
+      - name: Prove live rejection, release, and stale recovery
+        env:
+          REVIEW_ROUTER_TEST_NATIVE_LOCK_PATH: /usr/bin:/bin:/usr/sbin:/sbin
+        run: pnpm codex-rotating:installer-portability
+
   self-hosted-e2e:
     name: Self-hosted E2E
     runs-on: ubuntu-latest
@@ -119,11 +169,22 @@ jobs:
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci'
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE review_router_ci_test'
 
+      - name: Rotating Codex PostgreSQL 17 combined migration rehearsal (no skips)
+        env:
+          REVIEW_ROUTER_MIGRATION_REHEARSAL_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci
+        run: pnpm codex-rotating:migration-rehearsal
+
+      - name: Rotating Codex observation-backed rollout verifier
+        run: pnpm codex-rotating:rollout-proof
+
       - name: Apply dev database migrations
         run: pnpm db:migrate:deploy
 
       - name: Apply test database migrations
         run: DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir packages/platform/db db:migrate:deploy
+
+      - name: Rotating Codex dropped-response loopback proof
+        run: pnpm codex-rotating:loopback-proof
 
       - name: Migration smoke test
         run: pnpm db:migrate:smoke
@@ -285,7 +346,10 @@ jobs:
         run: pnpm build
 
       - name: Codex rotating action artifact smoke
-        run: pnpm action:build && pnpm action:artifact:check:smoke
+        run: pnpm action:artifact:check:smoke
+
+      - name: Codex secret-write boundary
+        run: pnpm codex-rotating:secret-write-boundary
 
       - name: Compiled runtime smoke
         run: pnpm runtime:smoke

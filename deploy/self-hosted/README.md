@@ -77,6 +77,16 @@ POSTGRES_PASSWORD
 ```
 
 Keep `DATABASE_URL` in sync with `POSTGRES_PASSWORD`.
+Use the secret manager's cryptographic generator to create
+`REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS` directly as at least 32 random bytes
+encoded as unpadded base64url. Store it as one shared runtime value used by
+every web/API writer; never include it in terminal output, logs, or support
+output.
+
+Set `REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF` to an exact 40-character Action
+SHA independently of the general Action ref. During A -> B, trust both exact
+SHAs first, use B only for new setup candidates, and keep existing active
+namespaces pinned to A until a fenced drain and fresh namespace activation.
 
 ## 2. Create GitHub App
 

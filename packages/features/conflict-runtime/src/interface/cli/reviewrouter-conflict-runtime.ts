@@ -55,8 +55,6 @@ async function preflight(): Promise<void> {
   const sessionFile = resolveSessionFile();
   const configClient = new ActionControlPlaneRuntimeConfigClient({
     apiUrl,
-    audience:
-      readOption("--audience") ?? process.env.REVIEWROUTER_OIDC_AUDIENCE,
     actionVersion:
       readOption("--action-version") ??
       process.env.REVIEWROUTER_ACTION_VERSION ??
@@ -111,8 +109,6 @@ async function run(): Promise<void> {
   mask(session.sessionToken);
   const configClient = new ActionControlPlaneRuntimeConfigClient({
     apiUrl,
-    audience:
-      readOption("--audience") ?? process.env.REVIEWROUTER_OIDC_AUDIENCE,
     actionVersion:
       readOption("--action-version") ??
       process.env.REVIEWROUTER_ACTION_VERSION ??

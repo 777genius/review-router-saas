@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  buildCodexRotatingSetupManifest,
+  renderCodexRotatingInstallerCommand,
+} from "@reviewrouter/features-provider-setup";
 
 const mocks = vi.hoisted(() => ({
   authorizeGitHubCliRepository: vi.fn(),
@@ -22,6 +26,20 @@ vi.mock("../../../../../src/server/prisma", () => ({
 
 import { POST } from "./route";
 
+const setupCommand = renderCodexRotatingInstallerCommand({
+  manifest: buildCodexRotatingSetupManifest({
+    repositoryFullName: "Padelapp-Club/monorepository",
+    repositoryId: "1185393047",
+    installerUrl: "https://reviewrouter.site/install/codex-rotating",
+    installerVersion: "route-test",
+    installerSha256: "a".repeat(64),
+    now: new Date("2026-07-15T16:45:00.000Z"),
+  }),
+  setupManifestUrl:
+    "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+  installerArguments: ["--force-reseed"],
+});
+
 describe("Codex rotating CLI setup command route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -40,7 +58,7 @@ describe("Codex rotating CLI setup command route", () => {
       installation: { status: "active" },
     });
     mocks.issueCodexRotatingSetupForRepository.mockResolvedValue({
-      command: "safe setup command",
+      command: setupCommand,
       expiresAt: "2026-07-15T17:00:00.000Z",
       providerInstanceId: "codex-rotating:1185393047",
     });
@@ -58,8 +76,12 @@ describe("Codex rotating CLI setup command route", () => {
     expect(mocks.issueCodexRotatingSetupForRepository).toHaveBeenCalledWith(
       expect.objectContaining({ installerArguments: ["--force-reseed"] }),
     );
-    expect(body.command).toBe("safe setup command");
+    expect(body.command).toBe(setupCommand);
+    expect(body.command).toContain(
+      "REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL=https://reviewrouter.site/api/codex-rotating/setup-manifest",
+    );
     expect(JSON.stringify(body)).not.toContain("github-token-value");
+    expect(JSON.stringify(body)).not.toContain("REVIEWROUTER_CODEX_AUTH_JSON");
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
@@ -92,6 +114,56 @@ describe("Codex rotating CLI setup command route", () => {
       error: "github_cli_token_required",
     });
     expect(mocks.authorizeGitHubCliRepository).not.toHaveBeenCalled();
+  });
+
+  it("reports an active provider setup as a retryable conflict", async () => {
+    mocks.issueCodexRotatingSetupForRepository.mockRejectedValueOnce(
+      new Error("codex_rotating_setup_in_progress"),
+    );
+
+    const response = await POST(request({ reuseCurrentAuth: false }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_setup_in_progress",
+    });
+  });
+
+  it("reports setup lock contention as a retryable conflict", async () => {
+    mocks.issueCodexRotatingSetupForRepository.mockRejectedValueOnce(
+      new Error("codex_rotating_setup_lock_failed"),
+    );
+
+    const response = await POST(request({ reuseCurrentAuth: false }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_setup_lock_failed",
+    });
+  });
+
+  it("returns the stable recovery-required conflict across a witness generation", async () => {
+    mocks.issueCodexRotatingSetupForRepository.mockRejectedValueOnce(
+      new Error("codex_rotating_setup_recovery_required"),
+    );
+
+    const response = await POST(request({ reuseCurrentAuth: false }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_setup_recovery_required",
+    });
+  });
+
+  it("returns an actionable unavailable response while issuance is quiesced", async () => {
+    mocks.issueCodexRotatingSetupForRepository.mockRejectedValueOnce(
+      new Error("codex_rotating_setup_issuance_quiesced"),
+    );
+    const response = await POST(request({ reuseCurrentAuth: false }));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_rotating_setup_issuance_quiesced",
+    });
   });
 });
 

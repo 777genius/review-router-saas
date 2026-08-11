@@ -2,27 +2,43 @@ import { App } from "@octokit/app";
 import { request as githubRequest } from "@octokit/request";
 import { createHash } from "node:crypto";
 import {
+  assertCanonicalCodexRotatingProviderId,
+  canonicalCodexRotatingProviderId,
   areWorkflowDocumentsSemanticallyEqual,
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
-  readCodexRotatingWorkflowSourceMetadata,
   scanCodexRotatingAdvisoryWorkflow,
+  createVersionedSecretWorkflowSourceAttestation,
+  workflowDocumentSemanticSha256,
+  WorkflowSourceTrust,
+  renderCanonicalCodexRotatingT0WorkflowV4,
+  CodexRotatingT0WorkflowSchemaVersion,
+  type VersionedProviderSecretNamespace,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import {
   renderCanonicalCodexRotatingInteractionWorkflowV1,
   renderCanonicalCodexRotatingInteractionWorkflowV2,
 } from "@reviewrouter/features-workflow-provisioning";
-import { REVIEW_ROUTER_ACTION_REPOSITORY } from "@reviewrouter/platform-config";
+import {
+  isLoopbackHostname,
+  REVIEW_ROUTER_ACTION_REPOSITORY,
+} from "@reviewrouter/platform-config";
 import {
   managedCodexWorkflowPath,
   managedInteractionWorkflowPath,
+  CodexRotatingSecretPutPreDispatchError,
   type ActionRepositoryContext,
   type CodexRotatingGitHubSecretTokenIssuerPort,
   type CodexRotatingGitHubSecretWriterPort,
   type CodexRotatingGitHubCheckoutTokenIssuerPort,
   type CodexRotatingWorkflowSourceVerifierPort,
   type CodexRotatingSecretWriteTarget,
+  type CodexRotatingVersionedWorkflowPublisherPort,
 } from "@reviewrouter/features-action-control-plane";
 import type { HostedReviewPullRequestFactsPort } from "../hosted-review-prelease-gate.js";
+import {
+  putGitHubSecretExactlyOnce,
+  type OneShotGitHubSecretPut,
+} from "./one-shot-github-secret-put.js";
 type InstallationTokenResponse = {
   readonly type?: unknown;
   readonly tokenType?: unknown;
@@ -36,20 +52,22 @@ type InstallationTokenResponse = {
   };
 };
 
-type SecretPutResponse = {
-  readonly status: number;
-};
-
 type SecretPermission = "read" | "write";
 type InstallationPermission = {
   readonly actions?: "read";
   readonly secrets?: SecretPermission;
-  readonly contents?: "read";
+  readonly contents?: "read" | "write";
   readonly pull_requests?: "read";
 };
 
 type ContentsResponse = {
   readonly data?: unknown;
+};
+
+type ContentsWriteResponse = {
+  readonly data?: {
+    readonly commit?: { readonly sha?: unknown };
+  };
 };
 
 type WorkflowRunResponse = {
@@ -69,6 +87,10 @@ type PullRequestResponse = {
 };
 
 type BranchResponse = {
+  readonly data?: unknown;
+};
+
+type CompareResponse = {
   readonly data?: unknown;
 };
 
@@ -121,28 +143,37 @@ export class OctokitCodexRotatingGitHubSecretGateway
     CodexRotatingGitHubSecretWriterPort,
     CodexRotatingGitHubCheckoutTokenIssuerPort,
     CodexRotatingWorkflowSourceVerifierPort,
+    CodexRotatingVersionedWorkflowPublisherPort,
     HostedReviewPullRequestFactsPort
 {
   private readonly app: App;
   private readonly expectedApiUrl: string;
   private readonly trustedActionRefs: ReadonlySet<string>;
+  private readonly secretPut: OneShotGitHubSecretPut;
+  private readonly secretPutBaseUrl: string;
+  private readonly secretPutTimeoutMs: number;
 
   constructor(options: {
     readonly appId: string;
     readonly privateKey: string;
-    readonly expectedApiUrl?: string;
+    readonly expectedApiUrl: string;
     readonly trustedActionRefs?: readonly string[];
+    readonly secretPut?: OneShotGitHubSecretPut;
+    readonly secretPutBaseUrl?: string;
+    readonly secretPutTimeoutMs?: number;
   }) {
+    this.expectedApiUrl = normalizeWorkflowApiUrl(options.expectedApiUrl);
     this.app = new App({
       appId: options.appId,
       privateKey: options.privateKey,
     });
-    this.expectedApiUrl = normalizeWorkflowApiUrl(
-      options.expectedApiUrl ?? "https://api.reviewrouter.site",
-    );
     this.trustedActionRefs = new Set(
       (options.trustedActionRefs ?? []).map((ref) => ref.toLowerCase()),
     );
+    this.secretPut = options.secretPut ?? putGitHubSecretExactlyOnce;
+    this.secretPutBaseUrl =
+      options.secretPutBaseUrl ?? "https://api.github.com";
+    this.secretPutTimeoutMs = options.secretPutTimeoutMs ?? 15_000;
   }
 
   async issueSecretsReadToken(input: {
@@ -169,6 +200,12 @@ export class OctokitCodexRotatingGitHubSecretGateway
   async assertCanWriteRepositorySecret(
     input: CodexRotatingSecretWriteTarget,
   ): Promise<{ readonly status: "ready" }> {
+    assertCanonicalCodexRotatingProviderId({
+      providerInstanceId:
+        input.expectedProviderInstanceId ??
+        canonicalCodexRotatingProviderId(input.githubRepositoryId),
+      githubRepositoryId: input.githubRepositoryId,
+    });
     await this.mintRepositorySecretsToken({
       githubInstallationId: input.githubInstallationId,
       githubRepositoryId: input.githubRepositoryId,
@@ -210,29 +247,146 @@ export class OctokitCodexRotatingGitHubSecretGateway
     readonly status: "accepted";
     readonly statusCode: 201 | 204;
   }> {
-    const token = await this.mintRepositorySecretsToken({
-      githubInstallationId: input.githubInstallationId,
-      githubRepositoryId: input.githubRepositoryId,
-      permission: "write",
+    let token;
+    try {
+      assertCanonicalCodexRotatingProviderId({
+        providerInstanceId:
+          input.expectedProviderInstanceId ??
+          canonicalCodexRotatingProviderId(input.githubRepositoryId),
+        githubRepositoryId: input.githubRepositoryId,
+      });
+      token = await this.mintRepositorySecretsToken({
+        githubInstallationId: input.githubInstallationId,
+        githubRepositoryId: input.githubRepositoryId,
+        permission: "write",
+      });
+    } catch {
+      // No repository-secret request has been dispatched yet, so this is the
+      // only failure class that may safely permit an in-place recovery.
+      throw new CodexRotatingSecretPutPreDispatchError();
+    }
+    // This is deliberately not Octokit request machinery: the one-shot port
+    // constructs one native ClientRequest, disables connection reuse, and has
+    // no redirect or retry path.
+    const response = await this.secretPut({
+      baseUrl: this.secretPutBaseUrl,
+      owner: input.owner,
+      repo: input.repo,
+      secretName: input.secretName,
+      encryptedValue: input.encryptedValue,
+      keyId: input.keyId,
+      token: token.token,
+      timeoutMs: this.secretPutTimeoutMs,
     });
-    const response = (await githubRequest(
-      "PUT /repos/{owner}/{repo}/actions/secrets/{secret_name}",
-      {
-        owner: input.owner,
-        repo: input.repo,
-        secret_name: input.secretName,
-        encrypted_value: input.encryptedValue,
-        key_id: input.keyId,
-        headers: {
-          authorization: `Bearer ${token.token}`,
-        },
-      },
-    )) as SecretPutResponse;
 
     if (response.status !== 201 && response.status !== 204) {
       throw new Error("codex_rotating_secret_put_unexpected_status");
     }
     return { status: "accepted", statusCode: response.status };
+  }
+
+  async publishAndVerifyVersionedWorkflow(input: {
+    readonly repository: ActionRepositoryContext;
+    readonly providerInstanceId: string;
+    readonly namespace: VersionedProviderSecretNamespace;
+  }) {
+    assertCanonicalCodexRotatingProviderId({
+      providerInstanceId: input.providerInstanceId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+    });
+    const repo = repoNameFromFullName(input.repository.fullName);
+    const token = await this.mintRepositoryToken({
+      githubInstallationId: input.repository.githubInstallationId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+      permissions: { contents: "write" },
+    });
+    const headers = { authorization: `Bearer ${token.token}` };
+    const repositoryResponse = (await githubRequest(
+      "GET /repos/{owner}/{repo}",
+      {
+        owner: input.repository.owner,
+        repo,
+        headers,
+      },
+    )) as RepositoryResponse;
+    const defaultBranch = decodeRepositoryDefaultBranch(
+      repositoryResponse.data,
+      input.repository.githubRepositoryId,
+      input.repository.fullName,
+    );
+    const currentResponse = (await githubRequest(
+      "GET /repos/{owner}/{repo}/contents/{path}",
+      {
+        owner: input.repository.owner,
+        repo,
+        path: managedCodexWorkflowPath,
+        ref: defaultBranch,
+        headers,
+      },
+    )) as ContentsResponse;
+    const currentSource = decodeWorkflowContent(currentResponse.data);
+    const currentBlobSha = decodeWorkflowBlobSha(currentResponse.data);
+    const metadata =
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(currentSource);
+    if (
+      metadata.providerInstanceId !== input.providerInstanceId ||
+      metadata.apiUrl !== this.expectedApiUrl ||
+      !this.trustedActionRefs.has(metadata.actionRef.toLowerCase())
+    ) {
+      throw new Error("codex_rotating_workflow_publish_source_untrusted");
+    }
+    const refreshScheduleCron = extractCanonicalRefreshCron(currentSource);
+    const nextSource = renderCanonicalCodexRotatingT0WorkflowV4({
+      actionRef: metadata.actionRef,
+      apiUrl: metadata.apiUrl,
+      providerInstanceId: input.providerInstanceId,
+      refreshScheduleCron,
+      claudeCodeOAuthTokenSecret: currentSource.includes(
+        "CLAUDE_CODE_OAUTH_TOKEN:",
+      ),
+      openRouterApiKeySecret: currentSource.includes("OPENROUTER_API_KEY:"),
+      activeSecretNamespace: input.namespace,
+    });
+    // Reparse before publication so malformed rendering can never reach the
+    // trusted branch even if a future template change regresses.
+    const nextMetadata =
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(nextSource);
+    if (
+      nextMetadata.workflowSchemaVersion !==
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 ||
+      !nextMetadata.secretNamespace
+    ) {
+      throw new Error("codex_rotating_workflow_publish_render_invalid");
+    }
+
+    const writeResponse = (await githubRequest(
+      "PUT /repos/{owner}/{repo}/contents/{path}",
+      {
+        owner: input.repository.owner,
+        repo,
+        path: managedCodexWorkflowPath,
+        branch: defaultBranch,
+        sha: currentBlobSha,
+        message: "chore: rotate ReviewRouter Codex auth namespace",
+        content: Buffer.from(nextSource, "utf8").toString("base64"),
+        headers,
+      },
+    )) as ContentsWriteResponse;
+    const commitSha = decodeContentsWriteCommitSha(writeResponse.data);
+    const verified = await this.verifyWorkflowSource({
+      repository: input.repository,
+      workflowSha: commitSha,
+      workflowRef: `${input.repository.fullName}/${managedCodexWorkflowPath}@refs/heads/${defaultBranch}`,
+      workflowPath: managedCodexWorkflowPath,
+      expectedActionOwnerRepo: metadata.actionRef.split("@")[0]!,
+      expectedProviderInstanceId: input.providerInstanceId,
+      expectedWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+    });
+    if (!verified.attestation) {
+      throw new Error("codex_rotating_workflow_publish_attestation_missing");
+    }
+    return verified.attestation;
   }
 
   async verifyWorkflowSource(input: {
@@ -243,11 +397,16 @@ export class OctokitCodexRotatingGitHubSecretGateway
       readonly owner: string;
     };
     readonly workflowSha: string;
+    readonly workflowRef: string;
     readonly workflowPath: string;
     readonly expectedActionOwnerRepo: string;
     readonly expectedProviderInstanceId: string;
     readonly expectedWorkflowSchemaVersion: number;
   }) {
+    assertCanonicalCodexRotatingProviderId({
+      providerInstanceId: input.expectedProviderInstanceId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+    });
     const token = await this.mintRepositoryToken({
       githubInstallationId: input.repository.githubInstallationId,
       githubRepositoryId: input.repository.githubRepositoryId,
@@ -266,17 +425,21 @@ export class OctokitCodexRotatingGitHubSecretGateway
       },
     )) as ContentsResponse;
     const workflow = decodeWorkflowContent(response.data);
-    const metadata = readCodexRotatingWorkflowSourceMetadata(workflow);
+    const metadata =
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(workflow);
     if (
       metadata.actionRef.split("@")[0]!.toLowerCase() !==
       input.expectedActionOwnerRepo.toLowerCase()
     ) {
       throw new Error("codex_rotating_workflow_action_ref_not_allowed");
     }
+    if (!this.trustedActionRefs.has(metadata.actionRef.toLowerCase())) {
+      throw new Error("codex_rotating_workflow_action_ref_not_trusted");
+    }
     if (metadata.providerInstanceId !== input.expectedProviderInstanceId) {
       throw new Error("codex_rotating_workflow_provider_instance_mismatch");
     }
-    if (normalizeWorkflowApiUrl(metadata.apiUrl) !== this.expectedApiUrl) {
+    if (metadata.apiUrl !== this.expectedApiUrl) {
       throw new Error("codex_rotating_workflow_api_url_mismatch");
     }
     if (
@@ -284,6 +447,64 @@ export class OctokitCodexRotatingGitHubSecretGateway
     ) {
       throw new Error("codex_rotating_workflow_schema_mismatch");
     }
+    if (!metadata.secretNamespace) {
+      throw new Error("codex_rotating_workflow_secret_namespace_missing");
+    }
+    const repositoryResponse = (await githubRequest(
+      "GET /repos/{owner}/{repo}",
+      {
+        owner: input.repository.owner,
+        repo: repoNameFromFullName(input.repository.fullName),
+        headers: { authorization: `Bearer ${token.token}` },
+      },
+    )) as RepositoryResponse;
+    const defaultBranch = decodeRepositoryDefaultBranch(
+      repositoryResponse.data,
+      input.repository.githubRepositoryId,
+      input.repository.fullName,
+    );
+    if (
+      input.workflowRef !==
+      `${input.repository.fullName}/${input.workflowPath}@refs/heads/${defaultBranch}`
+    ) {
+      throw new Error("codex_rotating_workflow_source_not_default_branch");
+    }
+    const defaultBranchHead = await this.readBranchHead({
+      token: token.token,
+      owner: input.repository.owner,
+      repo: repoNameFromFullName(input.repository.fullName),
+      branch: defaultBranch,
+    });
+    await this.assertWorkflowRevisionOnDefaultBranchHistory({
+      token: token.token,
+      owner: input.repository.owner,
+      repo: repoNameFromFullName(input.repository.fullName),
+      workflowSha: input.workflowSha,
+      defaultBranchHead,
+    });
+    const workflowSourceSha256 = createHash("sha256")
+      .update(workflow, "utf8")
+      .digest("hex");
+    const workflowSourceBlobSha = decodeWorkflowBlobSha(response.data);
+    const computedWorkflowBlobSha = createHash(
+      workflowSourceBlobSha.length === 40 ? "sha1" : "sha256",
+    )
+      .update(`blob ${Buffer.byteLength(workflow, "utf8")}\0`, "utf8")
+      .update(workflow, "utf8")
+      .digest("hex");
+    if (computedWorkflowBlobSha !== workflowSourceBlobSha) {
+      throw new Error("codex_rotating_workflow_blob_sha_mismatch");
+    }
+    const attestation = createVersionedSecretWorkflowSourceAttestation({
+      repositoryId: input.repository.githubRepositoryId,
+      workflowPath: input.workflowPath,
+      workflowSourceCommitSha: input.workflowSha,
+      workflowSourceBlobSha,
+      workflowSourceSha256,
+      workflowSemanticSha256: workflowDocumentSemanticSha256(workflow),
+      sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+      secretNamespace: metadata.secretNamespace,
+    });
 
     return {
       binding: {
@@ -293,10 +514,9 @@ export class OctokitCodexRotatingGitHubSecretGateway
         actionRef: metadata.actionRef,
         workflowPath: input.workflowPath,
         workflowSchemaVersion: metadata.workflowSchemaVersion,
+        activeSecretNamespace: metadata.secretNamespace,
       },
-      workflowSourceSha256: createHash("sha256")
-        .update(workflow, "utf8")
-        .digest("hex"),
+      attestation,
     };
   }
 
@@ -358,7 +578,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
       return { compatible: false };
     }
     if (
-      normalizeWorkflowApiUrl(metadata.apiUrl) !== this.expectedApiUrl ||
+      metadata.apiUrl !== this.expectedApiUrl ||
       metadata.providerInstanceId !==
         `codex-rotating:${input.githubRepositoryId}` ||
       !this.trustedActionRefs.has(metadata.actionRef.toLowerCase())
@@ -752,6 +972,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
     const defaultBranch = decodeRepositoryDefaultBranch(
       repositoryResponse.data,
       input.githubRepositoryId,
+      `${input.owner}/${input.repo}`,
     );
     const pullRequests: ReviewInventoryPullRequestSnapshot[] = [];
     let paginationComplete = false;
@@ -912,6 +1133,35 @@ export class OctokitCodexRotatingGitHubSecretGateway
     return decodeBranchHead(response.data, input.branch);
   }
 
+  private async assertWorkflowRevisionOnDefaultBranchHistory(input: {
+    readonly token: string;
+    readonly owner: string;
+    readonly repo: string;
+    readonly workflowSha: string;
+    readonly defaultBranchHead: string;
+  }): Promise<void> {
+    const workflowSha = requireCommitSha(input.workflowSha);
+    const defaultBranchHead = requireCommitSha(input.defaultBranchHead);
+    if (workflowSha === defaultBranchHead) {
+      return;
+    }
+
+    const response = (await githubRequest(
+      "GET /repos/{owner}/{repo}/compare/{basehead}",
+      {
+        owner: input.owner,
+        repo: input.repo,
+        basehead: `${workflowSha}...${defaultBranchHead}`,
+        headers: { authorization: `Bearer ${input.token}` },
+      },
+    )) as CompareResponse;
+    if (decodeCompareStatus(response.data) !== "ahead") {
+      throw new Error(
+        "codex_rotating_workflow_source_not_current_default_head",
+      );
+    }
+  }
+
   private async readWorkflowAtRef(input: {
     readonly token: string;
     readonly owner: string;
@@ -971,16 +1221,22 @@ async function mapWithConcurrency<T, R>(
 function decodeRepositoryDefaultBranch(
   data: unknown,
   expectedRepositoryId: string,
+  expectedRepositoryFullName: string,
 ): string {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw new Error("codex_rotating_repository_invalid_response");
   }
   const repository = data as {
     readonly id?: unknown;
+    readonly full_name?: unknown;
     readonly default_branch?: unknown;
   };
   if (
+    typeof repository.id !== "number" ||
+    !Number.isSafeInteger(repository.id) ||
+    repository.id <= 0 ||
     String(repository.id ?? "") !== expectedRepositoryId ||
+    repository.full_name !== expectedRepositoryFullName ||
     typeof repository.default_branch !== "string" ||
     repository.default_branch.length === 0 ||
     repository.default_branch.trim() !== repository.default_branch
@@ -991,16 +1247,45 @@ function decodeRepositoryDefaultBranch(
 }
 
 function normalizeWorkflowApiUrl(value: string): string {
-  const url = new URL(value);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("codex_rotating_workflow_api_url_invalid");
+  }
   if (
     url.protocol !== "https:" ||
+    isLoopbackHostname(url.hostname) ||
     url.username !== "" ||
     url.password !== "" ||
-    url.hash !== ""
+    url.search !== "" ||
+    url.hash !== "" ||
+    url.pathname !== "/"
   ) {
     throw new Error("codex_rotating_workflow_api_url_invalid");
   }
   return url.toString().replace(/\/$/, "");
+}
+
+function requireCommitSha(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-f0-9]{40}$/.test(normalized)) {
+    throw new Error("codex_rotating_workflow_source_commit_invalid");
+  }
+  return normalized;
+}
+
+function decodeCompareStatus(data: unknown): string {
+  const status = (data as { readonly status?: unknown } | null)?.status;
+  if (
+    status !== "ahead" &&
+    status !== "behind" &&
+    status !== "diverged" &&
+    status !== "identical"
+  ) {
+    throw new Error("codex_rotating_workflow_compare_invalid_response");
+  }
+  return status;
 }
 
 function decodeOpenPullRequests(
@@ -1324,4 +1609,36 @@ function decodeWorkflowContent(data: unknown): string {
     throw new Error("codex_rotating_workflow_content_too_large");
   }
   return Buffer.from(compacted, "base64").toString("utf8");
+}
+
+function decodeWorkflowBlobSha(data: unknown): string {
+  const sha = (data as { readonly sha?: unknown } | null)?.sha;
+  if (
+    typeof sha !== "string" ||
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(sha)
+  ) {
+    throw new Error("codex_rotating_workflow_blob_sha_invalid_response");
+  }
+  return sha.toLowerCase();
+}
+
+function decodeContentsWriteCommitSha(data: unknown): string {
+  const sha = (data as ContentsWriteResponse["data"])?.commit?.sha;
+  if (typeof sha !== "string" || !/^[a-f0-9]{40}$/i.test(sha)) {
+    throw new Error("codex_rotating_workflow_commit_sha_invalid_response");
+  }
+  return sha.toLowerCase();
+}
+
+function extractCanonicalRefreshCron(source: string): string | null {
+  if (!/^\s{2}codex-refresh:\s*$/mu.test(source)) return null;
+  const match = /^\s{4}- cron: ("(?:[^"\\]|\\.)*")\s*$/mu.exec(source);
+  if (!match?.[1]) {
+    throw new Error("codex_rotating_workflow_refresh_cron_invalid");
+  }
+  const value = JSON.parse(match[1]);
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("codex_rotating_workflow_refresh_cron_invalid");
+  }
+  return value;
 }

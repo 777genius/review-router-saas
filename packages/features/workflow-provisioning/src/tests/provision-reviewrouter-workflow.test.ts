@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { allocateVersionedProviderSecretNamespace } from "@reviewrouter/features-codex-oauth-rotating";
 import type {
   AuditEventInput,
   AuditLogRepositoryPort,
@@ -592,6 +593,70 @@ describe("provisionReviewRouterWorkflow", () => {
         },
       ),
     ).rejects.toThrow("repository_not_selected");
+
+    expect(gateway.input).toBeNull();
+  });
+
+  it("provisions v4 from an explicitly proven workflow namespace", async () => {
+    const gateway = new CapturingSetupGateway();
+    const namespace = allocateVersionedProviderSecretNamespace({
+      scope: {
+        repositoryId: "123456",
+        providerInstanceId: "codex-rotating:123456",
+      },
+      epoch: 7n,
+      randomBytes: (size) => new Uint8Array(size).fill(7),
+    });
+
+    await expect(
+      provisionRepositoryReviewRouterWorkflow(
+        {
+          repositoryId: "repo-1",
+          actionRef: `777genius/review-router@${"a".repeat(40)}`,
+          apiUrl: "https://app.reviewrouter.dev",
+          runtimeConfigMode: "oidc",
+          staticRuntimeEnv: { REVIEW_AUTH_MODE: "codex-oauth-rotating" },
+          codexRotatingProviderInstanceId: "codex-rotating:123456",
+          codexRotatingWorkflowSecretNamespace: namespace,
+          actor: "user:maintainer",
+        },
+        {
+          targets: new StaticWorkflowProvisioningTarget(activeTarget),
+          setupGateway: gateway,
+          provisioning: new CapturingProvisioningRepository(),
+        },
+      ),
+    ).resolves.toMatchObject({ number: 1 });
+
+    const workflow = gateway.input?.workflowFiles.find(
+      (file) => file.path === ".github/workflows/reviewrouter-codex.yml",
+    );
+    expect(workflow?.operation).not.toBe("delete");
+    expect(workflow && "content" in workflow ? workflow.content : "").toContain(
+      `secrets.${namespace.name}`,
+    );
+  });
+
+  it("does not call GitHub without an exact workflow namespace", async () => {
+    const gateway = new CapturingSetupGateway();
+
+    await expect(
+      provisionRepositoryReviewRouterWorkflow(
+        {
+          repositoryId: "repo-1",
+          actionRef: `777genius/review-router@${"a".repeat(40)}`,
+          apiUrl: "https://app.reviewrouter.dev",
+          runtimeConfigMode: "oidc",
+          staticRuntimeEnv: { REVIEW_AUTH_MODE: "codex-oauth-rotating" },
+          codexRotatingProviderInstanceId: "codex-rotating:123456",
+        },
+        {
+          targets: new StaticWorkflowProvisioningTarget(activeTarget),
+          setupGateway: gateway,
+          provisioning: new CapturingProvisioningRepository(),
+        },
+      ),
+    ).rejects.toThrow("codex_rotating_active_secret_namespace_required");
 
     expect(gateway.input).toBeNull();
   });

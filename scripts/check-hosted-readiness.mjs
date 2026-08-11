@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeSync } from "node:fs";
 import { loadEnvFile } from "./lib/env-file.mjs";
+import { isLoopbackHostname } from "../packages/shared/src/validation/loopback-hostname.mjs";
+import { resolveCodexRotatingInstallerDescriptor } from "../packages/shared/src/validation/codex-rotating-installer-descriptor.mjs";
 
 const envFile = process.env.REVIEW_ROUTER_HOSTED_ENV_FILE || ".env.production";
 const envFileExists = existsSync(envFile);
@@ -16,6 +18,7 @@ if (!envFileExists) {
 
 requireEqual("NODE_ENV", "production");
 requirePostgresUrl("DATABASE_URL", { allowLocalhost: false });
+requireCodexEffectAuthorityDatabaseUrl();
 requireHttpsUrl("REVIEW_ROUTER_WEB_URL");
 requireHttpsUrl("REVIEW_ROUTER_API_URL");
 requireHttpsUrl("REVIEW_ROUTER_PUBLIC_API_URL");
@@ -29,9 +32,12 @@ requireSecret("GITHUB_APP_SLUG", 1);
 requireSecret("REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY", 32);
 requireSecret("GITHUB_WEBHOOK_SECRET", 16);
 requireSecret("REVIEW_ROUTER_ACTION_SESSION_SECRET", 32);
+requireDatabaseRecoveryWitness();
 requireEqual("REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS", "1");
 requireEqual("REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING", "1");
-requireEqual("REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH", "1");
+requireEqual("REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH", "0");
+requireEqual("REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED", "0");
+requireEqual("REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED", "0");
 forbidEqual("REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING", "1");
 forbidEqual("REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE", "1");
 forbidSet("REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH_BETA");
@@ -39,27 +45,64 @@ forbidSet("REVIEW_ROUTER_CODEX_ROTATING_OAUTH_BETA_REPOSITORIES");
 requireGitHubAppPrivateKey();
 forbidProviderSecretsInSaaS();
 requireHostedActionRef();
+requireHostedCodexRotatingActionRef();
+requireCodexRotatingInstallerDescriptor();
 
 if (errors.length > 0) {
-  console.error("ReviewRouter hosted readiness failed:");
-  for (const error of errors) console.error(`- ${error}`);
+  const output = [
+    "ReviewRouter hosted readiness failed:",
+    ...errors.map((error) => `- ${error}`),
+  ];
   if (warnings.length > 0) {
-    console.error("Warnings:");
-    for (const warning of warnings) console.error(`- ${warning}`);
+    output.push("Warnings:", ...warnings.map((warning) => `- ${warning}`));
   }
-  process.exit(1);
-}
-
-console.log("ReviewRouter hosted readiness checks passed.");
-if (warnings.length > 0) {
-  console.log("Warnings:");
-  for (const warning of warnings) console.log(`- ${warning}`);
+  writeSync(2, `${output.join("\n")}\n`);
+  process.exitCode = 1;
+} else {
+  console.log("ReviewRouter hosted readiness checks passed.");
+  if (warnings.length > 0) {
+    console.log("Warnings:");
+    for (const warning of warnings) console.log(`- ${warning}`);
+  }
 }
 
 function requireEqual(name, expected) {
   const actual = read(name);
   if (actual !== expected) {
     errors.push(`${name} must be ${expected}.`);
+  }
+}
+
+function requireCodexEffectAuthorityDatabaseUrl() {
+  const runtimeValue = read("DATABASE_URL");
+  const authorityValue = read(
+    "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
+  );
+  if (!authorityValue) {
+    errors.push(
+      "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL is required.",
+    );
+    return;
+  }
+  try {
+    const runtime = new URL(runtimeValue);
+    const authority = new URL(authorityValue);
+    const identity = (url) =>
+      `${url.hostname.toLowerCase().replace(/\.$/u, "")}:${url.port || "5432"}${url.pathname}`;
+    if (
+      !["postgres:", "postgresql:"].includes(authority.protocol) ||
+      decodeURIComponent(authority.username) !==
+        "reviewrouter_codex_effect_authority" ||
+      !authority.password ||
+      isLoopbackHostname(authority.hostname) ||
+      identity(authority) !== identity(runtime)
+    ) {
+      throw new Error("invalid");
+    }
+  } catch {
+    errors.push(
+      "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL must authenticate as reviewrouter_codex_effect_authority on the DATABASE_URL database generation.",
+    );
   }
 }
 
@@ -115,7 +158,7 @@ function requirePostgresUrl(name, policy) {
   if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
     errors.push(`${name} must use postgresql:// or postgres://.`);
   }
-  if (!policy.allowLocalhost && isLocalhost(parsed.hostname)) {
+  if (!policy.allowLocalhost && isLoopbackHostname(parsed.hostname)) {
     errors.push(`${name} must not point to localhost in hosted production.`);
   }
 }
@@ -136,10 +179,16 @@ function requireHttpsUrl(name) {
   if (parsed.protocol !== "https:") {
     errors.push(`${name} must use https:// in hosted production.`);
   }
-  if (isLocalhost(parsed.hostname)) {
+  if (isLoopbackHostname(parsed.hostname)) {
     errors.push(`${name} must not point to localhost in hosted production.`);
   }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+  if (
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    parsed.pathname !== "/"
+  ) {
     errors.push(`${name} must not include credentials, query, or hash.`);
   }
 }
@@ -232,6 +281,51 @@ function requireHostedActionRef() {
   }
 }
 
+function requireHostedCodexRotatingActionRef() {
+  const primary = read("REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(primary)) {
+    errors.push(
+      "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF must be an exact full-SHA Action ref.",
+    );
+    return;
+  }
+  const primaryRepository = primary.split("@", 1)[0]?.toLowerCase();
+  for (const ref of read("REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS")
+    .split(/[\s,]+/)
+    .filter(Boolean)) {
+    if (
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(ref) ||
+      ref.split("@", 1)[0]?.toLowerCase() !== primaryRepository
+    ) {
+      errors.push(
+        "REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS must contain only same-repository full-SHA Action refs.",
+      );
+    }
+  }
+}
+
+function requireCodexRotatingInstallerDescriptor() {
+  try {
+    resolveCodexRotatingInstallerDescriptor(env);
+  } catch (error) {
+    errors.push(
+      `Codex rotating installer descriptor is invalid: ${error instanceof Error ? error.message : String(error)}.`,
+    );
+  }
+}
+
+function requireDatabaseRecoveryWitness() {
+  const value = read("REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS");
+  if (
+    !/^[A-Za-z0-9_-]{43,256}$/.test(value) ||
+    /replace-with|placeholder/i.test(value)
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS must be 43-256 base64url characters.",
+    );
+  }
+}
+
 function resolveHostedActionRef() {
   const actionRef = read("REVIEW_ROUTER_ACTION_REF");
   if (actionRef) {
@@ -249,13 +343,4 @@ function isHostedActionRef(actionRef) {
 
 function read(name) {
   return String(env[name] ?? "").trim();
-}
-
-function isLocalhost(hostname) {
-  return (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname === "::1" ||
-    hostname.endsWith(".localhost")
-  );
 }

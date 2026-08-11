@@ -7,6 +7,15 @@ export {
   codexRotatingSecretName,
   CodexRotatingReviewActionV2Mode,
   CodexRotatingT0WorkflowSchemaVersion,
+  WorkflowSourceTrust,
+  assertActiveVersionedSecretWorkflowAttestation,
+  assertSameVersionedProviderSecretNamespace,
+  assertTrustedCanonicalVersionedWorkflow,
+  createVersionedProviderSecretNamespace,
+  createVersionedSecretWorkflowSourceAttestation,
+  readCanonicalCodexRotatingT0WorkflowSourceMetadata,
+  workflowDocumentSemanticSha256,
+  type VersionedProviderSecretNamespace,
 } from "@reviewrouter/features-codex-oauth-rotating";
 export * from "./application/ports/workflow-setup-gateway-port";
 export * from "./application/ports/workflow-provisioning-query-port";

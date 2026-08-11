@@ -69,7 +69,7 @@ describe("provider catalog", () => {
       "codex-oauth-rotating",
     );
     expect(getProviderSecretNames("codex_subscription_oauth_rotating")).toEqual(
-      ["REVIEWROUTER_CODEX_AUTH_JSON"],
+      [],
     );
     expect(toLegacyRuntimeAuthMode("codex_openai_api_key")).toBe("openai-api");
     expect(toLegacyRuntimeAuthMode("openrouter_api_key")).toBe(

@@ -115,7 +115,9 @@ const authModeMetadata = {
     runtimeAuthMode: "codex-oauth-rotating",
     setupKind: "codex_oauth_rotating",
     label: "Codex subscription rotating",
-    secretNames: ["REVIEWROUTER_CODEX_AUTH_JSON"],
+    // Rotating credentials use a server-authorized, never-reused namespace;
+    // there is no stable catalog secret name to probe or inject.
+    secretNames: [],
   },
   codex_openai_api_key: {
     authMode: "codex_openai_api_key",

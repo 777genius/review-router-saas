@@ -11,11 +11,11 @@ describe("provider secret setup guidance", () => {
       repoFullName: "777genius/agent-teams-ai",
       organizationLogin: "777genius",
       rotatingSetup: {
+        repositoryId: "123456",
         installerUrl: "https://reviewrouter.site/install/codex-rotating",
         installerVersion: "v1.2.3",
         installerSha256:
           "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        repositoryId: "123456",
         providerInstanceId: "codex-rotating:123456",
         setupNonce: "stp:123456789",
         now: new Date("2026-05-25T12:00:00.000Z"),
@@ -31,12 +31,16 @@ describe("provider secret setup guidance", () => {
       scope: "repository",
       storesSecretIn: "github_repository_secret",
       targetLabel: "777genius/agent-teams-ai repository secret",
-      secretNames: ["REVIEWROUTER_CODEX_AUTH_JSON"],
+      secretNames: [
+        "REVIEWROUTER_CODEX_AUTH_JSON_R<repository-id>_P<provider-hash>_E<epoch>_<entropy>",
+      ],
       selectedRepositories: ["777genius/agent-teams-ai"],
       validatesBeforeWrite: true,
       sendsSecretToReviewRouter: false,
     });
-    expect(guidance.commands[0]?.command).toContain("curl -fsSL");
+    expect(guidance.commands[0]?.command).toContain(
+      "curl -q --fail --silent --show-error --max-redirs 0",
+    );
     expect(guidance.commands[0]?.command).toContain("shasum -a 256");
     expect(guidance.commands[0]?.command).toContain("sha256sum");
     expect(guidance.commands[0]?.command).toContain(

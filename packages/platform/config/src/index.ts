@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { isLoopbackHostname } from "@reviewrouter/shared";
+export { isLoopbackHostname } from "@reviewrouter/shared";
 import { z } from "zod";
 
 export const REVIEW_ROUTER_ACTION_REPOSITORY = "777genius/review-router";
@@ -23,6 +25,9 @@ export const runtimeEnvSchema = z.object({
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   REVIEW_ROUTER_ACTION_REF: z.string().optional(),
   REVIEW_ROUTER_ALLOWED_ACTION_REFS: z.string().default(""),
+  REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: z.string().optional(),
+  REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS: z.string().default(""),
+  REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: z.string().optional(),
   REVIEW_ROUTER_ACTION_VERSION: z
     .string()
     .default(DEFAULT_REVIEW_ROUTER_ACTION_VERSION),
@@ -51,11 +56,21 @@ export type RuntimeEnv = z.infer<typeof runtimeEnvSchema>;
 type ReviewRouterActionRefEnv = {
   readonly REVIEW_ROUTER_ACTION_REF?: string | undefined;
   readonly REVIEW_ROUTER_ALLOWED_ACTION_REFS?: string | undefined;
+  readonly REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF?: string | undefined;
+  readonly REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS?:
+    | string
+    | undefined;
   readonly REVIEW_ROUTER_ACTION_VERSION?: string | undefined;
   readonly [key: string]: string | undefined;
 };
 
+type ReviewRouterDatabaseRecoveryWitnessEnv = {
+  readonly REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS?: string | undefined;
+  readonly [key: string]: string | undefined;
+};
+
 type ReviewRouterApiUrlEnv = {
+  readonly NODE_ENV?: string | undefined;
   readonly REVIEW_ROUTER_API_URL?: string | undefined;
   readonly REVIEW_ROUTER_PUBLIC_API_URL?: string | undefined;
   readonly [key: string]: string | undefined;
@@ -81,14 +96,102 @@ export function resolveReviewRouterActionRef(
   return `${REVIEW_ROUTER_ACTION_REPOSITORY}@${version}`;
 }
 
+/**
+ * Resolves the immutable Action release used only by rotating Codex workflows.
+ *
+ * This intentionally has no fallback to REVIEW_ROUTER_ACTION_REF: the general
+ * workflow channel may track a branch, while a rotating workflow is part of a
+ * durable secret-namespace attestation and must remain pinned to an exact
+ * release for the lifetime of that namespace.
+ */
+export function resolveReviewRouterCodexRotatingActionRef(
+  input: ReviewRouterActionRefEnv = process.env,
+): string {
+  const value = input.REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF?.trim();
+  if (!value) {
+    throw new Error("missing_env:REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF");
+  }
+  return normalizeFullShaActionRef(
+    value,
+    "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF",
+  );
+}
+
+export function resolveReviewRouterCodexRotatingTrustedActionRefs(
+  input: ReviewRouterActionRefEnv = process.env,
+): readonly string[] {
+  const primaryRef = resolveReviewRouterCodexRotatingActionRef(input);
+  const primaryRepository = actionRefRepository(primaryRef);
+  const overlap = parseFullShaActionRefList(
+    input.REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS,
+    "REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS",
+  );
+  if (overlap.some((ref) => actionRefRepository(ref) !== primaryRepository)) {
+    throw new Error(
+      "invalid_env:REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS",
+    );
+  }
+  return [...new Set([primaryRef, ...overlap])];
+}
+
+export function requireReviewRouterDatabaseRecoveryWitness(
+  input: ReviewRouterDatabaseRecoveryWitnessEnv = process.env,
+): string {
+  const value = input.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS?.trim();
+  if (!value) {
+    throw new Error("missing_env:REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS");
+  }
+  // 32 random bytes encode to 43 unpadded base64url characters. Keep this
+  // aligned with fingerprintDatabaseRecoveryWitness without ever returning a
+  // secret-bearing validation error.
+  if (
+    !/^[A-Za-z0-9_-]{43,256}$/.test(value) ||
+    /replace-with|placeholder/i.test(value)
+  ) {
+    throw new Error("invalid_env:REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS");
+  }
+  return value;
+}
+
 export function resolveReviewRouterPublicApiUrl(
   input: ReviewRouterApiUrlEnv = process.env,
 ): string {
-  return (
+  const production = input.NODE_ENV === "production";
+  const raw =
     input.REVIEW_ROUTER_PUBLIC_API_URL?.trim() ||
-    input.REVIEW_ROUTER_API_URL?.trim() ||
-    "https://api.reviewrouter.site"
-  ).replace(/\/+$/, "");
+    input.REVIEW_ROUTER_API_URL?.trim();
+  if (!raw) {
+    if (production) {
+      throw new Error("missing_env:REVIEW_ROUTER_PUBLIC_API_URL");
+    }
+    return "http://localhost:4000";
+  }
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("invalid_workflow_api_url");
+  }
+  if (
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    url.pathname !== "/"
+  ) {
+    throw new Error("invalid_workflow_api_url");
+  }
+  const local = isLoopbackHostname(url.hostname);
+  if (production && local) {
+    throw new Error("invalid_workflow_api_url");
+  }
+  if (
+    url.protocol !== "https:" &&
+    !(url.protocol === "http:" && !production && local)
+  ) {
+    throw new Error("invalid_workflow_api_url");
+  }
+  return url.toString().replace(/\/$/u, "");
 }
 
 export function resolveReviewRouterTrustedActionRefs(
@@ -108,16 +211,7 @@ export function resolveReviewRouterTrustedActionRefs(
 export function parseReviewRouterActionRefList(
   value: string | undefined,
 ): readonly string[] {
-  const raw = value?.trim();
-  if (!raw) {
-    return [];
-  }
-  return raw
-    .split(/[\s,]+/)
-    .map((ref) =>
-      normalizeFullShaActionRef(ref, "REVIEW_ROUTER_ALLOWED_ACTION_REFS"),
-    )
-    .filter((ref) => ref.length > 0);
+  return parseFullShaActionRefList(value, "REVIEW_ROUTER_ALLOWED_ACTION_REFS");
 }
 
 export function isWorkflowProvisioningEnabled(
@@ -291,6 +385,24 @@ function normalizeFullShaActionRef(actionRef: string, envName: string): string {
     throw new Error(`invalid_env:${envName}`);
   }
   return normalized;
+}
+
+function parseFullShaActionRefList(
+  value: string | undefined,
+  envName: string,
+): readonly string[] {
+  const raw = value?.trim();
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(/[\s,]+/)
+    .map((ref) => normalizeFullShaActionRef(ref, envName))
+    .filter((ref) => ref.length > 0);
+}
+
+function actionRefRepository(actionRef: string): string {
+  return actionRef.slice(0, actionRef.lastIndexOf("@"));
 }
 
 function isFullShaActionRef(actionRef: string): boolean {

@@ -70,6 +70,16 @@ requireDockerfileText("postgresql-client");
 for (const service of ["migrate", "web", "api", "worker"]) {
   requireEnvironment(
     service,
+    "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF",
+    fileEnvValue("REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF"),
+  );
+  requireEnvironment(
+    service,
+    "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+    fileEnvValue("REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS"),
+  );
+  requireEnvironment(
+    service,
     "REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED",
     "1",
   );
@@ -152,6 +162,10 @@ function composeEnvironment() {
       "reviewrouter-compose-contract-password",
     REVIEW_ROUTER_SELF_HOSTED_ENV_FILE: configuredEnvFile ?? "./.env.example",
   };
+}
+
+function fileEnvValue(name) {
+  return String(composeEnvironment()[name] ?? "");
 }
 
 function requireService(name) {

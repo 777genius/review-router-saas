@@ -1,40 +1,262 @@
 /* global fetch */
 
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { reviewV2ContextEnvForRole } from "./review-v2-render-env.mjs";
+import { isLoopbackHostname } from "../packages/shared/src/validation/loopback-hostname.mjs";
+import { resolveCodexRotatingInstallerDescriptor } from "../packages/shared/src/validation/codex-rotating-installer-descriptor.mjs";
+import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
+import {
+  assertTrustedGitHubEvidence,
+  fetchTrustedGitHubEvidence,
+  gitBlobSha,
+} from "./lib/github-actions-trusted-evidence.mjs";
 
 const renderApi = "https://api.render.com/v1";
+const roleBootstrapDatabaseUrlEnvironmentName =
+  "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL";
+const forbiddenRuntimeDeployDotenvMessage =
+  "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL is forbidden in the runtime deploy environment file";
+const dotenvWhitespace = /\s/u;
+const dotenvAssignmentNameStart = /[A-Za-z_]/u;
+const dotenvAssignmentNamePart = /[A-Za-z0-9_]/u;
 
-function parseDotenv(text) {
+function skipDotenvWhitespace(line, start) {
+  let offset = start;
+  while (offset < line.length && dotenvWhitespace.test(line[offset])) {
+    offset += 1;
+  }
+  return offset;
+}
+
+function lexDotenvAssignment(line) {
+  const assignmentStart = skipDotenvWhitespace(line, 0);
+  if (
+    assignmentStart === line.length ||
+    line[assignmentStart] === "#" ||
+    !dotenvAssignmentNameStart.test(line[assignmentStart])
+  ) {
+    return null;
+  }
+
+  let nameStart = assignmentStart;
+  if (
+    line.startsWith("export", assignmentStart) &&
+    dotenvWhitespace.test(line[assignmentStart + "export".length])
+  ) {
+    nameStart = skipDotenvWhitespace(line, assignmentStart + "export".length);
+    if (
+      nameStart === line.length ||
+      !dotenvAssignmentNameStart.test(line[nameStart])
+    ) {
+      return null;
+    }
+  }
+
+  let offset = nameStart + 1;
+  while (offset < line.length && dotenvAssignmentNamePart.test(line[offset])) {
+    offset += 1;
+  }
+  const nameEnd = offset;
+  offset = skipDotenvWhitespace(line, offset);
+  if (line[offset] !== "=") return null;
+
+  return {
+    name: line.slice(nameStart, nameEnd),
+    valueStart: offset + 1,
+  };
+}
+
+function parseDotenv(text, forbiddenNames = new Set()) {
   const values = {};
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#") || !line.includes("=")) continue;
-    const separator = line.indexOf("=");
-    const key = line.slice(0, separator).trim();
-    let value = line.slice(separator + 1).trim();
+  for (const rawLine of text.split("\n")) {
+    const assignment = lexDotenvAssignment(rawLine);
+    if (!assignment) continue;
+    if (forbiddenNames.has(assignment.name)) {
+      throw new Error(forbiddenRuntimeDeployDotenvMessage);
+    }
+
+    let value = rawLine.slice(assignment.valueStart).trim();
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
       (value.startsWith("'") && value.endsWith("'"))
     ) {
       value = value.slice(1, -1);
     }
-    values[key] = value.replace(/\\n/g, "\n");
+    values[assignment.name] = value.replace(/\\n/g, "\n");
   }
   return values;
 }
 
-function readOptionalDotenv(filePath) {
+function readRuntimeDeployDotenv(filePath) {
   if (!fs.existsSync(filePath)) return {};
-  return parseDotenv(fs.readFileSync(filePath, "utf8"));
+  return parseHostedDeployDotenv(fs.readFileSync(filePath, "utf8"));
 }
 
-function requiredEnv(name, source) {
+export function parseHostedDeployDotenv(text) {
+  return parseDotenv(text, new Set([roleBootstrapDatabaseUrlEnvironmentName]));
+}
+
+export function requiredEnv(name, source) {
   const value = source[name] ?? process.env[name];
   if (!value) throw new Error(`Missing required value: ${name}`);
   return value;
+}
+
+const placeholderPattern =
+  /(?:replace[-_ ]?with|placeholder|changeme|change[-_ ]?me|example|todo|insert[-_ ]?here)/iu;
+
+const stableSecretNames = Object.freeze([
+  "AUTH_SECRET",
+  "REVIEW_ROUTER_ACTION_SESSION_SECRET",
+  "REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY",
+  "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+]);
+
+const installerDescriptorSchema =
+  "reviewrouter.codex-rotating-installer-descriptor.v1";
+const installerDescriptorEnvironmentNames = Object.freeze([
+  "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL",
+  "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION",
+  "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256",
+]);
+
+function sha256Bytes(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function assertExactObjectKeys(value, expected, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (
+    actual.length !== wanted.length ||
+    actual.some((key, i) => key !== wanted[i])
+  ) {
+    throw new Error(`${label} fields are not canonical`);
+  }
+}
+
+/**
+ * Read the release-produced descriptor only through a separately pinned digest.
+ * Keeping the digest outside the file prevents a locally substituted descriptor
+ * from selecting its own installer bytes.
+ */
+export function readVerifiedInstallerReleaseDescriptor(source) {
+  const descriptorPath = requiredEnv(
+    "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_FILE",
+    source,
+  );
+  const expectedDigest = requiredEnv(
+    "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256",
+    source,
+  );
+  if (!/^[a-f0-9]{64}$/u.test(expectedDigest)) {
+    throw new Error(
+      "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256 must be an exact lowercase SHA-256",
+    );
+  }
+  const bytes = fs.readFileSync(descriptorPath);
+  if (sha256Bytes(bytes) !== expectedDigest) {
+    throw new Error(
+      "immutable rotating installer release descriptor digest mismatch",
+    );
+  }
+  let descriptor;
+  try {
+    descriptor = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error(
+      "immutable rotating installer release descriptor is not valid JSON",
+    );
+  }
+  assertExactObjectKeys(
+    descriptor,
+    ["schemaVersion", "url", "version", "sha256", "actionRef", "reseed"],
+    "immutable rotating installer release descriptor",
+  );
+  assertExactObjectKeys(
+    descriptor.reseed,
+    ["url", "sha256"],
+    "immutable rotating reseed descriptor",
+  );
+  if (descriptor.schemaVersion !== installerDescriptorSchema) {
+    throw new Error(
+      "immutable rotating installer release descriptor schema mismatch",
+    );
+  }
+  const actionRef = resolveHostedCodexRotatingActionRef(source);
+  if (String(descriptor.actionRef).toLowerCase() !== actionRef) {
+    throw new Error(
+      "immutable rotating installer release descriptor Action ref mismatch",
+    );
+  }
+  const tupleEnv = {
+    ...source,
+    REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: descriptor.url,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: descriptor.version,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: descriptor.sha256,
+  };
+  const tuple = resolveCodexRotatingInstallerDescriptor(tupleEnv);
+  const actionRepository = actionRef.slice(0, actionRef.lastIndexOf("@"));
+  const actionSha = actionRef.slice(actionRef.lastIndexOf("@") + 1);
+  const expectedReseedUrl = `https://raw.githubusercontent.com/${actionRepository}/${actionSha}/scripts/reseed-codex-rotating-auth.sh`;
+  if (
+    descriptor.reseed.url !== expectedReseedUrl ||
+    !/^[a-f0-9]{64}$/u.test(descriptor.reseed.sha256)
+  ) {
+    throw new Error("immutable rotating reseed descriptor mismatch");
+  }
+  return Object.freeze({
+    descriptorPath,
+    descriptorSha256: expectedDigest,
+    actionRef,
+    tuple: Object.freeze(tuple),
+  });
+}
+
+function installerDescriptorIdentity(value) {
+  return JSON.stringify({
+    descriptorSha256: value.descriptorSha256,
+    actionRef: value.actionRef,
+    tuple: value.tuple,
+  });
+}
+
+function applyInstallerTuple(source, verified) {
+  return {
+    ...source,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: verified.tuple.url,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: verified.tuple.version,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: verified.tuple.sha256,
+  };
+}
+
+export function resolveStableSecuritySecrets(source) {
+  return Object.fromEntries(
+    stableSecretNames.map((name) => {
+      const value =
+        name === "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS"
+          ? requireDatabaseRecoveryWitness(source)
+          : requiredEnv(name, source);
+      if (
+        value !== value.trim() ||
+        value.length < 32 ||
+        placeholderPattern.test(value)
+      ) {
+        throw new Error(
+          `${name} must be a stable, non-placeholder secret of at least 32 characters`,
+        );
+      }
+      return [name, value];
+    }),
+  );
 }
 
 function resolveHostedActionRef(source) {
@@ -48,6 +270,204 @@ function resolveHostedActionRef(source) {
     process.env.REVIEW_ROUTER_ACTION_VERSION ??
     "main";
   return `777genius/review-router@${version}`;
+}
+
+export function resolveHostedCodexRotatingActionRef(source) {
+  const value = requiredEnv(
+    "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF",
+    source,
+  ).trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(value)) {
+    throw new Error(
+      "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF must be an exact full-SHA Action ref",
+    );
+  }
+  return value.toLowerCase();
+}
+
+export function resolveHostedCodexRotatingAllowedActionRefs(source) {
+  const primary = resolveHostedCodexRotatingActionRef(source);
+  const primaryRepository = primary.slice(0, primary.lastIndexOf("@"));
+  const value = String(
+    source.REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS ??
+      process.env.REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS ??
+      "",
+  ).trim();
+  if (!value) return "";
+  const refs = value
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .map((ref) => {
+      const normalized = ref.toLowerCase();
+      if (
+        !/^[a-z0-9_.-]+\/[a-z0-9_.-]+@[a-f0-9]{40}$/.test(normalized) ||
+        normalized.slice(0, normalized.lastIndexOf("@")) !== primaryRepository
+      ) {
+        throw new Error(
+          "REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS must contain only same-repository full-SHA Action refs",
+        );
+      }
+      return normalized;
+    });
+  return [...new Set(refs)].join(",");
+}
+
+export function requireDatabaseRecoveryWitness(source) {
+  const value = requiredEnv(
+    "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+    source,
+  ).trim();
+  if (
+    !/^[A-Za-z0-9_-]{43,256}$/.test(value) ||
+    /replace-with|placeholder/i.test(value)
+  ) {
+    throw new Error(
+      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS must be 43-256 base64url characters",
+    );
+  }
+  return value;
+}
+
+const databaseUrlEnvironmentByRole = Object.freeze({
+  api: "REVIEW_ROUTER_API_DATABASE_URL",
+  web: "REVIEW_ROUTER_WEB_DATABASE_URL",
+  worker: "REVIEW_ROUTER_WORKER_DATABASE_URL",
+  codexEffectAuthority: "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
+  releaseMigration: "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
+});
+
+export function resolveDistinctDatabaseRoleUrls(source) {
+  const expectedUsers = {
+    api: "reviewrouter_api",
+    web: "reviewrouter_web",
+    worker: "reviewrouter_worker",
+    codexEffectAuthority: "reviewrouter_codex_effect_authority",
+    releaseMigration: "reviewrouter_release_migration",
+  };
+  const urls = {};
+  for (const [role, environmentName] of Object.entries(
+    databaseUrlEnvironmentByRole,
+  )) {
+    let parsed;
+    try {
+      parsed = new URL(requiredEnv(environmentName, source));
+    } catch {
+      throw new Error(`${environmentName} must be a PostgreSQL URL`);
+    }
+    if (
+      !["postgres:", "postgresql:"].includes(parsed.protocol) ||
+      decodeURIComponent(parsed.username) !== expectedUsers[role] ||
+      !parsed.password
+    ) {
+      throw new Error(
+        `${environmentName} must authenticate as ${expectedUsers[role]}`,
+      );
+    }
+    urls[role] = parsed.toString();
+  }
+  const identities = Object.values(urls).map(normalizedDatabaseIdentity);
+  if (new Set(identities).size !== 1) {
+    throw new Error("all database roles must target one database generation");
+  }
+  if (
+    new Set(Object.values(urls).map((value) => new URL(value).username))
+      .size !== 5
+  ) {
+    throw new Error("database role credentials must be distinct");
+  }
+  return urls;
+}
+
+export function normalizedDatabaseIdentity(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("database connection must be a PostgreSQL URL");
+  }
+  if (!["postgres:", "postgresql:"].includes(parsed.protocol)) {
+    throw new Error("database connection must be a PostgreSQL URL");
+  }
+  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+  if (!databaseName || databaseName.includes("/")) {
+    throw new Error("database connection must select exactly one database");
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/u, "");
+  return `${hostname}:${parsed.port || "5432"}/${databaseName}`;
+}
+
+export function assertSelectedDatabaseIdentity(
+  selectedConnection,
+  databaseUrls,
+) {
+  const selected = normalizedDatabaseIdentity(selectedConnection);
+  for (const [role, value] of Object.entries(databaseUrls)) {
+    if (normalizedDatabaseIdentity(value) !== selected) {
+      throw new Error(
+        `selected Render database identity does not match ${databaseUrlEnvironmentByRole[role]}`,
+      );
+    }
+  }
+  return selected;
+}
+
+function resourceValue(value) {
+  return (
+    value?.service ??
+    value?.postgres ??
+    value?.resource ??
+    value?.environment ??
+    value?.project ??
+    value
+  );
+}
+
+function identityId(value) {
+  return typeof value === "string" ? value : value?.id;
+}
+
+export function observedRenderScope(value) {
+  const resource = resourceValue(value) ?? {};
+  return {
+    ownerId: identityId(resource.ownerId ?? resource.owner),
+    projectId: identityId(resource.projectId ?? resource.project),
+    environmentId: identityId(resource.environmentId ?? resource.environment),
+  };
+}
+
+export function assertExactRenderScope(value, expected, label) {
+  const observed = observedRenderScope(value);
+  for (const key of ["ownerId", "environmentId"]) {
+    if (!observed[key] || observed[key] !== expected[key]) {
+      throw new Error(`Render ${label} ${key} does not match requested scope`);
+    }
+  }
+  if (observed.projectId && observed.projectId !== expected.projectId) {
+    throw new Error(`Render ${label} projectId does not match requested scope`);
+  }
+  return resourceValue(value);
+}
+
+export async function verifyControlPlaneScope(client, expected) {
+  const project = resourceValue(
+    await client.request("GET", `/projects/${expected.projectId}`),
+  );
+  if (identityId(project?.ownerId ?? project?.owner) !== expected.ownerId) {
+    throw new Error("Render project ownerId does not match requested scope");
+  }
+  const environment = resourceValue(
+    await client.request("GET", `/environments/${expected.environmentId}`),
+  );
+  if (
+    identityId(environment?.ownerId ?? environment?.owner) !==
+      expected.ownerId ||
+    identityId(environment?.projectId ?? environment?.project) !==
+      expected.projectId
+  ) {
+    throw new Error(
+      "Render environment does not match requested owner/project scope",
+    );
+  }
 }
 
 function readRenderApiKey() {
@@ -72,35 +492,43 @@ function readGithubPrivateKey(env) {
   );
 }
 
-function isLocalUrl(value) {
-  if (!value) return false;
+function assertHostedUrl(name, value) {
+  if (!value) throw new Error(`${name} is required for hosted deployment`);
+  let url;
   try {
-    const url = new URL(value);
-    return ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+    url = new URL(value);
   } catch {
-    return false;
+    throw new Error(`${name} must be a canonical public HTTPS origin`);
+  }
+  if (
+    url.protocol !== "https:" ||
+    isLoopbackHostname(url.hostname) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    url.pathname !== "/"
+  ) {
+    throw new Error(`${name} must be a canonical public HTTPS origin`);
   }
 }
 
-function assertHostedDeployEnv({ apiUrl, env, envFile, webUrl }) {
+export function assertHostedDeployEnv({ apiUrl, env, envFile, webUrl }) {
+  // URL identity is security-sensitive workflow input and is never bypassed,
+  // including staging deploys using REVIEW_ROUTER_ALLOW_LOCAL_DEPLOY_ENV.
+  assertHostedUrl("REVIEW_ROUTER_WEB_URL", webUrl);
+  assertHostedUrl("REVIEW_ROUTER_API_URL", apiUrl);
+  if (env.NEXTAUTH_URL) assertHostedUrl("NEXTAUTH_URL", env.NEXTAUTH_URL);
+
   if (env.REVIEW_ROUTER_ALLOW_LOCAL_DEPLOY_ENV === "1") return;
 
   const appSlug = String(env.GITHUB_APP_SLUG ?? "");
-  const localValues = [
-    ["REVIEW_ROUTER_WEB_URL", webUrl],
-    ["REVIEW_ROUTER_API_URL", apiUrl],
-    ["NEXTAUTH_URL", env.NEXTAUTH_URL],
-  ].filter(([, value]) => isLocalUrl(value));
-
   const issues = [];
   if (path.basename(envFile) === ".env.local") {
     issues.push("deployment env file is .env.local");
   }
-  for (const [key, value] of localValues) {
-    issues.push(`${key} points to ${value}`);
-  }
   if (appSlug.toLowerCase().includes("local")) {
-    issues.push(`GITHUB_APP_SLUG looks local: ${appSlug}`);
+    issues.push("GITHUB_APP_SLUG looks local");
   }
 
   if (issues.length > 0) {
@@ -108,7 +536,7 @@ function assertHostedDeployEnv({ apiUrl, env, envFile, webUrl }) {
       [
         "Refusing hosted Render deploy with local-looking configuration.",
         ...issues.map((issue) => `- ${issue}`),
-        "Use REVIEW_ROUTER_RENDER_ENV_FILE=.env.production or set REVIEW_ROUTER_ALLOW_LOCAL_DEPLOY_ENV=1 only for an intentional staging deploy.",
+        "Use REVIEW_ROUTER_RENDER_RUNTIME_DEPLOY_ENV_FILE with a dedicated runtime-deploy file or set REVIEW_ROUTER_ALLOW_LOCAL_DEPLOY_ENV=1 only for an intentional staging deploy.",
       ].join("\n"),
     );
   }
@@ -144,7 +572,7 @@ function readOptionalEnvVars(env, keys) {
   return values;
 }
 
-class RenderClient {
+export class RenderClient {
   constructor(apiKey) {
     this.apiKey = apiKey;
   }
@@ -167,10 +595,7 @@ class RenderClient {
       data = text;
     }
     if (!response.ok) {
-      const message = typeof data === "string" ? data : JSON.stringify(data);
-      throw new Error(
-        `${method} ${endpoint} failed ${response.status}: ${message}`,
-      );
+      throw new Error(`${method} ${endpoint} failed ${response.status}`);
     }
     return data;
   }
@@ -184,7 +609,7 @@ class RenderClient {
   }
 }
 
-function serviceDetails({ type, startCommand, healthCheckPath }) {
+export function serviceDetails({ type, startCommand, healthCheckPath }) {
   const details = {
     envSpecificDetails: {
       buildCommand:
@@ -193,7 +618,9 @@ function serviceDetails({ type, startCommand, healthCheckPath }) {
     },
     maxShutdownDelaySeconds: type === "background_worker" ? 120 : 60,
     plan: "starter",
-    preDeployCommand: "pnpm db:migrate:deploy",
+    // Database rollout runs in the trusted GitHub migration workflow.
+    // Runtime services must represent per-service migration callers as null.
+    preDeployCommand: null,
     region: "frankfurt",
     runtime: "node",
   };
@@ -201,17 +628,19 @@ function serviceDetails({ type, startCommand, healthCheckPath }) {
   return details;
 }
 
-function buildServiceEnv({
+export function buildServiceEnv({
   databaseUrl,
+  databaseUrls,
   env,
   privateKey,
   role,
   webUrl,
   apiUrl,
 }) {
+  const stableSecrets = resolveStableSecuritySecrets(env);
+  const installer = resolveCodexRotatingInstallerDescriptor(env);
   const values = {
-    AUTH_SECRET:
-      env.AUTH_SECRET ?? crypto.randomBytes(32).toString("base64url"),
+    AUTH_SECRET: stableSecrets.AUTH_SECRET,
     AUTH_TRUST_HOST: "true",
     DATABASE_URL: databaseUrl,
     GITHUB_APP_CLIENT_ID: requiredEnv("GITHUB_APP_CLIENT_ID", env),
@@ -229,10 +658,18 @@ function buildServiceEnv({
     REVIEW_ROUTER_ACTION_REF: resolveHostedActionRef(env),
     REVIEW_ROUTER_ALLOWED_ACTION_REFS:
       env.REVIEW_ROUTER_ALLOWED_ACTION_REFS ?? "",
+    REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
+      resolveHostedCodexRotatingActionRef(env),
+    REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS:
+      resolveHostedCodexRotatingAllowedActionRefs(env),
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: installer.url,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: installer.version,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: installer.sha256,
+    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS:
+      stableSecrets.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS,
     REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter",
     REVIEW_ROUTER_ACTION_SESSION_SECRET:
-      env.REVIEW_ROUTER_ACTION_SESSION_SECRET ??
-      crypto.randomBytes(32).toString("base64url"),
+      stableSecrets.REVIEW_ROUTER_ACTION_SESSION_SECRET,
     REVIEW_ROUTER_API_URL: apiUrl,
     REVIEW_ROUTER_DEFAULT_EFFORT: env.REVIEW_ROUTER_DEFAULT_EFFORT ?? "xhigh",
     REVIEW_ROUTER_DEFAULT_MODEL: env.REVIEW_ROUTER_DEFAULT_MODEL ?? "gpt-5.5",
@@ -241,11 +678,14 @@ function buildServiceEnv({
     REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS: "1",
     REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK:
       env.REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK ?? "1",
-    REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH:
-      env.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH ?? "1",
+    // Deploy convergence is always dormant. Cutover is a separate observed
+    // operation and stale local/example values are intentionally ignored.
+    REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "0",
+    REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED: "0",
     REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "1",
     REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES:
       env.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES ?? "",
+    REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED: "0",
     REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES:
       env.REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES ?? "",
     REVIEW_ROUTER_MAX_REPOSITORIES_PER_SYNC: "250",
@@ -253,49 +693,110 @@ function buildServiceEnv({
     REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS: "900000",
     REVIEW_ROUTER_PUBLIC_API_URL: apiUrl,
     REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY:
-      env.REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY ??
-      crypto.randomBytes(32).toString("base64url"),
+      stableSecrets.REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY,
     REVIEW_ROUTER_WEB_URL: webUrl,
     REVIEW_ROUTER_WORKER_BUSY_MS: "250",
     REVIEW_ROUTER_WORKER_ERROR_MS: "5000",
     REVIEW_ROUTER_WORKER_IDLE_MS: "5000",
   };
+  if (role === "api" || role === "web") {
+    const authorityDatabaseUrl =
+      databaseUrls?.codexEffectAuthority ??
+      env.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL;
+    if (authorityDatabaseUrl) {
+      values.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL =
+        authorityDatabaseUrl;
+    }
+  }
   if (role === "api") {
     Object.assign(values, readOptionalEnvVars(env, apiOnlyGitLabEnvKeys));
   }
   Object.assign(values, reviewV2ContextEnvForRole(env, role));
+  Object.assign(values, {
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "0",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED: "0",
+    REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "0",
+  });
   if (role !== "worker") values.PORT = "10000";
   return asEnvVars(values);
 }
 
-async function addToEnvironment(client, environmentId, resourceIds) {
+export async function addToEnvironment(client, environmentId, resourceIds) {
   if (!environmentId || resourceIds.length === 0) return;
-  try {
+  const readLinkedIds = async () => {
+    const linked = await client.request(
+      "GET",
+      `/environments/${environmentId}/resources`,
+    );
+    return new Set(
+      (Array.isArray(linked) ? linked : (linked?.resources ?? [])).map((item) =>
+        identityId(resourceValue(item)?.id ?? item?.resourceId),
+      ),
+    );
+  };
+  let linkedIds = await readLinkedIds();
+  const missingIds = resourceIds.filter(
+    (resourceId) => !linkedIds.has(resourceId),
+  );
+  if (missingIds.length > 0) {
     await client.request("POST", `/environments/${environmentId}/resources`, {
-      resourceIds,
+      resourceIds: missingIds,
     });
-  } catch (error) {
-    console.log(`environment link warning: ${error.message}`);
+    linkedIds = await readLinkedIds();
+  }
+  for (const resourceId of resourceIds) {
+    if (!linkedIds.has(resourceId)) {
+      throw new Error(
+        `Render environment link verification failed for ${resourceId}`,
+      );
+    }
   }
 }
 
-async function ensureDatabase(client, { ownerId, environmentId }) {
-  const existing = (await client.list("/postgres"))
+export async function ensureDatabase(client, { allowCreate = true, ...scope }) {
+  const candidates = (await client.list(`/postgres?ownerId=${scope.ownerId}`))
     .map((item) => item.postgres)
-    .find((postgres) => postgres?.name === "reviewrouter-db");
-  if (existing) return existing;
+    .filter((postgres) => postgres?.name === "reviewrouter-db");
+  const matching = candidates.filter((postgres) => {
+    const observed = observedRenderScope(postgres);
+    return (
+      observed.ownerId === scope.ownerId &&
+      observed.environmentId === scope.environmentId &&
+      (!observed.projectId || observed.projectId === scope.projectId)
+    );
+  });
+  if (matching.length > 1) {
+    throw new Error(
+      "multiple Render databases match the exact requested scope",
+    );
+  }
+  const existing = matching[0];
+  if (existing) {
+    if (!/^17(?:\.|$)/u.test(String(existing.version ?? ""))) {
+      throw new Error(
+        "existing Render database reviewrouter-db must use PostgreSQL 17",
+      );
+    }
+    return existing;
+  }
+  if (!allowCreate) {
+    throw new Error(
+      "runtime-deploy requires an existing database from the prepare phase",
+    );
+  }
 
   console.log("creating database reviewrouter-db");
   return await client.request("POST", "/postgres", {
     databaseName: "review_router",
-    databaseUser: "reviewrouter",
-    environmentId,
+    databaseUser: "reviewrouter_role_bootstrap",
+    environmentId: scope.environmentId,
     ipAllowList: [],
     name: "reviewrouter-db",
-    ownerId,
+    ownerId: scope.ownerId,
+    projectId: scope.projectId,
     plan: "basic_256mb",
     region: "frankfurt",
-    version: "16",
+    version: "17",
   });
 }
 
@@ -326,19 +827,37 @@ async function waitForDatabase(client, databaseId) {
   throw new Error("Timed out waiting for database connection string");
 }
 
-async function ensureService(client, spec, common) {
-  const existing = (await client.list("/services"))
+export async function ensureService(client, spec, common) {
+  const candidates = (await client.list(`/services?ownerId=${common.ownerId}`))
     .map((item) => item.service)
-    .find((service) => service?.name === spec.name);
+    .filter((service) => service?.name === spec.name);
+  const matching = candidates.filter((service) => {
+    const observed = observedRenderScope(service);
+    return (
+      observed.ownerId === common.ownerId &&
+      observed.environmentId === common.environmentId &&
+      (!observed.projectId || observed.projectId === common.projectId)
+    );
+  });
+  if (matching.length > 1) {
+    throw new Error(`multiple Render services named ${spec.name} match scope`);
+  }
+  const existing = matching[0];
   if (existing) return existing;
+  if (common.allowCreate === false) {
+    throw new Error(
+      `runtime-deploy requires existing service ${spec.name} from the prepare phase`,
+    );
+  }
 
   console.log(`creating service ${spec.name}`);
   const created = await client.request("POST", "/services", {
-    autoDeployTrigger: "commit",
+    autoDeployTrigger: "off",
     branch: common.branch,
-    envVars: buildServiceEnv({ ...common, role: spec.role }),
     name: spec.name,
+    environmentId: common.environmentId,
     ownerId: common.ownerId,
+    projectId: common.projectId,
     repo: common.repo,
     serviceDetails: serviceDetails(spec),
     type: spec.type,
@@ -346,93 +865,837 @@ async function ensureService(client, spec, common) {
   return created.service ?? created;
 }
 
-async function syncService(client, service, spec, common) {
-  console.log(`syncing env for ${spec.name}`);
-  await client.request(
-    "PUT",
-    `/services/${service.id}/env-vars`,
-    buildServiceEnv({ ...common, role: spec.role }),
+export async function verifyResourceScope(
+  client,
+  kind,
+  resourceId,
+  scope,
+  label,
+) {
+  return assertExactRenderScope(
+    await client.request("GET", `/${kind}/${resourceId}`),
+    scope,
+    label,
   );
 }
 
-async function triggerDeploy(client, service) {
-  console.log(`triggering deploy for ${service.name}`);
-  await client.request("POST", `/services/${service.id}/deploys`, {
-    clearCache: "do_not_clear",
+export async function syncService(client, service, spec, common) {
+  console.log(`syncing env for ${spec.name}`);
+  await verifyControlPlaneScope(client, common);
+  await addToEnvironment(client, common.environmentId, [service.id]);
+  await verifyResourceScope(client, "services", service.id, common, spec.name);
+  // Re-read the digest-pinned release descriptor after all scope reads and
+  // immediately before constructing the secret-bearing PUT. A path swap or
+  // local edit fails closed unless the bytes still match the release digest.
+  const rereadDescriptor = readVerifiedInstallerReleaseDescriptor(common.env);
+  if (
+    installerDescriptorIdentity(rereadDescriptor) !==
+    installerDescriptorIdentity(common.installerDescriptor)
+  ) {
+    throw new Error(
+      "immutable rotating installer release descriptor changed before mutation",
+    );
+  }
+  const expectedEnv = buildServiceEnv({
+    ...common,
+    env: applyInstallerTuple(common.env, rereadDescriptor),
+    databaseUrl: common.databaseUrls[spec.role],
+    role: spec.role,
   });
+  await client.request("PUT", `/services/${service.id}/env-vars`, expectedEnv);
+  await verifyServiceEnvConvergence(client, service, expectedEnv);
 }
 
-const envFile = process.env.REVIEW_ROUTER_RENDER_ENV_FILE ?? ".env.production";
-const env = { ...readOptionalDotenv(envFile), ...process.env };
-const ownerId = requiredEnv("RENDER_OWNER_ID", env);
-const environmentId = requiredEnv("RENDER_ENVIRONMENT_ID", env);
-const repo = requiredEnv("RENDER_REPO", env);
-const branch = env.RENDER_BRANCH ?? "main";
-const webUrl = env.REVIEW_ROUTER_WEB_URL ?? "https://reviewrouter.site";
-const apiUrl = env.REVIEW_ROUTER_API_URL ?? "https://api.reviewrouter.site";
-assertHostedDeployEnv({ apiUrl, env, envFile, webUrl });
-const privateKey = readGithubPrivateKey(env);
-const client = new RenderClient(readRenderApiKey());
+function renderEnvVars(value) {
+  const candidate = Array.isArray(value)
+    ? value
+    : (value?.envVars ??
+      value?.environmentVariables ??
+      value?.service?.envVars);
+  if (!Array.isArray(candidate)) {
+    throw new Error(
+      "Render service environment convergence response is invalid",
+    );
+  }
+  return Object.fromEntries(
+    candidate.map((item) => {
+      const envVar = item?.envVar ?? item;
+      return [
+        envVar?.key,
+        String(envVar?.value ?? envVar?.envVarValue?.value ?? ""),
+      ];
+    }),
+  );
+}
 
-const database = await ensureDatabase(client, { environmentId, ownerId });
-const readyDatabase = await waitForDatabase(client, database.id);
-const common = {
-  apiUrl,
-  branch,
-  databaseUrl: readyDatabase.internalConnectionString,
+export async function verifyServiceEnvConvergence(
+  client,
+  service,
+  expectedEnv,
+) {
+  const observed = renderEnvVars(
+    await client.request("GET", `/services/${service.id}/env-vars?limit=100`),
+  );
+  for (const { key, value } of expectedEnv) {
+    if (observed[key] !== String(value)) {
+      throw new Error(
+        `Render service ${service.name} environment did not converge for ${key}`,
+      );
+    }
+  }
+  // Exercise the same hosted readiness contracts against the provider read,
+  // including exact tuple shape and the stable encryption/recovery secrets.
+  resolveCodexRotatingInstallerDescriptor(observed);
+  resolveStableSecuritySecrets(observed);
+  for (const key of installerDescriptorEnvironmentNames) {
+    if (!observed[key]) {
+      throw new Error(
+        `Render service ${service.name} readiness is missing ${key}`,
+      );
+    }
+  }
+}
+
+export async function disableAndVerifyPreDeployCommand(client, service) {
+  await client.request("PATCH", `/services/${service.id}`, {
+    autoDeployTrigger: "off",
+    serviceDetails: { preDeployCommand: "" },
+  });
+  const observed = await client.request("GET", `/services/${service.id}`);
+  const value = observed.service ?? observed;
+  const preDeployCommand =
+    value.serviceDetails?.envSpecificDetails?.preDeployCommand;
+  if (preDeployCommand !== "") {
+    throw new Error(
+      `Render service ${service.name} preDeployCommand is not canonically disabled`,
+    );
+  }
+  if (value.autoDeployTrigger !== "off") {
+    throw new Error(
+      `Render service ${service.name} autoDeployTrigger is not canonical off`,
+    );
+  }
+}
+
+export function assertMigrationEvidence(trustedEvidence, context) {
+  const evidence = assertTrustedGitHubEvidence(trustedEvidence).evidence;
+  return assertMigrationEvidencePayload(evidence, context);
+}
+
+export function assertMigrationEvidencePayload(
+  evidence,
+  { scope, databaseId, databaseIdentity, commit, imageDigest, databaseUrls },
+) {
+  const exactKeys = (value, keys) =>
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key));
+  if (
+    evidence?.version !== 5 ||
+    !exactKeys(evidence, [
+      "version",
+      "rolloutId",
+      "execution",
+      "scope",
+      "release",
+      "database",
+      "databaseGeneration",
+      "migration",
+      "runtimeRoles",
+      "databaseObservation",
+      "migrationOutput",
+    ])
+  ) {
+    throw new Error("migration evidence version or shape must be exactly 5");
+  }
+  const provider = evidence.databaseObservation;
+  const providerResponses = Array.isArray(provider?.rawResponses)
+    ? provider.rawResponses
+    : [];
+  const digest = (value) =>
+    createHash("sha256")
+      .update(Buffer.from(canonicalProviderJson(value)))
+      .digest("hex");
+  if (
+    !exactKeys(provider, [
+      "observationVersion",
+      "source",
+      "captureIdentity",
+      "rawResponses",
+      "database",
+    ]) ||
+    provider?.observationVersion !== 4 ||
+    provider?.source !== "render-api" ||
+    providerResponses.length !== 2 ||
+    providerResponses.some(
+      (response) =>
+        !exactKeys(response, ["url", "status", "bodySha256", "body"]) ||
+        typeof response?.url !== "string" ||
+        !response.url.startsWith("https://api.render.com/v1/") ||
+        response.status !== 200 ||
+        response.bodySha256 !== digest(response.body),
+    ) ||
+    !exactKeys(provider.captureIdentity, [
+      "ownerId",
+      "apiHost",
+      "authenticated",
+      "observedAt",
+      "rawResponsesSha256",
+    ]) ||
+    provider.captureIdentity.ownerId !== scope.ownerId ||
+    provider.captureIdentity.apiHost !== "api.render.com" ||
+    provider.captureIdentity.authenticated !== true ||
+    !Number.isFinite(Date.parse(provider.captureIdentity.observedAt ?? "")) ||
+    provider.captureIdentity?.rawResponsesSha256 !== digest(providerResponses)
+  ) {
+    throw new Error(
+      "migration evidence is missing a bound Render provider observation",
+    );
+  }
+  if (
+    !exactKeys(evidence.execution, [
+      "repositoryId",
+      "repositoryFullName",
+      "workflowPath",
+      "workflowSha",
+      "workflowRef",
+      "runId",
+      "runAttempt",
+      "jobId",
+      "jobName",
+      "artifactName",
+      "headSha",
+    ]) ||
+    evidence.execution.workflowPath !==
+      ".github/workflows/codex-rotating-release-migration.yml" ||
+    evidence.execution.workflowRef !== commit ||
+    evidence.execution.headSha !== commit ||
+    evidence.execution.jobName !== "trusted-release-migration" ||
+    !/^[a-f0-9]{40}$/u.test(evidence.execution.workflowSha ?? "") ||
+    ![
+      evidence.execution.repositoryId,
+      evidence.execution.runId,
+      evidence.execution.jobId,
+    ].every(
+      (value) => typeof value === "string" && /^[1-9][0-9]*$/u.test(value),
+    ) ||
+    !Number.isSafeInteger(evidence.execution.runAttempt) ||
+    evidence.execution.runAttempt <= 0
+  )
+    throw new Error("migration evidence GitHub execution identity is invalid");
+  if (!exactKeys(evidence.scope, ["ownerId", "projectId", "environmentId"]))
+    throw new Error("migration evidence scope shape is invalid");
+  for (const key of ["ownerId", "projectId", "environmentId"]) {
+    if (evidence.scope?.[key] !== scope[key]) {
+      throw new Error(
+        `migration evidence ${key} does not match requested scope`,
+      );
+    }
+  }
+  if (
+    !exactKeys(evidence.release, ["commit", "imageDigest"]) ||
+    evidence.release?.commit !== commit ||
+    evidence.release?.imageDigest !== imageDigest
+  ) {
+    throw new Error("migration evidence immutable release does not match");
+  }
+  if (
+    !exactKeys(evidence.database, [
+      "id",
+      "postgresMajorVersion",
+      "identity",
+      "observationSha256",
+    ]) ||
+    evidence.database?.id !== databaseId ||
+    evidence.database?.postgresMajorVersion !== "17" ||
+    evidence.database?.identity !== databaseIdentity ||
+    evidence.database?.observationSha256 !== digest(provider)
+  ) {
+    throw new Error("migration evidence database identity does not match");
+  }
+  if (
+    !exactKeys(evidence.databaseGeneration, [
+      "recoveryWitnessSha256",
+      "systemIdentifier",
+    ]) ||
+    typeof evidence.databaseGeneration.systemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(evidence.databaseGeneration.systemIdentifier ?? "") ||
+    typeof evidence.databaseGeneration.recoveryWitnessSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(
+      evidence.databaseGeneration.recoveryWitnessSha256 ?? "",
+    )
+  ) {
+    throw new Error("migration evidence database generation is invalid");
+  }
+  const migration = evidence.migration;
+  if (
+    !exactKeys(migration, [
+      "callerCount",
+      "status",
+      "preflightStatus",
+      "migrationStatus",
+      "evidenceStatus",
+      "outputSha256",
+    ]) ||
+    migration.callerCount !== 1 ||
+    migration.status !== "succeeded" ||
+    migration.preflightStatus !== "passed" ||
+    migration.migrationStatus !== "succeeded" ||
+    migration.evidenceStatus !== "verified" ||
+    migration.outputSha256 !== digest(evidence.migrationOutput)
+  ) {
+    throw new Error(
+      "migration evidence must prove one successful exclusive preflight/migration/evidence job",
+    );
+  }
+  if (
+    !exactKeys(provider.database, ["id", "name", "version", "ownerId"]) ||
+    provider.database?.id !== databaseId ||
+    !/^17(?:\.|$)/u.test(String(provider.database?.version ?? "")) ||
+    provider.database?.ownerId !== scope.ownerId ||
+    providerResponses[0].url !==
+      `https://api.render.com/v1/owners/${encodeURIComponent(scope.ownerId)}` ||
+    providerResponses[0].body?.id !== scope.ownerId ||
+    providerResponses[1].url !==
+      `https://api.render.com/v1/postgres/${encodeURIComponent(databaseId)}` ||
+    providerResponses[1].body?.id !== databaseId ||
+    (providerResponses[1].body?.ownerId ??
+      providerResponses[1].body?.owner?.id) !== scope.ownerId ||
+    String(providerResponses[1].body?.version) !==
+      String(provider.database.version)
+  ) {
+    throw new Error("migration evidence Render database observation mismatch");
+  }
+  if (
+    !exactKeys(evidence.migrationOutput, [
+      "version",
+      "caller",
+      "callerCount",
+      "commit",
+      "databaseGeneration",
+      "databaseIdentity",
+      "imageDigest",
+      "migrationStatus",
+      "preflightOutputSha256",
+      "preflightStatus",
+      "roles",
+      "status",
+    ]) ||
+    evidence.migrationOutput.version !== 3 ||
+    evidence.migrationOutput?.caller !==
+      "scripts/run-codex-rotating-release-migration.mjs" ||
+    evidence.migrationOutput?.callerCount !== 1 ||
+    evidence.migrationOutput?.commit !== commit ||
+    evidence.migrationOutput?.imageDigest !== imageDigest ||
+    evidence.migrationOutput?.databaseIdentity !== databaseIdentity ||
+    evidence.migrationOutput?.databaseGeneration?.systemIdentifier !==
+      evidence.databaseGeneration.systemIdentifier ||
+    evidence.migrationOutput?.databaseGeneration?.recoveryWitnessSha256 !==
+      evidence.databaseGeneration.recoveryWitnessSha256 ||
+    evidence.migrationOutput?.status !== "succeeded"
+  ) {
+    throw new Error("migration evidence canonical caller output mismatch");
+  }
+  const expectedRoles = new Map(
+    Object.entries(databaseUrls).map(([role, url]) => [
+      role,
+      {
+        username: decodeURIComponent(new URL(url).username),
+        databaseIdentity: normalizedDatabaseIdentity(url),
+      },
+    ]),
+  );
+  const roles = Array.isArray(evidence.runtimeRoles)
+    ? evidence.runtimeRoles
+    : [];
+  if (roles.length !== expectedRoles.size) {
+    throw new Error("migration evidence must verify all five database roles");
+  }
+  for (const role of roles) {
+    const expected = expectedRoles.get(role.role);
+    if (
+      !expected ||
+      !exactKeys(role, [
+        "role",
+        "username",
+        "databaseIdentity",
+        "login",
+        "superuser",
+        "createDatabase",
+        "createRole",
+        "replication",
+        "bypassRls",
+        "canSetReleaseRole",
+      ]) ||
+      role.username !== expected.username ||
+      role.databaseIdentity !== expected.databaseIdentity ||
+      role.login !== true ||
+      role.superuser !== false ||
+      role.createDatabase !== false ||
+      role.createRole !== false ||
+      role.replication !== false ||
+      role.bypassRls !== false ||
+      role.canSetReleaseRole !== (role.role === "releaseMigration")
+    ) {
+      throw new Error("migration evidence database role verification failed");
+    }
+    expectedRoles.delete(role.role);
+  }
+  if (expectedRoles.size !== 0) {
+    throw new Error("migration evidence must verify every canonical role once");
+  }
+  const outputRoles = Array.isArray(evidence.migrationOutput.roles)
+    ? evidence.migrationOutput.roles
+    : [];
+  if (
+    outputRoles.length !== roles.length ||
+    outputRoles.some((role) => {
+      const normalized = roles.find(
+        (entry) => entry.username === role.username,
+      );
+      return (
+        !exactKeys(role, [
+          "username",
+          "login",
+          "superuser",
+          "createDatabase",
+          "createRole",
+          "replication",
+          "bypassRls",
+          "canSetReleaseRole",
+        ]) ||
+        !normalized ||
+        [
+          "login",
+          "superuser",
+          "createDatabase",
+          "createRole",
+          "replication",
+          "bypassRls",
+          "canSetReleaseRole",
+        ].some((key) => role[key] !== normalized[key])
+      );
+    })
+  )
+    throw new Error("migration evidence role observations are not cross-bound");
+  return evidence;
+}
+
+export async function fetchTrustedMigrationEvidence(
   env,
-  ownerId,
-  privateKey,
-  repo,
-  webUrl,
-};
-const serviceSpecs = [
-  {
-    healthCheckPath: "/",
-    name: "reviewrouter-web",
-    role: "web",
-    startCommand: "pnpm web:start",
-    type: "web_service",
-  },
-  {
-    healthCheckPath: "/health",
-    name: "reviewrouter-api",
-    role: "api",
-    startCommand: "HOST=0.0.0.0 pnpm api:start",
-    type: "web_service",
-  },
-  {
-    name: "reviewrouter-worker",
-    role: "worker",
-    startCommand: "pnpm worker:start",
-    type: "background_worker",
-  },
-];
-
-const services = [];
-for (const spec of serviceSpecs) {
-  const service = await ensureService(client, spec, common);
-  services.push({ service, spec });
-}
-await addToEnvironment(client, environmentId, [
-  readyDatabase.id,
-  ...services.map(({ service }) => service.id),
-]);
-for (const { service, spec } of services)
-  await syncService(client, service, spec, common);
-for (const { service } of services) await triggerDeploy(client, service);
-
-console.log(
-  JSON.stringify(
+  fetchImpl = globalThis.fetch,
+) {
+  const workflowPath = ".github/workflows/codex-rotating-release-migration.yml";
+  const workflowBytes = fs.readFileSync(
+    path.resolve(import.meta.dirname, "..", workflowPath),
+  );
+  const commit = requiredEnv("REVIEW_ROUTER_RENDER_COMMIT_SHA", env);
+  return fetchTrustedGitHubEvidence(
     {
-      database: { id: readyDatabase.id, status: readyDatabase.status },
-      services: services.map(({ service }) => ({
-        id: service.id,
-        name: service.name,
-        url: service.serviceDetails?.url ?? null,
-      })),
+      token: requiredEnv("REVIEW_ROUTER_ROLLOUT_GITHUB_TOKEN", env),
+      repository: "777genius/review-router-saas",
+      repositoryId: requiredEnv(
+        "REVIEW_ROUTER_ROLLOUT_EVIDENCE_REPOSITORY_ID",
+        env,
+      ),
+      workflowPath,
+      workflowSha: gitBlobSha(workflowBytes),
+      workflowRef: commit,
+      headSha: commit,
+      rolloutId: requiredEnv("REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID", env),
+      runId: requiredEnv("REVIEW_ROUTER_ROLLOUT_EVIDENCE_RUN_ID", env),
+      runAttempt: requiredEnv(
+        "REVIEW_ROUTER_ROLLOUT_EVIDENCE_RUN_ATTEMPT",
+        env,
+      ),
+      jobId: requiredEnv("REVIEW_ROUTER_ROLLOUT_EVIDENCE_JOB_ID", env),
+      jobName: "trusted-release-migration",
+      artifactId: requiredEnv(
+        "REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_ID",
+        env,
+      ),
+      artifactName: requiredEnv(
+        "REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_NAME",
+        env,
+      ),
     },
-    null,
-    2,
-  ),
+    fetchImpl,
+  );
+}
+
+export function claimTrustedMigrationEvidence(
+  databaseUrl,
+  trustedEvidence,
+  execute = spawnSync,
+) {
+  const trusted = assertTrustedGitHubEvidence(trustedEvidence);
+  const parsed = new URL(databaseUrl);
+  if (decodeURIComponent(parsed.username) !== "reviewrouter_release_migration")
+    throw new Error(
+      "trusted migration evidence claim requires the release role",
+    );
+  const receipt = trusted.receipt;
+  const release = trusted.evidence.release;
+  const generation = trusted.evidence.databaseGeneration;
+  const result = execute(
+    "psql",
+    [
+      "--no-psqlrc",
+      "--tuples-only",
+      "--no-align",
+      "--set",
+      `artifact_digest=${receipt.artifactDigest}`,
+      "--set",
+      `artifact_id=${receipt.artifactId}`,
+      "--set",
+      `rollout_id=${receipt.rolloutId}`,
+      "--set",
+      `run_id=${receipt.runId}`,
+      "--set",
+      `run_attempt=${receipt.runAttempt}`,
+      "--set",
+      `job_id=${receipt.jobId}`,
+      "--set",
+      `workflow_path=${receipt.workflowPath}`,
+      "--set",
+      `commit=${receipt.commit}`,
+      "--set",
+      `image_digest=${release.imageDigest}`,
+      "--set",
+      `system_identifier=${generation.systemIdentifier}`,
+      "--set",
+      `recovery_witness_sha256=${generation.recoveryWitnessSha256}`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        PGHOST: parsed.hostname,
+        PGPORT: parsed.port || "5432",
+        PGDATABASE: decodeURIComponent(parsed.pathname.slice(1)),
+        PGUSER: decodeURIComponent(parsed.username),
+        PGPASSWORD: decodeURIComponent(parsed.password),
+        PGSSLMODE: parsed.searchParams.get("sslmode") ?? "require",
+      },
+      input: String.raw`\set ON_ERROR_STOP on
+BEGIN;
+SELECT reviewrouter_bootstrap.consume_migration_evidence(
+  :'artifact_digest',
+  :'artifact_id',
+  :'rollout_id',
+  :'run_id',
+  :'run_attempt'::integer,
+  :'job_id',
+  :'workflow_path',
+  :'commit',
+  :'image_digest',
+  :'system_identifier',
+  :'recovery_witness_sha256'
 );
+COMMIT;
+SELECT 'claimed';
+`,
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  if (
+    result.status !== 0 ||
+    result.stdout.trim().split(/\s+/u).at(-1) !== "claimed"
+  )
+    throw new Error("trusted migration evidence claim failed or was replayed");
+}
+
+function resolvedDeployFacts(deploy) {
+  const value = deploy.deploy ?? deploy;
+  return {
+    id: value.id ?? null,
+    status: value.status ?? null,
+    commit:
+      value.commit?.id ??
+      value.commitId ??
+      value.commit?.sha ??
+      value.sha ??
+      null,
+    imageDigest:
+      value.image?.digest ??
+      value.imageDigest ??
+      value.build?.imageDigest ??
+      null,
+  };
+}
+
+export async function triggerAndVerifyDeploy(
+  client,
+  service,
+  {
+    commit,
+    imageDigest,
+    poll = async () => new Promise((resolve) => setTimeout(resolve, 10_000)),
+    maxAttempts = 180,
+  },
+) {
+  console.log(`triggering deploy for ${service.name}`);
+  const created = await client.request(
+    "POST",
+    `/services/${service.id}/deploys`,
+    {
+      clearCache: "do_not_clear",
+      commitId: commit,
+    },
+  );
+  const createdId = resolvedDeployFacts(created).id;
+  if (!createdId)
+    throw new Error(
+      `Render service ${service.name} did not return a deploy id`,
+    );
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const observed = await client.request(
+      "GET",
+      `/services/${service.id}/deploys/${createdId}`,
+    );
+    const facts = resolvedDeployFacts(observed);
+    if (
+      ["build_failed", "update_failed", "canceled", "deactivated"].includes(
+        facts.status,
+      )
+    ) {
+      throw new Error(
+        `Render service ${service.name} deploy terminated as ${facts.status}`,
+      );
+    }
+    if (facts.status === "live") {
+      if (facts.commit !== commit) {
+        throw new Error(
+          `Render service ${service.name} resolved commit mismatch`,
+        );
+      }
+      if (facts.imageDigest !== imageDigest) {
+        throw new Error(
+          `Render service ${service.name} resolved image digest mismatch`,
+        );
+      }
+      return facts;
+    }
+    await poll();
+  }
+  throw new Error(`Render service ${service.name} deploy did not resolve`);
+}
+
+export async function main() {
+  if (Object.hasOwn(process.env, roleBootstrapDatabaseUrlEnvironmentName)) {
+    throw new Error(
+      `${roleBootstrapDatabaseUrlEnvironmentName} crossed the runtime deploy process boundary`,
+    );
+  }
+  const envFile =
+    process.env.REVIEW_ROUTER_RENDER_RUNTIME_DEPLOY_ENV_FILE ??
+    ".env.render-runtime-deploy";
+  const env = {
+    ...readRuntimeDeployDotenv(envFile),
+    ...process.env,
+  };
+  const ownerId = requiredEnv("RENDER_OWNER_ID", env);
+  const projectId = requiredEnv("RENDER_PROJECT_ID", env);
+  const environmentId = requiredEnv("RENDER_ENVIRONMENT_ID", env);
+  const phase = requiredEnv("REVIEW_ROUTER_RENDER_PHASE", env);
+  if (!["prepare", "runtime-deploy"].includes(phase)) {
+    throw new Error(
+      "REVIEW_ROUTER_RENDER_PHASE must be prepare or runtime-deploy",
+    );
+  }
+  const scope = { ownerId, projectId, environmentId };
+  const repo = requiredEnv("RENDER_REPO", env);
+  const branch = env.RENDER_BRANCH ?? "main";
+  const commit = requiredEnv("REVIEW_ROUTER_RENDER_COMMIT_SHA", env);
+  const imageDigest = requiredEnv("REVIEW_ROUTER_RENDER_IMAGE_DIGEST", env);
+  if (!/^[a-f0-9]{40}$/u.test(commit))
+    throw new Error(
+      "REVIEW_ROUTER_RENDER_COMMIT_SHA must be an exact 40-character lowercase SHA",
+    );
+  if (!/^sha256:[a-f0-9]{64}$/u.test(imageDigest))
+    throw new Error(
+      "REVIEW_ROUTER_RENDER_IMAGE_DIGEST must be an exact sha256 digest",
+    );
+  const webUrl = env.REVIEW_ROUTER_WEB_URL ?? "https://reviewrouter.site";
+  const apiUrl = env.REVIEW_ROUTER_API_URL ?? "https://api.reviewrouter.site";
+  assertHostedDeployEnv({ apiUrl, env, envFile, webUrl });
+  // Resolve every cross-process security value before constructing a Render
+  // client or mutating hosted state. buildServiceEnv revalidates defensively.
+  env.REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF =
+    resolveHostedCodexRotatingActionRef(env);
+  env.REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS =
+    resolveHostedCodexRotatingAllowedActionRefs(env);
+  const stableSecrets = resolveStableSecuritySecrets(env);
+  Object.assign(env, stableSecrets);
+  const installerDescriptor = readVerifiedInstallerReleaseDescriptor(env);
+  Object.assign(env, applyInstallerTuple(env, installerDescriptor));
+  const databaseUrls =
+    phase === "runtime-deploy" ? resolveDistinctDatabaseRoleUrls(env) : null;
+  const privateKey =
+    phase === "runtime-deploy" ? readGithubPrivateKey(env) : null;
+  const client = new RenderClient(readRenderApiKey());
+  let trustedMigrationEvidence = null;
+
+  await verifyControlPlaneScope(client, scope);
+  const database = await ensureDatabase(client, {
+    ...scope,
+    allowCreate: phase === "prepare",
+  });
+  const readyDatabase = await waitForDatabase(client, database.id);
+  if (!/^17(?:\.|$)/u.test(String(readyDatabase.version ?? ""))) {
+    throw new Error(
+      "ready Render database reviewrouter-db must use PostgreSQL 17",
+    );
+  }
+  await verifyResourceScope(
+    client,
+    "postgres",
+    readyDatabase.id,
+    scope,
+    "reviewrouter-db",
+  );
+  if (phase === "runtime-deploy") {
+    const selectedDatabaseIdentity = assertSelectedDatabaseIdentity(
+      readyDatabase.internalConnectionString,
+      databaseUrls,
+    );
+    trustedMigrationEvidence = await fetchTrustedMigrationEvidence(env);
+    assertMigrationEvidence(trustedMigrationEvidence, {
+      scope,
+      databaseId: readyDatabase.id,
+      databaseIdentity: selectedDatabaseIdentity,
+      commit,
+      imageDigest,
+      databaseUrls,
+    });
+  }
+  const common = {
+    allowCreate: phase === "prepare",
+    apiUrl,
+    branch,
+    databaseUrls,
+    env,
+    installerDescriptor,
+    environmentId,
+    ownerId,
+    projectId,
+    privateKey,
+    repo,
+    webUrl,
+  };
+  const serviceSpecs = [
+    {
+      healthCheckPath: "/",
+      name: "reviewrouter-web",
+      role: "web",
+      startCommand: "pnpm web:start",
+      type: "web_service",
+    },
+    {
+      healthCheckPath: "/health",
+      name: "reviewrouter-api",
+      role: "api",
+      startCommand: "HOST=0.0.0.0 pnpm api:start",
+      type: "web_service",
+    },
+    {
+      name: "reviewrouter-worker",
+      role: "worker",
+      startCommand: "pnpm worker:start",
+      type: "background_worker",
+    },
+  ];
+
+  const services = [];
+  for (const spec of serviceSpecs) {
+    const service = await ensureService(client, spec, common);
+    services.push({ service, spec });
+  }
+  await addToEnvironment(client, environmentId, [
+    readyDatabase.id,
+    ...services.map(({ service }) => service.id),
+  ]);
+  for (const { service } of services) {
+    await verifyResourceScope(
+      client,
+      "services",
+      service.id,
+      scope,
+      service.name,
+    );
+  }
+  // Unsafe commit deployment and per-service migrations remain disabled in
+  // both phases. No runtime environment is written during prepare.
+  for (const { service } of services)
+    await disableAndVerifyPreDeployCommand(client, service);
+
+  if (phase === "prepare") {
+    console.log(
+      JSON.stringify(
+        {
+          phase,
+          scope,
+          database: { id: readyDatabase.id, status: readyDatabase.status },
+          services: services.map(({ service, spec }) => ({
+            serviceId: service.id,
+            name: service.name,
+            role: spec.role,
+          })),
+          next: "dispatch the immutable codex-rotating-release-migration workflow once, then invoke runtime-deploy with its authenticated GitHub artifact identity",
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  claimTrustedMigrationEvidence(
+    databaseUrls.releaseMigration,
+    trustedMigrationEvidence,
+  );
+
+  // Scope is fetched again immediately before each complete secret-bearing PUT.
+  for (const { service, spec } of services)
+    await syncService(client, service, spec, common);
+  const resolvedDeploys = [];
+  for (const { service } of services)
+    resolvedDeploys.push(
+      await triggerAndVerifyDeploy(client, service, { commit, imageDigest }),
+    );
+
+  console.log(
+    JSON.stringify(
+      {
+        phase,
+        scope,
+        database: { id: readyDatabase.id, status: readyDatabase.status },
+        services: services.map(({ service }, index) => ({
+          serviceId: service.id,
+          name: service.name,
+          role: services[index].spec.role,
+          url: service.serviceDetails?.url ?? null,
+          deployId: resolvedDeploys[index]?.id ?? null,
+        })),
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  if (process.argv[2] === "--assert-runtime-deploy-process-boundary") {
+    if (Object.hasOwn(process.env, roleBootstrapDatabaseUrlEnvironmentName)) {
+      throw new Error("runtime deploy process boundary check failed");
+    }
+    process.stdout.write("runtime deploy process boundary check passed\n");
+  } else {
+    await main();
+  }
+}

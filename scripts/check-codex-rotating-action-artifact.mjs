@@ -49,6 +49,8 @@ const requireBinary =
 const actionYml = readFileSync(actionYmlPath, "utf8");
 const bundle = readFileSync(bundlePath, "utf8");
 
+assertBundleMatchesSource(bundle);
+
 assertIncludes(actionYml, "using: node24", "action.yml must use node24");
 assertIncludes(
   actionYml,
@@ -223,6 +225,48 @@ console.log(
     ? "Codex rotating action artifact check passed."
     : "Codex rotating action artifact smoke passed.",
 );
+
+function assertBundleMatchesSource(committedBundle) {
+  const buildDir = mkdtempSync(join(tmpdir(), "reviewrouter-action-parity-"));
+  const rebuiltBundlePath = join(buildDir, "index.cjs");
+  try {
+    const result = spawnSync(
+      "pnpm",
+      [
+        "exec",
+        "esbuild",
+        "packages/features/codex-oauth-rotating/src/action/github-action.ts",
+        "--bundle",
+        "--platform=node",
+        "--target=node20",
+        "--format=cjs",
+        "--legal-comments=none",
+        `--outfile=${rebuiltBundlePath}`,
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    if (result.status !== 0) {
+      fail(
+        `Action source-parity rebuild failed: ${result.stderr.trim() || result.stdout.trim()}`,
+      );
+    }
+    const rebuiltBundle = readFileSync(rebuiltBundlePath, "utf8").replace(
+      /[ \t]+$/gm,
+      "",
+    );
+    if (committedBundle !== rebuiltBundle) {
+      fail(
+        "action-dist/index.cjs is stale; run pnpm action:build and commit the deterministic source-matching bundle",
+      );
+    }
+  } finally {
+    rmSync(buildDir, { recursive: true, force: true });
+  }
+}
 
 function extractArchive(archivePath) {
   const extractionDir = mkdtempSync(

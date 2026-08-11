@@ -2,17 +2,23 @@ import type {
   CodexRotatingEncryptedWritebackRequest,
   CodexRotatingLeaseRecord,
   CodexRotatingProviderBinding,
+  VersionedSecretWorkflowSourceAttestation,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
 
 export type CodexRotatingPreleaseRecord = CodexRotatingLeaseRecord & {
   readonly repository: ActionRepositoryContext;
   readonly generationHashSalt: string;
+  readonly accountFingerprintSalt: string;
   readonly currentGeneration: number;
   readonly currentGenerationHash?: string | undefined;
+  readonly mutationEpoch: bigint;
+  readonly secretNamespaceId?: string | undefined;
+  readonly secretNamespaceEpoch?: bigint | undefined;
 };
 
 export type CodexRotatingSecretWriteTarget = {
+  readonly expectedProviderInstanceId?: string;
   readonly githubInstallationId: string;
   readonly githubRepositoryId: string;
   readonly repositoryFullName: string;
@@ -29,20 +35,26 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly workflowSchemaVersion: number;
   }): Promise<CodexRotatingProviderBinding | null>;
 
+  ensureVerifiedProviderBinding(input: {
+    readonly repository: ActionRepositoryContext;
+    readonly binding: CodexRotatingProviderBinding;
+  }): Promise<void>;
+
   acquirePrelease(input: {
     readonly repository: ActionRepositoryContext;
     readonly providerInstanceId: string;
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
-    readonly now: Date;
+    readonly newWorkAdmissionBarrier: Readonly<{
+      assertAdmitted(): void;
+    }>;
   }): Promise<CodexRotatingPreleaseRecord>;
 
   finalizeLease(input: {
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly restoredGenerationHash: string;
-    readonly now: Date;
   }): Promise<{
     readonly leaseId: string;
     readonly nextGeneration: number;
@@ -54,7 +66,6 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly reason: "needs_reconnect" | "unknown_auth_state";
-    readonly now: Date;
   }): Promise<{
     readonly status: "abandoned" | "lease_not_active";
   }>;
@@ -63,7 +74,6 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly githubKeyId: string;
-    readonly now: Date;
   }): Promise<
     | {
         readonly status: "ready";
@@ -91,32 +101,26 @@ export interface CodexRotatingOAuthRepositoryPort {
         readonly status: "lease_not_completed" | "lease_not_active";
       }
   >;
+}
 
-  prepareEncryptedWriteback(input: {
-    readonly request: CodexRotatingEncryptedWritebackRequest;
-    readonly encryptedPayloadDigest: string;
-    readonly now: Date;
-  }): Promise<
-    | {
-        readonly status: "ready";
-        readonly intentId: string;
-        readonly writeTarget: CodexRotatingSecretWriteTarget;
-      }
-    | {
-        readonly status: "idempotent_replay" | "writeback_idempotency_conflict";
-      }
-  >;
+export class CodexRotatingSecretPutPreDispatchError extends Error {
+  readonly outcome = "pre_dispatch_failure" as const;
 
-  confirmEncryptedWriteback(input: {
-    readonly intentId: string;
-    readonly now: Date;
-  }): Promise<void>;
+  constructor() {
+    super("codex_rotating_secret_put_pre_dispatch_failed");
+  }
+}
 
-  markEncryptedWritebackFailed(input: {
-    readonly intentId: string;
-    readonly safeErrorCode: string;
-    readonly now: Date;
-  }): Promise<void>;
+export function isCodexRotatingSecretPutPreDispatchError(
+  error: unknown,
+): error is CodexRotatingSecretPutPreDispatchError {
+  return (
+    error instanceof CodexRotatingSecretPutPreDispatchError ||
+    (typeof error === "object" &&
+      error !== null &&
+      "outcome" in error &&
+      error.outcome === "pre_dispatch_failure")
+  );
 }
 
 export interface CodexRotatingGitHubSecretTokenIssuerPort {
@@ -149,6 +153,86 @@ export interface CodexRotatingGitHubSecretWriterPort {
   }>;
 }
 
+/**
+ * Required replacement for runtime refresh writes. Implementations must
+ * durably allocate a never-reused namespace and one dispatch attempt before
+ * issuing one provider PUT; an ambiguous result permanently retires the name.
+ */
+export interface CodexRotatingVersionedWritebackDispatcherPort {
+  dispatchOneShot(input: {
+    readonly request: CodexRotatingEncryptedWritebackRequest;
+    readonly encryptedPayloadDigest: string;
+  }): Promise<
+    | { readonly status: "accepted"; readonly generation: number }
+    | { readonly status: "idempotent_replay"; readonly generation: number }
+    | { readonly status: "in_progress"; readonly retryAfter: Date }
+    | { readonly status: "github_put_failed" }
+    | { readonly status: "writeback_recovery_required" }
+    | { readonly status: "writeback_idempotency_conflict" }
+  >;
+}
+
+export type CodexRotatingVersionedWritebackClaim = Readonly<{
+  intentId: string;
+  attemptId: string;
+  executorOwner: string;
+  retirementIdentity: import("@reviewrouter/features-codex-oauth-rotating").RuntimeVersionedWritebackIdentity;
+  namespace: import("@reviewrouter/features-codex-oauth-rotating").VersionedProviderSecretNamespace;
+  writeTarget: CodexRotatingSecretWriteTarget;
+  repository: ActionRepositoryContext;
+}>;
+
+export interface CodexRotatingVersionedWritebackLedgerPort {
+  prepareVersionedWriteback(input: {
+    readonly request: CodexRotatingEncryptedWritebackRequest;
+    readonly encryptedPayloadDigest: string;
+  }): Promise<
+    | ({ readonly status: "ready" } & CodexRotatingVersionedWritebackClaim)
+    | { readonly status: "unchanged_generation"; readonly generation: number }
+    | { readonly status: "idempotent_replay"; readonly generation: number }
+    | { readonly status: "in_progress"; readonly retryAfter: Date }
+    | { readonly status: "writeback_recovery_required" }
+    | { readonly status: "writeback_idempotency_conflict" }
+  >;
+
+  confirmVersionedProviderWrite(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly statusCode: 201 | 204;
+  }): Promise<void>;
+
+  retirePreDispatchVersionedWriteback(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly safeErrorCode: string;
+  }): Promise<void>;
+
+  retireAmbiguousVersionedWriteback(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly retirementIdentity: import("@reviewrouter/features-codex-oauth-rotating").RuntimeVersionedWritebackIdentity;
+    readonly safeErrorCode: string;
+  }): Promise<void>;
+
+  activateVersionedWriteback(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly attestation: VersionedSecretWorkflowSourceAttestation;
+  }): Promise<{ readonly generation: number }>;
+}
+
+export interface CodexRotatingVersionedWorkflowPublisherPort {
+  publishAndVerifyVersionedWorkflow(input: {
+    readonly repository: ActionRepositoryContext;
+    readonly providerInstanceId: string;
+    readonly namespace: import("@reviewrouter/features-codex-oauth-rotating").VersionedProviderSecretNamespace;
+  }): Promise<VersionedSecretWorkflowSourceAttestation>;
+}
+
 export interface CodexRotatingGitHubCheckoutTokenIssuerPort {
   issueContentsReadToken(input: {
     readonly githubInstallationId: string;
@@ -168,13 +252,14 @@ export interface CodexRotatingWorkflowSourceVerifierPort {
   verifyWorkflowSource(input: {
     readonly repository: ActionRepositoryContext;
     readonly workflowSha: string;
+    readonly workflowRef: string;
     readonly workflowPath: string;
     readonly expectedActionOwnerRepo: string;
     readonly expectedProviderInstanceId: string;
     readonly expectedWorkflowSchemaVersion: number;
   }): Promise<{
     readonly binding: CodexRotatingProviderBinding;
-    readonly workflowSourceSha256: string;
+    readonly attestation?: VersionedSecretWorkflowSourceAttestation;
   }>;
 
   resolveWorkflowRunPullRequest?(input: {

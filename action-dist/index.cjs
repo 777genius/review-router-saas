@@ -21172,6 +21172,22 @@ B.prototype.to_Uint8Array = function() {
 }, t.add = o, t.base64_variants = m, t.compare = l, t.from_base64 = x, t.from_hex = b, t.from_string = v, t.increment = p, t.is_zero = h, t.memcmp = i, t.memzero = y, t.output_formats = T, t.pad = u, t.unpad = d, t.ready = s, t.symbols = c, t.to_base64 = E, t.to_hex = f, t.to_string = g;
 var libsodium_wrappers_default = t;
 
+// packages/features/codex-oauth-rotating/src/domain/provider-mutation-fence.ts
+var githubRepositoryIdSchema = external_exports.string().regex(/^[1-9][0-9]*$/);
+var codexRotatingProviderIdSchema = external_exports.string().regex(/^codex-rotating:[1-9][0-9]*$/);
+function canonicalCodexRotatingProviderId(githubRepositoryId) {
+  return `codex-rotating:${githubRepositoryIdSchema.parse(githubRepositoryId)}`;
+}
+var codexRotatingMutationOwnerValues = [
+  "runtime",
+  "setup",
+  "recovery"
+];
+var codexRotatingMutationOwnerSchema = external_exports.enum(
+  codexRotatingMutationOwnerValues
+);
+var codexRotatingExternalMutationGraceMs = 15 * 60 * 1e3;
+
 // packages/features/codex-oauth-rotating/src/domain/review-execution-budget.ts
 var defaultReviewJobTimeoutMinutes = 60;
 var minimumReviewJobTimeoutMinutes = 10;
@@ -21206,7 +21222,7 @@ function remainingReviewExecutionBudgetMs(input) {
 var codexRotatingAuthMode = "codex_subscription_oauth_rotating";
 var codexRotatingRuntimeAuthMode = "codex-oauth-rotating";
 var codexRotatingRefreshRuntimeMode = "codex-oauth-refresh";
-var codexRotatingSecretName = "REVIEWROUTER_CODEX_AUTH_JSON";
+var codexRotatingProtocolVersion = 2;
 var codexRotatingAuthJsonMaxBytes = 32 * 1024;
 var codexRotatingOidcMaxTokenAgeSeconds = 10 * 60;
 var repoFullNamePattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -21227,6 +21243,43 @@ var codexAuthJsonSchema = external_exports.object({
   tokens: codexTokensSchema,
   last_refresh: external_exports.string().optional()
 }).passthrough();
+function deriveCodexStableAccountIdentityFromIdToken(idToken) {
+  let claims;
+  try {
+    const parts = idToken.split(".");
+    if (parts.length !== 3) throw new Error("jwt_shape");
+    claims = JSON.parse(
+      Buffer.from(parts[1], "base64url").toString("utf8")
+    );
+  } catch {
+    throw new Error("codex_account_identity_token_invalid");
+  }
+  const auth = claims["https://api.openai.com/auth"] && typeof claims["https://api.openai.com/auth"] === "object" ? claims["https://api.openai.com/auth"] : {};
+  const issuer = requireStableIdentityClaim(claims.iss);
+  const subject = requireStableIdentityClaim(claims.sub);
+  const accountIds = [
+    claims.chatgpt_account_id,
+    claims.account_id,
+    auth.chatgpt_account_id,
+    auth.account_id
+  ].filter(
+    (value) => typeof value === "string" && value.length > 0
+  );
+  if (new Set(accountIds).size !== 1) {
+    throw new Error("codex_account_identity_account_id_invalid");
+  }
+  return Object.freeze({
+    issuer,
+    subject,
+    chatgptAccountId: accountIds[0]
+  });
+}
+function requireStableIdentityClaim(value) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("codex_account_identity_claim_invalid");
+  }
+  return value;
+}
 function validateCodexAuthJsonBytes2(input) {
   const maxBytes = input.maxBytes ?? codexRotatingAuthJsonMaxBytes;
   const byteLength = Buffer.byteLength(input.authJsonBytes, "utf8");
@@ -21272,12 +21325,11 @@ function computeCodexAuthGenerationHash(input) {
   return (0, import_node_crypto5.createHmac)("sha256", salt).update(input.authJsonBytes, "utf8").digest("base64url");
 }
 var codexRotatingSetupManifestSchema = external_exports.object({
-  protocolVersion: external_exports.literal(1),
+  protocolVersion: external_exports.literal(codexRotatingProtocolVersion),
   repositoryFullName: external_exports.string().regex(repoFullNamePattern),
-  repositoryId: external_exports.string().regex(/^[0-9]+$/).optional(),
+  repositoryId: external_exports.string().regex(/^[0-9]+$/),
   providerInstanceId: external_exports.string().regex(safeOpaqueIdPattern),
   setupNonce: external_exports.string().regex(safeOpaqueIdPattern),
-  secretName: external_exports.literal(codexRotatingSecretName),
   authMode: external_exports.literal(codexRotatingAuthMode),
   generatedAt: external_exports.string().datetime(),
   expiresAt: external_exports.string().datetime(),
@@ -21288,7 +21340,15 @@ var codexRotatingSetupManifestSchema = external_exports.object({
   }).strict(),
   generationHashSalt: external_exports.string().regex(base64UrlPattern),
   accountFingerprintSalt: external_exports.string().regex(base64UrlPattern)
-}).strict();
+}).strict().superRefine((manifest, context) => {
+  if (!codexRotatingProviderIdSchema.safeParse(manifest.providerInstanceId).success || manifest.providerInstanceId !== canonicalCodexRotatingProviderId(manifest.repositoryId)) {
+    context.addIssue({
+      code: "custom",
+      path: ["providerInstanceId"],
+      message: "protocol v2 requires canonical provider identity"
+    });
+  }
+});
 var codexRotatingOidcClaimsSchema = external_exports.object({
   iss: external_exports.literal("https://token.actions.githubusercontent.com"),
   aud: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]),
@@ -21321,9 +21381,11 @@ var codexRotatingOidcClaimsSchema = external_exports.object({
 var codexRotatingEncryptedWritebackSchema = external_exports.object({
   protocolVersion: external_exports.literal(1),
   leaseId: external_exports.string().regex(safeOpaqueIdPattern),
-  providerInstanceId: external_exports.string().regex(safeOpaqueIdPattern),
+  providerInstanceId: codexRotatingProviderIdSchema,
   generation: external_exports.number().int().positive(),
   latestGenerationHash: external_exports.string().min(32).max(128),
+  accountIdentityHash: external_exports.string().min(32).max(128),
+  accountIdentityAlgorithm: external_exports.literal("provider_issuer_subject_account_v1"),
   encryptedValue: external_exports.string().regex(base64Pattern).max(96 * 1024),
   keyId: external_exports.string().min(1).max(256),
   idempotencyKey: external_exports.string().regex(safeOpaqueIdPattern)
@@ -21352,6 +21414,26 @@ async function encryptCodexRotatingAuthForGitHubSecret(input) {
     encryptedValue: Buffer.from(encrypted).toString("base64"),
     keyId: input.githubKeyId
   };
+}
+function computeCodexRotatingAccountIdentityHash(input) {
+  const auth = JSON.parse(input.authJsonBytes);
+  const idToken = auth.tokens?.id_token;
+  if (typeof idToken !== "string") {
+    throw new Error("codex_account_identity_id_token_required");
+  }
+  const identity = deriveCodexStableAccountIdentityFromIdToken(idToken);
+  const salt = Buffer.from(input.accountFingerprintSalt, "base64url");
+  if (salt.length < 16) {
+    throw new Error("codex_account_identity_salt_invalid");
+  }
+  return (0, import_node_crypto5.createHmac)("sha256", salt).update(
+    JSON.stringify({
+      issuer: identity.issuer,
+      subject: identity.subject,
+      chatgptAccountId: identity.chatgptAccountId
+    }),
+    "utf8"
+  ).digest("base64url");
 }
 function classifyCodexRuntimeFailure2(message) {
   const normalized = message.toLowerCase();
@@ -22514,7 +22596,6 @@ async function requestCodexRotatingPreleaseWithFreshOidc(input) {
           url: `${input.apiUrl}/api/action/v1/codex-oauth/prelease`,
           body: {
             oidcToken,
-            audience: defaultOidcAudience,
             providerInstanceId: input.providerInstanceId,
             workflowSchemaVersion: input.workflowSchemaVersion
           },
@@ -23483,6 +23564,10 @@ async function writeRefreshedCodexAuthJson(input) {
     githubKeyId: input.publicKey.key_id,
     generationHashSalt: input.prelease.generationHashSalt
   });
+  const accountIdentityHash = computeCodexRotatingAccountIdentityHash({
+    authJsonBytes: compact.compactAuthJsonBytes,
+    accountFingerprintSalt: input.prelease.accountFingerprintSalt
+  });
   const writeback = await postJson({
     fetchImpl: input.fetchImpl,
     label: "api_writeback",
@@ -23493,6 +23578,8 @@ async function writeRefreshedCodexAuthJson(input) {
       providerInstanceId: input.inputs.providerInstanceId,
       generation: input.finalize.nextGeneration,
       latestGenerationHash: encrypted.latestGenerationHash,
+      accountIdentityHash,
+      accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
       encryptedValue: encrypted.encryptedValue,
       keyId: encrypted.keyId,
       idempotencyKey: buildWritebackIdempotencyKey(

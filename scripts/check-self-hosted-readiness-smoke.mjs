@@ -103,6 +103,12 @@ const baseEnv = {
   REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE: "0",
   REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter",
   REVIEW_ROUTER_ACTION_REF: `777genius/review-router@${actionCommitSha}`,
+  REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: `777genius/review-router@${actionCommitSha}`,
+  REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS: "",
+  REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: `https://raw.githubusercontent.com/777genius/review-router/${actionCommitSha}/scripts/seed-codex-rotating-auth.sh`,
+  REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.0.39",
+  REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "a".repeat(64),
+  REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
   REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
   REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED: "1",
   REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE: "client_triggered_t0",
@@ -146,6 +152,61 @@ const baseEnv = {
 };
 
 const cases = [
+  ...[
+    "https://127.0.0.2",
+    "https://127.255.255.255",
+    "https://[::ffff:127.0.0.1]",
+    "https://[::ffff:7f00:1]",
+    "https://service.localhost.",
+  ].map((origin) => ({
+    name: `rejects loopback alias ${origin}`,
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_PUBLIC_API_URL must not point to localhost in self-hosted production.",
+    env: { REVIEW_ROUTER_PUBLIC_API_URL: origin },
+  })),
+  {
+    name: "requires the shared database recovery witness",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS must be 43-256 base64url characters.",
+    env: { REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "" },
+  },
+  {
+    name: "does not expose an invalid database recovery witness",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS must be 43-256 base64url characters.",
+    forbiddenOutput: "database-recovery-secret-never-log",
+    env: {
+      REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS:
+        "database-recovery-secret-never-log",
+    },
+  },
+  {
+    name: "rejects a mutable rotating Action channel",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF must be an exact full-SHA Action ref.",
+    env: {
+      REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: "777genius/review-router@main",
+    },
+  },
+  {
+    name: "requires a complete installer descriptor",
+    expectSuccess: false,
+    expectedError: "codex_rotating_installer_descriptor_incomplete",
+    env: { REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "" },
+  },
+  {
+    name: "rejects an installer URL for another Action SHA",
+    expectSuccess: false,
+    expectedError: "invalid_codex_rotating_installer_url",
+    env: {
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL:
+        "https://raw.githubusercontent.com/777genius/review-router/1111111111111111111111111111111111111111/scripts/seed-codex-rotating-auth.sh",
+    },
+  },
   {
     name: "managed-review passes without workflow provisioning",
     expectSuccess: true,
@@ -443,6 +504,15 @@ for (const testCase of cases) {
     );
     console.error(result.stdout);
     console.error(result.stderr);
+    process.exit(1);
+  }
+  if (
+    testCase.forbiddenOutput &&
+    `${result.stdout}${result.stderr}`.includes(testCase.forbiddenOutput)
+  ) {
+    console.error(
+      `Self-hosted readiness smoke exposed a forbidden value: ${testCase.name}`,
+    );
     process.exit(1);
   }
 }

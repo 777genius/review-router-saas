@@ -56,6 +56,7 @@ import {
   assertDashboardMutationAllowed,
   assertDashboardRepositoryConfigMutationAllowed,
   assertDashboardRepositoryMutationAllowed,
+  assertDashboardRepositoryRecoveryAllowed,
   createGitHubUserOctokit,
   getDashboardSignedInActor,
 } from "./dashboard-mutations";
@@ -279,6 +280,92 @@ describe("dashboard repository mutations", () => {
         canManage: false,
       }),
     );
+  });
+
+  it("authorizes recovery from the live permission without mutating the durable cache", async () => {
+    mocks.octokitRequest.mockResolvedValue({
+      data: {
+        permission: "write",
+        role_name: "write",
+        user: { id: "123", login: "maintainer" },
+      },
+    });
+
+    await expect(
+      assertDashboardRepositoryRecoveryAllowed("workspace_1", repository),
+    ).resolves.toMatchObject({
+      accessSource: {
+        source: "repo_manager",
+        capability: "repo_manager",
+      },
+    });
+
+    expect(mocks.octokitRequest).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.updateRepositoryPermissionCacheFromLiveCheck,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("requires a successful live repository-manager check for a workspace admin", async () => {
+    mocks.assertWorkspaceMutationAllowed.mockResolvedValueOnce(undefined);
+    mocks.octokitRequest.mockResolvedValue({
+      data: {
+        permission: "admin",
+        role_name: "admin",
+        user: { id: "123", login: "maintainer" },
+      },
+    });
+
+    await expect(
+      assertDashboardRepositoryRecoveryAllowed("workspace_1", repository),
+    ).resolves.toMatchObject({
+      accessSource: {
+        source: "repo_manager",
+        capability: "repo_manager",
+        permission: "admin",
+      },
+    });
+
+    expect(mocks.assertWorkspaceMutationAllowed).not.toHaveBeenCalled();
+    expect(mocks.octokitRequest).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.updateRepositoryPermissionCacheFromLiveCheck,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("rejects a workspace admin whose live repository permission was revoked", async () => {
+    mocks.assertWorkspaceMutationAllowed.mockResolvedValueOnce(undefined);
+    mocks.octokitRequest.mockResolvedValue({
+      data: {
+        permission: "read",
+        role_name: "read",
+        user: { id: "123", login: "maintainer" },
+      },
+    });
+
+    await expect(
+      assertDashboardRepositoryRecoveryAllowed("workspace_1", repository),
+    ).rejects.toThrow("repository_mutation_forbidden");
+
+    expect(mocks.assertWorkspaceMutationAllowed).not.toHaveBeenCalled();
+    expect(mocks.octokitRequest).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.updateRepositoryPermissionCacheFromLiveCheck,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("rejects recovery after a failed live permission check without downshifting the durable cache", async () => {
+    const error = new Error("Not Found") as Error & { status: number };
+    error.status = 404;
+    mocks.octokitRequest.mockRejectedValue(error);
+
+    await expect(
+      assertDashboardRepositoryRecoveryAllowed("workspace_1", repository),
+    ).rejects.toThrow("repository_mutation_forbidden");
+
+    expect(
+      mocks.updateRepositoryPermissionCacheFromLiveCheck,
+    ).not.toHaveBeenCalled();
   });
 
   it("creates a GitHub user-token requester for user-triggered repository writes", async () => {

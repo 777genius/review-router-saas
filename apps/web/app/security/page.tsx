@@ -29,7 +29,7 @@ export const metadata: Metadata = createPublicPageMetadata({
 });
 
 const secretCommand = `# Copy the full repo-scoped Codex command from the ReviewRouter dashboard.
-# It uses ${resolveCodexSeedScriptUrl()} with a short-lived setup nonce and writes REVIEWROUTER_CODEX_AUTH_JSON directly to GitHub Actions secrets.`;
+# It uses ${resolveCodexSeedScriptUrl()} with a short-lived setup nonce and writes one server-issued versioned namespace directly to GitHub Actions secrets.`;
 
 const securitySignals = [
   {

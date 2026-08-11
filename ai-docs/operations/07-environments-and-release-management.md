@@ -255,33 +255,37 @@ errors.
 
 ## Production Action Ref Sync
 
-Codex OAuth rotating workflows must match the configured ReviewRouter Action
-ref, normally `777genius/review-router@main`. The SaaS control plane validates
-that ref during GitHub OIDC preflight. This is intentional: a workflow that
-silently switches to an untrusted Action ref must fail closed instead of
-receiving checkout/comment/writeback tokens.
+General workflows and rotating Codex workflows use separate release contracts:
 
-Normal hosted beta production should keep `REVIEW_ROUTER_ACTION_REF` on
-`777genius/review-router@main`. Use the sync command only to restore that value
-or for a deliberate full-SHA rollback, dogfood Action commit, emergency
-correction, or rollout-window maintenance:
+- `REVIEW_ROUTER_ACTION_REF` may remain
+  `777genius/review-router@main` for the general workflow channel.
+- `REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF` is mandatory and must be an exact
+  `owner/repo@40-character-SHA`.
+- `REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS` is a bounded,
+  same-repository list of old exact SHAs still needed by active namespaces or
+  queued/in-progress runs. The primary SHA is trusted automatically.
+
+Rotating T0 rendering, installer URLs, OIDC source verification, and runtime
+writeback must never fall back to the mutable general channel. A workflow that
+switches to an untrusted ref fails closed before receiving checkout, comment,
+or writeback capability.
+
+The general ref sync remains available for non-rotating workflows:
 
 ```bash
 pnpm ops:sync-action-ref
 ```
 
-By default, the command:
+By default, that command:
 
 - writes `777genius/review-router@main`
 - updates `REVIEW_ROUTER_ACTION_REF` on `reviewrouter-web`,
   `reviewrouter-api`, and `reviewrouter-worker`
-- keeps `REVIEW_ROUTER_ALLOWED_ACTION_REFS` as a short full-SHA transition
-  window when explicit rollback refs are present
+- does not change the rotating primary or rotating overlap list
 - triggers Render deploys for the three services
 
 When `--action-ref 777genius/review-router@v1` or an exact tag such as
-`@v1.0.40` is provided, the command writes that hosted ref directly. Use a full
-SHA for rollback refs that must also stay in `REVIEW_ROUTER_ALLOWED_ACTION_REFS`.
+`@v1.0.40` is provided, the command writes that general hosted ref directly.
 
 Useful variants:
 
@@ -302,15 +306,27 @@ curl -fsS -o /dev/null -w '%{http_code}\n' https://reviewrouter.site
 pnpm ops:sync-action-ref --dry-run --no-deploy
 ```
 
-`REVIEW_ROUTER_ALLOWED_ACTION_REFS` is a rollout safety window, not a channel.
-Every value must be `owner/repo@40-char-sha` and must use the same Action
-repository as `REVIEW_ROUTER_ACTION_REF`. Remove old SHAs by running the command
-again with `--allowlist-window 1` after customer workflows have converged.
+For a rotating A -> B release, use this fail-closed order:
 
-If a PR run fails with `action_repository_mismatch` immediately after an Action
-runtime bump, run the sync command before rerunning the PR. The failure means the
-OIDC guard worked: the workflow source and configured production action refs
-were temporarily out of sync.
+1. Keep primary A and deploy a trusted overlap containing B to every web/API
+   instance. Wait for all exact deployments to be live.
+2. Change the rotating primary to B for new setup candidates while retaining A
+   in the overlap.
+3. Do not rewrite an active A namespace in place. Existing namespaces remain
+   pinned to their already-attested Action SHA; migrate them only through a
+   fenced drain and fresh setup/namespace activation.
+4. Retain A while any repository namespace, queued/in-progress workflow, or
+   unexpired mutation lease can reference it. Default-branch fast-forwards do
+   not invalidate a queued workflow when its claimed revision remains a
+   verified ancestor and its exact workflow attestation still matches.
+5. Remove A only after two inventories show zero live references and the
+   maximum queue/lease window has elapsed. Never prune by a fixed list length.
+
+The current namespace schema stores one exact active workflow attestation.
+Allowlisting A and B does not make an in-place A -> B rewrite safe: overwriting
+the attestation strands queued A, while retaining it blocks B. Concurrent
+in-place migration requires a future bounded attestation-history schema; until
+then, drain and allocate a fresh namespace.
 
 ## Rollback
 
@@ -437,11 +453,18 @@ Critical flags:
 ```text
 REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE
 REVIEW_ROUTER_ALLOWED_ACTION_REFS
+REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF
+REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS
+REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS
 REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS
 REVIEW_ROUTER_HOSTED_MAX_CHANGED_LINES
 REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING
 REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING
 REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS
+REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH
+REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED
+REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED
+REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES
 REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK
 REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED
 REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED
@@ -454,6 +477,13 @@ REVIEW_ROUTER_REVIEW_V2_INTENT_MAX_DISPATCH_ATTEMPTS
 ```
 
 Flags must fail closed for security-sensitive features.
+
+Hosted release convergence keeps all three rotating OAuth flags at exact `0`.
+Setup issuance and new-work admission enable only on exact `1`. New-work also
+requires a nonempty explicit repository cohort; an empty cohort never means
+"all" while admission is enabled. Follow the fenced bridge/canary/widening
+state machine in
+[`08-codex-rotating-serialization-cutover.md`](./08-codex-rotating-serialization-cutover.md).
 
 `REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS` is a comma-separated exact-match
 blocklist for known-bad installed Action versions, for example
@@ -486,5 +516,7 @@ and can make queued workflows restore an older secret generation. Use
 `scripts/reseed-codex-rotating-auth.sh` so the reseed follows the expected
 rotating-auth write path.
 
-`REVIEW_ROUTER_ALLOWED_ACTION_REFS` is a comma-separated full-SHA allowlist used
-only for trusted rollout overlap during pinned Codex OAuth rotating releases.
+`REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS` is the comma-separated
+full-SHA overlap used only for rotating namespace releases. It never authorizes
+a branch/tag and never changes the exact Action SHA pinned in an active
+namespace.

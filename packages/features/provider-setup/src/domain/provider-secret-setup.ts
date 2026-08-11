@@ -5,7 +5,6 @@ import {
 } from "@reviewrouter/features-review-providers";
 import {
   buildCodexRotatingSetupManifest,
-  codexRotatingSecretName,
   renderCodexRotatingInstallerCommand,
   type CodexRotatingSetupManifest,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -68,8 +67,7 @@ export function buildProviderSecretSetupGuidance(input: {
     readonly installerVersion: string;
     readonly installerSha256: string;
     readonly setupManifestUrl?: string;
-    readonly setupConfirmUrl?: string;
-    readonly repositoryId?: string;
+    readonly repositoryId: string;
     readonly providerInstanceId?: string;
     readonly setupNonce?: string;
     readonly now?: Date;
@@ -90,9 +88,7 @@ export function buildProviderSecretSetupGuidance(input: {
       installerUrl: input.rotatingSetup.installerUrl,
       installerVersion: input.rotatingSetup.installerVersion,
       installerSha256: input.rotatingSetup.installerSha256,
-      ...(input.rotatingSetup?.repositoryId
-        ? { repositoryId: input.rotatingSetup.repositoryId }
-        : {}),
+      repositoryId: input.rotatingSetup.repositoryId,
       ...(input.rotatingSetup?.providerInstanceId
         ? { providerInstanceId: input.rotatingSetup.providerInstanceId }
         : {}),
@@ -115,9 +111,6 @@ export function buildProviderSecretSetupGuidance(input: {
       manifest,
       ...(input.rotatingSetup.setupManifestUrl
         ? { setupManifestUrl: input.rotatingSetup.setupManifestUrl }
-        : {}),
-      ...(input.rotatingSetup.setupConfirmUrl
-        ? { setupConfirmUrl: input.rotatingSetup.setupConfirmUrl }
         : {}),
     });
   }
@@ -301,7 +294,6 @@ function buildCodexRotatingSecretSetupGuidance(input: {
   readonly repoFullName: string;
   readonly manifest: CodexRotatingSetupManifest;
   readonly setupManifestUrl?: string;
-  readonly setupConfirmUrl?: string;
 }): ProviderSecretSetupGuidance {
   return {
     provider: "codex_oauth_rotating",
@@ -311,19 +303,18 @@ function buildCodexRotatingSecretSetupGuidance(input: {
         scope: "repository",
         title: "Repository secret with automatic refresh",
         description:
-          "Stores REVIEWROUTER_CODEX_AUTH_JSON directly in this repository and lets GitHub-hosted runs refresh it after each Codex bootstrap.",
+          "Allocates a never-reused REVIEWROUTER_CODEX_AUTH_JSON_R<repository-id>_P<provider-hash>_E<epoch>_<entropy> namespace in this repository and binds refreshes to the attested active namespace.",
         command: renderCodexRotatingInstallerCommand({
           manifest: input.manifest,
           ...(input.setupManifestUrl
             ? { setupManifestUrl: input.setupManifestUrl }
             : {}),
-          ...(input.setupConfirmUrl
-            ? { setupConfirmUrl: input.setupConfirmUrl }
-            : {}),
         }),
         storesSecretIn: "github_repository_secret",
         targetLabel: `${input.repoFullName} repository secret`,
-        secretNames: [codexRotatingSecretName],
+        secretNames: [
+          "REVIEWROUTER_CODEX_AUTH_JSON_R<repository-id>_P<provider-hash>_E<epoch>_<entropy>",
+        ],
         selectedRepositories: [input.repoFullName],
         validatesBeforeWrite: true,
         failureRecovery:
@@ -333,7 +324,7 @@ function buildCodexRotatingSecretSetupGuidance(input: {
     ],
     warnings: [
       "Rotating Codex OAuth is repository-scoped; organization secrets are intentionally disabled because each repository keeps an isolated refresh generation.",
-      "The command downloads a versioned installer, verifies SHA256 locally, then writes REVIEWROUTER_CODEX_AUTH_JSON directly to GitHub Actions secrets through gh.",
+      "The command downloads a versioned installer, verifies SHA256 locally, then writes one never-reused versioned GitHub Actions secret through gh. Ambiguous writes retire that name permanently.",
       "The installer creates a dedicated ~/.reviewrouter/codex/<repo> CODEX_HOME and does not mutate the normal ~/.codex login cache.",
       "ReviewRouter SaaS never receives plaintext auth.json; CI sends only the encrypted GitHub-secret payload needed for writeback.",
       "Generated production workflows run on GitHub-hosted same-repository PRs only; fork and bot-triggered PRs never receive secret-bearing Codex review. Draft review is disabled by default and can be enabled with the REVIEW_ROUTER_REVIEW_DRAFTS repository variable.",

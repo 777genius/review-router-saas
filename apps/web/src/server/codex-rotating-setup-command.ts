@@ -1,6 +1,9 @@
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { CodexRotatingInstallerArgument } from "@reviewrouter/features-provider-setup";
-import { isCodexRotatingOAuthAllowedForRepository } from "@reviewrouter/platform-config";
+import {
+  isCodexRotatingOAuthAllowedForRepository,
+  requireReviewRouterDatabaseRecoveryWitness,
+} from "@reviewrouter/platform-config";
 import { createDashboardRateLimitPolicy } from "./dashboard-rate-limits";
 import {
   resolveCodexRotatingPublicWebUrl,
@@ -23,17 +26,15 @@ export async function issueCodexRotatingSetupForRepository(input: {
   readonly prisma: PrismaClient;
   readonly repository: CodexRotatingSetupRepository;
   readonly installerArguments?: readonly CodexRotatingInstallerArgument[];
+  readonly recovery?: {
+    readonly requestId: string;
+    readonly epoch: bigint;
+  };
 }) {
   assertCodexRotatingSetupRepository(input.repository);
 
-  await createDashboardRateLimitPolicy(
-    input.prisma,
-  ).assertReviewConfigSaveAllowed({
-    workspaceId: input.repository.workspaceId,
-    resourceId: `codex-rotating-setup:${input.repository.id}`,
-  });
-
   const baseUrl = resolveCodexRotatingPublicWebUrl();
+  const databaseRecoveryWitness = requireReviewRouterDatabaseRecoveryWitness();
   return issueCodexRotatingSetupCommand({
     prisma: input.prisma,
     workspaceId: input.repository.workspaceId,
@@ -41,17 +42,38 @@ export async function issueCodexRotatingSetupForRepository(input: {
     repositoryFullName: input.repository.fullName,
     githubRepositoryId: input.repository.githubRepositoryId!.toString(),
     installer: resolveCodexRotatingSeedScriptDescriptor(),
+    runtimeEnvironment: process.env,
     setupManifestUrl: new URL(
       "/api/codex-rotating/setup-manifest",
       baseUrl,
     ).toString(),
-    setupConfirmUrl: new URL(
-      "/api/codex-rotating/setup-confirm",
+    setupPrepareUrl: new URL(
+      "/api/codex-rotating/setup-prepare",
       baseUrl,
     ).toString(),
+    setupDispatchUrl: new URL(
+      "/api/codex-rotating/setup-dispatch",
+      baseUrl,
+    ).toString(),
+    setupDispatchOutcomeUrl: new URL(
+      "/api/codex-rotating/setup-dispatch-outcome",
+      baseUrl,
+    ).toString(),
+    setupStatusUrl: new URL(
+      "/api/codex-rotating/setup-status",
+      baseUrl,
+    ).toString(),
+    databaseRecoveryWitness,
+    admittedOperation: async (tx) => {
+      await createDashboardRateLimitPolicy(tx).assertReviewConfigSaveAllowed({
+        workspaceId: input.repository.workspaceId,
+        resourceId: `codex-rotating-setup:${input.repository.id}`,
+      });
+    },
     ...(input.installerArguments
       ? { installerArguments: input.installerArguments }
       : {}),
+    ...(input.recovery ? { recovery: input.recovery } : {}),
   });
 }
 

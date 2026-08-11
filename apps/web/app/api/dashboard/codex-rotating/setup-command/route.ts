@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { assertDashboardRepositoryMutationAllowed } from "../../../../../src/server/dashboard-mutations";
 import { getPrisma } from "../../../../../src/server/prisma";
 import { issueCodexRotatingSetupForRepository } from "../../../../../src/server/codex-rotating-setup-command";
-import { codexRotatingSecretName } from "@reviewrouter/features-provider-setup";
 
 export async function POST(request: Request): Promise<
   NextResponse<
@@ -10,7 +9,6 @@ export async function POST(request: Request): Promise<
         readonly command: string;
         readonly expiresAt: string;
         readonly providerInstanceId: string;
-        readonly secretNames: readonly string[];
       }
     | { readonly error: string }
   >
@@ -70,12 +68,23 @@ export async function POST(request: Request): Promise<
       command: setup.command,
       expiresAt: setup.expiresAt,
       providerInstanceId: setup.providerInstanceId,
-      secretNames: [codexRotatingSecretName],
     });
   } catch (error) {
+    const code = codexRotatingSetupCommandErrorCode(error);
     return NextResponse.json(
-      { error: codexRotatingSetupCommandErrorCode(error) },
-      { status: 400 },
+      { error: code },
+      {
+        status:
+          code === "codex_rotating_setup_issuance_quiesced"
+            ? 503
+            : code === "codex_rotating_setup_in_progress" ||
+                code === "codex_rotating_setup_recovery_required" ||
+                code === "codex_rotating_identity_quarantined" ||
+                code === "codex_rotating_mutation_fence_conflict" ||
+                code === "codex_rotating_setup_lock_failed"
+              ? 409
+              : 400,
+      },
     );
   }
 }
@@ -102,8 +111,15 @@ function codexRotatingSetupCommandErrorCode(error: unknown): string {
       "repository_mutation_forbidden",
       "workspace_mutation_forbidden",
       "codex_rotating_not_enabled",
+      "codex_rotating_setup_issuance_quiesced",
       "codex_rotating_installer_missing",
       "codex_rotating_installer_descriptor_incomplete",
+      "codex_rotating_setup_in_progress",
+      "codex_rotating_setup_recovery_required",
+      "codex_rotating_identity_quarantined",
+      "codex_rotating_setup_issuance_quiesced",
+      "codex_rotating_mutation_fence_conflict",
+      "codex_rotating_setup_lock_failed",
       "invalid_codex_rotating_installer_sha256",
       "invalid_review_router_web_url",
     ].includes(message)

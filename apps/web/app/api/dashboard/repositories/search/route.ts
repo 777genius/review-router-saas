@@ -8,7 +8,10 @@ import {
   listWorkspaceRepositoryHealth,
   PrismaRepositoryHealthRepository,
 } from "@reviewrouter/features-repo-health";
-import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
+import {
+  requireReviewRouterDatabaseRecoveryWitness,
+  resolveReviewRouterActionRef,
+} from "@reviewrouter/platform-config";
 import {
   asDashboardGitHubActor,
   getDashboardSignedInActor,
@@ -20,8 +23,10 @@ import {
   buildProviderSetupMismatchRepositoryIds,
   repositoryHealthStatusWithProviderSetupReadiness,
 } from "../../../../../src/server/dashboard-provider-setup-readiness";
+import { deriveDashboardProviderSetupReadiness } from "../../../../../src/server/dashboard-codex-rotating-setup-readiness";
 import { listGitHubUserRepositoryAccess } from "../../../../../src/server/github-user-repository-access";
 import { getPrisma } from "../../../../../src/server/prisma";
+import { PrismaCodexRotatingSetupReadiness } from "../../../../../src/server/prisma-codex-rotating-setup-readiness";
 import {
   buildRepositorySearchText,
   repositoryMatchesSearchFilter,
@@ -113,6 +118,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     orderBy: [{ selected: "desc" }, { fullName: "asc" }],
     select: {
       id: true,
+      githubRepositoryId: true,
       fullName: true,
       owner: true,
       name: true,
@@ -124,7 +130,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       stargazersCount: true,
     },
   });
-  const [health, providerSetup] = await Promise.all([
+  const [health, cachedProviderSetup] = await Promise.all([
     listWorkspaceRepositoryHealth(
       {
         workspaceId: workspace.id,
@@ -149,6 +155,15 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       },
     }),
   ]);
+  const providerSetup = await deriveDashboardProviderSetupReadiness({
+    providerSetup: cachedProviderSetup,
+    repositories,
+    workspaceId: workspace.id,
+    readiness: new PrismaCodexRotatingSetupReadiness(
+      prisma,
+      requireReviewRouterDatabaseRecoveryWitness(),
+    ),
+  });
   const repositoryHealthById = new Map(
     health.map((item) => [item.repositoryId, item] as const),
   );

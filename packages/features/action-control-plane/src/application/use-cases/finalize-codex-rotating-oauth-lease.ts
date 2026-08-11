@@ -2,7 +2,6 @@ import {
   mapConfigToRuntimeEnv,
   safeDefaultReviewConfiguration,
 } from "@reviewrouter/features-review-config";
-import type { Clock } from "@reviewrouter/shared";
 import type {
   CodexRotatingGitHubSecretTokenIssuerPort,
   CodexRotatingOAuthRepositoryPort,
@@ -18,7 +17,6 @@ export type FinalizeCodexRotatingOAuthLeaseDependencies = {
     "findRuntimeReviewConfiguration"
   >;
   readonly ledgerKeys?: ActionLedgerKeyPort;
-  readonly clock: Clock;
 };
 
 export async function finalizeCodexRotatingOAuthLease(
@@ -50,7 +48,6 @@ export async function finalizeCodexRotatingOAuthLease(
 > {
   const result = await dependencies.codexRotatingOAuth.finalizeLease({
     ...input,
-    now: dependencies.clock.now(),
   });
   if (result.status !== "finalized") {
     return {

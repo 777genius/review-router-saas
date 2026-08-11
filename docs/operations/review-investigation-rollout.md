@@ -130,6 +130,33 @@ flags. A missing policy, malformed selector, missing observation/certificate,
 or unavailable policy source denies the investigation effect without exposing
 source, credentials, or raw provider output.
 
+## Additive provenance rollout floor
+
+Treat every additive field that participates in an investigation dossier,
+finding evidence binding, replay checkpoint, or certificate hash as a
+mixed-version protocol change even when it is stored inside JSON.
+
+Use a reader-first, writer-second rollout:
+
+1. deploy a compatibility reader that accepts both the legacy representation
+   and the future field while the production writer still emits the legacy
+   representation;
+2. prove old-data-to-new-reader and future-data-to-new-reader restart tests;
+3. verify the compatibility release commit on every API and worker instance;
+4. only then deploy the writer and its strict domain invariant;
+5. keep the compatibility reader release as the rollback floor until no live or
+   retained record requires the additive representation.
+
+Do not enable the writer in the same rolling deploy that introduces its reader.
+Feature flags do not make a persisted canonical-format change downgrade-safe.
+After writer activation, first disable the writer and wait for every in-flight
+write lease to terminate. Record the last aggregate ID, version, update time,
+and sanitized outcome hash containing a non-empty additive value. Rollback to a
+version older than the compatibility reader remains forbidden until those
+records are drained or migrated back to the legacy representation and a final
+query, taken after the recorded quiescence boundary, proves that no newer
+non-empty write exists. Start the older reader only after that final check.
+
 ## Emergency rollback
 
 ### Evidence provenance rollback floor
@@ -142,18 +169,52 @@ both legacy dossiers without the field and new dossiers with bound operation
 receipt digests. Do not use Render native rollback, redeploy, or a manual image
 pin below this SHA after the writer is enabled.
 
-Before a code rollback, verify that the candidate contains the compatibility
-floor:
+Before a code rollback, verify reader behavior in the immutable candidate
+artifact. Run the trusted compatibility probe sourced from the floor commit,
+not a test supplied by the rollback candidate, against a disposable Postgres
+database. The trusted probe must prove both legacy provenance without
+`acceptedOperationReceiptIds` and future provenance with a non-empty list can be
+restored after a reader restart. Bind the passing probe result to the candidate
+artifact image digest and source commit. The phase-1 probe source is
+`packages/features/review-investigations/src/tests/prisma-investigation-store-real.test.ts`
+at the floor commit; its SHA-256 is
+`457690a77952ba0530eecefbbf7117fea3c5cf97626bcf6deb10dc9afc33721a`.
+The relevant cases are `round-trips token usage with reasoning included in
+output` and `round-trips future operation receipt bindings through the
+compatibility reader`.
+
+The canonical compatibility-probe result input is the UTF-8 JSON file emitted
+by the trusted floor-commit probe harness after those two cases complete. It
+must contain only the stable result object (probe policy/version, both named
+case IDs and pass conclusions, reader restart count, candidate image digest,
+and candidate source commit), serialized with `jq -S -c` and one trailing
+newline; console output, timestamps, database URLs, and candidate-supplied test
+data are not part of the digest input. Record its expected SHA-256 beside the
+candidate image digest and source commit in the rollback evidence before the
+probe runs. Compare the observed canonical result exactly with:
+
+```bash
+test "$(sha256sum compatibility-probe-result.json | awk '{print $1}')" = \
+  "$EXPECTED_COMPATIBILITY_PROBE_RESULT_SHA256"
+```
+
+On macOS, install GNU coreutils and invoke its `sha256sum`; do not silently
+substitute a differently serialized result. This result digest binds the probe
+outcome. It is distinct from the source-file SHA-256 above, which authenticates
+the trusted probe implementation itself, and both comparisons are required.
+
+Then apply commit ancestry as a secondary guard:
 
 ```bash
 git merge-base --is-ancestor \
   a7b8d62824869d674c51d2effd14021b104e9181 <candidate-sha>
 ```
 
-A non-zero result denies the rollback. Code running below the floor cannot
-protect itself from data written after its release, so this is a deployment
-control-plane invariant rather than an application feature flag. Flag-first
-rollback remains the incident response path.
+A failed compatibility probe, artifact/source identity mismatch, unexpected
+probe digest, or non-zero ancestry result denies the rollback. Code running
+below the floor cannot protect itself from data written after its release, so
+this is a deployment control-plane invariant rather than an application feature
+flag. Flag-first rollback remains the incident response path.
 
 Emergency disable has precedence over flags and selectors. The general review
 authorization remains independent so disabling investigations cannot stop the
@@ -232,3 +293,124 @@ replay material, tokens, cookies, provider credentials, or raw model output.
 
 No live cohort may be enabled solely because unit tests or the disposable corpus
 pass.
+
+## 2026-08-04 pre-canary release evidence
+
+The investigation-capable pair under test is intentionally immutable:
+
+- Action commit and workflow ref:
+  `295e76f7777a995b8fd0b0bb0a36788429c89b83`;
+- producer release: `review-action-v2-295e76f7`;
+- investigation capability: `review_investigation_v1`;
+- Context Gateway policy: v4.
+
+Before opening a live sandbox canary, the SaaS release passed the full build,
+test, typecheck, architecture-boundary, generated-protocol, formatting, and
+self-hosted E2E gates. The paired-release harness then executed the exact
+committed Action checkout against disposable Postgres and passed all five
+production-path scenarios. The self-hosted E2E covered migration, OIDC action
+startup, restart/adoption, fencing, stale-head handling, partial publication,
+and log redaction.
+
+These checks establish local and composed release integrity. They do not count
+as a live hosted canary, a same-release live self-hosted canary, or promotion
+approval. Production effects, verified-clean publication, and cross-revision
+replay remain disabled. Live sandbox run IDs, sanitized database evidence, and
+emergency-disable rollback evidence must be appended before this release's E2E
+record is considered complete.
+
+## 2026-08-09 evidence-provenance compatibility floor
+
+Gateway-backed findings require accepted operation receipt IDs to survive
+aggregate persistence and restart. This additive JSON field was released in two
+phases so a rolling deploy cannot route newly written records to an older
+reader.
+
+Phase 1 is commit `a7b8d62824869d674c51d2effd14021b104e9181`.
+It accepts legacy and non-empty future bindings, preserves legacy canonical
+hashes when the list is empty, and keeps the production writer on the empty
+legacy representation. The exact commit passed Quality Gates and disposable
+self-hosted E2E, then reached `live` on:
+
+- API deploy `dep-d9ru992jnfac738f5j40`;
+- worker deploy `dep-d9ru9b710e5c738rumgg`;
+- web deploy `dep-d9ru8uuq1p3s73fbium0`.
+
+Phase 2 may emit non-empty bindings only while phase 1 remains the rollback
+floor. Production effects and verified-clean publication stay disabled until
+the phase-2 sandbox finding, clean, stale/reuse, and emergency-disable evidence
+is appended here.
+
+## 2026-08-09 hosted sandbox evidence
+
+The bounded live canary used only
+`777genius/review-router-saas-e2e`. No user repository was used for agent or
+publication testing.
+
+The immutable Action pair was release
+`review-action-v2-08f6bc14-investigation` at commit
+`08f6bc1481fd284fa82adfa47cda05c76b161b00`. Phase 2 was SaaS commit
+`f5d9b657a0d31d825da309ff9664118a98a6ac76`, deployed live as API
+`dep-d9rv2lfavr4c73a51eg0`, worker `dep-d9rv2n7avr4c73a51iig`, and web
+`dep-d9rv2fb7uimc73bbcnt0`.
+
+The canary established these independent outcomes:
+
+- run `31292670868` produced a gateway-backed semantic finding with accepted
+  operation receipt IDs and one deduplicated inline publication; run
+  `31293179085` verified the fixed revision as clean;
+- run `31293309895` was superseded by a newer revision without stale findings
+  or comments, and run `31293444391` restored idempotently without duplicate
+  semantic work;
+- runs `31294278893` and `31294548314` produced certificate-backed
+  `verified_clean` outcomes while authoritative verified-clean publication was
+  still disabled;
+- run `31295477721`, attempt 2, completed and checkpointed the stable README
+  unit in a two-batch plan, then ended `required_provider_lane_busy` before the
+  second batch. This proves the first batch boundary and checkpoint durability,
+  not full two-batch completion;
+- run `31310718760` selectively replayed two unchanged blob receipts into a new
+  revision with two unique replay proof IDs. Changed search/tree dependencies
+  were not reused and required fresh evidence, as required by the fail-closed
+  replay policy. The replay receipts survived retry, but the run later reported
+  gateway seal/cleanup process failures and ended `required_provider_lane_busy`;
+- with emergency disable active on both API and worker, run `31311520702`
+  created a valid authorization but zero investigation units, executed the
+  ordinary review path, and published a typed partial outcome after provider
+  attempts were exhausted, ending `required_work_exhausted`. This proves
+  admission-time fallback only; authoritative effects were disabled, so it does
+  not claim interruption of an in-flight authoritative mutation.
+
+These run IDs and sanitized database projections are the evidence record for
+the independent boundaries above. No promotion report was generated, and no
+promotion report hash is claimed: the cohort remains dormant and this evidence
+is not production promotion approval.
+
+The multi-batch canary first exposed
+`investigation_inventory_seed_mismatch`: the server compared a batch-local unit
+inventory with the authenticated full-revision inventory as if they were equal.
+Commit `0bd0c341a77b9bb62862f0a2c843cce12c5754e5` fixes the invariant to require
+every unit path to be a member of the full inventory while terminal aggregate
+validation still covers the complete authenticated path set. Duplicate-free,
+exactly-once partitioning is owned by the immutable Action batch planner: it
+rejects duplicate route keys, canonical identities, and scheduling priorities,
+and its `never duplicates or loses review units` test covers a 503-unit plan.
+The 50,000-unit corpus E2E covers the same planner at scale. The SaaS membership
+check does not claim to prove cross-batch multiplicity by itself. The fix passed
+133 focused tests plus the full Quality Gates and self-hosted E2E, then reached
+live as API `dep-d9s5fmh42hec73bodjl0`, worker
+`dep-d9s5fmv10e5c7398raf0`, and web `dep-d9s5fh3ncjis739kejlg`.
+
+After the admission-time emergency fallback check, the sandbox repository
+context-reuse policy was disabled.
+The API and worker were restored with emergency disable, cross-revision replay,
+verified-clean publication, and production effects all set to `0`. Recording,
+shadow evaluation, and the context critic remain non-authoritative. The phase-1
+reader commit remains the minimum code rollback floor because phase 2 has
+already persisted non-empty evidence provenance.
+
+The final dormant configuration reached `live` on API deploy
+`dep-d9s6khn10e5c739atvl0` and worker deploy
+`dep-d9s6kkh42hec73bptlfg`. Post-deploy health reported both the API and database
+as `ok`, and operator status confirmed repository context reuse `disabled` with
+no repository emergency stop.

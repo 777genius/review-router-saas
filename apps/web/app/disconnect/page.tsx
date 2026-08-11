@@ -15,7 +15,7 @@ export const metadata: Metadata = createPublicPageMetadata({
 
 const uninstallPath =
   "GitHub -> Settings -> Applications -> Installed GitHub Apps -> ReviewRouter -> Configure -> Uninstall";
-const removeSecrets = `gh secret delete REVIEWROUTER_CODEX_AUTH_JSON --repo owner/repo
+const removeSecrets = `# Delete each ReviewRouter-issued versioned Codex secret by its exact recorded name.
 gh secret delete CLAUDE_CODE_OAUTH_TOKEN --repo owner/repo
 gh secret delete OPENROUTER_API_KEY --repo owner/repo
 gh secret delete CODEX_AUTH_JSON --repo owner/repo # optional legacy cleanup

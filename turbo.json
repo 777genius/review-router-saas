@@ -3,6 +3,13 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "env": [
+        "NEXTAUTH_URL",
+        "REVIEW_ROUTER_API_URL",
+        "REVIEW_ROUTER_PUBLIC_API_URL",
+        "REVIEW_ROUTER_PUBLIC_WEB_URL",
+        "REVIEW_ROUTER_WEB_URL"
+      ],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**", "!.next/dev/**"]
     },
     "build:contract-source": {
