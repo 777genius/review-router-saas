@@ -12,6 +12,14 @@ These runbooks are written for local/private beta. They must stay
 metadata-only: do not paste provider secrets, raw webhook payloads, repository
 code, pull request diffs, prompts, or model responses into tickets or logs.
 
+## Private PostgreSQL 17 generation cutover
+
+Use [the private-network PostgreSQL 17 cutover runbook](./14-private-network-postgresql-17-cutover.md)
+for the side-by-side PG16 to PG17 copy, private JIT runner, ACL admission gate,
+activation receipt, evidence, rehearsal, and rollback boundary. Release tags
+and git flow remain governed by
+[07-environments-and-release-management.md](./07-environments-and-release-management.md).
+
 ## App-First Repository E2E
 
 Run this gate before every SaaS organization rollout and after changes to the

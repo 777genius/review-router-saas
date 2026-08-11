@@ -13,6 +13,20 @@ The SaaS stores metadata and configuration only.
 
 ## Secret Handling Modes
 
+### Private release runner
+
+The dedicated Render runner-base service is a separate secret boundary. It may
+hold only its narrowly scoped GitHub App bootstrap identity; it must not inherit
+runtime environment groups, database URLs, `PGPASSWORD`, Render control-plane
+credentials, or customer provider credentials. It removes the App private key,
+installation ID, App ID, `GITHUB_TOKEN`, and `GH_TOKEN` before starting the
+one-job GitHub runner process.
+
+Protected workflow environments keep `production-role-bootstrap`, `production`,
+and `production-runner-control` credentials separate. Database URLs appear only
+on unique private-network runner jobs. A GitHub-hosted control job cannot
+reference them even if it provisions or verifies the runner lifecycle.
+
 ### Codex OAuth Subscription
 
 Recommended v1 mode:

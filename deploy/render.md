@@ -446,3 +446,17 @@ GitHub-hosted runner -> public HTTPS API -> OIDC exchange -> config fetch -> hea
   through the documented drain-and-reseed transition.
 - The Postgres `ipAllowList: []` setting keeps the database private to Render's
   network. Use Render shell or trusted admin tooling for direct DB operations.
+
+## Private PG16 to PG17 generation cutover
+
+In-place database upgrades and GitHub-hosted database jobs are unsupported.
+The release uses a separate private PG17 generation plus a dedicated Render
+runner-base service whose artifact contains no database credentials. Exact
+runner-base service/deploy/image facts are protected workflow variables, not a
+mutable `latest` tag.
+
+The complete operator sequence, environment separation, evidence archive, and
+irreversible first-write boundary are in
+[the private-network PG17 cutover runbook](../ai-docs/operations/14-private-network-postgresql-17-cutover.md).
+General release and tag operations remain in
+[the release-management source of truth](../ai-docs/operations/07-environments-and-release-management.md).
