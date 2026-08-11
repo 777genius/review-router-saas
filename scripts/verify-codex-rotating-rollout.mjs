@@ -9,6 +9,10 @@ import {
   gitBlobSha,
 } from "./lib/github-actions-trusted-evidence.mjs";
 import {
+  isGenerationBoundMigrationReceipt,
+  normalizeMigrationEvidenceReceipts,
+} from "./lib/codex-rotating-migration-receipts.mjs";
+import {
   catalogColumnKey,
   codexRotatingCatalogCheckNames,
   codexRotatingCheckDefinitions,
@@ -401,6 +405,14 @@ function verifyDatabase(db, descriptor, need, options) {
     "production database identity is incomplete",
   );
   need(db?.isWriter === true, "database observation is not from a writer");
+  let normalizedMigrationReceipts = [];
+  try {
+    normalizedMigrationReceipts = normalizeMigrationEvidenceReceipts(
+      db?.databaseGenerationBinding?.consumedMigrationEvidence,
+    );
+  } catch {
+    need(false, "database migration receipt history is malformed");
+  }
   need(
     hasExactKeys(db?.databaseGenerationBinding, [
       "consumedMigrationEvidence",
@@ -408,50 +420,20 @@ function verifyDatabase(db, descriptor, need, options) {
       "systemIdentifier",
       "version",
     ]) &&
-      db.databaseGenerationBinding.version === 3 &&
-      Array.isArray(db.databaseGenerationBinding.consumedMigrationEvidence) &&
-      db.databaseGenerationBinding.consumedMigrationEvidence.length > 0 &&
-      db.databaseGenerationBinding.consumedMigrationEvidence.every(
+      db.databaseGenerationBinding.version === 4 &&
+      normalizedMigrationReceipts.length > 0 &&
+      normalizedMigrationReceipts.every(
         (receipt) =>
-          hasExactKeys(receipt, [
-            "artifactDigest",
-            "artifactId",
-            "claimedAt",
-            "commit",
-            "imageDigest",
-            "jobId",
-            "rolloutId",
-            "runId",
-            "runAttempt",
-            "workflowPath",
-          ]) &&
-          /^sha256:[a-f0-9]{64}$/u.test(receipt.artifactDigest ?? "") &&
-          [
-            receipt.artifactId,
-            receipt.rolloutId,
-            receipt.runId,
-            receipt.jobId,
-          ].every((value) => typeof value === "string" && value.length > 0) &&
-          Number.isSafeInteger(receipt.runAttempt) &&
-          receipt.runAttempt > 0 &&
-          receipt.workflowPath ===
-            ".github/workflows/codex-rotating-release-migration.yml" &&
-          /^[a-f0-9]{40}$/u.test(receipt.commit ?? "") &&
-          /^sha256:[a-f0-9]{64}$/u.test(receipt.imageDigest ?? "") &&
-          Number.isFinite(Date.parse(receipt.claimedAt ?? "")),
+          receipt.receiptVersion !== 4 ||
+          isGenerationBoundMigrationReceipt(
+            receipt,
+            db.databaseGenerationBinding,
+          ),
       ) &&
-      new Set(
-        db.databaseGenerationBinding.consumedMigrationEvidence.flatMap(
-          (receipt) => [
-            receipt.artifactDigest,
-            `rollout:${receipt.rolloutId}`,
-            `run-artifact:${receipt.runId}:${receipt.artifactId}`,
-          ],
-        ),
-      ).size ===
-        db.databaseGenerationBinding.consumedMigrationEvidence.length * 3 &&
+      typeof db.databaseGenerationBinding.systemIdentifier === "string" &&
       db.databaseGenerationBinding.systemIdentifier ===
         db?.databaseIdentity?.systemIdentifier &&
+      typeof db.databaseGenerationBinding.recoveryWitnessSha256 === "string" &&
       /^[a-f0-9]{64}$/u.test(
         db.databaseGenerationBinding.recoveryWitnessSha256 ?? "",
       ) &&
@@ -492,6 +474,9 @@ function verifyDatabase(db, descriptor, need, options) {
       "runAttempt",
       "runId",
       "sessionUser",
+      "receiptVersion",
+      "recoveryWitnessSha256",
+      "systemIdentifier",
       "workflowPath",
     ]) &&
       db?.callerIdentity?.kind === "trusted-github-release-migration" &&
@@ -514,7 +499,12 @@ function verifyDatabase(db, descriptor, need, options) {
         ".github/workflows/codex-rotating-release-migration.yml" &&
       Number.isFinite(Date.parse(db?.callerIdentity?.claimedAt ?? "")) &&
       /^[a-f0-9]{40}$/u.test(db?.callerIdentity?.commit ?? "") &&
-      /^sha256:[a-f0-9]{64}$/u.test(db?.callerIdentity?.imageDigest ?? ""),
+      /^sha256:[a-f0-9]{64}$/u.test(db?.callerIdentity?.imageDigest ?? "") &&
+      db?.callerIdentity?.receiptVersion === 4 &&
+      isGenerationBoundMigrationReceipt(
+        db?.callerIdentity,
+        db?.databaseGenerationBinding,
+      ),
     "production migration caller is not the canonical database role and trusted GitHub receipt",
   );
   const callerReceiptFields = [
@@ -527,18 +517,19 @@ function verifyDatabase(db, descriptor, need, options) {
     "rolloutId",
     "runAttempt",
     "runId",
+    "receiptVersion",
+    "recoveryWitnessSha256",
+    "systemIdentifier",
     "workflowPath",
   ];
-  const matchingCallerReceipts = (
-    db?.databaseGenerationBinding?.consumedMigrationEvidence ?? []
-  ).filter((receipt) =>
+  const matchingCallerReceipts = normalizedMigrationReceipts.filter((receipt) =>
     callerReceiptFields.every(
       (key) => receipt?.[key] === db?.callerIdentity?.[key],
     ),
   );
   need(
     matchingCallerReceipts.length === 1 &&
-      db.databaseGenerationBinding.consumedMigrationEvidence.filter(
+      normalizedMigrationReceipts.filter(
         (receipt) => receipt?.rolloutId === db?.callerIdentity?.rolloutId,
       ).length === 1,
     "production migration caller must match exactly one unspliced database receipt",

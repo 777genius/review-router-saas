@@ -301,12 +301,14 @@ canonical role, and must not be able to `SET ROLE
 reviewrouter_release_migration`. The workflow captures canonical migration
 output locally and makes only read-only authenticated Render API observations
 of database owner identity and PostgreSQL version. It uploads a strict
-version-4 provider-neutral GitHub execution artifact whose digest, immutable workflow blob, repository,
+version-5 provider-neutral GitHub execution artifact whose digest, immutable workflow blob, repository,
 run, attempt, job, and artifact identities are independently re-fetched before
 use. Local JSON and local checksums are never deployment authority.
-Supply each role's distinct private URL only to `runtime-deploy`; the helper
-checks all four URLs against the selected Render database connection before any
-secret-bearing mutation.
+Supply the four runtime-role URLs plus the release-migration URL only to
+`runtime-deploy`; the helper checks all five against the selected Render
+database connection before any secret-bearing mutation. The bootstrap URL is
+exclusive to the protected role-bootstrap workflow and must not be present in
+the runtime deploy environment or its env file.
 
 The bootstrap role owns the database container. The release role owns the
 `public` schema, `_prisma_migrations`, every rotating-OAuth table, and every
@@ -317,11 +319,14 @@ through the narrowly granted
 `reviewrouter_bootstrap.consume_migration_evidence` security-definer function.
 The bootstrap-owned function validates the exact trusted GitHub receipt and
 stores it alongside this database-owner generation comment (substitute observed
-values; never store the witness itself):
+values; never store the witness itself). The canonical migration output records
+the system identifier and only the recovery-witness SHA-256; the immutable
+GitHub artifact authenticates that pair, and claim rejects a different restored
+or promoted generation:
 
 ```sql
 COMMENT ON DATABASE review_router IS
-  '{"version":1,"systemIdentifier":"<pg_control_system.system_identifier>","recoveryWitnessSha256":"<sha256-of-current-witness>"}';
+  '{"version":1,"systemIdentifier":"<pg_control_system.system_identifier>","recoveryWitnessSha256":"<sha256-of-current-witness>","consumedMigrationEvidence":[]}';
 ```
 
 The verifiable boundary assumes GitHub and Render faithfully serve their
@@ -360,7 +365,9 @@ provider-digested artifact.
 
 3. Claim the authenticated migration evidence into the database generation
    binding. The receipt stores its rollout, artifact, run/attempt/job, workflow
-   path, exact commit, and target image digest. Run the production-writer
+   path, exact commit, target image digest, explicit receipt version, system
+   identifier, and recovery-witness hash. Historical five-field v2 receipts are
+   strictly validated and normalized without weakening replay detection. Run the production-writer
    capture with the release credential and the raw, byte-for-byte Render runtime
    observation path. It selects exactly one receipt for the requested rollout;
    it never derives the caller from a historical Render job or application
@@ -373,7 +380,8 @@ provider-digested artifact.
    access). `runtime-deploy` downloads the archive itself and rejects a wrong,
    stale, replayed, expired, locally substituted, or digest-mismatched artifact.
    It also requires the exact commit/image/database, one successful caller,
-   provider response bindings, canonical output, and four verified roles. Run:
+   provider response bindings, canonical output, generation identity, and five
+   verified roles. Run:
 
 ```bash
 REVIEW_ROUTER_RENDER_PHASE=runtime-deploy pnpm deploy:render:hosted-beta

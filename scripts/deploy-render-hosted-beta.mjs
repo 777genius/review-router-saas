@@ -16,14 +16,17 @@ import {
 } from "./lib/github-actions-trusted-evidence.mjs";
 
 const renderApi = "https://api.render.com/v1";
+const roleBootstrapDatabaseUrlEnvironmentName =
+  "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL";
 
-function parseDotenv(text) {
+function parseDotenv(text, excludedNames = new Set()) {
   const values = {};
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#") || !line.includes("=")) continue;
     const separator = line.indexOf("=");
     const key = line.slice(0, separator).trim();
+    if (excludedNames.has(key)) continue;
     let value = line.slice(separator + 1).trim();
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
@@ -38,7 +41,19 @@ function parseDotenv(text) {
 
 function readOptionalDotenv(filePath) {
   if (!fs.existsSync(filePath)) return {};
-  return parseDotenv(fs.readFileSync(filePath, "utf8"));
+  return parseHostedDeployDotenv(fs.readFileSync(filePath, "utf8"));
+}
+
+export function parseHostedDeployDotenv(text) {
+  return parseDotenv(text, new Set([roleBootstrapDatabaseUrlEnvironmentName]));
+}
+
+export function withoutRoleBootstrapCredential(source) {
+  return Object.fromEntries(
+    Object.entries(source).filter(
+      ([name]) => name !== roleBootstrapDatabaseUrlEnvironmentName,
+    ),
+  );
 }
 
 export function requiredEnv(name, source) {
@@ -274,7 +289,6 @@ const databaseUrlEnvironmentByRole = Object.freeze({
   web: "REVIEW_ROUTER_WEB_DATABASE_URL",
   worker: "REVIEW_ROUTER_WORKER_DATABASE_URL",
   codexEffectAuthority: "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
-  roleBootstrap: "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
   releaseMigration: "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
 });
 
@@ -284,7 +298,6 @@ export function resolveDistinctDatabaseRoleUrls(source) {
     web: "reviewrouter_web",
     worker: "reviewrouter_worker",
     codexEffectAuthority: "reviewrouter_codex_effect_authority",
-    roleBootstrap: "reviewrouter_role_bootstrap",
     releaseMigration: "reviewrouter_release_migration",
   };
   const urls = {};
@@ -314,7 +327,7 @@ export function resolveDistinctDatabaseRoleUrls(source) {
   }
   if (
     new Set(Object.values(urls).map((value) => new URL(value).username))
-      .size !== 6
+      .size !== 5
   ) {
     throw new Error("database role credentials must be distinct");
   }
@@ -902,14 +915,15 @@ export async function verifyServiceEnvConvergence(
 export async function disableAndVerifyPreDeployCommand(client, service) {
   await client.request("PATCH", `/services/${service.id}`, {
     autoDeployTrigger: "off",
-    serviceDetails: { preDeployCommand: null },
+    serviceDetails: { preDeployCommand: "" },
   });
   const observed = await client.request("GET", `/services/${service.id}`);
   const value = observed.service ?? observed;
-  const details = value.serviceDetails;
-  if (details?.preDeployCommand !== null) {
+  const preDeployCommand =
+    value.serviceDetails?.envSpecificDetails?.preDeployCommand;
+  if (preDeployCommand !== "") {
     throw new Error(
-      `Render service ${service.name} preDeployCommand is not canonical null`,
+      `Render service ${service.name} preDeployCommand is not canonically disabled`,
     );
   }
   if (value.autoDeployTrigger !== "off") {
@@ -935,7 +949,7 @@ export function assertMigrationEvidencePayload(
     Object.keys(value).length === keys.length &&
     keys.every((key) => Object.hasOwn(value, key));
   if (
-    evidence?.version !== 4 ||
+    evidence?.version !== 5 ||
     !exactKeys(evidence, [
       "version",
       "rolloutId",
@@ -943,13 +957,14 @@ export function assertMigrationEvidencePayload(
       "scope",
       "release",
       "database",
+      "databaseGeneration",
       "migration",
       "runtimeRoles",
       "databaseObservation",
       "migrationOutput",
     ])
   ) {
-    throw new Error("migration evidence version or shape must be exactly 4");
+    throw new Error("migration evidence version or shape must be exactly 5");
   }
   const provider = evidence.databaseObservation;
   const providerResponses = Array.isArray(provider?.rawResponses)
@@ -1056,6 +1071,20 @@ export function assertMigrationEvidencePayload(
   ) {
     throw new Error("migration evidence database identity does not match");
   }
+  if (
+    !exactKeys(evidence.databaseGeneration, [
+      "recoveryWitnessSha256",
+      "systemIdentifier",
+    ]) ||
+    typeof evidence.databaseGeneration.systemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(evidence.databaseGeneration.systemIdentifier ?? "") ||
+    typeof evidence.databaseGeneration.recoveryWitnessSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(
+      evidence.databaseGeneration.recoveryWitnessSha256 ?? "",
+    )
+  ) {
+    throw new Error("migration evidence database generation is invalid");
+  }
   const migration = evidence.migration;
   if (
     !exactKeys(migration, [
@@ -1101,6 +1130,7 @@ export function assertMigrationEvidencePayload(
       "caller",
       "callerCount",
       "commit",
+      "databaseGeneration",
       "databaseIdentity",
       "imageDigest",
       "migrationStatus",
@@ -1109,27 +1139,29 @@ export function assertMigrationEvidencePayload(
       "roles",
       "status",
     ]) ||
-    evidence.migrationOutput.version !== 2 ||
+    evidence.migrationOutput.version !== 3 ||
     evidence.migrationOutput?.caller !==
       "scripts/run-codex-rotating-release-migration.mjs" ||
     evidence.migrationOutput?.callerCount !== 1 ||
     evidence.migrationOutput?.commit !== commit ||
     evidence.migrationOutput?.imageDigest !== imageDigest ||
     evidence.migrationOutput?.databaseIdentity !== databaseIdentity ||
+    evidence.migrationOutput?.databaseGeneration?.systemIdentifier !==
+      evidence.databaseGeneration.systemIdentifier ||
+    evidence.migrationOutput?.databaseGeneration?.recoveryWitnessSha256 !==
+      evidence.databaseGeneration.recoveryWitnessSha256 ||
     evidence.migrationOutput?.status !== "succeeded"
   ) {
     throw new Error("migration evidence canonical caller output mismatch");
   }
   const expectedRoles = new Map(
-    Object.entries(databaseUrls)
-      .filter(([role]) => role !== "roleBootstrap")
-      .map(([role, url]) => [
-        role,
-        {
-          username: decodeURIComponent(new URL(url).username),
-          databaseIdentity: normalizedDatabaseIdentity(url),
-        },
-      ]),
+    Object.entries(databaseUrls).map(([role, url]) => [
+      role,
+      {
+        username: decodeURIComponent(new URL(url).username),
+        databaseIdentity: normalizedDatabaseIdentity(url),
+      },
+    ]),
   );
   const roles = Array.isArray(evidence.runtimeRoles)
     ? evidence.runtimeRoles
@@ -1262,6 +1294,7 @@ export function claimTrustedMigrationEvidence(
     );
   const receipt = trusted.receipt;
   const release = trusted.evidence.release;
+  const generation = trusted.evidence.databaseGeneration;
   const result = execute(
     "psql",
     [
@@ -1286,6 +1319,10 @@ export function claimTrustedMigrationEvidence(
       `commit=${receipt.commit}`,
       "--set",
       `image_digest=${release.imageDigest}`,
+      "--set",
+      `system_identifier=${generation.systemIdentifier}`,
+      "--set",
+      `recovery_witness_sha256=${generation.recoveryWitnessSha256}`,
     ],
     {
       encoding: "utf8",
@@ -1309,7 +1346,9 @@ SELECT reviewrouter_bootstrap.consume_migration_evidence(
   :'job_id',
   :'workflow_path',
   :'commit',
-  :'image_digest'
+  :'image_digest',
+  :'system_identifier',
+  :'recovery_witness_sha256'
 );
 COMMIT;
 SELECT 'claimed';
@@ -1403,7 +1442,10 @@ export async function triggerAndVerifyDeploy(
 export async function main() {
   const envFile =
     process.env.REVIEW_ROUTER_RENDER_ENV_FILE ?? ".env.production";
-  const env = { ...readOptionalDotenv(envFile), ...process.env };
+  const env = {
+    ...readOptionalDotenv(envFile),
+    ...withoutRoleBootstrapCredential(process.env),
+  };
   const ownerId = requiredEnv("RENDER_OWNER_ID", env);
   const projectId = requiredEnv("RENDER_PROJECT_ID", env);
   const environmentId = requiredEnv("RENDER_ENVIRONMENT_ID", env);

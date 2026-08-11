@@ -398,8 +398,8 @@ export async function fetchTrustedGitHubEvidence(
   } catch {
     throw new Error("trusted evidence manifest is not strict JSON");
   }
-  if (![3, 4].includes(evidence?.version))
-    throw new Error("trusted evidence manifest version must be 3 or 4");
+  if (![3, 4, 5].includes(evidence?.version))
+    throw new Error("trusted evidence manifest version must be 3, 4, or 5");
   exactExecution(evidence, expected);
   const result = {
     evidence,

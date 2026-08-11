@@ -255,6 +255,48 @@ function observeCanonicalRoleTopology(run, url, env) {
   );
 }
 
+export function canonicalDatabaseGenerationObservationSql() {
+  return `SELECT json_build_object(
+    'systemIdentifier', system.system_identifier::text,
+    'recoveryWitnessSha256', binding.value->>'recoveryWitnessSha256'
+  )
+  FROM pg_control_system() system
+  CROSS JOIN LATERAL (
+    SELECT shobj_description(database.oid, 'pg_database')::jsonb AS value
+    FROM pg_database database
+    WHERE database.datname = current_database()
+  ) binding`;
+}
+
+function observeDatabaseGeneration(run, url, env) {
+  const generation = JSON.parse(
+    run(
+      "verify_database_generation",
+      "psql",
+      [
+        url,
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        canonicalDatabaseGenerationObservationSql(),
+      ],
+      { env },
+    ).trim(),
+  );
+  if (
+    !generation ||
+    Object.keys(generation).length !== 2 ||
+    typeof generation.systemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(generation.systemIdentifier ?? "") ||
+    typeof generation.recoveryWitnessSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(generation.recoveryWitnessSha256 ?? "")
+  ) {
+    throw new Error("release_migration_database_generation_unproven");
+  }
+  return Object.freeze(generation);
+}
+
 export function resolveReleaseMigrationConfiguration(env) {
   const releaseUrl = new URL(
     required(env, "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL"),
@@ -439,6 +481,7 @@ BEGIN
 END
 $ownership$;
 DROP FUNCTION IF EXISTS reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text);
+DROP FUNCTION IF EXISTS reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text);
 DROP SCHEMA IF EXISTS reviewrouter_bootstrap;
 DO $transfer_public_ownership$
 DECLARE owned_object record;
@@ -515,7 +558,9 @@ CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.consume_migration_evidence(
   job_id text,
   workflow_path text,
   commit_sha text,
-  image_digest text
+  image_digest text,
+  expected_system_identifier text,
+  expected_recovery_witness_sha256 text
 ) RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -524,6 +569,8 @@ AS $receipt$
 DECLARE
   binding jsonb;
   receipts jsonb;
+  receipt jsonb;
+  normalized_receipts jsonb := '[]'::jsonb;
 BEGIN
   IF session_user <> 'reviewrouter_release_migration'
      OR artifact_digest !~ '^sha256:[a-f0-9]{64}$'
@@ -534,18 +581,136 @@ BEGIN
      OR job_id !~ '^[1-9][0-9]*$'
      OR workflow_path <> '.github/workflows/codex-rotating-release-migration.yml'
      OR commit_sha !~ '^[a-f0-9]{40}$'
-     OR image_digest !~ '^sha256:[a-f0-9]{64}$' THEN
+     OR image_digest !~ '^sha256:[a-f0-9]{64}$'
+     OR expected_system_identifier !~ '^[0-9]+$'
+     OR expected_recovery_witness_sha256 !~ '^[a-f0-9]{64}$' THEN
     RAISE EXCEPTION 'trusted migration evidence receipt invalid';
   END IF;
   PERFORM pg_advisory_xact_lock(1381126735, 1129271120);
   SELECT shobj_description(oid, 'pg_database')::jsonb INTO binding
   FROM pg_database WHERE datname = current_database();
   IF binding IS NULL
+     OR (SELECT count(*) FROM jsonb_object_keys(binding)) <> 4
+     OR NOT binding ?& ARRAY['version','systemIdentifier','recoveryWitnessSha256','consumedMigrationEvidence']
+     OR binding->'version' NOT IN ('1'::jsonb, '2'::jsonb, '3'::jsonb, '4'::jsonb)
+     OR jsonb_typeof(binding->'systemIdentifier') <> 'string'
+     OR jsonb_typeof(binding->'recoveryWitnessSha256') <> 'string'
+     OR jsonb_typeof(binding->'consumedMigrationEvidence') <> 'array'
      OR binding->>'systemIdentifier' <> (SELECT system_identifier::text FROM pg_control_system())
-     OR binding->>'recoveryWitnessSha256' !~ '^[a-f0-9]{64}$' THEN
+     OR binding->>'recoveryWitnessSha256' !~ '^[a-f0-9]{64}$'
+     OR binding->>'systemIdentifier' <> expected_system_identifier
+     OR binding->>'recoveryWitnessSha256' <> expected_recovery_witness_sha256 THEN
     RAISE EXCEPTION 'trusted migration evidence database generation binding invalid';
   END IF;
   receipts := coalesce(binding->'consumedMigrationEvidence', '[]'::jsonb);
+  IF jsonb_typeof(receipts) <> 'array' THEN
+    RAISE EXCEPTION 'trusted migration evidence receipt history invalid';
+  END IF;
+  FOR receipt IN SELECT value FROM jsonb_array_elements(receipts)
+  LOOP
+    IF jsonb_typeof(receipt) <> 'object' THEN
+      RAISE EXCEPTION 'trusted migration evidence receipt history invalid';
+    ELSIF (SELECT count(*) FROM jsonb_object_keys(receipt)) = 5
+      AND receipt ?& ARRAY['artifactDigest','artifactId','rolloutId','runId','claimedAt']
+      AND jsonb_typeof(receipt->'artifactDigest') = 'string'
+      AND jsonb_typeof(receipt->'artifactId') = 'string'
+      AND jsonb_typeof(receipt->'rolloutId') = 'string'
+      AND jsonb_typeof(receipt->'runId') = 'string'
+      AND jsonb_typeof(receipt->'claimedAt') = 'string'
+      AND receipt->>'artifactDigest' ~ '^sha256:[a-f0-9]{64}$'
+      AND receipt->>'artifactId' ~ '^[1-9][0-9]*$'
+      AND receipt->>'rolloutId' <> ''
+      AND receipt->>'runId' ~ '^[1-9][0-9]*$'
+      AND receipt->>'claimedAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$'
+      AND to_char((receipt->>'claimedAt')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') = receipt->>'claimedAt' THEN
+      receipt := receipt || jsonb_build_object('receiptVersion', 2);
+    ELSIF (SELECT count(*) FROM jsonb_object_keys(receipt)) = 6
+      AND receipt ?& ARRAY['artifactDigest','artifactId','rolloutId','runId','claimedAt','receiptVersion']
+      AND receipt->'receiptVersion' = '2'::jsonb
+      AND jsonb_typeof(receipt->'artifactDigest') = 'string'
+      AND jsonb_typeof(receipt->'artifactId') = 'string'
+      AND jsonb_typeof(receipt->'rolloutId') = 'string'
+      AND jsonb_typeof(receipt->'runId') = 'string'
+      AND jsonb_typeof(receipt->'claimedAt') = 'string'
+      AND receipt->>'artifactDigest' ~ '^sha256:[a-f0-9]{64}$'
+      AND receipt->>'artifactId' ~ '^[1-9][0-9]*$'
+      AND receipt->>'rolloutId' <> ''
+      AND receipt->>'runId' ~ '^[1-9][0-9]*$'
+      AND receipt->>'claimedAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$'
+      AND to_char((receipt->>'claimedAt')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') = receipt->>'claimedAt' THEN
+      NULL;
+    ELSIF (SELECT count(*) FROM jsonb_object_keys(receipt)) IN (10, 11)
+      AND receipt ?& ARRAY['artifactDigest','artifactId','rolloutId','runId','runAttempt','jobId','workflowPath','commit','imageDigest','claimedAt']
+      AND ((SELECT count(*) FROM jsonb_object_keys(receipt)) = 10 OR receipt->'receiptVersion' = '3'::jsonb)
+      AND jsonb_typeof(receipt->'artifactDigest') = 'string'
+      AND jsonb_typeof(receipt->'artifactId') = 'string'
+      AND jsonb_typeof(receipt->'rolloutId') = 'string'
+      AND jsonb_typeof(receipt->'runId') = 'string'
+      AND jsonb_typeof(receipt->'runAttempt') = 'number'
+      AND jsonb_typeof(receipt->'jobId') = 'string'
+      AND jsonb_typeof(receipt->'workflowPath') = 'string'
+      AND jsonb_typeof(receipt->'commit') = 'string'
+      AND jsonb_typeof(receipt->'imageDigest') = 'string'
+      AND jsonb_typeof(receipt->'claimedAt') = 'string'
+      AND receipt->>'artifactDigest' ~ '^sha256:[a-f0-9]{64}$'
+      AND receipt->>'artifactId' ~ '^[1-9][0-9]*$'
+      AND receipt->>'rolloutId' <> ''
+      AND receipt->>'runId' ~ '^[1-9][0-9]*$'
+      AND (receipt->>'runAttempt') ~ '^[1-9][0-9]*$'
+      AND receipt->>'jobId' ~ '^[1-9][0-9]*$'
+      AND receipt->>'workflowPath' = '.github/workflows/codex-rotating-release-migration.yml'
+      AND receipt->>'commit' ~ '^[a-f0-9]{40}$'
+      AND receipt->>'imageDigest' ~ '^sha256:[a-f0-9]{64}$'
+      AND receipt->>'claimedAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$'
+      AND to_char((receipt->>'claimedAt')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') = receipt->>'claimedAt' THEN
+      receipt := receipt || jsonb_build_object('receiptVersion', 3);
+    ELSIF (SELECT count(*) FROM jsonb_object_keys(receipt)) = 13
+      AND receipt ?& ARRAY['artifactDigest','artifactId','rolloutId','runId','runAttempt','jobId','workflowPath','commit','imageDigest','claimedAt','receiptVersion','systemIdentifier','recoveryWitnessSha256']
+      AND receipt->'receiptVersion' = '4'::jsonb
+      AND jsonb_typeof(receipt->'artifactDigest') = 'string'
+      AND jsonb_typeof(receipt->'artifactId') = 'string'
+      AND jsonb_typeof(receipt->'rolloutId') = 'string'
+      AND jsonb_typeof(receipt->'runId') = 'string'
+      AND jsonb_typeof(receipt->'runAttempt') = 'number'
+      AND jsonb_typeof(receipt->'jobId') = 'string'
+      AND jsonb_typeof(receipt->'workflowPath') = 'string'
+      AND jsonb_typeof(receipt->'commit') = 'string'
+      AND jsonb_typeof(receipt->'imageDigest') = 'string'
+      AND jsonb_typeof(receipt->'claimedAt') = 'string'
+      AND jsonb_typeof(receipt->'systemIdentifier') = 'string'
+      AND jsonb_typeof(receipt->'recoveryWitnessSha256') = 'string'
+      AND receipt->>'artifactDigest' ~ '^sha256:[a-f0-9]{64}$'
+      AND receipt->>'artifactId' ~ '^[1-9][0-9]*$'
+      AND receipt->>'rolloutId' <> ''
+      AND receipt->>'runId' ~ '^[1-9][0-9]*$'
+      AND (receipt->>'runAttempt') ~ '^[1-9][0-9]*$'
+      AND receipt->>'jobId' ~ '^[1-9][0-9]*$'
+      AND receipt->>'workflowPath' = '.github/workflows/codex-rotating-release-migration.yml'
+      AND receipt->>'commit' ~ '^[a-f0-9]{40}$'
+      AND receipt->>'imageDigest' ~ '^sha256:[a-f0-9]{64}$'
+      AND receipt->>'claimedAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$'
+      AND receipt->>'systemIdentifier' = expected_system_identifier
+      AND receipt->>'recoveryWitnessSha256' = expected_recovery_witness_sha256
+      AND to_char((receipt->>'claimedAt')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') = receipt->>'claimedAt' THEN
+      NULL;
+    ELSE
+      RAISE EXCEPTION 'trusted migration evidence receipt history invalid';
+    END IF;
+    normalized_receipts := normalized_receipts || jsonb_build_array(receipt);
+  END LOOP;
+  receipts := normalized_receipts;
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(receipts) item
+    GROUP BY item->>'artifactDigest' HAVING count(*) > 1
+  ) OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(receipts) item
+    GROUP BY item->>'rolloutId' HAVING count(*) > 1
+  ) OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(receipts) item
+    GROUP BY item->>'runId', item->>'artifactId' HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'trusted migration evidence receipt history replay invalid';
+  END IF;
   IF EXISTS (
     SELECT 1 FROM jsonb_array_elements(receipts) receipt
     WHERE receipt->>'artifactDigest' = artifact_digest
@@ -554,7 +719,7 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'trusted migration evidence replay rejected';
   END IF;
-  binding := jsonb_set(binding, '{version}', '3'::jsonb, true);
+  binding := jsonb_set(binding, '{version}', '4'::jsonb, true);
   binding := jsonb_set(
     binding,
     '{consumedMigrationEvidence}',
@@ -568,6 +733,9 @@ BEGIN
       'workflowPath', workflow_path,
       'commit', commit_sha,
       'imageDigest', image_digest,
+      'receiptVersion', 4,
+      'systemIdentifier', expected_system_identifier,
+      'recoveryWitnessSha256', expected_recovery_witness_sha256,
       'claimedAt', to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
     )),
     true
@@ -576,9 +744,9 @@ BEGIN
   RETURN true;
 END
 $receipt$;
-ALTER FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text) OWNER TO reviewrouter_role_bootstrap;
-REVOKE ALL ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text) TO reviewrouter_release_migration;
+ALTER FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) TO reviewrouter_release_migration;
 COMMIT;
 `;
 }
@@ -863,12 +1031,18 @@ export function executeCanonicalReleaseMigration(
     configuration.releaseUrl,
     childEnv,
   );
+  const databaseGeneration = observeDatabaseGeneration(
+    run,
+    configuration.releaseUrl,
+    childEnv,
+  );
   return {
-    version: 2,
+    version: 3,
     caller: "scripts/run-codex-rotating-release-migration.mjs",
     callerCount: 1,
     commit: configuration.commit,
     databaseIdentity: configuration.databaseIdentity,
+    databaseGeneration,
     imageDigest: configuration.imageDigest,
     migrationStatus: "succeeded",
     preflightOutputSha256: createHash("sha256")

@@ -72,7 +72,7 @@ function fixture() {
     rolloutId: "rollout-unique-1",
   };
   const evidence = {
-    version: 4,
+    version: 5,
     rolloutId: expected.rolloutId,
     execution: {
       repositoryId: "17",
@@ -90,6 +90,10 @@ function fixture() {
     release: {
       commit: expected.headSha,
       imageDigest: `sha256:${"b".repeat(64)}`,
+    },
+    databaseGeneration: {
+      systemIdentifier: "7612345678901234567",
+      recoveryWitnessSha256: "f".repeat(64),
     },
   };
   const archive = zip({
@@ -205,6 +209,13 @@ describe("authenticated GitHub Actions rollout evidence", () => {
     expect(execute.mock.calls[0][2].input).toContain(
       "reviewrouter_bootstrap.consume_migration_evidence",
     );
+    expect(execute.mock.calls[0][1]).toEqual(
+      expect.arrayContaining([
+        "system_identifier=7612345678901234567",
+        `recovery_witness_sha256=${"f".repeat(64)}`,
+      ]),
+    );
+    expect(execute.mock.calls[0][2].input).toContain(":'system_identifier'");
     execute.mockReturnValueOnce({ status: 1, stdout: "" });
     expect(() =>
       claimTrustedMigrationEvidence(

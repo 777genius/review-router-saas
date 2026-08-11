@@ -5,6 +5,10 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isLoopbackHostname } from "../packages/shared/src/validation/loopback-hostname.mjs";
+import {
+  isGenerationBoundMigrationReceipt,
+  normalizeMigrationEvidenceReceipts,
+} from "./lib/codex-rotating-migration-receipts.mjs";
 import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
 import {
   codexRotatingCatalogTables,
@@ -786,40 +790,36 @@ export async function captureProductionWriterObservation(
     );
   }
   const generationBinding = base?.databaseGenerationBinding;
+  let normalizedReceipts;
+  try {
+    normalizedReceipts = normalizeMigrationEvidenceReceipts(
+      generationBinding?.consumedMigrationEvidence,
+    );
+  } catch {
+    throw new Error("database generation witness binding is absent or invalid");
+  }
   if (
-    generationBinding?.version !== 3 ||
+    generationBinding?.version !== 4 ||
+    typeof generationBinding?.systemIdentifier !== "string" ||
     generationBinding?.systemIdentifier !==
       base?.databaseIdentity?.systemIdentifier ||
+    typeof generationBinding?.recoveryWitnessSha256 !== "string" ||
     !/^[a-f0-9]{64}$/u.test(generationBinding?.recoveryWitnessSha256 ?? "") ||
-    !Array.isArray(generationBinding?.consumedMigrationEvidence) ||
-    generationBinding.consumedMigrationEvidence.length === 0 ||
-    generationBinding.consumedMigrationEvidence.some(
+    normalizedReceipts.some(
       (receipt) =>
-        Object.keys(receipt ?? {}).length !== 10 ||
-        !/^sha256:[a-f0-9]{64}$/u.test(receipt?.artifactDigest ?? "") ||
-        typeof receipt?.artifactId !== "string" ||
-        !receipt.artifactId ||
-        typeof receipt?.rolloutId !== "string" ||
-        !receipt.rolloutId ||
-        typeof receipt?.runId !== "string" ||
-        !receipt.runId ||
-        !Number.isSafeInteger(receipt?.runAttempt) ||
-        receipt.runAttempt <= 0 ||
-        typeof receipt?.jobId !== "string" ||
-        !receipt.jobId ||
-        receipt?.workflowPath !==
-          ".github/workflows/codex-rotating-release-migration.yml" ||
-        !/^[a-f0-9]{40}$/u.test(receipt?.commit ?? "") ||
-        !/^sha256:[a-f0-9]{64}$/u.test(receipt?.imageDigest ?? "") ||
-        !Number.isFinite(Date.parse(receipt?.claimedAt ?? "")),
+        receipt.receiptVersion === 4 &&
+        !isGenerationBoundMigrationReceipt(receipt, generationBinding),
     )
   ) {
     throw new Error("database generation witness binding is absent or invalid");
   }
-  const rolloutReceipts = generationBinding.consumedMigrationEvidence.filter(
+  const rolloutReceipts = normalizedReceipts.filter(
     (receipt) => receipt.rolloutId === configuration.rolloutId,
   );
-  if (rolloutReceipts.length !== 1)
+  if (
+    rolloutReceipts.length !== 1 ||
+    !isGenerationBoundMigrationReceipt(rolloutReceipts[0], generationBinding)
+  )
     throw new Error(
       "database generation does not contain exactly one requested migration receipt",
     );
@@ -865,7 +865,10 @@ export async function captureProductionWriterObservation(
     databaseIdentity: base.databaseIdentity,
     isWriter: base.isWriter,
     recoveryWitnessSha256,
-    databaseGenerationBinding: generationBinding,
+    databaseGenerationBinding: {
+      ...generationBinding,
+      consumedMigrationEvidence: normalizedReceipts,
+    },
     admittedRecoveryEvidence: base.admittedRecoveryEvidence,
     databaseAuthorization: base.databaseAuthorization,
     callerIdentity: {

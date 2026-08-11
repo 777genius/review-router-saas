@@ -38,6 +38,7 @@ export function assembleTrustedMigrationEvidence({
   if (
     databaseObservation?.observationVersion !== 4 ||
     databaseObservation?.source !== "render-api" ||
+    migrationOutput?.version !== 3 ||
     migrationOutput?.caller !==
       "scripts/run-codex-rotating-release-migration.mjs" ||
     migrationOutput?.callerCount !== 1 ||
@@ -57,7 +58,18 @@ export function assembleTrustedMigrationEvidence({
   if (
     migrationOutput.commit !== commit ||
     migrationOutput.imageDigest !== imageDigest ||
-    migrationOutput.databaseIdentity !== databaseIdentity
+    migrationOutput.databaseIdentity !== databaseIdentity ||
+    !migrationOutput.databaseGeneration ||
+    Object.keys(migrationOutput.databaseGeneration).length !== 2 ||
+    typeof migrationOutput.databaseGeneration.systemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(
+      migrationOutput.databaseGeneration.systemIdentifier ?? "",
+    ) ||
+    typeof migrationOutput.databaseGeneration.recoveryWitnessSha256 !==
+      "string" ||
+    !/^[a-f0-9]{64}$/u.test(
+      migrationOutput.databaseGeneration.recoveryWitnessSha256 ?? "",
+    )
   )
     throw new Error("trusted_evidence_migration_output_binding_mismatch");
   const roleByUsername = new Map(
@@ -91,7 +103,7 @@ export function assembleTrustedMigrationEvidence({
     "REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_NAME",
   );
   return {
-    version: 4,
+    version: 5,
     rolloutId: required(env, "REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID"),
     execution: {
       repositoryId: required(env, "GITHUB_REPOSITORY_ID"),
@@ -116,6 +128,7 @@ export function assembleTrustedMigrationEvidence({
       identity: databaseIdentity,
       observationSha256: sha256(databaseObservation),
     },
+    databaseGeneration: migrationOutput.databaseGeneration,
     migration: {
       callerCount: migrationOutput.callerCount,
       status: migrationOutput.status,

@@ -11,6 +11,45 @@ type ProductionDatabaseIdentity = Readonly<{
   systemIdentifier: string;
 }>;
 
+type HistoricalMigrationReceipt = Readonly<{
+  receiptVersion: 2;
+  artifactDigest: Sha256Digest;
+  artifactId: string;
+  rolloutId: string;
+  runId: string;
+  claimedAt: string;
+}>;
+
+type GenerationBoundMigrationReceipt = Readonly<{
+  receiptVersion: 4;
+  artifactDigest: Sha256Digest;
+  artifactId: string;
+  rolloutId: string;
+  runId: string;
+  runAttempt: number;
+  jobId: string;
+  workflowPath: ".github/workflows/codex-rotating-release-migration.yml";
+  commit: string;
+  imageDigest: Sha256Digest;
+  systemIdentifier: string;
+  recoveryWitnessSha256: string;
+  claimedAt: string;
+}>;
+
+type PriorTrustedMigrationReceipt = Readonly<{
+  receiptVersion: 3;
+  artifactDigest: Sha256Digest;
+  artifactId: string;
+  rolloutId: string;
+  runId: string;
+  runAttempt: number;
+  jobId: string;
+  workflowPath: ".github/workflows/codex-rotating-release-migration.yml";
+  commit: string;
+  imageDigest: Sha256Digest;
+  claimedAt: string;
+}>;
+
 export type ProductionWriterObservation = Readonly<{
   observationVersion: 5;
   source: "production-postgresql-writer";
@@ -20,21 +59,14 @@ export type ProductionWriterObservation = Readonly<{
   isWriter: true;
   recoveryWitnessSha256: string;
   databaseGenerationBinding: Readonly<{
-    version: 3;
+    version: 4;
     systemIdentifier: string;
     recoveryWitnessSha256: string;
-    consumedMigrationEvidence: readonly Readonly<{
-      artifactDigest: Sha256Digest;
-      artifactId: string;
-      rolloutId: string;
-      runId: string;
-      runAttempt: number;
-      jobId: string;
-      workflowPath: ".github/workflows/codex-rotating-release-migration.yml";
-      commit: string;
-      imageDigest: Sha256Digest;
-      claimedAt: string;
-    }>[];
+    consumedMigrationEvidence: readonly (
+      | HistoricalMigrationReceipt
+      | PriorTrustedMigrationReceipt
+      | GenerationBoundMigrationReceipt
+    )[];
   }>;
   callerIdentity: Readonly<{
     id: "release-migration";
@@ -44,6 +76,7 @@ export type ProductionWriterObservation = Readonly<{
     databaseRole: "reviewrouter_release_migration";
     sessionUser: "reviewrouter_release_migration";
     platform: "github-actions";
+    receiptVersion: 4;
     artifactDigest: Sha256Digest;
     artifactId: string;
     rolloutId: string;
@@ -51,6 +84,8 @@ export type ProductionWriterObservation = Readonly<{
     runAttempt: number;
     workflowPath: ".github/workflows/codex-rotating-release-migration.yml";
     jobId: string;
+    systemIdentifier: string;
+    recoveryWitnessSha256: string;
     claimedAt: string;
   }>;
   drainObservations: readonly Readonly<{

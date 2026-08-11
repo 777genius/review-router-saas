@@ -15,6 +15,7 @@ import {
   ensureDatabase,
   ensureService,
   main,
+  parseHostedDeployDotenv,
   readVerifiedInstallerReleaseDescriptor,
   resolveDistinctDatabaseRoleUrls,
   resolveStableSecuritySecrets,
@@ -23,6 +24,7 @@ import {
   triggerAndVerifyDeploy,
   verifyControlPlaneScope,
   verifyServiceEnvConvergence,
+  withoutRoleBootstrapCredential,
 } from "./deploy-render-hosted-beta.mjs";
 
 const actionSha = "0123456789abcdef0123456789abcdef01234567";
@@ -208,10 +210,10 @@ describe("Render hosted deploy hardening", () => {
     );
   });
 
-  it("requires a distinct bootstrap authority plus five canonical database roles", () => {
+  it("requires only the five non-bootstrap deployment database roles", () => {
     const urls = resolveDistinctDatabaseRoleUrls({
       REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
-        "postgresql://reviewrouter_role_bootstrap:z@db.internal/review_router",
+        "this-runtime-only-resolver-must-not-parse-bootstrap-secrets",
       REVIEW_ROUTER_API_DATABASE_URL:
         "postgresql://reviewrouter_api:a@db.internal/review_router",
       REVIEW_ROUTER_WEB_DATABASE_URL:
@@ -224,15 +226,25 @@ describe("Render hosted deploy hardening", () => {
         "postgresql://reviewrouter_release_migration:d@db.internal/review_router",
     });
     expect(new URL(urls.api).username).toBe("reviewrouter_api");
-    expect(new URL(urls.roleBootstrap).username).toBe(
-      "reviewrouter_role_bootstrap",
-    );
+    expect(urls).not.toHaveProperty("roleBootstrap");
     expect(new URL(urls.releaseMigration).username).toBe(
       "reviewrouter_release_migration",
     );
     expect(new URL(urls.codexEffectAuthority).username).toBe(
       "reviewrouter_codex_effect_authority",
     );
+    expect(Object.keys(urls)).toHaveLength(5);
+    expect(
+      withoutRoleBootstrapCredential({
+        KEEP: "value",
+        REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: "must-not-be-retained",
+      }),
+    ).toEqual({ KEEP: "value" });
+    expect(
+      parseHostedDeployDotenv(
+        "KEEP=value\nREVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL='must-not-be-parsed'\n",
+      ),
+    ).toEqual({ KEEP: "value" });
   });
 
   it.each([
@@ -758,7 +770,7 @@ describe("Render hosted deploy hardening", () => {
       databaseUrls,
     };
     const evidence: any = {
-      version: 4,
+      version: 5,
       rolloutId: "rollout-1",
       execution: {
         repositoryId: "1",
@@ -783,6 +795,10 @@ describe("Render hosted deploy hardening", () => {
         postgresMajorVersion: "17",
         identity: context.databaseIdentity,
       },
+      databaseGeneration: {
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "f".repeat(64),
+      },
       migration: {
         callerCount: 1,
         status: "succeeded",
@@ -793,10 +809,14 @@ describe("Render hosted deploy hardening", () => {
       migrationOutput: {
         caller: "scripts/run-codex-rotating-release-migration.mjs",
         callerCount: 1,
-        version: 2,
+        version: 3,
         commit: context.commit,
         imageDigest: context.imageDigest,
         databaseIdentity: context.databaseIdentity,
+        databaseGeneration: {
+          systemIdentifier: "7612345678901234567",
+          recoveryWitnessSha256: "f".repeat(64),
+        },
         status: "succeeded",
         migrationStatus: "succeeded",
         preflightStatus: "passed",
@@ -1078,13 +1098,15 @@ describe("Render hosted deploy hardening", () => {
     }
   });
 
-  it("PATCHes an existing migration hook off and GET-verifies null", async () => {
+  it("PATCHes an existing migration hook off and GET-verifies the nested empty value", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({
         autoDeployTrigger: "off",
-        serviceDetails: { preDeployCommand: null },
+        serviceDetails: {
+          envSpecificDetails: { preDeployCommand: "" },
+        },
       });
     await disableAndVerifyPreDeployCommand({ request } as never, {
       id: "srv-1",
@@ -1096,26 +1118,28 @@ describe("Render hosted deploy hardening", () => {
         "/services/srv-1",
         {
           autoDeployTrigger: "off",
-          serviceDetails: { preDeployCommand: null },
+          serviceDetails: { preDeployCommand: "" },
         },
       ],
       ["GET", "/services/srv-1"],
     ]);
   });
 
-  it("aborts before deploy when the canonical null GET check fails", async () => {
+  it("aborts before deploy when the canonical disabled GET check fails", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({
-        serviceDetails: { preDeployCommand: "pnpm db:migrate" },
+        serviceDetails: {
+          envSpecificDetails: { preDeployCommand: "pnpm db:migrate" },
+        },
       });
     await expect(
       disableAndVerifyPreDeployCommand({ request } as never, {
         id: "srv-1",
         name: "api",
       }),
-    ).rejects.toThrow("preDeployCommand is not canonical null");
+    ).rejects.toThrow("preDeployCommand is not canonically disabled");
   });
 
   it.each([

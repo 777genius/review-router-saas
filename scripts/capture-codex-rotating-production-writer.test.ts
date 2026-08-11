@@ -318,11 +318,19 @@ describe("production-writer rollout observation capture", () => {
         sessionUser: "reviewrouter_release_migration",
       },
       databaseGenerationBinding: {
-        version: 3,
+        version: 4,
         systemIdentifier: "7612345678901234567",
         recoveryWitnessSha256: "f".repeat(64),
         consumedMigrationEvidence: [
           {
+            artifactDigest: `sha256:${"c".repeat(64)}`,
+            artifactId: "301",
+            rolloutId: "rollout-historical",
+            runId: "99",
+            claimedAt: "2026-08-09T00:00:00.000Z",
+          },
+          {
+            receiptVersion: 4,
             artifactDigest: `sha256:${"a".repeat(64)}`,
             artifactId: "303",
             rolloutId: "rollout-1",
@@ -333,6 +341,8 @@ describe("production-writer rollout observation capture", () => {
               ".github/workflows/codex-rotating-release-migration.yml",
             commit: "a".repeat(40),
             imageDigest: `sha256:${"b".repeat(64)}`,
+            systemIdentifier: "7612345678901234567",
+            recoveryWitnessSha256: "f".repeat(64),
             claimedAt: "2026-08-10T00:00:00.000Z",
           },
         ],
@@ -382,11 +392,26 @@ describe("production-writer rollout observation capture", () => {
       databaseIdentity: base.databaseIdentity,
       isWriter: true,
       recoveryWitnessSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      databaseGenerationBinding: {
+        consumedMigrationEvidence: expect.arrayContaining([
+          expect.objectContaining({
+            receiptVersion: 2,
+            rolloutId: "rollout-historical",
+          }),
+          expect.objectContaining({
+            receiptVersion: 4,
+            rolloutId: "rollout-1",
+          }),
+        ]),
+      },
       callerIdentity: {
         id: "release-migration",
         platform: "github-actions",
         rolloutId: "rollout-1",
         jobId: "202",
+        receiptVersion: 4,
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "f".repeat(64),
       },
       recoveryOwnerId: "setup-recovery:fetched",
       drainObservations: [
@@ -432,6 +457,46 @@ describe("production-writer rollout observation capture", () => {
     });
     expect(query).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledWith(15_000);
+
+    await expect(
+      captureProductionWriterObservation(validEnv, {
+        query: vi.fn().mockReturnValue({
+          ...base,
+          databaseGenerationBinding: {
+            ...base.databaseGenerationBinding,
+            consumedMigrationEvidence:
+              base.databaseGenerationBinding.consumedMigrationEvidence.map(
+                (receipt) =>
+                  "receiptVersion" in receipt
+                    ? { ...receipt, systemIdentifier: "7611111111111111111" }
+                    : receipt,
+              ),
+          },
+        }),
+        sleep,
+      }),
+    ).rejects.toThrow(
+      "database generation witness binding is absent or invalid",
+    );
+
+    await expect(
+      captureProductionWriterObservation(validEnv, {
+        query: vi.fn().mockReturnValue({
+          ...base,
+          databaseGenerationBinding: {
+            ...base.databaseGenerationBinding,
+            consumedMigrationEvidence:
+              base.databaseGenerationBinding.consumedMigrationEvidence.map(
+                (receipt, index) =>
+                  index === 0 ? { ...receipt, unexpected: "field" } : receipt,
+              ),
+          },
+        }),
+        sleep,
+      }),
+    ).rejects.toThrow(
+      "database generation witness binding is absent or invalid",
+    );
 
     await expect(
       captureProductionWriterObservation(validEnv, {

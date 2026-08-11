@@ -322,7 +322,9 @@ evidence queries through `REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL`,
 authenticated directly as the LOGIN, NOCREATEROLE
 `reviewrouter_release_migration` role. Both URLs must name the same explicit
 host, port, and database; they are never interchangeable and there is no
-ambient owner or superuser fallback.
+ambient owner or superuser fallback. Never put the bootstrap URL in the normal
+runtime-deploy process environment or `.env.production`; the deploy helper
+excludes that key from both sources and does not parse or forward it.
 
 ```bash
 REVIEW_ROUTER_PRODUCTION_WRITER_OBSERVATION=1 \

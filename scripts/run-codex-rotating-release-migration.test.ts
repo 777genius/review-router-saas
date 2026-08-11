@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertCanonicalRoleTopology,
+  canonicalDatabaseGenerationObservationSql,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
   resolveReleaseMigrationConfiguration,
@@ -379,6 +380,11 @@ describe("canonical exclusive release migration caller", () => {
             unexpectedPublicObjectOwnerCount: 0,
           },
         });
+      if (step === "verify_database_generation")
+        return JSON.stringify({
+          systemIdentifier: "7612345678901234567",
+          recoveryWitnessSha256: "f".repeat(64),
+        });
       return step === "migration_history_preflight" ? "preflight" : "";
     };
     executeCanonicalRoleBootstrap(environment(), run);
@@ -405,6 +411,7 @@ describe("canonical exclusive release migration caller", () => {
       "deploy_migrations",
       "converge_runtime_grants",
       "verify_roles",
+      "verify_database_generation",
     ]);
     expect(
       calls.every(
@@ -421,6 +428,33 @@ describe("canonical exclusive release migration caller", () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  it("emits only the authoritative generation identifier and witness hash", () => {
+    expect(canonicalDatabaseGenerationObservationSql()).toContain(
+      "pg_control_system()",
+    );
+    expect(canonicalDatabaseGenerationObservationSql()).toContain(
+      "shobj_description",
+    );
+    const env = {
+      ...environment(),
+      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
+        "not-a-bootstrap-url-that-release-must-ignore",
+    };
+    expect(resolveReleaseMigrationConfiguration(env).releaseUrl).toContain(
+      "reviewrouter_release_migration",
+    );
+  });
+
+  it("strictly normalizes historical receipts before replay checks", () => {
+    const sql = roleProvisioningSql(
+      resolveReleaseMigrationConfiguration(environment()),
+    );
+    expect(sql).toContain("jsonb_build_object('receiptVersion', 2)");
+    expect(sql).toContain("receipt history replay invalid");
+    expect(sql).toContain("expected_system_identifier");
+    expect(sql).toContain("expected_recovery_witness_sha256");
   });
 
   it("rejects an unexpectedly privileged release connection before migrations", () => {

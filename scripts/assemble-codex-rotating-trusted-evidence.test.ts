@@ -41,11 +41,15 @@ function fixture() {
       },
     },
     migrationOutput: {
-      version: 2,
+      version: 3,
       caller: "scripts/run-codex-rotating-release-migration.mjs",
       callerCount: 1,
       commit,
       databaseIdentity,
+      databaseGeneration: {
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "f".repeat(64),
+      },
       imageDigest,
       migrationStatus: "succeeded",
       preflightOutputSha256: "c".repeat(64),
@@ -69,7 +73,7 @@ describe("provider-neutral trusted migration evidence assembly", () => {
   it("binds canonical output and read-only database observation to GitHub execution", () => {
     const value = fixture();
     expect(assembleTrustedMigrationEvidence(value as never)).toMatchObject({
-      version: 4,
+      version: 5,
       rolloutId: "rollout-1",
       execution: {
         headSha: commit,
@@ -81,6 +85,10 @@ describe("provider-neutral trusted migration evidence assembly", () => {
         id: "dpg-1",
         postgresMajorVersion: "17",
         identity: databaseIdentity,
+      },
+      databaseGeneration: {
+        systemIdentifier: "7612345678901234567",
+        recoveryWitnessSha256: "f".repeat(64),
       },
       migration: { callerCount: 1, status: "succeeded" },
       runtimeRoles: expect.arrayContaining([
@@ -103,6 +111,22 @@ describe("provider-neutral trusted migration evidence assembly", () => {
       assembleTrustedMigrationEvidence({
         ...value,
         migrationOutput: { ...value.migrationOutput, ...mutation },
+      } as never),
+    ).toThrow("trusted_evidence_migration_output_binding_mismatch");
+  });
+
+  it("rejects a malformed database generation identity", () => {
+    const value = fixture();
+    expect(() =>
+      assembleTrustedMigrationEvidence({
+        ...value,
+        migrationOutput: {
+          ...value.migrationOutput,
+          databaseGeneration: {
+            ...value.migrationOutput.databaseGeneration,
+            systemIdentifier: "not-a-system-identifier",
+          },
+        },
       } as never),
     ).toThrow("trusted_evidence_migration_output_binding_mismatch");
   });
