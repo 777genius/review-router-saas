@@ -326,6 +326,15 @@ ambient owner or superuser fallback. Never put the bootstrap URL in the normal
 runtime-deploy process environment or `.env.production`; the deploy helper
 excludes that key from both sources and does not parse or forward it.
 
+PostgreSQL 17 automatically records one ADMIN membership from each role created
+by a CREATEROLE login back to that creator. The recorded grantor is the single
+external role authority from which the bootstrap received creation authority,
+not the bootstrap itself. This edge cannot be revoked by the bootstrap. The
+bootstrap and rollout verifiers therefore require exactly five such edges, one
+per canonical role, all from the same non-runtime authority with ADMIN=true,
+INHERIT=false, and SET=false. A second grantor, missing role, extra membership,
+or changed option blocks the transaction and rollout.
+
 ```bash
 REVIEW_ROUTER_PRODUCTION_WRITER_OBSERVATION=1 \
 REVIEW_ROUTER_PRODUCTION_WRITER_DATABASE_URL="$PRODUCTION_WRITER_URL" \

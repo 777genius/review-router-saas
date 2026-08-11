@@ -110,7 +110,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
 
   it("rehearses fail-closed grantor topology and an idempotent second bootstrap", () => {
     expect(source).toContain("adversarial_foreign_grantor_role_provisioning");
-    expect(source).toContain("refusing foreign role membership grant");
+    expect(source).toContain("refusing non-canonical role membership topology");
     expect(source).toContain("idempotent_second_role_provisioning");
     expect(source).toContain(
       "second role bootstrap changed the canonical membership topology",
@@ -118,8 +118,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain(
       "adversarial grantor retained role membership revoke authority",
     );
+    expect(source).toContain("membership_grantor_count <> 1");
     expect(source).toContain(
-      "AND grantor.rolname = 'reviewrouter_role_bootstrap'",
+      "Codex OAuth role membership authority mismatch: total %, canonical %, roles %, grantors %",
     );
   });
 

@@ -649,10 +649,10 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "runtime database roles can perform DDL or assume the release-migration role",
     ],
     [
-      "canonical membership has a foreign grantor with revoke authority",
+      "canonical memberships have more than one external grantor authority",
       (fixture: any) => {
         fixture.artifacts.database.databaseAuthorization.memberships[0].grantor =
-          "foreign_role_admin";
+          "second_platform_role_authority";
       },
       "runtime database roles can perform DDL or assume the release-migration role",
     ],
@@ -1222,7 +1222,7 @@ function observedFixture(): any {
         ].map((role) => ({
           role,
           member: "reviewrouter_role_bootstrap",
-          grantor: "reviewrouter_role_bootstrap",
+          grantor: "platform_role_authority",
           adminOption: true,
           inheritOption: false,
           setOption: false,

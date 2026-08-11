@@ -967,6 +967,11 @@ function verifyDatabaseAuthorization(authorization, need) {
   ];
   const expectedBootstrapMembershipRoles = [...expectedRoleNames].sort();
   const roles = authorization?.roles ?? [];
+  const membershipGrantors = new Set(
+    Array.isArray(authorization?.memberships)
+      ? authorization.memberships.map((entry) => entry.grantor)
+      : [],
+  );
   need(
     hasExactKeys(authorization, [
       "databaseOwner",
@@ -1109,11 +1114,13 @@ function verifyDatabaseAuthorization(authorization, need) {
             "setOption",
           ]) &&
           entry.member === bootstrapRole &&
-          entry.grantor === bootstrapRole &&
+          entry.grantor !== bootstrapRole &&
+          !expectedRoleNames.includes(entry.grantor) &&
           entry.adminOption === true &&
           entry.inheritOption === false &&
           entry.setOption === false,
       ) &&
+      membershipGrantors.size === 1 &&
       JSON.stringify(authorization?.releaseRoleSettableByLoginRoles) ===
         JSON.stringify([releaseRole]) &&
       Array.isArray(authorization?.nonReleaseOwnedCatalogObjects) &&

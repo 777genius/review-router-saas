@@ -214,13 +214,16 @@ export function assertCanonicalRoleTopology(verifiedRoles) {
       (entry) =>
         !canonicalRoleNames.includes(entry.granted) ||
         entry.member !== canonicalBootstrapRoleName ||
-        entry.grantor !== canonicalBootstrapRoleName ||
+        entry.grantor === canonicalBootstrapRoleName ||
+        canonicalRoleNames.includes(entry.grantor) ||
         entry.adminOption !== true ||
         entry.inheritOption !== false ||
         entry.setOption !== false,
     ) ||
     new Set(verifiedRoles.bootstrapMemberships.map((entry) => entry.granted))
       .size !== canonicalRoleNames.length ||
+    new Set(verifiedRoles.bootstrapMemberships.map((entry) => entry.grantor))
+      .size !== 1 ||
     verifiedRoles.ownership?.databaseOwner !== canonicalBootstrapRoleName ||
     verifiedRoles.ownership?.publicSchemaOwner !==
       "reviewrouter_release_migration" ||
@@ -403,13 +406,29 @@ $membership$;
     .join("\n");
   return `\\set ON_ERROR_STOP on
 BEGIN;
+${createAndConverge}
 DO $grantor_topology$
-DECLARE foreign_grant record;
+DECLARE total_count integer;
+DECLARE canonical_count integer;
+DECLARE granted_role_count integer;
+DECLARE grantor_count integer;
 BEGIN
-  SELECT granted.rolname AS granted_name,
-         member.rolname AS member_name,
-         grantor.rolname AS grantor_name
-  INTO foreign_grant
+  SELECT count(*),
+         count(*) FILTER (
+           WHERE granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+             AND member.rolname = '${canonicalBootstrapRoleName}'
+             AND grantor.rolname <> '${canonicalBootstrapRoleName}'
+             AND grantor.rolname <> ALL (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+             AND membership.admin_option
+             AND NOT membership.inherit_option
+             AND NOT membership.set_option
+         ),
+         count(DISTINCT granted.oid) FILTER (
+           WHERE granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+             AND member.rolname = '${canonicalBootstrapRoleName}'
+         ),
+         count(DISTINCT grantor.oid)
+  INTO total_count, canonical_count, granted_role_count, grantor_count
   FROM pg_auth_members membership
   JOIN pg_roles granted ON granted.oid = membership.roleid
   JOIN pg_roles member ON member.oid = membership.member
@@ -420,19 +439,17 @@ BEGIN
       OR granted.rolname = '${canonicalBootstrapRoleName}'
       OR member.rolname = '${canonicalBootstrapRoleName}'
     )
-    AND grantor.rolname <> '${canonicalBootstrapRoleName}'
-  ORDER BY granted.rolname, member.rolname, grantor.rolname
-  LIMIT 1;
-  IF FOUND THEN
+  ;
+  IF total_count <> ${canonicalRoleNames.length}
+     OR canonical_count <> ${canonicalRoleNames.length}
+     OR granted_role_count <> ${canonicalRoleNames.length}
+     OR grantor_count <> 1 THEN
     RAISE EXCEPTION
-      'refusing foreign role membership grant: role %, member %, grantor %',
-      foreign_grant.granted_name,
-      foreign_grant.member_name,
-      foreign_grant.grantor_name;
+      'refusing non-canonical role membership topology: total %, canonical %, roles %, grantors %',
+      total_count, canonical_count, granted_role_count, grantor_count;
   END IF;
 END
 $grantor_topology$;
-${createAndConverge}
 SELECT 'REVOKE CREATE ON SCHEMA public FROM PUBLIC'
 WHERE EXISTS (
   SELECT 1
@@ -533,12 +550,7 @@ $transfer_public_ownership$;
 SELECT 'ALTER SCHEMA public OWNER TO reviewrouter_release_migration'
 WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'public') <> 'reviewrouter_release_migration'
 \\gexec
-${canonicalRoleNames
-  .map(
-    (role) =>
-      `GRANT ${role} TO ${canonicalBootstrapRoleName} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY ${canonicalBootstrapRoleName};`,
-  )
-  .join("\n")}
+REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE;
 CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap;
 DO $bootstrap_schema$
 BEGIN
@@ -590,12 +602,13 @@ BEGIN
   SELECT shobj_description(oid, 'pg_database')::jsonb INTO binding
   FROM pg_database WHERE datname = current_database();
   IF binding IS NULL
-     OR (SELECT count(*) FROM jsonb_object_keys(binding)) <> 4
-     OR NOT binding ?& ARRAY['version','systemIdentifier','recoveryWitnessSha256','consumedMigrationEvidence']
+     OR (SELECT count(*) FROM jsonb_object_keys(binding)) NOT IN (3, 4)
+     OR NOT binding ?& ARRAY['version','systemIdentifier','recoveryWitnessSha256']
      OR binding->'version' NOT IN ('1'::jsonb, '2'::jsonb, '3'::jsonb, '4'::jsonb)
      OR jsonb_typeof(binding->'systemIdentifier') <> 'string'
      OR jsonb_typeof(binding->'recoveryWitnessSha256') <> 'string'
-     OR jsonb_typeof(binding->'consumedMigrationEvidence') <> 'array'
+     OR (binding ? 'consumedMigrationEvidence' AND jsonb_typeof(binding->'consumedMigrationEvidence') <> 'array')
+     OR (NOT binding ? 'consumedMigrationEvidence' AND (SELECT count(*) FROM jsonb_object_keys(binding)) <> 3)
      OR binding->>'systemIdentifier' <> (SELECT system_identifier::text FROM pg_control_system())
      OR binding->>'recoveryWitnessSha256' !~ '^[a-f0-9]{64}$'
      OR binding->>'systemIdentifier' <> expected_system_identifier
@@ -712,10 +725,10 @@ BEGIN
     RAISE EXCEPTION 'trusted migration evidence receipt history replay invalid';
   END IF;
   IF EXISTS (
-    SELECT 1 FROM jsonb_array_elements(receipts) receipt
-    WHERE receipt->>'artifactDigest' = artifact_digest
-       OR receipt->>'rolloutId' = rollout_id
-       OR (receipt->>'runId' = run_id AND receipt->>'artifactId' = artifact_id)
+    SELECT 1 FROM jsonb_array_elements(receipts) existing_receipt
+    WHERE existing_receipt->>'artifactDigest' = artifact_digest
+       OR existing_receipt->>'rolloutId' = rollout_id
+       OR (existing_receipt->>'runId' = run_id AND existing_receipt->>'artifactId' = artifact_id)
   ) THEN
     RAISE EXCEPTION 'trusted migration evidence replay rejected';
   END IF;

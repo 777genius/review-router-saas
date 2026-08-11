@@ -1268,7 +1268,9 @@ function proveDatabasePrivileges(url) {
       DECLARE unsafe_table_count INTEGER;
       DECLARE role_name TEXT;
       DECLARE membership_count INTEGER;
-      DECLARE bootstrap_membership_count INTEGER;
+      DECLARE canonical_membership_count INTEGER;
+      DECLARE membership_role_count INTEGER;
+      DECLARE membership_grantor_count INTEGER;
       BEGIN
         SELECT count(*), count(*) FILTER (
           WHERE has_function_privilege('public', p.oid, 'EXECUTE')
@@ -1625,26 +1627,21 @@ function proveDatabasePrivileges(url) {
           RAISE EXCEPTION 'Codex OAuth effect authority isolation mismatch';
         END IF;
 
-        SELECT
-          count(*) FILTER (
-            WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
-              AND member.rolname = 'reviewrouter_role_bootstrap'
-              AND grantor.rolname = 'reviewrouter_role_bootstrap'
-              AND membership.admin_option
-              AND NOT membership.inherit_option
-              AND NOT membership.set_option
-          ),
-          count(*) FILTER (
-            WHERE NOT (
-              granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
-              AND member.rolname = 'reviewrouter_role_bootstrap'
-              AND grantor.rolname = 'reviewrouter_role_bootstrap'
-              AND membership.admin_option
-              AND NOT membership.inherit_option
-              AND NOT membership.set_option
-            )
-          )
-        INTO bootstrap_membership_count, membership_count
+        SELECT count(*),
+               count(*) FILTER (
+                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                   AND member.rolname = 'reviewrouter_role_bootstrap'
+                   AND grantor.rolname NOT IN ('reviewrouter_role_bootstrap','reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                   AND membership.admin_option
+                   AND NOT membership.inherit_option
+                   AND NOT membership.set_option
+               ),
+               count(DISTINCT granted.oid) FILTER (
+                 WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+                   AND member.rolname = 'reviewrouter_role_bootstrap'
+               ),
+               count(DISTINCT grantor.oid)
+        INTO membership_count, canonical_membership_count, membership_role_count, membership_grantor_count
         FROM pg_auth_members membership
         JOIN pg_roles granted ON granted.oid = membership.roleid
         JOIN pg_roles member ON member.oid = membership.member
@@ -1653,8 +1650,13 @@ function proveDatabasePrivileges(url) {
            OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
            OR granted.rolname = 'reviewrouter_role_bootstrap'
            OR member.rolname = 'reviewrouter_role_bootstrap';
-        IF bootstrap_membership_count <> 5 OR membership_count <> 0 THEN
-          RAISE EXCEPTION 'Codex OAuth role membership authority mismatch: expected %, unexpected %', bootstrap_membership_count, membership_count;
+        IF membership_count <> 5
+           OR canonical_membership_count <> 5
+           OR membership_role_count <> 5
+           OR membership_grantor_count <> 1 THEN
+          RAISE EXCEPTION
+            'Codex OAuth role membership authority mismatch: total %, canonical %, roles %, grantors %',
+            membership_count, canonical_membership_count, membership_role_count, membership_grantor_count;
         END IF;
       END $$;
     `,
@@ -1788,6 +1790,12 @@ function prepareCanonicalReleaseRoles(url) {
       input: canonicalProvisioningSql,
     },
   );
+  for (const role of allRoles) {
+    psql(url, [
+      "-c",
+      `COMMENT ON ROLE ${quoteIdentifier(role)} IS ${quoteLiteral(rehearsalRoleMarker)}`,
+    ]);
+  }
   const observeMembershipTopology = () =>
     psql(bootstrap, [
       "-Atc",
@@ -1831,7 +1839,7 @@ function prepareCanonicalReleaseRoles(url) {
     );
   } catch (error) {
     rejectedForeignGrantor = String(error).includes(
-      "refusing foreign role membership grant",
+      "refusing non-canonical role membership topology",
     );
   } finally {
     psql(url, [
@@ -1878,7 +1886,9 @@ function prepareCanonicalReleaseRoles(url) {
       '202',
       '.github/workflows/codex-rotating-release-migration.yml',
       '${"a".repeat(40)}',
-      'sha256:${"b".repeat(64)}'
+      'sha256:${"b".repeat(64)}',
+      (SELECT system_identifier::text FROM pg_control_system()),
+      '${"f".repeat(64)}'
     );`,
   ]);
   psql(bootstrap, [
@@ -1888,11 +1898,13 @@ function prepareCanonicalReleaseRoles(url) {
     BEGIN
       SELECT shobj_description(oid, 'pg_database')::jsonb INTO binding
       FROM pg_database WHERE datname = current_database();
-      IF binding->>'version' <> '3'
+      IF binding->>'version' <> '4'
          OR jsonb_array_length(binding->'consumedMigrationEvidence') <> 1
          OR binding#>>'{consumedMigrationEvidence,0,rolloutId}' <> 'rehearsal-rollout'
          OR binding#>>'{consumedMigrationEvidence,0,commit}' <> '${"a".repeat(40)}'
-         OR binding#>>'{consumedMigrationEvidence,0,imageDigest}' <> 'sha256:${"b".repeat(64)}' THEN
+         OR binding#>>'{consumedMigrationEvidence,0,imageDigest}' <> 'sha256:${"b".repeat(64)}'
+         OR binding#>>'{consumedMigrationEvidence,0,systemIdentifier}' <> binding->>'systemIdentifier'
+         OR binding#>>'{consumedMigrationEvidence,0,recoveryWitnessSha256}' <> '${"f".repeat(64)}' THEN
         RAISE EXCEPTION 'trusted GitHub migration receipt was not bound to the database generation';
       END IF;
     END

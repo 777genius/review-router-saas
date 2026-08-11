@@ -59,7 +59,7 @@ describe("canonical exclusive release migration caller", () => {
       bootstrapMemberships: names.map((granted) => ({
         granted,
         member: "reviewrouter_role_bootstrap",
-        grantor: "reviewrouter_role_bootstrap",
+        grantor: "platform_role_authority",
         adminOption: true,
         inheritOption: false,
         setOption: false,
@@ -85,21 +85,6 @@ describe("canonical exclusive release migration caller", () => {
     expect(() =>
       assertCanonicalRoleTopology({
         ...observation,
-        bootstrapMemberships: observation.bootstrapMemberships.slice(1),
-      }),
-    ).toThrow("release_migration_role_observation_failed");
-    expect(() =>
-      assertCanonicalRoleTopology({
-        ...observation,
-        setRoleMatrix: [
-          observation.setRoleMatrix[1],
-          ...observation.setRoleMatrix.slice(1),
-        ],
-      }),
-    ).toThrow("release_migration_role_observation_failed");
-    expect(() =>
-      assertCanonicalRoleTopology({
-        ...observation,
         bootstrapMemberships: observation.bootstrapMemberships.map(
           (entry, index) =>
             index === 0 ? { ...entry, grantor: "foreign_role_admin" } : entry,
@@ -109,9 +94,15 @@ describe("canonical exclusive release migration caller", () => {
     expect(() =>
       assertCanonicalRoleTopology({
         ...observation,
-        bootstrapMemberships: [
-          observation.bootstrapMemberships[1],
-          ...observation.bootstrapMemberships.slice(1),
+        bootstrapMemberships: observation.bootstrapMemberships.slice(1),
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
+        setRoleMatrix: [
+          observation.setRoleMatrix[1],
+          ...observation.setRoleMatrix.slice(1),
         ],
       }),
     ).toThrow("release_migration_role_observation_failed");
@@ -152,15 +143,19 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "refusing to take over public objects owned by unexpected role",
     );
-    expect(provisioning).toContain("refusing foreign role membership grant");
+    expect(provisioning).toContain(
+      "refusing non-canonical role membership topology",
+    );
     expect(provisioning).toContain(
       "REVOKE %I FROM %I GRANTED BY reviewrouter_role_bootstrap",
     );
-    expect(
-      provisioning.match(
-        /TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY reviewrouter_role_bootstrap/g,
-      ),
-    ).toHaveLength(5);
+    expect(provisioning).toContain("count(DISTINCT grantor.oid)");
+    expect(provisioning).toContain(
+      "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
+    );
+    expect(provisioning).not.toContain(
+      "TO reviewrouter_role_bootstrap WITH ADMIN TRUE",
+    );
     expect(provisioning).not.toContain("ALTER DATABASE");
     expect(provisioning).toContain(
       "GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration",
@@ -366,7 +361,7 @@ describe("canonical exclusive release migration caller", () => {
           bootstrapMemberships: roleNames.map((granted) => ({
             granted,
             member: "reviewrouter_role_bootstrap",
-            grantor: "reviewrouter_role_bootstrap",
+            grantor: "platform_role_authority",
             adminOption: true,
             inheritOption: false,
             setOption: false,
@@ -455,6 +450,10 @@ describe("canonical exclusive release migration caller", () => {
     expect(sql).toContain("receipt history replay invalid");
     expect(sql).toContain("expected_system_identifier");
     expect(sql).toContain("expected_recovery_witness_sha256");
+    expect(sql).toContain(
+      "(SELECT count(*) FROM jsonb_object_keys(binding)) NOT IN (3, 4)",
+    );
+    expect(sql).toContain("NOT binding ? 'consumedMigrationEvidence'");
   });
 
   it("rejects an unexpectedly privileged release connection before migrations", () => {
