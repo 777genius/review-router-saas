@@ -38,8 +38,10 @@ export enum ContextGatewayV4ValidationIssue {
   FileContentMetadataIncomplete = "context_gateway_v4_file_content_metadata_incomplete",
   FileIdentityMismatch = "context_gateway_v4_file_identity_mismatch",
   FileLineCountInvalid = "context_gateway_v4_file_line_count_invalid",
+  FileModeInvalid = "context_gateway_v4_file_mode_invalid",
   FileRangeGap = "context_gateway_v4_file_range_gap",
   FileRangeIncomplete = "context_gateway_v4_file_range_incomplete",
+  FileRevisionInvalid = "context_gateway_v4_file_revision_invalid",
   FileResultShapeInvalid = "context_gateway_v4_file_result_shape_invalid",
   GitFactInvalid = "context_gateway_v4_git_fact_invalid",
   GitFactResultShapeInvalid = "context_gateway_v4_git_fact_result_shape_invalid",
@@ -331,6 +333,17 @@ function normalizeResult(
       assertSha256(result.contentHash, "file_content_hash");
       assertNonNegativeInteger(result.startByte, "file_start_byte");
       assertNonNegativeInteger(result.byteCount, "file_byte_count");
+      if (result.revision !== "head" && result.revision !== "merge_base") {
+        throw new Error(ContextGatewayV4ValidationIssue.FileRevisionInvalid);
+      }
+      if (
+        result.mode !== "100644" &&
+        result.mode !== "100755" &&
+        result.mode !== "120000" &&
+        result.mode !== "160000"
+      ) {
+        throw new Error(ContextGatewayV4ValidationIssue.FileModeInvalid);
+      }
       if (extendedFileEvidence) {
         if (result.contentKind !== "text" && result.contentKind !== "binary") {
           throw new Error(

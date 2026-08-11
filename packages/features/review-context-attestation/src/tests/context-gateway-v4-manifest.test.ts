@@ -126,6 +126,22 @@ describe("ContextGatewayV4Manifest", () => {
     expect(() =>
       createContextGatewayV4Manifest(candidate([first, inconsistentMode])),
     ).toThrow("context_gateway_v4_file_identity_mismatch");
+
+    const invalidRevision = Object.freeze({
+      ...first,
+      result: Object.freeze({ ...first.result!, revision: "main" }),
+    });
+    expect(() =>
+      createContextGatewayV4Manifest(candidate([invalidRevision])),
+    ).toThrow("context_gateway_v4_file_revision_invalid");
+
+    const invalidMode = Object.freeze({
+      ...first,
+      result: Object.freeze({ ...first.result!, mode: "040000" }),
+    });
+    expect(() =>
+      createContextGatewayV4Manifest(candidate([invalidMode])),
+    ).toThrow("context_gateway_v4_file_mode_invalid");
   });
 
   it("replays the exact authenticated partial file range only", () => {
