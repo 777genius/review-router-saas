@@ -152,6 +152,9 @@ describe("canonical exclusive release migration caller", () => {
       "GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration",
     );
     expect(provisioning).toContain(
+      "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_migration",
+    );
+    expect(provisioning).toContain(
       "CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap",
     );
     expect(provisioning).toContain(

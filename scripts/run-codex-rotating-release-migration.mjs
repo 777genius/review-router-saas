@@ -367,6 +367,7 @@ WHERE EXISTS (
 \\gexec
 SELECT format('GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration', current_database())
 \\gexec
+GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_migration;
 GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH SET TRUE;
 DO $ownership$
 DECLARE unexpected_owner text;
