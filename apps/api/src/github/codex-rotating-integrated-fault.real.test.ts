@@ -234,6 +234,16 @@ class IntegratedLedger implements CodexRotatingVersionedWritebackLedgerPort {
       intentId: "intent-1",
       attemptId: "attempt-1",
       executorOwner: "executor-1",
+      retirementIdentity: {
+        providerInstanceId: writebackRequest.providerInstanceId,
+        mutationOwner: "runtime" as const,
+        mutationOwnerId: writebackRequest.leaseId,
+        mutationEpoch: 1n,
+        namespaceId: namespace.namespaceId,
+        generation: writebackRequest.generation,
+        latestGenerationHash: writebackRequest.latestGenerationHash,
+        accountIdentityHash: writebackRequest.accountIdentityHash,
+      },
       namespace,
       repository: {
         workspaceId: "workspace-1",

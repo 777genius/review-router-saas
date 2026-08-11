@@ -373,6 +373,10 @@ describe("Codex rotating OAuth action control plane", () => {
       ),
     ).resolves.toEqual({ protocolVersion: 1, status: "ready" });
 
+    const preparation = vi.spyOn(
+      codexRotatingOAuth,
+      "prepareVersionedWriteback",
+    );
     const activation = vi.spyOn(
       codexRotatingOAuth,
       "activateVersionedWriteback",
@@ -491,10 +495,15 @@ describe("Codex rotating OAuth action control plane", () => {
 
     const activatedAttempt = activation.mock.calls[0]?.[0];
     if (!activatedAttempt) throw new Error("expected activated writeback");
+    const preparedAttempt = await preparation.mock.results[0]?.value;
+    if (!preparedAttempt || preparedAttempt.status !== "ready") {
+      throw new Error("expected prepared writeback");
+    }
     await codexRotatingOAuth.retireAmbiguousVersionedWriteback({
       intentId: activatedAttempt.intentId,
       attemptId: activatedAttempt.attemptId,
       executorOwner: activatedAttempt.executorOwner,
+      retirementIdentity: preparedAttempt.retirementIdentity,
       safeErrorCode: "stale_retirement_after_activation",
       now,
     });
@@ -605,6 +614,7 @@ describe("Codex rotating OAuth action control plane", () => {
       intentId: activatedAttempt.intentId,
       attemptId: activatedAttempt.attemptId,
       executorOwner: activatedAttempt.executorOwner,
+      retirementIdentity: preparedAttempt.retirementIdentity,
       safeErrorCode: "stale_retirement_after_new_owner",
       now,
     });

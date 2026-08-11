@@ -167,17 +167,27 @@ describe("ambiguous versioned writeback lock ordering", () => {
     const order: string[] = [];
     const intent = {
       providerInstanceRowId: "provider:lock-order",
+      providerInstanceId: "codex-rotating:123456",
       leaseId: "lease:lock-order",
       dispatchAttemptId: "attempt:lock-order",
       secretNamespaceId: "namespace:lock-order",
       status: "pending",
       mutationEpoch: 7n,
+      generation: 2,
+      latestGenerationHash: "generation-hash-lock-order",
+      accountIdentityHash: "account-identity-hash-lock-order",
       databaseIncarnation: "7612345678901234567",
       databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
         databaseRecoveryWitness,
       ),
       executorOwner: "executor:lock-order",
       executorLeaseExpiresAt: new Date("2026-08-10T00:05:00.000Z"),
+      providerInstance: {
+        mutationOwner: "runtime",
+        mutationOwnerId: "lease:lock-order",
+        mutationEpoch: 7n,
+        activeAccountIdentityHash: "account-identity-hash-lock-order",
+      },
     };
     const tx = {
       codexOAuthWritebackIntent: {
@@ -242,8 +252,18 @@ describe("ambiguous versioned writeback lock ordering", () => {
       intentId: "intent:lock-order",
       attemptId: intent.dispatchAttemptId,
       executorOwner: intent.executorOwner,
+      retirementIdentity: {
+        providerInstanceId: intent.providerInstanceId,
+        mutationOwner: "runtime",
+        mutationOwnerId: intent.leaseId,
+        mutationEpoch: intent.mutationEpoch,
+        namespaceId: intent.secretNamespaceId,
+        generation: intent.generation,
+        latestGenerationHash: intent.latestGenerationHash,
+        accountIdentityHash: intent.accountIdentityHash,
+      },
       safeErrorCode: "provider_response_unknown",
-      now: new Date("2026-08-10T00:00:00.000Z"),
+      now: intent.executorLeaseExpiresAt,
     });
 
     expect(order).toEqual([
@@ -257,6 +277,88 @@ describe("ambiguous versioned writeback lock ordering", () => {
       "lease_update",
     ]);
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts an exact repeated retirement idempotently long after executor expiry", async () => {
+    const executorLeaseExpiresAt = new Date("2026-08-10T00:05:00.000Z");
+    const intent = {
+      providerInstanceRowId: "provider:retired",
+      providerInstanceId: "codex-rotating:123456",
+      leaseId: "lease:retired",
+      dispatchAttemptId: "attempt:retired",
+      secretNamespaceId: "namespace:retired",
+      status: "remote_outcome_unknown",
+      mutationEpoch: 7n,
+      generation: 2,
+      latestGenerationHash: "generation-hash-retired",
+      accountIdentityHash: "account-identity-hash-retired",
+      databaseIncarnation: "7612345678901234567",
+      databaseRecoveryWitness: fingerprintDatabaseRecoveryWitness(
+        databaseRecoveryWitness,
+      ),
+      executorOwner: "executor:retired",
+      executorLeaseExpiresAt,
+      providerInstance: {
+        mutationOwner: "recovery",
+        mutationOwnerId: "intent:retired",
+        mutationEpoch: 8n,
+        activeAccountIdentityHash: "account-identity-hash-retired",
+      },
+    };
+    const tx = {
+      codexOAuthWritebackIntent: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValueOnce({
+            providerInstanceRowId: intent.providerInstanceRowId,
+            dispatchAttemptId: intent.dispatchAttemptId,
+          })
+          .mockResolvedValueOnce(intent),
+        updateMany: vi.fn(),
+      },
+      codexOAuthSecretNamespace: { updateMany: vi.fn() },
+      codexOAuthProviderInstance: { updateMany: vi.fn() },
+      codexOAuthLease: { updateMany: vi.fn() },
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([{ id: intent.providerInstanceRowId }])
+        .mockResolvedValueOnce([
+          { databaseIncarnation: intent.databaseIncarnation },
+        ]),
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) =>
+        operation(tx),
+      ),
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
+      actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness,
+    });
+
+    await expect(
+      repository.retireAmbiguousVersionedWriteback({
+        intentId: "intent:retired",
+        attemptId: intent.dispatchAttemptId,
+        executorOwner: intent.executorOwner,
+        retirementIdentity: {
+          providerInstanceId: intent.providerInstanceId,
+          mutationOwner: "runtime",
+          mutationOwnerId: intent.leaseId,
+          mutationEpoch: intent.mutationEpoch,
+          namespaceId: intent.secretNamespaceId,
+          generation: intent.generation,
+          latestGenerationHash: intent.latestGenerationHash,
+          accountIdentityHash: intent.accountIdentityHash,
+        },
+        safeErrorCode: "versioned_provider_put_outcome_unknown",
+        now: new Date("2026-08-10T01:00:00.000Z"),
+      }),
+    ).resolves.toBeUndefined();
+    expect(tx.codexOAuthSecretNamespace.updateMany).not.toHaveBeenCalled();
+    expect(tx.codexOAuthWritebackIntent.updateMany).not.toHaveBeenCalled();
+    expect(tx.codexOAuthProviderInstance.updateMany).not.toHaveBeenCalled();
+    expect(tx.codexOAuthLease.updateMany).not.toHaveBeenCalled();
   });
 
   it("retires a definite pre-dispatch failure without unknown-outcome evidence", async () => {

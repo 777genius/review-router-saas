@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   assertProviderSecretAuthorizationUnexpired,
   assertProviderSecretTransitionAuthorized,
+  assertRuntimeVersionedAmbiguousRetirementAuthorized,
   assertExternalRecoveryWitnessAdmission,
   classifyExternalRecoveryWitnessRelation,
   ExternalRecoveryWitnessRelation,
   fingerprintDatabaseRecoveryWitness,
   isRuntimeVersionedDurableMarker,
   RuntimeVersionedDurableMarker,
+  reserveRuntimeVersionedEffectConfirmationWindow,
+  runtimeVersionedMinimumEffectConfirmationWindowMs,
 } from "../domain/provider-secret-transition-policy.js";
 
 const now = new Date("2026-08-10T00:00:00.000Z");
@@ -22,6 +25,16 @@ const valid = {
   },
   authorizationExpiresAt: new Date(now.getTime() + 1),
   now,
+};
+const retirementIdentity = {
+  providerInstanceId: "codex-rotating:123456",
+  mutationOwner: "runtime" as const,
+  mutationOwnerId: "lease:1",
+  mutationEpoch: 7n,
+  namespaceId: "namespace:2",
+  generation: 2,
+  latestGenerationHash: "generation-hash-2",
+  accountIdentityHash: "account-hash-1",
 };
 
 describe("provider secret transition policy", () => {
@@ -54,6 +67,60 @@ describe("provider secret transition policy", () => {
         authorizationExpiresAt: now,
       }),
     ).toThrow("provider_secret_transition_authorization_expired");
+  });
+
+  it("reserves the exact minimum effect and confirmation window", () => {
+    const exactBoundary = new Date(
+      now.getTime() + runtimeVersionedMinimumEffectConfirmationWindowMs,
+    );
+    expect(
+      reserveRuntimeVersionedEffectConfirmationWindow({
+        now,
+        authorizationExpiresAt: exactBoundary,
+      }),
+    ).toEqual(exactBoundary);
+    expect(() =>
+      reserveRuntimeVersionedEffectConfirmationWindow({
+        now,
+        authorizationExpiresAt: new Date(exactBoundary.getTime() - 1),
+      }),
+    ).toThrow("runtime_versioned_effect_confirmation_window_unavailable");
+  });
+
+  it("permits exact ambiguous retirement at and arbitrarily after executor expiry", () => {
+    const executorLeaseExpiresAt = new Date(now.getTime() + 60_000);
+    for (const retirementAt of [
+      executorLeaseExpiresAt,
+      new Date(executorLeaseExpiresAt.getTime() + 24 * 60 * 60_000),
+    ]) {
+      expect(retirementAt >= executorLeaseExpiresAt).toBe(true);
+      expect(() =>
+        assertRuntimeVersionedAmbiguousRetirementAuthorized({
+          expected: retirementIdentity,
+          actual: retirementIdentity,
+          executorLeaseExpiresAt,
+          now: retirementAt,
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it.each([
+    ["stale provider epoch", { mutationEpoch: 8n }],
+    ["unrelated owner", { mutationOwnerId: "lease:other" }],
+    ["unrelated namespace", { namespaceId: "namespace:other" }],
+    ["stale generation", { generation: 3 }],
+    ["account switch", { accountIdentityHash: "account-hash-2" }],
+    ["provider switch", { providerInstanceId: "codex-rotating:999999" }],
+  ] as const)("rejects %s retirement identity", (_label, difference) => {
+    expect(() =>
+      assertRuntimeVersionedAmbiguousRetirementAuthorized({
+        expected: retirementIdentity,
+        actual: { ...retirementIdentity, ...difference },
+        executorLeaseExpiresAt: new Date(now.getTime() + 60_000),
+        now,
+      }),
+    ).toThrow("runtime_versioned_retirement_identity_stale");
   });
 
   it("recognizes every strict runtime durable marker without fallbacks", () => {

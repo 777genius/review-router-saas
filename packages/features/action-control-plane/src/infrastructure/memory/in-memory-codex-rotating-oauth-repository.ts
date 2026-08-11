@@ -9,11 +9,14 @@ import {
   allocateVersionedProviderSecretNamespace,
   assertSameVersionedProviderSecretNamespace,
   assertProviderSecretTransitionAuthorized,
+  assertRuntimeVersionedAmbiguousRetirementAuthorized,
+  assertSameRuntimeVersionedWritebackIdentity,
   assertExternalRecoveryWitnessAdmission,
   classifyExternalRecoveryWitnessRelation,
   fingerprintDatabaseRecoveryWitness,
   WorkflowSourceTrust,
   RuntimeVersionedDurableMarker,
+  reserveRuntimeVersionedEffectConfirmationWindow,
   type VersionedProviderSecretNamespace,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
@@ -598,7 +601,13 @@ export class InMemoryCodexRotatingOAuthRepository
     const intentId = `intent:${key}`;
     const attemptId = `attempt:${namespace.namespaceId}`;
     const executorOwner = `executor:${attemptId}`;
-    const executorLeaseExpiresAt = new Date(input.now.getTime() + 5 * 60_000);
+    const executorLeaseExpiresAt =
+      reserveRuntimeVersionedEffectConfirmationWindow({
+        now: input.now,
+        authorizationExpiresAt: this.leaseExpiresAtById.get(
+          input.request.leaseId,
+        )!,
+      });
     this.writebacks.set(key, {
       intentId,
       attemptId,
@@ -622,6 +631,16 @@ export class InMemoryCodexRotatingOAuthRepository
       intentId,
       attemptId,
       executorOwner,
+      retirementIdentity: {
+        providerInstanceId: input.request.providerInstanceId,
+        mutationOwner: "runtime" as const,
+        mutationOwnerId: input.request.leaseId,
+        mutationEpoch: provider.mutationEpoch,
+        namespaceId: namespace.namespaceId,
+        generation: input.request.generation,
+        latestGenerationHash: input.request.latestGenerationHash,
+        accountIdentityHash: input.request.accountIdentityHash,
+      },
       namespace,
       repository: provider.repository,
       writeTarget: {
@@ -655,33 +674,67 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly intentId: string;
     readonly attemptId: string;
     readonly executorOwner: string;
+    readonly retirementIdentity: import("@reviewrouter/features-codex-oauth-rotating").RuntimeVersionedWritebackIdentity;
     readonly safeErrorCode: string;
     readonly now: Date;
   }): Promise<void> {
     const entry = this.findVersionedWriteback(input);
     if (!entry) return;
     const [key, record] = entry;
-    this.assertExecutorOwner(record, input.executorOwner, input.now);
+    if (record.executorOwner !== input.executorOwner) {
+      throw new Error("codex_rotating_versioned_executor_lease_conflict");
+    }
     this.assertAutomaticRuntimeDatabaseRecoveryWitness(
       this.providers.get(record.request.providerInstanceId),
       record.databaseRecoveryWitness,
     );
+    if (
+      record.authorizationEpoch === undefined ||
+      !record.namespace ||
+      !record.executorLeaseExpiresAt
+    ) {
+      throw new Error("codex_rotating_versioned_attempt_epoch_missing");
+    }
+    const persistedRetirementIdentity = {
+      providerInstanceId: record.request.providerInstanceId,
+      mutationOwner: "runtime" as const,
+      mutationOwnerId: record.request.leaseId,
+      mutationEpoch: record.authorizationEpoch,
+      namespaceId: record.namespace.namespaceId,
+      generation: record.request.generation,
+      latestGenerationHash: record.request.latestGenerationHash,
+      accountIdentityHash: record.request.accountIdentityHash,
+    };
+    assertSameRuntimeVersionedWritebackIdentity({
+      expected: persistedRetirementIdentity,
+      actual: input.retirementIdentity,
+    });
     if (
       record.status === "completed" ||
       record.status === "remote_outcome_unknown"
     ) {
       return;
     }
-    if (record.authorizationEpoch === undefined) {
-      throw new Error("codex_rotating_versioned_attempt_epoch_missing");
-    }
     const provider = this.providers.get(record.request.providerInstanceId);
-    if (
-      !provider ||
-      provider.mutationOwner !== "runtime" ||
-      provider.mutationOwnerId !== record.request.leaseId ||
-      provider.mutationEpoch !== record.authorizationEpoch
-    ) {
+    if (!provider) {
+      throw new Error("codex_rotating_versioned_retirement_fence_conflict");
+    }
+    try {
+      assertRuntimeVersionedAmbiguousRetirementAuthorized({
+        expected: persistedRetirementIdentity,
+        actual: {
+          ...persistedRetirementIdentity,
+          mutationOwner: provider.mutationOwner ?? null,
+          mutationOwnerId: provider.mutationOwnerId ?? null,
+          mutationEpoch: provider.mutationEpoch,
+          accountIdentityHash:
+            provider.activeAccountIdentityHash ??
+            persistedRetirementIdentity.accountIdentityHash,
+        },
+        executorLeaseExpiresAt: record.executorLeaseExpiresAt,
+        now: input.now,
+      });
+    } catch {
       throw new Error("codex_rotating_versioned_retirement_fence_conflict");
     }
     if (

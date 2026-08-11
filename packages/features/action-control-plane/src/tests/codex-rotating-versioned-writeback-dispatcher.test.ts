@@ -42,6 +42,16 @@ const repository = {
   selected: true,
   installationStatus: "active",
 };
+const retirementIdentity = {
+  providerInstanceId: request.providerInstanceId,
+  mutationOwner: "runtime" as const,
+  mutationOwnerId: request.leaseId,
+  mutationEpoch: 7n,
+  namespaceId: namespace.namespaceId,
+  generation: request.generation,
+  latestGenerationHash: request.latestGenerationHash,
+  accountIdentityHash: request.accountIdentityHash,
+};
 
 function harness() {
   const events: string[] = [];
@@ -63,6 +73,7 @@ function harness() {
         intentId: "intent-1",
         attemptId: "attempt-1",
         executorOwner: "executor-1",
+        retirementIdentity,
         namespace,
         repository,
         writeTarget: {
@@ -122,6 +133,7 @@ describe("versioned rotating runtime writeback dispatcher", () => {
       intentId: "intent-1",
       attemptId: "attempt-1",
       executorOwner: "executor-1",
+      retirementIdentity,
       namespace,
       repository,
       writeTarget: {
@@ -165,6 +177,79 @@ describe("versioned rotating runtime writeback dispatcher", () => {
     expect(h.ledger.retireAmbiguousVersionedWriteback).not.toHaveBeenCalled();
     releasePut();
     await expect(first).resolves.toEqual({ status: "accepted", generation: 2 });
+  });
+
+  it("lets the exact original dispatcher retire idempotently when a concurrent retry wins at executor expiry", async () => {
+    const h = harness();
+    const executorExpiry = new Date(now.getTime() + 60_000);
+    let current = now;
+    let rejectPut!: () => void;
+    h.provider.putEncryptedRepositorySecret.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectPut = () => reject(new Error("response_dropped_after_retry"));
+        }),
+    );
+    h.ledger.prepareVersionedWriteback.mockResolvedValueOnce({
+      status: "ready",
+      intentId: "intent-1",
+      attemptId: "attempt-1",
+      executorOwner: "executor-1",
+      retirementIdentity,
+      namespace,
+      repository,
+      writeTarget: {
+        expectedProviderInstanceId: request.providerInstanceId,
+        githubInstallationId: "789",
+        githubRepositoryId: "123456",
+        repositoryFullName: "owner/repo",
+        owner: "owner",
+        repo: "repo",
+        secretName: namespace.name,
+      },
+    });
+    h.ledger.prepareVersionedWriteback.mockResolvedValueOnce({
+      status: "writeback_recovery_required",
+    } as never);
+    const dispatcher = new CodexRotatingVersionedWritebackDispatcher(
+      h.ledger,
+      h.provider,
+      h.workflows,
+      { now: () => current },
+    );
+
+    const original = dispatcher.dispatchOneShot({
+      request,
+      encryptedPayloadDigest: "digest-012345678901234567890123456789",
+    });
+    await vi.waitFor(() =>
+      expect(h.provider.putEncryptedRepositorySecret).toHaveBeenCalledOnce(),
+    );
+    current = executorExpiry;
+    await expect(
+      dispatcher.dispatchOneShot({
+        request,
+        encryptedPayloadDigest: "digest-012345678901234567890123456789",
+      }),
+    ).resolves.toEqual({ status: "writeback_recovery_required" });
+    expect(h.ledger.prepareVersionedWriteback).toHaveBeenLastCalledWith(
+      expect.objectContaining({ now: executorExpiry }),
+    );
+    expect(h.provider.putEncryptedRepositorySecret).toHaveBeenCalledOnce();
+
+    rejectPut();
+    await expect(original).resolves.toEqual({
+      status: "writeback_recovery_required",
+    });
+    expect(h.ledger.retireAmbiguousVersionedWriteback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intentId: "intent-1",
+        attemptId: "attempt-1",
+        executorOwner: "executor-1",
+        retirementIdentity,
+        now: executorExpiry,
+      }),
+    );
   });
 
   it("claims one name, performs one PUT, attests V4, then activates", async () => {
@@ -249,6 +334,7 @@ describe("versioned rotating runtime writeback dispatcher", () => {
       intentId: "intent-1",
       attemptId: "attempt-1",
       executorOwner: "executor-1",
+      retirementIdentity,
       safeErrorCode: "versioned_provider_confirmation_outcome_unknown",
       now,
     });
@@ -256,6 +342,96 @@ describe("versioned rotating runtime writeback dispatcher", () => {
       h.workflows.publishAndVerifyVersionedWorkflow,
     ).not.toHaveBeenCalled();
   });
+
+  it.each([
+    "dropped-response",
+    "provider-success",
+    "workflow-publication",
+  ] as const)(
+    "retires at the exact executor expiry after %s crosses the boundary",
+    async (crossingEdge) => {
+      const h = harness();
+      const executorExpiry = new Date(now.getTime() + 60_000);
+      let current = now;
+      if (crossingEdge === "dropped-response") {
+        h.provider.putEncryptedRepositorySecret.mockImplementationOnce(
+          async () => {
+            current = executorExpiry;
+            throw new Error("response_dropped_at_expiry");
+          },
+        );
+      } else if (crossingEdge === "provider-success") {
+        h.provider.putEncryptedRepositorySecret.mockImplementationOnce(
+          async () => {
+            current = executorExpiry;
+            return { status: "accepted" as const, statusCode: 204 as const };
+          },
+        );
+      } else {
+        h.workflows.publishAndVerifyVersionedWorkflow.mockImplementationOnce(
+          async () => {
+            current = executorExpiry;
+            return createVersionedSecretWorkflowSourceAttestation({
+              repositoryId: "123456",
+              workflowPath: ".github/workflows/reviewrouter-codex.yml",
+              workflowSourceCommitSha: "a".repeat(40),
+              workflowSourceBlobSha: "b".repeat(40),
+              workflowSourceSha256: "c".repeat(64),
+              workflowSemanticSha256: "d".repeat(64),
+              sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+              secretNamespace: namespace,
+            });
+          },
+        );
+      }
+      h.ledger.confirmVersionedProviderWrite.mockImplementationOnce(
+        async () => {
+          h.events.push("confirm-provider");
+          if (current >= executorExpiry) {
+            throw new Error("confirmation_at_expiry");
+          }
+        },
+      );
+      h.ledger.activateVersionedWriteback.mockImplementationOnce(async () => {
+        h.events.push("activate");
+        if (current >= executorExpiry) {
+          throw new Error("activation_at_expiry");
+        }
+        return { generation: 2 };
+      });
+      h.ledger.retireAmbiguousVersionedWriteback.mockImplementationOnce(
+        async () => {
+          h.events.push("tombstone");
+        },
+      );
+      const dispatcher = new CodexRotatingVersionedWritebackDispatcher(
+        h.ledger,
+        h.provider,
+        h.workflows,
+        { now: () => current },
+      );
+
+      await expect(
+        dispatcher.dispatchOneShot({
+          request,
+          encryptedPayloadDigest: "digest-012345678901234567890123456789",
+        }),
+      ).resolves.toEqual({ status: "writeback_recovery_required" });
+      expect(h.ledger.retireAmbiguousVersionedWriteback).toHaveBeenCalledOnce();
+      expect(h.ledger.retireAmbiguousVersionedWriteback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          now: executorExpiry,
+          retirementIdentity,
+        }),
+      );
+      expect(h.provider.putEncryptedRepositorySecret).toHaveBeenCalledOnce();
+      if (crossingEdge === "workflow-publication") {
+        expect(
+          h.workflows.publishAndVerifyVersionedWorkflow,
+        ).toHaveBeenCalledOnce();
+      }
+    },
+  );
 
   it("retires a typed pre-dispatch failure without recording an unknown PUT outcome", async () => {
     const h = harness();

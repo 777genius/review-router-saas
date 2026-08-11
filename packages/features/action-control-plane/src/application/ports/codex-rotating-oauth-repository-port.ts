@@ -180,6 +180,7 @@ export type CodexRotatingVersionedWritebackClaim = Readonly<{
   intentId: string;
   attemptId: string;
   executorOwner: string;
+  retirementIdentity: import("@reviewrouter/features-codex-oauth-rotating").RuntimeVersionedWritebackIdentity;
   namespace: import("@reviewrouter/features-codex-oauth-rotating").VersionedProviderSecretNamespace;
   writeTarget: CodexRotatingSecretWriteTarget;
   repository: ActionRepositoryContext;
@@ -219,6 +220,7 @@ export interface CodexRotatingVersionedWritebackLedgerPort {
     readonly intentId: string;
     readonly attemptId: string;
     readonly executorOwner: string;
+    readonly retirementIdentity: import("@reviewrouter/features-codex-oauth-rotating").RuntimeVersionedWritebackIdentity;
     readonly safeErrorCode: string;
     readonly now: Date;
   }): Promise<void>;

@@ -2,6 +2,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import {
   allocateVersionedProviderSecretNamespace,
+  assertRuntimeVersionedAmbiguousRetirementAuthorized,
+  assertSameRuntimeVersionedWritebackIdentity,
   assertProviderSecretTransitionAuthorized,
   assertSameVersionedProviderSecretNamespace,
   assertCanonicalCodexRotatingProviderId,
@@ -15,6 +17,7 @@ import {
   mapActiveVersionedProviderSecretNamespace,
   parseVersionedProviderSecretName,
   RuntimeVersionedDurableMarker,
+  reserveRuntimeVersionedEffectConfirmationWindow,
   type CodexRotatingEncryptedWritebackRequest,
   type CodexRotatingProviderBinding,
   type VersionedSecretWorkflowSourceAttestation,
@@ -1221,13 +1224,15 @@ export class PrismaCodexRotatingOAuthRepository
       });
       const attemptId = `wba_${randomUUID()}`;
       const executorOwner = `wbe_${randomUUID()}`;
-      const executorLeaseExpiresAt = new Date(
-        Math.min(
-          lease.expiresAt.getTime(),
-          provider.activeLeaseExpiresAt.getTime(),
-          input.now.getTime() + 5 * 60_000,
-        ),
-      );
+      const authorizationExpiresAt =
+        lease.expiresAt < provider.activeLeaseExpiresAt
+          ? lease.expiresAt
+          : provider.activeLeaseExpiresAt;
+      const executorLeaseExpiresAt =
+        reserveRuntimeVersionedEffectConfirmationWindow({
+          now: input.now,
+          authorizationExpiresAt,
+        });
       await tx.codexOAuthSecretNamespace.create({
         data: {
           id: namespace.namespaceId,
@@ -1270,6 +1275,16 @@ export class PrismaCodexRotatingOAuthRepository
         intentId: intent.id,
         attemptId,
         executorOwner,
+        retirementIdentity: {
+          providerInstanceId: provider.providerInstanceId,
+          mutationOwner: "runtime" as const,
+          mutationOwnerId: lease.id,
+          mutationEpoch: provider.mutationEpoch,
+          namespaceId: namespace.namespaceId,
+          generation: input.request.generation,
+          latestGenerationHash: input.request.latestGenerationHash,
+          accountIdentityHash: input.request.accountIdentityHash,
+        },
         namespace,
         repository: toActionRepositoryContext(repository),
         writeTarget: toSecretWriteTarget(repository, namespace.name),
@@ -1414,6 +1429,7 @@ export class PrismaCodexRotatingOAuthRepository
     readonly intentId: string;
     readonly attemptId: string;
     readonly executorOwner: string;
+    readonly retirementIdentity: import("@reviewrouter/features-codex-oauth-rotating").RuntimeVersionedWritebackIdentity;
     readonly safeErrorCode: string;
     readonly now: Date;
   }): Promise<void> {
@@ -1431,25 +1447,55 @@ export class PrismaCodexRotatingOAuthRepository
         where: { id: input.intentId },
         select: {
           providerInstanceRowId: true,
+          providerInstanceId: true,
           leaseId: true,
           dispatchAttemptId: true,
           secretNamespaceId: true,
           status: true,
           mutationEpoch: true,
+          generation: true,
+          latestGenerationHash: true,
+          accountIdentityHash: true,
           databaseIncarnation: true,
           databaseRecoveryWitness: true,
           executorOwner: true,
           executorLeaseExpiresAt: true,
+          providerInstance: {
+            select: {
+              mutationEpoch: true,
+              mutationOwner: true,
+              mutationOwnerId: true,
+              activeAccountIdentityHash: true,
+            },
+          },
         },
       });
       if (!intent || intent.dispatchAttemptId !== input.attemptId) return;
-      if (
-        intent.executorOwner !== input.executorOwner ||
-        !intent.executorLeaseExpiresAt ||
-        intent.executorLeaseExpiresAt <= input.now
-      ) {
+      if (intent.executorOwner !== input.executorOwner) {
         throw new Error("codex_rotating_versioned_executor_lease_conflict");
       }
+      if (
+        !intent.executorLeaseExpiresAt ||
+        intent.mutationEpoch === null ||
+        !intent.secretNamespaceId ||
+        !intent.accountIdentityHash
+      ) {
+        throw new Error("codex_rotating_versioned_attempt_epoch_missing");
+      }
+      const persistedRetirementIdentity = {
+        providerInstanceId: intent.providerInstanceId,
+        mutationOwner: "runtime" as const,
+        mutationOwnerId: intent.leaseId,
+        mutationEpoch: intent.mutationEpoch,
+        namespaceId: intent.secretNamespaceId,
+        generation: intent.generation,
+        latestGenerationHash: intent.latestGenerationHash,
+        accountIdentityHash: intent.accountIdentityHash,
+      };
+      assertSameRuntimeVersionedWritebackIdentity({
+        expected: persistedRetirementIdentity,
+        actual: input.retirementIdentity,
+      });
       await assertDatabaseIncarnation(
         tx,
         intent.databaseIncarnation,
@@ -1461,8 +1507,27 @@ export class PrismaCodexRotatingOAuthRepository
         intent.status === "remote_outcome_unknown"
       )
         return;
-      if (intent.mutationEpoch === null) {
-        throw new Error("codex_rotating_versioned_attempt_epoch_missing");
+      try {
+        assertRuntimeVersionedAmbiguousRetirementAuthorized({
+          expected: persistedRetirementIdentity,
+          actual: {
+            ...persistedRetirementIdentity,
+            mutationOwner:
+              intent.providerInstance.mutationOwner === "setup" ||
+              intent.providerInstance.mutationOwner === "runtime" ||
+              intent.providerInstance.mutationOwner === "recovery"
+                ? intent.providerInstance.mutationOwner
+                : null,
+            mutationOwnerId: intent.providerInstance.mutationOwnerId,
+            mutationEpoch: intent.providerInstance.mutationEpoch,
+            accountIdentityHash:
+              intent.providerInstance.activeAccountIdentityHash,
+          },
+          executorLeaseExpiresAt: intent.executorLeaseExpiresAt,
+          now: input.now,
+        });
+      } catch {
+        throw new Error("codex_rotating_versioned_retirement_fence_conflict");
       }
       if (intent.secretNamespaceId) {
         const retiredNamespace = await tx.codexOAuthSecretNamespace.updateMany({

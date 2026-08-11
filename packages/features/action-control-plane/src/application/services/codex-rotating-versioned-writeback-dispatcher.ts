@@ -112,6 +112,7 @@ export class CodexRotatingVersionedWritebackDispatcher implements CodexRotatingV
       intentId: string;
       attemptId: string;
       executorOwner: string;
+      retirementIdentity: import("@reviewrouter/features-codex-oauth-rotating").RuntimeVersionedWritebackIdentity;
     }>,
     safeErrorCode: string,
     now: Date,
@@ -120,6 +121,7 @@ export class CodexRotatingVersionedWritebackDispatcher implements CodexRotatingV
       intentId: claim.intentId,
       attemptId: claim.attemptId,
       executorOwner: claim.executorOwner,
+      retirementIdentity: claim.retirementIdentity,
       safeErrorCode,
       now,
     });
