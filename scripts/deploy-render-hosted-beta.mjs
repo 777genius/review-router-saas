@@ -20,37 +20,73 @@ const roleBootstrapDatabaseUrlEnvironmentName =
   "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL";
 const forbiddenRuntimeDeployDotenvMessage =
   "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL is forbidden in the runtime deploy environment file";
+const dotenvWhitespace = /\s/u;
+const dotenvAssignmentNameStart = /[A-Za-z_]/u;
+const dotenvAssignmentNamePart = /[A-Za-z0-9_]/u;
 
-function assertRuntimeDeployDotenvAssignmentNames(text) {
-  for (const rawLine of text.split(/\r?\n/)) {
-    const assignment = rawLine.match(
-      /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=/u,
-    );
-    if (assignment?.[1] === roleBootstrapDatabaseUrlEnvironmentName) {
-      throw new Error(forbiddenRuntimeDeployDotenvMessage);
-    }
+function skipDotenvWhitespace(line, start) {
+  let offset = start;
+  while (offset < line.length && dotenvWhitespace.test(line[offset])) {
+    offset += 1;
   }
+  return offset;
 }
 
-function parseDotenv(text, excludedNames = new Set()) {
+function lexDotenvAssignment(line) {
+  const assignmentStart = skipDotenvWhitespace(line, 0);
+  if (
+    assignmentStart === line.length ||
+    line[assignmentStart] === "#" ||
+    !dotenvAssignmentNameStart.test(line[assignmentStart])
+  ) {
+    return null;
+  }
+
+  let nameStart = assignmentStart;
+  if (
+    line.startsWith("export", assignmentStart) &&
+    dotenvWhitespace.test(line[assignmentStart + "export".length])
+  ) {
+    nameStart = skipDotenvWhitespace(line, assignmentStart + "export".length);
+    if (
+      nameStart === line.length ||
+      !dotenvAssignmentNameStart.test(line[nameStart])
+    ) {
+      return null;
+    }
+  }
+
+  let offset = nameStart + 1;
+  while (offset < line.length && dotenvAssignmentNamePart.test(line[offset])) {
+    offset += 1;
+  }
+  const nameEnd = offset;
+  offset = skipDotenvWhitespace(line, offset);
+  if (line[offset] !== "=") return null;
+
+  return {
+    name: line.slice(nameStart, nameEnd),
+    valueStart: offset + 1,
+  };
+}
+
+function parseDotenv(text, forbiddenNames = new Set()) {
   const values = {};
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#") || !line.includes("=")) continue;
-    const separator = line.indexOf("=");
-    const key = line
-      .slice(0, separator)
-      .trim()
-      .replace(/^export[ \t]+(?=[A-Za-z_][A-Za-z0-9_]*$)/u, "");
-    if (excludedNames.has(key)) continue;
-    let value = line.slice(separator + 1).trim();
+  for (const rawLine of text.split("\n")) {
+    const assignment = lexDotenvAssignment(rawLine);
+    if (!assignment) continue;
+    if (forbiddenNames.has(assignment.name)) {
+      throw new Error(forbiddenRuntimeDeployDotenvMessage);
+    }
+
+    let value = rawLine.slice(assignment.valueStart).trim();
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
       (value.startsWith("'") && value.endsWith("'"))
     ) {
       value = value.slice(1, -1);
     }
-    values[key] = value.replace(/\\n/g, "\n");
+    values[assignment.name] = value.replace(/\\n/g, "\n");
   }
   return values;
 }
@@ -61,8 +97,7 @@ function readRuntimeDeployDotenv(filePath) {
 }
 
 export function parseHostedDeployDotenv(text) {
-  assertRuntimeDeployDotenvAssignmentNames(text);
-  return parseDotenv(text);
+  return parseDotenv(text, new Set([roleBootstrapDatabaseUrlEnvironmentName]));
 }
 
 export function requiredEnv(name, source) {

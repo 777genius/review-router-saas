@@ -34,6 +34,82 @@ const installerTuple = Object.freeze({
   REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
   REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
 });
+const forbiddenRuntimeDeployDotenvName =
+  "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL";
+const forbiddenRuntimeDeployDotenvMessage = `${forbiddenRuntimeDeployDotenvName} is forbidden in the runtime deploy environment file`;
+const dotenvValueMarker = "DOTENV_VALUE_MARKER";
+
+const forbiddenDotenvAssignments = [
+  ["canonical", `${forbiddenRuntimeDeployDotenvName}=${dotenvValueMarker}`],
+  ["export", `export ${forbiddenRuntimeDeployDotenvName}=${dotenvValueMarker}`],
+  [
+    "BOM canonical",
+    `\uFEFF${forbiddenRuntimeDeployDotenvName}\uFEFF=\uFEFF${dotenvValueMarker}`,
+  ],
+  [
+    "BOM export",
+    `\uFEFFexport\uFEFF${forbiddenRuntimeDeployDotenvName}\uFEFF=\uFEFF${dotenvValueMarker}`,
+  ],
+  [
+    "carriage return whitespace",
+    `\r${forbiddenRuntimeDeployDotenvName}\r=\r${dotenvValueMarker}`,
+  ],
+  [
+    "form-feed whitespace",
+    `\f${forbiddenRuntimeDeployDotenvName}\f=\f${dotenvValueMarker}`,
+  ],
+  [
+    "vertical-tab whitespace",
+    `\v${forbiddenRuntimeDeployDotenvName}\v=\v${dotenvValueMarker}`,
+  ],
+  [
+    "non-breaking-space whitespace",
+    `\u00A0${forbiddenRuntimeDeployDotenvName}\u00A0=\u00A0${dotenvValueMarker}`,
+  ],
+  [
+    "em-space whitespace",
+    `\u2003${forbiddenRuntimeDeployDotenvName}\u2003=\u2003${dotenvValueMarker}`,
+  ],
+  [
+    "CRLF-delimited assignment",
+    `ALLOWED_CRLF=ok\r\n${forbiddenRuntimeDeployDotenvName}=${dotenvValueMarker}\r\n`,
+  ],
+  [
+    "malformed quoted value",
+    `${forbiddenRuntimeDeployDotenvName}='unterminated-${dotenvValueMarker}`,
+  ],
+  [
+    "late-line assignment",
+    `# comment\nALLOWED_BEFORE=ok\n\n${forbiddenRuntimeDeployDotenvName}=${dotenvValueMarker}`,
+  ],
+] as const;
+
+const nearMissDotenvAssignments = [
+  [
+    "export-prefixed key",
+    `export${forbiddenRuntimeDeployDotenvName}=near-export`,
+    `export${forbiddenRuntimeDeployDotenvName}`,
+    "near-export",
+  ],
+  [
+    "suffix key",
+    `${forbiddenRuntimeDeployDotenvName}_SUFFIX=near-suffix`,
+    `${forbiddenRuntimeDeployDotenvName}_SUFFIX`,
+    "near-suffix",
+  ],
+  [
+    "prefix key",
+    `PREFIX_${forbiddenRuntimeDeployDotenvName}=near-prefix`,
+    `PREFIX_${forbiddenRuntimeDeployDotenvName}`,
+    "near-prefix",
+  ],
+  [
+    "case-sensitive key",
+    `review_router_role_bootstrap_database_url=near-case`,
+    "review_router_role_bootstrap_database_url",
+    "near-case",
+  ],
+] as const;
 
 function releaseDescriptor(overrides: Record<string, unknown> = {}) {
   return {
@@ -288,28 +364,70 @@ describe("Render hosted deploy hardening", () => {
     );
   });
 
-  it.each([
-    ["canonical", "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL=CANARY"],
-    ["export", "export REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL=CANARY"],
-    [
-      "leading whitespace and tabs",
-      " \t export\t REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL \t=CANARY",
-    ],
-    [
-      "quoted value",
-      'export REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL="CANARY"',
-    ],
-    [
-      "malformed quoted value",
-      "\texport  REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL='unterminated-CANARY",
-    ],
-  ])(
-    "rejects the %s forbidden dotenv assignment before runtime validation",
-    (_name, dotenvLine) => {
+  it.each(forbiddenDotenvAssignments)(
+    "directly rejects the %s forbidden dotenv assignment with a fixed diagnostic",
+    (_name, dotenvText) => {
+      expect(() => parseHostedDeployDotenv(dotenvText)).toThrow(
+        forbiddenRuntimeDeployDotenvMessage,
+      );
+      try {
+        parseHostedDeployDotenv(dotenvText);
+      } catch (error) {
+        expect((error as Error).message).toBe(
+          forbiddenRuntimeDeployDotenvMessage,
+        );
+        expect((error as Error).message).not.toContain(dotenvValueMarker);
+      }
+    },
+  );
+
+  it.each(nearMissDotenvAssignments)(
+    "directly preserves the %s dotenv assignment",
+    (_name, dotenvText, expectedName, expectedValue) => {
+      expect(parseHostedDeployDotenv(dotenvText)).toEqual({
+        [expectedName]: expectedValue,
+      });
+    },
+  );
+
+  it("uses the assignment lexer for allowed values and ignores non-assignments", () => {
+    expect(
+      parseHostedDeployDotenv(
+        [
+          "\uFEFFexport\u00A0ALLOWED_EXPORTED_KEY\u2003=\f allowed \v",
+          "# comment",
+          "\uFEFF  # BOM comment",
+          "",
+          "NOT AN ASSIGNMENT",
+          "9INVALID=value",
+          "export 9INVALID=value",
+          "MISSING_EQUALS",
+        ].join("\n"),
+      ),
+    ).toEqual({ ALLOWED_EXPORTED_KEY: "allowed" });
+  });
+
+  const subprocessDotenvAssignments = [
+    ...forbiddenDotenvAssignments,
+    ...nearMissDotenvAssignments.map(
+      ([name, dotenvText]) =>
+        [
+          `near miss: ${name}`,
+          `${dotenvText}\n${forbiddenRuntimeDeployDotenvName}=${dotenvValueMarker}`,
+        ] as const,
+    ),
+  ];
+
+  it.each(subprocessDotenvAssignments)(
+    "subprocess rejects the %s adversarial dotenv input before runtime validation",
+    (_name, dotenvText) => {
       const directory = mkdtempSync(join(tmpdir(), "render-runtime-dotenv-"));
       const envFile = join(directory, "runtime.env");
       const canary = "bootstrap-dotenv-value-must-not-be-materialized";
-      writeFileSync(envFile, `${dotenvLine.replace("CANARY", canary)}\n`);
+      writeFileSync(
+        envFile,
+        `${dotenvText.replaceAll(dotenvValueMarker, canary)}\n`,
+      );
       try {
         const result = spawnSync(
           "sh",
@@ -325,9 +443,7 @@ describe("Render hosted deploy hardening", () => {
         );
         const output = `${result.stdout}${result.stderr}`;
         expect(result.status).not.toBe(0);
-        expect(output).toContain(
-          "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL is forbidden in the runtime deploy environment file",
-        );
+        expect(output).toContain(forbiddenRuntimeDeployDotenvMessage);
         expect(output).not.toContain("Missing required value");
         expect(output).not.toContain(canary);
       } finally {
@@ -335,24 +451,6 @@ describe("Render hosted deploy hardening", () => {
       }
     },
   );
-
-  it("normalizes allowed export assignments without treating export-prefixed keys as export syntax", () => {
-    expect(
-      parseHostedDeployDotenv(
-        [
-          "# comment",
-          "",
-          " export\tALLOWED_EXPORTED_KEY = allowed",
-          "exportREVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL=near-miss",
-          "export REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL_SUFFIX=also-allowed",
-        ].join("\n"),
-      ),
-    ).toEqual({
-      ALLOWED_EXPORTED_KEY: "allowed",
-      exportREVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: "near-miss",
-      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL_SUFFIX: "also-allowed",
-    });
-  });
 
   it.each([
     [
