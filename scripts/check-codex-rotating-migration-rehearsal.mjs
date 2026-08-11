@@ -1734,6 +1734,12 @@ function prepareCanonicalReleaseRoles(url) {
     REVIEW_ROUTER_RENDER_COMMIT_SHA: "a".repeat(40),
     REVIEW_ROUTER_RENDER_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
   };
+  psql(bootstrap, [
+    "-c",
+    `CREATE TABLE public.rr_legacy_bootstrap_owned (id integer PRIMARY KEY);
+     CREATE FUNCTION public.rr_legacy_bootstrap_owned_fn() RETURNS integer
+       LANGUAGE sql IMMUTABLE AS 'SELECT 1';`,
+  ]);
   runRehearsalReleaseSubprocess(
     "initial_role_provisioning",
     "psql",
@@ -1767,6 +1773,30 @@ function prepareCanonicalReleaseRoles(url) {
       }),
     },
   );
+  const transferredLegacyOwners = psql(release, [
+    "-Atc",
+    `SELECT count(*) || ':' || count(*) FILTER (WHERE owner_name = 'reviewrouter_release_migration')
+     FROM (
+       SELECT owner.rolname AS owner_name
+       FROM pg_class relation
+       JOIN pg_roles owner ON owner.oid = relation.relowner
+       WHERE relation.oid = 'public.rr_legacy_bootstrap_owned'::regclass
+       UNION ALL
+       SELECT owner.rolname AS owner_name
+       FROM pg_proc routine
+       JOIN pg_roles owner ON owner.oid = routine.proowner
+       WHERE routine.oid = 'public.rr_legacy_bootstrap_owned_fn()'::regprocedure
+     ) ownership`,
+  ]).stdout.trim();
+  assert(
+    transferredLegacyOwners === "2:2",
+    "role bootstrap did not transfer pre-existing public objects to the release role",
+  );
+  psql(release, [
+    "-c",
+    `DROP FUNCTION public.rr_legacy_bootstrap_owned_fn();
+     DROP TABLE public.rr_legacy_bootstrap_owned;`,
+  ]);
   markCanonicalRehearsalRoles(bootstrap.toString());
   return {
     clients,
