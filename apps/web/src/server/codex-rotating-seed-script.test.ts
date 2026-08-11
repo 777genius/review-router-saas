@@ -1150,7 +1150,11 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     const lockId = createHash("sha256")
       .update("777genius/agent-teams-ai")
       .digest("hex");
-    writeFileSync(join(lockDirectory, `${lockId}.lock`), "2147483647\n");
+    const exitedPid = spawnSync("bash", ["-c", "printf %s $$"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    expect(exitedPid).toMatch(/^[1-9][0-9]*$/u);
+    writeFileSync(join(lockDirectory, `${lockId}.lock`), `${exitedPid}\n`);
 
     const result = spawnSync(
       "bash",
