@@ -42,7 +42,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("keeps 000063 and 000064 in the late-failure rollback/replay matrix", () => {
+  it("keeps 000063 through 000066 in the late-failure rollback/replay matrix", () => {
     const matrix =
       /function proveLateMigrationRollbackAndReplayMatrix\(\) \{([\s\S]+?)\n\}/u.exec(
         source,
@@ -50,6 +50,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(matrix).toBeDefined();
     expect(matrix).toContain("name: migration63Name");
     expect(matrix).toContain("name: migration64Name");
+    expect(matrix).toContain("name: migration65Name");
+    expect(matrix).toContain("name: migration66Name");
     expect(matrix).toContain('psql(url, ["-c", testCase.decoy])');
     expect(matrix).toContain("`${testCase.name} injected failure missing`");
     expect(matrix).toContain(
@@ -131,7 +133,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       'public."codex_oauth_consume_database_authority"(',
     );
     expect(providerGuardContract).toContain(
-      `'''provider_identity_repair'', OLD."id", 0'`,
+      `'''provider_identity_repair_v2'', transition_key, 0'`,
     );
     expect(providerGuardContract).toMatch(
       /position\(\s+'FROM public\."CodexOAuthDatabaseAuthorityReceipt"'\s+IN pg_get_functiondef\(p\.oid\)\s+\) = 0/u,
@@ -289,30 +291,60 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain("fabricated_stale_acl");
     const oneShotIdentityMutationProof =
-      /async function proveDatabaseAuthorityReceiptOneShot\(adminUrl, clients\) \{([\s\S]+?)\n\}/u.exec(
+      /async function proveProviderRepairAuthorityV2\(adminUrl, clients\) \{([\s\S]+?)\n\}/u.exec(
         source,
       )?.[1];
     expect(oneShotIdentityMutationProof).toBeDefined();
     expect(oneShotIdentityMutationProof).toContain(
-      "manual consume proof did not consume its receipt",
+      "provider repair savepoint rollback did not restore all state",
     );
     expect(oneShotIdentityMutationProof).toContain(
-      "manually consumed authority authorized an identity mutation",
+      "signed provider repair authorized a different target",
     );
     expect(oneShotIdentityMutationProof).toContain(
-      "provider-scoped authority authorized a different provider",
+      "codex_oauth_database_authority_signature_invalid",
     );
     expect(oneShotIdentityMutationProof).toContain(
-      "identity guard did not consume authority atomically",
+      "provider repair replay succeeded",
     );
     expect(oneShotIdentityMutationProof).toContain(
-      "second identity mutation reused one-shot authority",
+      "provider repair did not atomically consume and resolve",
     );
     expect(oneShotIdentityMutationProof).toContain(
-      "codex_oauth_provider_identity_authority_required",
+      "ROLLBACK TO SAVEPOINT rollback_proof",
+    );
+    expect(oneShotIdentityMutationProof).toContain(
+      "provider_identity_repair_v2",
+    );
+    expect(oneShotIdentityMutationProof).toContain(
+      "codex_oauth_provider_quarantine_recovery_required",
     );
     expect(oneShotIdentityMutationProof).toContain("clients.web");
     expect(oneShotIdentityMutationProof).toContain("clients.effectAuthority");
+    const cascadeProof =
+      /function proveRuntimeParentCascadesDenied\(adminUrl, clients\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(cascadeProof).toBeDefined();
+    for (const role of [
+      "reviewrouter_api",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+      "reviewrouter_codex_effect_authority",
+    ]) {
+      expect(cascadeProof).toContain(role);
+    }
+    expect(cascadeProof).toContain("workspace delete");
+    expect(cascadeProof).toContain("normal-delete-${role}");
+    expect(cascadeProof).toContain("workspace key update");
+    expect(cascadeProof).toContain("installation delete");
+    expect(cascadeProof).toContain("installation key update");
+    expect(cascadeProof).toContain("gitlab installation delete");
+    expect(cascadeProof).toContain("gitlab installation key update");
+    expect(cascadeProof).toContain("SCM identity delete");
+    expect(cascadeProof).toContain("SCM identity key update");
+    expect(cascadeProof).toContain("provider parent delete");
+    expect(cascadeProof).toContain("provider parent key update");
     expect(attack).toContain("repeat('0',64)");
     expect(attack).toContain("direct production-faithful login");
     expect(attack).not.toContain("SET SESSION AUTHORIZATION");

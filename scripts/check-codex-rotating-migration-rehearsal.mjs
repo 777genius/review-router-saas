@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { codexRotatingProductionWriterBaseObservationSql } from "./capture-codex-rotating-production-writer.mjs";
+import { codexRotatingTriggers } from "./codex-rotating-production-writer-schema.mjs";
 import { provisionAndAssertRehearsalRoles } from "./codex-rotating-rehearsal-role-provisioning.mjs";
 import { runtimeGrantStatements } from "./run-codex-rotating-release-migration.mjs";
 import { verifyCodexRotatingDatabaseCatalog } from "./verify-codex-rotating-rollout.mjs";
@@ -18,12 +19,14 @@ const migration62Name = "000062_codex_oauth_remote_outcome_unknown";
 const migration63Name = "000063_codex_oauth_setup_payload_claim";
 const migration64Name = "000064_codex_oauth_versioned_secret_namespaces";
 const migration65Name = "000065_codex_oauth_authority_acl_hardening";
+const migration66Name = "000066_codex_oauth_rotating_cascade_authority";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
 const migration63 = join(migrationsDirectory, migration63Name, "migration.sql");
 const migration64 = join(migrationsDirectory, migration64Name, "migration.sql");
 const migration65 = join(migrationsDirectory, migration65Name, "migration.sql");
+const migration66 = join(migrationsDirectory, migration66Name, "migration.sql");
 const rotatingMigrationNames = readdirSync(migrationsDirectory)
   .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
   .sort();
@@ -36,6 +39,7 @@ assert(
       migration63Name,
       migration64Name,
       migration65Name,
+      migration66Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -78,6 +82,7 @@ try {
 
   proveSuccessfulCombinedRelease(rehearsalUrl);
   proveDatabasePrivileges(rehearsalUrl);
+  proveRuntimeParentCascadesDenied(rehearsalUrl, rehearsalRoleClients);
   proveStaleAclProviderIdentityEscalationDenied(
     rehearsalUrl,
     rehearsalRoleClients,
@@ -92,18 +97,15 @@ try {
   provePrismaCleanupRetention(rehearsalUrl, versionedNamespaceEvidence);
   proveLegacyChildWritesRejected(rehearsalUrl);
   proveParentIdentityWriteRejected(rehearsalUrl);
-  await proveDatabaseAuthorityReceiptOneShot(
-    rehearsalUrl,
-    rehearsalRoleClients,
-  );
-  proveQuarantineCleanupPath(rehearsalUrl);
+  await proveProviderRepairAuthorityV2(rehearsalUrl, rehearsalRoleClients);
+  proveQuarantineCleanupPathV2(rehearsalUrl);
   proveExactProductionCatalogContract(rehearsalUrl);
   proveMigrateDeployNoOp(rehearsalUrl);
   proveLateMigrationRollbackAndReplayMatrix();
   const observation = collectObservation(rehearsalUrl);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060+000061+000062+000063+000064+000065 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060+000061+000062+000063+000064+000065+000066 rehearsal passed.\n",
   );
 } finally {
   psql(
@@ -163,6 +165,23 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       cleanup: 'DROP FUNCTION "codex_oauth_database_authority_receipt_guard"()',
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_authorize_provider_identity_repair'",
+    },
+    {
+      name: migration66Name,
+      source: migration66,
+      prior: [
+        [migration60Name, migration60],
+        [migration61Name, migration61],
+        [migration62Name, migration62],
+        [migration63Name, migration63],
+        [migration64Name, migration64],
+        [migration65Name, migration65],
+      ],
+      decoy:
+        'CREATE FUNCTION "codex_oauth_runtime_referential_action_guard"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN OLD; END $$',
+      cleanup: 'DROP FUNCTION "codex_oauth_runtime_referential_action_guard"()',
+      leaked:
+        "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_provider_identity_repair_challenge'",
     },
   ];
   for (const [index, testCase] of cases.entries()) {
@@ -236,6 +255,19 @@ function seedDirtyFixtures(url) {
     String.raw`
       INSERT INTO "Workspace" ("id", "slug", "name", "updatedAt")
       VALUES ('ws-proof', 'ws-proof', 'migration proof', CURRENT_TIMESTAMP);
+      INSERT INTO "GitHubInstallation" (
+        "id", "workspaceId", "githubInstallationId", "accountLogin", "accountType",
+        "repositorySelection", "updatedAt"
+      ) VALUES (
+        'installation-proof', 'ws-proof', 990001, 'proof', 'Organization', 'selected', now()
+      );
+      INSERT INTO "GitLabInstallation" (
+        "id", "workspaceId", "sourceBaseUrl", "namespacePath", "sourceKind",
+        "updatedAt"
+      ) VALUES (
+        'gitlab-installation-proof', 'ws-proof', 'https://gitlab.example',
+        'proof', 'group', now()
+      );
       INSERT INTO "RepositoryConnection" (
         "id", "workspaceId", "githubRepositoryId", "externalRepositoryId",
         "owner", "name", "fullName", "defaultBranch", "visibility", "updatedAt"
@@ -243,6 +275,21 @@ function seedDirtyFixtures(url) {
       SELECT 'repo-' || n, 'ws-proof', 900000 + n, (900000 + n)::text,
         'local', 'proof-' || n, 'local/proof-' || n, 'main', 'private', CURRENT_TIMESTAMP
       FROM generate_series(1, 13) n;
+      UPDATE "RepositoryConnection"
+      SET "installationId" = 'installation-proof'
+      WHERE "id" = 'repo-7';
+      UPDATE "RepositoryConnection"
+      SET "gitlabInstallationId" = 'gitlab-installation-proof'
+      WHERE "id" = 'repo-8';
+      INSERT INTO "ScmRepositoryIdentity" (
+        "scmRepositoryIdentityId", "provider", "normalizedSourceBaseUrl",
+        "externalRepositoryId", "createdAt"
+      ) VALUES (
+        'scm-identity-proof', 'github', 'https://github.com', '900007', now()
+      );
+      UPDATE "RepositoryConnection"
+      SET "scmRepositoryIdentityId" = 'scm-identity-proof'
+      WHERE "id" = 'repo-7';
       UPDATE "RepositoryConnection"
       SET "provider" = 'gitlab', "githubRepositoryId" = NULL
       WHERE "id" = 'repo-12';
@@ -648,8 +695,12 @@ function proveSuccessfulCombinedRelease(url) {
       ) THEN RAISE EXCEPTION 'unsafe active OAuth work remains'; END IF;
 
       SELECT array_agg(tgname ORDER BY tgname) INTO actual FROM pg_trigger
-      WHERE NOT tgisinternal AND (tgname LIKE 'CodexOAuth%guard' OR tgname = 'RepositoryConnection_codex_oauth_identity_guard');
-      expected := ARRAY['CodexOAuthDatabaseAuthorityReceipt_one_shot_guard','CodexOAuthLease_identity_fence_guard','CodexOAuthProviderInstance_identity_guard','CodexOAuthProviderInstance_mutation_transition_guard','CodexOAuthSecretNamespace_tombstone_guard','CodexOAuthSetupDispatchAttempt_evidence_guard','CodexOAuthSetupManifest_evidence_guard','CodexOAuthSetupManifest_identity_fence_guard','CodexOAuthSetupPayloadClaim_evidence_guard','CodexOAuthSetupRecoveryRequest_evidence_guard','CodexOAuthWritebackIntent_identity_fence_guard','CodexOAuthWritebackIntent_runtime_evidence_guard','RepositoryConnection_codex_oauth_identity_guard'];
+      WHERE NOT tgisinternal
+        AND (tgname LIKE 'CodexOAuth%guard' OR tgname LIKE 'RepositoryConnection%guard');
+      expected := ARRAY[${[...codexRotatingTriggers]
+        .sort()
+        .map((name) => quoteLiteral(name))
+        .join(",")}];
       IF actual <> expected THEN RAISE EXCEPTION 'trigger catalog mismatch: %', actual; END IF;
       IF EXISTS (
         SELECT 1 FROM (VALUES
@@ -715,6 +766,7 @@ function proveSuccessfulCombinedRelease(url) {
   proveMigrationRunnerHistory(url, migration63Name, true);
   proveMigrationRunnerHistory(url, migration64Name, true);
   proveMigrationRunnerHistory(url, migration65Name, true);
+  proveMigrationRunnerHistory(url, migration66Name, true);
 }
 
 function proveVersionedNamespaceLedger(url) {
@@ -1214,7 +1266,7 @@ function proveDatabasePrivileges(url) {
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = current_schema() AND p.proname LIKE 'codex_oauth_%';
-        IF function_count <> 20 OR unsafe_function_count <> 0 THEN
+        IF function_count <> 22 OR unsafe_function_count <> 0 THEN
           RAISE EXCEPTION 'Codex OAuth function privilege mismatch: %, %', function_count, unsafe_function_count;
         END IF;
 
@@ -1270,7 +1322,7 @@ function proveDatabasePrivileges(url) {
               IN pg_get_functiondef(p.oid)
             ) > 0
             AND position(
-              '''provider_identity_repair'', OLD."id", 0'
+              '''provider_identity_repair_v2'', transition_key, 0'
               IN pg_get_functiondef(p.oid)
             ) > 0
             AND position(
@@ -2062,186 +2114,229 @@ function proveStaleAclProviderIdentityEscalationDenied(adminUrl, clients) {
   proveDatabasePrivileges(adminUrl);
 }
 
-async function proveDatabaseAuthorityReceiptOneShot(adminUrl, clients) {
-  psql(adminUrl, [
-    "-c",
-    `GRANT UPDATE ("workspaceId","repositoryId","providerInstanceId","authMode","secretName")
-       ON TABLE "CodexOAuthProviderInstance" TO reviewrouter_web`,
-  ]);
+function proveRuntimeParentCascadesDenied(adminUrl, clients) {
+  const roles = [
+    ["reviewrouter_api", clients.api],
+    ["reviewrouter_web", clients.web],
+    ["reviewrouter_worker", clients.worker],
+    ["reviewrouter_codex_effect_authority", clients.effectAuthority],
+  ];
+  for (const [role, url] of roles) {
+    psql(adminUrl, [
+      "-c",
+      `GRANT SELECT, UPDATE, DELETE ON TABLE "Workspace", "GitHubInstallation", "GitLabInstallation", "ScmRepositoryIdentity" TO ${quoteIdentifier(role)};
+       GRANT SELECT, DELETE, UPDATE ("id") ON TABLE "CodexOAuthProviderInstance" TO ${quoteIdentifier(role)}`,
+    ]);
+    try {
+      psql(adminUrl, [
+        "-c",
+        `INSERT INTO "Workspace" ("id","slug","name","updatedAt") VALUES ('normal-delete-${role}','normal-delete-${role}','normal delete proof',now())`,
+      ]);
+      psql(url, [
+        "-c",
+        `DELETE FROM "Workspace" WHERE "id"='normal-delete-${role}'`,
+      ]);
+      for (const [label, sql, expected] of [
+        [
+          "workspace delete",
+          `DELETE FROM "Workspace" WHERE "id"='ws-proof'`,
+          "codex_oauth_runtime_referential_delete_forbidden",
+        ],
+        [
+          "workspace key update",
+          `UPDATE "Workspace" SET "id"='ws-proof-${role}' WHERE "id"='ws-proof'`,
+          "codex_oauth_runtime_referential_update_forbidden",
+        ],
+        [
+          "installation delete",
+          `DELETE FROM "GitHubInstallation" WHERE "id"='installation-proof'`,
+          "codex_oauth_runtime_referential_delete_forbidden",
+        ],
+        [
+          "installation key update",
+          `UPDATE "GitHubInstallation" SET "id"='installation-proof-${role}' WHERE "id"='installation-proof'`,
+          "codex_oauth_runtime_referential_update_forbidden",
+        ],
+        [
+          "gitlab installation delete",
+          `DELETE FROM "GitLabInstallation" WHERE "id"='gitlab-installation-proof'`,
+          "codex_oauth_runtime_referential_delete_forbidden",
+        ],
+        [
+          "gitlab installation key update",
+          `UPDATE "GitLabInstallation" SET "id"='gitlab-installation-proof-${role}' WHERE "id"='gitlab-installation-proof'`,
+          "codex_oauth_runtime_referential_update_forbidden",
+        ],
+        [
+          "SCM identity delete",
+          `DELETE FROM "ScmRepositoryIdentity" WHERE "scmRepositoryIdentityId"='scm-identity-proof'`,
+          "RepositoryConnection_scmRepositoryIdentityId_fkey",
+        ],
+        [
+          "SCM identity key update",
+          `UPDATE "ScmRepositoryIdentity" SET "scmRepositoryIdentityId"='scm-identity-proof-${role}' WHERE "scmRepositoryIdentityId"='scm-identity-proof'`,
+          "codex_oauth_runtime_referential_update_forbidden",
+        ],
+        [
+          "provider parent delete",
+          `DELETE FROM "CodexOAuthProviderInstance" WHERE "id"='p-clean'`,
+          "codex_oauth_runtime_referential_delete_forbidden",
+        ],
+        [
+          "provider parent key update",
+          `UPDATE "CodexOAuthProviderInstance" SET "id"='p-clean-${role}' WHERE "id"='p-clean'`,
+          "codex_oauth_provider_identity_authority_required",
+        ],
+      ]) {
+        const result = psql(url, ["-c", sql], false);
+        assertPsqlFailedWithExactMessage(
+          result,
+          expected,
+          `${role} bypassed rotating protection through ${label}`,
+        );
+      }
+    } finally {
+      convergeRuntimePrivileges(adminUrl);
+    }
+  }
+  const preserved = psql(adminUrl, [
+    "-Atc",
+    `SELECT count(*) FROM "RepositoryConnection" WHERE "workspaceId"='ws-proof'`,
+  ]).stdout.trim();
+  assert(preserved === "13", "parent cascade proofs changed protected rows");
+  proveDatabasePrivileges(adminUrl);
+}
+
+async function proveProviderRepairAuthorityV2(adminUrl, clients) {
+  const receiptsBefore = Number(
+    psql(adminUrl, [
+      "-Atc",
+      `SELECT count(*) FROM "CodexOAuthDatabaseAuthorityReceipt"
+       WHERE "effect"='provider_identity_repair_v2'
+         AND "databaseRole"='reviewrouter_web'
+         AND "consumedAt" IS NOT NULL`,
+    ]).stdout.trim(),
+  );
+  const repairArgs = [
+    "'p-quarantine'",
+    "'ws-proof'",
+    "'repo-6'",
+    "'legacy-wrong-id'",
+    "'codex_subscription_oauth_rotating'",
+    "'REVIEWROUTER_CODEX_AUTH_JSON'",
+    "'github'",
+    "900006",
+    "'900006'",
+    "'ws-proof'",
+    "'repo-6'",
+    "'codex-rotating:900006'",
+    "'codex_subscription_oauth_rotating'",
+    "'REVIEWROUTER_CODEX_AUTH_JSON'",
+    "900006",
+  ];
+  const args = repairArgs.join(",");
   const web = spawn(
     psqlBinary,
     [clients.web.toString(), "-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
-  const webOutput = createInterface({ input: web.stdout });
-  const webLines = webOutput[Symbol.asyncIterator]();
-  let webStderr = "";
+  const lines = createInterface({ input: web.stdout })[Symbol.asyncIterator]();
+  let stderr = "";
   web.stderr.setEncoding("utf8");
   web.stderr.on("data", (chunk) => {
-    webStderr += chunk;
+    stderr += chunk;
   });
-  const writeWeb = (sql) => {
-    assert(!web.stdin.destroyed, "web authority proof stdin closed");
-    web.stdin.write(`${sql}\n`);
-  };
-  const readWebLine = async (message) => {
-    const line = await webLines.next();
-    assert(!line.done, `${message}: ${webStderr}`);
-    return line.value;
-  };
-  const beginSignedWebTransaction = async () => {
-    writeWeb(String.raw`BEGIN;
-      SELECT "codex_oauth_database_authority_challenge"(
-        'provider_identity_repair', 'p-quarantine', 0
-      );`);
-    const challenge = await readWebLine(
-      "web authority proof did not emit a challenge",
-    );
-    const signature = psql(clients.effectAuthority, [
-      "-Atc",
-      `SELECT "codex_oauth_sign_database_authority"(${quoteLiteral(challenge)})`,
-    ]).stdout.trim();
-    assert(
-      signature.length > 0,
-      "provider identity repair proof was not signed",
-    );
-    return signature;
-  };
-  try {
-    const manuallyConsumedSignature = await beginSignedWebTransaction();
-    writeWeb(
-      String.raw`
-        DO $proof$
-        BEGIN
-          PERFORM "codex_oauth_authorize_provider_identity_repair"(
-            'p-quarantine', ${quoteLiteral(manuallyConsumedSignature)}
-          );
-          IF NOT "codex_oauth_consume_database_authority"(
-            'provider_identity_repair', 'p-quarantine', 0
-          ) THEN
-            RAISE EXCEPTION 'manual consume proof did not consume its receipt';
-          END IF;
-          BEGIN
-            UPDATE "CodexOAuthProviderInstance"
-            SET "providerInstanceId"='codex-rotating:900006'
-            WHERE "id"='p-quarantine';
-            RAISE EXCEPTION 'manually consumed authority authorized an identity mutation';
-          EXCEPTION WHEN insufficient_privilege THEN
-            IF SQLERRM <> 'codex_oauth_provider_identity_authority_required' THEN
-              RAISE;
-            END IF;
-          END;
-        END
-        $proof$;
-        ROLLBACK;
-        SELECT 'manual-consume-rejected';`,
-    );
-    assert(
-      (await readWebLine("manual consume identity proof did not finish")) ===
-        "manual-consume-rejected",
-      `manual consume identity proof returned unexpected output: ${webStderr}`,
-    );
-
-    const mutationSignature = await beginSignedWebTransaction();
-    writeWeb(
-      String.raw`
-        DO $proof$
-        BEGIN
-          PERFORM "codex_oauth_authorize_provider_identity_repair"(
-            'p-quarantine', ${quoteLiteral(mutationSignature)}
-          );
-          BEGIN
-            UPDATE "CodexOAuthProviderInstance"
-            SET "secretName"='not-the-authorized-provider'
-            WHERE "id"='p-parent-external-dirty';
-            RAISE EXCEPTION 'provider-scoped authority authorized a different provider';
-          EXCEPTION WHEN insufficient_privilege THEN
-            IF SQLERRM <> 'codex_oauth_provider_identity_authority_required' THEN
-              RAISE;
-            END IF;
-          END;
-          UPDATE "CodexOAuthProviderInstance"
-          SET "workspaceId"='ws-proof',
-              "repositoryId"='repo-6',
-              "providerInstanceId"='codex-rotating:900006',
-              "authMode"='codex_subscription_oauth_rotating',
-              "secretName"='REVIEWROUTER_CODEX_AUTH_JSON'
-          WHERE "id"='p-quarantine';
-          IF "codex_oauth_consume_database_authority"(
-            'provider_identity_repair', 'p-quarantine', 0
-          ) THEN
-            RAISE EXCEPTION 'identity guard did not consume authority atomically';
-          END IF;
-          BEGIN
-            UPDATE "CodexOAuthProviderInstance"
-            SET "secretName"='second-identity-mutation'
-            WHERE "id"='p-quarantine';
-            RAISE EXCEPTION 'second identity mutation reused one-shot authority';
-          EXCEPTION WHEN insufficient_privilege THEN
-            IF SQLERRM <> 'codex_oauth_provider_identity_authority_required' THEN
-              RAISE;
-            END IF;
-          END;
-        END
-        $proof$;
-        ROLLBACK;
-        SELECT 'one-shot-mutation-rejected';`,
-    );
-    assert(
-      (await readWebLine("one-shot identity mutation proof did not finish")) ===
-        "one-shot-mutation-rejected",
-      `one-shot identity mutation proof returned unexpected output: ${webStderr}`,
-    );
-  } finally {
-    if (!web.stdin.destroyed) web.stdin.end("\\q\n");
-    const webStatus =
-      web.exitCode ??
-      web.signalCode ??
-      (await new Promise((resolveExit) => web.once("close", resolveExit)));
-    webOutput.close();
-    assert(
-      webStatus === 0,
-      `web identity authority proof failed (${webStatus}): ${webStderr}`,
-    );
-    psql(adminUrl, [
-      "-c",
-      `REVOKE UPDATE ("workspaceId","repositoryId","providerInstanceId","authMode","secretName")
-         ON TABLE "CodexOAuthProviderInstance" FROM reviewrouter_web`,
-    ]);
-  }
-  proveDatabasePrivileges(adminUrl);
-  psql(adminUrl, [
-    "-c",
-    String.raw`
-      DO $proof$
-      DECLARE challenge text;
-      DECLARE signature text;
+  web.stdin.write(
+    `BEGIN; SELECT "codex_oauth_provider_identity_repair_challenge"(${args});\n`,
+  );
+  const challengeLine = await lines.next();
+  assert(!challengeLine.done, `repair challenge missing: ${stderr}`);
+  const signature = psql(clients.effectAuthority, [
+    "-Atc",
+    `SELECT "codex_oauth_sign_database_authority"(${quoteLiteral(challengeLine.value)})`,
+  ]).stdout.trim();
+  assert(signature.length > 0, "repair challenge was not signed");
+  const repairCall = `"codex_oauth_repair_quarantined_provider"(${args},${quoteLiteral(signature)})`;
+  const tamperedRepairArgs = [...repairArgs];
+  tamperedRepairArgs[11] = "'codex-rotating:900007'";
+  tamperedRepairArgs[14] = "900007";
+  const tamperedRepairCall =
+    `"codex_oauth_repair_quarantined_provider"(` +
+    `${tamperedRepairArgs.join(",")},${quoteLiteral(signature)})`;
+  web.stdin.write(String.raw`
+    DO $proof$
+    BEGIN
       BEGIN
-        challenge := "codex_oauth_database_authority_challenge"(
-          'provider_identity_repair', 'p-quarantine', 0
-        );
-        signature := "codex_oauth_sign_database_authority"(challenge);
-        PERFORM "codex_oauth_authorize_provider_identity_repair"(
-          'p-quarantine', signature
-        );
-        IF NOT "codex_oauth_consume_database_authority"(
-          'provider_identity_repair', 'p-quarantine', 0
-        ) THEN
-          RAISE EXCEPTION 'one-shot proof did not consume its receipt';
+        PERFORM ${tamperedRepairCall};
+        RAISE EXCEPTION 'signed provider repair authorized a different target';
+      EXCEPTION WHEN insufficient_privilege THEN
+        IF SQLERRM <> 'codex_oauth_database_authority_signature_invalid' THEN
+          RAISE;
         END IF;
-        BEGIN
-          PERFORM "codex_oauth_authorize_provider_identity_repair"(
-            'p-quarantine', signature
-          );
-          RAISE EXCEPTION 'consumed authority receipt was reauthorized';
-        EXCEPTION WHEN insufficient_privilege THEN
-          IF SQLERRM <> 'codex_oauth_database_authority_receipt_replay_forbidden' THEN
-            RAISE;
-          END IF;
-        END;
-      END
-      $proof$;`,
-  ]);
+      END;
+    END $proof$;
+    SAVEPOINT rollback_proof;
+    DO $proof$ BEGIN
+      PERFORM ${repairCall};
+    END $proof$;
+    ROLLBACK TO SAVEPOINT rollback_proof;
+    DO $proof$
+    BEGIN
+      IF (SELECT "providerInstanceId" FROM "CodexOAuthProviderInstance" WHERE "id"='p-quarantine') <> 'legacy-wrong-id'
+         OR (SELECT "resolvedAt" FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId"='p-quarantine') IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'provider repair savepoint rollback did not restore all state';
+      END IF;
+    END $proof$;
+    DO $proof$ BEGIN
+      PERFORM ${repairCall};
+    END $proof$;
+    DO $proof$
+    BEGIN
+      BEGIN
+        PERFORM ${repairCall};
+        RAISE EXCEPTION 'provider repair replay succeeded';
+      EXCEPTION WHEN serialization_failure THEN
+        IF SQLERRM <> 'codex_oauth_provider_quarantine_recovery_required' THEN
+          RAISE;
+        END IF;
+      END;
+      IF (SELECT "providerInstanceId" FROM "CodexOAuthProviderInstance" WHERE "id"='p-quarantine') <> 'codex-rotating:900006'
+         OR (SELECT "resolvedAt" FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId"='p-quarantine') IS NULL
+      THEN
+        RAISE EXCEPTION 'provider repair did not atomically consume and resolve';
+      END IF;
+    END $proof$;
+    COMMIT;
+    SELECT 'provider-repair-v2-passed';
+  `);
+  const terminal = await lines.next();
+  assert(
+    !terminal.done && terminal.value === "provider-repair-v2-passed",
+    `provider repair v2 proof failed: ${stderr}`,
+  );
+  web.stdin.end("\\q\n");
+  const status = await new Promise((resolveExit) =>
+    web.once("close", resolveExit),
+  );
+  assert(
+    status === 0,
+    `provider repair v2 client failed (${status}): ${stderr}`,
+  );
+  const receiptsAfter = Number(
+    psql(adminUrl, [
+      "-Atc",
+      `SELECT count(*) FROM "CodexOAuthDatabaseAuthorityReceipt"
+       WHERE "effect"='provider_identity_repair_v2'
+         AND "databaseRole"='reviewrouter_web'
+         AND "consumedAt" IS NOT NULL`,
+    ]).stdout.trim(),
+  );
+  assert(
+    receiptsAfter === receiptsBefore + 1,
+    "provider repair did not atomically consume exactly one authority receipt",
+  );
+  proveDatabasePrivileges(adminUrl);
 }
 
 function proveTerminalInsertGuards(url) {
@@ -2598,32 +2693,46 @@ function proveParentIdentityWriteRejected(url) {
   );
 }
 
-function proveQuarantineCleanupPath(url) {
+function proveQuarantineCleanupPathV2(url) {
   psql(url, [
     "-c",
     String.raw`
       DO $repair$
-      DECLARE provider_id text;
-      DECLARE github_repository_id bigint;
+      DECLARE repair record;
       DECLARE challenge text;
       DECLARE signature text;
       BEGIN
-        FOR provider_id, github_repository_id IN
+        FOR repair IN
           SELECT * FROM (VALUES
-            ('p-quarantine'::text, NULL::bigint),
-            ('p-parent-dirty'::text, 900012::bigint),
-            ('p-parent-external-dirty'::text, NULL::bigint)
-          ) repairs
+            ('p-parent-dirty'::text, 'repo-12'::text, 'legacy-parent-id'::text,
+             'gitlab'::text, NULL::bigint, '900012'::text, 900012::bigint),
+            ('p-parent-external-dirty'::text, 'repo-13'::text,
+             'codex-rotating:900013'::text, 'github'::text, 900013::bigint,
+             'dirty-external-id'::text, 900013::bigint)
+          ) AS repairs(provider_id, repository_id, old_provider_id,
+                       old_repository_provider, old_github_id,
+                       old_external_id, new_github_id)
         LOOP
-          challenge := codex_oauth_database_authority_challenge(
-            'provider_identity_repair', provider_id, 0
+          challenge := codex_oauth_provider_identity_repair_challenge(
+            repair.provider_id, 'ws-proof', repair.repository_id,
+            repair.old_provider_id, 'codex_subscription_oauth_rotating',
+            'REVIEWROUTER_CODEX_AUTH_JSON', repair.old_repository_provider,
+            repair.old_github_id, repair.old_external_id, 'ws-proof',
+            repair.repository_id,
+            'codex-rotating:' || repair.new_github_id::text,
+            'codex_subscription_oauth_rotating',
+            'REVIEWROUTER_CODEX_AUTH_JSON', repair.new_github_id
           );
           signature := codex_oauth_sign_database_authority(challenge);
-          PERFORM codex_oauth_authorize_provider_identity_repair(
-            provider_id, signature
-          );
           PERFORM codex_oauth_repair_quarantined_provider(
-            provider_id, github_repository_id
+            repair.provider_id, 'ws-proof', repair.repository_id,
+            repair.old_provider_id, 'codex_subscription_oauth_rotating',
+            'REVIEWROUTER_CODEX_AUTH_JSON', repair.old_repository_provider,
+            repair.old_github_id, repair.old_external_id, 'ws-proof',
+            repair.repository_id,
+            'codex-rotating:' || repair.new_github_id::text,
+            'codex_subscription_oauth_rotating',
+            'REVIEWROUTER_CODEX_AUTH_JSON', repair.new_github_id, signature
           );
         END LOOP;
       END
@@ -2633,9 +2742,7 @@ function proveQuarantineCleanupPath(url) {
       SELECT codex_oauth_repair_quarantined_child('lease','lease-dirty');
       SELECT codex_oauth_repair_quarantined_child('writeback_intent','intent-dirty','lease-dirty');
       DO $$ BEGIN
-        IF (SELECT "providerInstanceId" FROM "CodexOAuthProviderInstance" WHERE id='p-quarantine') <> 'codex-rotating:900006'
-          OR (SELECT "resolvedAt" FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId"='p-quarantine') IS NULL
-          OR (SELECT "resolvedAt" FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId"='p-parent-dirty') IS NULL
+        IF (SELECT "resolvedAt" FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId"='p-parent-dirty') IS NULL
           OR (SELECT "provider"::text FROM "RepositoryConnection" WHERE id='repo-12') <> 'github'
           OR (SELECT "githubRepositoryId" FROM "RepositoryConnection" WHERE id='repo-12') <> 900012
           OR (SELECT "providerInstanceId" FROM "CodexOAuthProviderInstance" WHERE id='p-parent-dirty') <> 'codex-rotating:900012'
@@ -2661,14 +2768,14 @@ function proveMigrateDeployNoOp(url) {
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening')`,
+      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening','000066_codex_oauth_rotating_cascade_authority')`,
   ]).stdout.trim();
   const rerun = migrateDeploy(url);
   const after = psql(url, [
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening')`,
+      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening','000066_codex_oauth_rotating_cascade_authority')`,
   ]).stdout.trim();
   assert(
     before === after,
@@ -2685,13 +2792,15 @@ function proveMigrateDeployNoOp(url) {
   proveMigrationRunnerHistory(url, migration62Name, true);
   proveMigrationRunnerHistory(url, migration63Name, true);
   proveMigrationRunnerHistory(url, migration64Name, true);
+  proveMigrationRunnerHistory(url, migration65Name, true);
+  proveMigrationRunnerHistory(url, migration66Name, true);
 }
 
 function collectObservation(url) {
   const history = JSON.parse(
     psql(url, [
       "-Atc",
-      String.raw`SELECT json_agg(x ORDER BY migration_name) FROM (SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NULL AS current, applied_steps_count FROM "_prisma_migrations" WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening')) x`,
+      String.raw`SELECT json_agg(x ORDER BY migration_name) FROM (SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NULL AS current, applied_steps_count FROM "_prisma_migrations" WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening','000066_codex_oauth_rotating_cascade_authority')) x`,
     ]).stdout,
   );
   const catalog = JSON.parse(

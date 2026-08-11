@@ -1,4 +1,4 @@
-# Fenced rotating OAuth cutover (000060 through 000065)
+# Fenced rotating OAuth cutover (000060 through 000066)
 
 > `REVIEWROUTER_CODEX_AUTH_JSON` is an unsafe, deprecated stable namespace.
 > Its legacy confirmation endpoint is permanently removed and has no runtime
@@ -13,7 +13,8 @@ This is the fail-closed release gate for the ordered combined release
 `000062_codex_oauth_remote_outcome_unknown`, then
 `000063_codex_oauth_setup_payload_claim`, then
 `000064_codex_oauth_versioned_secret_namespaces`, then
-`000065_codex_oauth_authority_acl_hardening`. The general release and git-flow
+`000065_codex_oauth_authority_acl_hardening`, then
+`000066_codex_oauth_rotating_cascade_authority`. The general release and git-flow
 rules remain in
 [`07-environments-and-release-management.md`](./07-environments-and-release-management.md).
 Never apply only one migration as a completed production rollout.
@@ -73,29 +74,30 @@ is checked against both that policy and the files on every test run.
 | `000063_codex_oauth_setup_payload_claim`         | `33100d6f5f3f59cd9a4c22f041d19caba6a0e0be88de4a0ee4d543af50619481` |
 | `000064_codex_oauth_versioned_secret_namespaces` | `4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666` |
 | `000065_codex_oauth_authority_acl_hardening`     | `ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c` |
+| `000066_codex_oauth_rotating_cascade_authority`  | `c7d098167f200a132dc9fd17943e365111b4cbf9b1d1d5800bf270589c80588e` |
 
-## 000065 forward-publication policy
+## 000066 forward-publication policy
 
-`000064_codex_oauth_versioned_secret_namespaces` is immutable at checksum
-`4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666`.
-`000065_codex_oauth_authority_acl_hardening` is the unpublished forward
-migration for this release. Its exact checked-in SHA-256 is
+`000065_codex_oauth_authority_acl_hardening` is immutable at checksum
 `ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c`.
+`000066_codex_oauth_rotating_cascade_authority` is the unpublished forward
+migration for this release. Its exact checked-in SHA-256 is
+`c7d098167f200a132dc9fd17943e365111b4cbf9b1d1d5800bf270589c80588e`.
 Before its first publication, migration preflight hashes those exact bytes and
-rejects every existing `_prisma_migrations` row named 000065, including failed,
+rejects every existing `_prisma_migrations` row named 000066, including failed,
 rolled-back, duplicate, or apparently successful rows. Do not resolve or bless
 an early row; stop and investigate its provenance.
 
 The one immutable release-migration caller may then apply those pinned bytes as
 the final member of the drained combined release. Post-release verification
-requires exactly one current successful 000065 row with that checksum and one
+requires exactly one current successful 000066 row with that checksum and one
 applied step. After the first production publication is accepted, the next
 release must deliberately reclassify this digest from `forwardUnpublished` to
 the immutable-history set and replace the reject-any prepublication rule with
 the same allow-one-exact rule used by released migrations. Until that explicit
 handoff is checked in and tested, preflight intentionally blocks every later
 release rather than guessing that publication occurred. Any later schema
-change uses a new forward migration; never edit 000064 or 000065 after
+change uses a new forward migration; never edit 000064, 000065, or 000066 after
 publication.
 
 The migration also owns the database authority for provider-effect evidence.

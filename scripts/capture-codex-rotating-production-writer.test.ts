@@ -110,7 +110,7 @@ describe("production-writer rollout observation capture", () => {
       functionsEnd,
     );
 
-    expect(codexRotatingFunctionBodyDigests).toHaveLength(20);
+    expect(codexRotatingFunctionBodyDigests).toHaveLength(22);
     expect(functionsSql).toContain("'bodySha256'");
     expect(functionsSql).toContain("'owner', owner.rolname");
     expect(functionsSql).toContain("p.prosrc");
@@ -405,6 +405,10 @@ describe("production-writer rollout observation capture", () => {
         },
         {
           id: "000065_codex_oauth_authority_acl_hardening",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
+        {
+          id: "000066_codex_oauth_rotating_cascade_authority",
           sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
         },
       ],

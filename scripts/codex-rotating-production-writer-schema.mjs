@@ -1189,10 +1189,6 @@ const functionBody = (name, bodySha256) => Object.freeze({ name, bodySha256 });
 // complete stored PL/pgSQL bodies rather than one easily preserved token.
 export const codexRotatingFunctionBodyDigests = Object.freeze([
   functionBody(
-    "codex_oauth_authorize_provider_identity_repair",
-    "90474a7b622a55f6967d9947451bcf8b563f6f0c89ef7dbe09bd58e0f61f20f3",
-  ),
-  functionBody(
     "codex_oauth_authorize_runtime_completion",
     "753dd33a96776039c03a12ad83eddeb9ff5041c5f1aadd62fa6170806caeb694",
   ),
@@ -1222,7 +1218,15 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_provider_identity_guard",
-    "a9f070ee7f332c150b7c33ccb5d5e1fc1a2ecf67ec35cd0ad5343b494718e6e8",
+    "a6d8c7a2e913d3dec9ce0625ddf900e3e5cbe18e959bcc35d2a13b31a88d162b",
+  ),
+  functionBody(
+    "codex_oauth_provider_identity_repair_challenge",
+    "4b99847380e0ae432e6598a38155e209fc7602b4056058a0a1a06004eea4b420",
+  ),
+  functionBody(
+    "codex_oauth_provider_identity_transition",
+    "5dd846ac4ef9844e6759cfb8ddf2d604ad9fd59197a24f38210374c6f093c6e1",
   ),
   functionBody(
     "codex_oauth_provider_mutation_transition_guard",
@@ -1234,11 +1238,15 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_repair_quarantined_provider",
-    "8b734e58f5d6cbc79f25bbeac77fc0f9347a2d5c27a3d9018c49db14226986af",
+    "c89bd8ee1fd50eebad428899e8c446a91c29f524ef8dca600eea2a4da9fdab30",
   ),
   functionBody(
     "codex_oauth_repository_identity_guard",
     "050ebe504e6051cf2675278d8f7c48eae3d36bad407da2f3a7e148934807436a",
+  ),
+  functionBody(
+    "codex_oauth_runtime_referential_action_guard",
+    "a4d500b9173198ece488dba73c3c570079e51350a050451b45c18b37fb2de03d",
   ),
   functionBody(
     "codex_oauth_runtime_writeback_evidence_guard",
@@ -1275,19 +1283,30 @@ export const codexRotatingFunctions = Object.freeze(
 );
 
 export const codexRotatingTriggers = Object.freeze([
+  "CodexOAuthChildIdentityQuarantine_cascade_guard",
   "CodexOAuthDatabaseAuthorityReceipt_one_shot_guard",
+  "CodexOAuthLease_cascade_guard",
   "CodexOAuthLease_identity_fence_guard",
+  "CodexOAuthProviderIdentityQuarantine_cascade_guard",
+  "CodexOAuthProviderInstance_cascade_guard",
   "CodexOAuthProviderInstance_identity_guard",
   "CodexOAuthProviderInstance_mutation_transition_guard",
+  "CodexOAuthSecretNamespace_cascade_guard",
+  "CodexOAuthSetupDispatchAttempt_cascade_guard",
+  "CodexOAuthSetupManifest_cascade_guard",
   "CodexOAuthSetupManifest_identity_fence_guard",
   "CodexOAuthSetupManifest_evidence_guard",
   "CodexOAuthSecretNamespace_tombstone_guard",
+  "CodexOAuthSetupPayloadClaim_cascade_guard",
   "CodexOAuthSetupPayloadClaim_evidence_guard",
   "CodexOAuthSetupDispatchAttempt_evidence_guard",
+  "CodexOAuthSetupRecoveryRequest_cascade_guard",
   "CodexOAuthSetupRecoveryRequest_evidence_guard",
+  "CodexOAuthWritebackIntent_cascade_guard",
   "CodexOAuthWritebackIntent_identity_fence_guard",
   "CodexOAuthWritebackIntent_runtime_evidence_guard",
   "RepositoryConnection_codex_oauth_identity_guard",
+  "RepositoryConnection_runtime_referential_action_guard",
 ]);
 
 export const codexRotatingPublicExecuteDeniedFunctions = codexRotatingFunctions;

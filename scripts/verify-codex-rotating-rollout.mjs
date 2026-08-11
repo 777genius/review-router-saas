@@ -72,6 +72,13 @@ const migrations = [
     expectedSha256:
       "ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c",
   },
+  {
+    id: "000066_codex_oauth_rotating_cascade_authority",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000066_codex_oauth_rotating_cascade_authority/migration.sql",
+    expectedSha256:
+      "c7d098167f200a132dc9fd17943e365111b4cbf9b1d1d5800bf270589c80588e",
+  },
 ];
 const checkedInRotatingMigrations = readdirSync(
   resolve(checkoutRoot, "packages/platform/db/prisma/migrations"),
@@ -844,7 +851,7 @@ function exactFunctionCatalogAcl(entries) {
     ["codex_oauth_authorize_setup_confirmation", ["reviewrouter_web"]],
     ["codex_oauth_authorize_runtime_confirmation", ["reviewrouter_api"]],
     ["codex_oauth_authorize_runtime_completion", ["reviewrouter_api"]],
-    ["codex_oauth_authorize_provider_identity_repair", ["reviewrouter_web"]],
+    ["codex_oauth_provider_identity_repair_challenge", ["reviewrouter_web"]],
     ["codex_oauth_repair_quarantined_provider", ["reviewrouter_web"]],
     ["codex_oauth_sign_database_authority", [effectAuthorityRole]],
   ]);
@@ -1170,6 +1177,11 @@ function verifyDrainObservations(
 
 function exactTriggerBinding(entry) {
   const bindings = {
+    CodexOAuthChildIdentityQuarantine_cascade_guard: [
+      "CodexOAuthChildIdentityQuarantine",
+      "codex_oauth_runtime_referential_action_guard",
+      11,
+    ],
     CodexOAuthDatabaseAuthorityReceipt_one_shot_guard: [
       "CodexOAuthDatabaseAuthorityReceipt",
       "codex_oauth_database_authority_receipt_guard",
@@ -1220,6 +1232,51 @@ function exactTriggerBinding(entry) {
       "codex_oauth_child_identity_fence_guard",
       23,
     ],
+    CodexOAuthLease_cascade_guard: [
+      "CodexOAuthLease",
+      "codex_oauth_runtime_referential_action_guard",
+      11,
+    ],
+    CodexOAuthProviderIdentityQuarantine_cascade_guard: [
+      "CodexOAuthProviderIdentityQuarantine",
+      "codex_oauth_runtime_referential_action_guard",
+      11,
+    ],
+    CodexOAuthProviderInstance_cascade_guard: [
+      "CodexOAuthProviderInstance",
+      "codex_oauth_runtime_referential_action_guard",
+      11,
+    ],
+    CodexOAuthSecretNamespace_cascade_guard: [
+      "CodexOAuthSecretNamespace",
+      "codex_oauth_runtime_referential_action_guard",
+      11,
+    ],
+    CodexOAuthSetupDispatchAttempt_cascade_guard: [
+      "CodexOAuthSetupDispatchAttempt",
+      "codex_oauth_runtime_referential_action_guard",
+      11,
+    ],
+    CodexOAuthSetupManifest_cascade_guard: [
+      "CodexOAuthSetupManifest",
+      "codex_oauth_runtime_referential_action_guard",
+      11,
+    ],
+    CodexOAuthSetupPayloadClaim_cascade_guard: [
+      "CodexOAuthSetupPayloadClaim",
+      "codex_oauth_runtime_referential_action_guard",
+      11,
+    ],
+    CodexOAuthSetupRecoveryRequest_cascade_guard: [
+      "CodexOAuthSetupRecoveryRequest",
+      "codex_oauth_runtime_referential_action_guard",
+      11,
+    ],
+    CodexOAuthWritebackIntent_cascade_guard: [
+      "CodexOAuthWritebackIntent",
+      "codex_oauth_runtime_referential_action_guard",
+      11,
+    ],
     CodexOAuthWritebackIntent_identity_fence_guard: [
       "CodexOAuthWritebackIntent",
       "codex_oauth_child_identity_fence_guard",
@@ -1235,6 +1292,11 @@ function exactTriggerBinding(entry) {
       "codex_oauth_repository_identity_guard",
       17,
     ],
+    RepositoryConnection_runtime_referential_action_guard: [
+      "RepositoryConnection",
+      "codex_oauth_runtime_referential_action_guard",
+      27,
+    ],
   };
   return (
     hasExactKeys(entry, ["enabled", "function", "name", "table", "type"]) &&
@@ -1249,8 +1311,6 @@ function exactFunctionDefinition(entry) {
     {
       codex_oauth_authorize_runtime_completion:
         "target_intent_id text, target_signature text",
-      codex_oauth_authorize_provider_identity_repair:
-        "target_provider_instance_row_id text, target_signature text",
       codex_oauth_authorize_runtime_confirmation:
         "target_intent_id text, target_executor_owner text, target_response_code integer, target_signature text",
       codex_oauth_authorize_setup_confirmation:
@@ -1259,18 +1319,24 @@ function exactFunctionDefinition(entry) {
         "target_effect text, target_owner_id text, target_effect_code integer",
       codex_oauth_database_authority_challenge:
         "target_effect text, target_owner_id text, target_effect_code integer",
+      codex_oauth_provider_identity_transition:
+        "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text",
+      codex_oauth_provider_identity_repair_challenge:
+        "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, old_repository_provider text, old_github_repository_id bigint, old_external_repository_id text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text, new_github_repository_id bigint",
       codex_oauth_sign_database_authority: "target_challenge text",
       codex_oauth_repair_quarantined_child:
         "target_kind text, target_id text, replacement_lease_id text DEFAULT NULL::text",
       codex_oauth_repair_quarantined_provider:
-        "target_provider_instance_row_id text, target_github_repository_id bigint DEFAULT NULL::bigint",
+        "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, old_repository_provider text, old_github_repository_id bigint, old_external_repository_id text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text, new_github_repository_id bigint, target_signature text",
     }[entry?.name] ?? "";
   const expectedResult = entry?.name?.startsWith("codex_oauth_authorize_")
     ? "void"
     : entry?.name === "codex_oauth_consume_database_authority"
       ? "boolean"
       : entry?.name === "codex_oauth_database_authority_challenge" ||
-          entry?.name === "codex_oauth_sign_database_authority"
+          entry?.name === "codex_oauth_sign_database_authority" ||
+          entry?.name === "codex_oauth_provider_identity_transition" ||
+          entry?.name === "codex_oauth_provider_identity_repair_challenge"
         ? "text"
         : entry?.name?.includes("repair")
           ? "void"
@@ -1279,12 +1345,16 @@ function exactFunctionDefinition(entry) {
     entry?.name?.startsWith("codex_oauth_authorize_") ||
     entry?.name === "codex_oauth_consume_database_authority" ||
     entry?.name === "codex_oauth_sign_database_authority" ||
+    entry?.name === "codex_oauth_provider_identity_repair_challenge" ||
     entry?.name === "codex_oauth_provider_identity_guard" ||
+    entry?.name === "codex_oauth_runtime_referential_action_guard" ||
     entry?.name === "codex_oauth_repair_quarantined_provider";
   const fixedSearchPathFunction =
     securityDefinerFunction ||
     entry?.name === "codex_oauth_database_authority_challenge" ||
-    entry?.name === "codex_oauth_database_authority_receipt_guard";
+    entry?.name === "codex_oauth_database_authority_receipt_guard" ||
+    entry?.name === "codex_oauth_provider_identity_transition" ||
+    entry?.name === "codex_oauth_provider_identity_repair_challenge";
   return (
     typeof bodySha256 === "string" &&
     hasExactKeys(entry, [

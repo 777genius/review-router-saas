@@ -183,8 +183,8 @@ GRANT EXECUTE ON FUNCTION public."codex_oauth_consume_database_authority"(text, 
 ${
   role === "web"
     ? `GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_setup_confirmation"(text, integer, text) TO ${username};
-GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_provider_identity_repair"(text, text) TO ${username};
-GRANT EXECUTE ON FUNCTION public."codex_oauth_repair_quarantined_provider"(text, bigint) TO ${username};`
+GRANT EXECUTE ON FUNCTION public."codex_oauth_provider_identity_repair_challenge"(text,text,text,text,text,text,text,bigint,text,text,text,text,text,text,bigint) TO ${username};
+GRANT EXECUTE ON FUNCTION public."codex_oauth_repair_quarantined_provider"(text,text,text,text,text,text,text,bigint,text,text,text,text,text,text,bigint,text) TO ${username};`
     : role === "api"
       ? `GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_runtime_confirmation"(text, text, integer, text) TO ${username};
 GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_runtime_completion"(text, text) TO ${username};`

@@ -33,6 +33,8 @@ const versionedSecretNamespaceForwardChecksum =
   "4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666";
 const authorityAclHardeningForwardChecksum =
   "ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c";
+const rotatingCascadeAuthorityForwardChecksum =
+  "c7d098167f200a132dc9fd17943e365111b4cbf9b1d1d5800bf270589c80588e";
 
 describe("observation-backed Codex rotating rollout verifier", () => {
   it("keeps the exhaustive column inventory synchronized with Prisma", () => {
@@ -68,6 +70,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "000063_codex_oauth_setup_payload_claim",
       "000064_codex_oauth_versioned_secret_namespaces",
       "000065_codex_oauth_authority_acl_hardening",
+      "000066_codex_oauth_rotating_cascade_authority",
     ]) {
       const sql = readFileSync(
         join(
@@ -77,9 +80,10 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         "utf8",
       );
       for (const match of sql.matchAll(
-        /CREATE (?:OR REPLACE )?FUNCTION "([^"]+)"\s*\([\s\S]*?\)\s*RETURNS?\s+[\s\S]*?LANGUAGE plpgsql[\s\S]*?AS \$\$([\s\S]*?)\$\$;/gu,
+        /CREATE (?:OR REPLACE )?FUNCTION "([^"]+)"\s*\([\s\S]*?\)\s*RETURNS?\s+[\s\S]*?LANGUAGE plpgsql[\s\S]*?AS \$\$([\s\S]*?)\$\$;|DROP FUNCTION "([^"]+)"\s*\([^;]*\);/gu,
       )) {
-        finalBodies.set(match[1], match[2]);
+        if (match[3]) finalBodies.delete(match[3]);
+        else finalBodies.set(match[1]!, match[2]!);
       }
     }
 
@@ -270,7 +274,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         "Render services still expose independent migration callers",
         "compatibility probe cases are missing executable observations or derived digests",
         "v2 issuance was observed before v1/v2 installer and workflow publication",
-        "000065_codex_oauth_authority_acl_hardening migration history is not exactly one current success",
+        "000066_codex_oauth_rotating_cascade_authority migration history is not exactly one current success",
         "rollback floor must be the fence-aware deployed commit",
       ]),
     );
@@ -1217,6 +1221,10 @@ function observedFixture(): any {
           id: "000065_codex_oauth_authority_acl_hardening",
           sha256: authorityAclHardeningForwardChecksum,
         },
+        {
+          id: "000066_codex_oauth_rotating_cascade_authority",
+          sha256: rotatingCascadeAuthorityForwardChecksum,
+        },
       ],
       history: [
         {
@@ -1265,6 +1273,13 @@ function observedFixture(): any {
         {
           migration_name: "000065_codex_oauth_authority_acl_hardening",
           checksum: authorityAclHardeningForwardChecksum,
+          finished: true,
+          current: true,
+          applied_steps_count: 1,
+        },
+        {
+          migration_name: "000066_codex_oauth_rotating_cascade_authority",
+          checksum: rotatingCascadeAuthorityForwardChecksum,
           finished: true,
           current: true,
           applied_steps_count: 1,
@@ -1327,7 +1342,7 @@ function observedFixture(): any {
                     : name === "codex_oauth_authorize_setup_confirmation"
                       ? ["reviewrouter_web"]
                       : name ===
-                            "codex_oauth_authorize_provider_identity_repair" ||
+                            "codex_oauth_provider_identity_repair_challenge" ||
                           name === "codex_oauth_repair_quarantined_provider"
                         ? ["reviewrouter_web"]
                         : name ===
@@ -1383,6 +1398,23 @@ function observedFixture(): any {
           ),
         },
         triggers: [
+          ...[
+            "CodexOAuthChildIdentityQuarantine",
+            "CodexOAuthLease",
+            "CodexOAuthProviderIdentityQuarantine",
+            "CodexOAuthProviderInstance",
+            "CodexOAuthSecretNamespace",
+            "CodexOAuthSetupDispatchAttempt",
+            "CodexOAuthSetupManifest",
+            "CodexOAuthSetupPayloadClaim",
+            "CodexOAuthSetupRecoveryRequest",
+            "CodexOAuthWritebackIntent",
+          ].map((table) => [
+            `${table}_cascade_guard`,
+            table,
+            "codex_oauth_runtime_referential_action_guard",
+            11,
+          ]),
           [
             "CodexOAuthDatabaseAuthorityReceipt_one_shot_guard",
             "CodexOAuthDatabaseAuthorityReceipt",
@@ -1461,6 +1493,12 @@ function observedFixture(): any {
             "codex_oauth_repository_identity_guard",
             17,
           ],
+          [
+            "RepositoryConnection_runtime_referential_action_guard",
+            "RepositoryConnection",
+            "codex_oauth_runtime_referential_action_guard",
+            27,
+          ],
         ].map(([name, table, fn, type]) => ({
           name,
           table,
@@ -1481,7 +1519,9 @@ function observedFixture(): any {
             securityDefiner:
               name.startsWith("codex_oauth_authorize_") ||
               name === "codex_oauth_consume_database_authority" ||
+              name === "codex_oauth_provider_identity_repair_challenge" ||
               name === "codex_oauth_provider_identity_guard" ||
+              name === "codex_oauth_runtime_referential_action_guard" ||
               name === "codex_oauth_repair_quarantined_provider" ||
               name === "codex_oauth_sign_database_authority",
             config:
@@ -1490,6 +1530,9 @@ function observedFixture(): any {
               name === "codex_oauth_database_authority_challenge" ||
               name === "codex_oauth_database_authority_receipt_guard" ||
               name === "codex_oauth_provider_identity_guard" ||
+              name === "codex_oauth_runtime_referential_action_guard" ||
+              name === "codex_oauth_provider_identity_transition" ||
+              name === "codex_oauth_provider_identity_repair_challenge" ||
               name === "codex_oauth_repair_quarantined_provider" ||
               name === "codex_oauth_sign_database_authority"
                 ? ["search_path=pg_catalog, public"]
@@ -1504,7 +1547,9 @@ function observedFixture(): any {
               : name === "codex_oauth_consume_database_authority"
                 ? "boolean"
                 : name === "codex_oauth_database_authority_challenge" ||
-                    name === "codex_oauth_sign_database_authority"
+                    name === "codex_oauth_sign_database_authority" ||
+                    name === "codex_oauth_provider_identity_transition" ||
+                    name === "codex_oauth_provider_identity_repair_challenge"
                   ? "text"
                   : name.includes("repair")
                     ? "void"
@@ -1512,24 +1557,27 @@ function observedFixture(): any {
             arguments:
               name === "codex_oauth_authorize_runtime_completion"
                 ? "target_intent_id text, target_signature text"
-                : name === "codex_oauth_authorize_provider_identity_repair"
-                  ? "target_provider_instance_row_id text, target_signature text"
-                  : name === "codex_oauth_authorize_runtime_confirmation"
-                    ? "target_intent_id text, target_executor_owner text, target_response_code integer, target_signature text"
-                    : name === "codex_oauth_authorize_setup_confirmation"
-                      ? "target_attempt_id text, target_response_code integer, target_signature text"
-                      : name === "codex_oauth_consume_database_authority"
+                : name === "codex_oauth_authorize_runtime_confirmation"
+                  ? "target_intent_id text, target_executor_owner text, target_response_code integer, target_signature text"
+                  : name === "codex_oauth_authorize_setup_confirmation"
+                    ? "target_attempt_id text, target_response_code integer, target_signature text"
+                    : name === "codex_oauth_consume_database_authority"
+                      ? "target_effect text, target_owner_id text, target_effect_code integer"
+                      : name === "codex_oauth_database_authority_challenge"
                         ? "target_effect text, target_owner_id text, target_effect_code integer"
-                        : name === "codex_oauth_database_authority_challenge"
-                          ? "target_effect text, target_owner_id text, target_effect_code integer"
-                          : name === "codex_oauth_sign_database_authority"
-                            ? "target_challenge text"
-                            : name === "codex_oauth_repair_quarantined_child"
-                              ? "target_kind text, target_id text, replacement_lease_id text DEFAULT NULL::text"
-                              : name ===
-                                  "codex_oauth_repair_quarantined_provider"
-                                ? "target_provider_instance_row_id text, target_github_repository_id bigint DEFAULT NULL::bigint"
-                                : "",
+                        : name === "codex_oauth_provider_identity_transition"
+                          ? "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text"
+                          : name ===
+                              "codex_oauth_provider_identity_repair_challenge"
+                            ? "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, old_repository_provider text, old_github_repository_id bigint, old_external_repository_id text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text, new_github_repository_id bigint"
+                            : name === "codex_oauth_sign_database_authority"
+                              ? "target_challenge text"
+                              : name === "codex_oauth_repair_quarantined_child"
+                                ? "target_kind text, target_id text, replacement_lease_id text DEFAULT NULL::text"
+                                : name ===
+                                    "codex_oauth_repair_quarantined_provider"
+                                  ? "provider_row_id text, old_workspace_id text, old_repository_id text, old_provider_instance_id text, old_auth_mode text, old_secret_name text, old_repository_provider text, old_github_repository_id bigint, old_external_repository_id text, new_workspace_id text, new_repository_id text, new_provider_instance_id text, new_auth_mode text, new_secret_name text, new_github_repository_id bigint, target_signature text"
+                                  : "",
           }),
         ),
         checks: [
@@ -2113,6 +2161,7 @@ function observedFixture(): any {
             "000063_codex_oauth_setup_payload_claim",
             "000064_codex_oauth_versioned_secret_namespaces",
             "000065_codex_oauth_authority_acl_hardening",
+            "000066_codex_oauth_rotating_cascade_authority",
           ],
           singleCaller: true,
           caller: "release-migration",
