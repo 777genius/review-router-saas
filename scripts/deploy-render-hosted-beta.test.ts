@@ -205,7 +205,7 @@ describe("Render hosted deploy hardening", () => {
     expect(guidance).toContain("operations/02-runbooks.md");
   });
 
-  it("checks in immutable exclusive migration and rollout evidence workflows", () => {
+  it("composes legacy entry points through the immutable private-network rollout", () => {
     const migration = readFileSync(
       ".github/workflows/codex-rotating-release-migration.yml",
       "utf8",
@@ -218,33 +218,25 @@ describe("Render hosted deploy hardening", () => {
       ".github/workflows/codex-rotating-role-bootstrap.yml",
       "utf8",
     );
-    expect(migration).toContain(
-      "node scripts/run-codex-rotating-release-migration.mjs > migration-output.json",
+    const privateRollout = readFileSync(
+      ".github/workflows/private-network-pg17-rollout.yml",
+      "utf8",
     );
-    expect(migration).toContain(
-      "group: codex-rotating-database-mutation-production",
+    for (const alias of [migration, bootstrap, rollout]) {
+      expect(alias).toContain(
+        "uses: ./.github/workflows/private-network-pg17-rollout.yml",
+      );
+      expect(alias).not.toContain("DATABASE_URL");
+      expect(alias).not.toContain("runs-on: ubuntu");
+    }
+    expect(privateRollout).toContain("group: private-network-pg17-production");
+    expect(privateRollout).toContain(
+      "scripts/run-private-pg17-copy-bootstrap.ts",
     );
-    expect(migration).not.toContain("run-render-codex-rotating-migration-job");
-    expect(bootstrap).toContain(
-      "node scripts/run-codex-rotating-role-bootstrap.mjs > role-bootstrap-output.json",
-    );
-    expect(bootstrap).toContain(
-      "group: codex-rotating-database-mutation-production",
-    );
-    expect(migration).not.toContain(
-      "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
-    );
-    expect(bootstrap).toContain("environment: production-role-bootstrap");
-    expect(migration).toContain(
-      "node scripts/assemble-codex-rotating-trusted-evidence.mjs",
-    );
-    expect(migration).toContain(
-      "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-    );
-    expect(rollout).toContain(
-      "node scripts/assemble-codex-rotating-trusted-rollout.mjs",
-    );
-    expect(rollout).not.toContain("MIGRATION_EVIDENCE_FILE");
+    expect(privateRollout).toContain("scripts/run-private-pg17-rollout.ts");
+    expect(privateRollout).toContain("environment: production-role-bootstrap");
+    expect(privateRollout).toContain("runs-on:");
+    expect(privateRollout).toContain("self-hosted");
     expect(`${migration}\n${bootstrap}\n${rollout}`).not.toMatch(
       /actions\/(?:checkout|upload-artifact)@v\d/u,
     );
