@@ -42,7 +42,7 @@ describe("canonical exclusive release migration caller", () => {
     const provisioning = roleProvisioningSql(configuration);
     const grants = runtimeGrantSql(configuration);
     expect(provisioning.match(/CREATE ROLE/g)).toHaveLength(5);
-    expect(provisioning.match(/NOCREATEDB/g)).toHaveLength(10);
+    expect(provisioning.match(/NOCREATEDB/g)).toHaveLength(5);
     expect(provisioning.match(/NOCREATEROLE/g)).toHaveLength(10);
     expect(provisioning).toContain(
       "refusing to converge unexpectedly privileged role",

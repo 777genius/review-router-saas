@@ -158,7 +158,7 @@ BEGIN
   END IF;
 END
 $role$;
-ALTER ROLE ${username} LOGIN NOCREATEDB NOCREATEROLE PASSWORD ${quoted(password)};
+ALTER ROLE ${username} LOGIN NOCREATEROLE PASSWORD ${quoted(password)};
 DO $membership$
 DECLARE membership record;
 BEGIN
