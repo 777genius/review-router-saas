@@ -15,6 +15,11 @@ x-reviewrouter-service: &reviewrouter-service
   build:
     context: ../..
     dockerfile: deploy/self-hosted/Dockerfile
+    args:
+      REVIEW_ROUTER_WEB_URL: ${REVIEW_ROUTER_WEB_URL:?REVIEW_ROUTER_WEB_URL is required}
+      REVIEW_ROUTER_API_URL: ${REVIEW_ROUTER_API_URL:?REVIEW_ROUTER_API_URL is required}
+      REVIEW_ROUTER_PUBLIC_WEB_URL: ${REVIEW_ROUTER_PUBLIC_WEB_URL:?REVIEW_ROUTER_PUBLIC_WEB_URL is required}
+      REVIEW_ROUTER_PUBLIC_API_URL: ${REVIEW_ROUTER_PUBLIC_API_URL:?REVIEW_ROUTER_PUBLIC_API_URL is required}
   env_file:
     - ${REVIEW_ROUTER_SELF_HOSTED_ENV_FILE:-./.env}
   restart: unless-stopped

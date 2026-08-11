@@ -27,6 +27,7 @@ CODEX_HOME_OVERRIDE="${REVIEW_ROUTER_CODEX_HOME:-}"
 ALLOW_EXTERNAL_AUTH_FILE="${REVIEW_ROUTER_ALLOW_EXTERNAL_CODEX_AUTH_FILE:-0}"
 DRY_RUN="${REVIEW_ROUTER_DRY_RUN:-0}"
 CURL_TEST_UNIX_SOCKET="${REVIEW_ROUTER_CODEX_ROTATING_CURL_TEST_UNIX_SOCKET:-}"
+CURL_TEST_MAX_TIME="${REVIEW_ROUTER_CODEX_ROTATING_CURL_TEST_MAX_TIME:-}"
 CONFIRM_WRITE="${REVIEW_ROUTER_CONFIRM_WRITE:-${REVIEW_ROUTER_YES:-0}}"
 SKIP_LOGIN="${REVIEW_ROUTER_SKIP_CODEX_LOGIN:-0}"
 FORCE_RESEED="${REVIEW_ROUTER_FORCE_CODEX_RESEED:-0}"
@@ -1038,11 +1039,11 @@ NODE
       printf 'unix-socket = "%s"\n' "$CURL_TEST_UNIX_SOCKET"
     fi
     curl_max_time=30
-    if [ -n "${REVIEW_ROUTER_CODEX_ROTATING_CURL_TEST_MAX_TIME:-}" ]; then
+    if [ -n "$CURL_TEST_MAX_TIME" ]; then
       [ "${REVIEW_ROUTER_SEED_LIBRARY_ONLY:-0}" = "1" ] || fatal "The curl max-time override is test-only."
-      case "$REVIEW_ROUTER_CODEX_ROTATING_CURL_TEST_MAX_TIME" in
+      case "$CURL_TEST_MAX_TIME" in
         ''|*[!0-9]*) fatal "The curl test max-time must be an integer." ;;
-        *) curl_max_time="$REVIEW_ROUTER_CODEX_ROTATING_CURL_TEST_MAX_TIME" ;;
+        *) curl_max_time="$CURL_TEST_MAX_TIME" ;;
       esac
       [ "$curl_max_time" -ge 1 ] || fatal "The curl test max-time must be positive."
     fi

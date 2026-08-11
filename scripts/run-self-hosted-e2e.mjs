@@ -49,7 +49,10 @@ try {
   );
 
   composeTouched = true;
-  runCompose(["up", "-d", "--build", "--wait", "--wait-timeout", "300"]);
+  runCompose(["up", "-d", "--wait", "--wait-timeout", "120", "postgres"]);
+  provisionEffectAuthorityRole();
+  runCompose(["build", "api"]);
+  runCompose(["up", "-d", "--wait", "--wait-timeout", "300"]);
   assertComposeState();
   await assertHealthEndpoint(
     `http://127.0.0.1:${ports.web}/api/health`,
@@ -130,11 +133,13 @@ function createTestSecrets() {
     encryption: randomSecret(),
     webhook: randomSecret(),
     postgres: randomSecret(),
+    effectAuthority: randomSecret(),
     githubClient: randomSecret(),
     reviewRunAuthorization: randomBytes(32).toString("base64"),
     reviewV2Capability: randomBytes(32).toString("base64"),
     reviewV2ContextSession: randomBytes(32).toString("base64"),
     reviewV2ContextReplay: randomBytes(32).toString("base64"),
+    databaseRecoveryWitness: randomBytes(32).toString("base64url"),
     investigationLeaseCapability: randomBytes(32).toString("base64"),
     investigationPrivateMaterial: randomBytes(32).toString("base64url"),
     reviewV2Operator: randomSecret(),
@@ -146,7 +151,11 @@ function createTestEnvironment() {
   const actionRef =
     process.env.REVIEW_ROUTER_SELF_HOSTED_E2E_ACTION_REF ??
     `777genius/review-router@${"a".repeat(40)}`;
+  const actionRepository = actionRef.slice(0, actionRef.lastIndexOf("@"));
   const actionCommitSha = actionRef.slice(actionRef.lastIndexOf("@") + 1);
+  const installerSha256 = createHash("sha256")
+    .update(readFileSync(join(repoRoot, "scripts/seed-codex-rotating-auth.sh")))
+    .digest("hex");
   const env = {
     ...process.env,
     NODE_ENV: "production",
@@ -155,6 +164,7 @@ function createTestEnvironment() {
     POSTGRES_USER: "reviewrouter",
     POSTGRES_PASSWORD: secrets.postgres,
     DATABASE_URL: `postgresql://reviewrouter:${secrets.postgres}@postgres:5432/review_router?schema=public`,
+    REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: `postgresql://reviewrouter_codex_effect_authority:${secrets.effectAuthority}@postgres:5432/review_router?schema=public`,
     REVIEW_ROUTER_WEB_BIND: `127.0.0.1:${ports.web}`,
     REVIEW_ROUTER_API_BIND: `127.0.0.1:${ports.api}`,
     REVIEW_ROUTER_POSTGRES_BIND: `127.0.0.1:${ports.postgres}`,
@@ -165,6 +175,7 @@ function createTestEnvironment() {
     NEXTAUTH_URL: "https://selfhost.reviewrouter.test",
     AUTH_SECRET: secrets.auth,
     REVIEW_ROUTER_ACTION_SESSION_SECRET: secrets.actionSession,
+    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: secrets.databaseRecoveryWitness,
     REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: secrets.encryption,
     GITHUB_APP_ID: "123456",
     GITHUB_APP_CLIENT_ID: "Iv1.selfhostede2eclient",
@@ -181,6 +192,10 @@ function createTestEnvironment() {
     REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE: "0",
     REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter",
     REVIEW_ROUTER_ACTION_REF: actionRef,
+    REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: `https://raw.githubusercontent.com/${actionRepository}/${actionCommitSha}/scripts/seed-codex-rotating-auth.sh`,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: actionCommitSha,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: installerSha256,
     REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
     REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED: "1",
     REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE: "client_triggered_t0",
@@ -310,6 +325,7 @@ function writeEnvFile(env) {
     "POSTGRES_USER",
     "POSTGRES_PASSWORD",
     "DATABASE_URL",
+    "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
     "REVIEW_ROUTER_WEB_BIND",
     "REVIEW_ROUTER_API_BIND",
     "REVIEW_ROUTER_POSTGRES_BIND",
@@ -320,6 +336,7 @@ function writeEnvFile(env) {
     "NEXTAUTH_URL",
     "AUTH_SECRET",
     "REVIEW_ROUTER_ACTION_SESSION_SECRET",
+    "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
     "REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY",
     "GITHUB_APP_ID",
     "GITHUB_APP_CLIENT_ID",
@@ -336,6 +353,10 @@ function writeEnvFile(env) {
     "REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE",
     "REVIEW_ROUTER_ACTION_OIDC_AUDIENCE",
     "REVIEW_ROUTER_ACTION_REF",
+    "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF",
+    "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL",
+    "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION",
+    "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256",
     "REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH",
     "REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED",
     "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE",
@@ -428,6 +449,42 @@ function runComposeWithSanitizedOutput(args) {
   return result;
 }
 
+function provisionEffectAuthorityRole() {
+  const password = secrets.effectAuthority.replaceAll("'", "''");
+  runComposeWithInput(
+    [
+      "exec",
+      "-T",
+      "postgres",
+      "psql",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-U",
+      testEnv.POSTGRES_USER,
+      "-d",
+      testEnv.POSTGRES_DB,
+    ],
+    `CREATE ROLE reviewrouter_codex_effect_authority LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '${password}';\n`,
+    "effect_authority_role_provisioning",
+  );
+}
+
+function runComposeWithInput(args, input, label) {
+  const result = spawnSync("docker", composeArguments(args), {
+    cwd: repoRoot,
+    env: testEnv,
+    encoding: "utf8",
+    input,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  assertCredentialMaterialAbsent(output, label);
+  if (output) process.stdout.write(output);
+  if (result.status !== 0) {
+    throw new Error(`${label}_failed:${result.status ?? result.signal}`);
+  }
+}
+
 function setGlobalReviewV2EmergencyStop(stopped) {
   runCompose([
     "exec",
@@ -517,10 +574,11 @@ function containerE2ECommand() {
   return [
     "set -eu",
     "test_url=$(node -e 'const u=new URL(process.env.DATABASE_URL);u.pathname=`/${process.env.REVIEW_ROUTER_E2E_DATABASE}`;process.stdout.write(u.href)')",
+    "authority_test_url=$(node -e 'const u=new URL(process.env.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL);u.pathname=`/${process.env.REVIEW_ROUTER_E2E_DATABASE}`;process.stdout.write(u.href)')",
     'DATABASE_URL="$test_url" pnpm --filter @reviewrouter/platform-db db:migrate:deploy',
-    'REVIEW_ROUTER_REVIEW_V2_E2E_ALLOW_DOCKER_DATABASE=1 REVIEW_ROUTER_TEST_DATABASE_URL="$test_url" pnpm review-v2:e2e',
-    'REVIEW_ROUTER_REVIEW_V2_E2E_ALLOW_DOCKER_DATABASE=1 REVIEW_ROUTER_SELF_HOSTED_REVIEW_PATHS_E2E=1 REVIEW_ROUTER_TEST_DATABASE_URL="$test_url" pnpm exec vitest run scripts/self-hosted-e2e/self-hosted-review-paths.e2e.test.ts',
-    'DATABASE_URL="$test_url" REVIEW_ROUTER_TARGET_REPO="reviewrouter-e2e/self-hosted-fixture" pnpm spike:action:e2e',
+    'REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL="$authority_test_url" REVIEW_ROUTER_REVIEW_V2_E2E_ALLOW_DOCKER_DATABASE=1 REVIEW_ROUTER_TEST_DATABASE_URL="$test_url" pnpm review-v2:e2e',
+    'REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL="$authority_test_url" REVIEW_ROUTER_REVIEW_V2_E2E_ALLOW_DOCKER_DATABASE=1 REVIEW_ROUTER_SELF_HOSTED_REVIEW_PATHS_E2E=1 REVIEW_ROUTER_TEST_DATABASE_URL="$test_url" pnpm exec vitest run scripts/self-hosted-e2e/self-hosted-review-paths.e2e.test.ts',
+    'DATABASE_URL="$test_url" REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL="$authority_test_url" REVIEW_ROUTER_TARGET_REPO="reviewrouter-e2e/self-hosted-fixture" pnpm spike:action:e2e',
   ].join("\n");
 }
 
