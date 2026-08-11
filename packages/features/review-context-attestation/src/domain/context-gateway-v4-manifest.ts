@@ -36,6 +36,7 @@ export enum ContextGatewayV4ValidationIssue {
   FileCompletionInvalid = "context_gateway_v4_file_completion_invalid",
   FileContentKindInvalid = "context_gateway_v4_file_content_kind_invalid",
   FileContentMetadataIncomplete = "context_gateway_v4_file_content_metadata_incomplete",
+  FileIdentityMismatch = "context_gateway_v4_file_identity_mismatch",
   FileLineCountInvalid = "context_gateway_v4_file_line_count_invalid",
   FileRangeGap = "context_gateway_v4_file_range_gap",
   FileRangeIncomplete = "context_gateway_v4_file_range_incomplete",
@@ -147,7 +148,7 @@ export function createContextGatewayV4Manifest(
   if (events.at(-1)?.eventHash !== candidate.authenticatedChainHash) {
     throw new Error(ContextGatewayV4ValidationIssue.TerminalHashInvalid);
   }
-  assertSuccessfulEvidenceCompleteness(events);
+  assertSuccessfulEvidenceConsistency(events);
   const manifest = Object.freeze({
     manifestVersion: contextGatewayV4ManifestVersion,
     gatewayPolicyVersion: contextGatewayV4PolicyVersion,
@@ -419,7 +420,7 @@ function normalizeResult(
   return Object.freeze({ ...result });
 }
 
-function assertSuccessfulEvidenceCompleteness(
+function assertSuccessfulEvidenceConsistency(
   events: readonly ContextGatewayV4Event[],
 ): void {
   const pages = new Map<string, ContextGatewayV4Event[]>();
@@ -443,19 +444,14 @@ function assertSuccessfulEvidenceCompleteness(
       pages.set(key, chain);
     }
     if (event.operationKind === ContextGatewayV4OperationKind.FileRead) {
-      const key = [
-        result.revision,
-        result.treeOid,
-        result.pathHash,
-        result.blobOid,
-      ].join(":");
+      const key = [result.revision, result.treeOid, result.pathHash].join(":");
       const ranges = files.get(key) ?? [];
       ranges.push(event);
       files.set(key, ranges);
     }
   }
   for (const chain of pages.values()) assertCompletePageSequences(chain);
-  for (const ranges of files.values()) assertCompleteFileRanges(ranges);
+  for (const ranges of files.values()) assertConsistentFileIdentity(ranges);
 }
 
 function assertCompletePageSequences(
@@ -510,30 +506,21 @@ function assertCompletePageChain(
   }
 }
 
-function assertCompleteFileRanges(
+function assertConsistentFileIdentity(
   ranges: readonly ContextGatewayV4Event[],
 ): void {
-  const spans = ranges
-    .map((event) => ({
-      start: Number(event.result?.startByte),
-      end: Number(event.result?.startByte) + Number(event.result?.byteCount),
-      eof: event.result?.eof === true,
-    }))
-    .sort((left, right) => left.start - right.start || left.end - right.end);
-  if (spans[0]?.start !== 0) {
-    throw new Error(ContextGatewayV4ValidationIssue.FileRangeIncomplete);
+  const first = ranges[0]?.result;
+  if (first === null || first === undefined) {
+    throw new Error(ContextGatewayV4ValidationIssue.ResultMissing);
   }
-  let coveredUntil = 0;
-  let eofCovered = false;
-  for (const span of spans) {
-    if (span.start > coveredUntil) {
-      throw new Error(ContextGatewayV4ValidationIssue.FileRangeGap);
+  for (const event of ranges.slice(1)) {
+    if (
+      event.result === null ||
+      event.result.mode !== first.mode ||
+      event.result.blobOid !== first.blobOid
+    ) {
+      throw new Error(ContextGatewayV4ValidationIssue.FileIdentityMismatch);
     }
-    coveredUntil = Math.max(coveredUntil, span.end);
-    if (span.eof && span.end <= coveredUntil) eofCovered = true;
-  }
-  if (!eofCovered) {
-    throw new Error(ContextGatewayV4ValidationIssue.FileRangeIncomplete);
   }
 }
 

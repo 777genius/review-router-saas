@@ -360,7 +360,7 @@ describe("Review Action v2 context attestation composition", () => {
     });
   });
 
-  it("accepts an authenticated gateway v4 manifest without enabling replay", async () => {
+  it("accepts an authenticated partial-file v4 manifest without enabling replay", async () => {
     const fixture = await createFixture({
       gatewayPolicyVersion: "context-gateway-v4",
       release: { contextGatewayPolicyVersion: "context-gateway-v4" },
@@ -376,21 +376,51 @@ describe("Review Action v2 context attestation composition", () => {
         "base64url",
       ),
       eventChainSeedHash: required(opened.result.eventChainSeedHash),
+      partialFile: true,
     });
     const replayMaterialCanonicalJson = stableJson({
       materialVersion: 1,
       sourceDependencies: [],
     });
 
-    const sealed = await fixture.routes.sealGateway!.execute(
-      await sealRequest({
-        fixture,
-        sessionId,
-        sealCapability: required(opened.result.sealCapability),
-        transcriptCanonicalJson: canonicalContextGatewayV4Manifest(manifest),
-        replayMaterialCanonicalJson,
-      }),
-    );
+    const sealCapability = required(opened.result.sealCapability);
+    const validSeal = await sealRequest({
+      fixture,
+      sessionId,
+      sealCapability,
+      transcriptCanonicalJson: canonicalContextGatewayV4Manifest(manifest),
+      replayMaterialCanonicalJson,
+    });
+    const partialEvent = required(manifest.events[0]);
+    const tampered = createContextGatewayV4Manifest({
+      ...manifest,
+      events: [
+        {
+          ...partialEvent,
+          result: {
+            ...required(partialEvent.result),
+            startByte: 1,
+          },
+        },
+      ],
+    });
+
+    await expect(
+      fixture.routes.sealGateway!.execute(
+        await sealRequest({
+          fixture,
+          sessionId,
+          sealCapability,
+          transcriptCanonicalJson: canonicalContextGatewayV4Manifest(tampered),
+          replayMaterialCanonicalJson,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      issues: ["context_transcript_hmac_chain_invalid"],
+    });
+
+    const sealed = await fixture.routes.sealGateway!.execute(validSeal);
 
     expect(sealed.result.status).toBe(
       ReviewContextGatewaySealResultStatus.Accepted,
@@ -1335,17 +1365,36 @@ function sourceV4Manifest(input: {
   sessionId: string;
   sessionSecret: Buffer;
   eventChainSeedHash: string;
+  partialFile?: boolean;
 }) {
-  const operation = {
-    kind: ContextGatewayV4OperationKind.GitFact,
-    fact: "merge_base",
-  } as const;
-  const result = {
-    complete: true,
-    fact: "merge_base",
-    itemCount: 1,
-    resultHash: sha("merge-base-result"),
-  } as const;
+  const operation = input.partialFile
+    ? ({
+        kind: ContextGatewayV4OperationKind.FileRead,
+        inputHash: sha("partial-file-input"),
+      } as const)
+    : ({
+        kind: ContextGatewayV4OperationKind.GitFact,
+        fact: "merge_base",
+      } as const);
+  const result = input.partialFile
+    ? ({
+        revision: "head",
+        treeOid: sourceTree,
+        pathHash: sha("partial-file-path"),
+        mode: "100644",
+        blobOid: gitOid("b"),
+        contentHash: sha("partial-file-content"),
+        byteCount: 256 * 1024,
+        startByte: 0,
+        eof: false,
+        complete: false,
+      } as const)
+    : ({
+        complete: true,
+        fact: "merge_base",
+        itemCount: 1,
+        resultHash: sha("merge-base-result"),
+      } as const);
   const operationKey = sha(stableJson(operation));
   const operationReceiptId = sha("operation-receipt");
   const eventIdentity = {
@@ -1379,7 +1428,7 @@ function sourceV4Manifest(input: {
         previousEventHash: input.eventChainSeedHash,
         eventHash,
         operationKey,
-        operationKind: ContextGatewayV4OperationKind.GitFact,
+        operationKind: operation.kind,
         outcome: ContextGatewayV4OutcomeKind.Succeeded,
         failureClass: null,
         operation,
