@@ -30,11 +30,8 @@ assertInvestigationReleaseFixture(investigationReleaseFixture);
 let composeTouched = false;
 let testDatabaseCreated = false;
 
-const ports = {
-  web: await reserveFreePort(),
-  api: await reserveFreePort(),
-  postgres: await reserveFreePort(),
-};
+const [webPort, apiPort, postgresPort] = await reserveFreePorts(3);
+const ports = { web: webPort, api: apiPort, postgres: postgresPort };
 const secrets = createTestSecrets();
 const testEnv = createTestEnvironment();
 writeEnvFile(testEnv);
@@ -697,22 +694,43 @@ function parseComposeRecords(value) {
     .map((line) => JSON.parse(line));
 }
 
-function reserveFreePort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.unref();
-    server.once("error", reject);
-    server.listen({ host: "127.0.0.1", port: 0 }, () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close();
-        reject(new Error("self_hosted_e2e_port_allocation_failed"));
-        return;
-      }
-      server.close((error) => {
-        if (error) reject(error);
-        else resolvePort(address.port);
-      });
-    });
-  });
+async function reserveFreePorts(count) {
+  const servers = Array.from({ length: count }, () => createServer());
+  try {
+    const ports = await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise((resolvePort, reject) => {
+            server.unref();
+            server.once("error", reject);
+            server.listen({ host: "127.0.0.1", port: 0 }, () => {
+              server.off("error", reject);
+              const address = server.address();
+              if (!address || typeof address === "string") {
+                reject(new Error("self_hosted_e2e_port_allocation_failed"));
+                return;
+              }
+              resolvePort(address.port);
+            });
+          }),
+      ),
+    );
+    if (new Set(ports).size !== count) {
+      throw new Error("self_hosted_e2e_port_allocation_not_unique");
+    }
+    return ports;
+  } finally {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise((resolveClose) => {
+            if (!server.listening) {
+              resolveClose();
+              return;
+            }
+            server.close(() => resolveClose());
+          }),
+      ),
+    );
+  }
 }
