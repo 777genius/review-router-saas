@@ -331,7 +331,6 @@ BEGIN
 END
 $role$;
 ALTER ROLE ${username} LOGIN NOCREATEROLE PASSWORD ${quoted(password)};
-GRANT ${username} TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 DO $membership$
 DECLARE membership record;
 BEGIN
@@ -454,7 +453,7 @@ $transfer_public_ownership$;
 SELECT 'ALTER SCHEMA public OWNER TO reviewrouter_release_migration'
 WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'public') <> 'reviewrouter_release_migration'
 \\gexec
-GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE;
 CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap;
 DO $bootstrap_schema$
 BEGIN

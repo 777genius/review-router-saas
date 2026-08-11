@@ -142,9 +142,11 @@ describe("canonical exclusive release migration caller", () => {
       "refusing to take over public objects owned by unexpected role",
     );
     expect(provisioning).toContain(
-      "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+      "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
     );
-    expect(provisioning).not.toContain("ADMIN reviewrouter_role_bootstrap");
+    expect(provisioning).not.toContain(
+      "TO reviewrouter_role_bootstrap WITH ADMIN TRUE",
+    );
     expect(provisioning).not.toContain("ALTER DATABASE");
     expect(provisioning).toContain(
       "GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration",
