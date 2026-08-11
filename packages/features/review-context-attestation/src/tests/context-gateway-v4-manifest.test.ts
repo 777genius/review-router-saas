@@ -100,12 +100,153 @@ describe("ContextGatewayV4Manifest", () => {
     ).toThrow("context_gateway_v4_terminal_failure_present");
   });
 
-  it("requires file byte ranges to cover the blob through EOF", () => {
+  it("attests exact partial file ranges with one immutable blob identity", () => {
     const first = successFile(1, 0, 4, false, hash("seed"));
     const gap = successFile(2, 8, 4, true, first.eventHash);
+
+    expect(createContextGatewayV4Manifest(candidate([first])).events).toEqual([
+      first,
+    ]);
+    expect(
+      createContextGatewayV4Manifest(candidate([first, gap])).events,
+    ).toEqual([first, gap]);
+
+    const inconsistent = Object.freeze({
+      ...gap,
+      result: Object.freeze({ ...gap.result!, blobOid: "c".repeat(40) }),
+    });
     expect(() =>
-      createContextGatewayV4Manifest(candidate([first, gap])),
-    ).toThrow("context_gateway_v4_file_range_gap");
+      createContextGatewayV4Manifest(candidate([first, inconsistent])),
+    ).toThrow("context_gateway_v4_file_identity_mismatch");
+
+    const inconsistentMode = Object.freeze({
+      ...gap,
+      result: Object.freeze({ ...gap.result!, mode: "100755" }),
+    });
+    expect(() =>
+      createContextGatewayV4Manifest(candidate([first, inconsistentMode])),
+    ).toThrow("context_gateway_v4_file_identity_mismatch");
+
+    const invalidRevision = Object.freeze({
+      ...first,
+      result: Object.freeze({ ...first.result!, revision: "main" }),
+    });
+    expect(() =>
+      createContextGatewayV4Manifest(candidate([invalidRevision])),
+    ).toThrow("context_gateway_v4_file_revision_invalid");
+
+    const invalidMode = Object.freeze({
+      ...first,
+      result: Object.freeze({ ...first.result!, mode: "040000" }),
+    });
+    expect(() =>
+      createContextGatewayV4Manifest(candidate([invalidMode])),
+    ).toThrow("context_gateway_v4_file_mode_invalid");
+  });
+
+  it("replays exact authenticated partial file ranges only", () => {
+    const first = successFile(1, 0, 4, false, hash("seed"));
+    const gap = successFile(2, 8, 4, true, first.eventHash);
+    const source = createContextGatewayV4Manifest(candidate([first, gap]));
+    const targetEvents = rechain(
+      [first, gap].map((entry) =>
+        Object.freeze({
+          ...entry,
+          result: Object.freeze({
+            ...entry.result!,
+            treeOid: "c".repeat(40),
+          }),
+        }),
+      ),
+      hash("target-seed"),
+    );
+    const target = createContextGatewayV4Manifest({
+      ...candidate(targetEvents),
+      checkoutTreeOid: "c".repeat(40),
+      eventChainSeedHash: hash("target-seed"),
+      authenticatedChainHash: targetEvents.at(-1)!.eventHash,
+    });
+    const receiptIds = [hash("file-receipt-0"), hash("file-receipt-8")];
+
+    expect(
+      decideContextGatewayV4Replay(source, target, receiptIds),
+    ).toMatchObject({ status: ContextDependencyReplayStatus.Matched });
+
+    const changedBlobEvents = rechain(
+      targetEvents.map((entry) =>
+        Object.freeze({
+          ...entry,
+          result: Object.freeze({
+            ...entry.result!,
+            blobOid: "d".repeat(40),
+          }),
+        }),
+      ),
+      hash("changed-blob-seed"),
+    );
+    const changedBlob = createContextGatewayV4Manifest({
+      ...candidate(changedBlobEvents),
+      checkoutTreeOid: "c".repeat(40),
+      eventChainSeedHash: hash("changed-blob-seed"),
+      authenticatedChainHash: changedBlobEvents.at(-1)!.eventHash,
+    });
+    expect(
+      decideContextGatewayV4Replay(source, changedBlob, receiptIds),
+    ).toMatchObject({
+      status: ContextDependencyReplayStatus.Denied,
+      reason: ContextDependencyReplayDenialReason.ResultMismatch,
+    });
+
+    const changedRangeEvents = rechain(
+      targetEvents.map((entry, index) =>
+        index === 1
+          ? Object.freeze({
+              ...entry,
+              result: Object.freeze({
+                ...entry.result!,
+                startByte: 9,
+              }),
+            })
+          : entry,
+      ),
+      hash("changed-range-seed"),
+    );
+    const changedRange = createContextGatewayV4Manifest({
+      ...candidate(changedRangeEvents),
+      checkoutTreeOid: "c".repeat(40),
+      eventChainSeedHash: hash("changed-range-seed"),
+      authenticatedChainHash: changedRangeEvents.at(-1)!.eventHash,
+    });
+    expect(
+      decideContextGatewayV4Replay(source, changedRange, receiptIds),
+    ).toMatchObject({
+      status: ContextDependencyReplayStatus.Denied,
+      reason: ContextDependencyReplayDenialReason.ResultMismatch,
+    });
+
+    const changedOperationEvents = rechain(
+      targetEvents.map((entry, index) =>
+        index === 1
+          ? Object.freeze({
+              ...entry,
+              operationKey: hash("changed-file-operation"),
+            })
+          : entry,
+      ),
+      hash("changed-operation-seed"),
+    );
+    const changedOperation = createContextGatewayV4Manifest({
+      ...candidate(changedOperationEvents),
+      checkoutTreeOid: "c".repeat(40),
+      eventChainSeedHash: hash("changed-operation-seed"),
+      authenticatedChainHash: changedOperationEvents.at(-1)!.eventHash,
+    });
+    expect(
+      decideContextGatewayV4Replay(source, changedOperation, receiptIds),
+    ).toMatchObject({
+      status: ContextDependencyReplayStatus.Denied,
+      reason: ContextDependencyReplayDenialReason.OperationMismatch,
+    });
   });
 
   it("replays only the selected receipt group and ignores revision tree identity", () => {

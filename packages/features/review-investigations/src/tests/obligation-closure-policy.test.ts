@@ -82,6 +82,16 @@ describe("VersionedObligationClosurePolicy", () => {
       receiptKind: "blob",
       operationReceiptIds: [hash("1"), hash("2")],
     });
+
+    expect(() =>
+      policy.prove({
+        obligation,
+        operations: [
+          fileEvidence({ receipt: "1", startByte: 0, byteCount: 10 }),
+        ],
+        revision: { reviewRevisionHash: hash("f") },
+      }),
+    ).toThrow("investigation_obligation_evidence_mismatch");
   });
 
   it("keeps a canonical binary boundary unresolvable by ordinary file evidence", () => {
