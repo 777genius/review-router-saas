@@ -1175,6 +1175,9 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     });
     staleOwner.kill("SIGTERM");
     await staleOwnerExited;
+    // Native macOS shlock compares second-resolution ctime values and refuses
+    // takeover when the stale lock and replacement candidate share a second.
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_100));
 
     const result = spawnSync(
       "bash",
@@ -1201,7 +1204,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
       },
     );
 
-    expect(result.status).toBe(0);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("[dry-run] one-shot encrypted GitHub PUT");
   });
 

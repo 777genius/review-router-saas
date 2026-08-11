@@ -334,7 +334,7 @@ describeWire("rotating installer one-shot curl provider adapter", () => {
         },
       );
 
-      expect(putCount).toBe(1);
+      expect(putCount, result.output).toBe(1);
       expect(transferCount).toBe(1);
       expect(requestLine).toBe(
         `PUT /repos/owner/repo/actions/secrets/${namespace} HTTP/1.1`,
