@@ -500,7 +500,7 @@ describe("Render hosted deploy hardening", () => {
   });
 
   it.each([
-    ["missing", undefined],
+    ["missing", ""],
     ["placeholder", "replace-with-a-strong-random-secret"],
     ["too short", "short"],
   ])("rejects %s stable security secrets", (_name, value) => {
