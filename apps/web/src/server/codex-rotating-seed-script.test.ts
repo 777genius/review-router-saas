@@ -1136,7 +1136,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     expect(readFileSync(events, "utf8")).not.toContain("gh:secret set");
   });
 
-  it("recovers an abandoned repository lock", () => {
+  it("recovers an abandoned repository lock", async () => {
     const fixture = createRotatingInstallerFixture();
     writeFileSync(
       join(fixture.codexHome, "auth.json"),
@@ -1150,11 +1150,31 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     const lockId = createHash("sha256")
       .update("777genius/agent-teams-ai")
       .digest("hex");
-    const exitedPid = spawnSync("bash", ["-c", "printf %s $$"], {
-      encoding: "utf8",
-    }).stdout.trim();
-    expect(exitedPid).toMatch(/^[1-9][0-9]*$/u);
-    writeFileSync(join(lockDirectory, `${lockId}.lock`), `${exitedPid}\n`);
+    const lockPath = join(lockDirectory, `${lockId}.lock`);
+    const staleOwner = spawn(process.execPath, [
+      "-e",
+      "setInterval(() => {}, 1000)",
+    ]);
+    const staleOwnerPid = staleOwner.pid;
+    expect(staleOwnerPid).toBeTypeOf("number");
+    const nativeLock = spawnSync(
+      "shlock",
+      ["-f", lockPath, "-p", String(staleOwnerPid)],
+      { env: { ...process.env, PATH: fixture.path }, encoding: "utf8" },
+    );
+    if (
+      (nativeLock.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
+    ) {
+      writeFileSync(lockPath, `${staleOwnerPid}\n`);
+    } else {
+      expect(nativeLock.status, nativeLock.stderr).toBe(0);
+    }
+    const staleOwnerExited = new Promise<void>((resolveExit, rejectExit) => {
+      staleOwner.once("exit", () => resolveExit());
+      staleOwner.once("error", rejectExit);
+    });
+    staleOwner.kill("SIGTERM");
+    await staleOwnerExited;
 
     const result = spawnSync(
       "bash",
