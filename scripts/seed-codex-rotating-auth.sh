@@ -895,6 +895,22 @@ validate_and_compact_auth() {
   [ -f "$auth_file" ] || fatal "Codex auth file not found: $auth_file"
   [ -r "$auth_file" ] || fatal "Codex auth file is not readable: $auth_file"
 
+  if ! node - "$auth_file" <<'NODE'
+const fs = require("node:fs");
+try {
+  const parsed = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+  if (
+    typeof parsed?.tokens?.id_token === "string" &&
+    parsed.tokens.id_token.split(".").length !== 3
+  ) process.exit(1);
+} catch {
+  // The canonical validator below owns all non-segment diagnostics.
+}
+NODE
+  then
+    fatal "auth.json cannot establish stable provider account identity: not a JWT"
+  fi
+
   compact_file="$(mktemp)"
   auth_metadata="$(node - "$auth_file" "$compact_file" "$MANIFEST_JSON" <<'NODE'
 const crypto = require("node:crypto");
