@@ -561,8 +561,8 @@ export function serviceDetails({ type, startCommand, healthCheckPath }) {
     },
     maxShutdownDelaySeconds: type === "background_worker" ? 120 : 60,
     plan: "starter",
-    // Database rollout is a separately observed, immutable release-migration
-    // caller. Per-service callers must be represented canonically as null.
+    // Database rollout runs in the trusted GitHub migration workflow.
+    // Runtime services must represent per-service migration callers as null.
     preDeployCommand: null,
     region: "frankfurt",
     runtime: "node",
@@ -928,10 +928,30 @@ export function assertMigrationEvidencePayload(
   evidence,
   { scope, databaseId, databaseIdentity, commit, imageDigest, databaseUrls },
 ) {
-  if (evidence?.version !== 3) {
-    throw new Error("migration evidence version must be 3");
+  const exactKeys = (value, keys) =>
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key));
+  if (
+    evidence?.version !== 4 ||
+    !exactKeys(evidence, [
+      "version",
+      "rolloutId",
+      "execution",
+      "scope",
+      "release",
+      "database",
+      "migration",
+      "runtimeRoles",
+      "databaseObservation",
+      "migrationOutput",
+    ])
+  ) {
+    throw new Error("migration evidence version or shape must be exactly 4");
   }
-  const provider = evidence.providerObservation;
+  const provider = evidence.databaseObservation;
   const providerResponses = Array.isArray(provider?.rawResponses)
     ? provider.rawResponses
     : [];
@@ -940,22 +960,74 @@ export function assertMigrationEvidencePayload(
       .update(Buffer.from(canonicalProviderJson(value)))
       .digest("hex");
   if (
-    provider?.observationVersion !== 3 ||
+    !exactKeys(provider, [
+      "observationVersion",
+      "source",
+      "captureIdentity",
+      "rawResponses",
+      "database",
+    ]) ||
+    provider?.observationVersion !== 4 ||
     provider?.source !== "render-api" ||
-    providerResponses.length < 5 ||
+    providerResponses.length !== 2 ||
     providerResponses.some(
       (response) =>
+        !exactKeys(response, ["url", "status", "bodySha256", "body"]) ||
         typeof response?.url !== "string" ||
         !response.url.startsWith("https://api.render.com/v1/") ||
         response.status !== 200 ||
         response.bodySha256 !== digest(response.body),
     ) ||
+    !exactKeys(provider.captureIdentity, [
+      "ownerId",
+      "apiHost",
+      "authenticated",
+      "observedAt",
+      "rawResponsesSha256",
+    ]) ||
+    provider.captureIdentity.ownerId !== scope.ownerId ||
+    provider.captureIdentity.apiHost !== "api.render.com" ||
+    provider.captureIdentity.authenticated !== true ||
+    !Number.isFinite(Date.parse(provider.captureIdentity.observedAt ?? "")) ||
     provider.captureIdentity?.rawResponsesSha256 !== digest(providerResponses)
   ) {
     throw new Error(
       "migration evidence is missing a bound Render provider observation",
     );
   }
+  if (
+    !exactKeys(evidence.execution, [
+      "repositoryId",
+      "repositoryFullName",
+      "workflowPath",
+      "workflowSha",
+      "workflowRef",
+      "runId",
+      "runAttempt",
+      "jobId",
+      "jobName",
+      "artifactName",
+      "headSha",
+    ]) ||
+    evidence.execution.workflowPath !==
+      ".github/workflows/codex-rotating-release-migration.yml" ||
+    evidence.execution.workflowRef !== commit ||
+    evidence.execution.headSha !== commit ||
+    evidence.execution.jobName !== "trusted-release-migration" ||
+    !/^[a-f0-9]{40}$/u.test(evidence.execution.workflowSha ?? "") ||
+    ![
+      evidence.execution.repositoryId,
+      evidence.execution.runId,
+      evidence.execution.jobId,
+    ].every(
+      (value) => typeof value === "string" && /^[1-9][0-9]*$/u.test(value),
+    ) ||
+    !Number.isSafeInteger(evidence.execution.runAttempt) ||
+    evidence.execution.runAttempt <= 0
+  )
+    throw new Error("migration evidence GitHub execution identity is invalid");
+  if (!exactKeys(evidence.scope, ["ownerId", "projectId", "environmentId"]))
+    throw new Error("migration evidence scope shape is invalid");
   for (const key of ["ownerId", "projectId", "environmentId"]) {
     if (evidence.scope?.[key] !== scope[key]) {
       throw new Error(
@@ -964,76 +1036,80 @@ export function assertMigrationEvidencePayload(
     }
   }
   if (
+    !exactKeys(evidence.release, ["commit", "imageDigest"]) ||
     evidence.release?.commit !== commit ||
     evidence.release?.imageDigest !== imageDigest
   ) {
     throw new Error("migration evidence immutable release does not match");
   }
   if (
+    !exactKeys(evidence.database, [
+      "id",
+      "postgresMajorVersion",
+      "identity",
+      "observationSha256",
+    ]) ||
     evidence.database?.id !== databaseId ||
     evidence.database?.postgresMajorVersion !== "17" ||
-    evidence.database?.identity !== databaseIdentity
+    evidence.database?.identity !== databaseIdentity ||
+    evidence.database?.observationSha256 !== digest(provider)
   ) {
     throw new Error("migration evidence database identity does not match");
   }
-  const migration = evidence.exclusiveMigration;
+  const migration = evidence.migration;
   if (
-    typeof migration?.jobId !== "string" ||
-    !migration.jobId ||
+    !exactKeys(migration, [
+      "callerCount",
+      "status",
+      "preflightStatus",
+      "migrationStatus",
+      "evidenceStatus",
+      "outputSha256",
+    ]) ||
     migration.callerCount !== 1 ||
     migration.status !== "succeeded" ||
     migration.preflightStatus !== "passed" ||
     migration.migrationStatus !== "succeeded" ||
-    migration.evidenceStatus !== "verified"
+    migration.evidenceStatus !== "verified" ||
+    migration.outputSha256 !== digest(evidence.migrationOutput)
   ) {
     throw new Error(
       "migration evidence must prove one successful exclusive preflight/migration/evidence job",
     );
   }
-  const observedCaller = provider.migrationCaller;
-  const rawProviderBodies = canonicalProviderJson(
-    providerResponses.map((response) => response.body),
-  );
-  const capturedMigrationOutputs = providerResponses.flatMap((response) => {
-    const entries = Array.isArray(response.body)
-      ? response.body
-      : (response.body?.logs ?? []);
-    return entries.flatMap((entry) => {
-      try {
-        return [JSON.parse(entry.message ?? entry.text ?? "")];
-      } catch {
-        return [];
-      }
-    });
-  });
   if (
+    !exactKeys(provider.database, ["id", "name", "version", "ownerId"]) ||
     provider.database?.id !== databaseId ||
     !/^17(?:\.|$)/u.test(String(provider.database?.version ?? "")) ||
     provider.database?.ownerId !== scope.ownerId ||
-    observedCaller?.jobId !== migration.jobId ||
-    observedCaller?.callerCount !== 1 ||
-    observedCaller?.commit !== commit ||
-    observedCaller?.imageDigest !== imageDigest ||
-    observedCaller?.status !== "succeeded" ||
-    observedCaller?.command !== "pnpm codex-rotating:release-migration" ||
-    [
-      databaseId,
-      migration.jobId,
-      commit,
-      imageDigest,
-      "pnpm codex-rotating:release-migration",
-    ].some((value) => !rawProviderBodies.includes(JSON.stringify(value)))
+    providerResponses[0].url !==
+      `https://api.render.com/v1/owners/${encodeURIComponent(scope.ownerId)}` ||
+    providerResponses[0].body?.id !== scope.ownerId ||
+    providerResponses[1].url !==
+      `https://api.render.com/v1/postgres/${encodeURIComponent(databaseId)}` ||
+    providerResponses[1].body?.id !== databaseId ||
+    (providerResponses[1].body?.ownerId ??
+      providerResponses[1].body?.owner?.id) !== scope.ownerId ||
+    String(providerResponses[1].body?.version) !==
+      String(provider.database.version)
   ) {
-    throw new Error("migration evidence Render caller observation mismatch");
+    throw new Error("migration evidence Render database observation mismatch");
   }
   if (
-    canonicalProviderJson(provider.migrationOutput) !==
-      canonicalProviderJson(evidence.migrationOutput) ||
-    !capturedMigrationOutputs.some(
-      (output) =>
-        canonicalProviderJson(output) ===
-        canonicalProviderJson(evidence.migrationOutput),
-    ) ||
+    !exactKeys(evidence.migrationOutput, [
+      "version",
+      "caller",
+      "callerCount",
+      "commit",
+      "databaseIdentity",
+      "imageDigest",
+      "migrationStatus",
+      "preflightOutputSha256",
+      "preflightStatus",
+      "roles",
+      "status",
+    ]) ||
+    evidence.migrationOutput.version !== 2 ||
     evidence.migrationOutput?.caller !==
       "scripts/run-codex-rotating-release-migration.mjs" ||
     evidence.migrationOutput?.callerCount !== 1 ||
@@ -1065,9 +1141,26 @@ export function assertMigrationEvidencePayload(
     const expected = expectedRoles.get(role.role);
     if (
       !expected ||
+      !exactKeys(role, [
+        "role",
+        "username",
+        "databaseIdentity",
+        "login",
+        "superuser",
+        "createDatabase",
+        "createRole",
+        "replication",
+        "bypassRls",
+        "canSetReleaseRole",
+      ]) ||
       role.username !== expected.username ||
       role.databaseIdentity !== expected.databaseIdentity ||
       role.login !== true ||
+      role.superuser !== false ||
+      role.createDatabase !== false ||
+      role.createRole !== false ||
+      role.replication !== false ||
+      role.bypassRls !== false ||
       role.canSetReleaseRole !== (role.role === "releaseMigration")
     ) {
       throw new Error("migration evidence database role verification failed");
@@ -1077,6 +1170,40 @@ export function assertMigrationEvidencePayload(
   if (expectedRoles.size !== 0) {
     throw new Error("migration evidence must verify every canonical role once");
   }
+  const outputRoles = Array.isArray(evidence.migrationOutput.roles)
+    ? evidence.migrationOutput.roles
+    : [];
+  if (
+    outputRoles.length !== roles.length ||
+    outputRoles.some((role) => {
+      const normalized = roles.find(
+        (entry) => entry.username === role.username,
+      );
+      return (
+        !exactKeys(role, [
+          "username",
+          "login",
+          "superuser",
+          "createDatabase",
+          "createRole",
+          "replication",
+          "bypassRls",
+          "canSetReleaseRole",
+        ]) ||
+        !normalized ||
+        [
+          "login",
+          "superuser",
+          "createDatabase",
+          "createRole",
+          "replication",
+          "bypassRls",
+          "canSetReleaseRole",
+        ].some((key) => role[key] !== normalized[key])
+      );
+    })
+  )
+    throw new Error("migration evidence role observations are not cross-bound");
   return evidence;
 }
 
@@ -1134,6 +1261,7 @@ export function claimTrustedMigrationEvidence(
       "trusted migration evidence claim requires the release role",
     );
   const receipt = trusted.receipt;
+  const release = trusted.evidence.release;
   const result = execute(
     "psql",
     [
@@ -1148,6 +1276,16 @@ export function claimTrustedMigrationEvidence(
       `rollout_id=${receipt.rolloutId}`,
       "--set",
       `run_id=${receipt.runId}`,
+      "--set",
+      `run_attempt=${receipt.runAttempt}`,
+      "--set",
+      `job_id=${receipt.jobId}`,
+      "--set",
+      `workflow_path=${receipt.workflowPath}`,
+      "--set",
+      `commit=${receipt.commit}`,
+      "--set",
+      `image_digest=${release.imageDigest}`,
     ],
     {
       encoding: "utf8",
@@ -1162,48 +1300,17 @@ export function claimTrustedMigrationEvidence(
       },
       input: String.raw`\set ON_ERROR_STOP on
 BEGIN;
-SELECT pg_advisory_xact_lock(1381126735, 1129271120);
-SELECT set_config('reviewrouter.artifact_digest', :'artifact_digest', true);
-SELECT set_config('reviewrouter.artifact_id', :'artifact_id', true);
-SELECT set_config('reviewrouter.rollout_id', :'rollout_id', true);
-SELECT set_config('reviewrouter.run_id', :'run_id', true);
-DO $claim$
-DECLARE
-  binding jsonb;
-  receipts jsonb;
-BEGIN
-  SELECT obj_description(oid, 'pg_database')::jsonb INTO binding
-  FROM pg_database WHERE datname = current_database();
-  IF binding IS NULL
-     OR binding->>'systemIdentifier' <> (SELECT system_identifier::text FROM pg_control_system())
-     OR binding->>'recoveryWitnessSha256' !~ '^[a-f0-9]{64}$' THEN
-    RAISE EXCEPTION 'trusted migration evidence database generation binding invalid';
-  END IF;
-  receipts := coalesce(binding->'consumedMigrationEvidence', '[]'::jsonb);
-  IF EXISTS (
-    SELECT 1 FROM jsonb_array_elements(receipts) receipt
-    WHERE receipt->>'artifactDigest' = current_setting('reviewrouter.artifact_digest')
-       OR receipt->>'rolloutId' = current_setting('reviewrouter.rollout_id')
-       OR (receipt->>'runId' = current_setting('reviewrouter.run_id') AND receipt->>'artifactId' = current_setting('reviewrouter.artifact_id'))
-  ) THEN
-    RAISE EXCEPTION 'trusted migration evidence replay rejected';
-  END IF;
-  binding := jsonb_set(binding, '{version}', '2'::jsonb, true);
-  binding := jsonb_set(
-    binding,
-    '{consumedMigrationEvidence}',
-    receipts || jsonb_build_array(jsonb_build_object(
-      'artifactDigest', current_setting('reviewrouter.artifact_digest'),
-      'artifactId', current_setting('reviewrouter.artifact_id'),
-      'rolloutId', current_setting('reviewrouter.rollout_id'),
-      'runId', current_setting('reviewrouter.run_id'),
-      'claimedAt', to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
-    )),
-    true
-  );
-  EXECUTE format('COMMENT ON DATABASE %I IS %L', current_database(), binding::text);
-END
-$claim$;
+SELECT reviewrouter_bootstrap.consume_migration_evidence(
+  :'artifact_digest',
+  :'artifact_id',
+  :'rollout_id',
+  :'run_id',
+  :'run_attempt'::integer,
+  :'job_id',
+  :'workflow_path',
+  :'commit',
+  :'image_digest'
+);
 COMMIT;
 SELECT 'claimed';
 `,

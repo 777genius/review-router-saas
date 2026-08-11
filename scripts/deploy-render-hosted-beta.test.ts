@@ -91,9 +91,27 @@ describe("Render hosted deploy hardening", () => {
       ".github/workflows/codex-rotating-rollout-evidence.yml",
       "utf8",
     );
-    expect(migration).toContain(
-      "node scripts/run-render-codex-rotating-migration-job.mjs",
+    const bootstrap = readFileSync(
+      ".github/workflows/codex-rotating-role-bootstrap.yml",
+      "utf8",
     );
+    expect(migration).toContain(
+      "node scripts/run-codex-rotating-release-migration.mjs > migration-output.json",
+    );
+    expect(migration).toContain(
+      "group: codex-rotating-database-mutation-production",
+    );
+    expect(migration).not.toContain("run-render-codex-rotating-migration-job");
+    expect(bootstrap).toContain(
+      "node scripts/run-codex-rotating-role-bootstrap.mjs > role-bootstrap-output.json",
+    );
+    expect(bootstrap).toContain(
+      "group: codex-rotating-database-mutation-production",
+    );
+    expect(migration).not.toContain(
+      "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
+    );
+    expect(bootstrap).toContain("environment: production-role-bootstrap");
     expect(migration).toContain(
       "node scripts/assemble-codex-rotating-trusted-evidence.mjs",
     );
@@ -104,7 +122,7 @@ describe("Render hosted deploy hardening", () => {
       "node scripts/assemble-codex-rotating-trusted-rollout.mjs",
     );
     expect(rollout).not.toContain("MIGRATION_EVIDENCE_FILE");
-    expect(`${migration}\n${rollout}`).not.toMatch(
+    expect(`${migration}\n${bootstrap}\n${rollout}`).not.toMatch(
       /actions\/(?:checkout|upload-artifact)@v\d/u,
     );
   });
@@ -740,7 +758,21 @@ describe("Render hosted deploy hardening", () => {
       databaseUrls,
     };
     const evidence: any = {
-      version: 1,
+      version: 4,
+      rolloutId: "rollout-1",
+      execution: {
+        repositoryId: "1",
+        repositoryFullName: "777genius/review-router-saas",
+        workflowPath: ".github/workflows/codex-rotating-release-migration.yml",
+        workflowSha: "c".repeat(40),
+        workflowRef: context.commit,
+        runId: "101",
+        runAttempt: 1,
+        jobId: "202",
+        jobName: "trusted-release-migration",
+        artifactName: "reviewrouter-trusted-rollout-101-1",
+        headSha: context.commit,
+      },
       scope: context.scope,
       release: {
         commit: context.commit,
@@ -751,8 +783,7 @@ describe("Render hosted deploy hardening", () => {
         postgresMajorVersion: "17",
         identity: context.databaseIdentity,
       },
-      exclusiveMigration: {
-        jobId: "job-1",
+      migration: {
         callerCount: 1,
         status: "succeeded",
         preflightStatus: "passed",
@@ -762,11 +793,14 @@ describe("Render hosted deploy hardening", () => {
       migrationOutput: {
         caller: "scripts/run-codex-rotating-release-migration.mjs",
         callerCount: 1,
-        jobId: "job-1",
+        version: 2,
         commit: context.commit,
         imageDigest: context.imageDigest,
         databaseIdentity: context.databaseIdentity,
         status: "succeeded",
+        migrationStatus: "succeeded",
+        preflightStatus: "passed",
+        preflightOutputSha256: "d".repeat(64),
       },
       runtimeRoles: Object.entries(databaseUrls)
         .filter(([role]) => role !== "roleBootstrap")
@@ -775,71 +809,105 @@ describe("Render hosted deploy hardening", () => {
           username: new URL(url).username,
           databaseIdentity: context.databaseIdentity,
           login: true,
+          superuser: false,
+          createDatabase: false,
+          createRole: false,
+          replication: false,
+          bypassRls: false,
           canSetReleaseRole: role === "releaseMigration",
         })),
     };
-    evidence.version = 3;
+    evidence.migrationOutput.roles = evidence.runtimeRoles.map((role) =>
+      Object.fromEntries(
+        Object.entries(role).filter(
+          ([key]) => !["role", "databaseIdentity"].includes(key),
+        ),
+      ),
+    );
     const digest = (value: unknown) =>
       createHash("sha256")
         .update(Buffer.from(canonicalProviderJson(value)))
         .digest("hex");
     const providerBodies = [
-      { id: "pg-1", ownerId: "owner-1", version: "17" },
-      { id: "job-1", status: "succeeded" },
-      { commit: context.commit, imageDigest: context.imageDigest },
-      { command: "pnpm codex-rotating:release-migration" },
       { id: "owner-1" },
+      { id: "pg-1", ownerId: "owner-1", version: "17" },
     ];
-    const rawResponses = providerBodies.map((body, index) => {
-      return {
-        url: `https://api.render.com/v1/observations/${index}`,
-        status: 200,
-        body,
-        bodySha256: digest(body),
-      };
-    });
-    const logBody = [{ message: JSON.stringify(evidence.migrationOutput) }];
-    rawResponses.push({
-      url: "https://api.render.com/v1/logs?instance=job-1",
+    const rawResponses = providerBodies.map((body, index) => ({
+      url:
+        index === 0
+          ? "https://api.render.com/v1/owners/owner-1"
+          : "https://api.render.com/v1/postgres/pg-1",
       status: 200,
-      body: logBody,
-      bodySha256: digest(logBody),
-    });
+      body,
+      bodySha256: digest(body),
+    }));
     Object.assign(evidence, {
-      providerObservation: {
-        observationVersion: 3,
+      databaseObservation: {
+        observationVersion: 4,
         source: "render-api",
-        captureIdentity: { rawResponsesSha256: digest(rawResponses) },
-        rawResponses,
-        database: { id: "pg-1", version: "17", ownerId: "owner-1" },
-        migrationCaller: {
-          jobId: "job-1",
-          callerCount: 1,
-          commit: context.commit,
-          imageDigest: context.imageDigest,
-          status: "succeeded",
-          command: "pnpm codex-rotating:release-migration",
+        captureIdentity: {
+          ownerId: "owner-1",
+          apiHost: "api.render.com",
+          authenticated: true,
+          observedAt: "2026-08-11T00:00:00.000Z",
+          rawResponsesSha256: digest(rawResponses),
         },
-        migrationOutput: evidence.migrationOutput,
+        rawResponses,
+        database: {
+          id: "pg-1",
+          name: "reviewrouter-db",
+          version: "17",
+          ownerId: "owner-1",
+        },
       },
     });
+    evidence.database.observationSha256 = digest(evidence.databaseObservation);
+    evidence.migration.outputSha256 = digest(evidence.migrationOutput);
     expect(assertMigrationEvidencePayload(evidence, context)).toBe(evidence);
     expect(() => assertMigrationEvidence(evidence, context)).toThrow(
       "not bound to an authenticated GitHub artifact observation",
     );
     expect(() =>
       assertMigrationEvidencePayload(
-        { ...evidence, providerObservation: undefined },
+        { ...evidence, databaseObservation: undefined },
         context,
       ),
     ).toThrow("missing a bound Render provider observation");
+    const splicedResponses = evidence.databaseObservation.rawResponses.map(
+      (response, index) => {
+        if (index !== 1) return response;
+        const body = { ...response.body, id: "pg-other" };
+        return { ...response, body, bodySha256: digest(body) };
+      },
+    );
+    const splicedObservation = {
+      ...evidence.databaseObservation,
+      rawResponses: splicedResponses,
+      captureIdentity: {
+        ...evidence.databaseObservation.captureIdentity,
+        rawResponsesSha256: digest(splicedResponses),
+      },
+    };
     expect(() =>
       assertMigrationEvidencePayload(
         {
           ...evidence,
-          providerObservation: {
-            ...evidence.providerObservation,
-            rawResponses: evidence.providerObservation.rawResponses.map(
+          database: {
+            ...evidence.database,
+            observationSha256: digest(splicedObservation),
+          },
+          databaseObservation: splicedObservation,
+        },
+        context,
+      ),
+    ).toThrow("Render database observation mismatch");
+    expect(() =>
+      assertMigrationEvidencePayload(
+        {
+          ...evidence,
+          databaseObservation: {
+            ...evidence.databaseObservation,
+            rawResponses: evidence.databaseObservation.rawResponses.map(
               (response, index) =>
                 index === 0
                   ? { ...response, bodySha256: "0".repeat(64) }
@@ -885,8 +953,8 @@ describe("Render hosted deploy hardening", () => {
       assertMigrationEvidencePayload(
         {
           ...evidence,
-          exclusiveMigration: {
-            ...evidence.exclusiveMigration,
+          migration: {
+            ...evidence.migration,
             callerCount: 2,
           },
         },

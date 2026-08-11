@@ -196,7 +196,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
     const result = verifyCodexRotatingRollout(invented);
     expect(result.ok).toBe(false);
     expect(result.failures).toContain(
-      "evidence must use observation-backed version 2",
+      "evidence must use receipt-bound version 3",
     );
     expect(result.failures).toContain(
       "top-level self-reported rollout fields are prohibited",
@@ -422,7 +422,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       (fixture: any) => {
         fixture.artifacts.database.callerIdentity.applicationName = "psql";
       },
-      "production migration caller is not the canonical database role and trusted platform job",
+      "production migration caller is not the canonical database role and trusted GitHub receipt",
     ],
     [
       "forged release application label on a runtime role",
@@ -432,7 +432,41 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         fixture.artifacts.database.callerIdentity.sessionUser =
           "reviewrouter_api";
       },
-      "production migration caller is not the canonical database role and trusted platform job",
+      "production migration caller is not the canonical database role and trusted GitHub receipt",
+    ],
+    [
+      "relationally spliced caller and receipt",
+      (fixture: any) => {
+        fixture.artifacts.database.callerIdentity.artifactId = "999";
+      },
+      "production migration caller must match exactly one unspliced database receipt",
+    ],
+    [
+      "missing caller receipt for the trusted rollout",
+      (fixture: any) => {
+        fixture.artifacts.database.callerIdentity.rolloutId = "rollout-other";
+      },
+      "release-migration caller is not derived from the exact rollout receipt",
+    ],
+    [
+      "receipt commit does not match deployed services",
+      (fixture: any) => {
+        const commit = "c".repeat(40);
+        fixture.artifacts.database.callerIdentity.commit = commit;
+        fixture.artifacts.database.databaseGenerationBinding.consumedMigrationEvidence[0].commit =
+          commit;
+      },
+      "release-migration caller is not bound to the deployed immutable release",
+    ],
+    [
+      "receipt image does not match deployed services",
+      (fixture: any) => {
+        const imageDigest = `sha256:${"c".repeat(64)}`;
+        fixture.artifacts.database.callerIdentity.imageDigest = imageDigest;
+        fixture.artifacts.database.databaseGenerationBinding.consumedMigrationEvidence[0].imageDigest =
+          imageDigest;
+      },
+      "release-migration caller is not bound to the deployed immutable release",
     ],
     [
       "runtime role with DDL privilege",
@@ -440,6 +474,15 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         fixture.artifacts.database.databaseAuthorization.roles.find(
           (role: any) => role.name === "reviewrouter_api",
         ).schemaCreate = true;
+      },
+      "runtime database roles can perform DDL or assume the release-migration role",
+    ],
+    [
+      "role replication attribute drift",
+      (fixture: any) => {
+        fixture.artifacts.database.databaseAuthorization.roles.find(
+          (role: any) => role.name === "reviewrouter_api",
+        ).replication = true;
       },
       "runtime database roles can perform DDL or assume the release-migration role",
     ],
@@ -643,14 +686,26 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "Render database observation is not PostgreSQL 17",
     ],
     [
-      "migration caller multiplicity",
+      "obsolete Render migration caller observation",
       (fixture: any) => {
-        fixture.artifacts.deployments.migrationCallers.push({
-          ...fixture.artifacts.deployments.migrationCallers[0],
-          jobId: "job-second",
-        });
+        fixture.artifacts.deployments.migrationCallers = [];
       },
-      "Render observation must contain exactly one immutable release-migration caller",
+      "deployments must be captured from the Render API",
+    ],
+    [
+      "duplicate migration receipt for the rollout",
+      (fixture: any) => {
+        fixture.artifacts.database.databaseGenerationBinding.consumedMigrationEvidence.push(
+          {
+            ...fixture.artifacts.database.databaseGenerationBinding
+              .consumedMigrationEvidence[0],
+            artifactDigest: `sha256:${"c".repeat(64)}`,
+            artifactId: "304",
+            jobId: "203",
+          },
+        );
+      },
+      "production migration caller must match exactly one unspliced database receipt",
     ],
     [
       "read replica database artifact",
@@ -1039,7 +1094,7 @@ function observedFixture(): any {
   );
   const artifacts: any = {
     database: {
-      observationVersion: 4,
+      observationVersion: 5,
       source: "production-postgresql-writer",
       captureKind: "database-query",
       rehearsal: false,
@@ -1052,7 +1107,7 @@ function observedFixture(): any {
       isWriter: true,
       recoveryWitnessSha256: "f".repeat(64),
       databaseGenerationBinding: {
-        version: 2,
+        version: 3,
         systemIdentifier: "7612345678901234567",
         recoveryWitnessSha256: "f".repeat(64),
         consumedMigrationEvidence: [
@@ -1061,6 +1116,12 @@ function observedFixture(): any {
             artifactId: "303",
             rolloutId: "rollout-1",
             runId: "101",
+            runAttempt: 1,
+            jobId: "202",
+            workflowPath:
+              ".github/workflows/codex-rotating-release-migration.yml",
+            commit,
+            imageDigest,
             claimedAt: "2026-08-10T00:00:00.000Z",
           },
         ],
@@ -1107,6 +1168,7 @@ function observedFixture(): any {
             superuser: false,
             createDatabase: false,
             createRole: false,
+            replication: false,
             bypassRls: false,
             databaseCreate: release,
             schemaCreate: release,
@@ -1153,15 +1215,18 @@ function observedFixture(): any {
       },
       callerIdentity: {
         id: "release-migration",
-        kind: "immutable-release-migration",
+        kind: "trusted-github-release-migration",
         commit,
         imageDigest,
-        platform: "render",
-        platformDeployObservationSha256: "set-below",
-        serviceId: "srv-migration",
-        deployId: "dep-migration",
-        jobId: "job-migration",
-        observedAt: "2026-08-09T00:04:00Z",
+        platform: "github-actions",
+        artifactDigest: `sha256:${"a".repeat(64)}`,
+        artifactId: "303",
+        rolloutId: "rollout-1",
+        runId: "101",
+        runAttempt: 1,
+        jobId: "202",
+        workflowPath: ".github/workflows/codex-rotating-release-migration.yml",
+        claimedAt: "2026-08-10T00:00:00.000Z",
         databaseRole: "reviewrouter_release_migration",
         sessionUser: "reviewrouter_release_migration",
       },
@@ -1993,19 +2058,6 @@ function observedFixture(): any {
         name: "reviewrouter-db",
         version: "17.6",
       },
-      migrationCallers: [
-        {
-          name: "reviewrouter-release-migration",
-          role: "release-migration",
-          serviceId: "srv-migration",
-          deployId: "dep-migration",
-          jobId: "job-migration",
-          commit,
-          imageDigest,
-          status: "succeeded",
-          observedAt: "2026-08-09T00:04:00Z",
-        },
-      ],
       services: ["api", "web", "worker"].map((role) => ({
         name: `reviewrouter-${role}`,
         role,
@@ -2013,6 +2065,7 @@ function observedFixture(): any {
         deployId: `dep-${role}`,
         commit,
         imageDigest,
+        status: "live",
         rotatingMutationAdmission: "off",
         preDeployCommand: null,
         serviceMigrationCallerEnabled: false,
@@ -2250,9 +2303,6 @@ function observedFixture(): any {
       ],
     },
   };
-  artifacts.database.callerIdentity.platformDeployObservationSha256 = digest(
-    Buffer.from(JSON.stringify(artifacts.deployments)),
-  );
   const databaseSha256 = digest(
     Buffer.from(JSON.stringify(artifacts.database)),
   );
@@ -2284,7 +2334,6 @@ function observedFixture(): any {
     ownerId: "own-production",
     database: artifacts.deployments.database,
     services: artifacts.deployments.services,
-    migrationCallers: artifacts.deployments.migrationCallers,
     witnessServiceId: "srv-api",
   };
   const renderRaw = rawEntry(
@@ -2296,6 +2345,7 @@ function observedFixture(): any {
   artifacts.deployments.rawResponses = [renderRaw];
   artifacts.deployments.captureIdentity = {
     ownerId: "own-production",
+    ownerName: "production",
     authenticated: true,
     apiHost: "api.render.com",
     observedAt: "2026-08-09T00:04:01Z",
@@ -2357,16 +2407,17 @@ function observedFixture(): any {
       Buffer.from(canonicalJson(workflowRaw).trimEnd()),
     ),
   };
-  artifacts.database.callerIdentity.platformDeployObservationSha256 = digest(
-    Buffer.from(JSON.stringify(artifacts.deployments)),
-  );
   artifacts.events.events.find(
     (entry: any) => entry.type === "migrations_completed",
   ).databaseArtifactSha256 = digest(
     Buffer.from(JSON.stringify(artifacts.database)),
   );
 
-  const evidence: any = { version: 2, artifacts: {} };
+  const evidence: any = {
+    version: 3,
+    rolloutId: "rollout-1",
+    artifacts: {},
+  };
   for (const name of Object.keys(artifacts))
     evidence.artifacts[name] = {
       path: `artifacts/${name}.json`,

@@ -1693,6 +1693,17 @@ function prepareCanonicalReleaseRoles(url) {
     COMMENT ON ROLE reviewrouter_role_bootstrap IS ${quoteLiteral(rehearsalRoleMarker)};
     ALTER SCHEMA public OWNER TO reviewrouter_role_bootstrap;
     ALTER DATABASE ${quoteIdentifier(databaseName)} OWNER TO reviewrouter_role_bootstrap;
+    DO $generation$
+    DECLARE binding jsonb;
+    BEGIN
+      binding := jsonb_build_object(
+        'version', 1,
+        'systemIdentifier', (SELECT system_identifier::text FROM pg_control_system()),
+        'recoveryWitnessSha256', repeat('f', 64)
+      );
+      EXECUTE format('COMMENT ON DATABASE %I IS %L', current_database(), binding::text);
+    END
+    $generation$;
     COMMIT;`;
   psql(url, ["-c", provisioningSql]);
 
@@ -1731,8 +1742,8 @@ function prepareCanonicalReleaseRoles(url) {
     REVIEW_ROUTER_WORKER_DATABASE_URL: clients.worker.toString(),
     REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
       clients.effectAuthority.toString(),
-    REVIEW_ROUTER_RENDER_COMMIT_SHA: "a".repeat(40),
-    REVIEW_ROUTER_RENDER_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
+    REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
+    REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
   };
   psql(bootstrap, [
     "-c",
@@ -1773,6 +1784,37 @@ function prepareCanonicalReleaseRoles(url) {
       }),
     },
   );
+  psql(release, [
+    "-c",
+    `SELECT reviewrouter_bootstrap.consume_migration_evidence(
+      'sha256:${"c".repeat(64)}',
+      '303',
+      'rehearsal-rollout',
+      '101',
+      1,
+      '202',
+      '.github/workflows/codex-rotating-release-migration.yml',
+      '${"a".repeat(40)}',
+      'sha256:${"b".repeat(64)}'
+    );`,
+  ]);
+  psql(bootstrap, [
+    "-c",
+    `DO $receipt$
+    DECLARE binding jsonb;
+    BEGIN
+      SELECT obj_description(oid, 'pg_database')::jsonb INTO binding
+      FROM pg_database WHERE datname = current_database();
+      IF binding->>'version' <> '3'
+         OR jsonb_array_length(binding->'consumedMigrationEvidence') <> 1
+         OR binding#>>'{consumedMigrationEvidence,0,rolloutId}' <> 'rehearsal-rollout'
+         OR binding#>>'{consumedMigrationEvidence,0,commit}' <> '${"a".repeat(40)}'
+         OR binding#>>'{consumedMigrationEvidence,0,imageDigest}' <> 'sha256:${"b".repeat(64)}' THEN
+        RAISE EXCEPTION 'trusted GitHub migration receipt was not bound to the database generation';
+      END IF;
+    END
+    $receipt$;`,
+  ]);
   const transferredLegacyOwners = psql(release, [
     "-Atc",
     `SELECT count(*) || ':' || count(*) FILTER (WHERE owner_name = 'reviewrouter_release_migration')

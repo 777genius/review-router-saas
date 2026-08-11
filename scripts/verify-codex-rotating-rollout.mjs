@@ -200,6 +200,7 @@ export function verifyCodexRotatingRollout(trustedEvidence) {
     trusted.evidence?.rollout,
     {
       readArtifact: trusted.readArtifact,
+      expectedRolloutId: trusted.evidence.rolloutId,
     },
   );
   const executionBound =
@@ -229,12 +230,13 @@ export function inspectCodexRotatingRolloutStructure(evidence, options = {}) {
   const need = (condition, message) => {
     if (!condition) failures.push(message);
   };
+  need(evidence?.version === 3, "evidence must use receipt-bound version 3");
   need(
-    evidence?.version === 2,
-    "evidence must use observation-backed version 2",
-  );
-  need(
-    hasExactKeys(evidence, ["artifacts", "version"]),
+    hasExactKeys(evidence, ["artifacts", "rolloutId", "version"]) &&
+      typeof evidence?.rolloutId === "string" &&
+      evidence.rolloutId.length > 0 &&
+      (!options.expectedRolloutId ||
+        evidence.rolloutId === options.expectedRolloutId),
     "top-level self-reported rollout fields are prohibited",
   );
   need(
@@ -297,24 +299,8 @@ export function inspectCodexRotatingRolloutStructure(evidence, options = {}) {
     "release-migration caller is not bound to the deployed immutable release",
   );
   need(
-    databaseFacts?.platformDeployObservationSha256 ===
-      evidence?.artifacts?.deployments?.sha256 &&
-      [
-        "name",
-        "role",
-        "serviceId",
-        "deployId",
-        "jobId",
-        "commit",
-        "imageDigest",
-        "status",
-        "observedAt",
-      ].every(
-        (key) =>
-          databaseFacts?.platformIdentity?.[key] ===
-          deploymentFacts.migrationCaller?.[key],
-      ),
-    "release-migration caller is not copied from the trusted Render observation",
+    databaseFacts?.callerRolloutId === evidence?.rolloutId,
+    "release-migration caller is not derived from the exact rollout receipt",
   );
   need(
     databaseFacts?.recoveryWitnessSha256 ===
@@ -371,7 +357,28 @@ function verifyDatabase(db, descriptor, need, options) {
     "production database capture executable source digest mismatched",
   );
   need(
-    db?.observationVersion === 4 &&
+    hasExactKeys(db, [
+      "observationVersion",
+      "source",
+      "captureKind",
+      "rehearsal",
+      "databaseIdentity",
+      "isWriter",
+      "recoveryWitnessSha256",
+      "databaseGenerationBinding",
+      "admittedRecoveryEvidence",
+      "databaseAuthorization",
+      "callerIdentity",
+      "postgresVersion",
+      "unsafeWork",
+      "recoveryOwnerId",
+      "catalogManifest",
+      "migrationSources",
+      "history",
+      "catalog",
+      "drainObservations",
+    ]) &&
+      db?.observationVersion === 5 &&
       db?.source === "production-postgresql-writer" &&
       db?.captureKind === "database-query" &&
       db?.rehearsal === false,
@@ -401,7 +408,7 @@ function verifyDatabase(db, descriptor, need, options) {
       "systemIdentifier",
       "version",
     ]) &&
-      db.databaseGenerationBinding.version === 2 &&
+      db.databaseGenerationBinding.version === 3 &&
       Array.isArray(db.databaseGenerationBinding.consumedMigrationEvidence) &&
       db.databaseGenerationBinding.consumedMigrationEvidence.length > 0 &&
       db.databaseGenerationBinding.consumedMigrationEvidence.every(
@@ -410,13 +417,27 @@ function verifyDatabase(db, descriptor, need, options) {
             "artifactDigest",
             "artifactId",
             "claimedAt",
+            "commit",
+            "imageDigest",
+            "jobId",
             "rolloutId",
             "runId",
+            "runAttempt",
+            "workflowPath",
           ]) &&
           /^sha256:[a-f0-9]{64}$/u.test(receipt.artifactDigest ?? "") &&
-          [receipt.artifactId, receipt.rolloutId, receipt.runId].every(
-            (value) => typeof value === "string" && value.length > 0,
-          ) &&
+          [
+            receipt.artifactId,
+            receipt.rolloutId,
+            receipt.runId,
+            receipt.jobId,
+          ].every((value) => typeof value === "string" && value.length > 0) &&
+          Number.isSafeInteger(receipt.runAttempt) &&
+          receipt.runAttempt > 0 &&
+          receipt.workflowPath ===
+            ".github/workflows/codex-rotating-release-migration.yml" &&
+          /^[a-f0-9]{40}$/u.test(receipt.commit ?? "") &&
+          /^sha256:[a-f0-9]{64}$/u.test(receipt.imageDigest ?? "") &&
           Number.isFinite(Date.parse(receipt.claimedAt ?? "")),
       ) &&
       new Set(
@@ -459,34 +480,68 @@ function verifyDatabase(db, descriptor, need, options) {
     hasExactKeys(db?.callerIdentity, [
       "commit",
       "databaseRole",
-      "deployId",
+      "artifactDigest",
+      "artifactId",
+      "claimedAt",
       "id",
       "imageDigest",
       "jobId",
       "kind",
-      "observedAt",
       "platform",
-      "platformDeployObservationSha256",
-      "serviceId",
+      "rolloutId",
+      "runAttempt",
+      "runId",
       "sessionUser",
+      "workflowPath",
     ]) &&
-      db?.callerIdentity?.kind === "immutable-release-migration" &&
+      db?.callerIdentity?.kind === "trusted-github-release-migration" &&
       db?.callerIdentity?.id === "release-migration" &&
-      db?.callerIdentity?.platform === "render" &&
+      db?.callerIdentity?.platform === "github-actions" &&
       db?.callerIdentity?.databaseRole ===
         codexRotatingDatabaseRoles.releaseMigration &&
       db?.callerIdentity?.sessionUser ===
         codexRotatingDatabaseRoles.releaseMigration &&
-      /^srv-[A-Za-z0-9_-]+$/u.test(db?.callerIdentity?.serviceId ?? "") &&
-      /^dep-[A-Za-z0-9_-]+$/u.test(db?.callerIdentity?.deployId ?? "") &&
-      /^job-[A-Za-z0-9_-]+$/u.test(db?.callerIdentity?.jobId ?? "") &&
-      /^[a-f0-9]{64}$/u.test(
-        db?.callerIdentity?.platformDeployObservationSha256 ?? "",
-      ) &&
-      Number.isFinite(Date.parse(db?.callerIdentity?.observedAt ?? "")) &&
+      /^sha256:[a-f0-9]{64}$/u.test(db?.callerIdentity?.artifactDigest ?? "") &&
+      [
+        db?.callerIdentity?.artifactId,
+        db?.callerIdentity?.jobId,
+        db?.callerIdentity?.rolloutId,
+        db?.callerIdentity?.runId,
+      ].every((value) => typeof value === "string" && value.length > 0) &&
+      Number.isSafeInteger(db?.callerIdentity?.runAttempt) &&
+      db.callerIdentity.runAttempt > 0 &&
+      db?.callerIdentity?.workflowPath ===
+        ".github/workflows/codex-rotating-release-migration.yml" &&
+      Number.isFinite(Date.parse(db?.callerIdentity?.claimedAt ?? "")) &&
       /^[a-f0-9]{40}$/u.test(db?.callerIdentity?.commit ?? "") &&
       /^sha256:[a-f0-9]{64}$/u.test(db?.callerIdentity?.imageDigest ?? ""),
-    "production migration caller is not the canonical database role and trusted platform job",
+    "production migration caller is not the canonical database role and trusted GitHub receipt",
+  );
+  const callerReceiptFields = [
+    "artifactDigest",
+    "artifactId",
+    "claimedAt",
+    "commit",
+    "imageDigest",
+    "jobId",
+    "rolloutId",
+    "runAttempt",
+    "runId",
+    "workflowPath",
+  ];
+  const matchingCallerReceipts = (
+    db?.databaseGenerationBinding?.consumedMigrationEvidence ?? []
+  ).filter((receipt) =>
+    callerReceiptFields.every(
+      (key) => receipt?.[key] === db?.callerIdentity?.[key],
+    ),
+  );
+  need(
+    matchingCallerReceipts.length === 1 &&
+      db.databaseGenerationBinding.consumedMigrationEvidence.filter(
+        (receipt) => receipt?.rolloutId === db?.callerIdentity?.rolloutId,
+      ).length === 1,
+    "production migration caller must match exactly one unspliced database receipt",
   );
   verifyDatabaseAuthorization(db?.databaseAuthorization, need);
   verifyDrainObservations(
@@ -712,21 +767,7 @@ function verifyDatabase(db, descriptor, need, options) {
     recoveryWitnessSha256: db?.recoveryWitnessSha256,
     callerCommit: db?.callerIdentity?.commit,
     callerImageDigest: db?.callerIdentity?.imageDigest,
-    platformDeployObservationSha256:
-      db?.callerIdentity?.platformDeployObservationSha256,
-    platformIdentity: db?.callerIdentity
-      ? {
-          name: "reviewrouter-release-migration",
-          role: "release-migration",
-          serviceId: db.callerIdentity.serviceId,
-          deployId: db.callerIdentity.deployId,
-          jobId: db.callerIdentity.jobId,
-          commit: db.callerIdentity.commit,
-          imageDigest: db.callerIdentity.imageDigest,
-          status: "succeeded",
-          observedAt: db.callerIdentity.observedAt,
-        }
-      : null,
+    callerRolloutId: db?.callerIdentity?.rolloutId,
   };
 }
 
@@ -975,6 +1016,7 @@ function verifyDatabaseAuthorization(authorization, need) {
           "providerSetupStateInsert",
           "providerSetupStateSelect",
           "providerSetupStateUpdate",
+          "replication",
           "repositoryConnectionDelete",
           "repositoryConnectionColumnInsert",
           "repositoryConnectionColumnReferences",
@@ -991,6 +1033,7 @@ function verifyDatabaseAuthorization(authorization, need) {
         entry.superuser !== false ||
         entry.createDatabase !== false ||
         entry.createRole !== false ||
+        entry.replication !== false ||
         entry.bypassRls !== false ||
         entry.schemaUsage !== true
       ) {
@@ -1849,7 +1892,24 @@ function verifyDeployments(observation, descriptor, need, options) {
   );
   need(
     observation?.observationVersion === 2 &&
-      observation?.source === "render-api",
+      observation?.source === "render-api" &&
+      hasExactKeys(observation, [
+        "observationVersion",
+        "source",
+        "captureIdentity",
+        "rawResponses",
+        "database",
+        "services",
+        "runtimeWitness",
+      ]) &&
+      hasExactKeys(observation.captureIdentity, [
+        "ownerId",
+        "ownerName",
+        "apiHost",
+        "authenticated",
+        "observedAt",
+        "rawResponsesSha256",
+      ]),
     "deployments must be captured from the Render API",
   );
   const services = observation?.services ?? [];
@@ -1876,6 +1936,19 @@ function verifyDeployments(observation, descriptor, need, options) {
   need(
     services.every(
       (entry) =>
+        hasExactKeys(entry, [
+          "role",
+          "name",
+          "serviceId",
+          "deployId",
+          "commit",
+          "imageDigest",
+          "status",
+          "rotatingMutationAdmission",
+          "preDeployCommand",
+          "serviceMigrationCallerEnabled",
+          "observedAt",
+        ]) &&
         raw.includes(entry.serviceId) &&
         raw.includes(entry.deployId) &&
         raw.includes(entry.commit) &&
@@ -1893,7 +1966,13 @@ function verifyDeployments(observation, descriptor, need, options) {
     "Render deployment service names, roles, or immutable IDs are invalid",
   );
   need(
-    /^[a-f0-9]{64}$/u.test(observation?.runtimeWitness?.sha256 ?? "") &&
+    hasExactKeys(observation?.runtimeWitness, [
+      "serviceId",
+      "key",
+      "sha256",
+      "sourceResponseSha256",
+    ]) &&
+      /^[a-f0-9]{64}$/u.test(observation?.runtimeWitness?.sha256 ?? "") &&
       observation.runtimeWitness.key ===
         "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS" &&
       raw.includes(observation.runtimeWitness.serviceId) &&
@@ -1928,39 +2007,12 @@ function verifyDeployments(observation, descriptor, need, options) {
     ),
     "deployment observation timestamps are invalid",
   );
-  const migrationCallers = observation?.migrationCallers ?? [];
-  need(
-    Array.isArray(migrationCallers) &&
-      migrationCallers.length === 1 &&
-      hasExactKeys(migrationCallers[0], [
-        "commit",
-        "deployId",
-        "imageDigest",
-        "jobId",
-        "name",
-        "observedAt",
-        "role",
-        "serviceId",
-        "status",
-      ]) &&
-      migrationCallers[0].name === "reviewrouter-release-migration" &&
-      migrationCallers[0].role === "release-migration" &&
-      /^srv-[A-Za-z0-9_-]+$/u.test(migrationCallers[0].serviceId ?? "") &&
-      /^dep-[A-Za-z0-9_-]+$/u.test(migrationCallers[0].deployId ?? "") &&
-      /^job-[A-Za-z0-9_-]+$/u.test(migrationCallers[0].jobId ?? "") &&
-      migrationCallers[0].status === "succeeded" &&
-      migrationCallers[0].commit === [...commits][0] &&
-      migrationCallers[0].imageDigest === [...images][0] &&
-      Number.isFinite(Date.parse(migrationCallers[0].observedAt ?? "")),
-    "Render observation must contain exactly one immutable release-migration caller",
-  );
   return {
     commit: [...commits][0],
     imageDigest: [...images][0],
     lastObservedAt: Math.max(
       ...services.map((entry) => Date.parse(entry.observedAt ?? "")),
     ),
-    migrationCaller: migrationCallers[0],
     runtimeWitnessSha256: observation?.runtimeWitness?.sha256,
   };
 }

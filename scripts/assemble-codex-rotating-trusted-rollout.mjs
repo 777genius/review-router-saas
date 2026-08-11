@@ -49,9 +49,10 @@ export function assembleTrustedRollout(env = process.env) {
     };
   }
   const headSha = required(env, "GITHUB_SHA");
+  const rolloutId = required(env, "REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID");
   return {
     version: 3,
-    rolloutId: required(env, "REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID"),
+    rolloutId,
     execution: {
       repositoryId: required(env, "GITHUB_REPOSITORY_ID"),
       repositoryFullName: required(env, "GITHUB_REPOSITORY"),
@@ -68,7 +69,7 @@ export function assembleTrustedRollout(env = process.env) {
       ),
       headSha,
     },
-    rollout: { version: 2, artifacts: descriptors },
+    rollout: { version: 3, rolloutId, artifacts: descriptors },
   };
 }
 

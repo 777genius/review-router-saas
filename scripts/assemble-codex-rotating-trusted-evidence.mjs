@@ -1,9 +1,15 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
 import { gitBlobSha } from "./lib/github-actions-trusted-evidence.mjs";
 
 const workflowPath = ".github/workflows/codex-rotating-release-migration.yml";
+const sha256 = (value) =>
+  createHash("sha256")
+    .update(Buffer.from(canonicalProviderJson(value)))
+    .digest("hex");
 
 function required(env, name) {
   const value = env[name];
@@ -20,30 +26,34 @@ function readJson(path, label) {
   }
 }
 
-export function assembleTrustedMigrationEvidence({ env, providerObservation }) {
+export function assembleTrustedMigrationEvidence({
+  env,
+  databaseObservation,
+  migrationOutput,
+}) {
   const commit = required(env, "GITHUB_SHA");
   const runAttempt = Number(required(env, "GITHUB_RUN_ATTEMPT"));
   if (!Number.isSafeInteger(runAttempt) || runAttempt <= 0)
     throw new Error("trusted_evidence_invalid_run_attempt");
   if (
-    providerObservation?.observationVersion !== 3 ||
-    providerObservation?.source !== "render-api" ||
-    providerObservation?.migrationOutput?.caller !==
-      "scripts/run-codex-rotating-release-migration.mjs"
+    databaseObservation?.observationVersion !== 4 ||
+    databaseObservation?.source !== "render-api" ||
+    migrationOutput?.caller !==
+      "scripts/run-codex-rotating-release-migration.mjs" ||
+    migrationOutput?.callerCount !== 1 ||
+    migrationOutput?.status !== "succeeded"
   )
     throw new Error("trusted_evidence_producer_observation_missing");
-  const migrationOutput = providerObservation.migrationOutput;
   const scope = {
     ownerId: required(env, "RENDER_OWNER_ID"),
     projectId: required(env, "RENDER_PROJECT_ID"),
     environmentId: required(env, "RENDER_ENVIRONMENT_ID"),
   };
-  const imageDigest = required(env, "REVIEW_ROUTER_RENDER_IMAGE_DIGEST");
+  const imageDigest = required(env, "REVIEW_ROUTER_RELEASE_IMAGE_DIGEST");
   const databaseIdentity = required(
     env,
     "REVIEW_ROUTER_RENDER_DATABASE_IDENTITY",
   );
-  const jobId = providerObservation.migrationCaller?.jobId;
   if (
     migrationOutput.commit !== commit ||
     migrationOutput.imageDigest !== imageDigest ||
@@ -68,6 +78,11 @@ export function assembleTrustedMigrationEvidence({ env, providerObservation }) {
       username,
       databaseIdentity,
       login: observed.login,
+      superuser: observed.superuser,
+      createDatabase: observed.createDatabase,
+      createRole: observed.createRole,
+      replication: observed.replication,
+      bypassRls: observed.bypassRls,
       canSetReleaseRole: observed.canSetReleaseRole,
     };
   });
@@ -76,7 +91,7 @@ export function assembleTrustedMigrationEvidence({ env, providerObservation }) {
     "REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_NAME",
   );
   return {
-    version: 3,
+    version: 4,
     rolloutId: required(env, "REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID"),
     execution: {
       repositoryId: required(env, "GITHUB_REPOSITORY_ID"),
@@ -94,22 +109,23 @@ export function assembleTrustedMigrationEvidence({ env, providerObservation }) {
     scope,
     release: { commit, imageDigest },
     database: {
-      id: providerObservation.database.id,
-      postgresMajorVersion: String(providerObservation.database.version).split(
+      id: databaseObservation.database.id,
+      postgresMajorVersion: String(databaseObservation.database.version).split(
         ".",
       )[0],
       identity: databaseIdentity,
+      observationSha256: sha256(databaseObservation),
     },
-    exclusiveMigration: {
-      jobId,
-      callerCount: providerObservation.migrationCaller.callerCount,
-      status: providerObservation.migrationCaller.status,
+    migration: {
+      callerCount: migrationOutput.callerCount,
+      status: migrationOutput.status,
       preflightStatus: migrationOutput.preflightStatus,
       migrationStatus: migrationOutput.migrationStatus,
       evidenceStatus: "verified",
+      outputSha256: sha256(migrationOutput),
     },
     runtimeRoles,
-    providerObservation,
+    databaseObservation,
     migrationOutput,
   };
 }
@@ -117,9 +133,13 @@ export function assembleTrustedMigrationEvidence({ env, providerObservation }) {
 export function main(env = process.env, stdout = process.stdout) {
   const evidence = assembleTrustedMigrationEvidence({
     env,
-    providerObservation: readJson(
-      required(env, "REVIEW_ROUTER_RENDER_PROVIDER_OBSERVATION_FILE"),
-      "provider-observation",
+    databaseObservation: readJson(
+      required(env, "REVIEW_ROUTER_RENDER_DATABASE_OBSERVATION_FILE"),
+      "database-observation",
+    ),
+    migrationOutput: readJson(
+      required(env, "REVIEW_ROUTER_MIGRATION_OUTPUT_FILE"),
+      "migration-output",
     ),
   });
   stdout.write(`${JSON.stringify(evidence)}\n`);

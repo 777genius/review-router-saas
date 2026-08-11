@@ -162,6 +162,33 @@ function exactExecution(evidence, expected) {
   if (evidence?.rolloutId !== expected.rolloutId)
     throw new Error("trusted evidence rollout ID mismatch or replay");
   const execution = evidence?.execution;
+  const executionKeys = [
+    "repositoryId",
+    "repositoryFullName",
+    "workflowPath",
+    "workflowSha",
+    "workflowRef",
+    "runId",
+    "runAttempt",
+    "jobId",
+    "jobName",
+    "artifactName",
+    "headSha",
+  ];
+  if (
+    !execution ||
+    Object.keys(execution).length !== executionKeys.length ||
+    !executionKeys.every((key) => Object.hasOwn(execution, key))
+  )
+    throw new Error("trusted evidence execution object keys are not exact");
+  if (
+    evidence.version === 3 &&
+    (Object.keys(evidence).length !== 4 ||
+      !["version", "rolloutId", "execution", "rollout"].every((key) =>
+        Object.hasOwn(evidence, key),
+      ))
+  )
+    throw new Error("trusted rollout evidence object keys are not exact");
   const pairs = {
     repositoryId: String(expected.repositoryId),
     repositoryFullName: expected.repository.toLowerCase(),
@@ -371,8 +398,8 @@ export async function fetchTrustedGitHubEvidence(
   } catch {
     throw new Error("trusted evidence manifest is not strict JSON");
   }
-  if (evidence?.version !== 3)
-    throw new Error("trusted evidence manifest version must be 3");
+  if (![3, 4].includes(evidence?.version))
+    throw new Error("trusted evidence manifest version must be 3 or 4");
   exactExecution(evidence, expected);
   const result = {
     evidence,
@@ -387,6 +414,10 @@ export async function fetchTrustedGitHubEvidence(
       artifactDigest: artifact.digest,
       rolloutId: expected.rolloutId,
       runId: String(expected.runId),
+      runAttempt: expected.runAttempt,
+      jobId: String(expected.jobId),
+      workflowPath: expected.workflowPath,
+      commit: expected.headSha,
       observedResponseSha256: Object.freeze({
         artifact: artifactResponse.bodySha256,
         jobs: jobsResponse.bodySha256,

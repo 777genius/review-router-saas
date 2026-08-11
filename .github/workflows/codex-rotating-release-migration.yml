@@ -14,7 +14,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: codex-rotating-release-migration-production
+  group: codex-rotating-database-mutation-production
   cancel-in-progress: false
 
 jobs:
@@ -30,10 +30,8 @@ jobs:
       RENDER_ENVIRONMENT_ID: ${{ vars.RENDER_ENVIRONMENT_ID }}
       REVIEW_ROUTER_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_RENDER_DATABASE_ID }}
       REVIEW_ROUTER_RENDER_DATABASE_IDENTITY: ${{ vars.REVIEW_ROUTER_RENDER_DATABASE_IDENTITY }}
-      REVIEW_ROUTER_RENDER_MIGRATION_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RENDER_MIGRATION_SERVICE_ID }}
-      REVIEW_ROUTER_RENDER_MIGRATION_DEPLOY_ID: ${{ vars.REVIEW_ROUTER_RENDER_MIGRATION_DEPLOY_ID }}
-      REVIEW_ROUTER_RENDER_COMMIT_SHA: ${{ github.sha }}
-      REVIEW_ROUTER_RENDER_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RENDER_IMAGE_DIGEST }}
+      REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ github.sha }}
+      REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RENDER_IMAGE_DIGEST }}
       REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
       REVIEW_ROUTER_API_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_API_DATABASE_URL }}
       REVIEW_ROUTER_WEB_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WEB_DATABASE_URL }}
@@ -75,26 +73,19 @@ jobs:
           appendFileSync(process.env.GITHUB_ENV, `REVIEW_ROUTER_GITHUB_JOB_ID=${jobs[0].id}\n`);
           NODE
 
-      - name: Run the exclusive canonical Render migration caller
-        run: |
-          node scripts/run-render-codex-rotating-migration-job.mjs > migration-job.json
-          node --input-type=module <<'NODE'
-          import { appendFileSync, readFileSync } from "node:fs";
-          const value = JSON.parse(readFileSync("migration-job.json", "utf8"));
-          if (value.status !== "succeeded") throw new Error("migration job did not succeed");
-          if (value.deployId !== process.env.REVIEW_ROUTER_RENDER_MIGRATION_DEPLOY_ID)
-            throw new Error("migration job did not use the pinned deploy");
-          appendFileSync(process.env.GITHUB_ENV, `REVIEW_ROUTER_RENDER_MIGRATION_JOB_ID=${value.jobId}\n`);
-          NODE
+      - name: Run canonical migration from the immutable checkout
+        run: node scripts/run-codex-rotating-release-migration.mjs > migration-output.json
 
-      - name: Capture authenticated Render job, logs, image, and database identity
+      - name: Capture read-only Render database identity
         env:
-          REVIEW_ROUTER_PROVENANCE_PROVIDER: render-migration
-        run: node scripts/codex-rotating-provider-provenance.mjs > render-migration-observation.json
+          REVIEW_ROUTER_PROVENANCE_PROVIDER: render-database
+          REVIEW_ROUTER_RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
+        run: node scripts/codex-rotating-provider-provenance.mjs > render-database-observation.json
 
       - name: Assemble provider-bound migration evidence
         env:
-          REVIEW_ROUTER_RENDER_PROVIDER_OBSERVATION_FILE: render-migration-observation.json
+          REVIEW_ROUTER_MIGRATION_OUTPUT_FILE: migration-output.json
+          REVIEW_ROUTER_RENDER_DATABASE_OBSERVATION_FILE: render-database-observation.json
         run: |
           mkdir trusted-evidence
           node scripts/assemble-codex-rotating-trusted-evidence.mjs > trusted-evidence/reviewrouter-trusted-rollout-evidence.json

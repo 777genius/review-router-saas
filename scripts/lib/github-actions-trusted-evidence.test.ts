@@ -72,7 +72,7 @@ function fixture() {
     rolloutId: "rollout-unique-1",
   };
   const evidence = {
-    version: 3,
+    version: 4,
     rolloutId: expected.rolloutId,
     execution: {
       repositoryId: "17",
@@ -86,6 +86,10 @@ function fixture() {
       jobName: expected.jobName,
       artifactName: expected.artifactName,
       headSha: expected.headSha,
+    },
+    release: {
+      commit: expected.headSha,
+      imageDigest: `sha256:${"b".repeat(64)}`,
     },
   };
   const archive = zip({
@@ -199,7 +203,7 @@ describe("authenticated GitHub Actions rollout evidence", () => {
       "database-secret",
     );
     expect(execute.mock.calls[0][2].input).toContain(
-      "trusted migration evidence replay rejected",
+      "reviewrouter_bootstrap.consume_migration_evidence",
     );
     execute.mockReturnValueOnce({ status: 1, stdout: "" });
     expect(() =>

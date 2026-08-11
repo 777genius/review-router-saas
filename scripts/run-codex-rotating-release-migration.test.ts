@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertCanonicalRoleTopology,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
   resolveReleaseMigrationConfiguration,
@@ -25,12 +26,95 @@ function environment() {
       "postgresql://reviewrouter_worker:worker-secret@db.internal/review_router",
     REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
       "postgresql://reviewrouter_codex_effect_authority:signer-secret@db.internal/review_router",
-    REVIEW_ROUTER_RENDER_COMMIT_SHA: "a".repeat(40),
-    REVIEW_ROUTER_RENDER_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
+    REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
+    REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
   };
 }
 
 describe("canonical exclusive release migration caller", () => {
+  it("rejects role-attribute drift and non-canonical bootstrap topology", () => {
+    const names = [
+      "reviewrouter_api",
+      "reviewrouter_codex_effect_authority",
+      "reviewrouter_release_migration",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+    ];
+    const observation = {
+      callerCount: 1,
+      roles: names.map((username) => ({
+        username,
+        login: true,
+        superuser: false,
+        createDatabase: false,
+        createRole: false,
+        replication: false,
+        bypassRls: false,
+        canSetReleaseRole: username === "reviewrouter_release_migration",
+      })),
+      setRoleMatrix: names.flatMap((member) =>
+        names.map((target) => ({ member, target, canSet: member === target })),
+      ),
+      bootstrapMemberships: names.map((granted) => ({
+        granted,
+        member: "reviewrouter_role_bootstrap",
+        adminOption: true,
+        inheritOption: false,
+        setOption: false,
+      })),
+      ownership: {
+        databaseOwner: "reviewrouter_role_bootstrap",
+        publicSchemaOwner: "reviewrouter_release_migration",
+        bootstrapSchemaOwner: "reviewrouter_role_bootstrap",
+        bootstrapFunctionOwner: "reviewrouter_role_bootstrap",
+        bootstrapFunctionCount: 1,
+        unexpectedPublicObjectOwnerCount: 0,
+      },
+    };
+    expect(assertCanonicalRoleTopology(observation)).toBe(observation);
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
+        roles: observation.roles.map((role, index) =>
+          index === 0 ? { ...role, replication: true } : role,
+        ),
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
+        bootstrapMemberships: observation.bootstrapMemberships.slice(1),
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
+        setRoleMatrix: [
+          observation.setRoleMatrix[1],
+          ...observation.setRoleMatrix.slice(1),
+        ],
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
+        bootstrapMemberships: [
+          observation.bootstrapMemberships[1],
+          ...observation.bootstrapMemberships.slice(1),
+        ],
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
+        ownership: {
+          ...observation.ownership,
+          publicSchemaOwner: "reviewrouter_role_bootstrap",
+        },
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+  });
+
   it("converges the four service roles and isolates effect authority", () => {
     const configuration = resolveReleaseMigrationConfiguration(environment());
     expect(configuration.roles.map((role) => role.username)).toEqual([
@@ -51,18 +135,29 @@ describe("canonical exclusive release migration caller", () => {
       "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH SET TRUE",
     );
     expect(provisioning).toContain(
-      "REASSIGN OWNED BY reviewrouter_role_bootstrap TO reviewrouter_release_migration",
+      "ALTER ROUTINE %s OWNER TO reviewrouter_release_migration",
     );
+    expect(provisioning).not.toContain("REASSIGN OWNED");
     expect(provisioning).toContain(
       "refusing to take over public objects owned by unexpected role",
     );
     expect(provisioning).toContain(
-      "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
+      "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
     );
     expect(provisioning).not.toContain("ADMIN reviewrouter_role_bootstrap");
     expect(provisioning).not.toContain("ALTER DATABASE");
     expect(provisioning).toContain(
       "GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration",
+    );
+    expect(provisioning).toContain(
+      "CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap",
+    );
+    expect(provisioning).toContain(
+      "DROP SCHEMA IF EXISTS reviewrouter_bootstrap",
+    );
+    expect(provisioning).toContain("SECURITY DEFINER");
+    expect(provisioning).toContain(
+      "reviewrouter_bootstrap.consume_migration_evidence",
     );
     expect(grants.match(/SELECT, INSERT, UPDATE, DELETE/g)).toHaveLength(6);
     expect(grants).toContain(
@@ -234,8 +329,11 @@ describe("canonical exclusive release migration caller", () => {
           roles: roleNames.map((username) => ({
             username,
             login: true,
+            superuser: false,
             createDatabase: false,
             createRole: false,
+            replication: false,
+            bypassRls: false,
             canSetReleaseRole: username === "reviewrouter_release_migration",
           })),
           setRoleMatrix: roleNames.flatMap((member) =>
@@ -252,6 +350,14 @@ describe("canonical exclusive release migration caller", () => {
             inheritOption: false,
             setOption: false,
           })),
+          ownership: {
+            databaseOwner: "reviewrouter_role_bootstrap",
+            publicSchemaOwner: "reviewrouter_release_migration",
+            bootstrapSchemaOwner: "reviewrouter_role_bootstrap",
+            bootstrapFunctionOwner: "reviewrouter_role_bootstrap",
+            bootstrapFunctionCount: 1,
+            unexpectedPublicObjectOwnerCount: 0,
+          },
         });
       return step === "migration_history_preflight" ? "preflight" : "";
     };
@@ -260,12 +366,14 @@ describe("canonical exclusive release migration caller", () => {
       "verify_bootstrap_authority",
       "provision_roles",
       "verify_release_authority",
+      "verify_roles",
     ]);
     expect(
       calls.every(
         (call) =>
           call.args[0]?.includes("reviewrouter_role_bootstrap") ||
-          call.step === "verify_release_authority",
+          call.step === "verify_release_authority" ||
+          call.step === "verify_roles",
       ),
     ).toBe(true);
 

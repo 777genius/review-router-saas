@@ -80,6 +80,178 @@ const canonicalRoleNames = Object.freeze([
   "reviewrouter_release_migration",
 ]);
 
+const canonicalBootstrapRoleName = "reviewrouter_role_bootstrap";
+
+export function canonicalRoleTopologyObservationSql() {
+  return `SELECT json_build_object(
+    'callerCount', 1,
+    'roles', (SELECT json_agg(json_build_object(
+      'username', rolname,
+      'login', rolcanlogin,
+      'superuser', rolsuper,
+      'createDatabase', rolcreatedb,
+      'createRole', rolcreaterole,
+      'replication', rolreplication,
+      'bypassRls', rolbypassrls,
+      'canSetReleaseRole', pg_has_role(rolname, 'reviewrouter_release_migration', 'SET')
+    ) ORDER BY rolname) FROM pg_roles WHERE rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])) ,
+    'setRoleMatrix', (SELECT json_agg(json_build_object(
+      'member', member.rolname,
+      'target', target.rolname,
+      'canSet', pg_has_role(member.oid, target.oid, 'SET')
+    ) ORDER BY member.rolname, target.rolname)
+    FROM pg_roles member CROSS JOIN pg_roles target
+    WHERE member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+      AND target.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])) ,
+    'bootstrapMemberships', (SELECT json_agg(json_build_object(
+      'granted', granted.rolname,
+      'member', member.rolname,
+      'adminOption', membership.admin_option,
+      'inheritOption', membership.inherit_option,
+      'setOption', membership.set_option
+    ) ORDER BY granted.rolname, member.rolname)
+    FROM pg_auth_members membership
+    JOIN pg_roles granted ON granted.oid = membership.roleid
+    JOIN pg_roles member ON member.oid = membership.member
+    WHERE granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+       OR member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+       OR granted.rolname = '${canonicalBootstrapRoleName}'
+       OR member.rolname = '${canonicalBootstrapRoleName}'),
+    'ownership', json_build_object(
+      'databaseOwner', (SELECT owner.rolname
+        FROM pg_database database
+        JOIN pg_roles owner ON owner.oid = database.datdba
+        WHERE database.datname = current_database()),
+      'publicSchemaOwner', (SELECT owner.rolname
+        FROM pg_namespace namespace
+        JOIN pg_roles owner ON owner.oid = namespace.nspowner
+        WHERE namespace.nspname = 'public'),
+      'bootstrapSchemaOwner', (SELECT owner.rolname
+        FROM pg_namespace namespace
+        JOIN pg_roles owner ON owner.oid = namespace.nspowner
+        WHERE namespace.nspname = 'reviewrouter_bootstrap'),
+      'bootstrapFunctionOwner', (SELECT max(owner.rolname)
+        FROM pg_proc routine
+        JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+        JOIN pg_roles owner ON owner.oid = routine.proowner
+        WHERE namespace.nspname = 'reviewrouter_bootstrap'
+          AND routine.proname = 'consume_migration_evidence'),
+      'bootstrapFunctionCount', (SELECT count(*)
+        FROM pg_proc routine
+        JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+        WHERE namespace.nspname = 'reviewrouter_bootstrap'
+          AND routine.proname = 'consume_migration_evidence'),
+      'unexpectedPublicObjectOwnerCount', (SELECT count(*) FROM (
+        SELECT owner.rolname
+        FROM pg_class relation
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        JOIN pg_roles owner ON owner.oid = relation.relowner
+        WHERE namespace.nspname = 'public'
+          AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+          AND owner.rolname <> 'reviewrouter_release_migration'
+        UNION ALL
+        SELECT owner.rolname
+        FROM pg_proc routine
+        JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+        JOIN pg_roles owner ON owner.oid = routine.proowner
+        WHERE namespace.nspname = 'public'
+          AND owner.rolname <> 'reviewrouter_release_migration'
+        UNION ALL
+        SELECT owner.rolname
+        FROM pg_type type
+        JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+        JOIN pg_roles owner ON owner.oid = type.typowner
+        WHERE namespace.nspname = 'public'
+          AND type.typtype IN ('d', 'e', 'm', 'r')
+          AND owner.rolname <> 'reviewrouter_release_migration'
+      ) unexpected_public_object_owners)
+    )
+  )`;
+}
+
+export function assertCanonicalRoleTopology(verifiedRoles) {
+  const observedMatrixKeys = Array.isArray(verifiedRoles?.setRoleMatrix)
+    ? new Set(
+        verifiedRoles.setRoleMatrix.map(
+          (entry) => `${entry.member}\u0000${entry.target}`,
+        ),
+      )
+    : new Set();
+  if (
+    verifiedRoles?.callerCount !== 1 ||
+    !Array.isArray(verifiedRoles.roles) ||
+    verifiedRoles.roles.length !== canonicalRoleNames.length ||
+    !Array.isArray(verifiedRoles.setRoleMatrix) ||
+    verifiedRoles.setRoleMatrix.length !==
+      canonicalRoleNames.length * canonicalRoleNames.length ||
+    !Array.isArray(verifiedRoles.bootstrapMemberships) ||
+    verifiedRoles.bootstrapMemberships.length !== canonicalRoleNames.length ||
+    verifiedRoles.roles.some(
+      (role) =>
+        !canonicalRoleNames.includes(role.username) ||
+        role.login !== true ||
+        role.superuser !== false ||
+        role.createDatabase !== false ||
+        role.createRole !== false ||
+        role.replication !== false ||
+        role.bypassRls !== false ||
+        role.canSetReleaseRole !==
+          (role.username === "reviewrouter_release_migration"),
+    ) ||
+    new Set(verifiedRoles.roles.map((role) => role.username)).size !==
+      canonicalRoleNames.length ||
+    verifiedRoles.setRoleMatrix.some(
+      (entry) =>
+        !canonicalRoleNames.includes(entry.member) ||
+        !canonicalRoleNames.includes(entry.target) ||
+        entry.canSet !== (entry.member === entry.target),
+    ) ||
+    observedMatrixKeys.size !==
+      canonicalRoleNames.length * canonicalRoleNames.length ||
+    verifiedRoles.bootstrapMemberships.some(
+      (entry) =>
+        !canonicalRoleNames.includes(entry.granted) ||
+        entry.member !== canonicalBootstrapRoleName ||
+        entry.adminOption !== true ||
+        entry.inheritOption !== false ||
+        entry.setOption !== false,
+    ) ||
+    new Set(verifiedRoles.bootstrapMemberships.map((entry) => entry.granted))
+      .size !== canonicalRoleNames.length ||
+    verifiedRoles.ownership?.databaseOwner !== canonicalBootstrapRoleName ||
+    verifiedRoles.ownership?.publicSchemaOwner !==
+      "reviewrouter_release_migration" ||
+    verifiedRoles.ownership?.bootstrapSchemaOwner !==
+      canonicalBootstrapRoleName ||
+    verifiedRoles.ownership?.bootstrapFunctionOwner !==
+      canonicalBootstrapRoleName ||
+    verifiedRoles.ownership?.bootstrapFunctionCount !== 1 ||
+    verifiedRoles.ownership?.unexpectedPublicObjectOwnerCount !== 0
+  )
+    throw new Error("release_migration_role_observation_failed");
+  return verifiedRoles;
+}
+
+function observeCanonicalRoleTopology(run, url, env) {
+  return assertCanonicalRoleTopology(
+    JSON.parse(
+      run(
+        "verify_roles",
+        "psql",
+        [
+          url,
+          "--no-psqlrc",
+          "--tuples-only",
+          "--no-align",
+          "--command",
+          canonicalRoleTopologyObservationSql(),
+        ],
+        { env },
+      ).trim(),
+    ),
+  );
+}
+
 export function resolveReleaseMigrationConfiguration(env) {
   const releaseUrl = new URL(
     required(env, "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL"),
@@ -104,8 +276,8 @@ export function resolveReleaseMigrationConfiguration(env) {
       throw new Error(`release_migration_runtime_password_missing:${role}`);
     return { environmentName, password, role, username };
   });
-  const commit = required(env, "REVIEW_ROUTER_RENDER_COMMIT_SHA");
-  const imageDigest = required(env, "REVIEW_ROUTER_RENDER_IMAGE_DIGEST");
+  const commit = required(env, "REVIEW_ROUTER_RELEASE_COMMIT_SHA");
+  const imageDigest = required(env, "REVIEW_ROUTER_RELEASE_IMAGE_DIGEST");
   if (
     !/^[a-f0-9]{40}$/u.test(commit) ||
     !/^sha256:[a-f0-9]{64}$/u.test(imageDigest)
@@ -159,6 +331,7 @@ BEGIN
 END
 $role$;
 ALTER ROLE ${username} LOGIN NOCREATEROLE PASSWORD ${quoted(password)};
+GRANT ${username} TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 DO $membership$
 DECLARE membership record;
 BEGIN
@@ -213,6 +386,13 @@ BEGIN
     JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
     JOIN pg_roles owner ON owner.oid = routine.proowner
     WHERE namespace.nspname = 'public'
+    UNION ALL
+    SELECT owner.rolname AS owner_name
+    FROM pg_type type
+    JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+    JOIN pg_roles owner ON owner.oid = type.typowner
+    WHERE namespace.nspname = 'public'
+      AND type.typtype IN ('d', 'e', 'm', 'r')
   ) owned
   WHERE owner_name NOT IN ('reviewrouter_role_bootstrap', 'reviewrouter_release_migration')
   ORDER BY owner_name
@@ -222,11 +402,142 @@ BEGIN
   END IF;
 END
 $ownership$;
-REASSIGN OWNED BY reviewrouter_role_bootstrap TO reviewrouter_release_migration;
+DROP FUNCTION IF EXISTS reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text);
+DROP SCHEMA IF EXISTS reviewrouter_bootstrap;
+DO $transfer_public_ownership$
+DECLARE owned_object record;
+BEGIN
+  FOR owned_object IN
+    SELECT relation.oid, relation.relkind
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_roles owner ON owner.oid = relation.relowner
+    WHERE namespace.nspname = 'public'
+      AND owner.rolname = 'reviewrouter_role_bootstrap'
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+  LOOP
+    EXECUTE CASE owned_object.relkind
+      WHEN 'S' THEN format('ALTER SEQUENCE %s OWNER TO reviewrouter_release_migration', owned_object.oid::regclass)
+      WHEN 'v' THEN format('ALTER VIEW %s OWNER TO reviewrouter_release_migration', owned_object.oid::regclass)
+      WHEN 'm' THEN format('ALTER MATERIALIZED VIEW %s OWNER TO reviewrouter_release_migration', owned_object.oid::regclass)
+      WHEN 'f' THEN format('ALTER FOREIGN TABLE %s OWNER TO reviewrouter_release_migration', owned_object.oid::regclass)
+      ELSE format('ALTER TABLE %s OWNER TO reviewrouter_release_migration', owned_object.oid::regclass)
+    END;
+  END LOOP;
+  FOR owned_object IN
+    SELECT routine.oid
+    FROM pg_proc routine
+    JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+    JOIN pg_roles owner ON owner.oid = routine.proowner
+    WHERE namespace.nspname = 'public'
+      AND owner.rolname = 'reviewrouter_role_bootstrap'
+  LOOP
+    EXECUTE format('ALTER ROUTINE %s OWNER TO reviewrouter_release_migration', owned_object.oid::regprocedure);
+  END LOOP;
+  FOR owned_object IN
+    SELECT type.typname, type.typtype
+    FROM pg_type type
+    JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+    JOIN pg_roles owner ON owner.oid = type.typowner
+    WHERE namespace.nspname = 'public'
+      AND owner.rolname = 'reviewrouter_role_bootstrap'
+      AND type.typtype IN ('d', 'e', 'm', 'r')
+  LOOP
+    IF owned_object.typtype = 'd' THEN
+      EXECUTE format('ALTER DOMAIN public.%I OWNER TO reviewrouter_release_migration', owned_object.typname);
+    ELSE
+      EXECUTE format('ALTER TYPE public.%I OWNER TO reviewrouter_release_migration', owned_object.typname);
+    END IF;
+  END LOOP;
+END
+$transfer_public_ownership$;
 SELECT 'ALTER SCHEMA public OWNER TO reviewrouter_release_migration'
 WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'public') <> 'reviewrouter_release_migration'
 \\gexec
-REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE;
+GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap;
+DO $bootstrap_schema$
+BEGIN
+  IF (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'reviewrouter_bootstrap') <> 'reviewrouter_role_bootstrap' THEN
+    RAISE EXCEPTION 'reviewrouter bootstrap schema owner is invalid';
+  END IF;
+END
+$bootstrap_schema$;
+REVOKE ALL ON SCHEMA reviewrouter_bootstrap FROM PUBLIC;
+GRANT USAGE ON SCHEMA reviewrouter_bootstrap TO reviewrouter_release_migration;
+CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.consume_migration_evidence(
+  artifact_digest text,
+  artifact_id text,
+  rollout_id text,
+  run_id text,
+  run_attempt integer,
+  job_id text,
+  workflow_path text,
+  commit_sha text,
+  image_digest text
+) RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $receipt$
+DECLARE
+  binding jsonb;
+  receipts jsonb;
+BEGIN
+  IF session_user <> 'reviewrouter_release_migration'
+     OR artifact_digest !~ '^sha256:[a-f0-9]{64}$'
+     OR artifact_id !~ '^[1-9][0-9]*$'
+     OR rollout_id = ''
+     OR run_id !~ '^[1-9][0-9]*$'
+     OR run_attempt <= 0
+     OR job_id !~ '^[1-9][0-9]*$'
+     OR workflow_path <> '.github/workflows/codex-rotating-release-migration.yml'
+     OR commit_sha !~ '^[a-f0-9]{40}$'
+     OR image_digest !~ '^sha256:[a-f0-9]{64}$' THEN
+    RAISE EXCEPTION 'trusted migration evidence receipt invalid';
+  END IF;
+  PERFORM pg_advisory_xact_lock(1381126735, 1129271120);
+  SELECT obj_description(oid, 'pg_database')::jsonb INTO binding
+  FROM pg_database WHERE datname = current_database();
+  IF binding IS NULL
+     OR binding->>'systemIdentifier' <> (SELECT system_identifier::text FROM pg_control_system())
+     OR binding->>'recoveryWitnessSha256' !~ '^[a-f0-9]{64}$' THEN
+    RAISE EXCEPTION 'trusted migration evidence database generation binding invalid';
+  END IF;
+  receipts := coalesce(binding->'consumedMigrationEvidence', '[]'::jsonb);
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(receipts) receipt
+    WHERE receipt->>'artifactDigest' = artifact_digest
+       OR receipt->>'rolloutId' = rollout_id
+       OR (receipt->>'runId' = run_id AND receipt->>'artifactId' = artifact_id)
+  ) THEN
+    RAISE EXCEPTION 'trusted migration evidence replay rejected';
+  END IF;
+  binding := jsonb_set(binding, '{version}', '3'::jsonb, true);
+  binding := jsonb_set(
+    binding,
+    '{consumedMigrationEvidence}',
+    receipts || jsonb_build_array(jsonb_build_object(
+      'artifactDigest', artifact_digest,
+      'artifactId', artifact_id,
+      'rolloutId', rollout_id,
+      'runId', run_id,
+      'runAttempt', run_attempt,
+      'jobId', job_id,
+      'workflowPath', workflow_path,
+      'commit', commit_sha,
+      'imageDigest', image_digest,
+      'claimedAt', to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+    )),
+    true
+  );
+  EXECUTE format('COMMENT ON DATABASE %I IS %L', current_database(), binding::text);
+  RETURN true;
+END
+$receipt$;
+ALTER FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text) OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text) TO reviewrouter_release_migration;
 COMMIT;
 `;
 }
@@ -448,12 +759,19 @@ export function executeCanonicalRoleBootstrap(
     "reviewrouter_release_migration",
     false,
   );
+  const verifiedRoles = observeCanonicalRoleTopology(
+    run,
+    configuration.bootstrapUrl,
+    bootstrapEnv,
+  );
   return {
-    version: 1,
+    version: 2,
     caller: "scripts/run-codex-rotating-role-bootstrap.mjs",
     commit: configuration.commit,
     databaseIdentity: configuration.databaseIdentity,
     imageDigest: configuration.imageDigest,
+    roles: verifiedRoles.roles,
+    bootstrapMemberships: verifiedRoles.bootstrapMemberships,
     status: "succeeded",
   };
 }
@@ -499,81 +817,13 @@ export function executeCanonicalReleaseMigration(
       input: runtimeGrantSql(configuration),
     },
   );
-  const verifiedRoles = JSON.parse(
-    run(
-      "verify_roles",
-      "psql",
-      [
-        configuration.releaseUrl,
-        "--no-psqlrc",
-        "--tuples-only",
-        "--no-align",
-        "--command",
-        `SELECT json_build_object(
-          'callerCount', 1,
-          'roles', (SELECT json_agg(json_build_object(
-            'username', rolname,
-            'login', rolcanlogin,
-            'createDatabase', rolcreatedb,
-            'createRole', rolcreaterole,
-            'canSetReleaseRole', pg_has_role(rolname, 'reviewrouter_release_migration', 'SET')
-          ) ORDER BY rolname) FROM pg_roles WHERE rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])) ,
-          'setRoleMatrix', (SELECT json_agg(json_build_object(
-            'member', member.rolname,
-            'target', target.rolname,
-            'canSet', pg_has_role(member.oid, target.oid, 'SET')
-          ) ORDER BY member.rolname, target.rolname)
-          FROM pg_roles member CROSS JOIN pg_roles target
-          WHERE member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
-            AND target.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])) ,
-          'bootstrapMemberships', (SELECT json_agg(json_build_object(
-            'granted', granted.rolname,
-            'member', member.rolname,
-            'adminOption', membership.admin_option,
-            'inheritOption', membership.inherit_option,
-            'setOption', membership.set_option
-          ) ORDER BY granted.rolname, member.rolname)
-          FROM pg_auth_members membership
-          JOIN pg_roles granted ON granted.oid = membership.roleid
-          JOIN pg_roles member ON member.oid = membership.member
-          WHERE granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
-             OR member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
-             OR granted.rolname = 'reviewrouter_role_bootstrap'
-             OR member.rolname = 'reviewrouter_role_bootstrap')
-        )`,
-      ],
-      { env: childEnv },
-    ).trim(),
+  const verifiedRoles = observeCanonicalRoleTopology(
+    run,
+    configuration.releaseUrl,
+    childEnv,
   );
-  if (
-    verifiedRoles.callerCount !== 1 ||
-    verifiedRoles.roles.length !== 5 ||
-    verifiedRoles.setRoleMatrix.length !== 25 ||
-    !Array.isArray(verifiedRoles.bootstrapMemberships) ||
-    verifiedRoles.bootstrapMemberships.length !== 5 ||
-    verifiedRoles.roles.some(
-      (role) =>
-        role.login !== true ||
-        role.createDatabase !== false ||
-        role.createRole !== false ||
-        (role.username !== "reviewrouter_release_migration" &&
-          role.canSetReleaseRole !== false),
-    ) ||
-    verifiedRoles.setRoleMatrix.some(
-      (entry) => entry.canSet !== (entry.member === entry.target),
-    ) ||
-    verifiedRoles.bootstrapMemberships.some(
-      (entry) =>
-        !canonicalRoleNames.includes(entry.granted) ||
-        entry.member !== "reviewrouter_role_bootstrap" ||
-        entry.adminOption !== true ||
-        entry.inheritOption !== false ||
-        entry.setOption !== false,
-    )
-  )
-    throw new Error("release_migration_role_observation_failed");
   return {
-    version: 1,
+    version: 2,
     caller: "scripts/run-codex-rotating-release-migration.mjs",
     callerCount: 1,
     commit: configuration.commit,

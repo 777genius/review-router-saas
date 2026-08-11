@@ -133,6 +133,7 @@ SELECT jsonb_build_object(
         'superuser', r.rolsuper,
         'createDatabase', r.rolcreatedb,
         'createRole', r.rolcreaterole,
+        'replication', r.rolreplication,
         'bypassRls', r.rolbypassrls,
         'databaseCreate', has_database_privilege(r.rolname, current_database(), 'CREATE'),
         'schemaCreate', has_schema_privilege(r.rolname, current_schema(), 'CREATE'),
@@ -721,7 +722,6 @@ export function assertProductionWriterCaptureConfiguration(env) {
   } catch {
     throw new Error("trusted Render observation is unreadable");
   }
-  const migrationCallers = deployObservation?.migrationCallers;
   if (
     deployObservation?.observationVersion !== 2 ||
     deployObservation?.source !== "render-api" ||
@@ -730,34 +730,16 @@ export function assertProductionWriterCaptureConfiguration(env) {
     !Array.isArray(deployObservation?.rawResponses) ||
     deployObservation.rawResponses.length === 0 ||
     deployObservation.captureIdentity.rawResponsesSha256 !==
-      sha256(
-        Buffer.from(canonicalProviderJson(deployObservation.rawResponses)),
-      ) ||
-    !Array.isArray(migrationCallers) ||
-    migrationCallers.length !== 1
+      sha256(Buffer.from(canonicalProviderJson(deployObservation.rawResponses)))
   ) {
-    throw new Error(
-      "trusted Render observation must identify one migration caller",
-    );
+    throw new Error("trusted Render runtime observation is invalid");
   }
-  const platformIdentity = migrationCallers[0];
-  if (
-    platformIdentity?.name !== "reviewrouter-release-migration" ||
-    platformIdentity?.role !== "release-migration" ||
-    !/^srv-[A-Za-z0-9_-]+$/u.test(platformIdentity?.serviceId ?? "") ||
-    !/^dep-[A-Za-z0-9_-]+$/u.test(platformIdentity?.deployId ?? "") ||
-    !/^job-[A-Za-z0-9_-]+$/u.test(platformIdentity?.jobId ?? "") ||
-    !/^[a-f0-9]{40}$/u.test(platformIdentity?.commit ?? "") ||
-    !/^sha256:[a-f0-9]{64}$/u.test(platformIdentity?.imageDigest ?? "") ||
-    platformIdentity?.status !== "succeeded" ||
-    !Number.isFinite(Date.parse(platformIdentity?.observedAt ?? ""))
-  ) {
-    throw new Error("trusted Render migration caller identity is invalid");
-  }
+  const rolloutId = env.REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID;
+  if (typeof rolloutId !== "string" || rolloutId.length === 0)
+    throw new Error("trusted migration rollout ID is required");
   return {
     databaseUrl,
-    platformIdentity,
-    platformDeployObservationSha256: sha256(deployObservationBytes),
+    rolloutId,
     runtimeWitnessSha256: deployObservation?.runtimeWitness?.sha256,
   };
 }
@@ -805,7 +787,7 @@ export async function captureProductionWriterObservation(
   }
   const generationBinding = base?.databaseGenerationBinding;
   if (
-    generationBinding?.version !== 2 ||
+    generationBinding?.version !== 3 ||
     generationBinding?.systemIdentifier !==
       base?.databaseIdentity?.systemIdentifier ||
     !/^[a-f0-9]{64}$/u.test(generationBinding?.recoveryWitnessSha256 ?? "") ||
@@ -813,6 +795,7 @@ export async function captureProductionWriterObservation(
     generationBinding.consumedMigrationEvidence.length === 0 ||
     generationBinding.consumedMigrationEvidence.some(
       (receipt) =>
+        Object.keys(receipt ?? {}).length !== 10 ||
         !/^sha256:[a-f0-9]{64}$/u.test(receipt?.artifactDigest ?? "") ||
         typeof receipt?.artifactId !== "string" ||
         !receipt.artifactId ||
@@ -820,11 +803,27 @@ export async function captureProductionWriterObservation(
         !receipt.rolloutId ||
         typeof receipt?.runId !== "string" ||
         !receipt.runId ||
+        !Number.isSafeInteger(receipt?.runAttempt) ||
+        receipt.runAttempt <= 0 ||
+        typeof receipt?.jobId !== "string" ||
+        !receipt.jobId ||
+        receipt?.workflowPath !==
+          ".github/workflows/codex-rotating-release-migration.yml" ||
+        !/^[a-f0-9]{40}$/u.test(receipt?.commit ?? "") ||
+        !/^sha256:[a-f0-9]{64}$/u.test(receipt?.imageDigest ?? "") ||
         !Number.isFinite(Date.parse(receipt?.claimedAt ?? "")),
     )
   ) {
     throw new Error("database generation witness binding is absent or invalid");
   }
+  const rolloutReceipts = generationBinding.consumedMigrationEvidence.filter(
+    (receipt) => receipt.rolloutId === configuration.rolloutId,
+  );
+  if (rolloutReceipts.length !== 1)
+    throw new Error(
+      "database generation does not contain exactly one requested migration receipt",
+    );
+  const migrationReceipt = rolloutReceipts[0];
   const recoveryWitnessSha256 = generationBinding.recoveryWitnessSha256;
   if (
     !Array.isArray(base?.admittedRecoveryEvidence?.witnessFingerprints) ||
@@ -859,7 +858,7 @@ export async function captureProductionWriterObservation(
     query(configuration.databaseUrl, drainObservationSql),
   );
   return {
-    observationVersion: 4,
+    observationVersion: 5,
     source: "production-postgresql-writer",
     captureKind: "database-query",
     rehearsal: false,
@@ -871,16 +870,9 @@ export async function captureProductionWriterObservation(
     databaseAuthorization: base.databaseAuthorization,
     callerIdentity: {
       id: "release-migration",
-      kind: "immutable-release-migration",
-      platform: "render",
-      platformDeployObservationSha256:
-        configuration.platformDeployObservationSha256,
-      serviceId: configuration.platformIdentity.serviceId,
-      deployId: configuration.platformIdentity.deployId,
-      jobId: configuration.platformIdentity.jobId,
-      commit: configuration.platformIdentity.commit,
-      imageDigest: configuration.platformIdentity.imageDigest,
-      observedAt: configuration.platformIdentity.observedAt,
+      kind: "trusted-github-release-migration",
+      platform: "github-actions",
+      ...migrationReceipt,
       ...base.databaseCaller,
     },
     postgresVersion: base.postgresVersion,

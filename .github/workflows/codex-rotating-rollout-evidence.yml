@@ -27,9 +27,6 @@ jobs:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       REVIEW_ROUTER_RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
       REVIEW_ROUTER_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_RENDER_DATABASE_ID }}
-      REVIEW_ROUTER_RENDER_MIGRATION_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RENDER_MIGRATION_SERVICE_ID }}
-      REVIEW_ROUTER_RENDER_MIGRATION_DEPLOY_ID: ${{ vars.REVIEW_ROUTER_RENDER_MIGRATION_DEPLOY_ID }}
-      REVIEW_ROUTER_RENDER_MIGRATION_JOB_ID: ${{ vars.REVIEW_ROUTER_RENDER_MIGRATION_JOB_ID }}
       REVIEW_ROUTER_RENDER_WITNESS_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RENDER_WITNESS_SERVICE_ID }}
       REVIEW_ROUTER_RENDER_API_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RENDER_API_SERVICE_ID }}
       REVIEW_ROUTER_RENDER_API_DEPLOY_ID: ${{ vars.REVIEW_ROUTER_RENDER_API_DEPLOY_ID }}
@@ -105,7 +102,10 @@ jobs:
           import { readFileSync } from "node:fs";
           import { inspectCodexRotatingRolloutStructure } from "./scripts/verify-codex-rotating-rollout.mjs";
           const manifest = JSON.parse(readFileSync("trusted-rollout/reviewrouter-trusted-rollout-evidence.json", "utf8"));
-          const result = inspectCodexRotatingRolloutStructure(manifest.rollout, { evidenceDirectory: "trusted-rollout" });
+          const result = inspectCodexRotatingRolloutStructure(manifest.rollout, {
+            evidenceDirectory: "trusted-rollout",
+            expectedRolloutId: process.env.REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID,
+          });
           if (!result.ok) throw new Error(result.failures.join("; "));
           NODE
 

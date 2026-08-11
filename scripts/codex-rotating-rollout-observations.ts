@@ -12,7 +12,7 @@ type ProductionDatabaseIdentity = Readonly<{
 }>;
 
 export type ProductionWriterObservation = Readonly<{
-  observationVersion: 4;
+  observationVersion: 5;
   source: "production-postgresql-writer";
   captureKind: "database-query";
   rehearsal: false;
@@ -20,7 +20,7 @@ export type ProductionWriterObservation = Readonly<{
   isWriter: true;
   recoveryWitnessSha256: string;
   databaseGenerationBinding: Readonly<{
-    version: 2;
+    version: 3;
     systemIdentifier: string;
     recoveryWitnessSha256: string;
     consumedMigrationEvidence: readonly Readonly<{
@@ -28,22 +28,30 @@ export type ProductionWriterObservation = Readonly<{
       artifactId: string;
       rolloutId: string;
       runId: string;
+      runAttempt: number;
+      jobId: string;
+      workflowPath: ".github/workflows/codex-rotating-release-migration.yml";
+      commit: string;
+      imageDigest: Sha256Digest;
       claimedAt: string;
     }>[];
   }>;
   callerIdentity: Readonly<{
     id: "release-migration";
-    kind: "immutable-release-migration";
+    kind: "trusted-github-release-migration";
     commit: string;
     imageDigest: Sha256Digest;
     databaseRole: "reviewrouter_release_migration";
     sessionUser: "reviewrouter_release_migration";
-    platform: "render";
-    platformDeployObservationSha256: string;
-    serviceId: string;
-    deployId: string;
+    platform: "github-actions";
+    artifactDigest: Sha256Digest;
+    artifactId: string;
+    rolloutId: string;
+    runId: string;
+    runAttempt: number;
+    workflowPath: ".github/workflows/codex-rotating-release-migration.yml";
     jobId: string;
-    observedAt: string;
+    claimedAt: string;
   }>;
   drainObservations: readonly Readonly<{
     databaseIdentity: ProductionDatabaseIdentity;

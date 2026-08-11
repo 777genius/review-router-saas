@@ -35,19 +35,6 @@ const renderObservation = {
     },
   ],
   runtimeWitness: { sha256: "f".repeat(64) },
-  migrationCallers: [
-    {
-      name: "reviewrouter-release-migration",
-      role: "release-migration",
-      serviceId: "srv-migration",
-      deployId: "dep-migration",
-      jobId: "job-migration",
-      commit: "a".repeat(40),
-      imageDigest: `sha256:${"b".repeat(64)}`,
-      status: "succeeded",
-      observedAt: "2026-08-09T00:00:00.000Z",
-    },
-  ],
 };
 renderObservation.captureIdentity.rawResponsesSha256 = createHash("sha256")
   .update(canonicalProviderJson(renderObservation.rawResponses))
@@ -59,6 +46,7 @@ const validEnv = {
   REVIEW_ROUTER_PRODUCTION_WRITER_DATABASE_URL:
     "postgresql://release:secret@writer.internal:5432/review_router",
   REVIEW_ROUTER_RENDER_OBSERVATION_PATH: renderObservationPath,
+  REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID: "rollout-1",
   REVIEW_ROUTER_DRAIN_OBSERVATION_INTERVAL_MS: "15000",
 };
 
@@ -270,27 +258,13 @@ describe("production-writer rollout observation capture", () => {
     );
   });
 
-  it("rejects trusted platform observations with multiple migration callers", () => {
-    const path = join(
-      mkdtempSync(join(tmpdir(), "rr-render-multiple-")),
-      "render.json",
-    );
-    writeFileSync(
-      path,
-      JSON.stringify({
-        ...renderObservation,
-        migrationCallers: [
-          ...renderObservation.migrationCallers,
-          { ...renderObservation.migrationCallers[0], jobId: "job-second" },
-        ],
-      }),
-    );
+  it("requires the exact migration rollout receipt selector", () => {
     expect(() =>
       assertProductionWriterCaptureConfiguration({
         ...validEnv,
-        REVIEW_ROUTER_RENDER_OBSERVATION_PATH: path,
+        REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID: "",
       }),
-    ).toThrow("must identify one migration caller");
+    ).toThrow("migration rollout ID is required");
   });
 
   it.each([
@@ -329,7 +303,7 @@ describe("production-writer rollout observation capture", () => {
         sessionUser: "reviewrouter_release_migration",
       },
       databaseGenerationBinding: {
-        version: 2,
+        version: 3,
         systemIdentifier: "7612345678901234567",
         recoveryWitnessSha256: "f".repeat(64),
         consumedMigrationEvidence: [
@@ -338,6 +312,12 @@ describe("production-writer rollout observation capture", () => {
             artifactId: "303",
             rolloutId: "rollout-1",
             runId: "101",
+            runAttempt: 1,
+            jobId: "202",
+            workflowPath:
+              ".github/workflows/codex-rotating-release-migration.yml",
+            commit: "a".repeat(40),
+            imageDigest: `sha256:${"b".repeat(64)}`,
             claimedAt: "2026-08-10T00:00:00.000Z",
           },
         ],
@@ -389,8 +369,9 @@ describe("production-writer rollout observation capture", () => {
       recoveryWitnessSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
       callerIdentity: {
         id: "release-migration",
-        platform: "render",
-        jobId: "job-migration",
+        platform: "github-actions",
+        rolloutId: "rollout-1",
+        jobId: "202",
       },
       recoveryOwnerId: "setup-recovery:fetched",
       drainObservations: [

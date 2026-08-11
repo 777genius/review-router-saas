@@ -77,7 +77,6 @@ export async function captureRenderProvenance(
     configuration.databaseId,
     "Render database ID is required",
   );
-  const migration = configuration.migration ?? {};
   const services = configuration.services ?? [];
   if (!Array.isArray(services) || services.length !== 3) {
     throw new Error(
@@ -97,22 +96,6 @@ export async function captureRenderProvenance(
   const database = await request(
     `v1/postgres/${encodeURIComponent(databaseId)}`,
     "Render database capture failed",
-  );
-  const migrationService = await request(
-    `v1/services/${encodeURIComponent(required(migration.serviceId, "Render migration service ID is required"))}`,
-    "Render migration service capture failed",
-  );
-  const migrationDeploy = await request(
-    `v1/services/${encodeURIComponent(migration.serviceId)}/deploys/${encodeURIComponent(required(migration.deployId, "Render migration deploy ID is required"))}`,
-    "Render migration deploy capture failed",
-  );
-  const migrationJob = await request(
-    `v1/services/${encodeURIComponent(migration.serviceId)}/jobs/${encodeURIComponent(required(migration.jobId, "Render migration job ID is required"))}`,
-    "Render migration job capture failed",
-  );
-  const migrationJobs = await request(
-    `v1/services/${encodeURIComponent(migration.serviceId)}/jobs?limit=100`,
-    "Render migration job inventory capture failed",
   );
   const witnessEnv = await request(
     `v1/services/${encodeURIComponent(required(configuration.witnessServiceId, "Render witness service ID is required"))}/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS`,
@@ -165,16 +148,7 @@ export async function captureRenderProvenance(
   witnessRaw.bodySha256 = sha256(
     Buffer.from(canonicalProviderJson(witnessRaw.body)),
   );
-  const rawResponses = [
-    identity.raw,
-    database.raw,
-    migrationService.raw,
-    migrationDeploy.raw,
-    migrationJob.raw,
-    migrationJobs.raw,
-    witnessRaw,
-    ...serviceRaw,
-  ];
+  const rawResponses = [identity.raw, database.raw, witnessRaw, ...serviceRaw];
   const observedAt = new Date().toISOString();
   return {
     observationVersion: 2,
@@ -196,33 +170,6 @@ export async function captureRenderProvenance(
       version: String(database.value.version),
       ownerId: database.value.ownerId ?? database.value.owner?.id,
     },
-    migrationCallers: (Array.isArray(migrationJobs.value)
-      ? migrationJobs.value.map((entry) => entry.job ?? entry)
-      : (migrationJobs.value?.jobs ?? [])
-    )
-      .filter((entry) => {
-        const command = entry.startCommand ?? entry.command;
-        const entryDeployId = entry.deployId ?? entry.deploy?.id;
-        return (
-          entry.status === "succeeded" &&
-          command === "pnpm codex-rotating:release-migration" &&
-          entryDeployId === migration.deployId
-        );
-      })
-      .map((entry) => ({
-        name: migrationService.value.name,
-        role: "release-migration",
-        serviceId: migrationService.value.id,
-        deployId: migrationDeploy.value.id,
-        jobId: entry.id,
-        commit:
-          migrationDeploy.value.commit?.id ?? migrationDeploy.value.commitId,
-        imageDigest:
-          migrationDeploy.value.image?.digest ??
-          migrationDeploy.value.imageDigest,
-        status: entry.status,
-        observedAt: entry.finishedAt ?? entry.updatedAt,
-      })),
     services: serviceFacts,
     runtimeWitness: {
       serviceId: configuration.witnessServiceId,
@@ -233,7 +180,7 @@ export async function captureRenderProvenance(
   };
 }
 
-export async function captureRenderMigrationProvenance(
+export async function captureRenderDatabaseProvenance(
   configuration,
   fetchImpl = globalThis.fetch,
 ) {
@@ -250,25 +197,13 @@ export async function captureRenderMigrationProvenance(
     configuration.databaseId,
     "Render database ID is required",
   );
-  const serviceId = required(
-    configuration.serviceId,
-    "Render migration service ID is required",
-  );
-  const deployId = required(
-    configuration.deployId,
-    "Render migration deploy ID is required",
-  );
-  const jobId = required(
-    configuration.jobId,
-    "Render migration job ID is required",
-  );
   const headers = {
     Accept: "application/json",
     Authorization: `Bearer ${required(configuration.token, "Render API token is required")}`,
   };
   const request = (path, message) =>
     getJson(fetchImpl, new URL(path, base), headers, message);
-  const [owner, database, service, deploy, job] = await Promise.all([
+  const [owner, database] = await Promise.all([
     request(
       `v1/owners/${encodeURIComponent(ownerId)}`,
       "Render owner capture failed",
@@ -277,83 +212,15 @@ export async function captureRenderMigrationProvenance(
       `v1/postgres/${encodeURIComponent(databaseId)}`,
       "Render database capture failed",
     ),
-    request(
-      `v1/services/${encodeURIComponent(serviceId)}`,
-      "Render migration service capture failed",
-    ),
-    request(
-      `v1/services/${encodeURIComponent(serviceId)}/deploys/${encodeURIComponent(deployId)}`,
-      "Render migration deploy capture failed",
-    ),
-    request(
-      `v1/services/${encodeURIComponent(serviceId)}/jobs/${encodeURIComponent(jobId)}`,
-      "Render migration job capture failed",
-    ),
   ]);
-  const logUrl = new URL("v1/logs", base);
-  logUrl.searchParams.set("ownerId", ownerId);
-  logUrl.searchParams.set("resource", serviceId);
-  logUrl.searchParams.set("instance", jobId);
-  logUrl.searchParams.set("type", "app");
-  const jobs = await request(
-    `v1/services/${encodeURIComponent(serviceId)}/jobs?limit=100`,
-    "Render migration job inventory capture failed",
-  );
-  const inventory = Array.isArray(jobs.value)
-    ? jobs.value.map((entry) => entry.job ?? entry)
-    : (jobs.value?.jobs ?? []);
-  const matchingCallers = inventory.filter((entry) => {
-    const entryCommand = entry.startCommand ?? entry.command;
-    const entryDeployId = entry.deployId ?? entry.deploy?.id;
-    return (
-      entry.status === "succeeded" &&
-      entryCommand === "pnpm codex-rotating:release-migration" &&
-      entryDeployId === deployId
-    );
-  });
-  const logs = await getJson(
-    fetchImpl,
-    logUrl,
-    headers,
-    "Render migration output capture failed",
-  );
-  const logEntries = Array.isArray(logs.value) ? logs.value : logs.value?.logs;
-  const migrationOutputs = (logEntries ?? []).flatMap((entry) => {
-    const message = entry.message ?? entry.text ?? "";
-    try {
-      const value = JSON.parse(message);
-      return value?.caller ===
-        "scripts/run-codex-rotating-release-migration.mjs"
-        ? [value]
-        : [];
-    } catch {
-      return [];
-    }
-  });
-  if (migrationOutputs.length !== 1)
-    throw new Error(
-      "Render logs do not contain exactly one canonical migration output",
-    );
-  const rawResponses = [
-    owner.raw,
-    database.raw,
-    service.raw,
-    deploy.raw,
-    job.raw,
-    jobs.raw,
-    logs.raw,
-  ];
-  const command =
-    job.value.startCommand ??
-    job.value.command ??
-    service.value.serviceDetails?.startCommand ??
-    service.value.startCommand;
+  const rawResponses = [owner.raw, database.raw];
   return {
-    observationVersion: 3,
+    observationVersion: 4,
     source: "render-api",
     captureIdentity: {
       ownerId: owner.value.id,
       apiHost: base.hostname,
+      authenticated: owner.value.id === ownerId,
       observedAt: new Date().toISOString(),
       rawResponsesSha256: sha256(
         Buffer.from(canonicalProviderJson(rawResponses)),
@@ -366,18 +233,6 @@ export async function captureRenderMigrationProvenance(
       version: String(database.value.version),
       ownerId: database.value.ownerId ?? database.value.owner?.id,
     },
-    migrationCaller: {
-      callerCount: matchingCallers.length,
-      serviceId: service.value.id,
-      deployId: deploy.value.id,
-      jobId: job.value.id,
-      commit: deploy.value.commit?.id ?? deploy.value.commitId,
-      imageDigest: deploy.value.image?.digest ?? deploy.value.imageDigest,
-      status: job.value.status,
-      command,
-      observedAt: job.value.finishedAt ?? job.value.updatedAt,
-    },
-    migrationOutput: migrationOutputs[0],
   };
 }
 
@@ -607,25 +462,17 @@ export async function captureGitHubWorkflowDrainProvenance(
 
 export async function main(env = process.env, stdout = process.stdout) {
   let observation;
-  if (env.REVIEW_ROUTER_PROVENANCE_PROVIDER === "render-migration") {
-    observation = await captureRenderMigrationProvenance({
+  if (env.REVIEW_ROUTER_PROVENANCE_PROVIDER === "render-database") {
+    observation = await captureRenderDatabaseProvenance({
       token: env.RENDER_API_KEY,
       ownerId: env.REVIEW_ROUTER_RENDER_OWNER_ID,
       databaseId: env.REVIEW_ROUTER_RENDER_DATABASE_ID,
-      serviceId: env.REVIEW_ROUTER_RENDER_MIGRATION_SERVICE_ID,
-      deployId: env.REVIEW_ROUTER_RENDER_MIGRATION_DEPLOY_ID,
-      jobId: env.REVIEW_ROUTER_RENDER_MIGRATION_JOB_ID,
     });
   } else if (env.REVIEW_ROUTER_PROVENANCE_PROVIDER === "render") {
     observation = await captureRenderProvenance({
       token: env.RENDER_API_KEY,
       ownerId: env.REVIEW_ROUTER_RENDER_OWNER_ID,
       databaseId: env.REVIEW_ROUTER_RENDER_DATABASE_ID,
-      migration: {
-        serviceId: env.REVIEW_ROUTER_RENDER_MIGRATION_SERVICE_ID,
-        deployId: env.REVIEW_ROUTER_RENDER_MIGRATION_DEPLOY_ID,
-        jobId: env.REVIEW_ROUTER_RENDER_MIGRATION_JOB_ID,
-      },
       witnessServiceId: env.REVIEW_ROUTER_RENDER_WITNESS_SERVICE_ID,
       services: ["api", "web", "worker"].map((role) => ({
         role,
@@ -656,7 +503,7 @@ export async function main(env = process.env, stdout = process.stdout) {
     );
   } else {
     throw new Error(
-      "REVIEW_ROUTER_PROVENANCE_PROVIDER must be render, render-migration, or github",
+      "REVIEW_ROUTER_PROVENANCE_PROVIDER must be render, render-database, or github",
     );
   }
   stdout.write(`${JSON.stringify(observation)}\n`);
