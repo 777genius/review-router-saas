@@ -124,6 +124,27 @@ describe("production-writer rollout observation capture", () => {
     expect(functionsSql).not.toContain("pg_get_functiondef");
   });
 
+  it("uses the complete trigger-table inventory for detailed observations", () => {
+    const triggersStart =
+      codexRotatingProductionWriterBaseObservationSql.indexOf(
+        "\n    'triggers', coalesce((",
+        codexRotatingProductionWriterBaseObservationSql.indexOf(
+          "\n    'columns', coalesce((",
+        ),
+      );
+    const triggersEnd = codexRotatingProductionWriterBaseObservationSql.indexOf(
+      "\n    'functions', coalesce((",
+      triggersStart,
+    );
+    const triggersSql = codexRotatingProductionWriterBaseObservationSql.slice(
+      triggersStart,
+      triggersEnd,
+    );
+
+    expect(triggersSql).toContain("'CodexOAuthProviderIdentityQuarantine'");
+    expect(triggersSql).toContain("'CodexOAuthChildIdentityQuarantine'");
+  });
+
   it("observes function ownership and the config-table privilege contract", () => {
     expect(codexRotatingProductionWriterBaseObservationSql).toContain(
       "'owner', owner.rolname",

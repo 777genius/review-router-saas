@@ -25,6 +25,14 @@ const preflightSource = readFileSync(
   resolve("scripts/preflight-codex-rotating-migration-history.ts"),
   "utf8",
 );
+const forwardMigrationSource = readFileSync(
+  resolve(
+    "packages/platform/db/prisma/migrations",
+    forwardUnpublishedCodexRotatingMigration.name,
+    "migration.sql",
+  ),
+  "utf8",
+);
 
 describe("Codex rotating immutable migration history policy", () => {
   it("pins the exact checked-in digest for the atomic 000063 migration", () => {
@@ -67,7 +75,7 @@ describe("Codex rotating immutable migration history policy", () => {
       checkedInCodexRotatingMigrationChecksums[
         forwardUnpublishedCodexRotatingMigration.name
       ],
-    ).toBe("c7d098167f200a132dc9fd17943e365111b4cbf9b1d1d5800bf270589c80588e");
+    ).toBe("3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8");
     expect(checkedInDigest).toBe(
       forwardUnpublishedCodexRotatingMigration.checksum,
     );
@@ -94,6 +102,21 @@ describe("Codex rotating immutable migration history policy", () => {
     );
     expect(queriedMigrationNames).toContain(
       forwardUnpublishedCodexRotatingMigration.name,
+    );
+  });
+
+  it("does not mint a provider-transition receipt for a repository-only repair", () => {
+    const repairFunction =
+      /CREATE FUNCTION "codex_oauth_repair_quarantined_provider"\([\s\S]+?END \$\$;/u.exec(
+        forwardMigrationSource,
+      )?.[0];
+
+    expect(repairFunction).toBeDefined();
+    expect(repairFunction).toMatch(
+      /IF old_workspace_id IS DISTINCT FROM new_workspace_id[\s\S]+?INSERT INTO public\."CodexOAuthDatabaseAuthorityReceipt"[\s\S]+?UPDATE public\."CodexOAuthProviderInstance"/u,
+    );
+    expect(repairFunction).toContain(
+      "A repository-only quarantine can leave the provider identity canonical.",
     );
   });
 

@@ -34,7 +34,7 @@ const versionedSecretNamespaceForwardChecksum =
 const authorityAclHardeningForwardChecksum =
   "ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c";
 const rotatingCascadeAuthorityForwardChecksum =
-  "c7d098167f200a132dc9fd17943e365111b4cbf9b1d1d5800bf270589c80588e";
+  "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8";
 
 describe("observation-backed Codex rotating rollout verifier", () => {
   it("keeps the exhaustive column inventory synchronized with Prisma", () => {

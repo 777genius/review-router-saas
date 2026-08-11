@@ -432,7 +432,7 @@ SELECT jsonb_build_object(
       WHERE NOT t.tgisinternal
         AND n.nspname = current_schema()
         AND pn.nspname = current_schema()
-        AND c.relname IN ('RepositoryConnection','CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent','CodexOAuthSetupRecoveryRequest','CodexOAuthSetupPayloadClaim','CodexOAuthSecretNamespace','CodexOAuthSetupDispatchAttempt','CodexOAuthDatabaseAuthorityReceipt')
+        AND c.relname IN (${sqlLiterals(catalogTriggerTables)})
     ), '[]'::jsonb),
     'functions', coalesce((
       SELECT jsonb_agg(jsonb_build_object(

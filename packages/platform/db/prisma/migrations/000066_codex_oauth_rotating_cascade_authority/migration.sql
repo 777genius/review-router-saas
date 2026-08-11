@@ -349,38 +349,48 @@ BEGIN
     new_workspace_id, new_repository_id, new_provider_instance_id,
     new_auth_mode, new_secret_name
   );
-  INSERT INTO public."CodexOAuthDatabaseAuthorityReceipt" (
-    "databaseRole", "backendPid", "transactionId", "effect", "ownerId", "effectCode"
-  ) VALUES (
-    caller_role, pg_backend_pid(), txid_current(),
-    'provider_identity_repair_v2', transition_key, 0
-  ) ON CONFLICT DO NOTHING;
-  GET DIAGNOSTICS affected_count = ROW_COUNT;
-  IF affected_count <> 1 THEN
-    RAISE EXCEPTION 'codex_oauth_database_authority_receipt_replay_forbidden'
-      USING ERRCODE = '42501';
-  END IF;
+  -- A repository-only quarantine can leave the provider identity canonical.
+  -- In that case the signed repair still authorizes the parent repair, but no
+  -- provider trigger fires and no provider-transition receipt may be minted.
+  IF old_workspace_id IS DISTINCT FROM new_workspace_id
+     OR old_repository_id IS DISTINCT FROM new_repository_id
+     OR old_provider_instance_id IS DISTINCT FROM new_provider_instance_id
+     OR old_auth_mode IS DISTINCT FROM new_auth_mode
+     OR old_secret_name IS DISTINCT FROM new_secret_name
+  THEN
+    INSERT INTO public."CodexOAuthDatabaseAuthorityReceipt" (
+      "databaseRole", "backendPid", "transactionId", "effect", "ownerId", "effectCode"
+    ) VALUES (
+      caller_role, pg_backend_pid(), txid_current(),
+      'provider_identity_repair_v2', transition_key, 0
+    ) ON CONFLICT DO NOTHING;
+    GET DIAGNOSTICS affected_count = ROW_COUNT;
+    IF affected_count <> 1 THEN
+      RAISE EXCEPTION 'codex_oauth_database_authority_receipt_replay_forbidden'
+        USING ERRCODE = '42501';
+    END IF;
 
-  UPDATE public."CodexOAuthProviderInstance"
-  SET "workspaceId" = new_workspace_id,
-      "repositoryId" = new_repository_id,
-      "providerInstanceId" = new_provider_instance_id,
-      "authMode" = new_auth_mode,
-      "secretName" = new_secret_name
-  WHERE "id" = provider_row_id;
+    UPDATE public."CodexOAuthProviderInstance"
+    SET "workspaceId" = new_workspace_id,
+        "repositoryId" = new_repository_id,
+        "providerInstanceId" = new_provider_instance_id,
+        "authMode" = new_auth_mode,
+        "secretName" = new_secret_name
+    WHERE "id" = provider_row_id;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM public."CodexOAuthDatabaseAuthorityReceipt"
-    WHERE "databaseRole" = caller_role
-      AND "backendPid" = pg_backend_pid()
-      AND "transactionId" = txid_current()
-      AND "effect" = 'provider_identity_repair_v2'
-      AND "ownerId" = transition_key
-      AND "effectCode" = 0
-      AND "consumedAt" IS NOT NULL
-  ) THEN
-    RAISE EXCEPTION 'codex_oauth_provider_identity_authority_required'
-      USING ERRCODE = '42501';
+    IF NOT EXISTS (
+      SELECT 1 FROM public."CodexOAuthDatabaseAuthorityReceipt"
+      WHERE "databaseRole" = caller_role
+        AND "backendPid" = pg_backend_pid()
+        AND "transactionId" = txid_current()
+        AND "effect" = 'provider_identity_repair_v2'
+        AND "ownerId" = transition_key
+        AND "effectCode" = 0
+        AND "consumedAt" IS NOT NULL
+    ) THEN
+      RAISE EXCEPTION 'codex_oauth_provider_identity_authority_required'
+        USING ERRCODE = '42501';
+    END IF;
   END IF;
 
   UPDATE public."CodexOAuthProviderIdentityQuarantine"

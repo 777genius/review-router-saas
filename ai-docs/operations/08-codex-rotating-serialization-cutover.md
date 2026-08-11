@@ -74,7 +74,7 @@ is checked against both that policy and the files on every test run.
 | `000063_codex_oauth_setup_payload_claim`         | `33100d6f5f3f59cd9a4c22f041d19caba6a0e0be88de4a0ee4d543af50619481` |
 | `000064_codex_oauth_versioned_secret_namespaces` | `4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666` |
 | `000065_codex_oauth_authority_acl_hardening`     | `ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c` |
-| `000066_codex_oauth_rotating_cascade_authority`  | `c7d098167f200a132dc9fd17943e365111b4cbf9b1d1d5800bf270589c80588e` |
+| `000066_codex_oauth_rotating_cascade_authority`  | `3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8` |
 
 ## 000066 forward-publication policy
 
@@ -82,7 +82,7 @@ is checked against both that policy and the files on every test run.
 `ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c`.
 `000066_codex_oauth_rotating_cascade_authority` is the unpublished forward
 migration for this release. Its exact checked-in SHA-256 is
-`c7d098167f200a132dc9fd17943e365111b4cbf9b1d1d5800bf270589c80588e`.
+`3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8`.
 Before its first publication, migration preflight hashes those exact bytes and
 rejects every existing `_prisma_migrations` row named 000066, including failed,
 rolled-back, duplicate, or apparently successful rows. Do not resolve or bless
