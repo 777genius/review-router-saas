@@ -6,8 +6,11 @@ import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { codexRotatingProductionWriterBaseObservationSql } from "./capture-codex-rotating-production-writer.mjs";
 import { codexRotatingTriggers } from "./codex-rotating-production-writer-schema.mjs";
-import { provisionAndAssertRehearsalRoles } from "./codex-rotating-rehearsal-role-provisioning.mjs";
-import { runtimeGrantStatements } from "./run-codex-rotating-release-migration.mjs";
+import {
+  executeCanonicalReleaseMigration,
+  roleProvisioningSql,
+  runtimeGrantStatements,
+} from "./run-codex-rotating-release-migration.mjs";
 import { verifyCodexRotatingDatabaseCatalog } from "./verify-codex-rotating-rollout.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -51,7 +54,7 @@ const baseUrl = requireLocalPostgres(
 const psqlBinary = requirePostgres17();
 const databaseName = `rr_codex_fence_${process.pid}_${Date.now()}`;
 const adminUrl = databaseUrl(baseUrl, "postgres");
-const rehearsalUrl = databaseUrl(baseUrl, databaseName);
+let rehearsalUrl = databaseUrl(baseUrl, databaseName);
 const rehearsalRoleMarker = `reviewrouter-rehearsal-managed:${process.pid}:${randomUUID()}`;
 let rehearsalRoleClients;
 
@@ -63,7 +66,9 @@ try {
       .startsWith("17"),
     "the rehearsal database server must be PostgreSQL 17",
   );
-  rehearsalRoleClients = ensureRuntimeRoles(rehearsalUrl);
+  const rehearsalRelease = prepareCanonicalReleaseRoles(rehearsalUrl);
+  rehearsalRoleClients = rehearsalRelease.clients;
+  rehearsalUrl = rehearsalRoleClients.release;
   applyBaselineThrough59(rehearsalUrl);
   seedDirtyFixtures(rehearsalUrl);
   await proveMigration60LockTimeout(rehearsalUrl);
@@ -76,9 +81,11 @@ try {
   proveStatementTimeoutConfiguration(rehearsalUrl);
   proveInjected61Rollback(rehearsalUrl);
   migrateResolve(rehearsalUrl, "--rolled-back", migration61Name);
-  migrateDeploy(rehearsalUrl);
-  convergeSyntheticReleaseOwnerEquivalentPrivileges(rehearsalUrl);
-  convergeRuntimePrivileges(rehearsalUrl);
+  discardRehearsalOnlyRolledBackMigrationHistory(rehearsalUrl);
+  executeCanonicalReleaseMigration(
+    rehearsalRelease.environment,
+    runRehearsalReleaseSubprocess,
+  );
 
   proveSuccessfulCombinedRelease(rehearsalUrl);
   proveDatabasePrivileges(rehearsalUrl);
@@ -361,17 +368,18 @@ function seedDirtyFixtures(url) {
 
 async function proveMigration60LockTimeout(url) {
   const applicationName = `rr_setup_lock_${process.pid}`;
+  const holderUrl = withApplicationName(url, applicationName);
   const holder = spawn(
     psqlBinary,
     [
-      url,
+      holderUrl,
       "-X",
       "-v",
       "ON_ERROR_STOP=1",
       "-c",
       'BEGIN; LOCK TABLE "CodexOAuthSetupManifest" IN ACCESS SHARE MODE; SELECT pg_sleep(60);',
     ],
-    { stdio: "ignore", env: { ...process.env, PGAPPNAME: applicationName } },
+    { stdio: "ignore", env: process.env },
   );
   try {
     await waitForLock(url, applicationName, '"CodexOAuthSetupManifest"');
@@ -430,17 +438,18 @@ async function proveMigration60LockTimeout(url) {
 
 async function proveCombinedLockTimeout(url) {
   const applicationName = `rr_fence_lock_${process.pid}`;
+  const holderUrl = withApplicationName(url, applicationName);
   const holder = spawn(
     psqlBinary,
     [
-      url,
+      holderUrl,
       "-X",
       "-v",
       "ON_ERROR_STOP=1",
       "-c",
       'BEGIN; LOCK TABLE "CodexOAuthProviderInstance" IN ACCESS SHARE MODE; SELECT pg_sleep(60);',
     ],
-    { stdio: "ignore", env: { ...process.env, PGAPPNAME: applicationName } },
+    { stdio: "ignore", env: process.env },
   );
   try {
     await waitForLock(url, applicationName, '"CodexOAuthProviderInstance"');
@@ -1210,8 +1219,8 @@ function proveRuntimeVersionedWriteback(url, clients) {
       cwd: root,
       env: {
         ...process.env,
-        REVIEW_ROUTER_PRISMA_EVIDENCE_ADMIN_DATABASE_URL:
-          clients.admin.toString(),
+        REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL:
+          clients.release.toString(),
         REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL: clients.api.toString(),
         REVIEW_ROUTER_PRISMA_EVIDENCE_WEB_DATABASE_URL: clients.web.toString(),
         REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL:
@@ -1259,6 +1268,7 @@ function proveDatabasePrivileges(url) {
       DECLARE unsafe_table_count INTEGER;
       DECLARE role_name TEXT;
       DECLARE membership_count INTEGER;
+      DECLARE bootstrap_membership_count INTEGER;
       BEGIN
         SELECT count(*), count(*) FILTER (
           WHERE has_function_privilege('public', p.oid, 'EXECUTE')
@@ -1355,13 +1365,18 @@ function proveDatabasePrivileges(url) {
           RAISE EXCEPTION 'Codex OAuth child identity fence guard execution contract mismatch';
         END IF;
 
-        -- Rehearsal fidelity only: Prisma migrations run as this database's
-        -- superuser, unlike production where the LOGIN release caller owns the
-        -- catalog and has implicit full privileges. The synthetic NOLOGIN role
-        -- therefore receives explicit owner-equivalent data privileges.
-        IF EXISTS (
+        -- The direct LOGIN release caller owns the schema and migration-created
+        -- catalog objects, so its owner-equivalent data privileges must remain
+        -- complete without inheriting another role.
+        IF NOT EXISTS (
           SELECT 1 FROM pg_roles
-          WHERE rolname = 'reviewrouter_release_migration' AND rolcanlogin
+          WHERE rolname = 'reviewrouter_release_migration'
+            AND rolcanlogin
+            AND NOT rolsuper
+            AND NOT rolcreatedb
+            AND NOT rolcreaterole
+            AND NOT rolreplication
+            AND NOT rolbypassrls
         )
            OR NOT has_schema_privilege('reviewrouter_release_migration', 'public', 'USAGE')
            OR EXISTS (
@@ -1399,7 +1414,7 @@ function proveDatabasePrivileges(url) {
                )
            )
         THEN
-          RAISE EXCEPTION 'Codex OAuth synthetic rehearsal release owner-equivalent privilege mismatch';
+          RAISE EXCEPTION 'Codex OAuth release migration privilege mismatch';
         END IF;
 
         FOREACH role_name IN ARRAY ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker'] LOOP
@@ -1604,52 +1619,52 @@ function proveDatabasePrivileges(url) {
           RAISE EXCEPTION 'Codex OAuth effect authority isolation mismatch';
         END IF;
 
-        SELECT count(*) INTO membership_count
+        SELECT
+          count(*) FILTER (
+            WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+              AND member.rolname = 'reviewrouter_role_bootstrap'
+              AND membership.admin_option
+              AND NOT membership.inherit_option
+              AND NOT membership.set_option
+          ),
+          count(*) FILTER (
+            WHERE NOT (
+              granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+              AND member.rolname = 'reviewrouter_role_bootstrap'
+              AND membership.admin_option
+              AND NOT membership.inherit_option
+              AND NOT membership.set_option
+            )
+          )
+        INTO bootstrap_membership_count, membership_count
         FROM pg_auth_members membership
         JOIN pg_roles granted ON granted.oid = membership.roleid
         JOIN pg_roles member ON member.oid = membership.member
         WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
-           OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration');
-        IF membership_count <> 0 THEN
-          RAISE EXCEPTION 'Codex OAuth role memberships are not empty: %', membership_count;
+           OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+           OR granted.rolname = 'reviewrouter_role_bootstrap'
+           OR member.rolname = 'reviewrouter_role_bootstrap';
+        IF bootstrap_membership_count <> 5 OR membership_count <> 0 THEN
+          RAISE EXCEPTION 'Codex OAuth role membership authority mismatch: expected %, unexpected %', bootstrap_membership_count, membership_count;
         END IF;
       END $$;
     `,
   ]);
 }
 
-function ensureRuntimeRoles(url) {
+function prepareCanonicalReleaseRoles(url) {
   const loginRoles = [
     ["reviewrouter_api", "rr-rehearsal-api"],
     ["reviewrouter_web", "rr-rehearsal-web"],
     ["reviewrouter_worker", "rr-rehearsal-worker"],
     ["reviewrouter_codex_effect_authority", "rr-rehearsal-effect-authority"],
+    ["reviewrouter_release_migration", "rr-rehearsal-release"],
   ];
-  const syntheticRoles = ["reviewrouter_release_migration"];
-  const allRoles = [...loginRoles.map(([role]) => role), ...syntheticRoles];
+  const allRoles = loginRoles.map(([role]) => role);
   const passwords = new Map(
     loginRoles.map(([role]) => [role, `${randomUUID()}${randomUUID()}`]),
   );
-  const statements = allRoles.map((role) => {
-    const password = passwords.get(role);
-    const loginClause = password
-      ? `LOGIN PASSWORD ${quoteLiteral(password)}`
-      : "NOLOGIN";
-    return `DO $role$ BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=${quoteLiteral(role)}) THEN
-        CREATE ROLE ${quoteIdentifier(role)};
-      END IF;
-    END $role$;
-    ALTER ROLE ${quoteIdentifier(role)} ${loginClause} NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-    COMMENT ON ROLE ${quoteIdentifier(role)} IS ${quoteLiteral(rehearsalRoleMarker)};
-    REVOKE ALL ON DATABASE ${quoteIdentifier(databaseName)} FROM ${quoteIdentifier(role)};`;
-  });
-  statements.push(
-    ...loginRoles.map(
-      ([role]) =>
-        `GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(role)};`,
-    ),
-  );
+  const bootstrapPassword = `${randomUUID()}${randomUUID()}`;
   const canonicalRoleLiterals = allRoles.map(quoteLiteral).join(",");
   const provisioningSql = `BEGIN;
     -- Canonical roles are cluster-global. Serialize the existence check and
@@ -1668,14 +1683,12 @@ function ensureRuntimeRoles(url) {
         RAISE EXCEPTION 'refusing to take over pre-existing canonical role %', existing_role;
       END IF;
     END $ownership$;
-    ${statements.join("\n")}
+    CREATE ROLE reviewrouter_role_bootstrap LOGIN NOSUPERUSER NOCREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(bootstrapPassword)};
+    COMMENT ON ROLE reviewrouter_role_bootstrap IS ${quoteLiteral(rehearsalRoleMarker)};
+    ALTER SCHEMA public OWNER TO reviewrouter_role_bootstrap;
+    ALTER DATABASE ${quoteIdentifier(databaseName)} OWNER TO reviewrouter_role_bootstrap;
     COMMIT;`;
-  provisionAndAssertRehearsalRoles({
-    marker: rehearsalRoleMarker,
-    provisioningSql,
-    psql,
-    url,
-  });
+  psql(url, ["-c", provisioningSql]);
 
   const clientUrl = (role, applicationName) => {
     const client = databaseUrl(url, databaseName);
@@ -1684,10 +1697,16 @@ function ensureRuntimeRoles(url) {
     client.searchParams.set("application_name", applicationName);
     return client;
   };
-  const admin = databaseUrl(url, databaseName);
-  admin.searchParams.set("application_name", "rr-rehearsal-admin");
-  return {
-    admin,
+  const bootstrap = clientUrl(
+    "reviewrouter_role_bootstrap",
+    "rr-rehearsal-role-bootstrap",
+  );
+  bootstrap.password = bootstrapPassword;
+  const release = clientUrl(
+    "reviewrouter_release_migration",
+    "rr-rehearsal-release-migration",
+  );
+  const clients = {
     api: clientUrl("reviewrouter_api", "rr-rehearsal-api"),
     web: clientUrl("reviewrouter_web", "rr-rehearsal-web"),
     worker: clientUrl("reviewrouter_worker", "rr-rehearsal-worker"),
@@ -1695,7 +1714,100 @@ function ensureRuntimeRoles(url) {
       "reviewrouter_codex_effect_authority",
       "rr-rehearsal-effect-authority",
     ),
+    release,
   };
+  const environment = {
+    ...process.env,
+    REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: bootstrap.toString(),
+    REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: release.toString(),
+    REVIEW_ROUTER_API_DATABASE_URL: clients.api.toString(),
+    REVIEW_ROUTER_WEB_DATABASE_URL: clients.web.toString(),
+    REVIEW_ROUTER_WORKER_DATABASE_URL: clients.worker.toString(),
+    REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+      clients.effectAuthority.toString(),
+    REVIEW_ROUTER_RENDER_COMMIT_SHA: "a".repeat(40),
+    REVIEW_ROUTER_RENDER_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
+  };
+  runRehearsalReleaseSubprocess(
+    "initial_role_provisioning",
+    "psql",
+    [bootstrap.toString(), "--no-psqlrc", "--quiet"],
+    {
+      env: { ...environment, DATABASE_URL: bootstrap.toString() },
+      input: roleProvisioningSql({
+        releasePassword: passwords.get("reviewrouter_release_migration"),
+        roles: [
+          {
+            role: "api",
+            username: "reviewrouter_api",
+            password: passwords.get("reviewrouter_api"),
+          },
+          {
+            role: "web",
+            username: "reviewrouter_web",
+            password: passwords.get("reviewrouter_web"),
+          },
+          {
+            role: "worker",
+            username: "reviewrouter_worker",
+            password: passwords.get("reviewrouter_worker"),
+          },
+          {
+            role: "effect-authority",
+            username: "reviewrouter_codex_effect_authority",
+            password: passwords.get("reviewrouter_codex_effect_authority"),
+          },
+        ],
+      }),
+    },
+  );
+  markCanonicalRehearsalRoles(bootstrap.toString());
+  return {
+    clients,
+    environment,
+  };
+}
+
+function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
+  const invocation =
+    command === "psql"
+      ? { executable: psqlBinary, args }
+      : command === "pnpm" && process.env.npm_execpath
+        ? {
+            executable: process.execPath,
+            args: [process.env.npm_execpath, ...args],
+          }
+        : { executable: command, args };
+  const result = spawnSync(invocation.executable, invocation.args, {
+    cwd: root,
+    encoding: "utf8",
+    env: options.env,
+    input: options.input,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.status !== 0)
+    throw new Error(
+      `rehearsal release helper failed at ${step}: ${result.stderr || result.stdout}`,
+    );
+  return result.stdout;
+}
+
+function markCanonicalRehearsalRoles(url) {
+  psql(url, [
+    "-c",
+    [
+      "reviewrouter_api",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+      "reviewrouter_codex_effect_authority",
+      "reviewrouter_release_migration",
+    ]
+      .map(
+        (role) =>
+          `COMMENT ON ROLE ${quoteIdentifier(role)} IS ${quoteLiteral(rehearsalRoleMarker)};`,
+      )
+      .join("\n"),
+  ]);
 }
 
 function cleanupRuntimeRoles(url) {
@@ -1705,6 +1817,7 @@ function cleanupRuntimeRoles(url) {
     "reviewrouter_worker",
     "reviewrouter_codex_effect_authority",
     "reviewrouter_release_migration",
+    "reviewrouter_role_bootstrap",
   ];
   for (const role of roles) {
     const marker = psql(
@@ -1719,42 +1832,6 @@ function cleanupRuntimeRoles(url) {
       psql(url, ["-c", `DROP ROLE ${quoteIdentifier(role)}`], false);
     }
   }
-}
-
-function convergeSyntheticReleaseOwnerEquivalentPrivileges(url) {
-  psql(url, [
-    "-c",
-    String.raw`
-      -- Rehearsal fidelity only. Production migrations are executed by the
-      -- LOGIN catalog owner, whose implicit privileges are intentionally full.
-      -- This rehearsal executes migrations as its superuser and uses a
-      -- synthetic NOLOGIN function owner, so explicitly converge the data
-      -- privileges needed by every release-owned SECURITY DEFINER function.
-      DO $ownership$
-      DECLARE owned_function regprocedure;
-      BEGIN
-        FOR owned_function IN
-          SELECT function.oid::regprocedure
-          FROM pg_proc function
-          JOIN pg_namespace namespace ON namespace.oid = function.pronamespace
-          WHERE namespace.nspname = 'public'
-            AND function.proname LIKE 'codex_oauth_%'
-        LOOP
-          EXECUTE format(
-            'ALTER FUNCTION %s OWNER TO reviewrouter_release_migration',
-            owned_function
-          );
-        END LOOP;
-      END $ownership$;
-      GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;
-      GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES
-        ON ALL TABLES IN SCHEMA public
-        TO reviewrouter_release_migration;
-      GRANT USAGE, SELECT, UPDATE
-        ON ALL SEQUENCES IN SCHEMA public
-        TO reviewrouter_release_migration;
-    `,
-  ]);
 }
 
 function convergeRuntimePrivileges(url) {
@@ -2877,6 +2954,37 @@ function proveMigrationRunnerHistory(url, name, successful) {
   );
 }
 
+function discardRehearsalOnlyRolledBackMigrationHistory(url) {
+  for (const [migrationName, expectedSuccessful] of [
+    [migration60Name, 1],
+    [migration61Name, 0],
+  ]) {
+    const observation = psql(url, [
+      "-Atc",
+      `SELECT count(*) || ':' || count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL) || ':' || count(*) FILTER (WHERE rolled_back_at IS NULL) FROM "_prisma_migrations" WHERE migration_name = ${quoteLiteral(migrationName)}`,
+    ]).stdout.trim();
+    const [total, successful, current] = observation.split(":").map(Number);
+    assert(
+      total >= 2 &&
+        successful === expectedSuccessful &&
+        current === expectedSuccessful,
+      `rehearsal-only rolled-back history contract mismatch for ${migrationName} (${observation})`,
+    );
+    psql(url, [
+      "-c",
+      `DELETE FROM "_prisma_migrations" WHERE migration_name = ${quoteLiteral(migrationName)} AND rolled_back_at IS NOT NULL`,
+    ]);
+    const remaining = psql(url, [
+      "-Atc",
+      `SELECT count(*) || ':' || count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL) FROM "_prisma_migrations" WHERE migration_name = ${quoteLiteral(migrationName)}`,
+    ]).stdout.trim();
+    assert(
+      remaining === `${expectedSuccessful}:${expectedSuccessful}`,
+      `rehearsal-only rolled-back history reset failed for ${migrationName} (${remaining})`,
+    );
+  }
+}
+
 function databaseFingerprintBefore61(url) {
   return psql(url, [
     "-Atc",
@@ -2894,8 +3002,14 @@ function databaseFingerprintBefore61(url) {
   ]).stdout.trim();
 }
 
+function withApplicationName(url, applicationName) {
+  const result = new URL(url);
+  result.searchParams.set("application_name", applicationName);
+  return result.toString();
+}
+
 async function waitForLock(url, applicationName, relation) {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const count = Number(
       psql(url, [

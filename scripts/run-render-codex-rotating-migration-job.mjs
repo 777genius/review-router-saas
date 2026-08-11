@@ -32,10 +32,12 @@ export async function runRenderMigrationJob(
     "Content-Type": "application/json",
   };
   const releaseEnvironment = [
+    "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
     "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
     "REVIEW_ROUTER_API_DATABASE_URL",
     "REVIEW_ROUTER_WEB_DATABASE_URL",
     "REVIEW_ROUTER_WORKER_DATABASE_URL",
+    "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
     "REVIEW_ROUTER_RENDER_COMMIT_SHA",
     "REVIEW_ROUTER_RENDER_IMAGE_DIGEST",
   ].map((key) => ({ key, value: required(env, key) }));

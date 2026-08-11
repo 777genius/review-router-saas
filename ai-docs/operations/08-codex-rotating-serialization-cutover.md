@@ -304,6 +304,19 @@ observation containing the PostgreSQL version, three runtime deploys, and
 exactly one successful release-migration job. Redirect stdout directly to the
 artifact file without editing it:
 
+The trusted migration job requires two explicit database connections.
+`REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL` authenticates as
+`reviewrouter_role_bootstrap` and is used only to create and converge the five
+canonical roles and retain database ownership while transferring schema and
+migration-object ownership to the release role. PostgreSQL requires CREATEDB
+to transfer database ownership, so the helper deliberately keeps the narrower
+LOGIN, NOSUPERUSER, NOCREATEDB, CREATEROLE identity. The helper then drops that
+connection and performs preflight, migrations, grant convergence, and evidence
+queries through `REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL`, authenticated
+directly as the LOGIN, NOCREATEROLE `reviewrouter_release_migration` role. Both
+URLs must name the same explicit host, port, and database; they are never
+interchangeable and there is no ambient owner or superuser fallback.
+
 ```bash
 REVIEW_ROUTER_PRODUCTION_WRITER_OBSERVATION=1 \
 REVIEW_ROUTER_PRODUCTION_WRITER_DATABASE_URL="$PRODUCTION_WRITER_URL" \

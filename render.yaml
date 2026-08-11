@@ -97,9 +97,9 @@ databases:
   - name: reviewrouter-db
     postgresMajorVersion: "17"
     databaseName: review_router
-    # This owner credential is reserved for the exclusive release-migration
-    # job and must never be supplied to web, API, or worker services.
-    user: reviewrouter_release_migration
+    # This CREATEROLE owner credential is used only to converge cluster roles.
+    # Migrations connect separately as the NOCREATEROLE release role.
+    user: reviewrouter_role_bootstrap
     region: frankfurt
     plan: basic-256mb
     ipAllowList: []

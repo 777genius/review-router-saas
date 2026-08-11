@@ -1061,7 +1061,7 @@ function observedFixture(): any {
         databaseIncarnations: ["7612345678901234567"],
       },
       databaseAuthorization: {
-        databaseOwner: "reviewrouter_release_migration",
+        databaseOwner: "reviewrouter_role_bootstrap",
         schemaOwner: "reviewrouter_release_migration",
         roles: [
           "reviewrouter_release_migration",

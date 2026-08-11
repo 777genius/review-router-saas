@@ -57,6 +57,7 @@ export function assembleTrustedMigrationEvidence({ env, providerObservation }) {
     api: "reviewrouter_api",
     web: "reviewrouter_web",
     worker: "reviewrouter_worker",
+    codexEffectAuthority: "reviewrouter_codex_effect_authority",
     releaseMigration: "reviewrouter_release_migration",
   };
   const runtimeRoles = Object.entries(roleNames).map(([role, username]) => {

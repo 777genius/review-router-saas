@@ -274,6 +274,7 @@ const databaseUrlEnvironmentByRole = Object.freeze({
   web: "REVIEW_ROUTER_WEB_DATABASE_URL",
   worker: "REVIEW_ROUTER_WORKER_DATABASE_URL",
   codexEffectAuthority: "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
+  roleBootstrap: "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
   releaseMigration: "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
 });
 
@@ -283,6 +284,7 @@ export function resolveDistinctDatabaseRoleUrls(source) {
     web: "reviewrouter_web",
     worker: "reviewrouter_worker",
     codexEffectAuthority: "reviewrouter_codex_effect_authority",
+    roleBootstrap: "reviewrouter_role_bootstrap",
     releaseMigration: "reviewrouter_release_migration",
   };
   const urls = {};
@@ -312,7 +314,7 @@ export function resolveDistinctDatabaseRoleUrls(source) {
   }
   if (
     new Set(Object.values(urls).map((value) => new URL(value).username))
-      .size !== 5
+      .size !== 6
   ) {
     throw new Error("database role credentials must be distinct");
   }
@@ -729,7 +731,7 @@ export async function ensureDatabase(client, { allowCreate = true, ...scope }) {
   console.log("creating database reviewrouter-db");
   return await client.request("POST", "/postgres", {
     databaseName: "review_router",
-    databaseUser: "reviewrouter_release_migration",
+    databaseUser: "reviewrouter_role_bootstrap",
     environmentId: scope.environmentId,
     ipAllowList: [],
     name: "reviewrouter-db",
@@ -1043,13 +1045,15 @@ export function assertMigrationEvidencePayload(
     throw new Error("migration evidence canonical caller output mismatch");
   }
   const expectedRoles = new Map(
-    Object.entries(databaseUrls).map(([role, url]) => [
-      role,
-      {
-        username: decodeURIComponent(new URL(url).username),
-        databaseIdentity: normalizedDatabaseIdentity(url),
-      },
-    ]),
+    Object.entries(databaseUrls)
+      .filter(([role]) => role !== "roleBootstrap")
+      .map(([role, url]) => [
+        role,
+        {
+          username: decodeURIComponent(new URL(url).username),
+          databaseIdentity: normalizedDatabaseIdentity(url),
+        },
+      ]),
   );
   const roles = Array.isArray(evidence.runtimeRoles)
     ? evidence.runtimeRoles

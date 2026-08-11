@@ -4,11 +4,15 @@ import { runRenderMigrationJob } from "./run-render-codex-rotating-migration-job
 const environment = {
   REVIEW_ROUTER_RENDER_MIGRATION_SERVICE_ID: "srv-migration",
   RENDER_API_KEY: "render-token-never-logged",
+  REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
+    "postgres://bootstrap:secret@db/app",
   REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
     "postgres://release:secret@db/app",
   REVIEW_ROUTER_API_DATABASE_URL: "postgres://api:secret@db/app",
   REVIEW_ROUTER_WEB_DATABASE_URL: "postgres://web:secret@db/app",
   REVIEW_ROUTER_WORKER_DATABASE_URL: "postgres://worker:secret@db/app",
+  REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+    "postgres://effect:secret@db/app",
   REVIEW_ROUTER_RENDER_COMMIT_SHA: "a".repeat(40),
   REVIEW_ROUTER_RENDER_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
 };
@@ -36,6 +40,16 @@ describe("exclusive Render migration job initiator", () => {
     expect(JSON.parse(create[1].body)).toMatchObject({
       startCommand: "pnpm codex-rotating:release-migration",
     });
+    expect(JSON.parse(create[1].body).envVars).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
+        }),
+        expect.objectContaining({
+          key: "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
+        }),
+      ]),
+    );
   });
 
   it("fails before creation when provider observation is missing or another caller is active", async () => {

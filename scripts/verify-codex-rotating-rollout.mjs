@@ -927,6 +927,7 @@ export function verifyCodexRotatingDatabaseCatalog(
 
 function verifyDatabaseAuthorization(authorization, need) {
   const releaseRole = codexRotatingDatabaseRoles.releaseMigration;
+  const bootstrapRole = "reviewrouter_role_bootstrap";
   const expectedRoleNames = [
     releaseRole,
     codexRotatingDatabaseRoles.effectAuthority,
@@ -943,13 +944,13 @@ function verifyDatabaseAuthorization(authorization, need) {
       "roles",
       "schemaOwner",
     ]) &&
-      authorization.databaseOwner === releaseRole &&
+      authorization.databaseOwner === bootstrapRole &&
       authorization.schemaOwner === releaseRole &&
       equalSorted(
         roles.map((entry) => entry.name),
         expectedRoleNames,
       ),
-    "database DDL ownership and canonical role inventory are not exclusive",
+    "database bootstrap ownership, schema DDL ownership, and canonical role inventory are not exclusive",
   );
   need(
     roles.every((entry) => {

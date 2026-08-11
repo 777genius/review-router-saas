@@ -3,7 +3,7 @@ export const rehearsalRoleLoginContract = new Map([
   ["reviewrouter_web", true],
   ["reviewrouter_worker", true],
   ["reviewrouter_codex_effect_authority", true],
-  ["reviewrouter_release_migration", false],
+  ["reviewrouter_release_migration", true],
 ]);
 
 export function rehearsalRoleObservationSql(marker) {

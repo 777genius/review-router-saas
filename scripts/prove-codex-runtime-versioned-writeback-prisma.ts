@@ -21,8 +21,8 @@ import {
 import { PrismaCodexRotatingSetupRecovery } from "../apps/web/src/server/prisma-codex-rotating-setup-recovery";
 import { PrismaCodexRotatingSetupPayloadClaim } from "../apps/web/src/server/prisma-codex-rotating-setup-payload-claim";
 
-const adminDatabaseUrl = requiredUrl(
-  "REVIEW_ROUTER_PRISMA_EVIDENCE_ADMIN_DATABASE_URL",
+const releaseDatabaseUrl = requiredUrl(
+  "REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL",
 );
 const apiDatabaseUrl = requiredUrl(
   "REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL",
@@ -33,7 +33,7 @@ const webDatabaseUrl = requiredUrl(
 const effectAuthorityDatabaseUrl = requiredUrl(
   "REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL",
 );
-const adminPrisma = createPrismaClient({ databaseUrl: adminDatabaseUrl });
+const adminPrisma = createPrismaClient({ databaseUrl: releaseDatabaseUrl });
 const apiPrisma = createPrismaClient({
   databaseUrl: apiDatabaseUrl,
   poolMax: 1,

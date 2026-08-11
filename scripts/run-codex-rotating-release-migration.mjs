@@ -72,15 +72,37 @@ function databaseIdentity(value) {
   return `${url.hostname.toLowerCase()}:${port}${url.pathname}`;
 }
 
+const canonicalRoleNames = Object.freeze([
+  "reviewrouter_api",
+  "reviewrouter_web",
+  "reviewrouter_worker",
+  "reviewrouter_codex_effect_authority",
+  "reviewrouter_release_migration",
+]);
+
 export function resolveReleaseMigrationConfiguration(env) {
+  const bootstrapUrl = new URL(
+    required(env, "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL"),
+  );
   const releaseUrl = new URL(
     required(env, "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL"),
   );
+  if (
+    decodeURIComponent(bootstrapUrl.username) !== "reviewrouter_role_bootstrap"
+  )
+    throw new Error("release_migration_bootstrap_role_mismatch");
   if (
     decodeURIComponent(releaseUrl.username) !== "reviewrouter_release_migration"
   )
     throw new Error("release_migration_caller_role_mismatch");
   const identity = databaseIdentity(releaseUrl);
+  if (databaseIdentity(bootstrapUrl) !== identity)
+    throw new Error("release_migration_bootstrap_database_mismatch");
+  if (!decodeURIComponent(bootstrapUrl.password))
+    throw new Error("release_migration_bootstrap_password_missing");
+  const releasePassword = decodeURIComponent(releaseUrl.password);
+  if (!releasePassword)
+    throw new Error("release_migration_release_password_missing");
   const roles = runtimeRoles.map(([role, username, environmentName]) => {
     const url = new URL(required(env, environmentName));
     if (
@@ -101,26 +123,38 @@ export function resolveReleaseMigrationConfiguration(env) {
   )
     throw new Error("release_migration_immutable_release_identity_invalid");
   return {
+    bootstrapUrl: bootstrapUrl.toString(),
     commit,
     databaseIdentity: identity,
     imageDigest,
     releaseUrl: releaseUrl.toString(),
+    releasePassword,
     roles,
   };
 }
 
 export function roleProvisioningSql(configuration) {
-  const createAndConverge = configuration.roles
+  const createAndConverge = [
+    ...configuration.roles,
+    {
+      username: "reviewrouter_release_migration",
+      password: configuration.releasePassword,
+    },
+  ]
     .map(
       ({ username, password }) => `
 DO $role$
+DECLARE observed record;
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${username}') THEN
-    CREATE ROLE ${username};
+  SELECT * INTO observed FROM pg_roles WHERE rolname = '${username}';
+  IF NOT FOUND THEN
+    CREATE ROLE ${username} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoted(password)};
+  ELSIF observed.rolsuper OR observed.rolreplication OR observed.rolbypassrls THEN
+    RAISE EXCEPTION 'refusing to converge unexpectedly privileged role ${username}';
   END IF;
 END
 $role$;
-ALTER ROLE ${username} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoted(password)};
+ALTER ROLE ${username} LOGIN NOCREATEROLE PASSWORD ${quoted(password)};
 DO $membership$
 DECLARE membership record;
 BEGIN
@@ -129,21 +163,88 @@ BEGIN
     FROM pg_auth_members edge
     JOIN pg_roles granted ON granted.oid = edge.roleid
     JOIN pg_roles member ON member.oid = edge.member
-    WHERE granted.rolname = '${username}' OR member.rolname = '${username}'
+    WHERE (granted.rolname = '${username}' OR member.rolname = '${username}')
+      AND NOT (
+        granted.rolname = '${username}'
+        AND member.rolname = 'reviewrouter_role_bootstrap'
+      )
   LOOP
     EXECUTE format('REVOKE %I FROM %I', membership.granted_name, membership.member_name);
   END LOOP;
 END
 $membership$;
-REVOKE ALL ON DATABASE :"DBNAME" FROM ${username};`,
+`,
     )
     .join("\n");
   return `\\set ON_ERROR_STOP on
 BEGIN;
 ${createAndConverge}
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+SELECT 'REVOKE CREATE ON SCHEMA public FROM PUBLIC'
+WHERE EXISTS (
+  SELECT 1
+  FROM pg_namespace namespace,
+       LATERAL aclexplode(coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))) acl
+  WHERE namespace.nspname = 'public'
+    AND acl.grantee = 0
+    AND acl.privilege_type = 'CREATE'
+)
+\\gexec
+SELECT format('GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration', current_database())
+\\gexec
+GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH SET TRUE;
+SELECT 'ALTER SCHEMA public OWNER TO reviewrouter_release_migration'
+WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'public') <> 'reviewrouter_release_migration'
+\\gexec
+REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE;
 COMMIT;
 `;
+}
+
+function connectionRoleObservationSql() {
+  return `SELECT json_build_object(
+    'currentUser', current_user,
+    'sessionUser', session_user,
+    'login', role.rolcanlogin,
+    'superuser', role.rolsuper,
+    'createDatabase', role.rolcreatedb,
+    'createRole', role.rolcreaterole,
+    'replication', role.rolreplication,
+    'bypassRls', role.rolbypassrls
+  ) FROM pg_roles role WHERE role.rolname = session_user`;
+}
+
+function observeConnectionRole(run, step, url, env) {
+  return JSON.parse(
+    run(
+      step,
+      "psql",
+      [
+        url,
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        connectionRoleObservationSql(),
+      ],
+      { env },
+    ).trim(),
+  );
+}
+
+function assertConnectionRole(observed, expectedUser, expectCreateRole) {
+  if (
+    observed?.currentUser !== expectedUser ||
+    observed?.sessionUser !== expectedUser ||
+    observed?.login !== true ||
+    observed?.createRole !== expectCreateRole ||
+    observed?.superuser !== false ||
+    observed?.createDatabase !== false ||
+    observed?.replication !== false ||
+    observed?.bypassRls !== false
+  )
+    throw new Error(
+      `release_migration_connection_authority_mismatch:${expectedUser}`,
+    );
 }
 
 export function runtimeGrantStatements(
@@ -282,19 +383,43 @@ export function runReleaseMigrationSubprocess(
   return result.stdout;
 }
 
-export function executeCanonicalReleaseMigration(env = process.env) {
+export function executeCanonicalReleaseMigration(
+  env = process.env,
+  run = runReleaseMigrationSubprocess,
+) {
   const configuration = resolveReleaseMigrationConfiguration(env);
-  const childEnv = { ...env, DATABASE_URL: configuration.releaseUrl };
-  runReleaseMigrationSubprocess(
+  const bootstrapEnv = { ...env, DATABASE_URL: configuration.bootstrapUrl };
+  assertConnectionRole(
+    observeConnectionRole(
+      run,
+      "verify_bootstrap_authority",
+      configuration.bootstrapUrl,
+      bootstrapEnv,
+    ),
+    "reviewrouter_role_bootstrap",
+    true,
+  );
+  run(
     "provision_roles",
     "psql",
-    [configuration.releaseUrl, "--no-psqlrc", "--quiet"],
+    [configuration.bootstrapUrl, "--no-psqlrc", "--quiet"],
     {
-      env: childEnv,
+      env: bootstrapEnv,
       input: roleProvisioningSql(configuration),
     },
   );
-  const preflightOutput = runReleaseMigrationSubprocess(
+  const childEnv = { ...env, DATABASE_URL: configuration.releaseUrl };
+  assertConnectionRole(
+    observeConnectionRole(
+      run,
+      "verify_release_authority",
+      configuration.releaseUrl,
+      childEnv,
+    ),
+    "reviewrouter_release_migration",
+    false,
+  );
+  const preflightOutput = run(
     "migration_history_preflight",
     "node",
     [
@@ -304,13 +429,13 @@ export function executeCanonicalReleaseMigration(env = process.env) {
     ],
     { env: childEnv },
   );
-  runReleaseMigrationSubprocess(
+  run(
     "deploy_migrations",
     "pnpm",
     ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"],
     { env: childEnv },
   );
-  runReleaseMigrationSubprocess(
+  run(
     "converge_runtime_grants",
     "psql",
     [configuration.releaseUrl, "--no-psqlrc", "--quiet"],
@@ -320,7 +445,7 @@ export function executeCanonicalReleaseMigration(env = process.env) {
     },
   );
   const verifiedRoles = JSON.parse(
-    runReleaseMigrationSubprocess(
+    run(
       "verify_roles",
       "psql",
       [
@@ -329,7 +454,37 @@ export function executeCanonicalReleaseMigration(env = process.env) {
         "--tuples-only",
         "--no-align",
         "--command",
-        `SELECT json_build_object('callerCount', 1, 'roles', json_agg(json_build_object('username', rolname, 'login', rolcanlogin, 'canSetReleaseRole', pg_has_role(rolname, 'reviewrouter_release_migration', 'SET')) ORDER BY rolname)) FROM pg_roles WHERE rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration') HAVING count(*) = 5`,
+        `SELECT json_build_object(
+          'callerCount', 1,
+          'roles', (SELECT json_agg(json_build_object(
+            'username', rolname,
+            'login', rolcanlogin,
+            'createRole', rolcreaterole,
+            'canSetReleaseRole', pg_has_role(rolname, 'reviewrouter_release_migration', 'SET')
+          ) ORDER BY rolname) FROM pg_roles WHERE rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])) ,
+          'setRoleMatrix', (SELECT json_agg(json_build_object(
+            'member', member.rolname,
+            'target', target.rolname,
+            'canSet', pg_has_role(member.oid, target.oid, 'SET')
+          ) ORDER BY member.rolname, target.rolname)
+          FROM pg_roles member CROSS JOIN pg_roles target
+          WHERE member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+            AND target.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])) ,
+          'bootstrapMemberships', (SELECT json_agg(json_build_object(
+            'granted', granted.rolname,
+            'member', member.rolname,
+            'adminOption', membership.admin_option,
+            'inheritOption', membership.inherit_option,
+            'setOption', membership.set_option
+          ) ORDER BY granted.rolname, member.rolname)
+          FROM pg_auth_members membership
+          JOIN pg_roles granted ON granted.oid = membership.roleid
+          JOIN pg_roles member ON member.oid = membership.member
+          WHERE granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+             OR member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+             OR granted.rolname = 'reviewrouter_role_bootstrap'
+             OR member.rolname = 'reviewrouter_role_bootstrap')
+        )`,
       ],
       { env: childEnv },
     ).trim(),
@@ -337,11 +492,26 @@ export function executeCanonicalReleaseMigration(env = process.env) {
   if (
     verifiedRoles.callerCount !== 1 ||
     verifiedRoles.roles.length !== 5 ||
+    verifiedRoles.setRoleMatrix.length !== 25 ||
+    !Array.isArray(verifiedRoles.bootstrapMemberships) ||
+    verifiedRoles.bootstrapMemberships.length !== 5 ||
     verifiedRoles.roles.some(
       (role) =>
         role.login !== true ||
+        role.createRole !== false ||
         (role.username !== "reviewrouter_release_migration" &&
           role.canSetReleaseRole !== false),
+    ) ||
+    verifiedRoles.setRoleMatrix.some(
+      (entry) => entry.canSet !== (entry.member === entry.target),
+    ) ||
+    verifiedRoles.bootstrapMemberships.some(
+      (entry) =>
+        !canonicalRoleNames.includes(entry.granted) ||
+        entry.member !== "reviewrouter_role_bootstrap" ||
+        entry.adminOption !== true ||
+        entry.inheritOption !== false ||
+        entry.setOption !== false,
     )
   )
     throw new Error("release_migration_role_observation_failed");

@@ -112,7 +112,7 @@ describe("Render hosted deploy hardening", () => {
   it("pins PostgreSQL 17 in the Blueprint without service pre-deploy migrations", () => {
     const blueprint = readFileSync("render.yaml", "utf8");
     expect(blueprint).toContain('postgresMajorVersion: "17"');
-    expect(blueprint).toContain("user: reviewrouter_release_migration");
+    expect(blueprint).toContain("user: reviewrouter_role_bootstrap");
     expect(blueprint).not.toContain("preDeployCommand:");
     expect(blueprint).not.toContain("property: connectionString");
     expect(blueprint.match(/autoDeployTrigger: off/g)).toHaveLength(3);
@@ -183,15 +183,17 @@ describe("Render hosted deploy hardening", () => {
       "POST",
       "/postgres",
       expect.objectContaining({
-        databaseUser: "reviewrouter_release_migration",
+        databaseUser: "reviewrouter_role_bootstrap",
         name: "reviewrouter-db",
         version: "17",
       }),
     );
   });
 
-  it("requires five distinct canonical database roles on one database", () => {
+  it("requires a distinct bootstrap authority plus five canonical database roles", () => {
     const urls = resolveDistinctDatabaseRoleUrls({
+      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
+        "postgresql://reviewrouter_role_bootstrap:z@db.internal/review_router",
       REVIEW_ROUTER_API_DATABASE_URL:
         "postgresql://reviewrouter_api:a@db.internal/review_router",
       REVIEW_ROUTER_WEB_DATABASE_URL:
@@ -204,6 +206,9 @@ describe("Render hosted deploy hardening", () => {
         "postgresql://reviewrouter_release_migration:d@db.internal/review_router",
     });
     expect(new URL(urls.api).username).toBe("reviewrouter_api");
+    expect(new URL(urls.roleBootstrap).username).toBe(
+      "reviewrouter_role_bootstrap",
+    );
     expect(new URL(urls.releaseMigration).username).toBe(
       "reviewrouter_release_migration",
     );
@@ -232,6 +237,8 @@ describe("Render hosted deploy hardening", () => {
   ])("rejects %s database credentials", (_name, override, message) => {
     expect(() =>
       resolveDistinctDatabaseRoleUrls({
+        REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
+          "postgresql://reviewrouter_role_bootstrap:z@db.internal/review_router",
         REVIEW_ROUTER_API_DATABASE_URL:
           "postgresql://reviewrouter_api:a@db.internal/review_router",
         REVIEW_ROUTER_WEB_DATABASE_URL:
@@ -509,6 +516,8 @@ describe("Render hosted deploy hardening", () => {
 
   it("matches the selected Render database identity to every role URL", () => {
     const urls = resolveDistinctDatabaseRoleUrls({
+      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
+        "postgresql://reviewrouter_role_bootstrap:z@db.internal/review_router",
       REVIEW_ROUTER_API_DATABASE_URL:
         "postgresql://reviewrouter_api:a@DB.INTERNAL./review_router?sslmode=require",
       REVIEW_ROUTER_WEB_DATABASE_URL:
@@ -705,6 +714,8 @@ describe("Render hosted deploy hardening", () => {
 
   it("requires exact exclusive migration and coherent role evidence", () => {
     const databaseUrls = resolveDistinctDatabaseRoleUrls({
+      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
+        "postgresql://reviewrouter_role_bootstrap:z@db.internal/review_router",
       REVIEW_ROUTER_API_DATABASE_URL:
         "postgresql://reviewrouter_api:a@db.internal/review_router",
       REVIEW_ROUTER_WEB_DATABASE_URL:
@@ -757,13 +768,15 @@ describe("Render hosted deploy hardening", () => {
         databaseIdentity: context.databaseIdentity,
         status: "succeeded",
       },
-      runtimeRoles: Object.entries(databaseUrls).map(([role, url]) => ({
-        role,
-        username: new URL(url).username,
-        databaseIdentity: context.databaseIdentity,
-        login: true,
-        canSetReleaseRole: role === "releaseMigration",
-      })),
+      runtimeRoles: Object.entries(databaseUrls)
+        .filter(([role]) => role !== "roleBootstrap")
+        .map(([role, url]) => ({
+          role,
+          username: new URL(url).username,
+          databaseIdentity: context.databaseIdentity,
+          login: true,
+          canSetReleaseRole: role === "releaseMigration",
+        })),
     };
     evidence.version = 3;
     const digest = (value: unknown) =>

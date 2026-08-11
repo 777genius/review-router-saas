@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  executeCanonicalReleaseMigration,
   resolveReleaseMigrationConfiguration,
   roleProvisioningSql,
   providerRuntimeUpdateColumns,
@@ -10,6 +11,8 @@ import {
 
 function environment() {
   return {
+    REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
+      "postgresql://reviewrouter_role_bootstrap:bootstrap@db.internal/review_router",
     REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
       "postgresql://reviewrouter_release_migration:release@db.internal/review_router",
     REVIEW_ROUTER_API_DATABASE_URL:
@@ -36,8 +39,22 @@ describe("canonical exclusive release migration caller", () => {
     ]);
     const provisioning = roleProvisioningSql(configuration);
     const grants = runtimeGrantSql(configuration);
-    expect(provisioning.match(/CREATE ROLE/g)).toHaveLength(4);
-    expect(provisioning.match(/NOCREATEROLE/g)).toHaveLength(4);
+    expect(provisioning.match(/CREATE ROLE/g)).toHaveLength(5);
+    expect(provisioning.match(/NOCREATEROLE/g)).toHaveLength(10);
+    expect(provisioning).toContain(
+      "refusing to converge unexpectedly privileged role",
+    );
+    expect(provisioning).toContain(
+      "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH SET TRUE",
+    );
+    expect(provisioning).toContain(
+      "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
+    );
+    expect(provisioning).not.toContain("ADMIN reviewrouter_role_bootstrap");
+    expect(provisioning).not.toContain("ALTER DATABASE");
+    expect(provisioning).toContain(
+      "GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration",
+    );
     expect(grants.match(/SELECT, INSERT, UPDATE, DELETE/g)).toHaveLength(6);
     expect(grants).toContain(
       "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
@@ -110,11 +127,36 @@ describe("canonical exclusive release migration caller", () => {
 
   it.each([
     [
+      "swapped bootstrap role",
+      {
+        REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
+          "postgresql://reviewrouter_release_migration:bootstrap@db.internal/review_router",
+      },
+      "release_migration_bootstrap_role_mismatch",
+    ],
+    [
+      "swapped release role",
+      {
+        REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
+          "postgresql://reviewrouter_role_bootstrap:release@db.internal/review_router",
+      },
+      "release_migration_caller_role_mismatch",
+    ],
+    [
+      "bootstrap targets another port",
+      {
+        REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
+          "postgresql://reviewrouter_role_bootstrap:bootstrap@db.internal:5433/review_router",
+      },
+      "release_migration_bootstrap_database_mismatch",
+    ],
+    [
       "wrong database",
       {
         REVIEW_ROUTER_API_DATABASE_URL:
           "postgresql://reviewrouter_api:secret@other.internal/review_router",
       },
+      "release_migration_runtime_role_mismatch",
     ],
     [
       "wrong role",
@@ -122,11 +164,149 @@ describe("canonical exclusive release migration caller", () => {
         REVIEW_ROUTER_API_DATABASE_URL:
           "postgresql://reviewrouter_worker:secret@db.internal/review_router",
       },
+      "release_migration_runtime_role_mismatch",
     ],
-  ])("rejects %s before execution", (_name, override) => {
+  ])("rejects %s before execution", (_name, override, message) => {
     expect(() =>
       resolveReleaseMigrationConfiguration({ ...environment(), ...override }),
-    ).toThrow("release_migration_runtime_role_mismatch");
+    ).toThrow(message);
+  });
+
+  it("uses bootstrap only for role convergence and release for every migration step", () => {
+    const calls: Array<{
+      step: string;
+      args: string[];
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+    const roleNames = [
+      "reviewrouter_api",
+      "reviewrouter_codex_effect_authority",
+      "reviewrouter_release_migration",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+    ];
+    const run = (
+      step: string,
+      _command: string,
+      args: string[],
+      options = {},
+    ) => {
+      calls.push({ step, args, ...(options as object) });
+      if (step === "verify_bootstrap_authority")
+        return JSON.stringify({
+          currentUser: "reviewrouter_role_bootstrap",
+          sessionUser: "reviewrouter_role_bootstrap",
+          login: true,
+          superuser: false,
+          createDatabase: false,
+          createRole: true,
+          replication: false,
+          bypassRls: false,
+        });
+      if (step === "verify_release_authority")
+        return JSON.stringify({
+          currentUser: "reviewrouter_release_migration",
+          sessionUser: "reviewrouter_release_migration",
+          login: true,
+          superuser: false,
+          createDatabase: false,
+          createRole: false,
+          replication: false,
+          bypassRls: false,
+        });
+      if (step === "verify_roles")
+        return JSON.stringify({
+          callerCount: 1,
+          roles: roleNames.map((username) => ({
+            username,
+            login: true,
+            createRole: false,
+            canSetReleaseRole: username === "reviewrouter_release_migration",
+          })),
+          setRoleMatrix: roleNames.flatMap((member) =>
+            roleNames.map((target) => ({
+              member,
+              target,
+              canSet: member === target,
+            })),
+          ),
+          bootstrapMemberships: roleNames.map((granted) => ({
+            granted,
+            member: "reviewrouter_role_bootstrap",
+            adminOption: true,
+            inheritOption: false,
+            setOption: false,
+          })),
+        });
+      return step === "migration_history_preflight" ? "preflight" : "";
+    };
+    executeCanonicalReleaseMigration(environment(), run);
+    expect(calls.map((call) => call.step)).toEqual([
+      "verify_bootstrap_authority",
+      "provision_roles",
+      "verify_release_authority",
+      "migration_history_preflight",
+      "deploy_migrations",
+      "converge_runtime_grants",
+      "verify_roles",
+    ]);
+    expect(
+      calls
+        .slice(0, 2)
+        .every((call) => call.args[0]?.includes("reviewrouter_role_bootstrap")),
+    ).toBe(true);
+    expect(
+      calls
+        .slice(2)
+        .every(
+          (call) =>
+            call.args[0]?.includes("reviewrouter_release_migration") ||
+            call.step === "migration_history_preflight" ||
+            call.step === "deploy_migrations",
+        ),
+    ).toBe(true);
+    expect(
+      calls
+        .slice(2)
+        .every((call) =>
+          (call as any).env?.DATABASE_URL.includes(
+            "reviewrouter_release_migration",
+          ),
+        ),
+    ).toBe(true);
+  });
+
+  it("rejects an unexpectedly privileged release connection before migrations", () => {
+    const run = (step: string) => {
+      if (step === "verify_bootstrap_authority")
+        return JSON.stringify({
+          currentUser: "reviewrouter_role_bootstrap",
+          sessionUser: "reviewrouter_role_bootstrap",
+          login: true,
+          superuser: false,
+          createDatabase: false,
+          createRole: true,
+          replication: false,
+          bypassRls: false,
+        });
+      if (step === "verify_release_authority")
+        return JSON.stringify({
+          currentUser: "reviewrouter_release_migration",
+          sessionUser: "reviewrouter_release_migration",
+          login: true,
+          superuser: false,
+          createDatabase: false,
+          createRole: true,
+          replication: false,
+          bypassRls: false,
+        });
+      return "";
+    };
+    expect(() =>
+      executeCanonicalReleaseMigration(environment(), run as never),
+    ).toThrow(
+      "release_migration_connection_authority_mismatch:reviewrouter_release_migration",
+    );
   });
 
   it("never includes credential values in validation errors", () => {
