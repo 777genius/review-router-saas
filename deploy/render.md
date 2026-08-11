@@ -245,17 +245,24 @@ create and rejects both an existing database and the final ready-database
 response unless they report major 17.
 
 The Blueprint creates only the owner `reviewrouter_release_migration`. After
-the helper's `prepare` phase, run exactly one immutable Render one-off job with
-that release credential. The job creates or converges login roles
+the helper's `prepare` phase, dispatch the checked-in
+`.github/workflows/codex-rotating-release-migration.yml` workflow at the exact
+release commit with a new, never-reused rollout ID. That workflow is the only
+supported migration initiator. It creates exactly one Render one-off job whose
+command is the checked-in `pnpm codex-rotating:release-migration` caller. The
+caller creates or converges login roles
 `reviewrouter_web`, `reviewrouter_api`, and `reviewrouter_worker`, then verifies
 them. They receive CONNECT, public-schema USAGE, required
 SELECT/INSERT/UPDATE/DELETE and sequence USAGE only. Revoke CREATE on the
 database and schema plus TRUNCATE, REFERENCES, and TRIGGER on application
 tables. They must own no application object, have no membership in any other
 canonical role, and must not be able to `SET ROLE
-reviewrouter_release_migration`. The job emits the strict version-1 migration
-evidence JSON consumed below, including all four canonical usernames, login
-status, inability to assume the release role, and normalized database identity.
+reviewrouter_release_migration`. The workflow captures the successful job and
+its exact service/deploy/job, command, commit, image, database, and canonical
+caller log output through authenticated Render API calls. It uploads a strict
+version-3 GitHub artifact whose digest, immutable workflow blob, repository,
+run, attempt, job, and artifact identities are independently re-fetched before
+use. Local JSON and local checksums are never deployment authority.
 Supply each role's distinct private URL only to `runtime-deploy`; the helper
 checks all four URLs against the selected Render database connection before any
 secret-bearing mutation.
@@ -271,36 +278,61 @@ COMMENT ON DATABASE review_router IS
   '{"version":1,"systemIdentifier":"<pg_control_system.system_identifier>","recoveryWitnessSha256":"<sha256-of-current-witness>"}';
 ```
 
+The verifiable boundary assumes GitHub and Render faithfully serve their
+authenticated API records and artifact digest, TLS is not compromised, and
+administrators of the fixed `777genius/review-router-saas` production
+environment protect its variables, secrets, and approval rules. Neither
+provider signs arbitrary Render response bodies. The immutable GitHub job
+therefore performs those authenticated reads itself, archives the exact bodies
+under GitHub's provider-computed artifact digest, and the consumer independently
+re-fetches the fixed repository/workflow/run/job/artifact tuple. Missing API
+fields, unsupported Render job/log inventory, redirects outside the allowed
+GitHub artifact hosts, and any identity or digest mismatch fail closed.
+
+The rollout-evidence workflow also requires the production environment's fixed
+`REVIEW_ROUTER_RUNTIME_OBSERVATION_ORIGIN` and scoped bearer credential. That
+HTTPS observer must serve the checked contract endpoints for the exact rollout
+ID; it is the residual trust boundary for live canary, compatibility, and
+ordered event observations. The workflow never accepts operator file paths or
+JSON inputs, and archives those authenticated response bodies in the same
+provider-digested artifact.
+
 1. Run `REVIEW_ROUTER_RENDER_PHASE=prepare pnpm deploy:render:hosted-beta`.
    Keep web, API, and worker mutation admission off and deploy no runtime
-   service yet. Create exactly one Render one-off job from the immutable release
-   commit/image. Its only database credential is
-   `reviewrouter_release_migration`; provision and verify the canonical roles,
-   run `pnpm codex-rotating:migration-preflight`, then
-   `pnpm db:migrate:deploy`, and finally the release evidence proof. Do not model this as a cron, worker, or
-   `preDeployCommand`: those shapes permit overlapping callers. If the job
-   fails, inspect and record it before creating one separately observed retry.
+   service yet. Dispatch the canonical workflow once. Its Render job receives
+   the release credential only for that invocation, runs the preflight,
+   migration, grants, and role verification, and emits one sanitized JSON log
+   record. Never run the caller as a cron, worker, service
+   `preDeployCommand`, or manual shell command. A failed attempt requires a new
+   rollout ID and run; artifacts from failed or superseded attempts are not
+   accepted.
+
 2. Capture the Render API database version and the single successful migration
    job's service/deploy/job IDs, commit, image digest, status, and timestamp.
    The rollout verifier rejects zero or multiple callers. Runtime services have
    canonical `preDeployCommand: null` and cannot use the release credential.
+
 3. Run the production-writer capture with the release credential and the raw,
    byte-for-byte Render observation path. It copies immutable deploy identity
    from that observation; commit/image/application-name environment labels are
    not accepted as identity.
-4. Store the verifier-approved strict evidence JSON outside the repository and
-   set `REVIEW_ROUTER_RENDER_MIGRATION_EVIDENCE_FILE` to that path. It must bind
-   the exact owner/project/environment, database ID and normalized identity,
-   PostgreSQL 17, release commit/image, one successful caller, passed preflight,
-   successful migration, verified evidence, and the four verified roles. Run:
 
-   ```bash
-   REVIEW_ROUTER_RENDER_PHASE=runtime-deploy pnpm deploy:render:hosted-beta
-   ```
+4. Record the workflow repository ID, run ID, run attempt, job ID, artifact ID,
+   artifact name, and rollout ID returned by GitHub. Set the corresponding
+   `REVIEW_ROUTER_ROLLOUT_EVIDENCE_*` variables plus
+   `REVIEW_ROUTER_ROLLOUT_GITHUB_TOKEN` (read-only `actions` and `contents`
+   access). `runtime-deploy` downloads the archive itself and rejects a wrong,
+   stale, replayed, expired, locally substituted, or digest-mismatched artifact.
+   It also requires the exact commit/image/database, one successful caller,
+   provider response bindings, canonical output, and four verified roles. Run:
 
-   The helper revalidates every resource scope immediately before each complete
-   secret-bearing environment PUT, then explicitly deploys web, API, and worker
-   at the evidence-bound commit/image. Missing or mismatched evidence is fatal.
+```bash
+REVIEW_ROUTER_RENDER_PHASE=runtime-deploy pnpm deploy:render:hosted-beta
+```
+
+The helper revalidates every resource scope immediately before each complete
+secret-bearing environment PUT, then explicitly deploys web, API, and worker
+at the evidence-bound commit/image. Missing or mismatched evidence is fatal.
 
 5. Confirm the API health endpoint:
 

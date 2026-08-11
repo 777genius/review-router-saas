@@ -2,9 +2,17 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { reviewV2ContextEnvForRole } from "./review-v2-render-env.mjs";
 import { isLoopbackHostname } from "../packages/shared/src/validation/loopback-hostname.mjs";
+import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
+import {
+  assertTrustedGitHubEvidence,
+  fetchTrustedGitHubEvidence,
+  gitBlobSha,
+} from "./lib/github-actions-trusted-evidence.mjs";
 
 const renderApi = "https://api.render.com/v1";
 
@@ -721,27 +729,42 @@ export async function disableAndVerifyPreDeployCommand(client, service) {
   }
 }
 
-function readJsonEvidence(filePath) {
-  if (!filePath) {
-    throw new Error(
-      "REVIEW_ROUTER_RENDER_MIGRATION_EVIDENCE_FILE is required for runtime-deploy",
-    );
-  }
-  let value;
-  try {
-    value = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch {
-    throw new Error("migration evidence must be readable strict JSON");
-  }
-  return value;
+export function assertMigrationEvidence(trustedEvidence, context) {
+  const evidence = assertTrustedGitHubEvidence(trustedEvidence).evidence;
+  return assertMigrationEvidencePayload(evidence, context);
 }
 
-export function assertMigrationEvidence(
+export function assertMigrationEvidencePayload(
   evidence,
   { scope, databaseId, databaseIdentity, commit, imageDigest, databaseUrls },
 ) {
-  if (evidence?.version !== 1) {
-    throw new Error("migration evidence version must be 1");
+  if (evidence?.version !== 3) {
+    throw new Error("migration evidence version must be 3");
+  }
+  const provider = evidence.providerObservation;
+  const providerResponses = Array.isArray(provider?.rawResponses)
+    ? provider.rawResponses
+    : [];
+  const digest = (value) =>
+    createHash("sha256")
+      .update(Buffer.from(canonicalProviderJson(value)))
+      .digest("hex");
+  if (
+    provider?.observationVersion !== 3 ||
+    provider?.source !== "render-api" ||
+    providerResponses.length < 5 ||
+    providerResponses.some(
+      (response) =>
+        typeof response?.url !== "string" ||
+        !response.url.startsWith("https://api.render.com/v1/") ||
+        response.status !== 200 ||
+        response.bodySha256 !== digest(response.body),
+    ) ||
+    provider.captureIdentity?.rawResponsesSha256 !== digest(providerResponses)
+  ) {
+    throw new Error(
+      "migration evidence is missing a bound Render provider observation",
+    );
   }
   for (const key of ["ownerId", "projectId", "environmentId"]) {
     if (evidence.scope?.[key] !== scope[key]) {
@@ -777,6 +800,60 @@ export function assertMigrationEvidence(
       "migration evidence must prove one successful exclusive preflight/migration/evidence job",
     );
   }
+  const observedCaller = provider.migrationCaller;
+  const rawProviderBodies = canonicalProviderJson(
+    providerResponses.map((response) => response.body),
+  );
+  const capturedMigrationOutputs = providerResponses.flatMap((response) => {
+    const entries = Array.isArray(response.body)
+      ? response.body
+      : (response.body?.logs ?? []);
+    return entries.flatMap((entry) => {
+      try {
+        return [JSON.parse(entry.message ?? entry.text ?? "")];
+      } catch {
+        return [];
+      }
+    });
+  });
+  if (
+    provider.database?.id !== databaseId ||
+    !/^17(?:\.|$)/u.test(String(provider.database?.version ?? "")) ||
+    provider.database?.ownerId !== scope.ownerId ||
+    observedCaller?.jobId !== migration.jobId ||
+    observedCaller?.callerCount !== 1 ||
+    observedCaller?.commit !== commit ||
+    observedCaller?.imageDigest !== imageDigest ||
+    observedCaller?.status !== "succeeded" ||
+    observedCaller?.command !== "pnpm codex-rotating:release-migration" ||
+    [
+      databaseId,
+      migration.jobId,
+      commit,
+      imageDigest,
+      "pnpm codex-rotating:release-migration",
+    ].some((value) => !rawProviderBodies.includes(JSON.stringify(value)))
+  ) {
+    throw new Error("migration evidence Render caller observation mismatch");
+  }
+  if (
+    canonicalProviderJson(provider.migrationOutput) !==
+      canonicalProviderJson(evidence.migrationOutput) ||
+    !capturedMigrationOutputs.some(
+      (output) =>
+        canonicalProviderJson(output) ===
+        canonicalProviderJson(evidence.migrationOutput),
+    ) ||
+    evidence.migrationOutput?.caller !==
+      "scripts/run-codex-rotating-release-migration.mjs" ||
+    evidence.migrationOutput?.callerCount !== 1 ||
+    evidence.migrationOutput?.commit !== commit ||
+    evidence.migrationOutput?.imageDigest !== imageDigest ||
+    evidence.migrationOutput?.databaseIdentity !== databaseIdentity ||
+    evidence.migrationOutput?.status !== "succeeded"
+  ) {
+    throw new Error("migration evidence canonical caller output mismatch");
+  }
   const expectedRoles = new Map(
     Object.entries(databaseUrls).map(([role, url]) => [
       role,
@@ -799,7 +876,7 @@ export function assertMigrationEvidence(
       role.username !== expected.username ||
       role.databaseIdentity !== expected.databaseIdentity ||
       role.login !== true ||
-      role.canSetReleaseRole !== false
+      role.canSetReleaseRole !== (role.role === "releaseMigration")
     ) {
       throw new Error("migration evidence database role verification failed");
     }
@@ -809,6 +886,143 @@ export function assertMigrationEvidence(
     throw new Error("migration evidence must verify every canonical role once");
   }
   return evidence;
+}
+
+export async function fetchTrustedMigrationEvidence(
+  env,
+  fetchImpl = globalThis.fetch,
+) {
+  const workflowPath = ".github/workflows/codex-rotating-release-migration.yml";
+  const workflowBytes = fs.readFileSync(
+    path.resolve(import.meta.dirname, "..", workflowPath),
+  );
+  const commit = requiredEnv("REVIEW_ROUTER_RENDER_COMMIT_SHA", env);
+  return fetchTrustedGitHubEvidence(
+    {
+      token: requiredEnv("REVIEW_ROUTER_ROLLOUT_GITHUB_TOKEN", env),
+      repository: "777genius/review-router-saas",
+      repositoryId: requiredEnv(
+        "REVIEW_ROUTER_ROLLOUT_EVIDENCE_REPOSITORY_ID",
+        env,
+      ),
+      workflowPath,
+      workflowSha: gitBlobSha(workflowBytes),
+      workflowRef: commit,
+      headSha: commit,
+      rolloutId: requiredEnv("REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID", env),
+      runId: requiredEnv("REVIEW_ROUTER_ROLLOUT_EVIDENCE_RUN_ID", env),
+      runAttempt: requiredEnv(
+        "REVIEW_ROUTER_ROLLOUT_EVIDENCE_RUN_ATTEMPT",
+        env,
+      ),
+      jobId: requiredEnv("REVIEW_ROUTER_ROLLOUT_EVIDENCE_JOB_ID", env),
+      jobName: "trusted-release-migration",
+      artifactId: requiredEnv(
+        "REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_ID",
+        env,
+      ),
+      artifactName: requiredEnv(
+        "REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_NAME",
+        env,
+      ),
+    },
+    fetchImpl,
+  );
+}
+
+export function claimTrustedMigrationEvidence(
+  databaseUrl,
+  trustedEvidence,
+  execute = spawnSync,
+) {
+  const trusted = assertTrustedGitHubEvidence(trustedEvidence);
+  const parsed = new URL(databaseUrl);
+  if (decodeURIComponent(parsed.username) !== "reviewrouter_release_migration")
+    throw new Error(
+      "trusted migration evidence claim requires the release role",
+    );
+  const receipt = trusted.receipt;
+  const result = execute(
+    "psql",
+    [
+      "--no-psqlrc",
+      "--tuples-only",
+      "--no-align",
+      "--set",
+      `artifact_digest=${receipt.artifactDigest}`,
+      "--set",
+      `artifact_id=${receipt.artifactId}`,
+      "--set",
+      `rollout_id=${receipt.rolloutId}`,
+      "--set",
+      `run_id=${receipt.runId}`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        PGHOST: parsed.hostname,
+        PGPORT: parsed.port || "5432",
+        PGDATABASE: decodeURIComponent(parsed.pathname.slice(1)),
+        PGUSER: decodeURIComponent(parsed.username),
+        PGPASSWORD: decodeURIComponent(parsed.password),
+        PGSSLMODE: parsed.searchParams.get("sslmode") ?? "require",
+      },
+      input: String.raw`\set ON_ERROR_STOP on
+BEGIN;
+SELECT pg_advisory_xact_lock(1381126735, 1129271120);
+SELECT set_config('reviewrouter.artifact_digest', :'artifact_digest', true);
+SELECT set_config('reviewrouter.artifact_id', :'artifact_id', true);
+SELECT set_config('reviewrouter.rollout_id', :'rollout_id', true);
+SELECT set_config('reviewrouter.run_id', :'run_id', true);
+DO $claim$
+DECLARE
+  binding jsonb;
+  receipts jsonb;
+BEGIN
+  SELECT obj_description(oid, 'pg_database')::jsonb INTO binding
+  FROM pg_database WHERE datname = current_database();
+  IF binding IS NULL
+     OR binding->>'systemIdentifier' <> (SELECT system_identifier::text FROM pg_control_system())
+     OR binding->>'recoveryWitnessSha256' !~ '^[a-f0-9]{64}$' THEN
+    RAISE EXCEPTION 'trusted migration evidence database generation binding invalid';
+  END IF;
+  receipts := coalesce(binding->'consumedMigrationEvidence', '[]'::jsonb);
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(receipts) receipt
+    WHERE receipt->>'artifactDigest' = current_setting('reviewrouter.artifact_digest')
+       OR receipt->>'rolloutId' = current_setting('reviewrouter.rollout_id')
+       OR (receipt->>'runId' = current_setting('reviewrouter.run_id') AND receipt->>'artifactId' = current_setting('reviewrouter.artifact_id'))
+  ) THEN
+    RAISE EXCEPTION 'trusted migration evidence replay rejected';
+  END IF;
+  binding := jsonb_set(binding, '{version}', '2'::jsonb, true);
+  binding := jsonb_set(
+    binding,
+    '{consumedMigrationEvidence}',
+    receipts || jsonb_build_array(jsonb_build_object(
+      'artifactDigest', current_setting('reviewrouter.artifact_digest'),
+      'artifactId', current_setting('reviewrouter.artifact_id'),
+      'rolloutId', current_setting('reviewrouter.rollout_id'),
+      'runId', current_setting('reviewrouter.run_id'),
+      'claimedAt', to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+    )),
+    true
+  );
+  EXECUTE format('COMMENT ON DATABASE %I IS %L', current_database(), binding::text);
+END
+$claim$;
+COMMIT;
+SELECT 'claimed';
+`,
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  if (
+    result.status !== 0 ||
+    result.stdout.trim().split(/\s+/u).at(-1) !== "claimed"
+  )
+    throw new Error("trusted migration evidence claim failed or was replayed");
 }
 
 function resolvedDeployFacts(deploy) {
@@ -929,6 +1143,7 @@ export async function main() {
   const privateKey =
     phase === "runtime-deploy" ? readGithubPrivateKey(env) : null;
   const client = new RenderClient(readRenderApiKey());
+  let trustedMigrationEvidence = null;
 
   await verifyControlPlaneScope(client, scope);
   const database = await ensureDatabase(client, {
@@ -953,17 +1168,15 @@ export async function main() {
       readyDatabase.internalConnectionString,
       databaseUrls,
     );
-    assertMigrationEvidence(
-      readJsonEvidence(env.REVIEW_ROUTER_RENDER_MIGRATION_EVIDENCE_FILE),
-      {
-        scope,
-        databaseId: readyDatabase.id,
-        databaseIdentity: selectedDatabaseIdentity,
-        commit,
-        imageDigest,
-        databaseUrls,
-      },
-    );
+    trustedMigrationEvidence = await fetchTrustedMigrationEvidence(env);
+    assertMigrationEvidence(trustedMigrationEvidence, {
+      scope,
+      databaseId: readyDatabase.id,
+      databaseIdentity: selectedDatabaseIdentity,
+      commit,
+      imageDigest,
+      databaseUrls,
+    });
   }
   const common = {
     allowCreate: phase === "prepare",
@@ -1036,7 +1249,7 @@ export async function main() {
             name: service.name,
             role: spec.role,
           })),
-          next: "run one exclusive PG17 role-provisioning, preflight, migration, and evidence job; then invoke runtime-deploy with its verified evidence file",
+          next: "dispatch the immutable codex-rotating-release-migration workflow once, then invoke runtime-deploy with its authenticated GitHub artifact identity",
         },
         null,
         2,
@@ -1044,6 +1257,11 @@ export async function main() {
     );
     return;
   }
+
+  claimTrustedMigrationEvidence(
+    databaseUrls.releaseMigration,
+    trustedMigrationEvidence,
+  );
 
   // Scope is fetched again immediately before each complete secret-bearing PUT.
   for (const { service, spec } of services)

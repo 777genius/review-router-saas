@@ -7,7 +7,7 @@ import {
   canonicalJson,
   runCodexRotatingRolloutVerifierCli,
   verifyCodexRotatingDatabaseCatalog,
-  verifyCodexRotatingRollout,
+  inspectCodexRotatingRolloutStructure as verifyCodexRotatingRollout,
 } from "./verify-codex-rotating-rollout.mjs";
 import {
   codexRotatingCatalogCheckNames,
@@ -272,7 +272,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
     );
   });
 
-  it("runs the CLI over real artifact files and rejects post-write tampering", () => {
+  it("refuses local artifact paths at the authorizing CLI boundary", async () => {
     const fixture = observedFixture();
     const directory = mkdtempSync(join(tmpdir(), "rr-observed-rollout-"));
     mkdirSync(join(directory, "artifacts"));
@@ -286,16 +286,17 @@ describe("observation-backed Codex rotating rollout verifier", () => {
     let output = "";
     let errors = "";
     expect(
-      runCodexRotatingRolloutVerifierCli([evidencePath], {
+      await runCodexRotatingRolloutVerifierCli([evidencePath], {
         stdout: { write: (v: string) => (output += v) },
         stderr: { write: (v: string) => (errors += v) },
       }),
       errors,
-    ).toBe(0);
-    expect(output).toMatch(/^PASS proof-bundle-sha256=[a-f0-9]{64}\n$/u);
+    ).toBe(1);
+    expect(output).toBe("");
+    expect(errors).toContain("REVIEW_ROUTER_ROLLOUT");
     writeFileSync(join(directory, "artifacts/database.json"), "{}\n");
     expect(
-      runCodexRotatingRolloutVerifierCli([evidencePath], {
+      await runCodexRotatingRolloutVerifierCli([evidencePath], {
         stdout: { write: () => undefined },
         stderr: { write: () => undefined },
       }),
@@ -838,9 +839,18 @@ function observedFixture(): any {
       isWriter: true,
       recoveryWitnessSha256: "f".repeat(64),
       databaseGenerationBinding: {
-        version: 1,
+        version: 2,
         systemIdentifier: "7612345678901234567",
         recoveryWitnessSha256: "f".repeat(64),
+        consumedMigrationEvidence: [
+          {
+            artifactDigest: `sha256:${"a".repeat(64)}`,
+            artifactId: "303",
+            rolloutId: "rollout-1",
+            runId: "101",
+            claimedAt: "2026-08-10T00:00:00.000Z",
+          },
+        ],
       },
       admittedRecoveryEvidence: {
         witnessFingerprints: ["f".repeat(64)],

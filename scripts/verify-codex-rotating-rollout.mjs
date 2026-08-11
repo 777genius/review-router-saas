@@ -4,6 +4,11 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  assertTrustedGitHubEvidence,
+  fetchTrustedGitHubEvidence,
+  gitBlobSha,
+} from "./lib/github-actions-trusted-evidence.mjs";
+import {
   catalogColumnKey,
   codexRotatingCatalogCheckNames,
   codexRotatingCheckDefinitions,
@@ -128,35 +133,83 @@ export function sha256Utf8(value) {
   return sha256(Buffer.from(value, "utf8"));
 }
 
-export function runCodexRotatingRolloutVerifierCli(
-  args,
+export async function runCodexRotatingRolloutVerifierCli(
+  _args,
   { stdout = process.stdout, stderr = process.stderr } = {},
 ) {
-  if (!args[0]) {
-    stderr.write("usage: verify-codex-rotating-rollout.mjs <evidence.json>\n");
-    return 2;
-  }
   try {
-    const evidencePath = resolve(args[0]);
-    const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
-    const result = verifyCodexRotatingRollout(evidence, {
-      evidenceDirectory: resolve(evidencePath, ".."),
+    const workflowPath =
+      ".github/workflows/codex-rotating-rollout-evidence.yml";
+    const required = (name) => {
+      const value = process.env[name];
+      if (!value) throw new Error(`missing ${name}`);
+      return value;
+    };
+    const headSha = required("REVIEW_ROUTER_ROLLOUT_EVIDENCE_HEAD_SHA");
+    const trusted = await fetchTrustedGitHubEvidence({
+      token: required("REVIEW_ROUTER_ROLLOUT_GITHUB_TOKEN"),
+      repository: "777genius/review-router-saas",
+      repositoryId: required("REVIEW_ROUTER_ROLLOUT_EVIDENCE_REPOSITORY_ID"),
+      workflowPath,
+      workflowSha: gitBlobSha(
+        readFileSync(resolve(checkoutRoot, workflowPath)),
+      ),
+      workflowRef: headSha,
+      headSha,
+      rolloutId: required("REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID"),
+      runId: required("REVIEW_ROUTER_ROLLOUT_EVIDENCE_RUN_ID"),
+      runAttempt: required("REVIEW_ROUTER_ROLLOUT_EVIDENCE_RUN_ATTEMPT"),
+      jobId: required("REVIEW_ROUTER_ROLLOUT_EVIDENCE_JOB_ID"),
+      jobName: "trusted-rollout-evidence",
+      artifactId: required("REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_ID"),
+      artifactName: required("REVIEW_ROUTER_ROLLOUT_EVIDENCE_ARTIFACT_NAME"),
     });
+    const result = verifyCodexRotatingRollout(trusted);
     if (!result.ok) {
       for (const failure of result.failures) stderr.write(`FAIL: ${failure}\n`);
       return 1;
     }
     stdout.write(`PASS proof-bundle-sha256=${result.proofBundleSha256}\n`);
     return 0;
-  } catch {
+  } catch (error) {
     stderr.write(
-      "FAIL: rollout evidence or an observed artifact is not readable JSON\n",
+      `FAIL: ${error instanceof Error ? error.message : "trusted rollout evidence verification failed"}\n`,
     );
     return 1;
   }
 }
 
-export function verifyCodexRotatingRollout(evidence, options = {}) {
+export function verifyCodexRotatingRollout(trustedEvidence) {
+  const trusted = assertTrustedGitHubEvidence(trustedEvidence);
+  const result = inspectCodexRotatingRolloutStructure(
+    trusted.evidence?.rollout,
+    {
+      readArtifact: trusted.readArtifact,
+    },
+  );
+  const executionBound =
+    trusted.evidence.execution?.headSha === result.observedCommit;
+  const proofBundleSha256 = sha256Utf8(
+    canonicalJson({
+      artifactDigest: trusted.receipt.artifactDigest,
+      providerResponses: trusted.receipt.observedResponseSha256,
+      rolloutProofBundleSha256: result.proofBundleSha256,
+    }),
+  );
+  return {
+    ...result,
+    ok: result.ok && executionBound,
+    failures: executionBound
+      ? result.failures
+      : [
+          ...result.failures,
+          "trusted workflow execution commit does not match the deployed release",
+        ],
+    proofBundleSha256,
+  };
+}
+
+export function inspectCodexRotatingRolloutStructure(evidence, options = {}) {
   const failures = [];
   const need = (condition, message) => {
     if (!condition) failures.push(message);
@@ -287,6 +340,8 @@ export function verifyCodexRotatingRollout(evidence, options = {}) {
   return {
     ok: failures.length === 0,
     failures,
+    observedCommit: deploymentFacts?.commit ?? null,
+    observedImageDigest: deploymentFacts?.imageDigest ?? null,
     proofBundleSha256: sha256Utf8(canonicalJson(evidence?.artifacts ?? null)),
   };
 }
@@ -326,11 +381,39 @@ function verifyDatabase(db, descriptor, need, options) {
   need(db?.isWriter === true, "database observation is not from a writer");
   need(
     hasExactKeys(db?.databaseGenerationBinding, [
+      "consumedMigrationEvidence",
       "recoveryWitnessSha256",
       "systemIdentifier",
       "version",
     ]) &&
-      db.databaseGenerationBinding.version === 1 &&
+      db.databaseGenerationBinding.version === 2 &&
+      Array.isArray(db.databaseGenerationBinding.consumedMigrationEvidence) &&
+      db.databaseGenerationBinding.consumedMigrationEvidence.length > 0 &&
+      db.databaseGenerationBinding.consumedMigrationEvidence.every(
+        (receipt) =>
+          hasExactKeys(receipt, [
+            "artifactDigest",
+            "artifactId",
+            "claimedAt",
+            "rolloutId",
+            "runId",
+          ]) &&
+          /^sha256:[a-f0-9]{64}$/u.test(receipt.artifactDigest ?? "") &&
+          [receipt.artifactId, receipt.rolloutId, receipt.runId].every(
+            (value) => typeof value === "string" && value.length > 0,
+          ) &&
+          Number.isFinite(Date.parse(receipt.claimedAt ?? "")),
+      ) &&
+      new Set(
+        db.databaseGenerationBinding.consumedMigrationEvidence.flatMap(
+          (receipt) => [
+            receipt.artifactDigest,
+            `rollout:${receipt.rolloutId}`,
+            `run-artifact:${receipt.runId}:${receipt.artifactId}`,
+          ],
+        ),
+      ).size ===
+        db.databaseGenerationBinding.consumedMigrationEvidence.length * 3 &&
       db.databaseGenerationBinding.systemIdentifier ===
         db?.databaseIdentity?.systemIdentifier &&
       /^[a-f0-9]{64}$/u.test(
@@ -2206,4 +2289,6 @@ function sortJson(value) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
-  process.exitCode = runCodexRotatingRolloutVerifierCli(process.argv.slice(2));
+  process.exitCode = await runCodexRotatingRolloutVerifierCli(
+    process.argv.slice(2),
+  );

@@ -240,9 +240,18 @@ describe("production-writer rollout observation capture", () => {
         sessionUser: "reviewrouter_release_migration",
       },
       databaseGenerationBinding: {
-        version: 1,
+        version: 2,
         systemIdentifier: "7612345678901234567",
         recoveryWitnessSha256: "f".repeat(64),
+        consumedMigrationEvidence: [
+          {
+            artifactDigest: `sha256:${"a".repeat(64)}`,
+            artifactId: "303",
+            rolloutId: "rollout-1",
+            runId: "101",
+            claimedAt: "2026-08-10T00:00:00.000Z",
+          },
+        ],
       },
       admittedRecoveryEvidence: {
         witnessFingerprints: ["f".repeat(64)],

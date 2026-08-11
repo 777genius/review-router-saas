@@ -20,9 +20,16 @@ export type ProductionWriterObservation = Readonly<{
   isWriter: true;
   recoveryWitnessSha256: string;
   databaseGenerationBinding: Readonly<{
-    version: 1;
+    version: 2;
     systemIdentifier: string;
     recoveryWitnessSha256: string;
+    consumedMigrationEvidence: readonly Readonly<{
+      artifactDigest: Sha256Digest;
+      artifactId: string;
+      rolloutId: string;
+      runId: string;
+      claimedAt: string;
+    }>[];
   }>;
   callerIdentity: Readonly<{
     id: "release-migration";
@@ -111,6 +118,27 @@ export type RolloutObservationBundle = Readonly<{
     canaryRuntime: ArtifactDescriptor;
     workflowRuns: SourceBoundArtifactDescriptor;
   }>;
+}>;
+
+export type TrustedGitHubExecutionIdentity = Readonly<{
+  repositoryId: string;
+  repositoryFullName: string;
+  workflowPath: `.github/workflows/${string}.yml`;
+  workflowSha: string;
+  workflowRef: string;
+  runId: string;
+  runAttempt: number;
+  jobId: string;
+  jobName: "trusted-release-migration" | "trusted-rollout-evidence";
+  artifactName: string;
+  headSha: string;
+}>;
+
+export type TrustedRolloutArtifact = Readonly<{
+  version: 3;
+  rolloutId: string;
+  execution: TrustedGitHubExecutionIdentity;
+  rollout: RolloutObservationBundle;
 }>;
 
 type ArtifactDescriptor = Readonly<{ path: string; sha256: string }>;

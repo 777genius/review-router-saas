@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   captureGitHubWorkflowDrainProvenance,
+  captureRenderMigrationProvenance,
   captureRenderProvenance,
 } from "./codex-rotating-provider-provenance.mjs";
 
@@ -11,6 +12,73 @@ const response = (body: unknown, link?: string) =>
   });
 
 describe("source-bound provider provenance", () => {
+  it("binds exactly one canonical caller output to the Render job inventory", async () => {
+    const output = {
+      caller: "scripts/run-codex-rotating-release-migration.mjs",
+      callerCount: 1,
+      commit: "a".repeat(40),
+      imageDigest: `sha256:${"b".repeat(64)}`,
+      databaseIdentity: "db.internal:5432/review_router",
+      status: "succeeded",
+    };
+    const fetchImpl = vi.fn(async (input: string | URL) => {
+      const url = new URL(input);
+      const values: Record<string, unknown> = {
+        "/v1/owners/own-1": { id: "own-1" },
+        "/v1/postgres/dpg-db": {
+          id: "dpg-db",
+          name: "reviewrouter-db",
+          version: "17",
+          ownerId: "own-1",
+        },
+        "/v1/services/srv-migration": {
+          id: "srv-migration",
+          serviceDetails: {
+            startCommand: "pnpm codex-rotating:release-migration",
+          },
+        },
+        "/v1/services/srv-migration/deploys/dep-1": {
+          id: "dep-1",
+          commitId: output.commit,
+          imageDigest: output.imageDigest,
+        },
+        "/v1/services/srv-migration/jobs/job-1": {
+          id: "job-1",
+          status: "succeeded",
+          command: "pnpm codex-rotating:release-migration",
+          finishedAt: "2026-08-11T00:00:00Z",
+        },
+        "/v1/services/srv-migration/jobs": [
+          {
+            id: "job-1",
+            deployId: "dep-1",
+            status: "succeeded",
+            command: "pnpm codex-rotating:release-migration",
+          },
+        ],
+        "/v1/logs": [{ message: JSON.stringify(output) }],
+      };
+      return response(values[url.pathname]);
+    });
+    const observation = await captureRenderMigrationProvenance(
+      {
+        token: "render-token",
+        ownerId: "own-1",
+        databaseId: "dpg-db",
+        serviceId: "srv-migration",
+        deployId: "dep-1",
+        jobId: "job-1",
+      },
+      fetchImpl as typeof fetch,
+    );
+    expect(observation.migrationCaller).toMatchObject({
+      callerCount: 1,
+      jobId: "job-1",
+      command: "pnpm codex-rotating:release-migration",
+    });
+    expect(observation.migrationOutput).toEqual(output);
+  });
+
   it("captures authenticated Render identity, raw immutable facts, and an independent runtime witness", async () => {
     const values: Record<string, unknown> = {
       "/v1/owners/own-1": { id: "own-1", name: "production" },
@@ -34,6 +102,15 @@ describe("source-bound provider provenance", () => {
         status: "succeeded",
         finishedAt: "2026-08-10T00:00:00Z",
       },
+      "/v1/services/srv-migration/jobs": [
+        {
+          id: "job-migration",
+          deployId: "dep-migration",
+          command: "pnpm codex-rotating:release-migration",
+          status: "succeeded",
+          finishedAt: "2026-08-10T00:00:00Z",
+        },
+      ],
       "/v1/services/srv-api/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS": {
         value: "independent-secret",
       },

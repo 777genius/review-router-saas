@@ -683,10 +683,23 @@ export async function captureProductionWriterObservation(
   }
   const generationBinding = base?.databaseGenerationBinding;
   if (
-    generationBinding?.version !== 1 ||
+    generationBinding?.version !== 2 ||
     generationBinding?.systemIdentifier !==
       base?.databaseIdentity?.systemIdentifier ||
-    !/^[a-f0-9]{64}$/u.test(generationBinding?.recoveryWitnessSha256 ?? "")
+    !/^[a-f0-9]{64}$/u.test(generationBinding?.recoveryWitnessSha256 ?? "") ||
+    !Array.isArray(generationBinding?.consumedMigrationEvidence) ||
+    generationBinding.consumedMigrationEvidence.length === 0 ||
+    generationBinding.consumedMigrationEvidence.some(
+      (receipt) =>
+        !/^sha256:[a-f0-9]{64}$/u.test(receipt?.artifactDigest ?? "") ||
+        typeof receipt?.artifactId !== "string" ||
+        !receipt.artifactId ||
+        typeof receipt?.rolloutId !== "string" ||
+        !receipt.rolloutId ||
+        typeof receipt?.runId !== "string" ||
+        !receipt.runId ||
+        !Number.isFinite(Date.parse(receipt?.claimedAt ?? "")),
+    )
   ) {
     throw new Error("database generation witness binding is absent or invalid");
   }

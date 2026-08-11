@@ -62,6 +62,7 @@
     "review-investigation:migration-rehearsal": "REVIEW_ROUTER_REVIEW_INVESTIGATION_MIGRATION_REHEARSAL=1 node scripts/run-with-env.mjs vitest run scripts/review-investigation-mixed-version-migration.test.ts",
     "codex-rotating:migration-rehearsal": "node scripts/check-codex-rotating-migration-rehearsal.mjs",
     "codex-rotating:migration-preflight": "node --import tsx scripts/preflight-codex-rotating-migration-history.ts",
+    "codex-rotating:release-migration": "node scripts/run-codex-rotating-release-migration.mjs",
     "codex-rotating:installer-portability": "vitest run apps/web/src/server/codex-rotating-seed-script.test.ts",
     "codex-rotating:loopback-proof": "REVIEW_ROUTER_CODEX_ROTATING_WIRE_PROOF=1 vitest run apps/web/src/server/codex-rotating-one-shot-curl.real.test.ts apps/api/src/github/one-shot-github-secret-put.protocol.test.ts apps/api/src/github/one-shot-github-secret-put.real.test.ts apps/api/src/github/codex-rotating-integrated-fault.real.test.ts",
     "codex-rotating:rollout-proof": "vitest run scripts/verify-codex-rotating-rollout.test.ts",
