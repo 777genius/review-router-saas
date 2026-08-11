@@ -81,25 +81,14 @@ const canonicalRoleNames = Object.freeze([
 ]);
 
 export function resolveReleaseMigrationConfiguration(env) {
-  const bootstrapUrl = new URL(
-    required(env, "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL"),
-  );
   const releaseUrl = new URL(
     required(env, "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL"),
   );
-  if (
-    decodeURIComponent(bootstrapUrl.username) !== "reviewrouter_role_bootstrap"
-  )
-    throw new Error("release_migration_bootstrap_role_mismatch");
   if (
     decodeURIComponent(releaseUrl.username) !== "reviewrouter_release_migration"
   )
     throw new Error("release_migration_caller_role_mismatch");
   const identity = databaseIdentity(releaseUrl);
-  if (databaseIdentity(bootstrapUrl) !== identity)
-    throw new Error("release_migration_bootstrap_database_mismatch");
-  if (!decodeURIComponent(bootstrapUrl.password))
-    throw new Error("release_migration_bootstrap_password_missing");
   const releasePassword = decodeURIComponent(releaseUrl.password);
   if (!releasePassword)
     throw new Error("release_migration_release_password_missing");
@@ -123,7 +112,6 @@ export function resolveReleaseMigrationConfiguration(env) {
   )
     throw new Error("release_migration_immutable_release_identity_invalid");
   return {
-    bootstrapUrl: bootstrapUrl.toString(),
     commit,
     databaseIdentity: identity,
     imageDigest,
@@ -131,6 +119,22 @@ export function resolveReleaseMigrationConfiguration(env) {
     releasePassword,
     roles,
   };
+}
+
+export function resolveRoleBootstrapConfiguration(env) {
+  const configuration = resolveReleaseMigrationConfiguration(env);
+  const bootstrapUrl = new URL(
+    required(env, "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL"),
+  );
+  if (
+    decodeURIComponent(bootstrapUrl.username) !== "reviewrouter_role_bootstrap"
+  )
+    throw new Error("release_migration_bootstrap_role_mismatch");
+  if (databaseIdentity(bootstrapUrl) !== configuration.databaseIdentity)
+    throw new Error("release_migration_bootstrap_database_mismatch");
+  if (!decodeURIComponent(bootstrapUrl.password))
+    throw new Error("release_migration_bootstrap_password_missing");
+  return { ...configuration, bootstrapUrl: bootstrapUrl.toString() };
 }
 
 export function roleProvisioningSql(configuration) {
@@ -192,6 +196,33 @@ WHERE EXISTS (
 SELECT format('GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration', current_database())
 \\gexec
 GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH SET TRUE;
+DO $ownership$
+DECLARE unexpected_owner text;
+BEGIN
+  SELECT owner_name INTO unexpected_owner
+  FROM (
+    SELECT owner.rolname AS owner_name
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_roles owner ON owner.oid = relation.relowner
+    WHERE namespace.nspname = 'public'
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+    UNION ALL
+    SELECT owner.rolname AS owner_name
+    FROM pg_proc routine
+    JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+    JOIN pg_roles owner ON owner.oid = routine.proowner
+    WHERE namespace.nspname = 'public'
+  ) owned
+  WHERE owner_name NOT IN ('reviewrouter_role_bootstrap', 'reviewrouter_release_migration')
+  ORDER BY owner_name
+  LIMIT 1;
+  IF unexpected_owner IS NOT NULL THEN
+    RAISE EXCEPTION 'refusing to take over public objects owned by unexpected role %', unexpected_owner;
+  END IF;
+END
+$ownership$;
+REASSIGN OWNED BY reviewrouter_role_bootstrap TO reviewrouter_release_migration;
 SELECT 'ALTER SCHEMA public OWNER TO reviewrouter_release_migration'
 WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'public') <> 'reviewrouter_release_migration'
 \\gexec
@@ -384,11 +415,11 @@ export function runReleaseMigrationSubprocess(
   return result.stdout;
 }
 
-export function executeCanonicalReleaseMigration(
+export function executeCanonicalRoleBootstrap(
   env = process.env,
   run = runReleaseMigrationSubprocess,
 ) {
-  const configuration = resolveReleaseMigrationConfiguration(env);
+  const configuration = resolveRoleBootstrapConfiguration(env);
   const bootstrapEnv = { ...env, DATABASE_URL: configuration.bootstrapUrl };
   assertConnectionRole(
     observeConnectionRole(
@@ -404,11 +435,34 @@ export function executeCanonicalReleaseMigration(
     "provision_roles",
     "psql",
     [configuration.bootstrapUrl, "--no-psqlrc", "--quiet"],
-    {
-      env: bootstrapEnv,
-      input: roleProvisioningSql(configuration),
-    },
+    { env: bootstrapEnv, input: roleProvisioningSql(configuration) },
   );
+  const releaseEnv = { ...env, DATABASE_URL: configuration.releaseUrl };
+  assertConnectionRole(
+    observeConnectionRole(
+      run,
+      "verify_release_authority",
+      configuration.releaseUrl,
+      releaseEnv,
+    ),
+    "reviewrouter_release_migration",
+    false,
+  );
+  return {
+    version: 1,
+    caller: "scripts/run-codex-rotating-role-bootstrap.mjs",
+    commit: configuration.commit,
+    databaseIdentity: configuration.databaseIdentity,
+    imageDigest: configuration.imageDigest,
+    status: "succeeded",
+  };
+}
+
+export function executeCanonicalReleaseMigration(
+  env = process.env,
+  run = runReleaseMigrationSubprocess,
+) {
+  const configuration = resolveReleaseMigrationConfiguration(env);
   const childEnv = { ...env, DATABASE_URL: configuration.releaseUrl };
   assertConnectionRole(
     observeConnectionRole(

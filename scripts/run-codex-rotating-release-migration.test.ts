@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   executeCanonicalReleaseMigration,
+  executeCanonicalRoleBootstrap,
   resolveReleaseMigrationConfiguration,
+  resolveRoleBootstrapConfiguration,
   roleProvisioningSql,
   providerRuntimeUpdateColumns,
   rotatingEvidenceTables,
@@ -47,6 +49,12 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(provisioning).toContain(
       "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH SET TRUE",
+    );
+    expect(provisioning).toContain(
+      "REASSIGN OWNED BY reviewrouter_role_bootstrap TO reviewrouter_release_migration",
+    );
+    expect(provisioning).toContain(
+      "refusing to take over public objects owned by unexpected role",
     );
     expect(provisioning).toContain(
       "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
@@ -172,12 +180,13 @@ describe("canonical exclusive release migration caller", () => {
       "release_migration_runtime_role_mismatch",
     ],
   ])("rejects %s before execution", (_name, override, message) => {
-    expect(() =>
-      resolveReleaseMigrationConfiguration({ ...environment(), ...override }),
-    ).toThrow(message);
+    const resolver = message.includes("bootstrap")
+      ? resolveRoleBootstrapConfiguration
+      : resolveReleaseMigrationConfiguration;
+    expect(() => resolver({ ...environment(), ...override })).toThrow(message);
   });
 
-  it("uses bootstrap only for role convergence and release for every migration step", () => {
+  it("separates role bootstrap from every release migration step", () => {
     const calls: Array<{
       step: string;
       args: string[];
@@ -246,10 +255,23 @@ describe("canonical exclusive release migration caller", () => {
         });
       return step === "migration_history_preflight" ? "preflight" : "";
     };
-    executeCanonicalReleaseMigration(environment(), run);
+    executeCanonicalRoleBootstrap(environment(), run);
     expect(calls.map((call) => call.step)).toEqual([
       "verify_bootstrap_authority",
       "provision_roles",
+      "verify_release_authority",
+    ]);
+    expect(
+      calls.every(
+        (call) =>
+          call.args[0]?.includes("reviewrouter_role_bootstrap") ||
+          call.step === "verify_release_authority",
+      ),
+    ).toBe(true);
+
+    calls.length = 0;
+    executeCanonicalReleaseMigration(environment(), run);
+    expect(calls.map((call) => call.step)).toEqual([
       "verify_release_authority",
       "migration_history_preflight",
       "deploy_migrations",
@@ -257,28 +279,19 @@ describe("canonical exclusive release migration caller", () => {
       "verify_roles",
     ]);
     expect(
-      calls
-        .slice(0, 2)
-        .every((call) => call.args[0]?.includes("reviewrouter_role_bootstrap")),
+      calls.every(
+        (call) =>
+          call.args[0]?.includes("reviewrouter_release_migration") ||
+          call.step === "migration_history_preflight" ||
+          call.step === "deploy_migrations",
+      ),
     ).toBe(true);
     expect(
-      calls
-        .slice(2)
-        .every(
-          (call) =>
-            call.args[0]?.includes("reviewrouter_release_migration") ||
-            call.step === "migration_history_preflight" ||
-            call.step === "deploy_migrations",
+      calls.every((call) =>
+        (call as any).env?.DATABASE_URL.includes(
+          "reviewrouter_release_migration",
         ),
-    ).toBe(true);
-    expect(
-      calls
-        .slice(2)
-        .every((call) =>
-          (call as any).env?.DATABASE_URL.includes(
-            "reviewrouter_release_migration",
-          ),
-        ),
+      ),
     ).toBe(true);
   });
 

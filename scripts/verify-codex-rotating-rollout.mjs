@@ -933,6 +933,7 @@ function verifyDatabaseAuthorization(authorization, need) {
     codexRotatingDatabaseRoles.effectAuthority,
     ...codexRotatingDatabaseRoles.runtime,
   ];
+  const expectedBootstrapMembershipRoles = [...expectedRoleNames].sort();
   const roles = authorization?.roles ?? [];
   need(
     hasExactKeys(authorization, [
@@ -1056,7 +1057,28 @@ function verifyDatabaseAuthorization(authorization, need) {
       );
     }) &&
       Array.isArray(authorization?.memberships) &&
-      authorization.memberships.length === 0 &&
+      authorization.memberships.length ===
+        expectedBootstrapMembershipRoles.length &&
+      JSON.stringify(
+        authorization.memberships.map((entry) => entry.role).sort(),
+      ) === JSON.stringify(expectedBootstrapMembershipRoles) &&
+      authorization.memberships.every(
+        (entry) =>
+          hasExactKeys(entry, [
+            "adminOption",
+            "grantor",
+            "inheritOption",
+            "member",
+            "role",
+            "setOption",
+          ]) &&
+          entry.member === bootstrapRole &&
+          typeof entry.grantor === "string" &&
+          entry.grantor.length > 0 &&
+          entry.adminOption === true &&
+          entry.inheritOption === false &&
+          entry.setOption === false,
+      ) &&
       JSON.stringify(authorization?.releaseRoleSettableByLoginRoles) ===
         JSON.stringify([releaseRole]) &&
       Array.isArray(authorization?.nonReleaseOwnedCatalogObjects) &&

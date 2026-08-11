@@ -1123,7 +1123,20 @@ function observedFixture(): any {
               : [],
           };
         }),
-        memberships: [],
+        memberships: [
+          "reviewrouter_api",
+          "reviewrouter_codex_effect_authority",
+          "reviewrouter_release_migration",
+          "reviewrouter_web",
+          "reviewrouter_worker",
+        ].map((role) => ({
+          role,
+          member: "reviewrouter_role_bootstrap",
+          grantor: "render_managed_postgres_admin",
+          adminOption: true,
+          inheritOption: false,
+          setOption: false,
+        })),
         releaseRoleSettableByLoginRoles: ["reviewrouter_release_migration"],
         nonReleaseOwnedCatalogObjects: [],
         nonReleaseOwnedFunctions: [],

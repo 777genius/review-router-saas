@@ -34,7 +34,6 @@ jobs:
       REVIEW_ROUTER_RENDER_MIGRATION_DEPLOY_ID: ${{ vars.REVIEW_ROUTER_RENDER_MIGRATION_DEPLOY_ID }}
       REVIEW_ROUTER_RENDER_COMMIT_SHA: ${{ github.sha }}
       REVIEW_ROUTER_RENDER_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RENDER_IMAGE_DIGEST }}
-      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL }}
       REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
       REVIEW_ROUTER_API_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_API_DATABASE_URL }}
       REVIEW_ROUTER_WEB_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WEB_DATABASE_URL }}
@@ -83,6 +82,8 @@ jobs:
           import { appendFileSync, readFileSync } from "node:fs";
           const value = JSON.parse(readFileSync("migration-job.json", "utf8"));
           if (value.status !== "succeeded") throw new Error("migration job did not succeed");
+          if (value.deployId !== process.env.REVIEW_ROUTER_RENDER_MIGRATION_DEPLOY_ID)
+            throw new Error("migration job did not use the pinned deploy");
           appendFileSync(process.env.GITHUB_ENV, `REVIEW_ROUTER_RENDER_MIGRATION_JOB_ID=${value.jobId}\n`);
           NODE
 
