@@ -2694,49 +2694,68 @@ function proveParentIdentityWriteRejected(url) {
 }
 
 function proveQuarantineCleanupPathV2(url) {
-  psql(url, [
-    "-c",
-    String.raw`
-      DO $repair$
-      DECLARE repair record;
+  const providerRepairs = [
+    {
+      providerId: "p-parent-dirty",
+      repositoryId: "repo-12",
+      oldProviderId: "legacy-parent-id",
+      oldRepositoryProvider: "gitlab",
+      oldGithubId: null,
+      oldExternalId: "900012",
+      newGithubId: 900012,
+    },
+    {
+      providerId: "p-parent-external-dirty",
+      repositoryId: "repo-13",
+      oldProviderId: "codex-rotating:900013",
+      oldRepositoryProvider: "github",
+      oldGithubId: 900013,
+      oldExternalId: "dirty-external-id",
+      newGithubId: 900013,
+    },
+  ];
+  for (const repair of providerRepairs) {
+    const oldGithubId = repair.oldGithubId ?? "NULL";
+    psql(url, [
+      "-c",
+      `DO $repair$
       DECLARE challenge text;
       DECLARE signature text;
       BEGIN
-        FOR repair IN
-          SELECT * FROM (VALUES
-            ('p-parent-dirty'::text, 'repo-12'::text, 'legacy-parent-id'::text,
-             'gitlab'::text, NULL::bigint, '900012'::text, 900012::bigint),
-            ('p-parent-external-dirty'::text, 'repo-13'::text,
-             'codex-rotating:900013'::text, 'github'::text, 900013::bigint,
-             'dirty-external-id'::text, 900013::bigint)
-          ) AS repairs(provider_id, repository_id, old_provider_id,
-                       old_repository_provider, old_github_id,
-                       old_external_id, new_github_id)
-        LOOP
-          challenge := codex_oauth_provider_identity_repair_challenge(
-            repair.provider_id, 'ws-proof', repair.repository_id,
-            repair.old_provider_id, 'codex_subscription_oauth_rotating',
-            'REVIEWROUTER_CODEX_AUTH_JSON', repair.old_repository_provider,
-            repair.old_github_id, repair.old_external_id, 'ws-proof',
-            repair.repository_id,
-            'codex-rotating:' || repair.new_github_id::text,
-            'codex_subscription_oauth_rotating',
-            'REVIEWROUTER_CODEX_AUTH_JSON', repair.new_github_id
-          );
-          signature := codex_oauth_sign_database_authority(challenge);
-          PERFORM codex_oauth_repair_quarantined_provider(
-            repair.provider_id, 'ws-proof', repair.repository_id,
-            repair.old_provider_id, 'codex_subscription_oauth_rotating',
-            'REVIEWROUTER_CODEX_AUTH_JSON', repair.old_repository_provider,
-            repair.old_github_id, repair.old_external_id, 'ws-proof',
-            repair.repository_id,
-            'codex-rotating:' || repair.new_github_id::text,
-            'codex_subscription_oauth_rotating',
-            'REVIEWROUTER_CODEX_AUTH_JSON', repair.new_github_id, signature
-          );
-        END LOOP;
+        challenge := codex_oauth_provider_identity_repair_challenge(
+          ${quoteLiteral(repair.providerId)}, 'ws-proof',
+          ${quoteLiteral(repair.repositoryId)},
+          ${quoteLiteral(repair.oldProviderId)},
+          'codex_subscription_oauth_rotating',
+          'REVIEWROUTER_CODEX_AUTH_JSON',
+          ${quoteLiteral(repair.oldRepositoryProvider)}, ${oldGithubId},
+          ${quoteLiteral(repair.oldExternalId)}, 'ws-proof',
+          ${quoteLiteral(repair.repositoryId)},
+          ${quoteLiteral(`codex-rotating:${repair.newGithubId}`)},
+          'codex_subscription_oauth_rotating',
+          'REVIEWROUTER_CODEX_AUTH_JSON', ${repair.newGithubId}
+        );
+        signature := codex_oauth_sign_database_authority(challenge);
+        PERFORM codex_oauth_repair_quarantined_provider(
+          ${quoteLiteral(repair.providerId)}, 'ws-proof',
+          ${quoteLiteral(repair.repositoryId)},
+          ${quoteLiteral(repair.oldProviderId)},
+          'codex_subscription_oauth_rotating',
+          'REVIEWROUTER_CODEX_AUTH_JSON',
+          ${quoteLiteral(repair.oldRepositoryProvider)}, ${oldGithubId},
+          ${quoteLiteral(repair.oldExternalId)}, 'ws-proof',
+          ${quoteLiteral(repair.repositoryId)},
+          ${quoteLiteral(`codex-rotating:${repair.newGithubId}`)},
+          'codex_subscription_oauth_rotating',
+          'REVIEWROUTER_CODEX_AUTH_JSON', ${repair.newGithubId}, signature
+        );
       END
-      $repair$;
+      $repair$;`,
+    ]);
+  }
+  psql(url, [
+    "-c",
+    String.raw`
       SELECT codex_oauth_repair_quarantined_child('lease','lease-provider-dirty');
       SELECT codex_oauth_repair_quarantined_child('setup_manifest','manifest-dirty');
       SELECT codex_oauth_repair_quarantined_child('lease','lease-dirty');
