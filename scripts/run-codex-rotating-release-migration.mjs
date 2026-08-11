@@ -149,12 +149,12 @@ BEGIN
   SELECT * INTO observed FROM pg_roles WHERE rolname = '${username}';
   IF NOT FOUND THEN
     CREATE ROLE ${username} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoted(password)};
-  ELSIF observed.rolsuper OR observed.rolreplication OR observed.rolbypassrls THEN
+  ELSIF observed.rolsuper OR observed.rolcreatedb OR observed.rolreplication OR observed.rolbypassrls THEN
     RAISE EXCEPTION 'refusing to converge unexpectedly privileged role ${username}';
   END IF;
 END
 $role$;
-ALTER ROLE ${username} LOGIN NOCREATEROLE PASSWORD ${quoted(password)};
+ALTER ROLE ${username} LOGIN NOCREATEDB NOCREATEROLE PASSWORD ${quoted(password)};
 DO $membership$
 DECLARE membership record;
 BEGIN
@@ -293,6 +293,7 @@ GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_runtime_completion"(text
 }
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ${username};
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${username};
+REVOKE ALL ON TABLE public."_prisma_migrations" FROM ${username};
 DO $runtime_acl$
 DECLARE protected_column record;
 BEGIN
@@ -459,6 +460,7 @@ export function executeCanonicalReleaseMigration(
           'roles', (SELECT json_agg(json_build_object(
             'username', rolname,
             'login', rolcanlogin,
+            'createDatabase', rolcreatedb,
             'createRole', rolcreaterole,
             'canSetReleaseRole', pg_has_role(rolname, 'reviewrouter_release_migration', 'SET')
           ) ORDER BY rolname) FROM pg_roles WHERE rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])) ,
@@ -498,6 +500,7 @@ export function executeCanonicalReleaseMigration(
     verifiedRoles.roles.some(
       (role) =>
         role.login !== true ||
+        role.createDatabase !== false ||
         role.createRole !== false ||
         (role.username !== "reviewrouter_release_migration" &&
           role.canSetReleaseRole !== false),

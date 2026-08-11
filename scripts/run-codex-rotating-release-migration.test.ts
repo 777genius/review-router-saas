@@ -40,6 +40,7 @@ describe("canonical exclusive release migration caller", () => {
     const provisioning = roleProvisioningSql(configuration);
     const grants = runtimeGrantSql(configuration);
     expect(provisioning.match(/CREATE ROLE/g)).toHaveLength(5);
+    expect(provisioning.match(/NOCREATEDB/g)).toHaveLength(10);
     expect(provisioning.match(/NOCREATEROLE/g)).toHaveLength(10);
     expect(provisioning).toContain(
       "refusing to converge unexpectedly privileged role",
@@ -83,6 +84,9 @@ describe("canonical exclusive release migration caller", () => {
       const genericGrant = grants.indexOf(
         `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
       );
+      const migrationHistoryRevocation = grants.indexOf(
+        `REVOKE ALL ON TABLE public."_prisma_migrations" FROM ${role}`,
+      );
       const keyRevocation = grants.indexOf(
         `REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityKey" FROM ${role}`,
       );
@@ -90,6 +94,7 @@ describe("canonical exclusive release migration caller", () => {
         `REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityReceipt" FROM ${role}`,
       );
       expect(genericGrant).toBeGreaterThan(-1);
+      expect(migrationHistoryRevocation).toBeGreaterThan(genericGrant);
       expect(keyRevocation).toBeGreaterThan(genericGrant);
       expect(receiptRevocation).toBeGreaterThan(genericGrant);
       expect(grants).toContain(
@@ -220,6 +225,7 @@ describe("canonical exclusive release migration caller", () => {
           roles: roleNames.map((username) => ({
             username,
             login: true,
+            createDatabase: false,
             createRole: false,
             canSetReleaseRole: username === "reviewrouter_release_migration",
           })),
