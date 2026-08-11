@@ -12,6 +12,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+
+const testCodexIdToken = `header.${Buffer.from(
+  JSON.stringify({
+    iss: "https://auth.openai.com",
+    sub: "user:test",
+    chatgpt_account_id: "account:test",
+  }),
+).toString("base64url")}.signature`;
 import {
   assertSupportedRunnerEnvironment,
   buildCodexCommand,
@@ -616,6 +624,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       tokens: {
         refresh_token: "refreshed-refresh-token",
         access_token: "refreshed-access-token",
+        id_token: testCodexIdToken,
       },
     });
     const invokedUrls: string[] = [];
@@ -677,6 +686,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         return jsonResponse({
           leaseId: "lease_1",
           generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+          accountFingerprintSalt:
+            "YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {
@@ -883,7 +894,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  auth_mode: 'chatgpt',",
         "  tokens: {",
         "    refresh_token: 'scheduled-refreshed-refresh-token',",
-        "    access_token: 'scheduled-refreshed-access-token'",
+        "    access_token: 'scheduled-refreshed-access-token',",
+        `    id_token: ${JSON.stringify(testCodexIdToken)}`,
         "  }",
         "}));",
         "",
@@ -906,6 +918,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         return jsonResponse({
           leaseId: "lease_1",
           generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+          accountFingerprintSalt:
+            "YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {
@@ -1199,6 +1213,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         const body = JSON.parse(String(init?.body)) as {
           readonly oidcToken: string;
         };
+        expect(body).not.toHaveProperty("audience");
         preleaseTokens.push(body.oidcToken);
         return new Response("<html>temporary upstream failure</html>", {
           status: 503,
@@ -1271,6 +1286,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         return jsonResponse({
           leaseId: "lease_1",
           generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+          accountFingerprintSalt:
+            "YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         });
       }
       throw new Error(`unexpected_fetch:${href}`);
@@ -1337,6 +1354,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         return jsonResponse({
           leaseId: "lease_1",
           generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+          accountFingerprintSalt:
+            "YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         });
       }
       throw new Error(`unexpected_fetch:${href}`);
@@ -1878,6 +1897,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       tokens: {
         refresh_token: "refreshed-refresh-token",
         access_token: "refreshed-access-token",
+        id_token: testCodexIdToken,
       },
     });
 
@@ -2013,6 +2033,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         return jsonResponse({
           leaseId: "lease_1",
           generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+          accountFingerprintSalt:
+            "YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {
@@ -2222,6 +2244,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       tokens: {
         refresh_token: "refreshed-refresh-token",
         access_token: "refreshed-access-token",
+        id_token: testCodexIdToken,
       },
     });
 
@@ -2433,6 +2456,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         return jsonResponse({
           leaseId: "lease_1",
           generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+          accountFingerprintSalt:
+            "YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {
@@ -2856,7 +2881,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  auth_mode: 'chatgpt',",
         "  tokens: {",
         "    refresh_token: 'refreshed-refresh-token',",
-        "    access_token: 'refreshed-access-token'",
+        "    access_token: 'refreshed-access-token',",
+        `    id_token: ${JSON.stringify(testCodexIdToken)}`,
         "  }",
         "}));",
         "",
@@ -2959,6 +2985,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         return jsonResponse({
           leaseId: "lease_1",
           generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+          accountFingerprintSalt:
+            "YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {
@@ -3102,7 +3130,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  auth_mode: 'chatgpt',",
         "  tokens: {",
         "    refresh_token: 'refreshed-refresh-token',",
-        "    access_token: 'refreshed-access-token'",
+        "    access_token: 'refreshed-access-token',",
+        `    id_token: ${JSON.stringify(testCodexIdToken)}`,
         "  }",
         "}));",
         "process.exit(0);",
@@ -3123,6 +3152,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         return jsonResponse({
           leaseId: "lease_1",
           generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+          accountFingerprintSalt:
+            "YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {
@@ -3241,6 +3272,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         return jsonResponse({
           leaseId: "lease_1",
           generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+          accountFingerprintSalt:
+            "YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {

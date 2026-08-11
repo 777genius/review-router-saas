@@ -21,7 +21,7 @@ type DeletedRateLimitBucketRow = {
 export class PrismaRateLimitStore
   implements RateLimitStorePort, RateLimitCleanupStorePort
 {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(private readonly prisma: Pick<PrismaClient, "$queryRaw">) {}
 
   async consumeFixedWindow(
     input: ConsumeFixedWindowRateLimitInput,

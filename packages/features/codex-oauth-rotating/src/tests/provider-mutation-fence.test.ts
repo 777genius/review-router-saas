@@ -100,4 +100,22 @@ describe("rotating provider identity and mutation fence", () => {
     });
     expect(result).toMatchObject({ classification: "active" });
   });
+
+  it("allows a new recovery decision after the versioned name is permanently retired", () => {
+    expect(
+      classifyCodexRotatingMutationOwnership({
+        owner: "recovery",
+        ownerId: "intent_1",
+        now: new Date("2036-08-09T12:00:00.000Z"),
+        writeback: {
+          id: "intent_1",
+          leaseId: "lease_1",
+          status: "remote_outcome_unknown",
+          claimedAt: new Date("2026-08-09T12:00:00.000Z"),
+          claimMarker: false,
+          remoteNamespacePermanentlyRetired: true,
+        },
+      }).classification,
+    ).toBe("recoverable");
+  });
 });

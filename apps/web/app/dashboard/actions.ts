@@ -1,5 +1,6 @@
 "use server";
 
+import { createHash } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import {
@@ -48,7 +49,10 @@ import {
   isCodexRotatingOAuthAllowedForWorkspaceDefault,
   isConflictReviewFallbackAllowedForRepository,
   isWorkflowProvisioningEnabled,
+  requireReviewRouterDatabaseRecoveryWitness,
   resolveReviewRouterActionRef,
+  resolveReviewRouterCodexRotatingActionRef,
+  resolveReviewRouterCodexRotatingTrustedActionRefs,
 } from "@reviewrouter/platform-config";
 import { OctokitRepositoryWorkflowProbe } from "@reviewrouter/features-repo-health";
 import {
@@ -61,8 +65,22 @@ import {
   PrismaWorkflowProvisioningRepository,
   PrismaWorkflowProvisioningTarget,
   provisionRepositoryReviewRouterWorkflow,
+  assertActiveVersionedSecretWorkflowAttestation,
+  assertTrustedCanonicalVersionedWorkflow,
+  createVersionedSecretWorkflowSourceAttestation,
+  readCanonicalCodexRotatingT0WorkflowSourceMetadata,
+  workflowDocumentSemanticSha256,
+  WorkflowSourceTrust,
 } from "@reviewrouter/features-workflow-provisioning";
-import type { ProviderSecretScope } from "@reviewrouter/features-provider-setup";
+import {
+  confirmCodexRotatingSetupReadiness,
+  canonicalCodexRotatingProviderId,
+  codexRotatingAuthMode,
+  inspectCodexRotatingWorkflowNamespace,
+  inspectCodexRotatingSetupReadiness,
+  type CodexRotatingWorkflowNamespaceInspection,
+  type ProviderSecretScope,
+} from "@reviewrouter/features-provider-setup";
 import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
 import {
   asDashboardGitHubActor,
@@ -90,6 +108,9 @@ import {
 } from "../../src/server/workflow-setup-gateway-fallback";
 import { resolveWorkflowPublicApiUrl } from "../../src/server/workflow-public-api-url";
 import { isWorkflowSetupAlreadyCurrent } from "../../src/server/workflow-setup-readiness";
+import { codexRotatingSetupLedger } from "../../src/server/codex-rotating-setup-ledger";
+import { PrismaCodexRotatingSetupReadiness } from "../../src/server/prisma-codex-rotating-setup-readiness";
+import { PrismaCodexRotatingWorkflowNamespace } from "../../src/server/prisma-codex-rotating-workflow-namespace";
 import {
   providerSecretAvailabilityStatusForError,
   providerSecretNamesForAuthMode,
@@ -415,7 +436,11 @@ export async function checkProviderRepositorySecretClientAction(
   const workspaceId = readFormString(formData, "workspaceId");
   const repositoryId = readFormString(formData, "repositoryId");
   const providerSetup = readProviderSetupSelection(formData);
-  const secretNames = providerSecretNamesForAuthMode(providerSetup.authMode);
+  const rotatingCodex =
+    providerSetup.authMode === "codex_subscription_oauth_rotating";
+  const secretNames = rotatingCodex
+    ? []
+    : providerSecretNamesForAuthMode(providerSetup.authMode);
 
   try {
     const repository = await loadRepositoryForWorkspace({
@@ -438,6 +463,34 @@ export async function checkProviderRepositorySecretClientAction(
       actor: actor.actor,
       feature: "action_control_plane",
     });
+
+    if (rotatingCodex) {
+      try {
+        await inspectCodexRotatingSetupReadiness(
+          {
+            workspaceId,
+            repositoryId,
+            githubRepositoryId: repository.githubRepositoryId.toString(),
+            providerInstanceId: `codex-rotating:${repository.githubRepositoryId.toString()}`,
+          },
+          {
+            readiness: new PrismaCodexRotatingSetupReadiness(
+              prisma,
+              requireReviewRouterDatabaseRecoveryWitness(),
+            ),
+          },
+        );
+        return { status: "available_repository" };
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "codex_rotating_setup_not_ready"
+        ) {
+          return { status: "missing" };
+        }
+        throw error;
+      }
+    }
 
     const octokit = await createGitHubAppInstallationOctokit(
       repository.installation.githubInstallationId.toString(),
@@ -515,16 +568,6 @@ async function createSetupPullRequestMutation(
       workspaceId,
       repositoryId,
     });
-    const octokit = await createGitHubAppInstallationOctokit(
-      githubRepository.installation.githubInstallationId.toString(),
-    );
-    const actionRef = resolveReviewRouterActionRef();
-    const setupBaseBranch = await resolveDashboardSetupBaseBranch({
-      octokit,
-      owner: repository.owner,
-      name: repository.name,
-      defaultBranch: repository.defaultBranch,
-    });
     const resolvedRuntime = await loadResolvedReviewRuntime({
       prisma,
       workspaceId,
@@ -548,19 +591,46 @@ async function createSetupPullRequestMutation(
     const codexRotatingSecretInputs = codexRotatingProviderInstanceId
       ? codexRotatingWorkflowSecretInputs(resolvedRuntime.config)
       : null;
-    const codexRotatingV2Provisioning =
-      codexRotatingProviderInstanceId &&
-      process.env.REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE ===
-        "client_triggered_t0"
-        ? {
-            codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
-            codexRotatingWorkflowSchemaVersion:
-              CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
-          }
-        : null;
-    const forkAgenticSandboxEnabled =
-      codexRotatingProviderInstanceId !== undefined &&
-      codexRotatingV2Provisioning === null;
+    const codexRotatingWorkflowNamespaceInspection =
+      codexRotatingProviderInstanceId
+        ? await resolveCodexWorkflowSecretNamespace({
+            prisma,
+            workspaceId,
+            repositoryId,
+            githubRepositoryId: githubRepository.githubRepositoryId.toString(),
+            providerInstanceId: codexRotatingProviderInstanceId,
+          })
+        : undefined;
+    const codexRotatingWorkflowSecretNamespace =
+      codexRotatingWorkflowNamespaceInspection?.namespace;
+    const codexRotatingV2Provisioning = codexRotatingProviderInstanceId
+      ? {
+          codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+        }
+      : null;
+    const forkAgenticSandboxEnabled = false;
+    const octokit = await createGitHubAppInstallationOctokit(
+      githubRepository.installation.githubInstallationId.toString(),
+    );
+    const setupBaseBranch = await resolveDashboardSetupBaseBranch({
+      octokit,
+      owner: repository.owner,
+      name: repository.name,
+      defaultBranch: repository.defaultBranch,
+    });
+    const actionRef = codexRotatingProviderInstanceId
+      ? await resolveCodexRotatingProvisioningActionRef({
+          prisma,
+          inspection: codexRotatingWorkflowNamespaceInspection!,
+          octokit,
+          owner: repository.owner,
+          name: repository.name,
+          defaultBranch: repository.defaultBranch,
+          expectedRepositoryId: githubRepository.githubRepositoryId.toString(),
+          expectedRepositoryFullName: repository.fullName,
+          expectedProviderInstanceId: codexRotatingProviderInstanceId,
+        })
+      : resolveReviewRouterActionRef();
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
@@ -577,6 +647,10 @@ async function createSetupPullRequestMutation(
         ...(codexRotatingProviderInstanceId
           ? {
               codexRotatingProviderInstanceId,
+              codexRotatingWorkflowSecretNamespace:
+                codexRotatingWorkflowSecretNamespace!,
+              codexRotatingWorkflowSchemaVersion:
+                CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
               forkAgenticSandboxEnabled,
               ...(codexRotatingSecretInputs ?? {}),
               ...(codexRotatingV2Provisioning ?? {}),
@@ -662,6 +736,8 @@ async function createSetupPullRequestMutation(
               ...(codexRotatingProviderInstanceId
                 ? {
                     codexRotatingProviderInstanceId,
+                    codexRotatingWorkflowSecretNamespace:
+                      codexRotatingWorkflowSecretNamespace!,
                     forkAgenticSandboxEnabled,
                     ...(codexRotatingV2Provisioning ?? {}),
                   }
@@ -836,8 +912,24 @@ async function confirmSetupPullRequestMergedMutation(
       resolvedRuntime !== null && codexRotatingProviderInstanceId
         ? codexRotatingWorkflowSecretInputs(resolvedRuntime.config)
         : null;
-    const forkAgenticSandboxEnabled =
-      codexRotatingProviderInstanceId !== undefined;
+    const codexRotatingWorkflowNamespaceInspection =
+      codexRotatingProviderInstanceId
+        ? await resolveCodexWorkflowSecretNamespace({
+            prisma,
+            workspaceId,
+            repositoryId,
+            githubRepositoryId: githubRepository.githubRepositoryId.toString(),
+            providerInstanceId: codexRotatingProviderInstanceId,
+          })
+        : undefined;
+    const codexRotatingWorkflowSecretNamespace =
+      codexRotatingWorkflowNamespaceInspection?.namespace;
+    const codexRotatingV2Provisioning = codexRotatingProviderInstanceId
+      ? {
+          codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+        }
+      : null;
+    const forkAgenticSandboxEnabled = false;
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
@@ -850,13 +942,31 @@ async function confirmSetupPullRequestMergedMutation(
             owner: repository.owner,
             name: repository.name,
             defaultBranch: setupBaseBranch,
-            actionRef: resolveReviewRouterActionRef(),
+            actionRef: codexRotatingProviderInstanceId
+              ? await resolveCodexRotatingProvisioningActionRef({
+                  prisma,
+                  inspection: codexRotatingWorkflowNamespaceInspection!,
+                  octokit,
+                  owner: repository.owner,
+                  name: repository.name,
+                  defaultBranch: repository.defaultBranch,
+                  expectedRepositoryId:
+                    githubRepository.githubRepositoryId.toString(),
+                  expectedRepositoryFullName: repository.fullName,
+                  expectedProviderInstanceId: codexRotatingProviderInstanceId,
+                })
+              : resolveReviewRouterActionRef(),
             conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
             ...(codexRotatingProviderInstanceId
               ? {
                   codexRotatingProviderInstanceId,
+                  codexRotatingWorkflowSecretNamespace:
+                    codexRotatingWorkflowSecretNamespace!,
+                  codexRotatingWorkflowSchemaVersion:
+                    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
                   forkAgenticSandboxEnabled,
                   ...(codexRotatingSecretInputs ?? {}),
+                  ...(codexRotatingV2Provisioning ?? {}),
                 }
               : {}),
             ...(workflowProviderKind
@@ -891,6 +1001,19 @@ async function confirmSetupPullRequestMergedMutation(
 
       throw new Error("setup_pr_not_merged");
     }
+
+    await activateConfirmedCodexNamespaceAfterWorkflowMerge({
+      prisma,
+      octokit,
+      workspaceId,
+      repositoryId,
+      githubRepositoryId: githubRepository.githubRepositoryId.toString(),
+      owner: repository.owner,
+      name: repository.name,
+      defaultBranch: repository.defaultBranch,
+      expectedRepositoryFullName: repository.fullName,
+      expectedApiUrl: resolveWorkflowPublicApiUrl(),
+    });
 
     await markRepositoryWorkflowConfigured({
       prisma,
@@ -941,7 +1064,11 @@ async function confirmProviderSecretSetupMutation(
   const providerSetup = readProviderSetupSelection(formData);
   const secretScope = readProviderSecretScope(formData);
   const confirmationMode = readProviderSetupConfirmationMode(formData);
-  const secretNames = providerSecretNamesForAuthMode(providerSetup.authMode);
+  const rotatingCodex =
+    providerSetup.authMode === "codex_subscription_oauth_rotating";
+  const secretNames = rotatingCodex
+    ? []
+    : providerSecretNamesForAuthMode(providerSetup.authMode);
   let params: Record<string, string>;
 
   try {
@@ -977,41 +1104,80 @@ async function confirmProviderSecretSetupMutation(
     ) {
       throw new Error("organization_secret_scope_forbidden");
     }
-    if (confirmationMode === "verified") {
+    let rotatingReadiness:
+      | Awaited<ReturnType<typeof confirmCodexRotatingSetupReadiness>>
+      | undefined;
+    if (rotatingCodex) {
+      if (secretScope !== "repository" || confirmationMode !== "verified") {
+        throw new Error("codex_rotating_setup_not_ready");
+      }
       const octokit = await createGitHubAppInstallationOctokit(
         repository.installation.githubInstallationId.toString(),
       );
       await assertRepositoryVisibleToGitHubApp({ octokit, repository });
-      await verifyProviderSecrets({
+      await activateConfirmedCodexNamespaceAfterWorkflowMerge({
+        prisma,
         octokit,
-        repository,
-        secretNames,
-        secretScope,
+        workspaceId,
+        repositoryId,
+        githubRepositoryId: repository.githubRepositoryId.toString(),
+        owner: repository.owner,
+        name: repository.name,
+        defaultBranch: repository.defaultBranch,
+        expectedRepositoryFullName: repository.fullName,
+        expectedApiUrl: resolveWorkflowPublicApiUrl(),
       });
-    }
-
-    await prisma.providerSetupState.upsert({
-      where: {
-        workspaceId_targetKey_providerKind_authMode: {
+      rotatingReadiness = await confirmCodexRotatingSetupReadiness(
+        {
           workspaceId,
+          repositoryId,
+          githubRepositoryId: repository.githubRepositoryId.toString(),
+          providerInstanceId: `codex-rotating:${repository.githubRepositoryId.toString()}`,
+        },
+        {
+          readiness: new PrismaCodexRotatingSetupReadiness(
+            prisma,
+            requireReviewRouterDatabaseRecoveryWitness(),
+          ),
+        },
+      );
+    } else {
+      if (confirmationMode === "verified") {
+        const octokit = await createGitHubAppInstallationOctokit(
+          repository.installation.githubInstallationId.toString(),
+        );
+        await assertRepositoryVisibleToGitHubApp({ octokit, repository });
+        await verifyProviderSecrets({
+          octokit,
+          repository,
+          secretNames,
+          secretScope,
+        });
+      }
+
+      await prisma.providerSetupState.upsert({
+        where: {
+          workspaceId_targetKey_providerKind_authMode: {
+            workspaceId,
+            targetKey: `repo:${repositoryId}`,
+            providerKind: providerSetup.providerKind,
+            authMode: providerSetup.authMode,
+          },
+        },
+        update: {
+          repositoryId,
+          state: "configured",
+        },
+        create: {
+          workspaceId,
+          repositoryId,
           targetKey: `repo:${repositoryId}`,
           providerKind: providerSetup.providerKind,
           authMode: providerSetup.authMode,
+          state: "configured",
         },
-      },
-      update: {
-        repositoryId,
-        state: "configured",
-      },
-      create: {
-        workspaceId,
-        repositoryId,
-        targetKey: `repo:${repositoryId}`,
-        providerKind: providerSetup.providerKind,
-        authMode: providerSetup.authMode,
-        state: "configured",
-      },
-    });
+      });
+    }
     await recordAuditEvent(
       {
         workspaceId,
@@ -1025,7 +1191,13 @@ async function confirmProviderSecretSetupMutation(
           authMode: providerSetup.authMode,
           confirmationMode,
           credentialScope: secretScope,
-          requiredCredentialCount: secretNames.length,
+          requiredCredentialCount: rotatingCodex ? 1 : secretNames.length,
+          ...(rotatingReadiness
+            ? {
+                readinessSource: "versioned_namespace_activation",
+                namespaceEpoch: rotatingReadiness.namespaceEpoch.toString(10),
+              }
+            : {}),
           ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
@@ -1039,7 +1211,12 @@ async function confirmProviderSecretSetupMutation(
       section: "repositories",
     };
   } catch (error) {
-    const failedState = providerSetupStateForSecretCheckError(error);
+    const failedState =
+      rotatingCodex &&
+      error instanceof Error &&
+      error.message === "codex_rotating_setup_not_ready"
+        ? "stale_or_invalid"
+        : providerSetupStateForSecretCheckError(error);
     if (failedState) {
       await prisma.providerSetupState.updateMany({
         where: {
@@ -1870,6 +2047,7 @@ async function loadRepositoryForWorkspace(input: {
   readonly owner: string;
   readonly name: string;
   readonly fullName: string;
+  readonly defaultBranch: string;
   readonly visibility: string;
   readonly selected: boolean;
   readonly archived: boolean;
@@ -1888,6 +2066,7 @@ async function loadRepositoryForWorkspace(input: {
       owner: true,
       name: true,
       fullName: true,
+      defaultBranch: true,
       visibility: true,
       selected: true,
       archived: true,
@@ -2309,6 +2488,343 @@ function workflowReadinessProviderKind(
   return config.providers.some((provider) => provider.kind === "claude")
     ? "claude"
     : undefined;
+}
+
+async function resolveCodexWorkflowSecretNamespace(input: {
+  readonly prisma: PrismaClient;
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+  readonly githubRepositoryId: string;
+  readonly providerInstanceId: string;
+}): Promise<CodexRotatingWorkflowNamespaceInspection> {
+  const inspection = await inspectCodexRotatingWorkflowNamespace(
+    {
+      workspaceId: input.workspaceId,
+      repositoryId: input.repositoryId,
+      githubRepositoryId: input.githubRepositoryId,
+      providerInstanceId: input.providerInstanceId,
+    },
+    {
+      workflowNamespace: new PrismaCodexRotatingWorkflowNamespace(
+        input.prisma,
+        requireReviewRouterDatabaseRecoveryWitness(),
+      ),
+    },
+  );
+  return inspection;
+}
+
+async function resolveCodexRotatingProvisioningActionRef(input: {
+  readonly prisma: PrismaClient;
+  readonly inspection: CodexRotatingWorkflowNamespaceInspection;
+  readonly octokit: {
+    request(
+      route: string,
+      parameters?: Record<string, unknown>,
+    ): Promise<{ data: unknown }>;
+  };
+  readonly owner: string;
+  readonly name: string;
+  readonly defaultBranch: string;
+  readonly expectedRepositoryId: string;
+  readonly expectedRepositoryFullName: string;
+  readonly expectedProviderInstanceId: string;
+}): Promise<string> {
+  if (input.inspection.source === "confirmed_setup_candidate") {
+    return resolveReviewRouterCodexRotatingActionRef();
+  }
+
+  // An active namespace is durably attested to the workflow already on the
+  // default branch. Keep that exact Action SHA during an A -> B trust overlap;
+  // changing it in place would strand queued A runs because a namespace has a
+  // single active workflow-source attestation.
+  const repositoryResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}",
+    { owner: input.owner, repo: input.name },
+  );
+  const observedRepository = readGitHubRepositoryIdentity(
+    repositoryResponse.data,
+  );
+  if (observedRepository.defaultBranch !== input.defaultBranch) {
+    throw new Error("codex_rotating_workflow_default_branch_mismatch");
+  }
+  const expectedSource =
+    await input.prisma.codexOAuthSecretNamespace.findUnique({
+      where: { id: input.inspection.namespace.namespaceId },
+      select: {
+        workflowPath: true,
+        workflowSourceCommitSha: true,
+        workflowSourceBlobSha: true,
+        workflowSourceSha256: true,
+        workflowSemanticSha256: true,
+        workflowSourceTrust: true,
+        attestedRepositoryId: true,
+      },
+    });
+  if (
+    expectedSource?.workflowPath !== defaultCodexRotatingWorkflowPath ||
+    !expectedSource.workflowSourceCommitSha ||
+    !expectedSource.workflowSourceBlobSha ||
+    !expectedSource.workflowSourceSha256 ||
+    !expectedSource.workflowSemanticSha256 ||
+    expectedSource.workflowSourceTrust !==
+      WorkflowSourceTrust.TrustedDefaultBranchRevision ||
+    expectedSource.attestedRepositoryId !== input.expectedRepositoryId
+  ) {
+    throw new Error("codex_rotating_workflow_source_attestation_missing");
+  }
+  const contentResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}/contents/{path}",
+    {
+      owner: input.owner,
+      repo: input.name,
+      path: expectedSource.workflowPath,
+      ref: expectedSource.workflowSourceCommitSha,
+    },
+  );
+  const { source, blobSha } = readGitHubWorkflowBlob(contentResponse.data);
+  const metadata = readCanonicalCodexRotatingT0WorkflowSourceMetadata(source);
+  assertTrustedCanonicalVersionedWorkflow({
+    metadata,
+    observedRepositoryId: observedRepository.id,
+    observedRepositoryFullName: observedRepository.fullName,
+    expectedRepositoryId: input.expectedRepositoryId,
+    expectedRepositoryFullName: input.expectedRepositoryFullName,
+    trustedActionRefs: resolveReviewRouterCodexRotatingTrustedActionRefs(),
+    expectedApiUrl: resolveWorkflowPublicApiUrl(),
+    expectedProviderInstanceId: input.expectedProviderInstanceId,
+    expectedSecretNamespace: input.inspection.namespace,
+  });
+  const observedAttestation = createVersionedSecretWorkflowSourceAttestation({
+    repositoryId: input.expectedRepositoryId,
+    workflowPath: expectedSource.workflowPath,
+    workflowSourceCommitSha: expectedSource.workflowSourceCommitSha,
+    workflowSourceBlobSha: blobSha,
+    workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
+    workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+    secretNamespace: input.inspection.namespace,
+  });
+  assertActiveVersionedSecretWorkflowAttestation({
+    attestation: observedAttestation,
+    repositoryId: input.expectedRepositoryId,
+    workflowPath: expectedSource.workflowPath,
+    workflowSourceCommitSha: expectedSource.workflowSourceCommitSha,
+    activeSecretNamespace: input.inspection.namespace,
+    expectedWorkflowSource: {
+      workflowPath: expectedSource.workflowPath,
+      workflowSourceCommitSha: expectedSource.workflowSourceCommitSha,
+      workflowSourceBlobSha: expectedSource.workflowSourceBlobSha,
+      workflowSourceSha256: expectedSource.workflowSourceSha256,
+      workflowSemanticSha256: expectedSource.workflowSemanticSha256,
+      sourceTrust: expectedSource.workflowSourceTrust,
+      repositoryId: expectedSource.attestedRepositoryId,
+    },
+  });
+  return metadata.actionRef;
+}
+
+async function activateConfirmedCodexNamespaceAfterWorkflowMerge(input: {
+  readonly prisma: PrismaClient;
+  readonly octokit: {
+    request(
+      route: string,
+      parameters?: Record<string, unknown>,
+    ): Promise<{ data: unknown }>;
+  };
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+  readonly githubRepositoryId: string;
+  readonly owner: string;
+  readonly name: string;
+  readonly defaultBranch: string;
+  readonly expectedRepositoryFullName: string;
+  readonly expectedApiUrl: string;
+}): Promise<void> {
+  const rotatingProvider =
+    await input.prisma.codexOAuthProviderInstance.findUnique({
+      where: {
+        repositoryId_authMode: {
+          repositoryId: input.repositoryId,
+          authMode: codexRotatingAuthMode,
+        },
+      },
+      select: { id: true },
+    });
+  // A repository with no rotating provider is the only no-op case. Once a
+  // rotating provider exists, absence or ambiguity of the exact witness-bound
+  // active/candidate namespace must fail closed.
+  if (!rotatingProvider) {
+    return;
+  }
+  const trustedActionRefs = resolveReviewRouterCodexRotatingTrustedActionRefs();
+  const providerInstanceId = canonicalCodexRotatingProviderId(
+    input.githubRepositoryId,
+  );
+  const inspection = await inspectCodexRotatingWorkflowNamespace(
+    {
+      workspaceId: input.workspaceId,
+      repositoryId: input.repositoryId,
+      githubRepositoryId: input.githubRepositoryId,
+      providerInstanceId,
+    },
+    {
+      workflowNamespace: new PrismaCodexRotatingWorkflowNamespace(
+        input.prisma,
+        requireReviewRouterDatabaseRecoveryWitness(),
+      ),
+    },
+  );
+  const namespace = inspection.namespace;
+  const repositoryResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}",
+    { owner: input.owner, repo: input.name },
+  );
+  const observedRepository = readGitHubRepositoryIdentity(
+    repositoryResponse.data,
+  );
+  if (observedRepository.defaultBranch !== input.defaultBranch) {
+    throw new Error("codex_rotating_workflow_default_branch_mismatch");
+  }
+  const refResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    {
+      owner: input.owner,
+      repo: input.name,
+      ref: `heads/${input.defaultBranch}`,
+    },
+  );
+  const workflowSourceCommitSha = readGitHubCommitSha(refResponse.data);
+  const workflowPath = defaultCodexRotatingWorkflowPath;
+  const contentResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}/contents/{path}",
+    {
+      owner: input.owner,
+      repo: input.name,
+      path: workflowPath,
+      ref: workflowSourceCommitSha,
+    },
+  );
+  const { source, blobSha } = readGitHubWorkflowBlob(contentResponse.data);
+  const metadata = readCanonicalCodexRotatingT0WorkflowSourceMetadata(source);
+  assertTrustedCanonicalVersionedWorkflow({
+    metadata,
+    observedRepositoryId: observedRepository.id,
+    observedRepositoryFullName: observedRepository.fullName,
+    expectedRepositoryId: input.githubRepositoryId,
+    expectedRepositoryFullName: input.expectedRepositoryFullName,
+    trustedActionRefs,
+    expectedApiUrl: input.expectedApiUrl,
+    expectedProviderInstanceId: providerInstanceId,
+    expectedSecretNamespace: namespace,
+  });
+  const attestation = createVersionedSecretWorkflowSourceAttestation({
+    repositoryId: input.githubRepositoryId,
+    workflowPath,
+    workflowSourceCommitSha,
+    workflowSourceBlobSha: blobSha,
+    workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
+    workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+    secretNamespace: namespace,
+  });
+  const finalRefResponse = await input.octokit.request(
+    "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    {
+      owner: input.owner,
+      repo: input.name,
+      ref: `heads/${input.defaultBranch}`,
+    },
+  );
+  if (readGitHubCommitSha(finalRefResponse.data) !== workflowSourceCommitSha) {
+    throw new Error("codex_rotating_workflow_default_head_changed");
+  }
+  if (inspection.source === "active") {
+    return;
+  }
+  await codexRotatingSetupLedger.activate({
+    claimId: inspection.claimId,
+    attemptId: inspection.attemptId,
+    namespaceId: namespace.namespaceId,
+    namespaceEpoch: namespace.epoch.toString(),
+    secretName: namespace.name,
+    repositoryId: attestation.repositoryId,
+    workflowPath: attestation.workflowPath,
+    workflowSourceCommitSha: attestation.workflowSourceCommitSha,
+    workflowSourceBlobSha: attestation.workflowSourceBlobSha,
+    workflowSourceSha256: attestation.workflowSourceSha256,
+    workflowSemanticSha256: attestation.workflowSemanticSha256,
+    sourceTrust: attestation.sourceTrust,
+  });
+}
+
+function readGitHubRepositoryIdentity(data: unknown): {
+  readonly id: string;
+  readonly fullName: string;
+  readonly defaultBranch: string;
+} {
+  const repository = data as {
+    id?: unknown;
+    full_name?: unknown;
+    default_branch?: unknown;
+  } | null;
+  if (
+    typeof repository?.id !== "number" ||
+    !Number.isSafeInteger(repository.id) ||
+    repository.id <= 0 ||
+    typeof repository.full_name !== "string" ||
+    typeof repository.default_branch !== "string" ||
+    repository.default_branch.length === 0
+  ) {
+    throw new Error("codex_rotating_workflow_repository_invalid_response");
+  }
+  return {
+    id: String(repository.id),
+    fullName: repository.full_name,
+    defaultBranch: repository.default_branch,
+  };
+}
+
+function readGitHubCommitSha(data: unknown): string {
+  const sha = (data as { object?: { sha?: unknown } } | null)?.object?.sha;
+  if (typeof sha !== "string" || !/^[a-f0-9]{40}$/i.test(sha)) {
+    throw new Error("codex_rotating_workflow_commit_invalid_response");
+  }
+  return sha.toLowerCase();
+}
+
+function readGitHubWorkflowBlob(data: unknown): {
+  readonly source: string;
+  readonly blobSha: string;
+} {
+  const blob = data as {
+    type?: unknown;
+    encoding?: unknown;
+    content?: unknown;
+    sha?: unknown;
+  } | null;
+  if (
+    blob?.type !== "file" ||
+    blob.encoding !== "base64" ||
+    typeof blob.content !== "string" ||
+    typeof blob.sha !== "string" ||
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(blob.sha)
+  ) {
+    throw new Error("codex_rotating_workflow_content_invalid_response");
+  }
+  const source = Buffer.from(
+    blob.content.replace(/\s+/g, ""),
+    "base64",
+  ).toString("utf8");
+  const blobSha = blob.sha.toLowerCase();
+  const computed = createHash(blobSha.length === 40 ? "sha1" : "sha256")
+    .update(`blob ${Buffer.byteLength(source, "utf8")}\0`, "utf8")
+    .update(source, "utf8")
+    .digest("hex");
+  if (computed !== blobSha) {
+    throw new Error("codex_rotating_workflow_blob_sha_mismatch");
+  }
+  return { source, blobSha };
 }
 
 function codexRotatingWorkflowSecretInputs(config: ReviewConfiguration): {

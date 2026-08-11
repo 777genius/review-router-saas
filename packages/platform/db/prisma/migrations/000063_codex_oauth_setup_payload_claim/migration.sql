@@ -1,3 +1,8 @@
+BEGIN;
+
+SET LOCAL lock_timeout = '15s';
+SET LOCAL statement_timeout = '5min';
+
 ALTER TABLE "CodexOAuthSetupManifest"
   ADD COLUMN "payloadVersion" INTEGER,
   ADD COLUMN "payloadGenerationHash" TEXT,
@@ -24,3 +29,5 @@ ALTER TABLE "CodexOAuthSetupManifest"
 
 CREATE INDEX "CodexOAuthSetupManifest_recovery_expiry_idx"
   ON "CodexOAuthSetupManifest"("status", "recoveryExpiresAt");
+
+COMMIT;

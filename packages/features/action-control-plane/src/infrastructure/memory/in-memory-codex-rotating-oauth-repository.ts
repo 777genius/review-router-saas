@@ -6,6 +6,15 @@ import {
   InMemoryCodexRotatingLeaseStore,
   type CodexRotatingEncryptedWritebackRequest,
   type CodexRotatingProviderBinding,
+  allocateVersionedProviderSecretNamespace,
+  assertSameVersionedProviderSecretNamespace,
+  assertProviderSecretTransitionAuthorized,
+  assertExternalRecoveryWitnessAdmission,
+  classifyExternalRecoveryWitnessRelation,
+  fingerprintDatabaseRecoveryWitness,
+  WorkflowSourceTrust,
+  RuntimeVersionedDurableMarker,
+  type VersionedProviderSecretNamespace,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
 import {
@@ -13,18 +22,10 @@ import {
   codexRotatingReviewSnapshotAccessTtlMs,
   isCodexRotatingCompletedLeasePostingWindowActive,
 } from "../../domain/codex-rotating-oauth-posting-window.js";
-import {
-  blocksCodexRotatingProviderMutation,
-  codexRotatingWritebackClaimMarker,
-  codexRotatingWritebackDispatchedMarker,
-  decideCodexRotatingWritebackConfirmation,
-  decideCodexRotatingWritebackPreparation,
-  mayFailCodexRotatingWritebackClaim,
-  type CodexRotatingWritebackIntentStatus,
-} from "../../domain/codex-rotating-writeback-policy.js";
 import type {
   CodexRotatingOAuthRepositoryPort,
   CodexRotatingPreleaseRecord,
+  CodexRotatingVersionedWritebackLedgerPort,
 } from "../../application/ports/codex-rotating-oauth-repository-port.js";
 import type { CodexRotatingReviewSnapshotAccessPort } from "../../application/ports/codex-rotating-review-snapshot-access-port.js";
 import type { CodexRotatingReviewExecutionCheckpointAccessPort } from "../../application/ports/codex-rotating-review-execution-checkpoint-access-port.js";
@@ -32,6 +33,7 @@ import type { CodexRotatingReviewExecutionCheckpointAccessPort } from "../../app
 type ProviderRecord = {
   readonly binding: CodexRotatingProviderBinding;
   readonly generationHashSalt: string;
+  readonly accountFingerprintSalt: string;
   readonly latestGeneration: number;
   readonly latestGenerationHash: string | null;
   readonly state: CodexRotatingProviderState;
@@ -41,15 +43,31 @@ type ProviderRecord = {
   readonly mutationEpoch: bigint;
   readonly mutationOwner?: "runtime" | "setup" | "recovery";
   readonly mutationOwnerId?: string;
+  readonly activeNamespace: VersionedProviderSecretNamespace;
+  readonly activeDatabaseRecoveryWitness?: string;
+  readonly activeAccountIdentityHash?: string;
 };
 
 type WritebackRecord = {
   readonly intentId: string;
   readonly request: CodexRotatingEncryptedWritebackRequest;
   readonly encryptedPayloadDigest: string;
-  readonly status: CodexRotatingWritebackIntentStatus;
+  readonly status:
+    | "pending"
+    | "completed"
+    | "failed"
+    | "remote_outcome_unknown";
   readonly safeErrorCode?: string;
   readonly completedAt?: Date;
+  readonly attemptId?: string;
+  readonly executorOwner?: string;
+  readonly executorLeaseExpiresAt?: Date;
+  readonly namespace?: VersionedProviderSecretNamespace;
+  readonly providerConfirmed?: boolean;
+  readonly authorizationEpoch?: bigint;
+  readonly authorizationExpiresAt?: Date;
+  readonly databaseIncarnation: string;
+  readonly databaseRecoveryWitness?: string;
 };
 
 type CompletedLeaseContext =
@@ -61,6 +79,7 @@ type CompletedLeaseContext =
         readonly runAttempt: string;
         readonly pullRequestNumber?: number | undefined;
       };
+      readonly namespace: VersionedProviderSecretNamespace;
     }
   | {
       readonly status: "lease_not_completed" | "lease_not_active";
@@ -69,14 +88,21 @@ type CompletedLeaseContext =
 export class InMemoryCodexRotatingOAuthRepository
   implements
     CodexRotatingOAuthRepositoryPort,
+    CodexRotatingVersionedWritebackLedgerPort,
     CodexRotatingReviewSnapshotAccessPort,
     CodexRotatingReviewExecutionCheckpointAccessPort
 {
   private readonly leases = new InMemoryCodexRotatingLeaseStore();
   private readonly providers = new Map<string, ProviderRecord>();
   private readonly writebacks = new Map<string, WritebackRecord>();
+  private readonly permanentlyRetiredNamespaceIds = new Set<string>();
   private readonly leaseExpiresAtById = new Map<string, Date>();
   private readonly leaseEpochById = new Map<string, bigint>();
+  private readonly leaseNamespaceById = new Map<
+    string,
+    VersionedProviderSecretNamespace
+  >();
+  private readonly restoredGenerationHashByLeaseId = new Map<string, string>();
   private readonly leaseSourceById = new Map<
     string,
     {
@@ -88,15 +114,33 @@ export class InMemoryCodexRotatingOAuthRepository
     }
   >();
 
-  constructor(bindings: readonly CodexRotatingProviderBinding[] = []) {
+  constructor(
+    bindings: readonly CodexRotatingProviderBinding[] = [],
+    private readonly options: Readonly<{
+      initialDatabaseRecoveryWitness?: string;
+      currentDatabaseRecoveryWitness?: () => string | undefined;
+      currentDatabaseIncarnation?: () => string | undefined;
+    }> = {},
+  ) {
+    const initialDatabaseRecoveryWitness =
+      options.initialDatabaseRecoveryWitness ??
+      options.currentDatabaseRecoveryWitness?.();
+    const activeDatabaseRecoveryWitness = initialDatabaseRecoveryWitness
+      ? fingerprintDatabaseRecoveryWitness(initialDatabaseRecoveryWitness)
+      : undefined;
     for (const binding of bindings) {
       this.providers.set(binding.providerInstanceId, {
         binding,
         generationHashSalt: testGenerationHashSalt,
+        accountFingerprintSalt: testAccountFingerprintSalt,
         latestGeneration: 1,
         latestGenerationHash: null,
         state: "setup_pending",
         mutationEpoch: 0n,
+        activeNamespace: initialNamespace(binding),
+        ...(activeDatabaseRecoveryWitness
+          ? { activeDatabaseRecoveryWitness }
+          : {}),
       });
     }
   }
@@ -151,6 +195,7 @@ export class InMemoryCodexRotatingOAuthRepository
     });
     const existing = this.providers.get(input.binding.providerInstanceId);
     if (existing) {
+      this.assertAutomaticRuntimeDatabaseRecoveryWitness(existing);
       if (
         existing.binding.githubRepositoryId !==
           input.repository.githubRepositoryId ||
@@ -170,11 +215,14 @@ export class InMemoryCodexRotatingOAuthRepository
     this.providers.set(input.binding.providerInstanceId, {
       binding: input.binding,
       generationHashSalt: testGenerationHashSalt,
+      accountFingerprintSalt: testAccountFingerprintSalt,
       latestGeneration: 1,
       latestGenerationHash: null,
       state: "setup_pending",
       repository: input.repository,
       mutationEpoch: 0n,
+      activeNamespace: initialNamespace(input.binding),
+      ...this.initialDatabaseRecoveryWitnessFingerprint(),
     });
   }
 
@@ -191,6 +239,7 @@ export class InMemoryCodexRotatingOAuthRepository
   }): Promise<CodexRotatingPreleaseRecord> {
     input.newWorkAdmissionBarrier.assertAdmitted();
     const provider = this.providers.get(input.providerInstanceId);
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(provider);
     if (
       provider?.state === "unknown_auth_state" ||
       provider?.state === "needs_reconnect" ||
@@ -203,7 +252,7 @@ export class InMemoryCodexRotatingOAuthRepository
       [...this.writebacks.values()].some(
         (record) =>
           record.request.providerInstanceId === input.providerInstanceId &&
-          blocksCodexRotatingProviderMutation(record.status),
+          ["pending", "remote_outcome_unknown"].includes(record.status),
       )
     ) {
       throw new Error("codex_rotating_mutation_fence_conflict");
@@ -231,6 +280,7 @@ export class InMemoryCodexRotatingOAuthRepository
       const mutationEpoch =
         this.leaseEpochById.get(lease.leaseId) ?? provider.mutationEpoch + 1n;
       this.leaseEpochById.set(lease.leaseId, mutationEpoch);
+      this.leaseNamespaceById.set(lease.leaseId, provider.activeNamespace);
       this.providers.set(input.providerInstanceId, {
         ...provider,
         repository: input.repository,
@@ -245,8 +295,16 @@ export class InMemoryCodexRotatingOAuthRepository
       ...lease,
       repository: input.repository,
       generationHashSalt: latest?.generationHashSalt ?? testGenerationHashSalt,
+      accountFingerprintSalt:
+        latest?.accountFingerprintSalt ?? testAccountFingerprintSalt,
       currentGeneration: latest?.latestGeneration ?? 1,
       mutationEpoch: latest?.mutationEpoch ?? 1n,
+      ...(latest?.activeNamespace
+        ? {
+            secretNamespaceId: latest.activeNamespace.namespaceId,
+            secretNamespaceEpoch: latest.activeNamespace.epoch,
+          }
+        : {}),
       ...(latest?.latestGenerationHash
         ? { currentGenerationHash: latest.latestGenerationHash }
         : {}),
@@ -265,6 +323,7 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly status: "finalized" | "stale_queued_secret";
   }> {
     const provider = this.providers.get(input.providerInstanceId);
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(provider);
     if (
       !provider ||
       provider.mutationOwner !== "runtime" ||
@@ -299,6 +358,10 @@ export class InMemoryCodexRotatingOAuthRepository
       nextGeneration,
       now: input.now,
     });
+    this.restoredGenerationHashByLeaseId.set(
+      input.leaseId,
+      input.restoredGenerationHash,
+    );
     const response = {
       leaseId: input.leaseId,
       nextGeneration,
@@ -318,6 +381,7 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly status: "abandoned" | "lease_not_active";
   }> {
     const provider = this.providers.get(input.providerInstanceId);
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(provider);
     if (!provider || provider.activeLeaseId !== input.leaseId) {
       return { status: "lease_not_active" };
     }
@@ -326,10 +390,7 @@ export class InMemoryCodexRotatingOAuthRepository
       return { status: "lease_not_active" };
     }
     this.providers.set(input.providerInstanceId, {
-      binding: provider.binding,
-      generationHashSalt: provider.generationHashSalt,
-      latestGeneration: provider.latestGeneration,
-      latestGenerationHash: provider.latestGenerationHash,
+      ...provider,
       state: input.reason,
       mutationEpoch: provider.mutationEpoch + 1n,
       mutationOwner: "recovery",
@@ -365,6 +426,7 @@ export class InMemoryCodexRotatingOAuthRepository
       }
   > {
     const provider = this.providers.get(input.providerInstanceId);
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(provider);
     if (
       !provider?.repository ||
       provider.activeLeaseId !== input.leaseId ||
@@ -380,42 +442,99 @@ export class InMemoryCodexRotatingOAuthRepository
     });
     return {
       status: "ready",
-      writeTarget: toWriteTarget(provider.repository),
+      writeTarget: toWriteTarget(
+        provider.repository,
+        provider.activeNamespace.name,
+      ),
     };
   }
 
-  async prepareEncryptedWriteback(input: {
+  async prepareVersionedWriteback(input: {
     readonly request: CodexRotatingEncryptedWritebackRequest;
     readonly encryptedPayloadDigest: string;
     readonly now: Date;
-  }): Promise<
-    | {
-        readonly status: "ready";
-        readonly intentId: string;
-        readonly writeTarget: {
-          readonly githubInstallationId: string;
-          readonly githubRepositoryId: string;
-          readonly repositoryFullName: string;
-          readonly owner: string;
-          readonly repo: string;
-          readonly secretName: string;
+  }) {
+    const key = `${input.request.providerInstanceId}:${input.request.idempotencyKey}`;
+    const existingForLease = [...this.writebacks.entries()].find(
+      ([, record]) => record.request.leaseId === input.request.leaseId,
+    );
+    if (existingForLease && existingForLease[0] !== key) {
+      return { status: "writeback_idempotency_conflict" as const };
+    }
+    const existing = existingForLease?.[1] ?? this.writebacks.get(key);
+    if (existing) {
+      this.assertWritebackDatabaseGeneration(
+        this.providers.get(input.request.providerInstanceId),
+        existing,
+      );
+      if (
+        existing.request.accountIdentityHash !==
+          input.request.accountIdentityHash ||
+        existing.request.accountIdentityAlgorithm !==
+          input.request.accountIdentityAlgorithm ||
+        existing.request.leaseId !== input.request.leaseId ||
+        existing.request.generation !== input.request.generation ||
+        existing.request.latestGenerationHash !==
+          input.request.latestGenerationHash ||
+        existing.request.keyId !== input.request.keyId
+      ) {
+        return { status: "writeback_idempotency_conflict" as const };
+      }
+      if (existing.status === "completed") {
+        if (existing.encryptedPayloadDigest !== input.encryptedPayloadDigest) {
+          return { status: "writeback_idempotency_conflict" as const };
+        }
+        return {
+          status: "idempotent_replay" as const,
+          generation: existing.request.generation,
         };
       }
-    | {
-        readonly status:
-          | "idempotent_replay"
-          | "writeback_recovery_required"
-          | "writeback_idempotency_conflict";
+      if (existing.encryptedPayloadDigest !== input.encryptedPayloadDigest) {
+        return { status: "writeback_idempotency_conflict" as const };
       }
-  > {
-    const key = `${input.request.providerInstanceId}:${input.request.idempotencyKey}`;
-    const existing = this.writebacks.get(key);
-    const decision = decideCodexRotatingWritebackPreparation({
-      existing,
-      encryptedPayloadDigest: input.encryptedPayloadDigest,
-    });
-    if (decision.status !== "claim") return decision;
+      if (
+        existing.status === "pending" &&
+        existing.attemptId &&
+        existing.namespace &&
+        existing.authorizationEpoch !== undefined
+      ) {
+        if (
+          existing.executorOwner &&
+          existing.executorLeaseExpiresAt &&
+          existing.executorLeaseExpiresAt > input.now
+        ) {
+          return {
+            status: "in_progress" as const,
+            retryAfter: existing.executorLeaseExpiresAt,
+          };
+        }
+        this.permanentlyRetiredNamespaceIds.add(existing.namespace.namespaceId);
+        this.writebacks.set(key, {
+          ...existing,
+          status: "remote_outcome_unknown",
+          safeErrorCode:
+            RuntimeVersionedDurableMarker.InterruptedAttemptRecoveredV1,
+        });
+        const provider = this.providers.get(input.request.providerInstanceId);
+        if (
+          provider?.mutationOwner === "runtime" &&
+          provider.mutationOwnerId === existing.request.leaseId
+        ) {
+          this.providers.set(input.request.providerInstanceId, {
+            ...withoutMutationOwnership(provider),
+            state: "unknown_auth_state",
+            mutationEpoch: provider.mutationEpoch + 1n,
+            mutationOwner: "recovery",
+            mutationOwnerId: existing.intentId,
+          });
+          this.leaseExpiresAtById.set(existing.request.leaseId, input.now);
+        }
+        return { status: "writeback_recovery_required" as const };
+      }
+      return { status: "writeback_recovery_required" as const };
+    }
     const provider = this.providers.get(input.request.providerInstanceId);
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(provider);
     if (
       !provider?.repository ||
       provider.activeLeaseId !== input.request.leaseId ||
@@ -423,33 +542,328 @@ export class InMemoryCodexRotatingOAuthRepository
       provider.mutationOwnerId !== input.request.leaseId ||
       this.leaseEpochById.get(input.request.leaseId) !==
         provider.mutationEpoch ||
-      provider.preflightKeyId !== input.request.keyId
+      provider.preflightKeyId !== input.request.keyId ||
+      !this.leaseExpiresAtById.get(input.request.leaseId) ||
+      this.leaseExpiresAtById.get(input.request.leaseId)! <= input.now ||
+      (provider.activeAccountIdentityHash !== undefined &&
+        provider.activeAccountIdentityHash !==
+          input.request.accountIdentityHash)
     ) {
-      throw new Error("codex_rotating_lease_not_active");
+      return { status: "writeback_recovery_required" as const };
     }
+    const restoredHash = this.restoredGenerationHashByLeaseId.get(
+      input.request.leaseId,
+    );
     if (
-      [...this.writebacks.values()].some(
-        (record) =>
-          record.request.providerInstanceId ===
-            input.request.providerInstanceId &&
-          blocksCodexRotatingProviderMutation(record.status),
-      )
+      provider.latestGenerationHash !== null &&
+      restoredHash === provider.latestGenerationHash &&
+      input.request.latestGenerationHash === provider.latestGenerationHash
     ) {
-      return { status: "writeback_recovery_required" };
+      const pendingNoOp: WritebackRecord = {
+        intentId: `intent:${key}`,
+        request: input.request,
+        encryptedPayloadDigest: input.encryptedPayloadDigest,
+        status: "pending",
+        authorizationEpoch: provider.mutationEpoch,
+        authorizationExpiresAt: this.leaseExpiresAtById.get(
+          input.request.leaseId,
+        )!,
+        databaseIncarnation: this.currentDatabaseIncarnation(),
+        ...(provider.activeDatabaseRecoveryWitness
+          ? { databaseRecoveryWitness: provider.activeDatabaseRecoveryWitness }
+          : {}),
+      };
+      this.writebacks.set(key, pendingNoOp);
+      this.providers.set(input.request.providerInstanceId, {
+        ...withoutMutationOwnership(provider),
+        latestGeneration: input.request.generation,
+        mutationEpoch: provider.mutationEpoch + 1n,
+      });
+      this.leases.complete({ leaseId: input.request.leaseId, now: input.now });
+      this.writebacks.set(key, {
+        ...pendingNoOp,
+        status: "completed",
+        safeErrorCode: "unchanged_generation_positive_proof_v1",
+        completedAt: input.now,
+      });
+      return {
+        status: "unchanged_generation" as const,
+        generation: input.request.generation,
+      };
     }
+    const namespace = allocateVersionedProviderSecretNamespace({
+      scope: provider.activeNamespace.scope,
+      epoch: provider.activeNamespace.epoch + 1n,
+    });
     const intentId = `intent:${key}`;
+    const attemptId = `attempt:${namespace.namespaceId}`;
+    const executorOwner = `executor:${attemptId}`;
+    const executorLeaseExpiresAt = new Date(input.now.getTime() + 5 * 60_000);
     this.writebacks.set(key, {
       intentId,
+      attemptId,
+      executorOwner,
+      executorLeaseExpiresAt,
+      namespace,
       request: input.request,
       encryptedPayloadDigest: input.encryptedPayloadDigest,
       status: "pending",
-      safeErrorCode: codexRotatingWritebackClaimMarker,
+      authorizationEpoch: provider.mutationEpoch,
+      authorizationExpiresAt: this.leaseExpiresAtById.get(
+        input.request.leaseId,
+      )!,
+      databaseIncarnation: this.currentDatabaseIncarnation(),
+      ...(provider.activeDatabaseRecoveryWitness
+        ? { databaseRecoveryWitness: provider.activeDatabaseRecoveryWitness }
+        : {}),
     });
     return {
-      status: "ready",
+      status: "ready" as const,
       intentId,
-      writeTarget: toWriteTarget(provider.repository),
+      attemptId,
+      executorOwner,
+      namespace,
+      repository: provider.repository,
+      writeTarget: {
+        ...toWriteTarget(provider.repository),
+        expectedProviderInstanceId: input.request.providerInstanceId,
+        secretName: namespace.name,
+      },
     };
+  }
+
+  async confirmVersionedProviderWrite(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly statusCode: 201 | 204;
+    readonly now: Date;
+  }): Promise<void> {
+    const entry = this.findVersionedWriteback(input);
+    if (!entry) throw new Error("codex_rotating_writeback_attempt_not_found");
+    const [key, record] = entry;
+    this.assertExecutorOwner(record, input.executorOwner, input.now);
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(
+      this.providers.get(record.request.providerInstanceId),
+      record.databaseRecoveryWitness,
+    );
+    this.assertVersionedTransitionAuthorized(record, input.now);
+    this.writebacks.set(key, { ...record, providerConfirmed: true });
+  }
+
+  async retireAmbiguousVersionedWriteback(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly safeErrorCode: string;
+    readonly now: Date;
+  }): Promise<void> {
+    const entry = this.findVersionedWriteback(input);
+    if (!entry) return;
+    const [key, record] = entry;
+    this.assertExecutorOwner(record, input.executorOwner, input.now);
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(
+      this.providers.get(record.request.providerInstanceId),
+      record.databaseRecoveryWitness,
+    );
+    if (
+      record.status === "completed" ||
+      record.status === "remote_outcome_unknown"
+    ) {
+      return;
+    }
+    if (record.authorizationEpoch === undefined) {
+      throw new Error("codex_rotating_versioned_attempt_epoch_missing");
+    }
+    const provider = this.providers.get(record.request.providerInstanceId);
+    if (
+      !provider ||
+      provider.mutationOwner !== "runtime" ||
+      provider.mutationOwnerId !== record.request.leaseId ||
+      provider.mutationEpoch !== record.authorizationEpoch
+    ) {
+      throw new Error("codex_rotating_versioned_retirement_fence_conflict");
+    }
+    if (
+      record.namespace &&
+      (this.permanentlyRetiredNamespaceIds.has(record.namespace.namespaceId) ||
+        provider.activeNamespace.namespaceId === record.namespace.namespaceId)
+    ) {
+      throw new Error("codex_rotating_versioned_retirement_namespace_conflict");
+    }
+    this.writebacks.set(key, {
+      ...record,
+      status: "remote_outcome_unknown",
+      safeErrorCode: input.safeErrorCode,
+    });
+    if (record.namespace) {
+      this.permanentlyRetiredNamespaceIds.add(record.namespace.namespaceId);
+    }
+    this.providers.set(record.request.providerInstanceId, {
+      ...withoutMutationOwnership(provider),
+      state: "unknown_auth_state",
+      mutationEpoch: provider.mutationEpoch + 1n,
+      mutationOwner: "recovery",
+      mutationOwnerId: record.intentId,
+    });
+    this.leaseExpiresAtById.set(record.request.leaseId, input.now);
+  }
+
+  async retirePreDispatchVersionedWriteback(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly safeErrorCode: string;
+    readonly now: Date;
+  }): Promise<void> {
+    const entry = this.findVersionedWriteback(input);
+    if (!entry) return;
+    const [key, record] = entry;
+    this.assertExecutorOwner(record, input.executorOwner, input.now);
+    if (record.status === "failed") return;
+    if (record.status !== "pending" || record.providerConfirmed) {
+      throw new Error(
+        "codex_rotating_versioned_predispatch_retirement_conflict",
+      );
+    }
+    const provider = this.providers.get(record.request.providerInstanceId);
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(
+      provider,
+      record.databaseRecoveryWitness,
+    );
+    if (
+      !provider ||
+      provider.mutationOwner !== "runtime" ||
+      provider.mutationOwnerId !== record.request.leaseId ||
+      provider.mutationEpoch !== record.authorizationEpoch
+    ) {
+      throw new Error("codex_rotating_versioned_retirement_fence_conflict");
+    }
+    if (record.namespace) {
+      this.permanentlyRetiredNamespaceIds.add(record.namespace.namespaceId);
+    }
+    this.writebacks.set(key, {
+      ...record,
+      status: "failed",
+      safeErrorCode: input.safeErrorCode,
+    });
+    this.providers.set(record.request.providerInstanceId, {
+      ...withoutMutationOwnership(provider),
+      state: "active",
+      mutationEpoch: provider.mutationEpoch + 1n,
+    });
+    this.leaseExpiresAtById.set(record.request.leaseId, input.now);
+    this.leases.retire({ leaseId: record.request.leaseId, now: input.now });
+  }
+
+  async activateVersionedWriteback(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly attestation: import("@reviewrouter/features-codex-oauth-rotating").VersionedSecretWorkflowSourceAttestation;
+    readonly now: Date;
+  }): Promise<{ readonly generation: number }> {
+    const entry = this.findVersionedWriteback(input);
+    if (!entry) throw new Error("codex_rotating_writeback_attempt_not_found");
+    const [key, record] = entry;
+    this.assertExecutorOwner(record, input.executorOwner, input.now);
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(
+      this.providers.get(record.request.providerInstanceId),
+      record.databaseRecoveryWitness,
+    );
+    if (!record.providerConfirmed || !record.namespace) {
+      throw new Error("codex_rotating_provider_write_not_confirmed");
+    }
+    if (this.permanentlyRetiredNamespaceIds.has(record.namespace.namespaceId)) {
+      throw new Error("codex_rotating_secret_namespace_permanently_retired");
+    }
+    const provider = this.providers.get(record.request.providerInstanceId);
+    this.assertVersionedTransitionAuthorized(record, input.now);
+    if (
+      !provider ||
+      provider.mutationOwner !== "runtime" ||
+      provider.mutationOwnerId !== record.request.leaseId ||
+      input.attestation.repositoryId !== provider.binding.githubRepositoryId ||
+      input.attestation.sourceTrust !==
+        WorkflowSourceTrust.TrustedDefaultBranchRevision
+    ) {
+      throw new Error("codex_rotating_activation_fence_conflict");
+    }
+    assertSameVersionedProviderSecretNamespace({
+      expected: record.namespace,
+      actual: input.attestation.secretNamespace,
+    });
+    this.writebacks.set(key, {
+      ...record,
+      status: "completed",
+      completedAt: input.now,
+    });
+    this.providers.set(record.request.providerInstanceId, {
+      ...withoutMutationOwnership(provider),
+      latestGeneration: record.request.generation,
+      latestGenerationHash: record.request.latestGenerationHash,
+      activeAccountIdentityHash: record.request.accountIdentityHash,
+      activeNamespace: record.namespace,
+      ...(record.databaseRecoveryWitness
+        ? { activeDatabaseRecoveryWitness: record.databaseRecoveryWitness }
+        : {}),
+      state: "active",
+      mutationEpoch: provider.mutationEpoch + 1n,
+    });
+    this.leaseNamespaceById.set(record.request.leaseId, record.namespace);
+    this.leases.complete({ leaseId: record.request.leaseId, now: input.now });
+    return { generation: record.request.generation };
+  }
+
+  private findVersionedWriteback(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+  }): [string, WritebackRecord] | undefined {
+    return [...this.writebacks.entries()].find(
+      ([, record]) =>
+        record.intentId === input.intentId &&
+        record.attemptId === input.attemptId,
+    );
+  }
+
+  private assertExecutorOwner(
+    record: WritebackRecord,
+    executorOwner: string,
+    now: Date,
+  ): void {
+    if (
+      record.executorOwner !== executorOwner ||
+      !record.executorLeaseExpiresAt ||
+      record.executorLeaseExpiresAt <= now
+    ) {
+      throw new Error("codex_rotating_versioned_executor_lease_conflict");
+    }
+  }
+
+  private assertVersionedTransitionAuthorized(
+    record: WritebackRecord,
+    now: Date,
+  ): void {
+    const provider = this.providers.get(record.request.providerInstanceId);
+    if (
+      !provider ||
+      !record.authorizationEpoch ||
+      !record.authorizationExpiresAt
+    ) {
+      throw new Error("codex_rotating_activation_fence_conflict");
+    }
+    assertProviderSecretTransitionAuthorized({
+      expectedOwner: "runtime",
+      expectedOwnerId: record.request.leaseId,
+      expectedEpoch: record.authorizationEpoch,
+      actualFence: {
+        owner: provider.mutationOwner ?? null,
+        ownerId: provider.mutationOwnerId ?? null,
+        epoch: provider.mutationEpoch,
+      },
+      authorizationExpiresAt: record.authorizationExpiresAt,
+      now,
+    });
   }
 
   async findCompletedLeaseWriteTarget(input: {
@@ -477,7 +891,7 @@ export class InMemoryCodexRotatingOAuthRepository
     if (context.status !== "ready") return context;
     return {
       status: "ready" as const,
-      writeTarget: toWriteTarget(context.repository),
+      writeTarget: toWriteTarget(context.repository, context.namespace.name),
     };
   }
 
@@ -574,183 +988,88 @@ export class InMemoryCodexRotatingOAuthRepository
     ) {
       return { status: "lease_not_active" as const };
     }
+    const provider = this.providers.get(input.providerInstanceId);
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(provider);
+    const leaseNamespace = this.leaseNamespaceById.get(input.leaseId);
+    if (
+      !provider ||
+      !leaseNamespace ||
+      leaseNamespace.namespaceId !== provider.activeNamespace.namespaceId ||
+      leaseNamespace.epoch !== provider.activeNamespace.epoch
+    ) {
+      return { status: "lease_not_active" as const };
+    }
     return {
       status: "ready" as const,
       repository: source.repository,
       source,
+      namespace: leaseNamespace,
     };
   }
 
-  async confirmEncryptedWriteback(input: {
-    readonly intentId: string;
-    readonly now: Date;
-  }) {
-    const recordEntry = [...this.writebacks.entries()].find(
-      ([, record]) => record.intentId === input.intentId,
-    );
-    if (!recordEntry) {
-      throw new Error("codex_rotating_writeback_intent_not_found");
-    }
-    const [key, record] = recordEntry;
-    const confirmationDecision =
-      decideCodexRotatingWritebackConfirmation(record);
-    if (confirmationDecision === "idempotent") {
-      return {
-        status: "idempotent" as const,
-        generation: record.request.generation,
-      };
-    }
-    if (confirmationDecision === "recovery_required") {
-      const fencedProvider = this.providers.get(
-        record.request.providerInstanceId,
-      );
-      if (fencedProvider) {
-        this.providers.set(record.request.providerInstanceId, {
-          ...fencedProvider,
-          state: "unknown_auth_state",
-          mutationEpoch: fencedProvider.mutationEpoch + 1n,
-          mutationOwner: "recovery",
-          mutationOwnerId: record.intentId,
-        });
-      }
-      return {
-        status: "recovery_required" as const,
-        reason: "owner_mismatch" as const,
-      };
-    }
-    const fencedProvider = this.providers.get(
-      record.request.providerInstanceId,
-    );
-    if (
-      !fencedProvider ||
-      fencedProvider.mutationOwner !== "runtime" ||
-      fencedProvider.mutationOwnerId !== record.request.leaseId ||
-      this.leaseEpochById.get(record.request.leaseId) !==
-        fencedProvider.mutationEpoch
-    ) {
-      if (fencedProvider) {
-        this.providers.set(record.request.providerInstanceId, {
-          ...fencedProvider,
-          state: "unknown_auth_state",
-          mutationEpoch: fencedProvider.mutationEpoch + 1n,
-          mutationOwner: "recovery",
-          mutationOwnerId: record.intentId,
-        });
-      }
-      return {
-        status: "recovery_required" as const,
-        reason: "owner_mismatch" as const,
-      };
-    }
-    this.writebacks.set(key, {
-      intentId: record.intentId,
-      request: record.request,
-      encryptedPayloadDigest: record.encryptedPayloadDigest,
-      status: "completed",
-      completedAt: input.now,
-    });
-    const provider = this.providers.get(record.request.providerInstanceId);
-    if (provider) {
-      this.providers.set(record.request.providerInstanceId, {
-        binding: provider.binding,
-        generationHashSalt: provider.generationHashSalt,
-        latestGeneration: record.request.generation,
-        latestGenerationHash: record.request.latestGenerationHash,
-        state: "active",
-        mutationEpoch: provider.mutationEpoch,
-        ...(provider.repository ? { repository: provider.repository } : {}),
-      });
-    }
-    this.leases.complete({ leaseId: record.request.leaseId, now: input.now });
-    return {
-      status: "confirmed" as const,
-      generation: record.request.generation,
-    };
+  private initialDatabaseRecoveryWitnessFingerprint(): Readonly<{
+    activeDatabaseRecoveryWitness?: string;
+  }> {
+    const witness =
+      this.options.initialDatabaseRecoveryWitness ??
+      this.options.currentDatabaseRecoveryWitness?.();
+    return witness
+      ? {
+          activeDatabaseRecoveryWitness:
+            fingerprintDatabaseRecoveryWitness(witness),
+        }
+      : {};
   }
 
-  async markEncryptedWritebackFailed(input: {
-    readonly intentId: string;
-    readonly safeErrorCode: string;
-    readonly now: Date;
-  }): Promise<void> {
-    this.markEncryptedWritebackOutcome(input, "failed");
-  }
-
-  async markEncryptedWritebackDispatched(input: {
-    readonly intentId: string;
-    readonly now: Date;
-  }): Promise<boolean> {
-    const recordEntry = [...this.writebacks.entries()].find(
-      ([, record]) => record.intentId === input.intentId,
-    );
-    if (!recordEntry) return false;
-    const [key, record] = recordEntry;
-    if (!mayFailCodexRotatingWritebackClaim(record)) return false;
-    const provider = this.providers.get(record.request.providerInstanceId);
-    if (
-      !provider ||
-      provider.mutationOwner !== "runtime" ||
-      provider.mutationOwnerId !== record.request.leaseId ||
-      this.leaseEpochById.get(record.request.leaseId) !== provider.mutationEpoch
-    ) {
-      return false;
-    }
-    this.writebacks.set(key, {
-      ...record,
-      status: "remote_outcome_unknown",
-      safeErrorCode: codexRotatingWritebackDispatchedMarker,
-    });
-    return true;
-  }
-
-  async markEncryptedWritebackRemoteOutcomeUnknown(input: {
-    readonly intentId: string;
-    readonly safeErrorCode: string;
-    readonly now: Date;
-  }): Promise<void> {
-    this.markEncryptedWritebackOutcome(input, "remote_outcome_unknown");
-  }
-
-  private markEncryptedWritebackOutcome(
-    input: {
-      readonly intentId: string;
-      readonly safeErrorCode: string;
-      readonly now: Date;
-    },
-    status: "failed" | "remote_outcome_unknown",
+  private assertAutomaticRuntimeDatabaseRecoveryWitness(
+    provider: ProviderRecord | undefined,
+    persistedFingerprint = provider?.activeDatabaseRecoveryWitness,
   ): void {
-    const recordEntry = [...this.writebacks.entries()].find(
-      ([, record]) => record.intentId === input.intentId,
-    );
-    if (!recordEntry) return;
-    const [key, record] = recordEntry;
-    if (!mayFailCodexRotatingWritebackClaim(record)) return;
-    this.writebacks.set(key, {
-      ...record,
-      status,
-      safeErrorCode: input.safeErrorCode,
-    });
-    const provider = this.providers.get(record.request.providerInstanceId);
-    if (provider) {
-      this.providers.set(record.request.providerInstanceId, {
-        binding: provider.binding,
-        generationHashSalt: provider.generationHashSalt,
-        latestGeneration: provider.latestGeneration,
-        latestGenerationHash: provider.latestGenerationHash,
-        ...(provider.repository ? { repository: provider.repository } : {}),
-        ...(provider.preflightKeyId
-          ? { preflightKeyId: provider.preflightKeyId }
-          : {}),
-        state: "unknown_auth_state",
-        mutationEpoch: provider.mutationEpoch + 1n,
-        mutationOwner: "recovery",
-        mutationOwnerId: record.intentId,
-      });
+    if (!persistedFingerprint) return;
+    let currentFingerprint: string;
+    try {
+      currentFingerprint = fingerprintDatabaseRecoveryWitness(
+        this.options.currentDatabaseRecoveryWitness?.() ?? "",
+      );
+    } catch {
+      throw new Error("codex_rotating_database_recovery_witness_unproven");
     }
+    assertExternalRecoveryWitnessAdmission({
+      transition: "automatic_runtime",
+      relation: classifyExternalRecoveryWitnessRelation({
+        persistedFingerprint,
+        currentFingerprint,
+      }),
+    });
+  }
+
+  private currentDatabaseIncarnation(): string {
+    const incarnation =
+      this.options.currentDatabaseIncarnation?.() ?? "in_memory_writer";
+    if (!incarnation) {
+      throw new Error("codex_rotating_database_incarnation_unproven");
+    }
+    return incarnation;
+  }
+
+  private assertWritebackDatabaseGeneration(
+    provider: ProviderRecord | undefined,
+    record: WritebackRecord,
+  ): void {
+    if (record.databaseIncarnation !== this.currentDatabaseIncarnation()) {
+      throw new Error("codex_rotating_database_incarnation_mismatch");
+    }
+    this.assertAutomaticRuntimeDatabaseRecoveryWitness(
+      provider,
+      record.databaseRecoveryWitness,
+    );
   }
 }
 
-function toWriteTarget(repository: ActionRepositoryContext) {
+function toWriteTarget(
+  repository: ActionRepositoryContext,
+  secretName: string = codexRotatingSecretName,
+) {
   return {
     expectedProviderInstanceId: `codex-rotating:${repository.githubRepositoryId}`,
     githubInstallationId: repository.githubInstallationId,
@@ -758,8 +1077,48 @@ function toWriteTarget(repository: ActionRepositoryContext) {
     repositoryFullName: repository.fullName,
     owner: repository.owner,
     repo: repository.fullName.slice(repository.owner.length + 1),
-    secretName: codexRotatingSecretName,
+    secretName,
   };
 }
 
 const testGenerationHashSalt = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
+const testAccountFingerprintSalt =
+  "YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
+
+function initialNamespace(
+  binding: CodexRotatingProviderBinding,
+): VersionedProviderSecretNamespace {
+  return allocateVersionedProviderSecretNamespace({
+    scope: {
+      repositoryId: binding.githubRepositoryId,
+      providerInstanceId: binding.providerInstanceId,
+    },
+    epoch: 1n,
+    randomBytes: () => new Uint8Array(16),
+  });
+}
+
+function withoutMutationOwnership(provider: ProviderRecord): ProviderRecord {
+  return {
+    binding: provider.binding,
+    generationHashSalt: provider.generationHashSalt,
+    accountFingerprintSalt: provider.accountFingerprintSalt,
+    latestGeneration: provider.latestGeneration,
+    latestGenerationHash: provider.latestGenerationHash,
+    state: provider.state,
+    mutationEpoch: provider.mutationEpoch,
+    activeNamespace: provider.activeNamespace,
+    ...(provider.activeDatabaseRecoveryWitness
+      ? {
+          activeDatabaseRecoveryWitness: provider.activeDatabaseRecoveryWitness,
+        }
+      : {}),
+    ...(provider.repository ? { repository: provider.repository } : {}),
+    ...(provider.preflightKeyId
+      ? { preflightKeyId: provider.preflightKeyId }
+      : {}),
+    ...(provider.activeAccountIdentityHash
+      ? { activeAccountIdentityHash: provider.activeAccountIdentityHash }
+      : {}),
+  };
+}

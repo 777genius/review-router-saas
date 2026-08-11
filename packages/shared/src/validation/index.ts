@@ -1,4 +1,5 @@
 import { z } from "zod";
+export { isLoopbackHostname } from "./loopback-hostname.mjs";
 
 export const nonEmptyString = z.string().trim().min(1);
 

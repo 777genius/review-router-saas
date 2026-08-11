@@ -77,6 +77,7 @@ export type ProviderSecretSetupChooserProps = {
   readonly openRouterApiKeyGuidance: ProviderSecretSetupGuidance;
   readonly codexRotatingOAuthEnabled?: boolean;
   readonly claudeCodeProviderEnabled?: boolean;
+  readonly rotatingPreparationOnly?: boolean;
 };
 
 export type OrganizationSecretPolicy = {
@@ -97,6 +98,7 @@ export function ProviderSecretSetupChooser({
   openRouterApiKeyGuidance,
   codexRotatingOAuthEnabled = true,
   claudeCodeProviderEnabled = true,
+  rotatingPreparationOnly = false,
 }: ProviderSecretSetupChooserProps): React.ReactElement {
   const [providerChoice, setProviderChoice] = useState<ProviderChoice>(
     "codex_oauth_rotating",
@@ -167,11 +169,11 @@ export function ProviderSecretSetupChooser({
             scope: "repository",
             title: "Repository secret with automatic refresh",
             description:
-              "Stores REVIEWROUTER_CODEX_AUTH_JSON directly in this repository with a short-lived setup nonce.",
+              "Allocates one server-authorized, never-reused versioned secret in this repository.",
             command: body.command,
             storesSecretIn: "github_repository_secret",
             targetLabel: `${repositoryFullName} repository secret`,
-            secretNames: body.secretNames,
+            secretNames: ["Server-authorized versioned secret"],
             selectedRepositories: [repositoryFullName],
             validatesBeforeWrite: true,
             failureRecovery:
@@ -218,7 +220,7 @@ export function ProviderSecretSetupChooser({
       ? rotatingSetupCommand.command
       : staticActiveCommand;
   const secretNames = rotatingCodexSelected
-    ? "REVIEWROUTER_CODEX_AUTH_JSON"
+    ? "Server-authorized versioned secret"
     : (activeCommand?.secretNames.join(", ") ?? "GitHub secret");
   const providerSetupSelection = providerChoiceToSetupSelection(providerChoice);
   const secretScope = activeCommand?.scope ?? "repository";
@@ -239,9 +241,11 @@ export function ProviderSecretSetupChooser({
     () =>
       providerChoices.filter(
         (choice) =>
-          choice.value !== "claude_code_oauth" || claudeCodeProviderEnabled,
+          (!rotatingPreparationOnly ||
+            choice.value === "codex_oauth_rotating") &&
+          (choice.value !== "claude_code_oauth" || claudeCodeProviderEnabled),
       ),
-    [claudeCodeProviderEnabled],
+    [claudeCodeProviderEnabled, rotatingPreparationOnly],
   );
 
   const providerDetails = useMemo(
@@ -250,7 +254,7 @@ export function ProviderSecretSetupChooser({
         ? {
             badge: "Codex rotating OAuth",
             title: "Use your ChatGPT Codex subscription with refresh",
-            body: `Run this from any terminal on your own computer. The command targets ${repositoryFullName}, creates a dedicated ReviewRouter Codex session, and writes REVIEWROUTER_CODEX_AUTH_JSON directly to this repository's GitHub Actions secrets.`,
+            body: `Run this from any terminal on your own computer. The command targets ${repositoryFullName}, creates a dedicated ReviewRouter Codex session, and writes only the server-authorized versioned credential to this repository's GitHub Actions secrets.`,
             footnote:
               "GitHub-hosted runs refresh the dedicated session and write the encrypted update back before review starts.",
             apiKey: null as {
@@ -444,32 +448,52 @@ export function ProviderSecretSetupChooser({
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
           {providerDetails.body}
         </p>
-        <ol className="mt-4 grid list-decimal gap-2 pl-5 text-sm leading-6 text-emerald-50/90">
-          <li>Merge the setup PR for {repositoryFullName}.</li>
-          <li>
-            On your own computer, open any terminal where GitHub CLI is
-            authenticated.
-          </li>
-          <li>
-            Run the command below to connect this AI provider to the repository.
-            {providerDetails.apiKey ? (
-              <>
-                {" "}
-                When the command asks for the secret value, paste your API key.{" "}
-                <a
-                  href={providerDetails.apiKey.url}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="font-semibold text-cyan-200 underline-offset-4 hover:underline"
-                >
-                  {providerDetails.apiKey.label}
-                </a>
-                .
-              </>
-            ) : null}
-          </li>
-          <li>Open a test pull request and ReviewRouter will run in CI.</li>
-        </ol>
+        {rotatingCodexSelected ? (
+          <ol className="mt-4 grid list-decimal gap-2 pl-5 text-sm leading-6 text-emerald-50/90">
+            <li>
+              On your own computer, run the command below to write the exact
+              server-authorized versioned credential.
+            </li>
+            <li>
+              Create and merge the setup PR for {repositoryFullName}; it will
+              reference that exact versioned namespace.
+            </li>
+            <li>
+              Return here and choose Verify versioned setup to confirm the
+              merged namespace is active.
+            </li>
+            <li>Open a test pull request and ReviewRouter will run in CI.</li>
+          </ol>
+        ) : (
+          <ol className="mt-4 grid list-decimal gap-2 pl-5 text-sm leading-6 text-emerald-50/90">
+            <li>Merge the setup PR for {repositoryFullName}.</li>
+            <li>
+              On your own computer, open any terminal where GitHub CLI is
+              authenticated.
+            </li>
+            <li>
+              Run the command below to connect this AI provider to the
+              repository.
+              {providerDetails.apiKey ? (
+                <>
+                  {" "}
+                  When the command asks for the secret value, paste your API
+                  key.{" "}
+                  <a
+                    href={providerDetails.apiKey.url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="font-semibold text-cyan-200 underline-offset-4 hover:underline"
+                  >
+                    {providerDetails.apiKey.label}
+                  </a>
+                  .
+                </>
+              ) : null}
+            </li>
+            <li>Open a test pull request and ReviewRouter will run in CI.</li>
+          </ol>
+        )}
         {rotatingCodexSelected && !codexRotatingOAuthEnabled ? (
           <p className="mt-4 rounded-xl border border-red-300/20 bg-red-300/[0.08] p-3 text-sm text-red-100">
             {providerSetupSubmitErrorText("codex_rotating_not_enabled")}
@@ -556,7 +580,7 @@ export function ProviderSecretSetupChooser({
                             command: body.command,
                             storesSecretIn: "github_repository_secret",
                             targetLabel: `${repositoryFullName} repository secret`,
-                            secretNames: body.secretNames,
+                            secretNames: ["Server-authorized versioned secret"],
                             selectedRepositories: [repositoryFullName],
                             validatesBeforeWrite: true,
                             failureRecovery:
@@ -631,6 +655,7 @@ export function ProviderSecretSetupChooser({
             void confirmProviderSecretSetup(formData)
               .then(({ params }) => {
                 if (
+                  !rotatingCodexSelected &&
                   submittedConfirmationMode === "verified" &&
                   isVerificationFallbackError(params.error)
                 ) {
@@ -688,10 +713,12 @@ export function ProviderSecretSetupChooser({
             type="hidden"
             name="confirmationMode"
             value={
-              verificationError &&
-              verificationErrorAllowsManual(verificationError)
-                ? "manual"
-                : "verified"
+              rotatingCodexSelected
+                ? "verified"
+                : verificationError &&
+                    verificationErrorAllowsManual(verificationError)
+                  ? "manual"
+                  : "verified"
             }
           />
           <div className="flex flex-wrap items-center gap-3">
@@ -709,16 +736,21 @@ export function ProviderSecretSetupChooser({
                     aria-hidden="true"
                     className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent"
                   />
-                  {verificationErrorAllowsManual(verificationError)
-                    ? "Saving..."
-                    : "Checking secrets..."}
+                  {rotatingCodexSelected
+                    ? "Checking versioned setup..."
+                    : verificationErrorAllowsManual(verificationError)
+                      ? "Saving..."
+                      : "Checking secrets..."}
                 </span>
-              ) : verificationErrorAllowsManual(verificationError) ? (
+              ) : !rotatingCodexSelected &&
+                verificationErrorAllowsManual(verificationError) ? (
                 "Confirm manually"
               ) : verificationError ? (
                 "Check secrets again"
               ) : confirmed ? (
                 "Confirmed"
+              ) : rotatingCodexSelected ? (
+                "Verify versioned setup"
               ) : (
                 "I ran this script"
               )}
@@ -747,15 +779,19 @@ export function ProviderSecretSetupChooser({
               role="status"
             >
               <p className="font-semibold">
-                {confirmedMode === "manual"
-                  ? "Provider setup was manually marked complete"
-                  : "Provider secret metadata was verified and setup was marked complete"}{" "}
+                {rotatingCodexSelected
+                  ? "Authorized versioned setup is active"
+                  : confirmedMode === "manual"
+                    ? "Provider setup was manually marked complete"
+                    : "Provider secret metadata was verified and setup was marked complete"}{" "}
                 for {repositoryFullName}.
               </p>
               <p className="mt-1 text-emerald-100/80">
-                {confirmedMode === "manual"
-                  ? "ReviewRouter did not verify GitHub secret metadata automatically. The setup progress was updated from your manual confirmation."
-                  : "ReviewRouter verified the GitHub secret metadata it can read. Keep this open if you want to copy another provider command, or close it when done."}
+                {rotatingCodexSelected
+                  ? "ReviewRouter matched the active provider, claim, definite dispatch outcome, and workflow-attested versioned namespace."
+                  : confirmedMode === "manual"
+                    ? "ReviewRouter did not verify GitHub secret metadata automatically. The setup progress was updated from your manual confirmation."
+                    : "ReviewRouter verified the GitHub secret metadata it can read. Keep this open if you want to copy another provider command, or close it when done."}
               </p>
             </div>
           ) : null}
@@ -777,7 +813,6 @@ type RotatingSetupCommandResponse = {
   readonly command: string;
   readonly expiresAt: string;
   readonly providerInstanceId: string;
-  readonly secretNames: readonly string[];
 };
 
 async function confirmProviderSecretSetup(
@@ -824,14 +859,11 @@ function isRotatingSetupCommandResponse(
     readonly command?: unknown;
     readonly expiresAt?: unknown;
     readonly providerInstanceId?: unknown;
-    readonly secretNames?: unknown;
   };
   return (
     typeof candidate.command === "string" &&
     typeof candidate.expiresAt === "string" &&
-    typeof candidate.providerInstanceId === "string" &&
-    Array.isArray(candidate.secretNames) &&
-    candidate.secretNames.every((secretName) => typeof secretName === "string")
+    typeof candidate.providerInstanceId === "string"
   );
 }
 
@@ -865,6 +897,8 @@ function providerSetupSubmitErrorText(error: string): string {
       return "This workspace plan does not allow provider setup confirmation.";
     case "codex_rotating_not_enabled":
       return "Rotating Codex OAuth is not enabled for this ReviewRouter deployment.";
+    case "codex_rotating_setup_not_ready":
+      return "ReviewRouter could not prove an active server-authorized versioned setup. Finish the versioned write and merge its exact workflow before retrying.";
     default:
       return "The dashboard could not save provider setup. Retry once, then check server logs if it repeats.";
   }
@@ -974,10 +1008,6 @@ function verificationErrorText(input: {
   if (input.error === "provider_secret_not_found") {
     if (input.secretScope !== "repository") {
       return `${input.secretNames} was not found as an organization Actions secret in ${input.organizationLogin ?? "this organization"}. Ask an organization owner to create it, or switch to a repository secret and run the repository command.`;
-    }
-
-    if (input.secretNames === "REVIEWROUTER_CODEX_AUTH_JSON") {
-      return `${input.secretNames} was not found in ${input.repositoryFullName} repository Actions secrets. If the terminal closed or the command was interrupted, reopen this dialog and copy a fresh command because rotating Codex setup links are one-time.`;
     }
 
     return `${input.secretNames} was not found in ${input.repositoryFullName} repository Actions secrets. Run the command below, then check again.`;

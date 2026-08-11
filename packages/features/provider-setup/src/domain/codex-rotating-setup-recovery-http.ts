@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { codexRotatingSetupRecoveryAcknowledgement } from "./codex-rotating-setup-recovery";
+import {
+  codexRotatingAccountSwitchAcknowledgement,
+  codexRotatingSetupRecoveryAcknowledgement,
+} from "./codex-rotating-setup-recovery";
 
 export const codexRotatingSetupRecoveryRequestIdSchema = z
   .string()
@@ -8,8 +11,13 @@ export const codexRotatingSetupRecoveryRequestIdSchema = z
 export function assertCodexRotatingSetupRecoveryHttpFields(input: {
   readonly acknowledgement: unknown;
   readonly recoveryRequestId: unknown;
+  readonly accountSwitch?: unknown;
 }): void {
-  if (input.acknowledgement !== codexRotatingSetupRecoveryAcknowledgement) {
+  const requiredAcknowledgement =
+    input.accountSwitch === true
+      ? codexRotatingAccountSwitchAcknowledgement
+      : codexRotatingSetupRecoveryAcknowledgement;
+  if (input.acknowledgement !== requiredAcknowledgement) {
     throw new Error("codex_rotating_setup_recovery_acknowledgement_required");
   }
   if (
@@ -45,6 +53,7 @@ const safeRecoveryErrors = new Set([
   "codex_rotating_setup_recovery_already_used",
   "codex_rotating_setup_recovery_required",
   "codex_rotating_setup_recovery_request_conflict",
+  "codex_rotating_account_switch_epoch_required",
   "codex_rotating_mutation_still_active",
   "codex_rotating_mutation_ownership_ambiguous",
   "codex_rotating_remote_outcome_unknown",

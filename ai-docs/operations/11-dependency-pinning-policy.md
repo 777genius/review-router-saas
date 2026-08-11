@@ -6,7 +6,7 @@ ReviewRouter generates workflows that run in customer repositories. Dependencies
 
 ## Generated Workflow Defaults
 
-For public production SaaS-generated workflows:
+For public production SaaS-generated workflows other than rotating Codex OAuth:
 
 - ReviewRouter Action defaults to `777genius/review-router@main` during hosted beta
 - third-party actions should use stable version tags initially for usability
@@ -14,7 +14,7 @@ For public production SaaS-generated workflows:
 - offer explicit `v1.0.x` pinning for customers who do not want automatic
   compatible updates
 
-For local/private beta smoke installs:
+For local/private beta smoke installs other than rotating Codex OAuth:
 
 - default ReviewRouter Action to `777genius/review-router@main`
 - reason: the current runtime is still moving quickly, and test installs must pick up bug fixes without a release cut
@@ -34,15 +34,22 @@ ReviewRouter Action
 
 Production hosted beta policy:
 
-- ReviewRouter Action: `777genius/review-router@main` by default so fixes reach
-  generated workflows without setup PR churn
+- General/non-rotating ReviewRouter Action: `777genius/review-router@main` by
+  default so fixes reach generated workflows without setup PR churn
+- Rotating Codex OAuth Action: the mandatory
+  `REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF=owner/repo@<40-character-SHA>`;
+  never inherit `REVIEW_ROUTER_ACTION_REF`
 - GitHub-owned actions: major version tags acceptable for beta, document tradeoff
 - third-party non-GitHub actions: avoid unless necessary; prefer first-party or inline code
 - Conservative customer option: explicit `v1.0.x` release tag
 
 Local beta policy:
 
-- ReviewRouter Action: `777genius/review-router@main` unless `REVIEW_ROUTER_ACTION_REF` or `REVIEW_ROUTER_ACTION_VERSION` overrides it
+- General/non-rotating ReviewRouter Action: `777genius/review-router@main`
+  unless `REVIEW_ROUTER_ACTION_REF` or `REVIEW_ROUTER_ACTION_VERSION` overrides
+  it
+- Rotating Codex OAuth Action: require the same exact-SHA rotating contract as
+  production
 - GitHub-owned actions: major version tags acceptable
 - every real smoke should record which action ref was generated
 
@@ -57,7 +64,7 @@ SaaS repo:
 
 ## Future Enterprise Mode
 
-Offer generated workflow option:
+For general/non-rotating generated workflows, offer:
 
 ```text
 pinActionsToSha: true
@@ -67,10 +74,15 @@ This should resolve action versions to full commit SHA and show update PRs when 
 
 ## Tests
 
-- production generated workflow uses `777genius/review-router@main`
-  by default
-- local beta generated workflow uses `777genius/review-router@main` by default
-- full-SHA or `v1.0.x` pinning requires explicit opt-in during hosted beta
+- production general/non-rotating generated workflow uses
+  `777genius/review-router@main` by default
+- local beta general/non-rotating generated workflow uses
+  `777genius/review-router@main` by default
+- rotating Codex OAuth generation fails closed without the separate exact-SHA
+  rotating ref; the same-repository overlap contains only explicitly trusted
+  old SHAs during a drained A -> B transition
+- full-SHA or `v1.0.x` pinning for general workflows requires explicit opt-in
+  during hosted beta
 - dependency update changes workflow snapshot intentionally
 
 ## Stable Major Channel

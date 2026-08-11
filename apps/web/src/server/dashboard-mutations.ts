@@ -175,6 +175,36 @@ export async function assertDashboardRepositoryMutationAllowed(
   return withRepositoryAccess(actor, repositoryAccess);
 }
 
+/**
+ * Authorizes the recovery transport without changing the durable repository
+ * permission cache. Recovery must admit the database recovery witness before
+ * any durable mutation, so this boundary deliberately uses only the live
+ * GitHub permission result.
+ */
+export async function assertDashboardRepositoryRecoveryAllowed(
+  _workspaceId: string,
+  repository: {
+    readonly id?: string;
+    readonly owner: string;
+    readonly name: string;
+    readonly githubRepositoryId: bigint | string | number;
+    readonly installation: {
+      readonly githubInstallationId: bigint | string | number;
+    };
+  },
+): Promise<DashboardMutationActor> {
+  const actor = await readDashboardMutationActor();
+
+  const repositoryAccess = await assertRepositoryPermissionForActor({
+    actor,
+    repository,
+    capability: "repo_manager",
+    permissionCacheMode: "read_only",
+  });
+
+  return withRepositoryAccess(actor, repositoryAccess);
+}
+
 export async function assertDashboardRepositoryConfigMutationAllowed(
   workspaceId: string,
   repository: {
@@ -379,6 +409,7 @@ async function assertRepositoryWritePermissionForActor(input: {
 async function assertRepositoryPermissionForActor(input: {
   readonly actor: DashboardMutationActor;
   readonly capability: DashboardRepositoryCapability;
+  readonly permissionCacheMode?: "write_through" | "read_only";
   readonly repository: {
     readonly id?: string;
     readonly owner: string;
@@ -433,7 +464,7 @@ async function assertRepositoryPermissionForActor(input: {
       permission,
       roleName,
     });
-    if (input.repository.id) {
+    if (input.repository.id && input.permissionCacheMode !== "read_only") {
       await updateRepositoryPermissionCacheFromLiveCheck({
         prisma: getPrisma(),
         actor: githubActor,
@@ -475,7 +506,7 @@ async function assertRepositoryPermissionForActor(input: {
 
     const status = githubApiStatus(error);
     if (status === 401 || status === 403 || status === 404) {
-      if (input.repository.id) {
+      if (input.repository.id && input.permissionCacheMode !== "read_only") {
         await updateRepositoryPermissionCacheFromLiveCheck({
           prisma: getPrisma(),
           actor: githubActor,

@@ -110,7 +110,9 @@ SaaS must validate:
 
 - issuer
 - signature via GitHub OIDC JWKS
-- audience
+- audience exactly matches the server-configured GitHub Actions OIDC audience;
+  an optional request-body compatibility echo must match that value and never
+  selects JWT verification policy
 - expiration and not-before
 - repository id/name matches installed repository
 - repository owner matches active installation/workspace

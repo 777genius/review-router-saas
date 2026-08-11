@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
-import { assertDashboardRepositoryMutationAllowed } from "../../../../../src/server/dashboard-mutations";
+import { assertDashboardRepositoryRecoveryAllowed } from "../../../../../src/server/dashboard-mutations";
 import { getPrisma } from "../../../../../src/server/prisma";
 import { recoverAndIssueCodexRotatingSetup } from "../../../../../src/server/codex-rotating-setup-recovery";
 import {
   assertCodexRotatingSetupRecoveryHttpFields,
-  codexRotatingSecretName,
   codexRotatingSetupRecoveryHttpStatus,
   safeCodexRotatingSetupRecoveryErrorCode,
 } from "@reviewrouter/features-provider-setup";
 import { PrismaCodexRotatingSetupRecovery } from "../../../../../src/server/prisma-codex-rotating-setup-recovery";
+import { requireReviewRouterDatabaseRecoveryWitness } from "@reviewrouter/platform-config";
 
 export async function GET(request: Request): Promise<NextResponse> {
   try {
@@ -36,13 +36,14 @@ export async function GET(request: Request): Promise<NextResponse> {
     ) {
       throw new Error("repository_not_found");
     }
-    await assertDashboardRepositoryMutationAllowed(workspaceId, {
+    await assertDashboardRepositoryRecoveryAllowed(workspaceId, {
       ...repository,
       githubRepositoryId: repository.githubRepositoryId,
       installation: repository.installation,
     });
     const status = await new PrismaCodexRotatingSetupRecovery(
       prisma,
+      requireReviewRouterDatabaseRecoveryWitness(),
     ).inspectStatus({
       workspaceId,
       repositoryId,
@@ -120,7 +121,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       githubRepositoryId: repository.githubRepositoryId,
       installation: repository.installation,
     };
-    const actor = await assertDashboardRepositoryMutationAllowed(
+    const actor = await assertDashboardRepositoryRecoveryAllowed(
       workspaceId,
       githubRepository,
     );
@@ -136,7 +137,6 @@ export async function POST(request: Request): Promise<NextResponse> {
         command: result.command,
         expiresAt: result.expiresAt,
         providerInstanceId: result.providerInstanceId,
-        secretNames: [codexRotatingSecretName],
         recoveryStatus: result.recoveryStatus,
       },
       { headers: { "Cache-Control": "no-store" } },

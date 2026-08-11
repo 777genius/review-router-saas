@@ -63,7 +63,10 @@ describe("provider runtime plan", () => {
     });
 
     expect(plan.runtimeEnv.REVIEW_AUTH_MODE).toBe("codex-oauth-rotating");
-    expect(plan.requiredSecretNames).toEqual(["REVIEWROUTER_CODEX_AUTH_JSON"]);
+    expect(plan.requiredSecretNames).toEqual([]);
+    expect(plan.requiredSecretNames).not.toContain(
+      "REVIEWROUTER_CODEX_AUTH_JSON",
+    );
     expect(plan.requiredSecretNames).not.toContain("CODEX_AUTH_JSON");
     expect(plan.requiredCliTools).toEqual(["codex"]);
   });

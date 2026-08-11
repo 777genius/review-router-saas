@@ -11,7 +11,7 @@ export function dashboardNoticeText(
 ): string {
   switch (notice) {
     case "app_installed":
-      return "GitHub App is connected. Search for one repository, create the setup PR, then seed provider credentials from this dashboard.";
+      return "GitHub App is connected. Search for one repository, then follow its provider-specific setup sequence from this dashboard.";
     case "sync_requested":
       return "Repository metadata refresh was queued. Reload in a few seconds if the repository list does not update immediately.";
     case "sync_already_requested":
@@ -436,6 +436,8 @@ export function dashboardErrorText(error: string): string {
       return "Codex rotating OAuth must be configured per repository, not as a workspace default.";
     case "codex_rotating_single_provider_required":
       return "Codex rotating OAuth supports exactly one Codex provider in this repository.";
+    case "codex_rotating_workflow_namespace_not_ready":
+      return "Run the rotating Codex setup command first and wait for its definite GitHub write confirmation. Then create the setup PR for that exact versioned namespace.";
     case "duplicate_review_provider":
       return "Duplicate provider/model rows are not supported yet. Pick a different model for duplicate providers.";
     case "codex_rotating_provider_instance_required":

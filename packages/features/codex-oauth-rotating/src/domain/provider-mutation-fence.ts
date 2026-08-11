@@ -88,6 +88,7 @@ export function classifyCodexRotatingMutationOwnership(input: {
     readonly status: string;
     readonly claimedAt: Date;
     readonly claimMarker: boolean;
+    readonly remoteNamespacePermanentlyRetired?: boolean;
   } | null;
   readonly runtimeLease?: {
     readonly id: string;
@@ -122,7 +123,9 @@ export function classifyCodexRotatingMutationOwnership(input: {
     }
     if (input.writeback) {
       if (input.writeback.status === "remote_outcome_unknown") {
-        return { classification: "remote_outcome_unknown" };
+        return input.writeback.remoteNamespacePermanentlyRetired === true
+          ? { classification: "recoverable" }
+          : { classification: "remote_outcome_unknown" };
       }
       if (
         !input.runtimeLease ||
@@ -178,7 +181,9 @@ export function classifyCodexRotatingMutationOwnership(input: {
       return { classification: "ambiguous" };
     }
     if (input.writeback?.status === "remote_outcome_unknown") {
-      return { classification: "remote_outcome_unknown" };
+      return input.writeback.remoteNamespacePermanentlyRetired === true
+        ? { classification: "recoverable" }
+        : { classification: "remote_outcome_unknown" };
     }
     const claimedDeadline = input.writeback
       ? input.writeback.claimedAt.getTime() + graceMs

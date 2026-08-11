@@ -27,6 +27,7 @@ export * from "./application/use-cases/finalize-codex-rotating-oauth-lease.js";
 export * from "./application/use-cases/abandon-codex-rotating-oauth-lease.js";
 export * from "./application/use-cases/preflight-codex-rotating-oauth-writeback.js";
 export * from "./application/use-cases/writeback-codex-rotating-oauth.js";
+export * from "./application/services/codex-rotating-versioned-writeback-dispatcher.js";
 export * from "./application/use-cases/issue-codex-rotating-oauth-checkout-token.js";
 export * from "./application/use-cases/issue-codex-rotating-oauth-comment-token.js";
 export * from "./application/use-cases/issue-codex-rotating-review-snapshot-head-token.js";

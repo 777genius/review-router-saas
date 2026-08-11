@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getDashboardSignedInActor: vi.fn(),
   getDashboardWorkspaceScope: vi.fn(),
+  deriveDashboardProviderSetupReadiness: vi.fn(),
   listGitHubUserRepositoryAccess: vi.fn(),
   listWorkspaceRepositoryHealth: vi.fn(),
   providerSetupFindMany: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("@reviewrouter/features-repo-health", () => ({
 }));
 
 vi.mock("@reviewrouter/platform-config", () => ({
+  requireReviewRouterDatabaseRecoveryWitness: () => "w".repeat(43),
   resolveReviewRouterActionRef: () => "reviewrouter/action@v1",
 }));
 
@@ -40,6 +42,14 @@ vi.mock("../../../../../src/server/dashboard-mutations", () => ({
 vi.mock("../../../../../src/server/github-user-repository-access", () => ({
   listGitHubUserRepositoryAccess: mocks.listGitHubUserRepositoryAccess,
 }));
+
+vi.mock(
+  "../../../../../src/server/dashboard-codex-rotating-setup-readiness",
+  () => ({
+    deriveDashboardProviderSetupReadiness:
+      mocks.deriveDashboardProviderSetupReadiness,
+  }),
+);
 
 vi.mock("../../../../../src/server/prisma", () => ({
   getPrisma: () => ({
@@ -75,6 +85,10 @@ describe("dashboard repository search route", () => {
     mocks.providerSetupFindMany.mockResolvedValue([]);
     mocks.reviewConfigurationFindUnique.mockResolvedValue(null);
     mocks.listWorkspaceRepositoryHealth.mockResolvedValue([]);
+    mocks.deriveDashboardProviderSetupReadiness.mockImplementation(
+      async (input: { readonly providerSetup: readonly unknown[] }) =>
+        input.providerSetup,
+    );
   });
 
   it("filters repo-only search results to repositories the GitHub user can manage", async () => {
@@ -237,6 +251,64 @@ describe("dashboard repository search route", () => {
     });
   });
 
+  it("does not surface cached rotating readiness after exact evidence becomes stale", async () => {
+    mocks.getDashboardWorkspaceScope.mockResolvedValue({
+      kind: "workspace_ids",
+      workspaceIds: ["workspace_1"],
+    });
+    mocks.listGitHubUserRepositoryAccess.mockResolvedValue({
+      status: "ready",
+      workspaceIds: [],
+      repositoryIds: new Set<string>(),
+      directConfigRepositoryIds: new Set<string>(),
+      checkedAt: null,
+    });
+    mocks.repositoryConnectionFindMany.mockResolvedValue([
+      repositoryRow({ id: "repo_stale", fullName: "fin-int/stale" }),
+    ]);
+    mocks.listWorkspaceRepositoryHealth.mockResolvedValue([
+      healthyReport("repo_stale"),
+    ]);
+    mocks.providerSetupFindMany.mockResolvedValue([
+      providerSetupRow({
+        repositoryId: "repo_stale",
+        authMode: "codex_subscription_oauth_rotating",
+      }),
+    ]);
+    mocks.deriveDashboardProviderSetupReadiness.mockImplementationOnce(
+      async (input: {
+        readonly providerSetup: readonly ReturnType<typeof providerSetupRow>[];
+      }) =>
+        input.providerSetup.map((setup) => ({
+          ...setup,
+          state: "stale_or_invalid",
+        })),
+    );
+
+    const response = await GET(
+      nextRequest(
+        "http://localhost/api/dashboard/repositories/search?workspace=fin-int&setup=ready",
+      ),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      repositoryIds: [],
+      total: 1,
+      filter: "ready",
+    });
+    expect(mocks.deriveDashboardProviderSetupReadiness).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: "workspace_1",
+        repositories: [
+          expect.objectContaining({
+            id: "repo_stale",
+            githubRepositoryId: 123456n,
+          }),
+        ],
+      }),
+    );
+  });
+
   it("loads repository policies for non-configured provider setup rows", async () => {
     mocks.reviewConfigurationFindUnique.mockImplementation(
       async (input: ReviewConfigurationFindUniqueInput) => {
@@ -333,6 +405,7 @@ function repositoryRow(input: {
   const [owner = "", name = ""] = input.fullName.split("/");
   return {
     id: input.id,
+    githubRepositoryId: 123456n,
     fullName: input.fullName,
     owner,
     name,

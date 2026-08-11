@@ -31,12 +31,16 @@ describe("provider secret setup guidance", () => {
       scope: "repository",
       storesSecretIn: "github_repository_secret",
       targetLabel: "777genius/agent-teams-ai repository secret",
-      secretNames: ["REVIEWROUTER_CODEX_AUTH_JSON"],
+      secretNames: [
+        "REVIEWROUTER_CODEX_AUTH_JSON_R<repository-id>_P<provider-hash>_E<epoch>_<entropy>",
+      ],
       selectedRepositories: ["777genius/agent-teams-ai"],
       validatesBeforeWrite: true,
       sendsSecretToReviewRouter: false,
     });
-    expect(guidance.commands[0]?.command).toContain("curl -fsSL");
+    expect(guidance.commands[0]?.command).toContain(
+      "curl -q --fail --silent --show-error --max-redirs 0",
+    );
     expect(guidance.commands[0]?.command).toContain("shasum -a 256");
     expect(guidance.commands[0]?.command).toContain("sha256sum");
     expect(guidance.commands[0]?.command).toContain(

@@ -3,6 +3,7 @@ import {
   codexRotatingSetupRecoveryAcknowledgement,
   recoverCodexRotatingSetup,
 } from "@reviewrouter/features-provider-setup";
+import { requireReviewRouterDatabaseRecoveryWitness } from "@reviewrouter/platform-config";
 import {
   assertCodexRotatingSetupRepository,
   issueCodexRotatingSetupForRepository,
@@ -18,6 +19,7 @@ export async function recoverAndIssueCodexRotatingSetup(input: {
   readonly actor: string;
   readonly recoveryRequestId: string;
   readonly acknowledgement: string;
+  readonly accountSwitch?: boolean;
 }) {
   assertCodexRotatingSetupRepository(input.repository);
   if (process.env.REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED !== "1") {
@@ -31,8 +33,16 @@ export async function recoverAndIssueCodexRotatingSetup(input: {
       recoveryRequestId: input.recoveryRequestId,
       actor: input.actor,
       acknowledgement: input.acknowledgement,
+      ...(input.accountSwitch !== undefined
+        ? { accountSwitch: input.accountSwitch }
+        : {}),
     },
-    { recovery: new PrismaCodexRotatingSetupRecovery(input.prisma) },
+    {
+      recovery: new PrismaCodexRotatingSetupRecovery(
+        input.prisma,
+        requireReviewRouterDatabaseRecoveryWitness(),
+      ),
+    },
   );
   const setup = await issueCodexRotatingSetupForRepository({
     prisma: input.prisma,

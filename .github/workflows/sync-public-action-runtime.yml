@@ -11,10 +11,11 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  group: sync-public-action-runtime-${{ github.event.workflow_run.head_sha || github.sha }}
+  group: sync-public-action-runtime
   cancel-in-progress: false
 
 env:
@@ -32,14 +33,74 @@ jobs:
     if: >-
       ${{
         github.event_name == 'workflow_dispatch' ||
-        (
-          github.event.workflow_run.event == 'push' &&
-          github.event.workflow_run.head_branch == 'main' &&
-          github.event.workflow_run.conclusion == 'success'
-        )
+        (github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main' &&
+         github.event.workflow_run.conclusion == 'success')
       }}
 
     steps:
+      - name: Gate exact current main SHA and successful CI
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$DISPATCH_REF" != "refs/heads/main" ]]; then
+            echo "::error::manual synchronization must be dispatched from refs/heads/main"
+            exit 1
+          fi
+          if [[ ! "$REQUESTED_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::source SHA must be an exact 40-character commit SHA"
+            exit 1
+          fi
+
+          CURRENT_MAIN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          if [[ "$REQUESTED_SHA" != "$CURRENT_MAIN_SHA" ]]; then
+            echo "::error::source $REQUESTED_SHA is superseded; current origin/main is $CURRENT_MAIN_SHA"
+            exit 1
+          fi
+
+          CI_RUN="$(
+            gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow CI \
+              --branch main \
+              --limit 50 \
+              --json databaseId,headSha,status,conclusion,url \
+              --jq ".[] | select(.headSha == \"$REQUESTED_SHA\" and .status == \"completed\" and .conclusion == \"success\") | [.databaseId, .url] | @tsv" \
+              | head -n 1
+          )"
+          if [[ -z "$CI_RUN" ]]; then
+            echo "::error::CI must complete successfully on current origin/main $REQUESTED_SHA before synchronization"
+            exit 1
+          fi
+          echo "sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+          echo "Using CI gate: ${CI_RUN#*$'\t'}"
+
+      - name: Checkout SaaS runtime
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: review-router-saas
+          persist-credentials: false
+
+      - name: Recheck checkout is exact current origin/main
+        working-directory: review-router-saas
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA" || "$(git rev-parse origin/main)" != "$SOURCE_SHA" ]]; then
+            echo "::error::source $SOURCE_SHA was superseded before branch code could run"
+            exit 1
+          fi
+
       - name: Require cross-repository sync credential
         shell: bash
         env:
@@ -51,12 +112,6 @@ jobs:
             echo "::error::REVIEW_ROUTER_ACTION_SYNC_SSH_KEY or REVIEW_ROUTER_ACTION_SYNC_TOKEN is required. Prefer a write deploy key scoped to ${ACTION_REPOSITORY}; alternatively use a fine-grained PAT or GitHub App token with Contents: write and permission to push ${ACTION_BRANCH}."
             exit 1
           fi
-
-      - name: Checkout SaaS runtime
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-          path: review-router-saas
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -108,8 +163,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git status --short -- action.yml action-dist
-          if git diff --quiet -- action.yml action-dist; then
+          mapfile -t synced_files < <(node ../review-router-saas/scripts/sync-public-action-runtime.mjs --print-files)
+          git status --short -- "${synced_files[@]}"
+          if [[ -z "$(git status --porcelain -- "${synced_files[@]}")" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -120,23 +176,42 @@ jobs:
         working-directory: review-router-action
         shell: bash
         env:
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
+          current_main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          if [[ "$SOURCE_SHA" != "$current_main_sha" ]]; then
+            echo "::error::source $SOURCE_SHA was superseded before publication by $current_main_sha"
+            exit 1
+          fi
+          mapfile -t synced_files < <(node ../review-router-saas/scripts/sync-public-action-runtime.mjs --print-files)
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add action.yml action-dist
+          git add -- "${synced_files[@]}"
           git commit \
             -m "fix: sync public action runtime" \
             -m "Source: 777genius/review-router-saas@${SOURCE_SHA}"
           git pull --rebase origin "${ACTION_BRANCH}"
+          git diff --exit-code -- "${synced_files[@]}"
+          git diff --cached --exit-code -- "${synced_files[@]}"
+          if [[ -n "$(git status --porcelain -- "${synced_files[@]}")" ]]; then
+            echo "::error::synced files changed after commit/rebase"
+            git status --short -- "${synced_files[@]}"
+            exit 1
+          fi
+          current_main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          if [[ "$SOURCE_SHA" != "$current_main_sha" ]]; then
+            echo "::error::source $SOURCE_SHA was superseded before push by $current_main_sha"
+            exit 1
+          fi
           git push origin "HEAD:${ACTION_BRANCH}"
 
       - name: Summary
         shell: bash
         env:
           CHANGED: ${{ steps.changes.outputs.changed }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           {
             echo "Public action runtime sync"

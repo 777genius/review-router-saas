@@ -10,6 +10,8 @@ import {
   readCodexRotatingWorkflowSourceMetadata,
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
+  createVersionedSecretWorkflowSourceAttestation,
+  WorkflowSourceTrust,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import {
   finalizeCodexRotatingOAuthLease,
@@ -20,6 +22,7 @@ import {
   preleaseCodexRotatingOAuth,
   registerActionControlPlaneRoutes,
   writebackCodexRotatingOAuth,
+  CodexRotatingVersionedWritebackDispatcher,
 } from "../index";
 
 const firstRunAt = new Date("2026-05-25T12:00:00.000Z");
@@ -85,7 +88,7 @@ describe("Codex rotating OAuth local E2E", () => {
         workflowSchemaVersion: 1,
       },
     ]);
-    const tokens = buildTokenFakes();
+    const tokens = buildTokenFakes(codexRotatingOAuth);
     const dependencies = {
       oidcVerifier: {
         verify: vi
@@ -194,6 +197,8 @@ describe("Codex rotating OAuth local E2E", () => {
             providerInstanceId,
             generation: firstLease.nextGeneration,
             latestGenerationHash: encrypted.latestGenerationHash,
+            accountIdentityHash: "account-identity-hash-value-0123456789",
+            accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
             encryptedValue: encrypted.encryptedValue,
             keyId: encrypted.keyId,
             idempotencyKey: "idem:first-run",
@@ -287,7 +292,7 @@ describe("Codex rotating OAuth local E2E", () => {
         workflowSchemaVersion: 1,
       },
     ]);
-    const tokenFakes = buildTokenFakes();
+    const tokenFakes = buildTokenFakes(codexRotatingOAuth);
     const mutationAdmission = { assertEnabled: vi.fn() };
     const reviewSnapshots = new InMemoryReviewSnapshotRepository();
     const workflow = renderCodexRotatingAdvisoryWorkflow({
@@ -351,17 +356,41 @@ describe("Codex rotating OAuth local E2E", () => {
       >[1],
     );
 
+    const wrongAudiencePrelease = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/prelease",
+      payload: {
+        oidcToken: "otherwise-valid-wrong-audience-token",
+        audience: "another-relying-party",
+        providerInstanceId,
+        workflowSchemaVersion: 1,
+      },
+    });
+    expect(wrongAudiencePrelease.statusCode).toBe(401);
+    expect(wrongAudiencePrelease.json()).toEqual({
+      error: {
+        code: "invalid_action_token",
+        message:
+          "GitHub Actions OIDC token is invalid, expired, or already used.",
+        retryable: false,
+      },
+    });
+    expect(dependencies.oidcVerifier.verify).not.toHaveBeenCalled();
+
     const prelease = await app.inject({
       method: "POST",
       url: "/api/action/v1/codex-oauth/prelease",
       payload: {
         oidcToken: "oidc-jwt",
-        audience: "reviewrouter",
         providerInstanceId,
         workflowSchemaVersion: 1,
       },
     });
     expect(prelease.statusCode).toBe(200);
+    expect(dependencies.oidcVerifier.verify).toHaveBeenCalledWith({
+      token: "oidc-jwt",
+      audience: "reviewrouter",
+    });
     const preleaseBody = prelease.json<{
       readonly leaseId: string;
       readonly generationHashSalt: string;
@@ -428,6 +457,8 @@ describe("Codex rotating OAuth local E2E", () => {
         providerInstanceId,
         generation: finalizeBody.nextGeneration,
         latestGenerationHash: encrypted.latestGenerationHash,
+        accountIdentityHash: "account-identity-hash-value-0123456789",
+        accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
         encryptedValue: encrypted.encryptedValue,
         keyId: encrypted.keyId,
         idempotencyKey: "idem:http-run",
@@ -693,7 +724,7 @@ describe("Codex rotating OAuth local E2E", () => {
       replayNonces: {
         tryConsumeNonce: vi.fn().mockResolvedValue(true),
       },
-      ...buildTokenFakes(),
+      ...buildTokenFakes(codexRotatingOAuth),
       codexRotatingWritebackHmacKey: "writeback-key",
       clock: { now: vi.fn(() => firstRunAt) },
       sessions: {},
@@ -880,7 +911,7 @@ describe("Codex rotating OAuth local E2E", () => {
       replayNonces: {
         tryConsumeNonce: vi.fn().mockResolvedValue(true),
       },
-      ...buildTokenFakes(),
+      ...buildTokenFakes(codexRotatingOAuth),
       codexRotatingWritebackHmacKey: "writeback-key",
       clock: { now: vi.fn(() => firstRunAt) },
     };
@@ -920,6 +951,8 @@ describe("Codex rotating OAuth local E2E", () => {
           providerInstanceId,
           generation: firstLease.nextGeneration,
           latestGenerationHash: "latest-generation-hash-value-0123456789",
+          accountIdentityHash: "account-identity-hash-value-0123456789",
+          accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
           encryptedValue: Buffer.from("ciphertext").toString("base64"),
           keyId: "github-key",
           idempotencyKey: "idem:first-run",
@@ -1028,7 +1061,42 @@ function requireLease(
   return response;
 }
 
-function buildTokenFakes() {
+function buildTokenFakes(ledger?: InMemoryCodexRotatingOAuthRepository) {
+  const codexRotatingSecretWriter = {
+    assertCanWriteRepositorySecret: vi
+      .fn()
+      .mockResolvedValue({ status: "ready" as const }),
+    putEncryptedRepositorySecret: vi.fn().mockResolvedValue({
+      status: "accepted" as const,
+      statusCode: 204 as const,
+    }),
+  };
+  const codexRotatingVersionedWriteback = ledger
+    ? new CodexRotatingVersionedWritebackDispatcher(
+        ledger,
+        codexRotatingSecretWriter,
+        {
+          publishAndVerifyVersionedWorkflow: vi.fn(async ({ namespace }) =>
+            createVersionedSecretWorkflowSourceAttestation({
+              repositoryId: namespace.scope.repositoryId,
+              workflowPath: ".github/workflows/reviewrouter-codex.yml",
+              workflowSourceCommitSha: "a".repeat(40),
+              workflowSourceBlobSha: "b".repeat(40),
+              workflowSourceSha256: "c".repeat(64),
+              workflowSemanticSha256: "d".repeat(64),
+              sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+              secretNamespace: namespace,
+            }),
+          ),
+        },
+        { now: () => firstRunAt },
+      )
+    : {
+        dispatchOneShot: vi.fn(async ({ request }) => ({
+          status: "accepted" as const,
+          generation: request.generation,
+        })),
+      };
   return {
     codexRotatingSecretsReadTokens: {
       issueSecretsReadToken: vi.fn().mockResolvedValue({
@@ -1037,15 +1105,8 @@ function buildTokenFakes() {
         permissions: { secrets: "read" },
       }),
     },
-    codexRotatingSecretWriter: {
-      assertCanWriteRepositorySecret: vi
-        .fn()
-        .mockResolvedValue({ status: "ready" }),
-      putEncryptedRepositorySecret: vi.fn().mockResolvedValue({
-        status: "accepted",
-        statusCode: 204,
-      }),
-    },
+    codexRotatingSecretWriter,
+    codexRotatingVersionedWriteback,
     codexRotatingCheckoutTokens: {
       issueContentsReadToken: vi.fn().mockResolvedValue({
         token: "ghs_contents_read_token",

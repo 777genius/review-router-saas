@@ -8,6 +8,7 @@ import {
 import type {
   CodexRotatingReviewActionV2Mode,
   CodexRotatingT0WorkflowSchemaVersion,
+  VersionedProviderSecretNamespace,
 } from "@reviewrouter/features-codex-oauth-rotating";
 
 export type WorkflowProvisioningStatus =
@@ -33,6 +34,7 @@ export type ProvisionWorkflowInput = {
   readonly codexRotatingProviderInstanceId?: string;
   readonly codexRotatingReviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
   readonly codexRotatingWorkflowSchemaVersion?: CodexRotatingT0WorkflowSchemaVersion;
+  readonly codexRotatingWorkflowSecretNamespace?: VersionedProviderSecretNamespace;
   readonly setupBranch?: string;
   readonly workflowPath?: string;
 };

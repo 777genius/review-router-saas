@@ -1,8 +1,26 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  catalogColumnKey,
+  codexRotatingCatalogCheckNames,
+  codexRotatingCheckDefinitions,
+  codexRotatingCatalogColumnKeys,
+  codexRotatingCatalogForeignKeyNames,
+  codexRotatingCatalogForeignKeys,
+  codexRotatingCatalogIndexNames,
+  codexRotatingCatalogTables,
+  codexRotatingFunctionBodyDigests,
+  codexRotatingIndexDefinitions,
+  codexRotatingPartialIndexPredicates,
+  codexRotatingDatabaseRoles,
+  codexRotatingFunctions as exactFunctions,
+  codexRotatingTriggers as exactTriggers,
+  codexRotatingCatalogColumns,
+  codexRotatingPrimaryKeys as exactPrimaryKeys,
+} from "./codex-rotating-production-writer-schema.mjs";
 
 /**
  * Runtime validators below are the trust boundary for observation data. Their
@@ -34,49 +52,97 @@ const migrations = [
     sourceFile:
       "packages/platform/db/prisma/migrations/000063_codex_oauth_setup_payload_claim/migration.sql",
   },
+  {
+    id: "000064_codex_oauth_versioned_secret_namespaces",
+    sourceFile:
+      "packages/platform/db/prisma/migrations/000064_codex_oauth_versioned_secret_namespaces/migration.sql",
+    expectedSha256:
+      "c356b9a434992811a52acc8cb985d1325c9f669e4f54933669aba766bde74c2b",
+  },
 ];
-const exactServices = ["api", "web", "worker"];
+const checkedInRotatingMigrations = readdirSync(
+  resolve(checkoutRoot, "packages/platform/db/prisma/migrations"),
+)
+  .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
+  .sort();
+if (
+  JSON.stringify(checkedInRotatingMigrations) !==
+  JSON.stringify(migrations.map(({ id }) => id))
+) {
+  throw new Error("Codex rotating migration source inventory is not exact");
+}
+const exactServiceRoles = new Map([
+  ["reviewrouter-api", "api"],
+  ["reviewrouter-web", "web"],
+  ["reviewrouter-worker", "worker"],
+]);
+const releaseMigrationRole = codexRotatingDatabaseRoles.releaseMigration;
+const runtimeDatabaseRoles = codexRotatingDatabaseRoles.runtime;
+const exactForeignKeys = codexRotatingCatalogForeignKeys.map(
+  ({ name }) => name,
+);
+const exactForeignKeyByName = new Map(
+  codexRotatingCatalogForeignKeys.map((foreignKey) => [
+    foreignKey.name,
+    foreignKey,
+  ]),
+);
+const exactFunctionBodyDigestByName = new Map(
+  codexRotatingFunctionBodyDigests.map(({ name, bodySha256 }) => [
+    name,
+    bodySha256,
+  ]),
+);
+const exactCheckDefinitionByName = new Map(
+  codexRotatingCheckDefinitions.map((entry) => [entry.name, entry]),
+);
+const exactIndexDefinitionDigestByName = new Map(
+  codexRotatingIndexDefinitions.map((entry) => [
+    entry.name,
+    entry.definitionSha256,
+  ]),
+);
+const exactPartialIndexPredicateDigestByName = new Map(
+  codexRotatingPartialIndexPredicates.map((entry) => [
+    entry.name,
+    entry.predicateSha256,
+  ]),
+);
 const exactCases = [
   "legacy-consumed-confirmation-replay",
   "v1-workflow-after-v2-publication",
   "v2-workflow-fence-aware",
 ];
-const exactTriggers = [
-  "CodexOAuthLease_identity_fence_guard",
-  "CodexOAuthProviderInstance_identity_guard",
-  "CodexOAuthProviderInstance_mutation_transition_guard",
-  "CodexOAuthSetupManifest_identity_fence_guard",
-  "CodexOAuthWritebackIntent_identity_fence_guard",
-  "RepositoryConnection_codex_oauth_identity_guard",
-];
 const exactChecks = [
   "CodexOAuthLease_epoch_check",
+  "CodexOAuthLease_pullRequestNumber_check",
   "CodexOAuthProviderInstance_mutation_fence_check",
   "CodexOAuthSetupManifest_epoch_check",
   "CodexOAuthWritebackIntent_epoch_check",
+  "CodexOAuthWritebackIntent_executor_lease_check",
   "CodexOAuthSetupRecoveryRequest_epoch_check",
   "CodexOAuthSetupRecoveryRequest_contract_check",
+  "CodexOAuthSetupRecoveryRequest_database_recovery_witness_check",
   "CodexOAuthSetupManifest_payload_claim_complete_check",
   "CodexOAuthSetupManifest_recovery_expiry_check",
+  "CodexOAuthSetupManifest_database_recovery_witness_check",
+  "CodexOAuthSetupPayloadClaim_payload_check",
+  "CodexOAuthSecretNamespace_lifecycle_check",
+  "CodexOAuthSecretNamespace_name_check",
+  "CodexOAuthSecretNamespace_recovery_witness_check",
+  "CodexOAuthSetupDispatchAttempt_lifecycle_check",
+  "CodexOAuthProviderInstance_active_namespace_pair_check",
+  "CodexOAuthLease_secret_namespace_pair_check",
+  "CodexOAuthWritebackIntent_versioned_dispatch_check",
+  "CodexOAuthWritebackIntent_provider_response_check",
+  "CodexOAuthWritebackIntent_database_incarnation_check",
+  "CodexOAuthWritebackIntent_database_recovery_witness_check",
+  "CodexOAuthWritebackIntent_account_identity_check",
+  "CodexOAuthWritebackIntent_recovery_resolution_check",
 ];
-const exactIndexes = [
-  "CodexOAuthChildIdentityQuarantine_provider_idx",
-  "CodexOAuthLease_provider_epoch_idx",
-  "CodexOAuthProviderInstance_mutation_owner_idx",
-  "CodexOAuthSetupManifest_one_active_provider_key",
-  "CodexOAuthSetupManifest_provider_epoch_idx",
-  "CodexOAuthWritebackIntent_provider_epoch_idx",
-  "CodexOAuthSetupRecoveryRequest_provider_request_key",
-  "CodexOAuthSetupRecoveryRequest_latestManifestId_key",
-  "CodexOAuthSetupRecoveryRequest_provider_state_idx",
-  "CodexOAuthSetupRecoveryRequest_one_active_provider_key",
-  "CodexOAuthSetupManifest_recovery_expiry_idx",
-];
-const exactForeignKeys = [
-  "CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey",
-  "CodexOAuthSetupRecoveryRequest_latestManifestId_fkey",
-];
-
+const exactIndexes = codexRotatingCatalogIndexNames.filter(
+  (name) => !name.endsWith("_pkey"),
+);
 export function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -153,7 +219,12 @@ export function verifyCodexRotatingRollout(evidence, options = {}) {
     need(
       hasExactKeys(
         descriptor,
-        name === "compatibilityProbe" || name === "database"
+        [
+          "compatibilityProbe",
+          "database",
+          "deployments",
+          "workflowRuns",
+        ].includes(name)
           ? ["path", "sha256", "sourceFile", "sourceFileSha256"]
           : ["path", "sha256"],
       ),
@@ -171,11 +242,41 @@ export function verifyCodexRotatingRollout(evidence, options = {}) {
     need,
     options,
   );
-  const deploymentFacts = verifyDeployments(loaded.deployments, need);
+  const deploymentFacts = verifyDeployments(
+    loaded.deployments,
+    evidence?.artifacts?.deployments,
+    need,
+    options,
+  );
   need(
     databaseFacts?.callerCommit === deploymentFacts.commit &&
       databaseFacts?.callerImageDigest === deploymentFacts.imageDigest,
     "release-migration caller is not bound to the deployed immutable release",
+  );
+  need(
+    databaseFacts?.platformDeployObservationSha256 ===
+      evidence?.artifacts?.deployments?.sha256 &&
+      [
+        "name",
+        "role",
+        "serviceId",
+        "deployId",
+        "jobId",
+        "commit",
+        "imageDigest",
+        "status",
+        "observedAt",
+      ].every(
+        (key) =>
+          databaseFacts?.platformIdentity?.[key] ===
+          deploymentFacts.migrationCaller?.[key],
+      ),
+    "release-migration caller is not copied from the trusted Render observation",
+  );
+  need(
+    databaseFacts?.recoveryWitnessSha256 ===
+      deploymentFacts.runtimeWitnessSha256,
+    "database witness is not independently bound to the authenticated runtime secret observation",
   );
   const compatibilityFacts = verifyCompatibility(
     loaded.compatibilityProbe,
@@ -184,7 +285,12 @@ export function verifyCodexRotatingRollout(evidence, options = {}) {
     need,
     options,
   );
-  const workflowFacts = verifyWorkflowRuns(loaded.workflowRuns, need);
+  const workflowFacts = verifyWorkflowRuns(
+    loaded.workflowRuns,
+    evidence?.artifacts?.workflowRuns,
+    need,
+    options,
+  );
   const canaryFacts = verifyCanaryRuntime(
     loaded.canaryRuntime,
     deploymentFacts,
@@ -220,7 +326,7 @@ function verifyDatabase(db, descriptor, need, options) {
     "production database capture executable source digest mismatched",
   );
   need(
-    db?.observationVersion === 2 &&
+    db?.observationVersion === 4 &&
       db?.source === "production-postgresql-writer" &&
       db?.captureKind === "database-query" &&
       db?.rehearsal === false,
@@ -229,39 +335,93 @@ function verifyDatabase(db, descriptor, need, options) {
   need(
     hasExactKeys(db?.databaseIdentity, [
       "currentDatabase",
+      "currentSchema",
       "serverAddress",
       "systemIdentifier",
     ]) &&
       [
         db?.databaseIdentity?.currentDatabase,
+        db?.databaseIdentity?.currentSchema,
         db?.databaseIdentity?.serverAddress,
         db?.databaseIdentity?.systemIdentifier,
-      ].every((value) => typeof value === "string" && value.length > 0),
+      ].every((value) => typeof value === "string" && value.length > 0) &&
+      db.databaseIdentity.currentSchema === "public",
     "production database identity is incomplete",
+  );
+  need(db?.isWriter === true, "database observation is not from a writer");
+  need(
+    hasExactKeys(db?.databaseGenerationBinding, [
+      "recoveryWitnessSha256",
+      "systemIdentifier",
+      "version",
+    ]) &&
+      db.databaseGenerationBinding.version === 1 &&
+      db.databaseGenerationBinding.systemIdentifier ===
+        db?.databaseIdentity?.systemIdentifier &&
+      /^[a-f0-9]{64}$/u.test(
+        db.databaseGenerationBinding.recoveryWitnessSha256 ?? "",
+      ) &&
+      db.recoveryWitnessSha256 ===
+        db.databaseGenerationBinding.recoveryWitnessSha256,
+    "database recovery witness is not stored against this database generation",
+  );
+  need(
+    hasExactKeys(db?.admittedRecoveryEvidence, [
+      "databaseIncarnations",
+      "witnessFingerprints",
+    ]) &&
+      Array.isArray(db.admittedRecoveryEvidence.witnessFingerprints) &&
+      Array.isArray(db.admittedRecoveryEvidence.databaseIncarnations) &&
+      db.admittedRecoveryEvidence.witnessFingerprints.length > 0 &&
+      db.admittedRecoveryEvidence.databaseIncarnations.length > 0 &&
+      db.admittedRecoveryEvidence.witnessFingerprints.every(
+        (value) => value === db.recoveryWitnessSha256,
+      ) &&
+      db.admittedRecoveryEvidence.databaseIncarnations.every(
+        (value) => value === db.databaseIdentity.systemIdentifier,
+      ),
+    "admitted recovery evidence is not bound to this database generation",
   );
   need(
     hasExactKeys(db?.callerIdentity, [
-      "applicationName",
       "commit",
       "databaseRole",
+      "deployId",
       "id",
       "imageDigest",
+      "jobId",
       "kind",
+      "observedAt",
+      "platform",
+      "platformDeployObservationSha256",
+      "serviceId",
       "sessionUser",
     ]) &&
       db?.callerIdentity?.kind === "immutable-release-migration" &&
       db?.callerIdentity?.id === "release-migration" &&
-      db?.callerIdentity?.applicationName ===
-        "reviewrouter-release-migration" &&
-      typeof db?.callerIdentity?.databaseRole === "string" &&
-      db.callerIdentity.databaseRole.length > 0 &&
-      typeof db?.callerIdentity?.sessionUser === "string" &&
-      db.callerIdentity.sessionUser.length > 0 &&
+      db?.callerIdentity?.platform === "render" &&
+      db?.callerIdentity?.databaseRole ===
+        codexRotatingDatabaseRoles.releaseMigration &&
+      db?.callerIdentity?.sessionUser ===
+        codexRotatingDatabaseRoles.releaseMigration &&
+      /^srv-[A-Za-z0-9_-]+$/u.test(db?.callerIdentity?.serviceId ?? "") &&
+      /^dep-[A-Za-z0-9_-]+$/u.test(db?.callerIdentity?.deployId ?? "") &&
+      /^job-[A-Za-z0-9_-]+$/u.test(db?.callerIdentity?.jobId ?? "") &&
+      /^[a-f0-9]{64}$/u.test(
+        db?.callerIdentity?.platformDeployObservationSha256 ?? "",
+      ) &&
+      Number.isFinite(Date.parse(db?.callerIdentity?.observedAt ?? "")) &&
       /^[a-f0-9]{40}$/u.test(db?.callerIdentity?.commit ?? "") &&
       /^sha256:[a-f0-9]{64}$/u.test(db?.callerIdentity?.imageDigest ?? ""),
-    "production migration caller identity is not one immutable release caller",
+    "production migration caller is not the canonical database role and trusted platform job",
   );
-  verifyDrainObservations(db?.drainObservations, db?.databaseIdentity, need);
+  verifyDatabaseAuthorization(db?.databaseAuthorization, need);
+  verifyDrainObservations(
+    db?.drainObservations,
+    db?.databaseIdentity,
+    db?.recoveryWitnessSha256,
+    need,
+  );
   need(
     /^17\./u.test(db?.postgresVersion ?? ""),
     "database observation is not PostgreSQL 17",
@@ -281,8 +441,22 @@ function verifyDatabase(db, descriptor, need, options) {
     "database observation has unsafe active work",
   );
   need(
-    db?.fetchedRecoveryOwner?.startsWith("setup:") === true,
-    "fetched ambiguity did not pin recovery",
+    /^(?:setup-recovery|versioned-namespace-cutover):.+/u.test(
+      db?.recoveryOwnerId ?? "",
+    ),
+    "production recovery owner identity is invalid",
+  );
+  const catalogManifestSource = readCheckout(
+    db?.catalogManifest?.sourceFile,
+    options,
+  );
+  need(
+    hasExactKeys(db?.catalogManifest, ["sha256", "sourceFile"]) &&
+      db.catalogManifest.sourceFile ===
+        "scripts/codex-rotating-production-writer-schema.mjs" &&
+      catalogManifestSource !== null &&
+      sha256(catalogManifestSource) === db.catalogManifest.sha256,
+    "database catalog manifest source digest mismatched",
   );
   need(
     JSON.stringify(db?.migrationSources?.map((entry) => entry.id)) ===
@@ -292,6 +466,12 @@ function verifyDatabase(db, descriptor, need, options) {
   for (const migration of migrations) {
     const source = readCheckout(migration.sourceFile, options);
     const digest = source ? sha256(source) : null;
+    if (migration.expectedSha256) {
+      need(
+        digest === migration.expectedSha256,
+        `${migration.id} checked-in forward migration digest mismatched`,
+      );
+    }
     const observedSource = db?.migrationSources?.find(
       (entry) => entry.id === migration.id,
     );
@@ -320,6 +500,60 @@ function verifyDatabase(db, descriptor, need, options) {
   }
   need(
     equalSorted(
+      db?.catalog?.tables?.map((entry) => entry.name),
+      codexRotatingCatalogTables,
+    ) &&
+      db?.catalog?.tables?.every(
+        (entry) =>
+          hasExactKeys(entry, [
+            "forceRowSecurity",
+            "kind",
+            "name",
+            "persistence",
+            "rowSecurity",
+          ]) &&
+          entry.kind === "r" &&
+          entry.persistence === "p" &&
+          entry.rowSecurity === false &&
+          entry.forceRowSecurity === false,
+      ),
+    "database owned table catalog is not exact",
+  );
+  need(
+    hasExactKeys(db?.catalog?.inventory, [
+      "checks",
+      "columns",
+      "foreignKeys",
+      "functions",
+      "indexes",
+      "triggers",
+    ]) &&
+      equalSorted(
+        db?.catalog?.inventory?.columns,
+        codexRotatingCatalogColumnKeys,
+      ) &&
+      equalSorted(
+        db?.catalog?.inventory?.checks,
+        codexRotatingCatalogCheckNames,
+      ) &&
+      equalSorted(
+        db?.catalog?.inventory?.indexes,
+        codexRotatingCatalogIndexNames,
+      ) &&
+      equalSorted(
+        db?.catalog?.inventory?.foreignKeys,
+        codexRotatingCatalogForeignKeyNames,
+      ) &&
+      equalSorted(db?.catalog?.inventory?.triggers, exactTriggers) &&
+      equalSorted(db?.catalog?.inventory?.functions, exactFunctions),
+    "database rotating OAuth catalog inventory is not exact",
+  );
+  need(
+    exactCatalogColumns(db?.catalog?.columns),
+    "database owned column catalog is not exact",
+  );
+  need(
+    equalSorted(
       db?.catalog?.triggers?.map((entry) => entry.name),
       exactTriggers,
     ),
@@ -328,6 +562,13 @@ function verifyDatabase(db, descriptor, need, options) {
   need(
     db?.catalog?.triggers?.every((entry) => exactTriggerBinding(entry)),
     "database trigger bindings are not exact",
+  );
+  need(
+    equalSorted(
+      db?.catalog?.functions?.map((entry) => entry.name),
+      exactFunctions,
+    ) && db?.catalog?.functions?.every(exactFunctionDefinition),
+    "database trigger function definitions are not exact",
   );
   need(
     equalSorted(
@@ -355,22 +596,297 @@ function verifyDatabase(db, descriptor, need, options) {
     equalSorted(
       db?.catalog?.foreignKeys?.map((entry) => entry.name),
       exactForeignKeys,
-    ) &&
-      db?.catalog?.foreignKeys?.every(
-        (entry) =>
-          entry.validated === true &&
-          entry.definition?.includes("FOREIGN KEY") &&
-          entry.definition?.includes("REFERENCES"),
-      ),
+    ) && db?.catalog?.foreignKeys?.every(exactForeignKeyDefinition),
     "database recovery-ledger foreign keys are not exact",
   );
+  need(
+    equalSorted(
+      db?.catalog?.primaryKeys?.map((entry) => entry.name),
+      exactPrimaryKeys.map(({ name }) => name),
+    ) &&
+      db?.catalog?.primaryKeys?.every((entry) => {
+        const expected = exactPrimaryKeys.find(
+          ({ name }) => name === entry.name,
+        );
+        return (
+          expected &&
+          hasExactKeys(entry, ["definition", "name", "table", "validated"]) &&
+          entry.table === expected.table &&
+          entry.definition === expected.definition &&
+          entry.validated === expected.validated
+        );
+      }),
+    "database evidence primary keys are not exact",
+  );
+  need(
+    exactCatalogAcl(
+      db?.catalog?.privileges?.functions,
+      exactFunctions,
+      [releaseMigrationRole],
+      ["EXECUTE"],
+    ),
+    "database owned function privileges are not exact",
+  );
+  need(
+    exactCatalogAcl(
+      db?.catalog?.privileges?.tables,
+      codexRotatingCatalogTables,
+      [releaseMigrationRole, ...runtimeDatabaseRoles],
+      null,
+    ),
+    "database owned table privileges are not exact",
+  );
   return {
+    recoveryWitnessSha256: db?.recoveryWitnessSha256,
     callerCommit: db?.callerIdentity?.commit,
     callerImageDigest: db?.callerIdentity?.imageDigest,
+    platformDeployObservationSha256:
+      db?.callerIdentity?.platformDeployObservationSha256,
+    platformIdentity: db?.callerIdentity
+      ? {
+          name: "reviewrouter-release-migration",
+          role: "release-migration",
+          serviceId: db.callerIdentity.serviceId,
+          deployId: db.callerIdentity.deployId,
+          jobId: db.callerIdentity.jobId,
+          commit: db.callerIdentity.commit,
+          imageDigest: db.callerIdentity.imageDigest,
+          status: "succeeded",
+          observedAt: db.callerIdentity.observedAt,
+        }
+      : null,
   };
 }
 
-function verifyDrainObservations(observations, databaseIdentity, need) {
+function exactCatalogAcl(entries, objects, grantees, fixedPrivileges) {
+  if (
+    !Array.isArray(entries) ||
+    entries.some(
+      (entry) =>
+        !hasExactKeys(entry, [
+          "grantable",
+          "grantee",
+          "grantor",
+          "name",
+          "privilege",
+        ]),
+    )
+  )
+    return false;
+  const ownerPrivileges = fixedPrivileges ?? [
+    "DELETE",
+    "INSERT",
+    "MAINTAIN",
+    "REFERENCES",
+    "SELECT",
+    "TRIGGER",
+    "TRUNCATE",
+    "UPDATE",
+  ];
+  const runtimePrivileges = ["DELETE", "INSERT", "SELECT", "UPDATE"];
+  const expected = [];
+  for (const name of objects) {
+    for (const grantee of grantees) {
+      const privileges =
+        grantee === releaseMigrationRole ? ownerPrivileges : runtimePrivileges;
+      for (const privilege of privileges)
+        expected.push({
+          name,
+          grantee,
+          grantor: releaseMigrationRole,
+          privilege,
+          grantable: false,
+        });
+    }
+  }
+  const key = (entry) =>
+    JSON.stringify([
+      entry.name,
+      entry.grantee,
+      entry.grantor,
+      entry.privilege,
+      entry.grantable,
+    ]);
+  return equalSorted(entries.map(key), expected.map(key));
+}
+
+export function verifyCodexRotatingDatabaseCatalog(
+  catalog,
+  { verifyPrivileges = true } = {},
+) {
+  const catalogMessages = new Set([
+    "database owned table catalog is not exact",
+    "database rotating OAuth catalog inventory is not exact",
+    "database owned column catalog is not exact",
+    "database trigger catalog is not exact",
+    "database trigger bindings are not exact",
+    "database trigger function definitions are not exact",
+    "database check catalog is not exact",
+    "database check definitions/validation flags are not exact",
+    "database index catalog is not exact",
+    "database index definitions/flags are not exact",
+    "database recovery-ledger foreign keys are not exact",
+    "database evidence primary keys are not exact",
+    "database owned function privileges are not exact",
+    "database owned table privileges are not exact",
+  ]);
+  const failures = [];
+  verifyDatabase(
+    { catalog },
+    {},
+    (condition, message) => {
+      if (catalogMessages.has(message) && !condition) failures.push(message);
+    },
+    {},
+  );
+  if (!verifyPrivileges) {
+    const structuralFailures = failures.filter(
+      (failure) =>
+        failure !== "database owned function privileges are not exact" &&
+        failure !== "database owned table privileges are not exact",
+    );
+    return {
+      ok: structuralFailures.length === 0,
+      failures: structuralFailures,
+    };
+  }
+  return { ok: failures.length === 0, failures };
+}
+
+function verifyDatabaseAuthorization(authorization, need) {
+  const releaseRole = codexRotatingDatabaseRoles.releaseMigration;
+  const expectedRoleNames = [
+    releaseRole,
+    ...codexRotatingDatabaseRoles.runtime,
+  ];
+  const roles = authorization?.roles ?? [];
+  need(
+    hasExactKeys(authorization, [
+      "databaseOwner",
+      "memberships",
+      "nonReleaseOwnedCatalogObjects",
+      "nonReleaseOwnedFunctions",
+      "releaseRoleSettableByLoginRoles",
+      "roles",
+      "schemaOwner",
+    ]) &&
+      authorization.databaseOwner === releaseRole &&
+      authorization.schemaOwner === releaseRole &&
+      equalSorted(
+        roles.map((entry) => entry.name),
+        expectedRoleNames,
+      ),
+    "database DDL ownership and canonical role inventory are not exclusive",
+  );
+  need(
+    roles.every((entry) => {
+      if (
+        !hasExactKeys(entry, [
+          "bypassRls",
+          "canLogin",
+          "canSetReleaseRole",
+          "createDatabase",
+          "createRole",
+          "databaseCreate",
+          "ddlTablePrivileges",
+          "name",
+          "ownsCatalogObject",
+          "schemaCreate",
+          "superuser",
+        ]) ||
+        entry.canLogin !== true ||
+        entry.superuser !== false ||
+        entry.createDatabase !== false ||
+        entry.createRole !== false ||
+        entry.bypassRls !== false
+      ) {
+        return false;
+      }
+      const isRelease = entry.name === releaseRole;
+      return (
+        entry.databaseCreate === isRelease &&
+        entry.schemaCreate === isRelease &&
+        entry.canSetReleaseRole === isRelease &&
+        entry.ownsCatalogObject === isRelease &&
+        entry.ddlTablePrivileges === isRelease
+      );
+    }) &&
+      Array.isArray(authorization?.memberships) &&
+      authorization.memberships.length === 0 &&
+      JSON.stringify(authorization?.releaseRoleSettableByLoginRoles) ===
+        JSON.stringify([releaseRole]) &&
+      Array.isArray(authorization?.nonReleaseOwnedCatalogObjects) &&
+      authorization.nonReleaseOwnedCatalogObjects.length === 0 &&
+      Array.isArray(authorization?.nonReleaseOwnedFunctions) &&
+      authorization.nonReleaseOwnedFunctions.length === 0,
+    "runtime database roles can perform DDL or assume the release-migration role",
+  );
+}
+
+function exactCatalogColumns(columns) {
+  if (
+    !Array.isArray(columns) ||
+    columns.length !== codexRotatingCatalogColumns.length
+  ) {
+    return false;
+  }
+  const actual = new Map(
+    columns.map((entry) => [catalogColumnKey(entry), entry]),
+  );
+  if (actual.size !== columns.length) return false;
+  return codexRotatingCatalogColumns.every((expected) => {
+    const entry = actual.get(catalogColumnKey(expected));
+    return (
+      hasExactKeys(entry, [
+        "defaultExpression",
+        "generated",
+        "identity",
+        "name",
+        "nullable",
+        "ordinal",
+        "table",
+        "type",
+      ]) &&
+      entry.table === expected.table &&
+      entry.name === expected.name &&
+      Number.isInteger(entry.ordinal) &&
+      entry.ordinal > 0 &&
+      entry.type === expected.type &&
+      entry.nullable === expected.nullable &&
+      normalizeCatalogDefault(entry.defaultExpression) ===
+        normalizeCatalogDefault(expected.defaultExpression) &&
+      entry.identity === "" &&
+      entry.generated === ""
+    );
+  });
+}
+
+function normalizeCatalogDefault(value) {
+  if (value === null || value === undefined) return null;
+  return String(value)
+    .replace(/::(?:bigint|integer|boolean)\b/giu, "")
+    .replace(/^\((.*)\)$/u, "$1")
+    .trim()
+    .toUpperCase();
+}
+
+function exactForeignKeyDefinition(entry) {
+  const expected = exactForeignKeyByName.get(entry?.name);
+  return (
+    expected !== undefined &&
+    hasExactKeys(entry, ["definition", "name", "table", "validated"]) &&
+    entry.table === expected.table &&
+    entry.definition === expected.definition &&
+    entry.validated === true
+  );
+}
+
+function verifyDrainObservations(
+  observations,
+  databaseIdentity,
+  recoveryWitnessSha256,
+  need,
+) {
   need(
     Array.isArray(observations) && observations.length === 2,
     "exactly two production drain observations are required",
@@ -381,9 +897,12 @@ function verifyDrainObservations(observations, databaseIdentity, need) {
       (entry) =>
         hasExactKeys(entry, [
           "activeLeases",
+          "databaseIdentity",
           "fetchedSetups",
+          "isWriter",
           "observedAt",
           "pendingIntents",
+          "recoveryWitnessSha256",
           "writerInFlight",
         ]) &&
         [
@@ -399,8 +918,17 @@ function verifyDrainObservations(observations, databaseIdentity, need) {
     "production in-flight barrier was not stably zero across two observations",
   );
   need(
-    databaseIdentity && Object.keys(databaseIdentity).length === 3,
-    "drain observations are not bound to one database identity",
+    databaseIdentity &&
+      Object.keys(databaseIdentity).length === 4 &&
+      /^[a-f0-9]{64}$/u.test(recoveryWitnessSha256 ?? "") &&
+      observations.every(
+        (entry) =>
+          entry.isWriter === true &&
+          JSON.stringify(entry.databaseIdentity) ===
+            JSON.stringify(databaseIdentity) &&
+          entry.recoveryWitnessSha256 === recoveryWitnessSha256,
+      ),
+    "drain observations are not bound to one database incarnation and recovery witness",
   );
 }
 
@@ -421,6 +949,31 @@ function exactTriggerBinding(entry) {
       "codex_oauth_child_identity_fence_guard",
       23,
     ],
+    CodexOAuthSetupManifest_evidence_guard: [
+      "CodexOAuthSetupManifest",
+      "codex_oauth_setup_manifest_evidence_guard",
+      31,
+    ],
+    CodexOAuthSecretNamespace_tombstone_guard: [
+      "CodexOAuthSecretNamespace",
+      "codex_oauth_secret_namespace_tombstone_guard",
+      31,
+    ],
+    CodexOAuthSetupPayloadClaim_evidence_guard: [
+      "CodexOAuthSetupPayloadClaim",
+      "codex_oauth_setup_claim_evidence_guard",
+      31,
+    ],
+    CodexOAuthSetupDispatchAttempt_evidence_guard: [
+      "CodexOAuthSetupDispatchAttempt",
+      "codex_oauth_setup_attempt_evidence_guard",
+      31,
+    ],
+    CodexOAuthSetupRecoveryRequest_evidence_guard: [
+      "CodexOAuthSetupRecoveryRequest",
+      "codex_oauth_setup_recovery_evidence_guard",
+      31,
+    ],
     CodexOAuthLease_identity_fence_guard: [
       "CodexOAuthLease",
       "codex_oauth_child_identity_fence_guard",
@@ -431,6 +984,11 @@ function exactTriggerBinding(entry) {
       "codex_oauth_child_identity_fence_guard",
       23,
     ],
+    CodexOAuthWritebackIntent_runtime_evidence_guard: [
+      "CodexOAuthWritebackIntent",
+      "codex_oauth_runtime_writeback_evidence_guard",
+      31,
+    ],
     RepositoryConnection_codex_oauth_identity_guard: [
       "RepositoryConnection",
       "codex_oauth_repository_identity_guard",
@@ -438,12 +996,64 @@ function exactTriggerBinding(entry) {
     ],
   };
   return (
-    JSON.stringify([entry?.table, entry?.function, entry?.type]) ===
-    JSON.stringify(bindings[entry?.name])
+    hasExactKeys(entry, ["enabled", "function", "name", "table", "type"]) &&
+    entry.enabled === "O" &&
+    JSON.stringify([entry.table, entry.function, entry.type]) ===
+      JSON.stringify(bindings[entry.name])
+  );
+}
+function exactFunctionDefinition(entry) {
+  const bodySha256 = exactFunctionBodyDigestByName.get(entry?.name);
+  const expectedArguments =
+    {
+      codex_oauth_repair_quarantined_child:
+        "target_kind text, target_id text, replacement_lease_id text DEFAULT NULL::text",
+      codex_oauth_repair_quarantined_provider:
+        "target_provider_instance_row_id text, target_github_repository_id bigint DEFAULT NULL::bigint",
+    }[entry?.name] ?? "";
+  const expectedResult = entry?.name?.includes("repair") ? "void" : "trigger";
+  return (
+    typeof bodySha256 === "string" &&
+    hasExactKeys(entry, [
+      "arguments",
+      "bodySha256",
+      "config",
+      "language",
+      "leakproof",
+      "name",
+      "parallel",
+      "procost",
+      "prokind",
+      "prorows",
+      "proretset",
+      "prosupport",
+      "resultType",
+      "securityDefiner",
+      "strict",
+      "volatility",
+    ]) &&
+    entry?.securityDefiner === false &&
+    entry.prokind === "f" &&
+    entry.proretset === false &&
+    entry.prosupport === null &&
+    entry.procost === 100 &&
+    entry.prorows === 0 &&
+    entry?.config === null &&
+    entry.language === "plpgsql" &&
+    entry.volatility === "v" &&
+    entry.parallel === "u" &&
+    entry.leakproof === false &&
+    entry.strict === false &&
+    entry.resultType === expectedResult &&
+    entry.arguments === expectedArguments &&
+    entry.bodySha256 === bodySha256
   );
 }
 function exactCheckDefinition(entry) {
+  const canonical = exactCheckDefinitionByName.get(entry?.name);
+  const expectedTable = entry?.name?.split("_", 1)[0];
   const tokens = {
+    CodexOAuthLease_pullRequestNumber_check: ["pullRequestNumber"],
     CodexOAuthProviderInstance_mutation_fence_check: [
       "mutationEpoch",
       "mutationOwner",
@@ -472,8 +1082,13 @@ function exactCheckDefinition(entry) {
     CodexOAuthSetupRecoveryRequest_epoch_check: ["mutationEpoch"],
     CodexOAuthSetupRecoveryRequest_contract_check: [
       "forced_reseed",
+      "forced_reseed_account_switch",
+      "account_switch_is_intended",
       "manifest_issued",
       "completed",
+    ],
+    CodexOAuthSetupRecoveryRequest_database_recovery_witness_check: [
+      "databaseRecoveryWitness",
     ],
     CodexOAuthSetupManifest_payload_claim_complete_check: [
       "payloadVersion",
@@ -486,23 +1101,145 @@ function exactCheckDefinition(entry) {
       "recoveryExpiresAt",
       "lastFetchedAt",
     ],
+    CodexOAuthSetupManifest_database_recovery_witness_check: [
+      "databaseRecoveryWitness",
+    ],
+    CodexOAuthSetupPayloadClaim_payload_check: [
+      "payloadVersion",
+      "canonicalizationVersion",
+      "accountIdentityAlgorithm",
+      "databaseRecoveryWitness",
+      "prepared",
+      "retired_confirmed",
+      "retired_active",
+    ],
+    CodexOAuthSecretNamespace_lifecycle_check: [
+      "retired_ambiguous",
+      "permanentlyRetired",
+      "workflowSourceCommitSha",
+      "workflowSourceBlobSha",
+      "workflowSemanticSha256",
+      "trusted_default_branch_revision",
+      "attestedRepositoryId",
+    ],
+    CodexOAuthSecretNamespace_name_check: [
+      "secretName",
+      "REVIEWROUTER_CODEX_AUTH_JSON_R",
+    ],
+    CodexOAuthSecretNamespace_recovery_witness_check: [
+      "databaseRecoveryWitness",
+    ],
+    CodexOAuthSetupDispatchAttempt_lifecycle_check: [
+      "dispatch_authorized",
+      "retired_ambiguous",
+      "retired_confirmed",
+      "definiteResponseCode",
+    ],
+    CodexOAuthProviderInstance_active_namespace_pair_check: [
+      "activeSecretNamespaceId",
+      "activeSecretNamespaceEpoch",
+      "activeSecretNamespaceName",
+    ],
+    CodexOAuthLease_secret_namespace_pair_check: [
+      "secretNamespaceId",
+      "secretNamespaceEpoch",
+    ],
+    CodexOAuthWritebackIntent_versioned_dispatch_check: [
+      "dispatchAttemptId",
+      "secretNamespaceId",
+      "dispatchAuthorizedAt",
+    ],
+    CodexOAuthWritebackIntent_executor_lease_check: [
+      "dispatchAttemptId",
+      "executorOwner",
+      "executorLeaseExpiresAt",
+      "dispatchAuthorizedAt",
+    ],
+    CodexOAuthWritebackIntent_provider_response_check: [
+      "providerResponseCode",
+      "201",
+      "204",
+    ],
+    CodexOAuthWritebackIntent_database_incarnation_check: [
+      "databaseIncarnation",
+    ],
+    CodexOAuthWritebackIntent_database_recovery_witness_check: [
+      "databaseRecoveryWitness",
+    ],
+    CodexOAuthWritebackIntent_account_identity_check: [
+      "accountIdentityHash",
+      "accountIdentityAlgorithm",
+      "provider_issuer_subject_account_v1",
+    ],
+    CodexOAuthWritebackIntent_recovery_resolution_check: [
+      "recoveryRequestRowId",
+      "recoveryResolvedAt",
+    ],
   }[entry?.name];
   const expectedValidated =
     entry?.name === "CodexOAuthSetupRecoveryRequest_epoch_check" ||
     !entry?.name?.endsWith("_epoch_check");
   return (
     Array.isArray(tokens) &&
+    canonical !== undefined &&
+    hasExactKeys(entry, [
+      "definition",
+      "definitionSha256",
+      "name",
+      "table",
+      "validated",
+    ]) &&
+    entry.table === expectedTable &&
     entry?.validated === expectedValidated &&
-    tokens.every((token) => entry?.definition?.includes(token))
+    entry.validated === canonical.validated &&
+    entry.definitionSha256 === canonical.definitionSha256
   );
 }
 function exactIndexDefinition(entry) {
+  const expectedDefinitionSha256 = exactIndexDefinitionDigestByName.get(
+    entry?.name,
+  );
+  const expectedPredicateSha256 =
+    exactPartialIndexPredicateDigestByName.get(entry?.name) ?? null;
   const keys = {
-    CodexOAuthSetupManifest_one_active_provider_key: [
-      "providerInstanceRowId",
-      "issued",
-      "fetched",
+    CodexOAuthLease_expiresAt_idx: ["expiresAt"],
+    CodexOAuthLease_leaseKey_key: ["leaseKey"],
+    CodexOAuthLease_providerInstanceId_status_idx: [
+      "providerInstanceId",
+      "status",
     ],
+    CodexOAuthLease_repositoryId_status_idx: ["repositoryId", "status"],
+    CodexOAuthLease_workspaceId_status_idx: ["workspaceId", "status"],
+    CodexOAuthProviderInstance_activeLeaseExpiresAt_idx: [
+      "activeLeaseExpiresAt",
+    ],
+    CodexOAuthProviderInstance_providerInstanceId_key: ["providerInstanceId"],
+    CodexOAuthProviderInstance_repositoryId_authMode_key: [
+      "repositoryId",
+      "authMode",
+    ],
+    CodexOAuthProviderInstance_repositoryId_state_idx: [
+      "repositoryId",
+      "state",
+    ],
+    CodexOAuthProviderInstance_workspaceId_state_idx: ["workspaceId", "state"],
+    CodexOAuthSetupManifest_expiresAt_idx: ["expiresAt"],
+    CodexOAuthSetupManifest_providerInstanceId_status_idx: [
+      "providerInstanceId",
+      "status",
+    ],
+    CodexOAuthSetupManifest_repositoryId_status_idx: ["repositoryId", "status"],
+    CodexOAuthSetupManifest_setupNonce_key: ["setupNonce"],
+    CodexOAuthWritebackIntent_leaseId_status_idx: ["leaseId", "status"],
+    CodexOAuthWritebackIntent_providerInstanceId_status_idx: [
+      "providerInstanceId",
+      "status",
+    ],
+    CodexOAuthWritebackIntent_providerInstanceId_idempotencyKey_key: [
+      "providerInstanceId",
+      "idempotencyKey",
+    ],
+    CodexOAuthSetupManifest_one_active_provider_key: ["providerInstanceRowId"],
     CodexOAuthProviderInstance_mutation_owner_idx: [
       "mutationOwner",
       "mutationEpoch",
@@ -534,44 +1271,260 @@ function exactIndexDefinition(entry) {
     ],
     CodexOAuthSetupRecoveryRequest_one_active_provider_key: [
       "providerInstanceRowId",
-      "active",
-      "manifest_issued",
     ],
     CodexOAuthSetupManifest_recovery_expiry_idx: [
       "status",
       "recoveryExpiresAt",
     ],
+    CodexOAuthSetupPayloadClaim_provider_operation_key: [
+      "providerInstanceRowId",
+      "operationId",
+    ],
+    CodexOAuthSetupPayloadClaim_provider_epoch_key: [
+      "providerInstanceRowId",
+      "recoveryEpoch",
+    ],
+    CodexOAuthSetupPayloadClaim_confirmedAttemptId_key: ["confirmedAttemptId"],
+    CodexOAuthSetupPayloadClaim_provider_status_idx: [
+      "providerInstanceRowId",
+      "status",
+    ],
+    CodexOAuthSecretNamespace_secretName_key: ["secretName"],
+    CodexOAuthSecretNamespace_provider_epoch_key: [
+      "providerInstanceRowId",
+      "namespaceEpoch",
+    ],
+    CodexOAuthSecretNamespace_provider_status_idx: [
+      "providerInstanceRowId",
+      "status",
+    ],
+    CodexOAuthSecretNamespace_id_epoch_key: ["id", "namespaceEpoch"],
+    CodexOAuthSecretNamespace_id_epoch_name_key: [
+      "id",
+      "namespaceEpoch",
+      "secretName",
+    ],
+    CodexOAuthSecretNamespace_provider_id_key: ["providerInstanceRowId", "id"],
+    CodexOAuthSetupDispatchAttempt_namespaceId_key: ["namespaceId"],
+    CodexOAuthSetupDispatchAttempt_claim_idempotency_key: [
+      "claimId",
+      "idempotencyKey",
+    ],
+    CodexOAuthSetupDispatchAttempt_claim_ordinal_key: ["claimId", "ordinal"],
+    CodexOAuthSetupDispatchAttempt_claim_status_idx: ["claimId", "status"],
+    CodexOAuthProviderInstance_activeSecretNamespaceId_key: [
+      "activeSecretNamespaceId",
+    ],
+    CodexOAuthWritebackIntent_dispatchAttemptId_key: ["dispatchAttemptId"],
+    CodexOAuthWritebackIntent_secretNamespaceId_key: ["secretNamespaceId"],
+    CodexOAuthWritebackIntent_versioned_lease_key: ["leaseId"],
   }[entry?.name];
+  const predicateTokens = {
+    CodexOAuthSetupManifest_one_active_provider_key: [
+      "status",
+      "issued",
+      "fetched",
+    ],
+    CodexOAuthSetupRecoveryRequest_one_active_provider_key: [
+      "state",
+      "active",
+      "manifest_issued",
+    ],
+    CodexOAuthWritebackIntent_versioned_lease_key: [
+      "databaseIncarnation",
+      "IS NOT NULL",
+    ],
+  }[entry?.name];
+  const expectedOpclasses = keys?.map((key) =>
+    ["mutationEpoch", "recoveryEpoch", "namespaceEpoch"].includes(key)
+      ? "int8_ops"
+      : key === "ordinal"
+        ? "int4_ops"
+        : ["resolvedAt", "expiresAt", "activeLeaseExpiresAt"].includes(key)
+          ? "timestamp_ops"
+          : key === "recoveryExpiresAt"
+            ? "timestamptz_ops"
+            : "text_ops",
+  );
   return (
     Array.isArray(keys) &&
+    hasExactKeys(entry, [
+      "definition",
+      "definitionSha256",
+      "includeCount",
+      "keyCount",
+      "keys",
+      "method",
+      "name",
+      "opclasses",
+      "options",
+      "predicate",
+      "predicateSha256",
+      "ready",
+      "unique",
+      "valid",
+    ]) &&
     entry?.valid === true &&
     entry?.ready === true &&
+    entry.method === "btree" &&
+    entry.keyCount === keys.length &&
+    entry.includeCount === 0 &&
+    JSON.stringify(entry.keys) === JSON.stringify(keys) &&
+    JSON.stringify(entry.opclasses) === JSON.stringify(expectedOpclasses) &&
+    JSON.stringify(entry.options) === JSON.stringify(keys.map(() => 0)) &&
     entry?.unique ===
       [
         "CodexOAuthSetupManifest_one_active_provider_key",
         "CodexOAuthSetupRecoveryRequest_provider_request_key",
         "CodexOAuthSetupRecoveryRequest_latestManifestId_key",
         "CodexOAuthSetupRecoveryRequest_one_active_provider_key",
+        "CodexOAuthSetupPayloadClaim_provider_operation_key",
+        "CodexOAuthSetupPayloadClaim_provider_epoch_key",
+        "CodexOAuthSetupPayloadClaim_confirmedAttemptId_key",
+        "CodexOAuthSecretNamespace_secretName_key",
+        "CodexOAuthSecretNamespace_provider_epoch_key",
+        "CodexOAuthSecretNamespace_id_epoch_key",
+        "CodexOAuthSecretNamespace_id_epoch_name_key",
+        "CodexOAuthSecretNamespace_provider_id_key",
+        "CodexOAuthSetupDispatchAttempt_namespaceId_key",
+        "CodexOAuthSetupDispatchAttempt_claim_idempotency_key",
+        "CodexOAuthSetupDispatchAttempt_claim_ordinal_key",
+        "CodexOAuthProviderInstance_activeSecretNamespaceId_key",
+        "CodexOAuthWritebackIntent_dispatchAttemptId_key",
+        "CodexOAuthWritebackIntent_secretNamespaceId_key",
+        "CodexOAuthWritebackIntent_versioned_lease_key",
+        "CodexOAuthLease_leaseKey_key",
+        "CodexOAuthProviderInstance_providerInstanceId_key",
+        "CodexOAuthProviderInstance_repositoryId_authMode_key",
+        "CodexOAuthSetupManifest_setupNonce_key",
+        "CodexOAuthWritebackIntent_providerInstanceId_idempotencyKey_key",
       ].includes(entry?.name) &&
+    typeof expectedDefinitionSha256 === "string" &&
+    entry.definitionSha256 === expectedDefinitionSha256 &&
+    entry.predicateSha256 === expectedPredicateSha256 &&
+    (predicateTokens ? entry?.predicate.length > 0 : entry?.predicate === "") &&
     keys.every((key) =>
       `${entry?.definition} ${entry?.predicate}`.includes(key),
     )
   );
 }
 
-function verifyDeployments(observation, need) {
+function verifyProviderCapture(
+  observation,
+  descriptor,
+  provider,
+  need,
+  options,
+) {
+  const source = readCheckout(descriptor?.sourceFile, options);
   need(
-    observation?.observationVersion === 1 &&
+    descriptor?.sourceFile ===
+      "scripts/codex-rotating-provider-provenance.mjs" &&
+      source !== null &&
+      sha256(source) === descriptor?.sourceFileSha256,
+    `${provider} provider capture executable source digest mismatched`,
+  );
+  const raw = observation?.rawResponses;
+  const host = provider === "Render" ? "api.render.com" : "api.github.com";
+  const rawValid =
+    Array.isArray(raw) &&
+    raw.length > 0 &&
+    raw.every((entry) => {
+      let url;
+      try {
+        url = new URL(entry?.url);
+      } catch {
+        return false;
+      }
+      return (
+        (hasExactKeys(entry, ["body", "bodySha256", "status", "url"]) ||
+          hasExactKeys(entry, [
+            "body",
+            "bodySha256",
+            "nextUrl",
+            "status",
+            "url",
+          ])) &&
+        url.protocol === "https:" &&
+        url.hostname === host &&
+        entry.status === 200 &&
+        entry.bodySha256 === sha256Utf8(canonicalJson(entry.body).trimEnd())
+      );
+    });
+  need(
+    rawValid &&
+      observation?.captureIdentity?.authenticated === true &&
+      observation.captureIdentity.apiHost === host &&
+      Number.isFinite(
+        Date.parse(observation.captureIdentity.observedAt ?? ""),
+      ) &&
+      observation.captureIdentity.rawResponsesSha256 ===
+        sha256Utf8(canonicalJson(raw).trimEnd()),
+    `${provider} evidence lacks an authenticated immutable capture identity`,
+  );
+  return rawValid ? canonicalJson(raw) : "";
+}
+
+function verifyDeployments(observation, descriptor, need, options) {
+  const raw = verifyProviderCapture(
+    observation,
+    descriptor,
+    "Render",
+    need,
+    options,
+  );
+  need(
+    observation?.observationVersion === 2 &&
       observation?.source === "render-api",
     "deployments must be captured from the Render API",
   );
   const services = observation?.services ?? [];
   need(
+    hasExactKeys(observation?.database, ["id", "name", "ownerId", "version"]) &&
+      /^dpg-[A-Za-z0-9_-]+$/u.test(observation.database.id ?? "") &&
+      observation.database.name === "reviewrouter-db" &&
+      /^17(?:\.|$)/u.test(observation.database.version ?? ""),
+    "Render database observation is not PostgreSQL 17",
+  );
+  need(
+    observation?.database?.ownerId === observation?.captureIdentity?.ownerId &&
+      raw.includes(observation?.database?.id ?? "__missing_database__") &&
+      raw.includes(observation?.database?.ownerId ?? "__missing_owner__"),
+    "Render database is not bound to the authenticated owner and raw API facts",
+  );
+  need(
     equalSorted(
       services.map((entry) => entry.name),
-      exactServices,
+      [...exactServiceRoles.keys()],
     ),
     "deployments must cover api, web, and worker exactly",
+  );
+  need(
+    services.every(
+      (entry) =>
+        raw.includes(entry.serviceId) &&
+        raw.includes(entry.deployId) &&
+        raw.includes(entry.commit) &&
+        raw.includes(entry.imageDigest),
+    ),
+    "Render deployment facts are not derivable from immutable raw API responses",
+  );
+  need(
+    services.every(
+      (entry) =>
+        exactServiceRoles.get(entry.name) === entry.role &&
+        /^srv-[A-Za-z0-9_-]+$/u.test(entry.serviceId ?? "") &&
+        /^dep-[A-Za-z0-9_-]+$/u.test(entry.deployId ?? ""),
+    ),
+    "Render deployment service names, roles, or immutable IDs are invalid",
+  );
+  need(
+    /^[a-f0-9]{64}$/u.test(observation?.runtimeWitness?.sha256 ?? "") &&
+      observation.runtimeWitness.key ===
+        "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS" &&
+      raw.includes(observation.runtimeWitness.serviceId) &&
+      raw.includes(observation.runtimeWitness.sourceResponseSha256),
+    "Render runtime witness observation is absent or not source-bound",
   );
   const commits = new Set(services.map((entry) => entry.commit));
   const images = new Set(services.map((entry) => entry.imageDigest));
@@ -601,12 +1554,40 @@ function verifyDeployments(observation, need) {
     ),
     "deployment observation timestamps are invalid",
   );
+  const migrationCallers = observation?.migrationCallers ?? [];
+  need(
+    Array.isArray(migrationCallers) &&
+      migrationCallers.length === 1 &&
+      hasExactKeys(migrationCallers[0], [
+        "commit",
+        "deployId",
+        "imageDigest",
+        "jobId",
+        "name",
+        "observedAt",
+        "role",
+        "serviceId",
+        "status",
+      ]) &&
+      migrationCallers[0].name === "reviewrouter-release-migration" &&
+      migrationCallers[0].role === "release-migration" &&
+      /^srv-[A-Za-z0-9_-]+$/u.test(migrationCallers[0].serviceId ?? "") &&
+      /^dep-[A-Za-z0-9_-]+$/u.test(migrationCallers[0].deployId ?? "") &&
+      /^job-[A-Za-z0-9_-]+$/u.test(migrationCallers[0].jobId ?? "") &&
+      migrationCallers[0].status === "succeeded" &&
+      migrationCallers[0].commit === [...commits][0] &&
+      migrationCallers[0].imageDigest === [...images][0] &&
+      Number.isFinite(Date.parse(migrationCallers[0].observedAt ?? "")),
+    "Render observation must contain exactly one immutable release-migration caller",
+  );
   return {
     commit: [...commits][0],
     imageDigest: [...images][0],
     lastObservedAt: Math.max(
       ...services.map((entry) => Date.parse(entry.observedAt ?? "")),
     ),
+    migrationCaller: migrationCallers[0],
+    runtimeWitnessSha256: observation?.runtimeWitness?.sha256,
   };
 }
 
@@ -701,11 +1682,90 @@ function exactCompatibilityObservations(cases) {
   );
 }
 
-function verifyWorkflowRuns(observation, need) {
+function exactGitHubCohortPages(observation) {
+  const cohort = observation?.cohort;
+  if (
+    !hasExactKeys(cohort, [
+      "perPage",
+      "repositoryFullName",
+      "repositoryId",
+      "statuses",
+      "workflow",
+    ]) ||
+    !/^[1-9][0-9]*$/u.test(cohort.repositoryId ?? "") ||
+    !/^[^/]+\/[^/]+$/u.test(cohort.repositoryFullName ?? "") ||
+    cohort.perPage !== 100 ||
+    JSON.stringify(cohort.statuses) !==
+      JSON.stringify(["queued", "in_progress"])
+  )
+    return false;
+  const [owner, repository] = cohort.repositoryFullName.split("/");
+  const pages = (observation.rawResponses ?? []).filter(
+    (entry) => entry?.body && Array.isArray(entry.body.workflow_runs),
+  );
+  for (const status of cohort.statuses) {
+    const cohortPages = pages.filter((entry) => {
+      let url;
+      try {
+        url = new URL(entry.url);
+      } catch {
+        return false;
+      }
+      return (
+        url.pathname ===
+          `/repos/${owner}/${repository}/actions/workflows/${cohort.workflow}/runs` &&
+        url.searchParams.get("status") === status &&
+        url.searchParams.get("per_page") === "100"
+      );
+    });
+    if (cohortPages.length === 0) return false;
+    const byUrl = new Map(cohortPages.map((entry) => [entry.url, entry]));
+    let expected = `https://api.github.com/repos/${owner}/${repository}/actions/workflows/${cohort.workflow}/runs?status=${status}&per_page=100&page=1`;
+    const visited = new Set();
+    while (expected) {
+      const page = byUrl.get(expected);
+      if (
+        !page ||
+        visited.has(expected) ||
+        page.body.workflow_runs.length > 100
+      )
+        return false;
+      visited.add(expected);
+      if (page.nextUrl === null && page.body.workflow_runs.length === 100)
+        return false;
+      expected = page.nextUrl;
+    }
+    if (visited.size !== cohortPages.length) return false;
+  }
+  return true;
+}
+
+function verifyWorkflowRuns(observation, descriptor, need, options) {
+  const raw = verifyProviderCapture(
+    observation,
+    descriptor,
+    "GitHub",
+    need,
+    options,
+  );
+  const supportedWorkflowSchemaVersions = [1, 2, 3, 4];
+  const hasExactSupportedSchemaInventory = (versions) =>
+    Array.isArray(versions) &&
+    JSON.stringify(versions) ===
+      JSON.stringify(supportedWorkflowSchemaVersions);
   need(
-    observation?.observationVersion === 1 &&
-      observation?.source === "github-actions-api",
+    observation?.observationVersion === 2 &&
+      observation?.source === "github-actions-api" &&
+      hasExactSupportedSchemaInventory(
+        observation?.supportedWorkflowSchemaVersions,
+      ),
     "workflow-run inventory must be captured from the GitHub Actions API",
+  );
+  need(
+    Array.isArray(observation?.observations) &&
+      observation.observations.every(exactGitHubCohortPages) &&
+      raw.includes(observation?.cohort?.repositoryId ?? ""),
+    "workflow-run inventory does not prove exact repository/workflow cohort pagination",
   );
   const samples = observation?.observations;
   need(
@@ -715,25 +1775,49 @@ function verifyWorkflowRuns(observation, need) {
   if (!Array.isArray(samples) || samples.length !== 2) return null;
   const validRun = (run) =>
     hasExactKeys(run, [
+      "event",
       "headSha",
+      "repositoryId",
       "runId",
       "status",
+      "workflowBlobSha",
       "workflowPath",
       "workflowSchemaVersion",
     ]) &&
     ["queued", "in_progress"].includes(run.status) &&
-    [1, 2].includes(run.workflowSchemaVersion) &&
+    supportedWorkflowSchemaVersions.includes(run.workflowSchemaVersion) &&
     /^[a-f0-9]{40}$/u.test(run.headSha ?? "") &&
     typeof run.workflowPath === "string" &&
     String(run.runId).length > 0;
   need(
     samples.every(
       (sample) =>
+        hasExactKeys(sample, [
+          "captureIdentity",
+          "cohort",
+          "inventoriedWorkflowSchemaVersions",
+          "observedAt",
+          "rawResponses",
+          "runs",
+        ]) &&
+        hasExactSupportedSchemaInventory(
+          sample.inventoriedWorkflowSchemaVersions,
+        ) &&
         Number.isFinite(Date.parse(sample?.observedAt ?? "")) &&
+        sample?.cohort?.repositoryId === observation?.cohort?.repositoryId &&
+        sample?.captureIdentity?.authenticated === true &&
+        Array.isArray(sample?.rawResponses) &&
+        sample.rawResponses.length > 0 &&
         Array.isArray(sample?.runs) &&
-        sample.runs.every(validRun),
+        sample.runs.every(
+          (run) =>
+            validRun(run) &&
+            run.repositoryId === observation.cohort.repositoryId &&
+            canonicalJson(sample.rawResponses).includes(run.runId) &&
+            canonicalJson(sample.rawResponses).includes(run.workflowBlobSha),
+        ),
     ),
-    "queued/in-progress v1/v2 run inventory is incomplete",
+    "queued/in-progress supported workflow-schema inventory is incomplete",
   );
   const firstIds = new Set(samples[0]?.runs?.map((run) => String(run.runId)));
   const arrivals = (samples[1]?.runs ?? []).filter(
@@ -742,7 +1826,7 @@ function verifyWorkflowRuns(observation, need) {
   need(
     Date.parse(samples[1]?.observedAt ?? "") >
       Date.parse(samples[0]?.observedAt ?? "") && arrivals.length === 0,
-    "new queued/in-progress v1/v2 work arrived between observations",
+    "new queued/in-progress supported workflow-schema work arrived between observations",
   );
   return { secondObservedAt: Date.parse(samples[1]?.observedAt ?? "") };
 }

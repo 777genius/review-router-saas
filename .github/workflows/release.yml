@@ -37,6 +37,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Recheck Codex secret-write boundary
+        run: node scripts/check-codex-secret-write-boundary.mjs
+
       - name: Validate release target
         id: release
         shell: bash
@@ -206,6 +209,50 @@ jobs:
           console.log(`Action tag and CI gate agree on ${evidence.actionSha}`);
           NODE
 
+      - name: Prepare immutable rotating installer descriptor
+        id: installer
+        shell: bash
+        env:
+          ACTION_REPOSITORY: 777genius/review-router
+          ACTION_SHA: ${{ steps.release.outputs.action_sha }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          descriptor_dir="$RUNNER_TEMP/codex-rotating-installer-descriptor"
+          mkdir -p "$descriptor_dir"
+          seed_url="https://raw.githubusercontent.com/${ACTION_REPOSITORY}/${ACTION_SHA}/scripts/seed-codex-rotating-auth.sh"
+          reseed_url="https://raw.githubusercontent.com/${ACTION_REPOSITORY}/${ACTION_SHA}/scripts/reseed-codex-rotating-auth.sh"
+          curl --fail --silent --show-error --location --max-redirs 0 "$seed_url" -o "$descriptor_dir/seed.sh"
+          curl --fail --silent --show-error --location --max-redirs 0 "$reseed_url" -o "$descriptor_dir/reseed.sh"
+          cmp scripts/seed-codex-rotating-auth.sh "$descriptor_dir/seed.sh"
+          cmp scripts/reseed-codex-rotating-auth.sh "$descriptor_dir/reseed.sh"
+          seed_sha256="$(sha256sum "$descriptor_dir/seed.sh" | awk '{print $1}')"
+          reseed_sha256="$(sha256sum "$descriptor_dir/reseed.sh" | awk '{print $1}')"
+          descriptor_path="$descriptor_dir/reviewrouter-codex-rotating-installer-descriptor.json"
+          node - "$descriptor_path" "$VERSION" "$ACTION_REPOSITORY" "$ACTION_SHA" "$seed_url" "$seed_sha256" "$reseed_url" "$reseed_sha256" <<'NODE'
+          const { writeFileSync } = require("node:fs");
+          const [path, version, repository, actionSha, url, sha256, reseedUrl, reseedSha256] = process.argv.slice(2);
+          writeFileSync(path, `${JSON.stringify({
+            schemaVersion: "reviewrouter.codex-rotating-installer-descriptor.v1",
+            url,
+            version,
+            sha256,
+            actionRef: `${repository}@${actionSha}`,
+            reseed: { url: reseedUrl, sha256: reseedSha256 },
+          }, null, 2)}\n`);
+          NODE
+          echo "path=$descriptor_path" >> "$GITHUB_OUTPUT"
+          echo "url=$seed_url" >> "$GITHUB_OUTPUT"
+          echo "sha256=$seed_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable rotating installer descriptor
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-rotating-installer-descriptor-${{ steps.release.outputs.version }}
+          path: ${{ steps.installer.outputs.path }}
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Preflight production Action ref override sync
         if: ${{ inputs.sync_production_action_ref }}
         shell: bash
@@ -274,6 +321,10 @@ jobs:
               --generate-notes \
               --latest
           fi
+          gh release upload "$VERSION" \
+            "${{ steps.installer.outputs.path }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
 
       - name: Summary
         shell: bash
@@ -283,6 +334,8 @@ jobs:
           ACTION_REF: ${{ steps.release.outputs.action_ref }}
           SYNC_PRODUCTION_ACTION_REF: ${{ inputs.sync_production_action_ref }}
           VERSION_TAG_EXISTS: ${{ steps.release.outputs.version_tag_exists }}
+          INSTALLER_URL: ${{ steps.installer.outputs.url }}
+          INSTALLER_SHA256: ${{ steps.installer.outputs.sha256 }}
         run: |
           {
             echo "Released $VERSION"
@@ -291,6 +344,9 @@ jobs:
             echo "- Stable tag: $MAJOR_TAG"
             echo "- Target SHA: $GITHUB_SHA"
             echo "- Exact tag pre-existed on target SHA: $VERSION_TAG_EXISTS"
+            echo "- Rotating installer URL: $INSTALLER_URL"
+            echo "- Rotating installer version: $VERSION"
+            echo "- Rotating installer SHA-256: $INSTALLER_SHA256"
             echo "- Production Action ref override sync: $SYNC_PRODUCTION_ACTION_REF"
             if [[ "$SYNC_PRODUCTION_ACTION_REF" == "true" ]]; then
               echo "- Override Action ref: $ACTION_REF"

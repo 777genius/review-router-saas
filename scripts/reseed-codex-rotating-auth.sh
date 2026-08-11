@@ -56,6 +56,27 @@ command -v gh >/dev/null 2>&1 || fatal "gh is required"
 command -v curl >/dev/null 2>&1 || fatal "curl is required"
 command -v node >/dev/null 2>&1 || fatal "node is required"
 
+if ! node - "$API_URL" <<'NODE'
+const value = process.argv[2];
+let url;
+try {
+  url = new URL(value);
+} catch {
+  process.exit(1);
+}
+if (
+  url.protocol !== "https:" ||
+  url.username ||
+  url.password ||
+  url.hash
+) {
+  process.exit(1);
+}
+NODE
+then
+  fatal "setup API URL must be credential-free HTTPS"
+fi
+
 umask 077
 TEMP_DIR="$(mktemp -d)"
 HEADER_FILE="$TEMP_DIR/github-header"
@@ -77,7 +98,12 @@ fs.writeFileSync(path, JSON.stringify({
 }));
 NODE
 
-http_status="$(curl --silent --show-error \
+http_status="$(curl -q --fail-with-body --silent --show-error \
+  --proto '=https' \
+  --max-redirs 0 \
+  --connect-timeout 10 \
+  --max-time 30 \
+  --retry 0 \
   --output "$RESPONSE_FILE" \
   --write-out '%{http_code}' \
   --request POST \

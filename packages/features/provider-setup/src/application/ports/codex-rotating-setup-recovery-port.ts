@@ -40,6 +40,7 @@ export interface CodexRotatingSetupRecoveryPort {
     readonly recoveryRequestId: string;
     readonly actor: string;
     readonly acknowledgement: string;
+    readonly accountSwitch: boolean;
     readonly decide: (
       snapshot: CodexRotatingSetupRecoverySnapshot,
     ) => CodexRotatingSetupRecoveryDecision;

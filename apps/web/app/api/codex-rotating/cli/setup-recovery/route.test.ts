@@ -121,8 +121,31 @@ describe("Codex rotating CLI setup recovery", () => {
     );
     const call = mocks.recoverAndIssue.mock.calls[0]![0];
     expect(call.actor).not.toContain("github-token-value");
-    expect(JSON.stringify(await response.json())).not.toContain(
-      "github-token-value",
+    const responseBody = JSON.stringify(await response.json());
+    expect(responseBody).not.toContain("github-token-value");
+    expect(responseBody).not.toContain("REVIEWROUTER_CODEX_AUTH_JSON");
+  });
+
+  it("exposes account switching only through the explicit switch acknowledgement", async () => {
+    const ordinary = JSON.parse(await request(true).text());
+    ordinary.accountSwitch = true;
+    const rejected = await POST(jsonRequest(ordinary));
+    expect(rejected.status).toBe(409);
+    await expect(rejected.json()).resolves.toEqual({
+      error: "codex_rotating_setup_recovery_acknowledgement_required",
+    });
+    expect(mocks.recoverAndIssue).not.toHaveBeenCalled();
+
+    const accepted = await POST(
+      jsonRequest({
+        ...ordinary,
+        acknowledgement:
+          "all_prior_installers_and_writers_are_stopped_and_account_switch_is_intended",
+      }),
+    );
+    expect(accepted.status).toBe(200);
+    expect(mocks.recoverAndIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ accountSwitch: true }),
     );
   });
 
@@ -141,6 +164,16 @@ describe("Codex rotating CLI setup recovery", () => {
 });
 
 function request(acknowledge: boolean): Request {
+  return jsonRequest({
+    repository: "owner/repo",
+    recoveryRequestId: "recovery-request-1",
+    ...(acknowledge
+      ? { acknowledgement: "all_prior_installers_and_writers_are_stopped" }
+      : {}),
+  });
+}
+
+function jsonRequest(body: unknown): Request {
   return new Request(
     "https://reviewrouter.site/api/codex-rotating/cli/setup-recovery",
     {
@@ -149,13 +182,7 @@ function request(acknowledge: boolean): Request {
         Authorization: "Bearer github-token-value",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        repository: "owner/repo",
-        recoveryRequestId: "recovery-request-1",
-        ...(acknowledge
-          ? { acknowledgement: "all_prior_installers_and_writers_are_stopped" }
-          : {}),
-      }),
+      body: JSON.stringify(body),
     },
   );
 }

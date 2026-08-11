@@ -5,10 +5,11 @@ const mocks = vi.hoisted(() => ({
   findUnique: vi.fn(),
   recoverAndIssue: vi.fn(),
   inspectStatus: vi.fn(),
+  recoveryConstructor: vi.fn(),
 }));
 
 vi.mock("../../../../../src/server/dashboard-mutations", () => ({
-  assertDashboardRepositoryMutationAllowed: mocks.authorize,
+  assertDashboardRepositoryRecoveryAllowed: mocks.authorize,
 }));
 vi.mock("../../../../../src/server/prisma", () => ({
   getPrisma: () => ({ repositoryConnection: { findUnique: mocks.findUnique } }),
@@ -16,10 +17,16 @@ vi.mock("../../../../../src/server/prisma", () => ({
 vi.mock("../../../../../src/server/codex-rotating-setup-recovery", () => ({
   recoverAndIssueCodexRotatingSetup: mocks.recoverAndIssue,
 }));
+vi.mock("@reviewrouter/platform-config", () => ({
+  requireReviewRouterDatabaseRecoveryWitness: () => "w".repeat(43),
+}));
 vi.mock(
   "../../../../../src/server/prisma-codex-rotating-setup-recovery",
   () => ({
     PrismaCodexRotatingSetupRecovery: class {
+      constructor(...args: unknown[]) {
+        mocks.recoveryConstructor(...args);
+      }
       inspectStatus = mocks.inspectStatus;
     },
   }),
@@ -44,6 +51,26 @@ describe("dashboard Codex setup recovery route", () => {
     });
     mocks.authorize.mockResolvedValue({ actor: "user:github:operator" });
     mocks.inspectStatus.mockResolvedValue({ status: "ready" });
+    mocks.recoverAndIssue.mockResolvedValue({
+      command: "safe recovery command",
+      expiresAt: "2026-08-10T01:00:00.000Z",
+      providerInstanceId: "codex-rotating:123",
+      recoveryStatus: "recovered",
+    });
+  });
+
+  it("does not advertise the retired stable secret in recovery responses", async () => {
+    const response = await POST(recoveryRequest(true));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      command: "safe recovery command",
+      expiresAt: "2026-08-10T01:00:00.000Z",
+      providerInstanceId: "codex-rotating:123",
+      recoveryStatus: "recovered",
+    });
+    expect(JSON.stringify(body)).not.toContain("REVIEWROUTER_CODEX_AUTH_JSON");
   });
 
   it("rejects an unauthorized repository operator before recovery", async () => {
@@ -116,6 +143,25 @@ describe("dashboard Codex setup recovery route", () => {
       action: expect.stringContaining("will not rewrite immutable identity"),
     });
     expect(mocks.recoverAndIssue).not.toHaveBeenCalled();
+  });
+
+  it("passes the configured database recovery witness into status inspection", async () => {
+    const response = await GET(
+      new Request(
+        "http://localhost/api/dashboard/codex-rotating/setup-recovery?workspaceId=workspace_1&repositoryId=repository_1",
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.recoveryConstructor).toHaveBeenCalledWith(
+      expect.anything(),
+      "w".repeat(43),
+    );
+    expect(mocks.inspectStatus).toHaveBeenCalledWith({
+      workspaceId: "workspace_1",
+      repositoryId: "repository_1",
+      issuanceEnabled: false,
+    });
   });
 
   it("exposes only the sanitized versioned-namespace action for unknown PUTs", async () => {

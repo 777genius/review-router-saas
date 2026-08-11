@@ -14,7 +14,11 @@ import { recoverAndIssueCodexRotatingSetup } from "../../../../../src/server/cod
 const requestSchema = z
   .object({
     repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-    acknowledgement: z.literal("all_prior_installers_and_writers_are_stopped"),
+    acknowledgement: z.enum([
+      "all_prior_installers_and_writers_are_stopped",
+      "all_prior_installers_and_writers_are_stopped_and_account_switch_is_intended",
+    ]),
+    accountSwitch: z.boolean().optional().default(false),
     recoveryRequestId: codexRotatingSetupRecoveryRequestIdSchema,
   })
   .strict();
@@ -29,16 +33,23 @@ export async function POST(request: Request): Promise<NextResponse> {
         typeof rawBody === "object" && rawBody
           ? (rawBody as {
               acknowledgement?: unknown;
+              accountSwitch?: unknown;
               recoveryRequestId?: unknown;
             })
           : {};
       assertCodexRotatingSetupRecoveryHttpFields({
         acknowledgement: fields.acknowledgement,
+        accountSwitch: fields.accountSwitch,
         recoveryRequestId: fields.recoveryRequestId,
       });
       throw new Error("invalid_request");
     }
     const body = parsed.data;
+    assertCodexRotatingSetupRecoveryHttpFields({
+      acknowledgement: body.acknowledgement,
+      accountSwitch: body.accountSwitch,
+      recoveryRequestId: body.recoveryRequestId,
+    });
     const authorized = await authorizeGitHubCliRepository({
       accessToken,
       repositoryFullName: body.repository,
@@ -74,6 +85,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         .digest("hex")}`,
       recoveryRequestId: body.recoveryRequestId,
       acknowledgement: body.acknowledgement,
+      accountSwitch: body.accountSwitch,
     });
     return NextResponse.json(
       {

@@ -48,6 +48,7 @@ export function RepositorySetupProgressPanel({
   initialStep,
   expectedProviderAuthModes = [],
   enableReviewAction,
+  providerSetupBeforeWorkflow = false,
 }: {
   readonly workspaceId: string;
   readonly repositoryId: string;
@@ -62,6 +63,7 @@ export function RepositorySetupProgressPanel({
   readonly initialStep: SetupStep;
   readonly expectedProviderAuthModes?: readonly ProviderAuthMode[];
   readonly enableReviewAction?: ReactNode;
+  readonly providerSetupBeforeWorkflow?: boolean;
 }): React.ReactElement {
   const router = useRouter();
   const [setupStatus, setSetupStatus] = useState(initialSetupStatus);
@@ -257,6 +259,7 @@ export function RepositorySetupProgressPanel({
     mutationsEnabled,
     currentStep,
     enableReviewAction: canManage ? enableReviewAction : null,
+    providerSetupBeforeWorkflow,
     onSetupComplete: handleSetupMutation,
     onMergeComplete: handleMergeMutation,
   });
@@ -283,7 +286,10 @@ export function RepositorySetupProgressPanel({
           Setup progress
         </p>
         <span className="font-mono text-xs text-slate-400">
-          {repositorySetupProgressSummary(currentStep)}
+          {repositorySetupProgressSummary(
+            currentStep,
+            providerSetupBeforeWorkflow,
+          )}
         </span>
       </div>
 
@@ -347,6 +353,7 @@ function buildSetupSteps({
   mutationsEnabled,
   currentStep,
   enableReviewAction,
+  providerSetupBeforeWorkflow,
   onSetupComplete,
   onMergeComplete,
 }: {
@@ -361,6 +368,7 @@ function buildSetupSteps({
   readonly mutationsEnabled: boolean;
   readonly currentStep: SetupStep;
   readonly enableReviewAction?: ReactNode;
+  readonly providerSetupBeforeWorkflow: boolean;
   readonly onSetupComplete: (params: Record<string, string>) => void;
   readonly onMergeComplete: (params: Record<string, string>) => void;
 }): readonly RepositorySetupProgressStep[] {
@@ -402,6 +410,18 @@ function buildSetupSteps({
         onComplete={onMergeComplete}
       />
     ) : null;
+  const preWorkflowProviderAction =
+    providerSetupBeforeWorkflow && currentStep === 1
+      ? enableReviewAction
+      : null;
+  const setupPreparationAction = preWorkflowProviderAction ? (
+    <div className="flex w-full flex-col gap-2 sm:w-auto">
+      {preWorkflowProviderAction}
+      {setupPrAction}
+    </div>
+  ) : (
+    setupPrAction
+  );
   const shouldRenderProviderAction =
     Boolean(enableReviewAction) && currentStep >= 3;
   const lockedReviewAction =
@@ -425,14 +445,20 @@ function buildSetupSteps({
     ? setupIssueHelperText(setupIssue)
     : currentStep > 1
       ? "Setup PR exists."
-      : "Add the workflow by PR.";
+      : providerSetupBeforeWorkflow
+        ? "Seed the versioned provider namespace, then add its workflow by PR."
+        : "Add the workflow by PR.";
 
   return [
     {
       number: 1,
-      title: setupIssue ? "Recover setup PR" : "Create setup PR",
+      title: setupIssue
+        ? "Recover setup PR"
+        : providerSetupBeforeWorkflow
+          ? "Prepare setup PR"
+          : "Create setup PR",
       helper: setupPrHelper,
-      action: setupPrAction,
+      action: setupPreparationAction,
     },
     {
       number: 2,
@@ -445,13 +471,19 @@ function buildSetupSteps({
     },
     {
       number: 3,
-      title: "Enable review",
+      title: providerSetupBeforeWorkflow
+        ? "Activate provider"
+        : "Enable review",
       helper:
         currentStep > 3
           ? "Provider access is configured."
           : currentStep === 3
-            ? "Seed provider access."
-            : "Available after merge.",
+            ? providerSetupBeforeWorkflow
+              ? "Verify the exact activated namespace."
+              : "Seed provider access."
+            : providerSetupBeforeWorkflow
+              ? "Return after merge to verify activation."
+              : "Available after merge.",
       action: reviewAction,
     },
     {
@@ -542,10 +574,15 @@ function RepositorySetupProgressStepItem({
   );
 }
 
-function repositorySetupProgressSummary(step: SetupStep): string {
+function repositorySetupProgressSummary(
+  step: SetupStep,
+  providerSetupBeforeWorkflow: boolean,
+): string {
   switch (step) {
     case 1:
-      return "1 of 4 - setup PR needed";
+      return providerSetupBeforeWorkflow
+        ? "1 of 4 - prepare versioned setup"
+        : "1 of 4 - setup PR needed";
     case 2:
       return "2 of 4 - merge setup PR";
     case 3:

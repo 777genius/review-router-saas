@@ -294,7 +294,7 @@ describe("ReviewConfigForm", () => {
     expect(screen.queryByText(/OpenRouter requires/i)).toBeNull();
   });
 
-  it("explains that Codex rotating secrets are refreshed and written back by CI", async () => {
+  it("derives rotating Codex readiness from the exact versioned activation chain", async () => {
     vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
       status: "available_repository",
     });
@@ -311,15 +311,40 @@ describe("ReviewConfigForm", () => {
     await waitFor(() => {
       const status = screen.getByRole("status");
       expect(status.textContent).toContain(
-        "REVIEWROUTER_CODEX_AUTH_JSON is set in this repository's GitHub Actions secrets",
+        "Authorized versioned Codex setup is active for this repository",
       );
       expect(status.textContent).toContain(
-        "GitHub-hosted ReviewRouter runs refresh this Codex session before review and write the rotated secret back automatically",
+        "Readiness comes from the confirmed versioned claim and namespace activation chain",
       );
-      expect(status.textContent).not.toContain(
-        "Codex OAuth with refresh can use this secret in CI",
-      );
+      expect(status.textContent).not.toContain("REVIEWROUTER_CODEX_AUTH_JSON");
+      expect(status.textContent).not.toContain("can use this secret in CI");
     });
+  });
+
+  it("never offers a generic stable-secret fallback for rotating Codex", async () => {
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+      status: "missing",
+    });
+
+    renderReviewConfigForm({
+      config: codexReviewConfiguration("codex_subscription_oauth_rotating"),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    expect(
+      await screen.findByText(
+        /Rotating Codex setup is not ready for this repository/i,
+      ),
+    ).toBeTruthy();
+    expect(pageText()).toContain(
+      "A generic repository secret cannot satisfy this readiness check",
+    );
+    expect(pageText()).not.toContain("REVIEWROUTER_CODEX_AUTH_JSON");
+    expect(pageText()).not.toContain("gh secret set");
   });
 
   it.each(["codex_subscription_oauth", "codex_openai_api_key"] as const)(
@@ -339,12 +364,16 @@ describe("ReviewConfigForm", () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByText(/Rotating Codex OAuth uses/i)).toBeTruthy();
+        expect(
+          screen.getByText(/Rotating Codex setup is not ready/i),
+        ).toBeTruthy();
       });
       expect(
         screen.getByText(/Legacy Codex setup requires reconnect/i),
       ).toBeTruthy();
-      expect(pageText()).toContain("REVIEWROUTER_CODEX_AUTH_JSON");
+      expect(pageText()).toContain("server-authorized versioned namespace");
+      expect(pageText()).not.toContain("REVIEWROUTER_CODEX_AUTH_JSON");
+      expect(pageText()).not.toContain("gh secret set");
       expect(pageText()).not.toContain("gh secret set CODEX_AUTH_JSON");
       expect(pageText()).not.toContain("OPENAI_API_KEY");
       const formData = vi.mocked(checkProviderRepositorySecretClientAction).mock
@@ -371,7 +400,9 @@ describe("ReviewConfigForm", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/Rotating Codex OAuth uses/i)).toBeTruthy();
+      expect(
+        screen.getByText(/Rotating Codex setup is not ready/i),
+      ).toBeTruthy();
     });
     expect(screen.getByText("Provider 1")).toBeTruthy();
     expect(screen.getByText("Provider 2")).toBeTruthy();

@@ -12,7 +12,8 @@ services:
     buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
     startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 pnpm web:start
     healthCheckPath: /
-    autoDeployTrigger: commit
+    # Runtime deploys are explicit and follow the exclusive migration evidence gate.
+    autoDeployTrigger: off
     maxShutdownDelaySeconds: 60
     envVars:
       - fromGroup: reviewrouter-hosted-beta
@@ -21,9 +22,9 @@ services:
       - key: PORT
         value: 10000
       - key: DATABASE_URL
-        fromDatabase:
-          name: reviewrouter-db
-          property: connectionString
+        # Provision reviewrouter_web as a non-owner runtime role, then enter
+        # its private URL during Blueprint sync. Never use the database owner.
+        sync: false
 
   - type: web
     name: reviewrouter-api
@@ -34,7 +35,8 @@ services:
     buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
     startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 HOST=0.0.0.0 pnpm api:start
     healthCheckPath: /health
-    autoDeployTrigger: commit
+    # Runtime deploys are explicit and follow the exclusive migration evidence gate.
+    autoDeployTrigger: off
     maxShutdownDelaySeconds: 60
     envVars:
       - fromGroup: reviewrouter-hosted-beta
@@ -43,9 +45,8 @@ services:
       - key: PORT
         value: 10000
       - key: DATABASE_URL
-        fromDatabase:
-          name: reviewrouter-db
-          property: connectionString
+        # Provision reviewrouter_api as a non-owner runtime role.
+        sync: false
       # GitLab integration is API-only. Runtime/model credentials still stay in
       # the user's GitLab CI/CD variables.
       - key: REVIEW_ROUTER_GITLAB_API_TOKEN
@@ -75,21 +76,24 @@ services:
     branch: main
     buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
     startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 pnpm worker:start
-    autoDeployTrigger: commit
+    # Runtime deploys are explicit and follow the exclusive migration evidence gate.
+    autoDeployTrigger: off
     maxShutdownDelaySeconds: 120
     envVars:
       - fromGroup: reviewrouter-hosted-beta
       - key: NODE_VERSION
         value: 24
       - key: DATABASE_URL
-        fromDatabase:
-          name: reviewrouter-db
-          property: connectionString
+        # Provision reviewrouter_worker as a non-owner runtime role.
+        sync: false
 
 databases:
   - name: reviewrouter-db
+    postgresMajorVersion: "17"
     databaseName: review_router
-    user: reviewrouter
+    # This owner credential is reserved for the exclusive release-migration
+    # job and must never be supplied to web, API, or worker services.
+    user: reviewrouter_release_migration
     region: frankfurt
     plan: basic-256mb
     ipAllowList: []
@@ -116,6 +120,17 @@ envVarGroups:
       - key: REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE
         value: "0"
       - key: REVIEW_ROUTER_ACTION_REF
+        sync: false
+      # Rotating workflows are durably attested to an immutable Action release.
+      # Keep the primary and bounded A -> B overlap separate from the mutable
+      # general workflow channel above.
+      - key: REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF
+        sync: false
+      - key: REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS
+        sync: false
+      # One operator-managed value is shared by every database writer. It is
+      # fingerprinted at runtime and must never be emitted to logs.
+      - key: REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS
         sync: false
       - key: REVIEW_ROUTER_ACTION_OIDC_AUDIENCE
         value: reviewrouter

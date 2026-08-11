@@ -11,13 +11,20 @@ import {
   defaultReviewJobTimeoutMinutes,
   defaultReviewT0LifecycleTimeoutMinutes,
 } from "./review-execution-budget";
+import {
+  legacyCodexRotatingSecretName,
+  ProviderSecretNamespaceMode,
+  parseVersionedProviderSecretName,
+  serializeVersionedProviderSecretNamespaceMetadata,
+  type VersionedProviderSecretNamespace,
+} from "./provider-secret-namespace";
 
 export const codexRotatingAuthMode = "codex_subscription_oauth_rotating";
 export const codexRotatingSetupKind = "codex_oauth_rotating";
 export const codexRotatingRuntimeAuthMode = "codex-oauth-rotating";
 export const codexRotatingRefreshRuntimeMode = "codex-oauth-refresh";
 export const codexForkAgenticSandboxRuntimeMode = "fork-agentic-sandbox";
-export const codexRotatingSecretName = "REVIEWROUTER_CODEX_AUTH_JSON";
+export const codexRotatingSecretName = legacyCodexRotatingSecretName;
 export const codexRotatingProtocolVersion = 2 as const;
 export const codexRotatingReviewDraftsVariableName =
   "REVIEW_ROUTER_REVIEW_DRAFTS";
@@ -29,6 +36,7 @@ export enum CodexRotatingT0WorkflowSchemaVersion {
   DurableDispatchV1 = 1,
   ClientTriggeredV2 = 2,
   ClientTriggeredLifecycleV3 = 3,
+  VersionedSecretNamespaceV4 = 4,
 }
 
 export const codexRotatingWorkflowSchemaVersion =
@@ -37,16 +45,19 @@ export const codexRotatingCanonicalT0WorkflowSchemaVersions = [
   CodexRotatingT0WorkflowSchemaVersion.DurableDispatchV1,
   CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
   CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
+  CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
 ] as const;
 
 export function isClientTriggeredT0WorkflowSchemaVersion(
   value: number | null | undefined,
 ): value is
   | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
-  | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3 {
+  | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
+  | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 {
   return (
     value === CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2 ||
-    value === CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
+    value === CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3 ||
+    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
   );
 }
 
@@ -150,6 +161,58 @@ const codexAuthJsonSchema = z
 
 export type ValidatedCodexAuthJson = z.infer<typeof codexAuthJsonSchema>;
 
+export type CodexStableAccountIdentity = Readonly<{
+  issuer: string;
+  subject: string;
+  chatgptAccountId: string;
+}>;
+
+/** Refresh/token lifecycle claims are intentionally excluded. */
+export function deriveCodexStableAccountIdentityFromIdToken(
+  idToken: string,
+): CodexStableAccountIdentity {
+  let claims: Record<string, unknown>;
+  try {
+    const parts = idToken.split(".");
+    if (parts.length !== 3) throw new Error("jwt_shape");
+    claims = JSON.parse(
+      Buffer.from(parts[1]!, "base64url").toString("utf8"),
+    ) as Record<string, unknown>;
+  } catch {
+    throw new Error("codex_account_identity_token_invalid");
+  }
+  const auth =
+    claims["https://api.openai.com/auth"] &&
+    typeof claims["https://api.openai.com/auth"] === "object"
+      ? (claims["https://api.openai.com/auth"] as Record<string, unknown>)
+      : {};
+  const issuer = requireStableIdentityClaim(claims.iss);
+  const subject = requireStableIdentityClaim(claims.sub);
+  const accountIds = [
+    claims.chatgpt_account_id,
+    claims.account_id,
+    auth.chatgpt_account_id,
+    auth.account_id,
+  ].filter(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
+  if (new Set(accountIds).size !== 1) {
+    throw new Error("codex_account_identity_account_id_invalid");
+  }
+  return Object.freeze({
+    issuer,
+    subject,
+    chatgptAccountId: accountIds[0]!,
+  });
+}
+
+function requireStableIdentityClaim(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("codex_account_identity_claim_invalid");
+  }
+  return value;
+}
+
 export type CodexAuthJsonValidationResult = {
   readonly parsed: ValidatedCodexAuthJson;
   readonly byteLength: number;
@@ -230,15 +293,11 @@ export function createCodexRotatingSalt(): string {
 
 export const codexRotatingSetupManifestSchema = z
   .object({
-    protocolVersion: z.union([z.literal(1), z.literal(2)]),
+    protocolVersion: z.literal(codexRotatingProtocolVersion),
     repositoryFullName: z.string().regex(repoFullNamePattern),
-    repositoryId: z
-      .string()
-      .regex(/^[0-9]+$/)
-      .optional(),
+    repositoryId: z.string().regex(/^[0-9]+$/),
     providerInstanceId: z.string().regex(safeOpaqueIdPattern),
     setupNonce: z.string().regex(safeOpaqueIdPattern),
-    secretName: z.literal(codexRotatingSecretName),
     authMode: z.literal(codexRotatingAuthMode),
     generatedAt: z.string().datetime(),
     expiresAt: z.string().datetime(),
@@ -254,15 +313,6 @@ export const codexRotatingSetupManifestSchema = z
   })
   .strict()
   .superRefine((manifest, context) => {
-    if (manifest.protocolVersion !== 2) return;
-    if (!manifest.repositoryId) {
-      context.addIssue({
-        code: "custom",
-        path: ["repositoryId"],
-        message: "protocol v2 requires repositoryId",
-      });
-      return;
-    }
     if (
       !codexRotatingProviderIdSchema.safeParse(manifest.providerInstanceId)
         .success ||
@@ -304,7 +354,6 @@ export function buildCodexRotatingSetupManifest(input: {
       input.providerInstanceId ??
       canonicalCodexRotatingProviderId(input.repositoryId),
     setupNonce: input.setupNonce ?? `stp:${randomUUID()}`,
-    secretName: codexRotatingSecretName,
     authMode: codexRotatingAuthMode,
     generatedAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
@@ -376,8 +425,10 @@ export function renderCodexRotatingInstallerCommand(input: {
   readonly manifest: CodexRotatingSetupManifest;
   readonly manifestBase64?: string;
   readonly setupManifestUrl?: string;
-  readonly setupConfirmUrl?: string;
   readonly setupPrepareUrl?: string;
+  readonly setupDispatchUrl?: string;
+  readonly setupDispatchOutcomeUrl?: string;
+  readonly setupStatusUrl?: string;
   readonly installerArguments?: readonly CodexRotatingInstallerArgument[];
 }): string {
   const manifestBase64 =
@@ -392,11 +443,17 @@ export function renderCodexRotatingInstallerCommand(input: {
   const setupManifestUrl = input.setupManifestUrl
     ? shellQuote(input.setupManifestUrl)
     : null;
-  const setupConfirmUrl = input.setupConfirmUrl
-    ? shellQuote(input.setupConfirmUrl)
-    : null;
   const setupPrepareUrl = input.setupPrepareUrl
     ? shellQuote(input.setupPrepareUrl)
+    : null;
+  const setupDispatchUrl = input.setupDispatchUrl
+    ? shellQuote(input.setupDispatchUrl)
+    : null;
+  const setupDispatchOutcomeUrl = input.setupDispatchOutcomeUrl
+    ? shellQuote(input.setupDispatchOutcomeUrl)
+    : null;
+  const setupStatusUrl = input.setupStatusUrl
+    ? shellQuote(input.setupStatusUrl)
     : null;
 
   const envLines = [
@@ -408,14 +465,24 @@ export function renderCodexRotatingInstallerCommand(input: {
     ...(setupManifestUrl
       ? [
           `REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL=${setupManifestUrl} \\`,
-          ...(setupConfirmUrl
-            ? [
-                `REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL=${setupConfirmUrl} \\`,
-              ]
-            : []),
           ...(setupPrepareUrl
             ? [
                 `REVIEW_ROUTER_CODEX_ROTATING_SETUP_PREPARE_URL=${setupPrepareUrl} \\`,
+              ]
+            : []),
+          ...(setupDispatchUrl
+            ? [
+                `REVIEW_ROUTER_CODEX_ROTATING_SETUP_DISPATCH_URL=${setupDispatchUrl} \\`,
+              ]
+            : []),
+          ...(setupDispatchOutcomeUrl
+            ? [
+                `REVIEW_ROUTER_CODEX_ROTATING_SETUP_DISPATCH_OUTCOME_URL=${setupDispatchOutcomeUrl} \\`,
+              ]
+            : []),
+          ...(setupStatusUrl
+            ? [
+                `REVIEW_ROUTER_CODEX_ROTATING_SETUP_STATUS_URL=${setupStatusUrl} \\`,
               ]
             : []),
           `REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE=${setupNonce} \\`,
@@ -428,7 +495,7 @@ export function renderCodexRotatingInstallerCommand(input: {
     "set -euo pipefail",
     'tmp="$(mktemp)"',
     "trap 'rm -f \"$tmp\"' EXIT",
-    `curl -fsSL ${installerUrl} -o "$tmp"`,
+    `curl -q --fail --silent --show-error --max-redirs 0 --connect-timeout 10 --max-time 30 --retry 0 ${installerUrl} -o "$tmp"`,
     `expected_sha256=${installerSha256}`,
     "if command -v shasum >/dev/null 2>&1; then",
     "  actual_sha256=\"$(shasum -a 256 \"$tmp\" | sed 's/[[:space:]].*$//' | tr '[:upper:]' '[:lower:]')\"",
@@ -466,6 +533,7 @@ export type CodexRotatingWorkflowOptions = {
   readonly workflowSchemaVersion?: number;
   readonly refreshScheduleCron?: string | null;
   readonly reviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
+  readonly activeSecretNamespace?: VersionedProviderSecretNamespace;
 };
 
 export enum CodexRotatingReviewActionV2Mode {
@@ -491,6 +559,29 @@ export function renderCodexRotatingAdvisoryWorkflow(
       : JSON.stringify(String(timeoutMinutes));
   const schemaVersion =
     options.workflowSchemaVersion ?? codexRotatingWorkflowSchemaVersion;
+  if (
+    options.activeSecretNamespace &&
+    options.activeSecretNamespace.mode !==
+      ProviderSecretNamespaceMode.VersionedNeverReused
+  ) {
+    throw new Error("codex_rotating_versioned_secret_namespace_required");
+  }
+  if (
+    options.activeSecretNamespace &&
+    schemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+  ) {
+    throw new Error(
+      "codex_rotating_versioned_secret_namespace_schema_required",
+    );
+  }
+  if (
+    schemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 &&
+    !options.activeSecretNamespace
+  ) {
+    throw new Error("codex_rotating_active_secret_namespace_required");
+  }
   const refreshScheduleCron =
     options.refreshScheduleCron === null
       ? null
@@ -506,6 +597,21 @@ export function renderCodexRotatingAdvisoryWorkflow(
     options.forkAgenticSandboxEnabled === true
   ) {
     throw new Error("codex_rotating_t0_fork_sandbox_not_supported");
+  }
+  if (
+    reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
+    schemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+  ) {
+    return renderCanonicalCodexRotatingT0WorkflowV4({
+      actionRef: options.actionRef,
+      apiUrl: options.apiUrl,
+      providerInstanceId: options.providerInstanceId,
+      refreshScheduleCron,
+      claudeCodeOAuthTokenSecret: options.claudeCodeOAuthTokenSecret === true,
+      openRouterApiKeySecret: options.openRouterApiKeySecret === true,
+      activeSecretNamespace: options.activeSecretNamespace!,
+    });
   }
   if (
     reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
@@ -815,6 +921,7 @@ export type CodexRotatingWorkflowSourceMetadata = {
   readonly apiUrl: string;
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
+  readonly secretNamespace?: VersionedProviderSecretNamespace;
 };
 
 function scanCodexForkAgenticSandboxMarkers(
@@ -1226,6 +1333,26 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   const clientTriggered = isClientTriggeredT0WorkflowSchemaVersion(
     source.workflowSchemaVersion,
   );
+  const versionedSecretName = workflow.match(
+    /^name: ReviewRouter Codex OAuth \[namespace=[^;\]]+;epoch=[^;\]]+;secret=([A-Z0-9_]+)\]$/m,
+  )?.[1];
+  const expectedSecretName =
+    source.workflowSchemaVersion ===
+    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+      ? versionedSecretName
+      : codexRotatingSecretName;
+  if (!expectedSecretName) {
+    errors.push("t0_versioned_secret_namespace_metadata_missing");
+  } else if (
+    source.workflowSchemaVersion ===
+    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+  ) {
+    try {
+      parseVersionedProviderSecretName(expectedSecretName);
+    } catch {
+      errors.push("t0_versioned_secret_namespace_invalid");
+    }
+  }
   const expectedConcurrencyGroup = source.providerInstanceId
     ? renderCodexRotatingConcurrencyGroup(source.providerInstanceId)
     : undefined;
@@ -1365,7 +1492,7 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   }
   if (
     !reviewJob.includes(
-      `CODEX_AUTH_JSON: \${{ secrets.${codexRotatingSecretName} }}`,
+      `CODEX_AUTH_JSON: \${{ secrets.${expectedSecretName ?? "INVALID"} }}`,
     )
   ) {
     errors.push("rotating_secret_must_be_literal_auth_json_input");
@@ -1404,7 +1531,7 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   }
   if (
     workflowMappingValue(reviewSecrets, "CODEX_AUTH_JSON") !==
-      `\${{ secrets.${codexRotatingSecretName} }}` ||
+      `\${{ secrets.${expectedSecretName ?? "INVALID"} }}` ||
     (workflowMappingValue(reviewSecrets, "CLAUDE_CODE_OAUTH_TOKEN") !==
       undefined &&
       workflowMappingValue(reviewSecrets, "CLAUDE_CODE_OAUTH_TOKEN") !==
@@ -1476,7 +1603,7 @@ function scanCodexRotatingT0AdvisoryWorkflow(
       `workflow-schema-version: ${JSON.stringify(
         String(source.workflowSchemaVersion),
       )}`,
-      `auth-json: \${{ secrets.${codexRotatingSecretName} }}`,
+      `auth-json: \${{ secrets.${expectedSecretName ?? "INVALID"} }}`,
     ]) {
       if (!refreshJob.includes(marker)) {
         errors.push(`refresh_binding_missing:${marker}`);
@@ -1690,6 +1817,27 @@ export function renderCanonicalCodexRotatingT0WorkflowV3(
   });
 }
 
+export function renderCanonicalCodexRotatingT0WorkflowV4(
+  input: Pick<
+    CodexRotatingWorkflowOptions,
+    | "actionRef"
+    | "apiUrl"
+    | "providerInstanceId"
+    | "refreshScheduleCron"
+    | "claudeCodeOAuthTokenSecret"
+    | "openRouterApiKeySecret"
+  > & { readonly activeSecretNamespace: VersionedProviderSecretNamespace },
+): string {
+  return renderCanonicalCodexRotatingClientTriggeredT0Workflow({
+    ...input,
+    workflowSchemaVersion:
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+    defaultTimeoutMinutes: codexRotatingT0DefaultTimeoutMinutesForSchema(
+      CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+    ),
+  });
+}
+
 function renderCanonicalCodexRotatingClientTriggeredT0Workflow(
   input: Pick<
     CodexRotatingWorkflowOptions,
@@ -1702,8 +1850,10 @@ function renderCanonicalCodexRotatingClientTriggeredT0Workflow(
   > & {
     readonly workflowSchemaVersion:
       | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
-      | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3;
+      | CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3
+      | CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4;
     readonly defaultTimeoutMinutes: number;
+    readonly activeSecretNamespace?: VersionedProviderSecretNamespace;
   },
 ): string {
   assertSafeActionRef(input.actionRef);
@@ -1716,8 +1866,13 @@ function renderCanonicalCodexRotatingClientTriggeredT0Workflow(
   const concurrencyGroup = renderCodexRotatingConcurrencyGroup(
     input.providerInstanceId,
   );
+  const secretName =
+    input.activeSecretNamespace?.name ?? codexRotatingSecretName;
+  const workflowName = input.activeSecretNamespace
+    ? `ReviewRouter Codex OAuth [${serializeVersionedProviderSecretNamespaceMetadata(input.activeSecretNamespace)}]`
+    : "ReviewRouter Codex OAuth";
 
-  return `name: ReviewRouter Codex OAuth
+  return `name: ${workflowName}
 
 run-name: \${{ format('ReviewRouter review PR {0} at {1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
 
@@ -1756,7 +1911,7 @@ jobs:
       max_changed_lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}
       review_timeout_minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '${input.defaultTimeoutMinutes}') }}
     secrets:
-      CODEX_AUTH_JSON: \${{ secrets.${codexRotatingSecretName} }}
+      CODEX_AUTH_JSON: \${{ secrets.${secretName} }}
 ${input.claudeCodeOAuthTokenSecret === true ? "      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${input.openRouterApiKeySecret === true ? "      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}${
     refreshScheduleCron
       ? `
@@ -1779,7 +1934,7 @@ ${input.claudeCodeOAuthTokenSecret === true ? "      CLAUDE_CODE_OAUTH_TOKEN: ${
           api-url: ${JSON.stringify(input.apiUrl)}
           provider-instance-id: ${JSON.stringify(input.providerInstanceId)}
           workflow-schema-version: "${input.workflowSchemaVersion}"
-          auth-json: \${{ secrets.${codexRotatingSecretName} }}
+          auth-json: \${{ secrets.${secretName} }}
 `
       : ""
   }`;
@@ -1829,6 +1984,16 @@ export type CodexRotatingProviderBinding = {
   readonly allowedActionRefs?: readonly string[] | undefined;
   readonly workflowPath: string;
   readonly workflowSchemaVersion: number;
+  readonly activeSecretNamespace?: VersionedProviderSecretNamespace;
+  readonly activeWorkflowSource?: Readonly<{
+    workflowPath: string;
+    workflowSourceCommitSha: string;
+    workflowSourceBlobSha: string;
+    workflowSourceSha256: string;
+    workflowSemanticSha256: string;
+    sourceTrust: "trusted_default_branch_revision";
+    repositoryId: string;
+  }>;
 };
 
 export function validateCodexRotatingPrelease(input: {
@@ -1991,6 +2156,23 @@ export class InMemoryCodexRotatingLeaseStore {
     this.records.set(completed.leaseId, completed);
     return completed;
   }
+
+  retire(input: {
+    readonly leaseId: string;
+    readonly now: Date;
+  }): CodexRotatingLeaseRecord {
+    const current = this.records.get(input.leaseId);
+    if (!current || current.status === "completed") {
+      throw new Error("lease_not_active");
+    }
+    const retired = {
+      ...current,
+      status: "expired" as const,
+      expiresAt: input.now,
+    };
+    this.records.set(retired.leaseId, retired);
+    return retired;
+  }
 }
 
 export const codexRotatingEncryptedWritebackSchema = z
@@ -2000,6 +2182,8 @@ export const codexRotatingEncryptedWritebackSchema = z
     providerInstanceId: codexRotatingProviderIdSchema,
     generation: z.number().int().positive(),
     latestGenerationHash: z.string().min(32).max(128),
+    accountIdentityHash: z.string().min(32).max(128),
+    accountIdentityAlgorithm: z.literal("provider_issuer_subject_account_v1"),
     encryptedValue: z
       .string()
       .regex(base64Pattern)
@@ -2059,6 +2243,39 @@ export function parseCodexRotatingEncryptedWritebackRequest(
     throw new Error("writeback_plaintext_auth_rejected");
   }
   return request;
+}
+
+/**
+ * Stable, salted identity of the subscription account. This deliberately
+ * excludes refresh/access tokens and binds all three provider identifiers so
+ * a subject or account switch cannot be mistaken for an ordinary refresh.
+ */
+export function computeCodexRotatingAccountIdentityHash(input: {
+  readonly authJsonBytes: string;
+  readonly accountFingerprintSalt: string;
+}): string {
+  const auth = JSON.parse(input.authJsonBytes) as {
+    readonly tokens?: { readonly id_token?: unknown };
+  };
+  const idToken = auth.tokens?.id_token;
+  if (typeof idToken !== "string") {
+    throw new Error("codex_account_identity_id_token_required");
+  }
+  const identity = deriveCodexStableAccountIdentityFromIdToken(idToken);
+  const salt = Buffer.from(input.accountFingerprintSalt, "base64url");
+  if (salt.length < 16) {
+    throw new Error("codex_account_identity_salt_invalid");
+  }
+  return createHmac("sha256", salt)
+    .update(
+      JSON.stringify({
+        issuer: identity.issuer,
+        subject: identity.subject,
+        chatgptAccountId: identity.chatgptAccountId,
+      }),
+      "utf8",
+    )
+    .digest("base64url");
 }
 
 export function computeEncryptedPayloadDigest(input: {

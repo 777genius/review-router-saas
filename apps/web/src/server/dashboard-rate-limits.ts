@@ -4,6 +4,7 @@ import {
   type RateLimitStorePort,
 } from "@reviewrouter/features-rate-limits";
 import { freeBetaLimits } from "@reviewrouter/features-entitlements";
+import type { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 
 type Clock = {
@@ -147,7 +148,7 @@ export class DashboardRateLimitPolicy {
 }
 
 export function createDashboardRateLimitPolicy(
-  prisma: PrismaClient,
+  prisma: PrismaClient | Prisma.TransactionClient,
 ): DashboardRateLimitPolicy {
   return new DashboardRateLimitPolicy(new PrismaRateLimitStore(prisma), {
     now: () => new Date(),

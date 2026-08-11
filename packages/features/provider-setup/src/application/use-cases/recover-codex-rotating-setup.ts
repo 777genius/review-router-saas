@@ -10,6 +10,7 @@ export async function recoverCodexRotatingSetup(
     readonly recoveryRequestId: string;
     readonly actor: string;
     readonly acknowledgement: string;
+    readonly accountSwitch?: boolean;
     readonly now?: Date;
   },
   dependencies: { readonly recovery: CodexRotatingSetupRecoveryPort },
@@ -23,9 +24,11 @@ export async function recoverCodexRotatingSetup(
   }
   return dependencies.recovery.recover({
     ...input,
+    accountSwitch: input.accountSwitch === true,
     decide: (snapshot) =>
       decideCodexRotatingSetupRecovery({
         acknowledgement: input.acknowledgement,
+        accountSwitch: input.accountSwitch,
         snapshot,
       }),
     now: input.now ?? new Date(),

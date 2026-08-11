@@ -70,6 +70,7 @@ import {
   isConflictReviewFallbackEnabled,
   readGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
+  resolveReviewRouterPublicApiUrl,
 } from "@reviewrouter/platform-config";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
@@ -107,6 +108,7 @@ loadDotenv({ path: ".env", override: false });
 const logger = new ConsoleLogger();
 
 async function main(): Promise<void> {
+  resolveReviewRouterPublicApiUrl();
   logger.info("ReviewRouter worker booted", {
     mode: process.env.NODE_ENV ?? "development",
   });
@@ -314,7 +316,7 @@ function createOutboxHandlers(
       auditLog: new PrismaAuditLogRepository(prisma),
       clock,
       actionRef: resolveReviewRouterActionRef(),
-      apiUrl: resolveWorkflowPublicApiUrl(),
+      apiUrl: resolveReviewRouterPublicApiUrl(),
       runtimeConfigMode: "oidc",
     }),
   ];
@@ -356,18 +358,6 @@ function createOrgRulesetSetupGatewayFactory(input: {
     new OctokitOrgRulesetSetupGateway(
       await app.getInstallationOctokit(Number(githubInstallationId)),
     );
-}
-
-function resolveWorkflowPublicApiUrl(): string {
-  const raw =
-    process.env.REVIEW_ROUTER_PUBLIC_API_URL ||
-    process.env.REVIEW_ROUTER_API_URL ||
-    "http://localhost:4000";
-  const url = new URL(raw);
-  if (!["http:", "https:"].includes(url.protocol)) {
-    throw new Error("invalid_workflow_api_url");
-  }
-  return url.toString().replace(/\/$/, "");
 }
 
 function createRateLimitMaintenance(

@@ -4,10 +4,11 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const repoCodexCommandFragment =
-  "/install/codex | REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL";
+  "Copy and run the complete command generated there";
 const installCodexFragment = "/install/codex";
 const setupNonceFragment = "short-lived setup nonce";
-const rotatingCodexSecretFragment = "REVIEWROUTER_CODEX_AUTH_JSON";
+const gettingStartedNamespaceFragment = "Server-issued versioned namespace";
+const securityNamespaceFragment = "server-issued versioned namespace";
 const commonTexts = ["ReviewRouter", "Security", "Support"];
 const landingHeroText = "Free privacy-first";
 
@@ -39,9 +40,8 @@ const pages = [
     "/getting-started",
     [
       "Getting started",
-      "curl -fsSL ",
       repoCodexCommandFragment,
-      rotatingCodexSecretFragment,
+      gettingStartedNamespaceFragment,
     ],
   ],
   [
@@ -50,7 +50,7 @@ const pages = [
       "Code and secrets stay under your control",
       installCodexFragment,
       setupNonceFragment,
-      rotatingCodexSecretFragment,
+      securityNamespaceFragment,
     ],
   ],
   ["/fair-use", ["Fair use"]],
@@ -60,15 +60,23 @@ const pages = [
   ["/support", ["Trusted beta support"]],
 ];
 
+const rotatingActionRef =
+  process.env.REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF?.trim() ?? "";
+const rotatingActionMatch = rotatingActionRef.match(
+  /^([^/@\s]+\/[^/@\s]+)@([a-f0-9]{40})$/i,
+);
+if (!rotatingActionMatch) {
+  throw new Error(
+    "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF must be owner/repository@40-character-SHA",
+  );
+}
+const [, rotatingActionRepository, rotatingActionSha] = rotatingActionMatch;
+
 const redirectChecks = [
   ["/status", "/support"],
   [
     "/install/codex",
-    "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-rotating-auth.sh",
-  ],
-  [
-    "/install/codex-reseed",
-    "https://raw.githubusercontent.com/777genius/review-router-saas/main/scripts/reseed-codex-rotating-auth.sh",
+    `https://raw.githubusercontent.com/${rotatingActionRepository}/${rotatingActionSha}/scripts/seed-codex-rotating-auth.sh`,
   ],
 ];
 
@@ -137,6 +145,14 @@ try {
     }
 
     const html = await response.text();
+    if (
+      path === "/getting-started" &&
+      (html.includes("curl -fsSL ") || html.includes("curl -q -fsSL "))
+    ) {
+      await fail(
+        `${path} included a rotating bootstrap that permits redirects or ambient curl config`,
+      );
+    }
     for (const expectedText of commonTexts) {
       if (!html.includes(expectedText)) {
         await fail(
@@ -399,6 +415,29 @@ try {
       );
     }
   }
+
+  const retiredReseedResponse = await fetch(`${baseUrl}/install/codex-reseed`, {
+    redirect: "manual",
+  });
+  if (!retiredReseedResponse.ok) {
+    await fail(
+      `/install/codex-reseed returned HTTP ${retiredReseedResponse.status}`,
+    );
+  }
+  if (retiredReseedResponse.headers.has("location")) {
+    await fail("/install/codex-reseed must not redirect to a mutable script");
+  }
+  const retiredReseedBody = await retiredReseedResponse.text();
+  assertIncludes(
+    retiredReseedBody,
+    "exit 1",
+    "retired reseed pipe must fail instead of silently succeeding",
+  );
+  assertNotIncludes(
+    retiredReseedBody,
+    "curl",
+    "retired reseed endpoint must not chain another download",
+  );
 
   console.log(
     `Web page smoke passed for ${pages.length} pages and ${redirectChecks.length} redirects.`,

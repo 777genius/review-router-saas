@@ -21,6 +21,15 @@ describe("resolveWorkflowPublicApiUrl", () => {
     ).toBe("https://app.reviewrouter.dev");
   });
 
+  it("canonicalizes a configured root URL before embedding trust evidence", () => {
+    expect(
+      resolveWorkflowPublicApiUrl({
+        NODE_ENV: "production",
+        REVIEW_ROUTER_PUBLIC_API_URL: "https://app.reviewrouter.dev/",
+      }),
+    ).toBe("https://app.reviewrouter.dev");
+  });
+
   it("allows localhost only for local development", () => {
     expect(resolveWorkflowPublicApiUrl({ NODE_ENV: "development" })).toBe(
       "http://localhost:4000",
@@ -46,6 +55,20 @@ describe("resolveWorkflowPublicApiUrl", () => {
         REVIEW_ROUTER_PUBLIC_API_URL: "http://localhost:4000",
       }),
     ).toThrow("invalid_workflow_api_url");
+    for (const origin of [
+      "https://localhost",
+      "https://service.localhost",
+      "https://127.0.0.1",
+      "https://127.1",
+      "https://[::1]",
+    ]) {
+      expect(() =>
+        resolveWorkflowPublicApiUrl({
+          NODE_ENV: "production",
+          REVIEW_ROUTER_PUBLIC_API_URL: origin,
+        }),
+      ).toThrow("invalid_workflow_api_url");
+    }
     expect(() =>
       resolveWorkflowPublicApiUrl({
         NODE_ENV: "production",

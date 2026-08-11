@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { codexRotatingProductionWriterBaseObservationSql } from "./capture-codex-rotating-production-writer.mjs";
+import { verifyCodexRotatingDatabaseCatalog } from "./verify-codex-rotating-rollout.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const dbDirectory = join(root, "packages/platform/db");
@@ -11,10 +13,26 @@ const migration60Name = "000060_codex_oauth_setup_serialization";
 const migration61Name = "000061_codex_oauth_provider_mutation_fence";
 const migration62Name = "000062_codex_oauth_remote_outcome_unknown";
 const migration63Name = "000063_codex_oauth_setup_payload_claim";
+const migration64Name = "000064_codex_oauth_versioned_secret_namespaces";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
 const migration63 = join(migrationsDirectory, migration63Name, "migration.sql");
+const migration64 = join(migrationsDirectory, migration64Name, "migration.sql");
+const rotatingMigrationNames = readdirSync(migrationsDirectory)
+  .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
+  .sort();
+assert(
+  JSON.stringify(rotatingMigrationNames) ===
+    JSON.stringify([
+      migration60Name,
+      migration61Name,
+      migration62Name,
+      migration63Name,
+      migration64Name,
+    ]),
+  "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
+);
 const baseUrl = requireLocalPostgres(
   process.env.REVIEW_ROUTER_MIGRATION_REHEARSAL_DATABASE_URL ??
     process.env.REVIEW_ROUTER_TEST_DATABASE_URL ??
@@ -48,14 +66,24 @@ try {
   migrateDeploy(rehearsalUrl);
 
   proveSuccessfulCombinedRelease(rehearsalUrl);
+  proveDatabasePrivileges(rehearsalUrl);
+  proveTerminalInsertGuards(rehearsalUrl);
+  proveRuntimeVersionedWriteback(rehearsalUrl);
+  proveAccountSwitchRecoveryContract(rehearsalUrl);
+  proveCompletedRecoveryEvidenceRetention(rehearsalUrl);
+  const versionedNamespaceEvidence =
+    proveVersionedNamespaceLedger(rehearsalUrl);
+  provePrismaCleanupRetention(rehearsalUrl, versionedNamespaceEvidence);
   proveLegacyChildWritesRejected(rehearsalUrl);
   proveParentIdentityWriteRejected(rehearsalUrl);
   proveQuarantineCleanupPath(rehearsalUrl);
+  proveExactProductionCatalogContract(rehearsalUrl);
   proveMigrateDeployNoOp(rehearsalUrl);
+  proveLateMigrationRollbackAndReplayMatrix();
   const observation = collectObservation(rehearsalUrl);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060+000061+000062+000063 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060+000061+000062+000063+000064 rehearsal passed.\n",
   );
 } finally {
   psql(
@@ -66,6 +94,69 @@ try {
     ],
     false,
   );
+}
+
+function proveLateMigrationRollbackAndReplayMatrix() {
+  const cases = [
+    {
+      name: migration63Name,
+      source: migration63,
+      prior: [
+        [migration60Name, migration60],
+        [migration61Name, migration61],
+        [migration62Name, migration62],
+      ],
+      decoy:
+        'CREATE INDEX "CodexOAuthSetupManifest_recovery_expiry_idx" ON "CodexOAuthSetupManifest"("status")',
+      cleanup: 'DROP INDEX "CodexOAuthSetupManifest_recovery_expiry_idx"',
+      leaked:
+        "SELECT count(*) FROM information_schema.columns WHERE table_name='CodexOAuthSetupManifest' AND column_name='payloadVersion'",
+    },
+    {
+      name: migration64Name,
+      source: migration64,
+      prior: [
+        [migration60Name, migration60],
+        [migration61Name, migration61],
+        [migration62Name, migration62],
+        [migration63Name, migration63],
+      ],
+      decoy:
+        'CREATE INDEX "CodexOAuthSecretNamespace_secretName_key" ON "CodexOAuthProviderInstance"("id")',
+      cleanup: 'DROP INDEX "CodexOAuthSecretNamespace_secretName_key"',
+      leaked:
+        "SELECT count(*) FROM information_schema.tables WHERE table_name='CodexOAuthSecretNamespace'",
+    },
+  ];
+  for (const [index, testCase] of cases.entries()) {
+    const name = `${databaseName}_atomic_${index}`;
+    const url = databaseUrl(baseUrl, name);
+    psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(name)}`]);
+    try {
+      applyBaselineThrough59(url);
+      psql(url, ["-c", testCase.decoy]);
+      const failed = migrateDeploy(url, false);
+      assert(failed.status !== 0, `${testCase.name} injected failure missing`);
+      for (const [migrationName] of testCase.prior) {
+        proveMigrationRunnerHistory(url, migrationName, true);
+      }
+      proveMigrationRunnerHistory(url, testCase.name, false);
+      assert(
+        psql(url, ["-Atc", testCase.leaked]).stdout.trim() === "0",
+        `${testCase.name} leaked partial catalog state after rollback`,
+      );
+      psql(url, ["-c", testCase.cleanup]);
+      migrateResolve(url, "--rolled-back", testCase.name);
+      migrateDeploy(url);
+      proveMigrationRunnerHistory(url, testCase.name, true);
+    } finally {
+      psql(
+        adminUrl,
+        ["-c", `DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`],
+        false,
+      );
+    }
+  }
 }
 
 function applyBaselineThrough59(url) {
@@ -466,11 +557,11 @@ function proveSuccessfulCombinedRelease(url) {
   psql(url, [
     "-c",
     String.raw`DO $$ DECLARE actual text[]; expected text[]; BEGIN
-      IF (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-fetched') <> 'setup'
-        OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-fetched') <> 'fetched-new'
+      IF (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-fetched') <> 'recovery'
+        OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-fetched') <> 'versioned-namespace-cutover:p-fetched'
         OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'fetched-new') <> 1
-      THEN RAISE EXCEPTION 'fetched ambiguity did not pin setup recovery ownership'; END IF;
-      IF (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-issued') <> 'issued-new'
+      THEN RAISE EXCEPTION 'fetched ambiguity did not enter versioned recovery ownership'; END IF;
+      IF (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-issued') <> 'versioned-namespace-cutover:p-issued'
         OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'issued-new') <> 1
         OR (SELECT "mutationEpoch" FROM "CodexOAuthLease" WHERE id = 'lease-active') <> 1
         OR (SELECT "mutationEpoch" FROM "CodexOAuthLease" WHERE id = 'lease-expired') <> 1
@@ -478,20 +569,31 @@ function proveSuccessfulCombinedRelease(url) {
         OR (SELECT "mutationEpoch" FROM "CodexOAuthLease" WHERE id = 'lease-stray') <> 1
         OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'fetched-recovery') <> 1
         OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-recovery') <> 'recovery'
-        OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-stray-lease') <> 'lease-stray'
-        OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-clean') IS NOT NULL
-      THEN RAISE EXCEPTION 'setup/lease/clean-provider backfills are wrong'; END IF;
+        OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-stray-lease') <> 'versioned-namespace-cutover:p-stray-lease'
+        OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-clean') <> 'recovery'
+        OR EXISTS (
+          SELECT 1 FROM "CodexOAuthProviderInstance" p
+          WHERE p."activeSecretNamespaceId" IS NULL
+            AND NOT EXISTS (SELECT 1 FROM "CodexOAuthProviderIdentityQuarantine" q WHERE q."providerInstanceRowId" = p.id AND q."resolvedAt" IS NULL)
+            AND (p."state" <> 'unknown_auth_state' OR p."mutationOwner" <> 'recovery' OR p."mutationOwnerId" <> 'versioned-namespace-cutover:' || p.id)
+        )
+      THEN RAISE EXCEPTION 'setup/lease/provider versioned cutover backfills are wrong'; END IF;
       IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') <> 'expired'
         OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') IS NOT NULL
-        OR (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 0
-        OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') IS NOT NULL
+        OR (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 1
+        OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 'recovery'
       THEN RAISE EXCEPTION '000061 did not re-expire the TTL-crossing issued manifest safely'; END IF;
-      IF (SELECT status FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 'failed'
-        OR (SELECT "safeErrorCode" FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 'legacy_ambiguous_recovery'
+      -- 000061 first terminalizes a legacy pending write. 000062 then
+      -- deliberately upgrades that evidence to the stronger, permanent
+      -- remote-outcome-unknown classification; the combined-release proof
+      -- must assert the final inventory, not the intermediate 000061 value.
+      IF (SELECT status FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 'remote_outcome_unknown'
+        OR (SELECT "safeErrorCode" FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 'legacy_remote_outcome_unknown'
         OR (SELECT "mutationEpoch" FROM "CodexOAuthWritebackIntent" WHERE id = 'intent-pending') <> 1
       THEN RAISE EXCEPTION 'pending intent recovery backfill is wrong'; END IF;
       IF NOT EXISTS (SELECT 1 FROM "CodexOAuthProviderIdentityQuarantine" WHERE "providerInstanceRowId" = 'p-quarantine' AND reason = 'canonical_id_mismatch')
         OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-quarantine') <> 'recovery'
+        OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-quarantine') <> 'child-quarantine:lease:lease-provider-dirty'
         OR NOT EXISTS (SELECT 1 FROM "CodexOAuthChildIdentityQuarantine" WHERE "childKind"='lease' AND "childId"='lease-provider-dirty' AND reason='provider_identity_quarantined')
         OR (SELECT status FROM "CodexOAuthLease" WHERE id='lease-provider-dirty') <> 'identity_quarantined'
       THEN RAISE EXCEPTION 'dirty identity was not quarantined and recovery-owned'; END IF;
@@ -510,15 +612,21 @@ function proveSuccessfulCombinedRelease(url) {
 
       SELECT array_agg(tgname ORDER BY tgname) INTO actual FROM pg_trigger
       WHERE NOT tgisinternal AND (tgname LIKE 'CodexOAuth%guard' OR tgname = 'RepositoryConnection_codex_oauth_identity_guard');
-      expected := ARRAY['CodexOAuthLease_identity_fence_guard','CodexOAuthProviderInstance_identity_guard','CodexOAuthProviderInstance_mutation_transition_guard','CodexOAuthSetupManifest_identity_fence_guard','CodexOAuthWritebackIntent_identity_fence_guard','RepositoryConnection_codex_oauth_identity_guard'];
+      expected := ARRAY['CodexOAuthLease_identity_fence_guard','CodexOAuthProviderInstance_identity_guard','CodexOAuthProviderInstance_mutation_transition_guard','CodexOAuthSecretNamespace_tombstone_guard','CodexOAuthSetupDispatchAttempt_evidence_guard','CodexOAuthSetupManifest_evidence_guard','CodexOAuthSetupManifest_identity_fence_guard','CodexOAuthSetupPayloadClaim_evidence_guard','CodexOAuthSetupRecoveryRequest_evidence_guard','CodexOAuthWritebackIntent_identity_fence_guard','CodexOAuthWritebackIntent_runtime_evidence_guard','RepositoryConnection_codex_oauth_identity_guard'];
       IF actual <> expected THEN RAISE EXCEPTION 'trigger catalog mismatch: %', actual; END IF;
       IF EXISTS (
         SELECT 1 FROM (VALUES
           ('CodexOAuthProviderInstance_identity_guard','CodexOAuthProviderInstance','codex_oauth_provider_identity_guard',23::smallint),
           ('CodexOAuthProviderInstance_mutation_transition_guard','CodexOAuthProviderInstance','codex_oauth_provider_mutation_transition_guard',19::smallint),
           ('CodexOAuthSetupManifest_identity_fence_guard','CodexOAuthSetupManifest','codex_oauth_child_identity_fence_guard',23::smallint),
+          ('CodexOAuthSetupManifest_evidence_guard','CodexOAuthSetupManifest','codex_oauth_setup_manifest_evidence_guard',31::smallint),
           ('CodexOAuthLease_identity_fence_guard','CodexOAuthLease','codex_oauth_child_identity_fence_guard',23::smallint),
           ('CodexOAuthWritebackIntent_identity_fence_guard','CodexOAuthWritebackIntent','codex_oauth_child_identity_fence_guard',23::smallint),
+          ('CodexOAuthWritebackIntent_runtime_evidence_guard','CodexOAuthWritebackIntent','codex_oauth_runtime_writeback_evidence_guard',31::smallint),
+          ('CodexOAuthSecretNamespace_tombstone_guard','CodexOAuthSecretNamespace','codex_oauth_secret_namespace_tombstone_guard',31::smallint),
+          ('CodexOAuthSetupDispatchAttempt_evidence_guard','CodexOAuthSetupDispatchAttempt','codex_oauth_setup_attempt_evidence_guard',31::smallint),
+          ('CodexOAuthSetupPayloadClaim_evidence_guard','CodexOAuthSetupPayloadClaim','codex_oauth_setup_claim_evidence_guard',31::smallint),
+          ('CodexOAuthSetupRecoveryRequest_evidence_guard','CodexOAuthSetupRecoveryRequest','codex_oauth_setup_recovery_evidence_guard',31::smallint),
           ('RepositoryConnection_codex_oauth_identity_guard','RepositoryConnection','codex_oauth_repository_identity_guard',17::smallint)
         ) wanted(trigger_name, table_name, function_name, trigger_type)
         WHERE NOT EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid
@@ -567,6 +675,642 @@ function proveSuccessfulCombinedRelease(url) {
   proveMigrationRunnerHistory(url, migration61Name, true);
   proveMigrationRunnerHistory(url, migration62Name, true);
   proveMigrationRunnerHistory(url, migration63Name, true);
+  proveMigrationRunnerHistory(url, migration64Name, true);
+}
+
+function proveVersionedNamespaceLedger(url) {
+  const evidence = JSON.parse(
+    psql(url, [
+      "-Atc",
+      String.raw`SELECT json_build_object(
+        'tombstone', (
+          SELECT row_to_json(exact_tombstone) FROM (
+            SELECT claim."id" AS "claimId", attempt."id" AS "attemptId",
+              namespace."id" AS "namespaceId", namespace."secretName",
+              namespace."namespaceEpoch"::text AS "namespaceEpoch",
+              namespace."databaseRecoveryWitness", claim."status" AS "claimStatus",
+              attempt."status" AS "attemptStatus", namespace."status" AS "namespaceStatus",
+              namespace."permanentlyRetired"
+            FROM "CodexOAuthSetupPayloadClaim" claim
+            JOIN "CodexOAuthSetupDispatchAttempt" attempt ON attempt."claimId" = claim."id"
+            JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = attempt."namespaceId"
+            WHERE claim."providerInstanceRowId" = 'p-clean'
+              AND claim."operationId" = 'operation:runtime-proof-initial'
+              AND attempt."idempotencyKey" = 'dispatch:runtime-proof-initial'
+          ) exact_tombstone
+        ),
+        'active', (
+          SELECT row_to_json(exact_active) FROM (
+            SELECT claim."id" AS "claimId", attempt."id" AS "attemptId",
+              namespace."id" AS "namespaceId", namespace."secretName",
+              namespace."namespaceEpoch"::text AS "namespaceEpoch",
+              claim."accountIdentityHash", claim."status" AS "claimStatus",
+              attempt."status" AS "attemptStatus", namespace."status" AS "namespaceStatus",
+              namespace."permanentlyRetired"
+            FROM "CodexOAuthSetupPayloadClaim" claim
+            JOIN "CodexOAuthSetupDispatchAttempt" attempt ON attempt."claimId" = claim."id"
+            JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = attempt."namespaceId"
+            WHERE claim."providerInstanceRowId" = 'p-clean'
+              AND claim."operationId" = 'operation:runtime-proof-recovery'
+              AND attempt."idempotencyKey" = 'dispatch:runtime-proof-recovery'
+          ) exact_active
+        ),
+        'ambiguous', (
+          SELECT row_to_json(exact_ambiguous) FROM (
+            SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
+              namespace."status" AS "namespaceStatus", namespace."permanentlyRetired",
+              intent."status" AS "intentStatus", intent."recoveryRequestRowId"
+            FROM "CodexOAuthWritebackIntent" intent
+            JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
+            WHERE intent."providerInstanceRowId" = 'p-clean'
+              AND intent."idempotencyKey" = 'proof:ambiguous'
+          ) exact_ambiguous
+        ),
+        'provider', (
+          SELECT row_to_json(exact_provider) FROM (
+            SELECT provider."id", provider."workspaceId", provider."repositoryId",
+              repository."githubRepositoryId"::text AS "githubRepositoryId",
+              provider."activeSecretNamespaceId",
+              provider."activeSecretNamespaceEpoch"::text AS "activeSecretNamespaceEpoch",
+              provider."activeSecretNamespaceName", provider."activeAccountIdentityHash"
+            FROM "CodexOAuthProviderInstance" provider
+            JOIN "RepositoryConnection" repository ON repository."id" = provider."repositoryId"
+            WHERE provider."id" = 'p-clean'
+          ) exact_provider
+        )
+      )`,
+    ]).stdout.trim(),
+  );
+  assert(
+    evidence.tombstone?.claimStatus === "retired_active" &&
+      evidence.tombstone.attemptStatus === "retired_confirmed" &&
+      evidence.tombstone.namespaceStatus === "retired_superseded" &&
+      evidence.tombstone.permanentlyRetired === true,
+    "runtime production path did not retain the exact superseded setup namespace tombstone",
+  );
+  assert(
+    evidence.active?.claimStatus === "active" &&
+      evidence.active.attemptStatus === "confirmed" &&
+      evidence.active.namespaceStatus === "active" &&
+      evidence.active.permanentlyRetired === false &&
+      evidence.provider?.activeSecretNamespaceId ===
+        evidence.active.namespaceId &&
+      evidence.provider.activeSecretNamespaceEpoch ===
+        evidence.active.namespaceEpoch &&
+      evidence.provider.activeSecretNamespaceName ===
+        evidence.active.secretName &&
+      evidence.provider.activeAccountIdentityHash ===
+        evidence.active.accountIdentityHash,
+    "runtime production path exact active namespace binding is incomplete",
+  );
+  assert(
+    evidence.ambiguous?.namespaceStatus === "retired_ambiguous" &&
+      evidence.ambiguous.permanentlyRetired === true &&
+      evidence.ambiguous.intentStatus === "remote_outcome_unknown" &&
+      typeof evidence.ambiguous.recoveryRequestRowId === "string",
+    "runtime production path did not retain the exact ambiguous namespace tombstone",
+  );
+
+  const tombstone = evidence.tombstone;
+  const active = evidence.active;
+  const provider = evidence.provider;
+  const recreate = psql(
+    url,
+    [
+      "-c",
+      `INSERT INTO "CodexOAuthSecretNamespace" ("id","providerInstanceRowId","githubRepositoryId","namespaceEpoch","secretName","databaseRecoveryWitness","status")
+       SELECT 'namespace-reuse-proof', ${quoteLiteral(provider.id)}, ${quoteLiteral(provider.githubRepositoryId)},
+         max("namespaceEpoch") + 1, ${quoteLiteral(tombstone.secretName)}, ${quoteLiteral(tombstone.databaseRecoveryWitness)}, 'dispatch_authorized'
+       FROM "CodexOAuthSecretNamespace" WHERE "providerInstanceRowId"=${quoteLiteral(provider.id)}`,
+    ],
+    false,
+  );
+  assert(
+    recreate.status !== 0 &&
+      `${recreate.stdout}${recreate.stderr}`.includes(
+        "CodexOAuthSecretNamespace_secretName_key",
+      ),
+    "the exact production tombstone name was not rejected by the permanent uniqueness constraint",
+  );
+  const forbiddenMutations = [
+    [
+      `UPDATE "CodexOAuthProviderInstance" SET "activeSecretNamespaceId"=NULL WHERE "id"=${quoteLiteral(provider.id)}`,
+      "codex_oauth_provider_mutation_fence_required",
+    ],
+    [
+      `UPDATE "CodexOAuthProviderInstance" SET "activeSecretNamespaceEpoch"="activeSecretNamespaceEpoch"+1 WHERE "id"=${quoteLiteral(provider.id)}`,
+      "codex_oauth_provider_mutation_fence_required",
+    ],
+    [
+      `UPDATE "CodexOAuthProviderInstance" SET "activeSecretNamespaceName"=${quoteLiteral(tombstone.secretName)} WHERE "id"=${quoteLiteral(provider.id)}`,
+      "codex_oauth_provider_mutation_fence_required",
+    ],
+    [
+      `UPDATE "CodexOAuthProviderInstance" SET "activeAccountIdentityHash"=repeat('x',64) WHERE "id"=${quoteLiteral(provider.id)}`,
+      "codex_oauth_provider_mutation_fence_required",
+    ],
+    [
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "manifestDigest"=repeat('f',64) WHERE "id"=${quoteLiteral(active.claimId)}`,
+      "codex_oauth_setup_claim_evidence_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "recoveryEpoch"="recoveryEpoch"+1 WHERE "id"=${quoteLiteral(active.claimId)}`,
+      "codex_oauth_setup_claim_evidence_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "installerDigest"=repeat('f',64) WHERE "id"=${quoteLiteral(active.claimId)}`,
+      "codex_oauth_setup_claim_evidence_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "databaseRecoveryWitness"=repeat('f',64) WHERE "id"=${quoteLiteral(active.claimId)}`,
+      "codex_oauth_setup_claim_evidence_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "confirmedAttemptId"=${quoteLiteral(tombstone.attemptId)} WHERE "id"=${quoteLiteral(active.claimId)}`,
+      "codex_oauth_setup_claim_evidence_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSetupDispatchAttempt" SET "dispatchExpiresAt"="dispatchExpiresAt"+interval '1 minute' WHERE "id"=${quoteLiteral(active.attemptId)}`,
+      "codex_oauth_setup_attempt_evidence_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceBlobSha"=repeat('e',40) WHERE "id"=${quoteLiteral(active.namespaceId)}`,
+      "codex_oauth_secret_namespace_identity_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(active.namespaceId)}`,
+      "codex_oauth_secret_namespace_identity_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSemanticSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(active.namespaceId)}`,
+      "codex_oauth_secret_namespace_identity_immutable",
+    ],
+    [
+      `UPDATE "CodexOAuthSecretNamespace" SET "attestedRepositoryId"='900008' WHERE "id"=${quoteLiteral(active.namespaceId)}`,
+      "codex_oauth_secret_namespace_identity_immutable",
+    ],
+  ];
+  for (const [statement, expectedError] of forbiddenMutations) {
+    const rejected = psql(url, ["-c", statement], false);
+    assert(
+      rejected.status !== 0 &&
+        `${rejected.stdout}${rejected.stderr}`.includes(expectedError),
+      `fence-critical mutation unexpectedly succeeded: ${statement}`,
+    );
+  }
+  for (const [table, id, expectedError] of [
+    [
+      "CodexOAuthSecretNamespace",
+      tombstone.namespaceId,
+      "codex_oauth_secret_namespace_delete_forbidden",
+    ],
+    [
+      "CodexOAuthSecretNamespace",
+      evidence.ambiguous.namespaceId,
+      "codex_oauth_secret_namespace_delete_forbidden",
+    ],
+    [
+      "CodexOAuthSetupDispatchAttempt",
+      active.attemptId,
+      "codex_oauth_setup_attempt_delete_forbidden",
+    ],
+    [
+      "CodexOAuthSetupPayloadClaim",
+      active.claimId,
+      "codex_oauth_setup_claim_delete_forbidden",
+    ],
+  ]) {
+    const evidenceDeletion = psql(
+      url,
+      ["-c", `DELETE FROM "${table}" WHERE "id"=${quoteLiteral(id)}`],
+      false,
+    );
+    assert(
+      evidenceDeletion.status !== 0 &&
+        `${evidenceDeletion.stdout}${evidenceDeletion.stderr}`.includes(
+          expectedError,
+        ),
+      `${table} permanent evidence deletion must be rejected`,
+    );
+  }
+  for (const [table, id] of [
+    ["CodexOAuthProviderInstance", provider.id],
+    ["RepositoryConnection", provider.repositoryId],
+    ["Workspace", provider.workspaceId],
+  ]) {
+    const ownerDeletion = psql(
+      url,
+      ["-c", `DELETE FROM "${table}" WHERE "id"=${quoteLiteral(id)}`],
+      false,
+    );
+    assert(ownerDeletion.status !== 0, `${table} cleanup must retain evidence`);
+    assertVersionedNamespaceEvidenceRetained(url, evidence, table);
+  }
+  return evidence;
+}
+
+function assertVersionedNamespaceEvidenceRetained(
+  url,
+  evidence,
+  attemptedTable,
+) {
+  const retained = psql(url, [
+    "-Atc",
+    `SELECT concat_ws(':',
+      (SELECT count(*) FROM "CodexOAuthSetupPayloadClaim" WHERE "id"=${quoteLiteral(evidence.active.claimId)}),
+      (SELECT count(*) FROM "CodexOAuthSetupDispatchAttempt" WHERE "id"=${quoteLiteral(evidence.active.attemptId)}),
+      (SELECT count(*) FROM "CodexOAuthSecretNamespace" WHERE "id"=${quoteLiteral(evidence.tombstone.namespaceId)} AND "permanentlyRetired"),
+      (SELECT count(*) FROM "CodexOAuthSecretNamespace" WHERE "id"=${quoteLiteral(evidence.ambiguous.namespaceId)} AND "permanentlyRetired"),
+      (SELECT count(*) FROM "CodexOAuthSecretNamespace" WHERE "id"=${quoteLiteral(evidence.active.namespaceId)} AND "status"='active'),
+      (SELECT count(*) FROM "CodexOAuthProviderInstance" WHERE "id"=${quoteLiteral(evidence.provider.id)}
+        AND "activeSecretNamespaceId"=${quoteLiteral(evidence.active.namespaceId)}
+        AND "activeSecretNamespaceEpoch"=${quoteLiteral(evidence.active.namespaceEpoch)}::bigint
+        AND "activeSecretNamespaceName"=${quoteLiteral(evidence.active.secretName)})
+    )`,
+  ]).stdout.trim();
+  assert(
+    retained === "1:1:1:1:1:1",
+    `${attemptedTable} cleanup changed the exact runtime evidence chain (${retained})`,
+  );
+}
+
+function provePrismaCleanupRetention(url, evidence) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      join(root, "scripts/prove-codex-rotating-evidence-prisma.ts"),
+    ],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL: url.toString(),
+        REVIEW_ROUTER_PRISMA_EVIDENCE_IDENTITIES: JSON.stringify({
+          claimId: evidence.active.claimId,
+          attemptId: evidence.active.attemptId,
+          namespaceId: evidence.tombstone.namespaceId,
+          providerId: evidence.provider.id,
+          repositoryId: evidence.provider.repositoryId,
+          workspaceId: evidence.provider.workspaceId,
+        }),
+      },
+      encoding: "utf8",
+    },
+  );
+  assert(
+    result.status === 0,
+    `Prisma evidence cleanup proof failed (${result.status}): ${result.stderr || result.stdout}`,
+  );
+}
+
+function proveRuntimeVersionedWriteback(url) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      join(root, "scripts/prove-codex-runtime-versioned-writeback-prisma.ts"),
+    ],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL: url.toString(),
+      },
+      encoding: "utf8",
+    },
+  );
+  assert(
+    result.status === 0,
+    `runtime versioned Prisma proof failed (${result.status}): ${result.stderr || result.stdout}`,
+  );
+}
+
+function proveExactProductionCatalogContract(url) {
+  const observation = JSON.parse(
+    psql(url, [
+      "-Atc",
+      codexRotatingProductionWriterBaseObservationSql,
+    ]).stdout.trim(),
+  );
+  const result = verifyCodexRotatingDatabaseCatalog(observation.catalog, {
+    verifyPrivileges: false,
+  });
+  assert(
+    result.ok,
+    `production catalog verifier rejected the PostgreSQL 17 rehearsal: ${result.failures.join(", ")}`,
+  );
+}
+
+function proveDatabasePrivileges(url) {
+  psql(url, [
+    "-c",
+    String.raw`
+      DO $$
+      DECLARE function_count INTEGER;
+      DECLARE unsafe_function_count INTEGER;
+      DECLARE table_count INTEGER;
+      DECLARE unsafe_table_count INTEGER;
+      BEGIN
+        SELECT count(*), count(*) FILTER (
+          WHERE has_function_privilege('public', p.oid, 'EXECUTE')
+        ) INTO function_count, unsafe_function_count
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = current_schema() AND p.proname LIKE 'codex_oauth_%';
+        IF function_count <> 12 OR unsafe_function_count <> 0 THEN
+          RAISE EXCEPTION 'Codex OAuth function privilege mismatch: %, %', function_count, unsafe_function_count;
+        END IF;
+
+        SELECT count(*), count(*) FILTER (
+          WHERE has_table_privilege(
+            'public', c.oid,
+            'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+          )
+        ) INTO table_count, unsafe_table_count
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = current_schema() AND c.relkind = 'r'
+          AND c.relname IN (
+            'CodexOAuthChildIdentityQuarantine',
+            'CodexOAuthProviderIdentityQuarantine',
+            'CodexOAuthSecretNamespace',
+            'CodexOAuthSetupDispatchAttempt',
+            'CodexOAuthSetupPayloadClaim',
+            'CodexOAuthSetupRecoveryRequest'
+          );
+        IF table_count <> 6 OR unsafe_table_count <> 0 THEN
+          RAISE EXCEPTION 'Codex OAuth table privilege mismatch: %, %', table_count, unsafe_table_count;
+        END IF;
+      END $$;
+    `,
+  ]);
+}
+
+function proveTerminalInsertGuards(url) {
+  const fabricatedSetupRows = [
+    {
+      error: "codex_oauth_secret_namespace_initial_state_invalid",
+      sql: String.raw`
+        INSERT INTO "CodexOAuthSecretNamespace" (
+          "id", "providerInstanceRowId", "githubRepositoryId", "namespaceEpoch",
+          "secretName", "databaseRecoveryWitness", "status", "confirmedAt", "activatedAt",
+          "workflowPath", "workflowSourceCommitSha", "workflowSourceBlobSha",
+          "workflowSourceSha256", "workflowSemanticSha256", "workflowSourceTrust", "attestedRepositoryId"
+        ) VALUES (
+          'namespace-fabricated-active', 'p-clean', '900007', 99,
+          'REVIEWROUTER_CODEX_AUTH_JSON_R900007_P0123456789abcdef_E99_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          repeat('a',64), 'active', now(), now(), '.github/workflows/reviewrouter-codex.yml',
+          repeat('a',40), repeat('b',40), repeat('c',64), repeat('d',64),
+          'trusted_default_branch_revision', '900007'
+        )`,
+    },
+    {
+      error: "codex_oauth_setup_claim_initial_state_invalid",
+      sql: String.raw`
+        INSERT INTO "CodexOAuthSetupPayloadClaim" (
+          "id", "providerInstanceRowId", "workspaceId", "repositoryId", "githubRepositoryId",
+          "manifestId", "manifestDigest", "recoveryEpoch", "operationId", "payloadVersion",
+          "canonicalizationVersion", "generationHash", "accountIdentityHash", "accountIdentityAlgorithm",
+          "authByteSize", "installerVersion", "installerDigest", "databaseIncarnation",
+          "databaseRecoveryWitness", "status", "prepareReplayExpiresAt", "recoveryExpiresAt",
+          "confirmedAttemptId", "confirmedAt"
+        ) VALUES (
+          'claim-fabricated-confirmed', 'p-clean', 'ws-proof', 'repo-7', '900007',
+          'fetched-recovery', repeat('a',64), 2, 'operation:fabricated', 2, 1,
+          repeat('g',43), repeat('i',43), 'provider_issuer_subject_account_v1', 100,
+          'proof', repeat('e',64), '7612345678901234567', repeat('a',64),
+          'confirmed_candidate', now(), now() + interval '1 hour', 'attempt-fabricated', now()
+        )`,
+    },
+    {
+      error: "codex_oauth_setup_attempt_initial_state_invalid",
+      sql: String.raw`
+        INSERT INTO "CodexOAuthSetupDispatchAttempt" (
+          "id", "claimId", "namespaceId", "ordinal", "idempotencyKey", "status",
+          "authorizedAt", "dispatchExpiresAt", "definiteResponseCode", "confirmedAt"
+        ) VALUES (
+          'attempt-fabricated', 'claim-fabricated', 'namespace-fabricated', 1,
+          'dispatch:fabricated', 'confirmed', now(), now() + interval '1 minute', 204, now()
+        )`,
+    },
+    {
+      error: "codex_oauth_setup_manifest_initial_state_invalid",
+      sql: String.raw`
+        INSERT INTO "CodexOAuthSetupManifest" (
+          "id", "workspaceId", "repositoryId", "providerInstanceRowId", "providerInstanceId",
+          "setupNonce", "manifestJson", "status", "expiresAt", "consumedAt", "mutationEpoch"
+        ) VALUES (
+          'manifest-fabricated-consumed', 'ws-proof', 'repo-7', 'p-clean',
+          'codex-rotating:900007', 'nonce-fabricated-consumed', '{}', 'consumed',
+          now() + interval '1 hour', now(), 1
+        )`,
+    },
+  ];
+  for (const fabricated of fabricatedSetupRows) {
+    const rejected = psql(url, ["-c", fabricated.sql], false);
+    assert(
+      rejected.status !== 0 &&
+        `${rejected.stdout}${rejected.stderr}`.includes(fabricated.error),
+      `raw SQL terminal setup insert did not hit ${fabricated.error}`,
+    );
+  }
+  const fabricatedRecovery = psql(
+    url,
+    [
+      "-c",
+      String.raw`
+        INSERT INTO "CodexOAuthSetupRecoveryRequest" (
+          "id", "providerInstanceRowId", "recoveryRequestId", "actor",
+          "acknowledgement", "mutationEpoch", "mode", "state", "updatedAt"
+        ) VALUES (
+          'recovery-fabricated-terminal', 'p-clean', 'request:fabricated-terminal', 'proof',
+          'all_prior_installers_and_writers_are_stopped',
+          (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE "id"='p-clean'),
+          'forced_reseed', 'completed', now()
+        )`,
+    ],
+    false,
+  );
+  assert(
+    fabricatedRecovery.status !== 0 &&
+      `${fabricatedRecovery.stdout}${fabricatedRecovery.stderr}`.includes(
+        "codex_oauth_setup_recovery_initial_state_invalid",
+      ),
+    "raw SQL must not insert fabricated terminal recovery evidence",
+  );
+
+  const fabricatedWriteback = psql(
+    url,
+    [
+      "-c",
+      String.raw`
+        INSERT INTO "CodexOAuthWritebackIntent" (
+          "id", "providerInstanceRowId", "leaseId", "providerInstanceId",
+          "idempotencyKey", "generation", "latestGenerationHash",
+          "encryptedPayloadDigest", "keyId", "status", "updatedAt"
+        ) VALUES (
+          'intent-fabricated-terminal', 'p-pending', 'lease-pending',
+          'codex-rotating:900005', 'fabricated-terminal', 3, 'hash', 'digest',
+          'kid', 'completed', now()
+        )`,
+    ],
+    false,
+  );
+  assert(
+    fabricatedWriteback.status !== 0 &&
+      `${fabricatedWriteback.stdout}${fabricatedWriteback.stderr}`.includes(
+        "codex_oauth_runtime_writeback_initial_state_invalid",
+      ),
+    "raw SQL must not insert fabricated terminal runtime evidence",
+  );
+}
+
+function proveAccountSwitchRecoveryContract(url) {
+  psql(url, [
+    "-c",
+    String.raw`
+      UPDATE "CodexOAuthProviderInstance"
+      SET "mutationEpoch" = "mutationEpoch" + 1,
+          "mutationOwner" = 'recovery',
+          "mutationOwnerId" = 'setup-recovery:request:account-switch-proof',
+          "updatedAt" = now()
+      WHERE "id" = 'p-clean';
+      INSERT INTO "CodexOAuthSetupRecoveryRequest" (
+        "id", "providerInstanceRowId", "recoveryRequestId", "actor",
+        "acknowledgement", "mutationEpoch", "mode", "state", "updatedAt"
+      ) VALUES (
+        'recovery-account-switch-proof', 'p-clean', 'request:account-switch-proof', 'proof',
+        'all_prior_installers_and_writers_are_stopped_and_account_switch_is_intended',
+        (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE "id"='p-clean'),
+        'forced_reseed_account_switch', 'active', now()
+      );
+    `,
+  ]);
+  const inferredSwitch = psql(
+    url,
+    [
+      "-c",
+      String.raw`
+        INSERT INTO "CodexOAuthSetupRecoveryRequest" (
+          "id", "providerInstanceRowId", "recoveryRequestId", "actor",
+          "acknowledgement", "mutationEpoch", "mode", "state", "updatedAt"
+        ) VALUES (
+          'recovery-account-switch-invalid', 'p-issued', 'request:account-switch-invalid', 'proof',
+          'all_prior_installers_and_writers_are_stopped',
+          1, 'forced_reseed_account_switch', 'active', now()
+        );
+      `,
+    ],
+    false,
+  );
+  assert(
+    inferredSwitch.status !== 0,
+    "ordinary recovery acknowledgement must not authorize an account-switch epoch",
+  );
+  const recoveryDeletion = psql(
+    url,
+    [
+      "-c",
+      `DELETE FROM "CodexOAuthSetupRecoveryRequest" WHERE "id"='recovery-account-switch-proof'`,
+    ],
+    false,
+  );
+  assert(
+    recoveryDeletion.status !== 0,
+    "account-switch recovery authority must remain permanent evidence",
+  );
+}
+
+function proveCompletedRecoveryEvidenceRetention(url) {
+  for (const statement of [
+    `UPDATE "CodexOAuthSetupRecoveryRequest" SET "state"='completed', "latestManifestId"='fetched-recovery', "completedAt"=now(), "updatedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
+    `UPDATE "CodexOAuthSetupRecoveryRequest" SET "state"='manifest_issued', "latestManifestId"='fetched-recovery', "updatedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
+  ]) {
+    const rejected = psql(url, ["-c", statement], false);
+    assert(
+      rejected.status !== 0,
+      "recovery terminal evidence must reject skipped lifecycle/cross-provider authority",
+    );
+  }
+  psql(url, [
+    "-c",
+    String.raw`
+      UPDATE "CodexOAuthProviderInstance"
+      SET "mutationEpoch" = "mutationEpoch" + 1,
+          "mutationOwner" = 'setup',
+          "mutationOwnerId" = 'manifest-completed-recovery-proof',
+          "updatedAt" = now()
+      WHERE "id" = 'p-clean';
+      INSERT INTO "CodexOAuthSetupManifest" (
+        "id", "workspaceId", "repositoryId", "providerInstanceRowId",
+        "providerInstanceId", "setupNonce", "manifestJson", "status",
+        "expiresAt", "createdAt", "mutationEpoch", "databaseRecoveryWitness"
+      ) VALUES (
+        'manifest-completed-recovery-proof', 'ws-proof', 'repo-7', 'p-clean',
+        'codex-rotating:900007', 'nonce-completed-recovery-proof', '{}',
+        'issued', now() + interval '1 hour', now(),
+        (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE "id"='p-clean'),
+        NULL
+      );
+    `,
+  ]);
+  const skippedManifestIssued = psql(
+    url,
+    [
+      "-c",
+      `UPDATE "CodexOAuthSetupRecoveryRequest" SET "state"='completed', "latestManifestId"='manifest-completed-recovery-proof', "completedAt"=now(), "updatedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
+    ],
+    false,
+  );
+  assert(
+    skippedManifestIssued.status !== 0,
+    "recovery completion must not skip manifest_issued",
+  );
+  psql(url, [
+    "-c",
+    String.raw`
+      UPDATE "CodexOAuthSetupRecoveryRequest"
+      SET "state" = 'manifest_issued',
+          "latestManifestId" = 'manifest-completed-recovery-proof',
+          "updatedAt" = now()
+      WHERE "id" = 'recovery-account-switch-proof';
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM "CodexOAuthSetupRecoveryRequest"
+          WHERE "id" = 'recovery-account-switch-proof'
+            AND "state" = 'manifest_issued'
+            AND "latestManifestId" = 'manifest-completed-recovery-proof'
+            AND "completedAt" IS NULL
+        ) THEN RAISE EXCEPTION 'manifest-issued recovery evidence was not retained'; END IF;
+      END $$;
+    `,
+  ]);
+  const fabricatedCompletion = psql(
+    url,
+    [
+      "-c",
+      `UPDATE "CodexOAuthSetupRecoveryRequest" SET "state"='completed', "completedAt"=now(), "updatedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
+    ],
+    false,
+  );
+  assert(
+    fabricatedCompletion.status !== 0,
+    "issued manifest alone must not complete recovery without its exact consumed active evidence chain",
+  );
+  for (const statement of [
+    `UPDATE "CodexOAuthSetupRecoveryRequest" SET "latestManifestId"=NULL WHERE "id"='recovery-account-switch-proof'`,
+    `UPDATE "CodexOAuthSetupRecoveryRequest" SET "completedAt"=now() WHERE "id"='recovery-account-switch-proof'`,
+    `DELETE FROM "CodexOAuthSetupManifest" WHERE "id"='manifest-completed-recovery-proof'`,
+  ]) {
+    const rejected = psql(url, ["-c", statement], false);
+    assert(
+      rejected.status !== 0,
+      "completed recovery evidence mutation/deletion must be rejected",
+    );
+  }
 }
 
 function proveLegacyChildWritesRejected(url) {
@@ -574,37 +1318,37 @@ function proveLegacyChildWritesRejected(url) {
     url,
     [
       "-c",
-      `UPDATE "CodexOAuthSetupManifest" SET status = 'consumed', "consumedAt" = now() WHERE id = 'fetched-recovery'`,
+      `UPDATE "CodexOAuthSetupManifest" SET "confirmationJson" = '{"legacy":true}'::jsonb WHERE id = 'fetched-recovery'`,
     ],
     false,
   );
   assert(
     setup.status !== 0,
-    "legacy setup transition under recovery ownership must fail",
+    "legacy setup mutation on a stale active epoch must fail",
   );
   assert(
     `${setup.stdout}${setup.stderr}`.includes(
-      "codex_oauth_child_mutation_owner_mismatch",
+      "codex_oauth_child_mutation_epoch_mismatch",
     ),
-    "legacy setup rejection must identify the owner fence",
+    "legacy setup rejection must identify the epoch fence",
   );
   const lease = psql(
     url,
     [
       "-c",
-      `UPDATE "CodexOAuthLease" SET status = 'finalized' WHERE id = 'lease-recovery'`,
+      `UPDATE "CodexOAuthLease" SET "githubRunAttempt" = '2' WHERE id = 'lease-recovery'`,
     ],
     false,
   );
   assert(
     lease.status !== 0,
-    "legacy lease transition under recovery ownership must fail",
+    "legacy lease mutation on a stale active epoch must fail",
   );
   assert(
     `${lease.stdout}${lease.stderr}`.includes(
-      "codex_oauth_child_mutation_owner_mismatch",
+      "codex_oauth_child_mutation_epoch_mismatch",
     ),
-    "legacy lease rejection must identify the owner fence",
+    "legacy lease rejection must identify the epoch fence",
   );
   psql(url, [
     "-c",
@@ -699,14 +1443,14 @@ function proveMigrateDeployNoOp(url) {
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim')`,
+      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces')`,
   ]).stdout.trim();
   const rerun = migrateDeploy(url);
   const after = psql(url, [
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim')`,
+      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces')`,
   ]).stdout.trim();
   assert(
     before === after,
@@ -722,26 +1466,19 @@ function proveMigrateDeployNoOp(url) {
   proveMigrationRunnerHistory(url, migration61Name, true);
   proveMigrationRunnerHistory(url, migration62Name, true);
   proveMigrationRunnerHistory(url, migration63Name, true);
+  proveMigrationRunnerHistory(url, migration64Name, true);
 }
 
 function collectObservation(url) {
   const history = JSON.parse(
     psql(url, [
       "-Atc",
-      String.raw`SELECT json_agg(x ORDER BY migration_name) FROM (SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NULL AS current, applied_steps_count FROM "_prisma_migrations" WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim')) x`,
+      String.raw`SELECT json_agg(x ORDER BY migration_name) FROM (SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NULL AS current, applied_steps_count FROM "_prisma_migrations" WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces')) x`,
     ]).stdout,
   );
   const catalog = JSON.parse(
-    psql(url, [
-      "-Atc",
-      String.raw`SELECT json_build_object(
-    'triggers',(SELECT json_agg(json_build_object('name',t.tgname,'table',c.relname,'function',p.proname,'type',t.tgtype) ORDER BY t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND (t.tgname LIKE 'CodexOAuth%guard' OR t.tgname='RepositoryConnection_codex_oauth_identity_guard')),
-    'checks',(SELECT json_agg(json_build_object('name',conname,'definition',pg_get_constraintdef(oid),'validated',convalidated) ORDER BY conname) FROM pg_constraint WHERE conname LIKE 'CodexOAuth%epoch_check' OR conname IN ('CodexOAuthProviderInstance_mutation_fence_check','CodexOAuthSetupRecoveryRequest_contract_check','CodexOAuthSetupManifest_payload_claim_complete_check','CodexOAuthSetupManifest_recovery_expiry_check')),
-    'indexes',(SELECT json_agg(json_build_object('name',ci.relname,'definition',pg_get_indexdef(i.indexrelid),'predicate',pg_get_expr(i.indpred,i.indrelid),'unique',i.indisunique,'valid',i.indisvalid,'ready',i.indisready) ORDER BY ci.relname) FROM pg_index i JOIN pg_class ci ON ci.oid=i.indexrelid WHERE ci.relname LIKE 'CodexOAuth%epoch_idx' OR ci.relname IN ('CodexOAuthSetupManifest_one_active_provider_key','CodexOAuthProviderInstance_mutation_owner_idx','CodexOAuthChildIdentityQuarantine_provider_idx','CodexOAuthSetupRecoveryRequest_provider_request_key','CodexOAuthSetupRecoveryRequest_latestManifestId_key','CodexOAuthSetupRecoveryRequest_provider_state_idx','CodexOAuthSetupRecoveryRequest_one_active_provider_key','CodexOAuthSetupManifest_recovery_expiry_idx')),
-    'foreignKeys',(SELECT json_agg(json_build_object('name',conname,'definition',pg_get_constraintdef(oid),'validated',convalidated) ORDER BY conname) FROM pg_constraint WHERE conname IN ('CodexOAuthSetupRecoveryRequest_providerInstanceRowId_fkey','CodexOAuthSetupRecoveryRequest_latestManifestId_fkey'))
-  )`,
-    ]).stdout,
-  );
+    psql(url, ["-Atc", codexRotatingProductionWriterBaseObservationSql]).stdout,
+  ).catalog;
   const unsafeWork = JSON.parse(
     psql(url, [
       "-Atc",
@@ -756,17 +1493,22 @@ function collectObservation(url) {
   return {
     observationVersion: 2,
     postgresVersion: psql(url, ["-Atc", "SHOW server_version"]).stdout.trim(),
-    migrationSources: [migration60, migration61, migration62, migration63].map(
-      (path, index) => ({
-        id: [
-          migration60Name,
-          migration61Name,
-          migration62Name,
-          migration63Name,
-        ][index],
-        sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
-      }),
-    ),
+    migrationSources: [
+      migration60,
+      migration61,
+      migration62,
+      migration63,
+      migration64,
+    ].map((path, index) => ({
+      id: [
+        migration60Name,
+        migration61Name,
+        migration62Name,
+        migration63Name,
+        migration64Name,
+      ][index],
+      sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
+    })),
     history,
     catalog,
     unsafeWork,

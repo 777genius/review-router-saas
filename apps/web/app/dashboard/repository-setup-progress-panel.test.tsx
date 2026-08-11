@@ -44,6 +44,65 @@ afterEach(() => {
 });
 
 describe("RepositorySetupProgressPanel", () => {
+  it("exposes rotating preparation before the first setup PR", () => {
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="not_configured"
+        initialSetupPullRequestUrl={null}
+        workflowCurrent={false}
+        mutationsEnabled
+        initialStep={1}
+        providerSetupBeforeWorkflow
+        enableReviewAction={
+          <button type="button">Set up versioned provider</button>
+        }
+      />,
+    );
+
+    expect(screen.getByText("1 of 4 - prepare versioned setup")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Set up versioned provider" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Create setup PR/i }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Seed the versioned provider namespace, then add its workflow by PR.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("keeps generic provider setup locked until after merge", () => {
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="not_configured"
+        initialSetupPullRequestUrl={null}
+        workflowCurrent={false}
+        mutationsEnabled
+        initialStep={1}
+        enableReviewAction={<button type="button">Connect provider</button>}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Connect provider" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Enable review" }),
+    ).toHaveProperty("disabled", true);
+  });
+
   it("keeps the real provider dialog open when confirmation advances progress", async () => {
     vi.stubGlobal(
       "fetch",
@@ -80,7 +139,7 @@ describe("RepositorySetupProgressPanel", () => {
             organizationLogin={null}
             organizationSecretPolicy={null}
             guidanceSet={{
-              codexOAuthRotating: guidance("REVIEWROUTER_CODEX_AUTH_JSON"),
+              codexOAuthRotating: rotatingGuidance(),
               codexOAuth: guidance("CODEX_AUTH_JSON"),
               codexApiKey: guidance("OPENAI_API_KEY"),
               claudeCodeOAuth: guidance("CLAUDE_CODE_OAUTH_TOKEN"),
@@ -93,10 +152,12 @@ describe("RepositorySetupProgressPanel", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Enable review" }));
-    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Verify versioned setup" }),
+    );
 
     expect(
-      await screen.findByText(/Provider secret metadata was verified/i),
+      await screen.findByText(/Authorized versioned setup is active/i),
     ).toBeTruthy();
     expect(screen.getByText("4 of 4 - complete")).toBeTruthy();
     expect(
@@ -539,6 +600,29 @@ function guidance(secretName: string): ProviderSecretSetupGuidance {
         selectedRepositories: ["777genius/example"],
         validatesBeforeWrite: false,
         failureRecovery: "Retry the command.",
+        sendsSecretToReviewRouter: false,
+      },
+    ],
+    warnings: [],
+  };
+}
+
+function rotatingGuidance(): ProviderSecretSetupGuidance {
+  return {
+    provider: "codex_oauth_rotating",
+    recommendedScope: "repository",
+    commands: [
+      {
+        scope: "repository",
+        title: "Versioned repository setup",
+        description: "Claims one server-authorized versioned setup attempt.",
+        command: "set -euo pipefail\n# versioned rotating installer",
+        storesSecretIn: "github_repository_secret",
+        targetLabel: "777genius/example repository secret",
+        secretNames: ["Server-authorized versioned secret"],
+        selectedRepositories: ["777genius/example"],
+        validatesBeforeWrite: true,
+        failureRecovery: "Recover through the versioned setup flow.",
         sendsSecretToReviewRouter: false,
       },
     ],

@@ -1,7 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveInstallCodexRedirect } from "./install-codex-redirect";
 
 describe("resolveInstallCodexRedirect", () => {
+  beforeEach(() => {
+    vi.stubEnv(
+      "REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF",
+      "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("sends browser requests to the human setup guide", () => {
     const request = new Request("https://reviewrouter.site/install/codex", {
       headers: {
@@ -21,7 +32,7 @@ describe("resolveInstallCodexRedirect", () => {
     });
 
     expect(resolveInstallCodexRedirect(request)).toBe(
-      "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-rotating-auth.sh",
+      "https://raw.githubusercontent.com/777genius/review-router/0123456789abcdef0123456789abcdef01234567/scripts/seed-codex-rotating-auth.sh",
     );
   });
 
@@ -29,7 +40,7 @@ describe("resolveInstallCodexRedirect", () => {
     const request = new Request("https://reviewrouter.site/install/codex");
 
     expect(resolveInstallCodexRedirect(request)).toBe(
-      "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-rotating-auth.sh",
+      "https://raw.githubusercontent.com/777genius/review-router/0123456789abcdef0123456789abcdef01234567/scripts/seed-codex-rotating-auth.sh",
     );
   });
 });

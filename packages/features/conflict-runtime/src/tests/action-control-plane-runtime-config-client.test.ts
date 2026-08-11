@@ -75,7 +75,6 @@ describe("ActionControlPlaneRuntimeConfigClient", () => {
       },
       body: {
         oidcToken: "github-oidc-token",
-        audience: "reviewrouter",
         conflictDispatch: {
           protocolVersion: 1,
           dispatchEventType: "reviewrouter_conflict_review",
@@ -86,6 +85,7 @@ describe("ActionControlPlaneRuntimeConfigClient", () => {
       },
       redirect: "error",
     });
+    expect(calls[0]?.body).not.toHaveProperty("audience");
     expect(calls[1]).toMatchObject({
       method: "GET",
       headers: {

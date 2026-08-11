@@ -68,6 +68,8 @@ export function safeDashboardErrorCode(error: unknown): string {
       "codex_rotating_not_enabled",
       "codex_rotating_repository_scope_required",
       "codex_rotating_single_provider_required",
+      "codex_rotating_setup_not_ready",
+      "codex_rotating_workflow_namespace_not_ready",
       "duplicate_review_provider",
       "codex_rotating_provider_instance_required",
       "codex_legacy_auth_requires_reconnect",

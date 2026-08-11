@@ -4,11 +4,18 @@ import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
   canonicalCodexRotatingProviderId,
   classifyCodexRotatingMutationOwnership,
+  codexRotatingAccountSwitchAcknowledgement,
   codexRotatingAuthMode,
+  codexRotatingForcedRecoveryAttemptTransitions,
+  codexRotatingForcedRecoveryClaimTransitions,
   codexRotatingSetupRecoveryAcknowledgement,
   codexRotatingSecretName,
   codexRotatingWritebackClaimMarker,
   codexRotatingWritebackDispatchedMarker,
+  isRuntimeVersionedDurableMarker,
+  fingerprintDatabaseRecoveryWitness,
+  classifyExternalRecoveryWitnessRelation,
+  ExternalRecoveryWitnessRelation,
   type CodexRotatingIdentityQuarantineReadModel,
   type CodexRotatingSetupRecoveryPort,
   type CodexRotatingSetupRecoveryResult,
@@ -18,11 +25,34 @@ import {
   lockCodexRotatingProviderRow,
   lockCodexRotatingSetupProvider,
 } from "./codex-rotating-provider-mutation-fence";
+import { assertCodexRotatingSetupRecoveryWitness } from "./codex-rotating-setup-manifest";
 
 const recoveryTransactionTimeoutMs = 10_000;
 
+type CodexRotatingSetupRecoveryAcknowledgement =
+  | typeof codexRotatingSetupRecoveryAcknowledgement
+  | typeof codexRotatingAccountSwitchAcknowledgement;
+
+export function validateCodexRotatingSetupRecoveryAcknowledgement(input: {
+  readonly acknowledgement: string;
+  readonly accountSwitch: boolean;
+}): CodexRotatingSetupRecoveryAcknowledgement {
+  const requiredAcknowledgement = input.accountSwitch
+    ? codexRotatingAccountSwitchAcknowledgement
+    : codexRotatingSetupRecoveryAcknowledgement;
+  if (input.acknowledgement !== requiredAcknowledgement) {
+    throw new Error("codex_rotating_setup_recovery_acknowledgement_required");
+  }
+  // Return the caller-supplied value so the durable recovery row records the
+  // exact operator proof that crossed the adapter boundary.
+  return input.acknowledgement as CodexRotatingSetupRecoveryAcknowledgement;
+}
+
 export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecoveryPort {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly databaseRecoveryWitness?: string,
+  ) {}
 
   async findIdentityQuarantine(input: {
     readonly workspaceId: string;
@@ -37,6 +67,7 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         ON repository."id" = quarantine."observedRepositoryId"
       WHERE repository."workspaceId" = ${input.workspaceId}
         AND repository."id" = ${input.repositoryId}
+        AND quarantine."resolvedAt" IS NULL
       LIMIT 1
     `;
     const row = rows[0];
@@ -71,9 +102,17 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         id: true,
         mutationOwner: true,
         writebackIntents: {
-          where: { status: "remote_outcome_unknown" },
+          where: {
+            status: "remote_outcome_unknown",
+            recoveryResolvedAt: null,
+          },
           take: 1,
-          select: { id: true },
+          select: {
+            id: true,
+            secretNamespace: {
+              select: { permanentlyRetired: true, status: true },
+            },
+          },
         },
         setupManifests: {
           where: { status: "fetched" },
@@ -82,15 +121,31 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         },
       },
     });
-    if (provider?.setupManifests.length || provider?.writebackIntents.length) {
-      return {
-        status: "remote_outcome_unknown",
-        reason: "github_secret_put_may_have_completed",
-        action: "use_versioned_secret_namespace_or_prove_no_overwrite",
-      };
+    if (
+      provider?.setupManifests.length ||
+      provider?.writebackIntents.some(
+        (intent) =>
+          !intent.secretNamespace?.permanentlyRetired ||
+          intent.secretNamespace.status !== "retired_ambiguous",
+      )
+    ) {
+      return { status: "recovery_required" };
     }
     if (provider?.mutationOwner === "recovery") {
       return { status: "recovery_required" };
+    }
+    if (provider) {
+      try {
+        await assertCodexRotatingSetupRecoveryWitness(this.prisma, {
+          providerInstanceRowId: provider.id,
+          ...(this.databaseRecoveryWitness !== undefined
+            ? { configuredRecoveryWitness: this.databaseRecoveryWitness }
+            : {}),
+          forcedRecoveryAuthority: null,
+        });
+      } catch {
+        return { status: "recovery_required" };
+      }
     }
     return { status: "ready" };
   }
@@ -98,6 +153,8 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
   async recover(
     input: Parameters<CodexRotatingSetupRecoveryPort["recover"]>[0],
   ): Promise<CodexRotatingSetupRecoveryResult> {
+    const acknowledgement =
+      validateCodexRotatingSetupRecoveryAcknowledgement(input);
     const expectedProviderInstanceId = canonicalCodexRotatingProviderId(
       input.githubRepositoryId,
     );
@@ -141,6 +198,25 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
             },
           },
         });
+        const latestNamespace = await tx.codexOAuthSecretNamespace.findFirst({
+          where: { providerInstanceRowId: provider.id },
+          orderBy: [{ namespaceEpoch: "desc" }, { id: "desc" }],
+          select: { databaseRecoveryWitness: true },
+        });
+        let currentWitness: string;
+        try {
+          currentWitness = fingerprintDatabaseRecoveryWitness(
+            this.databaseRecoveryWitness ?? "",
+          );
+        } catch {
+          throw new Error("codex_rotating_retryable_uncommitted");
+        }
+        const externalRecoveryWitnessRelation =
+          classifyExternalRecoveryWitnessRelation({
+            persistedFingerprint:
+              latestNamespace?.databaseRecoveryWitness ?? null,
+            currentFingerprint: currentWitness,
+          });
 
         const quarantine = await findQuarantine(tx, provider.id);
         const request = await findRecoveryRequest(
@@ -148,16 +224,28 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
           provider.id,
           input.recoveryRequestId,
         );
+        if (request && request.databaseRecoveryWitness !== currentWitness) {
+          // Idempotency keys are scoped to one database writer generation.
+          // Immutable W1 evidence cannot be reused as a W2 recovery request.
+          throw new Error("codex_rotating_setup_recovery_already_used");
+        }
+        if (request && !["active", "manifest_issued"].includes(request.state)) {
+          throw new Error("codex_rotating_setup_recovery_already_used");
+        }
+        const requestedMode = input.accountSwitch
+          ? "forced_reseed_account_switch"
+          : "forced_reseed";
+        if (request && request.mode !== requestedMode) {
+          throw new Error("codex_rotating_setup_recovery_request_conflict");
+        }
         const activeOtherRequest = await findOtherActiveRecoveryRequest(
           tx,
           provider.id,
           input.recoveryRequestId,
+          currentWitness,
         );
         if (activeOtherRequest) {
           throw new Error("codex_rotating_setup_recovery_request_conflict");
-        }
-        if (request && !["active", "manifest_issued"].includes(request.state)) {
-          throw new Error("codex_rotating_setup_recovery_already_used");
         }
         const setup = await tx.codexOAuthSetupManifest.findFirst({
           where: {
@@ -175,7 +263,13 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
           where: {
             providerInstanceRowId: provider.id,
-            status: { in: ["pending", "remote_outcome_unknown"] },
+            OR: [
+              { status: "pending" },
+              {
+                status: "remote_outcome_unknown",
+                recoveryResolvedAt: null,
+              },
+            ],
           },
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
           select: {
@@ -184,6 +278,9 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
             status: true,
             createdAt: true,
             safeErrorCode: true,
+            secretNamespace: {
+              select: { permanentlyRetired: true, status: true },
+            },
           },
         });
         const runtimeLease = provider.mutationOwnerId
@@ -218,7 +315,11 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
                   pendingIntent.safeErrorCode ===
                     codexRotatingWritebackClaimMarker ||
                   pendingIntent.safeErrorCode ===
-                    codexRotatingWritebackDispatchedMarker,
+                    codexRotatingWritebackDispatchedMarker ||
+                  isRuntimeVersionedDurableMarker(pendingIntent.safeErrorCode),
+                remoteNamespacePermanentlyRetired:
+                  pendingIntent.secretNamespace?.permanentlyRetired === true &&
+                  pendingIntent.secretNamespace.status === "retired_ambiguous",
               }
             : null,
           runtimeLease,
@@ -227,9 +328,17 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
           canonicalIdentity,
           quarantined: quarantine !== null,
           mutationOwnership: ownership.classification,
+          versionedNamespaceRecoveryAvailable: true,
+          externalRecoveryWitnessRelation,
           recoveryRequestAlreadyApplied:
             request?.state === "active" || request?.state === "manifest_issued",
         });
+        const supersededStaleRecoveryRequests =
+          await supersedeMismatchedActiveRecoveryRequests(tx, {
+            providerInstanceRowId: provider.id,
+            currentWitness,
+            now: input.now,
+          });
         if (decision.kind === "idempotent_replay") {
           if (!request)
             throw new Error("codex_rotating_setup_recovery_required");
@@ -248,17 +357,41 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
             state: "unknown_auth_state",
             activeLeaseId: null,
             activeLeaseExpiresAt: null,
+            activeSecretNamespaceId: null,
+            activeSecretNamespaceEpoch: null,
+            activeSecretNamespaceName: null,
+            activeAccountIdentityHash: input.accountSwitch
+              ? null
+              : provider.activeAccountIdentityHash,
             mutationEpoch: recoveryEpoch,
             mutationOwner: "recovery",
             mutationOwnerId: recoveryOwnerId,
           },
         });
+        await retirePriorNamespaceGeneration(tx, {
+          providerInstanceRowId: provider.id,
+          now: input.now,
+        });
+        await tx.providerSetupState.updateMany({
+          where: {
+            workspaceId: input.workspaceId,
+            repositoryId: input.repositoryId,
+            targetKey: `repo:${input.repositoryId}`,
+            providerKind: "codex",
+            authMode: codexRotatingAuthMode,
+          },
+          data: { state: "stale_or_invalid" },
+        });
+        const recoveryRequestRowId = `codex_recovery_${randomUUID()}`;
         await insertRecoveryRequest(tx, {
-          id: `codex_recovery_${randomUUID()}`,
+          id: recoveryRequestRowId,
           providerInstanceRowId: provider.id,
           recoveryRequestId: input.recoveryRequestId,
           actor: sanitizedActor,
           mutationEpoch: recoveryEpoch,
+          databaseRecoveryWitness: currentWitness,
+          acknowledgement,
+          accountSwitch: input.accountSwitch,
           now: input.now,
         });
         await tx.codexOAuthSetupManifest.updateMany({
@@ -282,6 +415,19 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
             status: "failed",
             safeErrorCode: "operator_setup_recovery",
             completedAt: input.now,
+            recoveryRequestRowId,
+            recoveryResolvedAt: input.now,
+          },
+        });
+        await tx.codexOAuthWritebackIntent.updateMany({
+          where: {
+            providerInstanceRowId: provider.id,
+            status: "remote_outcome_unknown",
+            recoveryResolvedAt: null,
+          },
+          data: {
+            recoveryRequestRowId,
+            recoveryResolvedAt: input.now,
           },
         });
         if (provider.activeLeaseId) {
@@ -301,7 +447,12 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
               source: "operator",
               recoveryRequestId: input.recoveryRequestId,
               recoveryEpoch: recoveryEpoch.toString(10),
+              accountSwitch: input.accountSwitch,
               previousOwnership: ownership.classification,
+              witnessRotation:
+                externalRecoveryWitnessRelation ===
+                ExternalRecoveryWitnessRelation.Mismatched,
+              supersededStaleRecoveryRequests,
             },
           },
         });
@@ -315,6 +466,8 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
 type RecoveryRequestRow = {
   readonly id: string;
   readonly mutationEpoch: bigint;
+  readonly databaseRecoveryWitness: string | null;
+  readonly mode: string;
   readonly state: string;
 };
 
@@ -324,7 +477,7 @@ async function findRecoveryRequest(
   recoveryRequestId: string,
 ): Promise<RecoveryRequestRow | null> {
   const rows = await tx.$queryRaw<RecoveryRequestRow[]>`
-    SELECT "id", "mutationEpoch", "state"
+    SELECT "id", "mutationEpoch", "databaseRecoveryWitness", "mode", "state"
     FROM "CodexOAuthSetupRecoveryRequest"
     WHERE "providerInstanceRowId" = ${providerInstanceRowId}
       AND "recoveryRequestId" = ${recoveryRequestId}
@@ -337,15 +490,35 @@ async function findOtherActiveRecoveryRequest(
   tx: Prisma.TransactionClient,
   providerInstanceRowId: string,
   recoveryRequestId: string,
+  currentWitness: string,
 ): Promise<{ readonly id: string } | null> {
   const rows = await tx.$queryRaw<Array<{ readonly id: string }>>`
     SELECT "id" FROM "CodexOAuthSetupRecoveryRequest"
     WHERE "providerInstanceRowId" = ${providerInstanceRowId}
       AND "recoveryRequestId" <> ${recoveryRequestId}
       AND "state" IN ('active', 'manifest_issued')
+      AND "databaseRecoveryWitness" IS NOT DISTINCT FROM ${currentWitness}
     LIMIT 1
   `;
   return rows[0] ?? null;
+}
+
+export async function supersedeMismatchedActiveRecoveryRequests(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly providerInstanceRowId: string;
+    readonly currentWitness: string;
+    readonly now: Date;
+  },
+): Promise<number> {
+  return tx.$executeRaw`
+    UPDATE "CodexOAuthSetupRecoveryRequest"
+    SET "state" = 'superseded', "completedAt" = COALESCE("completedAt", ${input.now}),
+        "updatedAt" = ${input.now}
+    WHERE "providerInstanceRowId" = ${input.providerInstanceRowId}
+      AND "state" IN ('active', 'manifest_issued')
+      AND "databaseRecoveryWitness" IS DISTINCT FROM ${input.currentWitness}
+  `;
 }
 
 async function insertRecoveryRequest(
@@ -356,21 +529,110 @@ async function insertRecoveryRequest(
     readonly recoveryRequestId: string;
     readonly actor: string;
     readonly mutationEpoch: bigint;
+    readonly databaseRecoveryWitness: string;
+    readonly acknowledgement: CodexRotatingSetupRecoveryAcknowledgement;
+    readonly accountSwitch: boolean;
     readonly now: Date;
   },
 ): Promise<void> {
   await tx.$executeRaw`
     INSERT INTO "CodexOAuthSetupRecoveryRequest" (
       "id", "providerInstanceRowId", "recoveryRequestId", "actor",
-      "acknowledgement", "mutationEpoch", "mode", "state",
+      "acknowledgement", "mutationEpoch", "databaseRecoveryWitness", "mode", "state",
       "requestedAt", "activatedAt", "updatedAt"
     ) VALUES (
       ${input.id}, ${input.providerInstanceRowId}, ${input.recoveryRequestId},
-      ${input.actor}, ${codexRotatingSetupRecoveryAcknowledgement},
-      ${input.mutationEpoch}, 'forced_reseed', 'active',
+      ${input.actor}, ${input.acknowledgement},
+      ${input.mutationEpoch}, ${input.databaseRecoveryWitness}, ${
+        input.accountSwitch ? "forced_reseed_account_switch" : "forced_reseed"
+      }, 'active',
       ${input.now}, ${input.now}, ${input.now}
     )
   `;
+}
+
+export async function retirePriorNamespaceGeneration(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly providerInstanceRowId: string;
+    readonly now: Date;
+  },
+): Promise<void> {
+  const attemptTransitions = Object.entries(
+    codexRotatingForcedRecoveryAttemptTransitions,
+  );
+  const claimTransitions = Object.entries(
+    codexRotatingForcedRecoveryClaimTransitions,
+  );
+  await tx.$executeRaw`
+    UPDATE "CodexOAuthSetupDispatchAttempt" attempt
+    SET "status" = CASE attempt."status"
+          ${Prisma.join(
+            attemptTransitions.map(
+              ([from, to]) => Prisma.sql`WHEN ${from} THEN ${to}`,
+            ),
+            " ",
+          )}
+          ELSE attempt."status"
+        END,
+        "retiredAt" = ${input.now},
+        "updatedAt" = ${input.now}
+    FROM "CodexOAuthSetupPayloadClaim" claim
+    WHERE attempt."claimId" = claim."id"
+      AND claim."providerInstanceRowId" = ${input.providerInstanceRowId}
+      AND attempt."status" IN (${Prisma.join(
+        attemptTransitions.map(([from]) => from),
+      )})
+  `;
+  await tx.$executeRaw`
+    UPDATE "CodexOAuthSetupPayloadClaim"
+    SET "status" = CASE "status"
+          ${Prisma.join(
+            claimTransitions.map(
+              ([from, to]) => Prisma.sql`WHEN ${from} THEN ${to}`,
+            ),
+            " ",
+          )}
+          ELSE "status"
+        END,
+        "updatedAt" = ${input.now}
+    WHERE "providerInstanceRowId" = ${input.providerInstanceRowId}
+      AND "status" IN (${Prisma.join(claimTransitions.map(([from]) => from))})
+  `;
+  await tx.$executeRaw`
+    UPDATE "CodexOAuthSecretNamespace"
+    SET "status" = CASE
+          WHEN "status" = 'active' THEN 'retired_superseded'
+          ELSE 'retired_ambiguous'
+        END,
+        "permanentlyRetired" = true,
+        "retiredAt" = ${input.now}
+    WHERE "providerInstanceRowId" = ${input.providerInstanceRowId}
+      AND "status" IN ('dispatch_authorized', 'confirmed_candidate', 'active')
+  `;
+  const remaining = await tx.$queryRaw<Array<{ count: bigint }>>`
+    SELECT (
+      (SELECT count(*) FROM "CodexOAuthSecretNamespace"
+       WHERE "providerInstanceRowId" = ${input.providerInstanceRowId}
+         AND "status" IN ('dispatch_authorized', 'confirmed_candidate', 'active'))
+      +
+      (SELECT count(*) FROM "CodexOAuthSetupDispatchAttempt" attempt
+       JOIN "CodexOAuthSetupPayloadClaim" claim ON claim."id" = attempt."claimId"
+       WHERE claim."providerInstanceRowId" = ${input.providerInstanceRowId}
+         AND attempt."status" IN (${Prisma.join(
+           attemptTransitions.map(([from]) => from),
+         )}))
+      +
+      (SELECT count(*) FROM "CodexOAuthSetupPayloadClaim"
+       WHERE "providerInstanceRowId" = ${input.providerInstanceRowId}
+         AND "status" IN (${Prisma.join(
+           claimTransitions.map(([from]) => from),
+         )}))
+    )::bigint AS count
+  `;
+  if (remaining[0]?.count !== 0n) {
+    throw new Error("codex_rotating_setup_recovery_retirement_conflict");
+  }
 }
 
 function sanitizeRecoveryActor(actor: string): string {
@@ -401,6 +663,7 @@ async function findQuarantine(
            "expectedProviderInstanceId", "reason", "quarantinedAt"
     FROM "CodexOAuthProviderIdentityQuarantine"
     WHERE "providerInstanceRowId" = ${providerInstanceRowId}
+      AND "resolvedAt" IS NULL
     LIMIT 1
   `;
   return rows[0] ?? null;
@@ -422,6 +685,7 @@ async function findScopedQuarantine(
       ON repository."id" = quarantine."observedRepositoryId"
     WHERE repository."workspaceId" = ${input.workspaceId}
       AND repository."id" = ${input.repositoryId}
+      AND quarantine."resolvedAt" IS NULL
     LIMIT 1
   `;
   return rows[0] ?? null;

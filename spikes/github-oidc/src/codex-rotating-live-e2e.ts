@@ -1,10 +1,21 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createServer, type IncomingMessage } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPrismaClient } from "../../../packages/platform/db/src/index.ts";
-import { resolveReviewRouterActionRef } from "../../../packages/platform/config/src/index.ts";
+import {
+  isLoopbackHostname,
+  requireReviewRouterDatabaseRecoveryWitness,
+  resolveReviewRouterCodexRotatingActionRef,
+} from "../../../packages/platform/config/src/index.ts";
 import { SystemClock } from "../../../packages/shared/src/index.ts";
 import {
   OctokitGitHubRepositorySource,
@@ -13,25 +24,34 @@ import {
 } from "../../../packages/features/repositories/src/index.ts";
 import {
   CodexRotatingReviewActionV2Mode,
-  CodexRotatingT0WorkflowSchemaVersion,
+  WorkflowSourceTrust,
+  assertSameVersionedProviderSecretNamespace,
+  assertTrustedCanonicalVersionedWorkflow,
+  createVersionedProviderSecretNamespace,
+  createVersionedSecretWorkflowSourceAttestation,
+  defaultCodexRotatingWorkflowPath,
   OctokitWorkflowSetupGateway,
   PrismaWorkflowProvisioningRepository,
-  provisionReviewRouterWorkflow,
+  PrismaWorkflowProvisioningTarget,
+  provisionRepositoryReviewRouterWorkflow,
+  readCanonicalCodexRotatingT0WorkflowSourceMetadata,
+  workflowDocumentSemanticSha256,
+  type VersionedProviderSecretNamespace,
 } from "../../../packages/features/workflow-provisioning/src/index.ts";
-import {
-  confirmCodexRotatingSetupManifest,
-  issueCodexRotatingSetupCommand,
-  resolveCodexRotatingSetupManifestForNonce,
-} from "../../../apps/web/src/server/codex-rotating-setup-manifest.ts";
-import { resolveCodexRotatingSeedScriptDescriptor } from "../../../apps/web/src/server/codex-rotating-seed-script.ts";
+import { inspectCodexRotatingWorkflowNamespace } from "../../../packages/features/provider-setup/src/index.ts";
+import { issueCodexRotatingSetupForRepository } from "../../../apps/web/src/server/codex-rotating-setup-command.ts";
+import { PrismaCodexRotatingSetupPayloadClaim } from "../../../apps/web/src/server/prisma-codex-rotating-setup-payload-claim.ts";
+import { PrismaCodexRotatingWorkflowNamespace } from "../../../apps/web/src/server/prisma-codex-rotating-workflow-namespace.ts";
 import { createGitHubApp, findInstallationForRepo } from "./github-app.js";
 import { loadAppProfile, loadEnvFiles } from "./config.js";
 import {
   assertGitHubAppCommentAuthor,
   expectedGitHubAppBotLogin,
 } from "./review-comment-identity.js";
+import { assertDisposableRepositoryProvenance } from "./codex-rotating-live-e2e-provenance.js";
 
 type RepositoryView = {
+  readonly numericId: string;
   readonly nameWithOwner: string;
   readonly isPrivate: boolean;
   readonly isArchived: boolean;
@@ -54,6 +74,7 @@ type PullRequestView = {
 };
 
 type WorkflowRunView = {
+  readonly attempt: number;
   readonly databaseId: number;
   readonly status: string;
   readonly conclusion: string;
@@ -72,10 +93,6 @@ type ReviewCommentView = {
   readonly line: number | null;
   readonly body: string;
   readonly user: { readonly login: string };
-};
-
-type SetupManifestRow = {
-  readonly setupNonce: string;
 };
 
 loadEnvFiles();
@@ -98,8 +115,7 @@ const apiUrl = normalizePublicHttpsUrl(
 );
 const actionRef =
   process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_ACTION_REF?.trim() ||
-  process.env.REVIEW_ROUTER_ACTION_REF?.trim() ||
-  resolveReviewRouterActionRef();
+  resolveReviewRouterCodexRotatingActionRef();
 const authFile =
   process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_AUTH_FILE?.trim() ||
   process.env.REVIEW_ROUTER_CODEX_AUTH_FILE?.trim() ||
@@ -137,16 +153,18 @@ requireCommand("bash");
 requireCommand("node");
 assertActionRefIsPinned(actionRef);
 assertActionRefIsFetchable(actionRef);
+assertLiveE2EMutationAuthorized();
 assertTargetRepoAllowlisted(targetRepo);
 if (!authFile && !allowInteractiveLogin) {
   throw new Error(
     "missing_codex_rotating_e2e_auth_file: set REVIEW_ROUTER_CODEX_ROTATING_E2E_AUTH_FILE, or set REVIEW_ROUTER_CODEX_ROTATING_E2E_ALLOW_LOGIN=1 for an interactive local Codex login",
   );
 }
-
 try {
   trace("ensure-repository");
   const repositoryView = ensureRepository();
+  trace("check-retired-stable-secret-absent");
+  assertRetiredStableSecretAbsent();
   trace("wait-for-installation");
   const installationId = await waitForRepositoryInstallation(targetRepo);
   trace("sync-installation");
@@ -157,18 +175,27 @@ try {
   if (!repository.githubRepositoryId) {
     throw new Error("synced repository is missing GitHub id");
   }
+  if (repository.githubRepositoryId.toString() !== repositoryView.numericId) {
+    throw new Error("codex_rotating_e2e_synced_repository_id_mismatch");
+  }
   trace("seed-rotating-codex-auth");
   const setup = await seedRotatingCodexAuth({
     workspaceId: repository.workspaceId,
     repositoryId: repository.id,
+    provider: repository.provider,
     repositoryFullName: repository.fullName,
     githubRepositoryId: repository.githubRepositoryId.toString(),
+    selected: repository.selected,
+    archived: repository.archived,
+    installation: repository.installation,
   });
 
   trace("check-workflow-current");
   const workflowCurrent = await isRotatingWorkflowCurrentOnDefaultBranch(
     repository.defaultBranch,
     setup.providerInstanceId,
+    repository.githubRepositoryId.toString(),
+    setup.workflowNamespace,
   );
   const setupPullRequest = workflowCurrent
     ? null
@@ -180,6 +207,7 @@ try {
         name: repository.name,
         defaultBranch: repository.defaultBranch,
         providerInstanceId: setup.providerInstanceId,
+        workflowNamespace: setup.workflowNamespace,
       });
   if (setupPullRequest) {
     trace("merge-setup-pr");
@@ -192,8 +220,31 @@ try {
     await waitForRotatingWorkflowOnDefaultBranch(
       repository.defaultBranch,
       setup.providerInstanceId,
+      repository.githubRepositoryId.toString(),
+      setup.workflowNamespace,
     );
   }
+  trace("activate-versioned-setup-namespace");
+  await activateVersionedSetupNamespace({
+    installationId,
+    repositoryId: repository.id,
+    githubRepositoryId: repository.githubRepositoryId.toString(),
+    owner: repository.owner,
+    name: repository.name,
+    defaultBranch: repository.defaultBranch,
+    providerInstanceId: setup.providerInstanceId,
+    workflowNamespace: setup.workflowNamespace,
+    claimId: setup.claimId,
+    attemptId: setup.attemptId,
+  });
+  await assertActiveWorkflowNamespace({
+    workspaceId: repository.workspaceId,
+    repositoryId: repository.id,
+    githubRepositoryId: repository.githubRepositoryId.toString(),
+    providerInstanceId: setup.providerInstanceId,
+    expectedNamespace: setup.workflowNamespace,
+  });
+  assertRetiredStableSecretAbsent();
 
   trace("read-provider-before-runs");
   const providerBeforeRuns = await readProviderState(setup.providerInstanceId);
@@ -203,8 +254,8 @@ try {
     defaultBranch:
       repositoryView.defaultBranchRef?.name || repository.defaultBranch,
     providerInstanceId: setup.providerInstanceId,
-    minCompletedWritebacks: 1,
-    minGeneration: providerBeforeRuns.latestGeneration + 1,
+    previousProviderState: providerBeforeRuns,
+    githubRepositoryId: repository.githubRepositoryId.toString(),
   });
   created.firstPullRequestUrl = first.pullRequestUrl;
   created.firstRunUrl = first.runUrl;
@@ -217,8 +268,8 @@ try {
     defaultBranch:
       repositoryView.defaultBranchRef?.name || repository.defaultBranch,
     providerInstanceId: setup.providerInstanceId,
-    minCompletedWritebacks: 2,
-    minGeneration: afterFirst.latestGeneration + 1,
+    previousProviderState: afterFirst,
+    githubRepositoryId: repository.githubRepositoryId.toString(),
   });
   created.secondPullRequestUrl = second.pullRequestUrl;
   created.secondRunUrl = second.runUrl;
@@ -271,6 +322,17 @@ try {
 function ensureRepository(): RepositoryView {
   const existing = readRepositoryView(targetRepo);
   if (existing) {
+    assertDisposableRepositoryProvenance({
+      repositoryId: existing.numericId,
+      repositoryFullName: targetRepo,
+      ...(process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_DISPOSABLE_REPOSITORY_ID
+        ? {
+            expectedExistingRepositoryId:
+              process.env
+                .REVIEW_ROUTER_CODEX_ROTATING_E2E_DISPOSABLE_REPOSITORY_ID,
+          }
+        : {}),
+    });
     if (existing.isPrivate !== (visibility === "private")) {
       throw new Error(
         `codex_rotating_e2e_repo_visibility_mismatch:${targetRepo}:expected_${visibility}`,
@@ -281,57 +343,11 @@ function ensureRepository(): RepositoryView {
     }
     return existing;
   }
-
-  const seedDir = join(workdir, "seed");
-  run("git", ["init", "-q", seedDir]);
-  run("git", ["branch", "-M", "main"], { cwd: seedDir });
-  writeFileSync(
-    join(seedDir, "README.md"),
-    [
-      "# ReviewRouter Codex rotating OAuth E2E",
-      "",
-      `Disposable ${visibility} repository reused by the ReviewRouter rotating OAuth live E2E.`,
-      "",
-    ].join("\n"),
-  );
-  run("git", ["add", "README.md"], { cwd: seedDir });
-  run(
-    "git",
-    [
-      "-c",
-      "user.name=ReviewRouter E2E",
-      "-c",
-      "user.email=reviewrouter-e2e@example.invalid",
-      "commit",
-      "-q",
-      "-m",
-      "chore: seed Codex rotating E2E repository",
-    ],
-    { cwd: seedDir },
-  );
-  run(
-    "gh",
-    [
-      "repo",
-      "create",
-      targetRepo,
-      visibility === "private" ? "--private" : "--public",
-      "--source=.",
-      "--remote=origin",
-      "--push",
-    ],
-    { cwd: seedDir },
-  );
-
-  const createdRepository = readRepositoryView(targetRepo);
-  if (!createdRepository) {
-    throw new Error(`codex_rotating_e2e_repo_create_failed:${targetRepo}`);
-  }
-  return createdRepository;
+  throw new Error(`codex_rotating_e2e_repository_missing:${targetRepo}`);
 }
 
 function readRepositoryView(repository: string): RepositoryView | null {
-  const result = spawnSync(
+  const metadataResult = spawnSync(
     "gh",
     [
       "repo",
@@ -342,8 +358,34 @@ function readRepositoryView(repository: string): RepositoryView | null {
     ],
     { encoding: "utf8" },
   );
-  if (result.status !== 0) return null;
-  return JSON.parse(result.stdout) as RepositoryView;
+  const identityResult = spawnSync(
+    "gh",
+    ["api", `repos/${repository}`, "--jq", ".id"],
+    { encoding: "utf8" },
+  );
+  if (metadataResult.status !== 0 || identityResult.status !== 0) {
+    const diagnostic = `${metadataResult.stdout ?? ""}\n${metadataResult.stderr ?? ""}\n${identityResult.stdout ?? ""}\n${identityResult.stderr ?? ""}`;
+    if (/\bHTTP 404\b|\bNot Found\b/iu.test(diagnostic)) return null;
+    throw new Error(
+      `codex_rotating_e2e_repository_identity_unavailable:${repository}`,
+    );
+  }
+  const numericId = identityResult.stdout.trim();
+  if (!/^[1-9][0-9]*$/u.test(numericId)) {
+    throw new Error(
+      `codex_rotating_e2e_repository_numeric_id_invalid:${repository}`,
+    );
+  }
+  const metadata = JSON.parse(metadataResult.stdout) as Omit<
+    RepositoryView,
+    "numericId"
+  >;
+  if (metadata.nameWithOwner.toLowerCase() !== repository.toLowerCase()) {
+    throw new Error(
+      `codex_rotating_e2e_repository_name_mismatch:${repository}`,
+    );
+  }
+  return { ...metadata, numericId };
 }
 
 async function waitForRepositoryInstallation(
@@ -399,12 +441,16 @@ async function findSyncedRepository(repositoryFullName: string) {
         select: {
           id: true,
           workspaceId: true,
+          provider: true,
           githubRepositoryId: true,
           owner: true,
           name: true,
           fullName: true,
           defaultBranch: true,
           visibility: true,
+          selected: true,
+          archived: true,
+          installation: { select: { status: true } },
         },
       }),
   );
@@ -424,161 +470,74 @@ async function findSyncedRepository(repositoryFullName: string) {
 async function seedRotatingCodexAuth(input: {
   readonly workspaceId: string;
   readonly repositoryId: string;
+  readonly provider: string;
   readonly repositoryFullName: string;
   readonly githubRepositoryId: string;
-}): Promise<{ readonly providerInstanceId: string }> {
-  const installer = resolveCodexRotatingSeedScriptDescriptor();
-  const localConfirmServer = await startSetupConfirmServer();
-  try {
-    const setup = await issueCodexRotatingSetupCommand({
-      prisma,
+  readonly selected: boolean;
+  readonly archived: boolean;
+  readonly installation: { readonly status: string } | null;
+}): Promise<{
+  readonly providerInstanceId: string;
+  readonly workflowNamespace: VersionedProviderSecretNamespace;
+  readonly claimId: string;
+  readonly attemptId: string;
+}> {
+  const codexHome = join(workdir, "codex-home");
+  mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  if (authFile) {
+    const stagedAuthFile = join(codexHome, "auth.json");
+    copyFileSync(authFile, stagedAuthFile);
+    chmodSync(stagedAuthFile, 0o600);
+  }
+
+  const setup = await issueCodexRotatingSetupForRepository({
+    prisma,
+    repository: {
+      id: input.repositoryId,
+      workspaceId: input.workspaceId,
+      provider: input.provider,
+      githubRepositoryId: BigInt(input.githubRepositoryId),
+      fullName: input.repositoryFullName,
+      selected: input.selected,
+      archived: input.archived,
+      installation: input.installation,
+    },
+    ...(authFile
+      ? {
+          installerArguments: [
+            "--reuse-existing-auth-i-know-it-is-current" as const,
+          ],
+        }
+      : {}),
+  });
+  await runSensitiveInstallerCommand(setup.command, {
+    ...process.env,
+    REVIEW_ROUTER_CODEX_HOME: codexHome,
+  });
+
+  const inspection = await inspectCodexRotatingWorkflowNamespace(
+    {
       workspaceId: input.workspaceId,
       repositoryId: input.repositoryId,
-      repositoryFullName: input.repositoryFullName,
       githubRepositoryId: input.githubRepositoryId,
-      installer,
-      setupManifestUrl: localConfirmServer.manifestUrl,
-      setupConfirmUrl: localConfirmServer.confirmUrl,
-    });
-    const setupNonce = await findLatestSetupNonce(setup.providerInstanceId);
-    const manifest = await resolveCodexRotatingSetupManifestForNonce({
-      prisma,
-      setupNonce,
-    });
-
-    const seedArgs = ["scripts/seed-codex-rotating-auth.sh", "--confirm-write"];
-    if (authFile) {
-      seedArgs.push("--auth-file", authFile);
-    }
-    if (!allowInteractiveLogin) {
-      seedArgs.push("--skip-login");
-    }
-
-    await Promise.all([
-      runAsync("bash", seedArgs, {
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          REVIEW_ROUTER_REPO: input.repositoryFullName,
-          REVIEW_ROUTER_INSTALLER_URL: installer.url,
-          REVIEW_ROUTER_INSTALLER_VERSION: installer.version,
-          REVIEW_ROUTER_INSTALLER_SHA256: installer.sha256,
-          REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID:
-            setup.providerInstanceId,
-          REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
-            manifest.manifestBase64,
-          REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL:
-            localConfirmServer.confirmUrl,
-        },
-        timeoutMs: Number(
-          process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_SETUP_TIMEOUT_MS ??
-            90_000,
-        ),
-      }),
-      localConfirmServer.waitForConfirmation(),
-    ]);
-    return { providerInstanceId: setup.providerInstanceId };
-  } finally {
-    await localConfirmServer.close();
-  }
-}
-
-async function startSetupConfirmServer(): Promise<{
-  readonly manifestUrl: string;
-  readonly confirmUrl: string;
-  readonly waitForConfirmation: () => Promise<void>;
-  readonly close: () => Promise<void>;
-}> {
-  let confirmed = false;
-  let failure: Error | null = null;
-  let resolveConfirmed: (() => void) | null = null;
-  const confirmedPromise = new Promise<void>((resolve) => {
-    resolveConfirmed = resolve;
-  });
-  const server = createServer(async (request, response) => {
-    if (request.method !== "POST" || request.url !== "/confirm") {
-      response.writeHead(404, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: "not_found" }));
-      return;
-    }
-    try {
-      const payload = JSON.parse(await readRequestBody(request));
-      await confirmCodexRotatingSetupManifest({ prisma, payload });
-      confirmed = true;
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ status: "accepted" }));
-      resolveConfirmed?.();
-    } catch (error) {
-      failure = error instanceof Error ? error : new Error(String(error));
-      response.writeHead(400, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: failure.message }));
-      resolveConfirmed?.();
-    }
-  });
-
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("codex_rotating_e2e_confirm_server_failed");
-  }
-  const baseUrl = `http://127.0.0.1:${address.port}`;
-  return {
-    manifestUrl: `${baseUrl}/manifest`,
-    confirmUrl: `${baseUrl}/confirm`,
-    waitForConfirmation: async () => {
-      await Promise.race([
-        confirmedPromise,
-        sleep(
-          Number(
-            process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_SETUP_TIMEOUT_MS ??
-              90_000,
-          ),
-        ),
-      ]);
-      if (failure) throw failure;
-      if (!confirmed) {
-        throw new Error("codex_rotating_setup_confirmation_timeout");
-      }
+      providerInstanceId: setup.providerInstanceId,
     },
-    close: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
+    {
+      workflowNamespace: new PrismaCodexRotatingWorkflowNamespace(
+        prisma,
+        requireReviewRouterDatabaseRecoveryWitness(),
       ),
-  };
-}
-
-async function readRequestBody(request: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > 64 * 1024) {
-      throw new Error("setup_confirmation_too_large");
-    }
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-async function findLatestSetupNonce(
-  providerInstanceId: string,
-): Promise<string> {
-  const rows = await withPrismaConnectionRetry(
-    "find-latest-setup-nonce",
-    () => prisma.$queryRaw<SetupManifestRow[]>`
-      SELECT "setupNonce"
-      FROM "CodexOAuthSetupManifest"
-      WHERE "providerInstanceId" = ${providerInstanceId}
-      ORDER BY "createdAt" DESC
-      LIMIT 1
-    `,
+    },
   );
-  const row = rows[0];
-  if (!row) {
-    throw new Error("codex_rotating_setup_manifest_not_created");
+  if (inspection.source !== "confirmed_setup_candidate") {
+    throw new Error("codex_rotating_e2e_fresh_setup_candidate_required");
   }
-  return row.setupNonce;
+  return {
+    providerInstanceId: setup.providerInstanceId,
+    workflowNamespace: inspection.namespace,
+    claimId: inspection.claimId,
+    attemptId: inspection.attemptId,
+  };
 }
 
 async function provisionRotatingWorkflow(input: {
@@ -589,29 +548,26 @@ async function provisionRotatingWorkflow(input: {
   readonly name: string;
   readonly defaultBranch: string;
   readonly providerInstanceId: string;
+  readonly workflowNamespace: VersionedProviderSecretNamespace;
 }): Promise<{
   readonly url: string;
   readonly number: number;
   readonly branch: string;
 }> {
   const octokit = await app.getInstallationOctokit(input.installationId);
-  return provisionReviewRouterWorkflow(
+  return provisionRepositoryReviewRouterWorkflow(
     {
-      workspaceId: input.workspaceId,
       repositoryId: input.repositoryId,
-      owner: input.owner,
-      name: input.name,
-      defaultBranch: input.defaultBranch,
       actionRef,
       apiUrl,
       runtimeConfigMode: "oidc",
       codexRotatingProviderInstanceId: input.providerInstanceId,
+      codexRotatingWorkflowSecretNamespace: input.workflowNamespace,
       codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
-      codexRotatingWorkflowSchemaVersion:
-        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3,
       forkAgenticSandboxEnabled: false,
     },
     {
+      targets: new PrismaWorkflowProvisioningTarget(prisma),
       setupGateway: new OctokitWorkflowSetupGateway(octokit),
       provisioning: new PrismaWorkflowProvisioningRepository(prisma),
     },
@@ -688,6 +644,8 @@ function mergePullRequest(number: number, subject: string): void {
 async function waitForRotatingWorkflowOnDefaultBranch(
   defaultBranch: string,
   providerInstanceId: string,
+  githubRepositoryId: string,
+  workflowNamespace: VersionedProviderSecretNamespace,
 ): Promise<void> {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
@@ -695,6 +653,8 @@ async function waitForRotatingWorkflowOnDefaultBranch(
       await isRotatingWorkflowCurrentOnDefaultBranch(
         defaultBranch,
         providerInstanceId,
+        githubRepositoryId,
+        workflowNamespace,
       )
     ) {
       return;
@@ -709,6 +669,8 @@ async function waitForRotatingWorkflowOnDefaultBranch(
 async function isRotatingWorkflowCurrentOnDefaultBranch(
   defaultBranch: string,
   providerInstanceId: string,
+  githubRepositoryId: string,
+  workflowNamespace: VersionedProviderSecretNamespace,
 ): Promise<boolean> {
   const result = spawnSync(
     "gh",
@@ -724,29 +686,239 @@ async function isRotatingWorkflowCurrentOnDefaultBranch(
     return false;
   }
   const workflow = Buffer.from(result.stdout.trim(), "base64").toString("utf8");
-  const [actionRepository, actionCommitSha] = actionRef.split("@");
-  return (
-    workflow.includes(
-      `${actionRepository}/.github/workflows/reviewrouter-t0-reusable.yml@${actionCommitSha}`,
-    ) &&
-    workflow.includes(`provider_instance_id: "${providerInstanceId}"`) &&
-    workflow.includes(
-      `workflow_schema_version: ${CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredLifecycleV3}`,
-    ) &&
-    workflow.includes(
-      "CODEX_AUTH_JSON: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
-    ) &&
-    !workflow.includes("pull_request_target:") &&
-    !workflow.includes("mode: codex-oauth-rotating")
+  try {
+    assertTrustedCanonicalVersionedWorkflow({
+      metadata: readCanonicalCodexRotatingT0WorkflowSourceMetadata(workflow),
+      observedRepositoryId: githubRepositoryId,
+      observedRepositoryFullName: targetRepo,
+      expectedRepositoryId: githubRepositoryId,
+      expectedRepositoryFullName: targetRepo,
+      trustedActionRefs: [actionRef],
+      expectedApiUrl: apiUrl,
+      expectedProviderInstanceId: providerInstanceId,
+      expectedSecretNamespace: workflowNamespace,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function activateVersionedSetupNamespace(input: {
+  readonly installationId: number;
+  readonly repositoryId: string;
+  readonly githubRepositoryId: string;
+  readonly owner: string;
+  readonly name: string;
+  readonly defaultBranch: string;
+  readonly providerInstanceId: string;
+  readonly workflowNamespace: VersionedProviderSecretNamespace;
+  readonly claimId: string;
+  readonly attemptId: string;
+}): Promise<void> {
+  const octokit = await app.getInstallationOctokit(input.installationId);
+  const repositoryResponse = await octokit.request(
+    "GET /repos/{owner}/{repo}",
+    {
+      owner: input.owner,
+      repo: input.name,
+    },
   );
+  const observedRepository = readGitHubRepositoryIdentity(
+    repositoryResponse.data,
+  );
+  if (
+    observedRepository.id !== input.githubRepositoryId ||
+    observedRepository.fullName !== targetRepo ||
+    observedRepository.defaultBranch !== input.defaultBranch
+  ) {
+    throw new Error("codex_rotating_e2e_workflow_repository_mismatch");
+  }
+
+  const refResponse = await octokit.request(
+    "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    {
+      owner: input.owner,
+      repo: input.name,
+      ref: `heads/${input.defaultBranch}`,
+    },
+  );
+  const workflowSourceCommitSha = readGitHubCommitSha(refResponse.data);
+  const contentResponse = await octokit.request(
+    "GET /repos/{owner}/{repo}/contents/{path}",
+    {
+      owner: input.owner,
+      repo: input.name,
+      path: defaultCodexRotatingWorkflowPath,
+      ref: workflowSourceCommitSha,
+    },
+  );
+  const { source, blobSha } = readGitHubWorkflowBlob(contentResponse.data);
+  assertTrustedCanonicalVersionedWorkflow({
+    metadata: readCanonicalCodexRotatingT0WorkflowSourceMetadata(source),
+    observedRepositoryId: observedRepository.id,
+    observedRepositoryFullName: observedRepository.fullName,
+    expectedRepositoryId: input.githubRepositoryId,
+    expectedRepositoryFullName: targetRepo,
+    trustedActionRefs: [actionRef],
+    expectedApiUrl: apiUrl,
+    expectedProviderInstanceId: input.providerInstanceId,
+    expectedSecretNamespace: input.workflowNamespace,
+  });
+  const attestation = createVersionedSecretWorkflowSourceAttestation({
+    repositoryId: input.githubRepositoryId,
+    workflowPath: defaultCodexRotatingWorkflowPath,
+    workflowSourceCommitSha,
+    workflowSourceBlobSha: blobSha,
+    workflowSourceSha256: createHash("sha256").update(source).digest("hex"),
+    workflowSemanticSha256: workflowDocumentSemanticSha256(source),
+    sourceTrust: WorkflowSourceTrust.TrustedDefaultBranchRevision,
+    secretNamespace: input.workflowNamespace,
+  });
+  const finalRefResponse = await octokit.request(
+    "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    {
+      owner: input.owner,
+      repo: input.name,
+      ref: `heads/${input.defaultBranch}`,
+    },
+  );
+  if (readGitHubCommitSha(finalRefResponse.data) !== workflowSourceCommitSha) {
+    throw new Error("codex_rotating_e2e_workflow_default_head_changed");
+  }
+
+  const claims = new PrismaCodexRotatingSetupPayloadClaim(
+    prisma,
+    requireReviewRouterDatabaseRecoveryWitness(),
+    undefined,
+    process.env,
+  );
+  await claims.activate({
+    claimId: input.claimId,
+    attemptId: input.attemptId,
+    namespaceId: input.workflowNamespace.namespaceId,
+    namespaceEpoch: input.workflowNamespace.epoch.toString(),
+    secretName: input.workflowNamespace.name,
+    repositoryId: attestation.repositoryId,
+    workflowPath:
+      attestation.workflowPath as ".github/workflows/reviewrouter-codex.yml",
+    workflowSourceCommitSha: attestation.workflowSourceCommitSha,
+    workflowSourceBlobSha: attestation.workflowSourceBlobSha,
+    workflowSourceSha256: attestation.workflowSourceSha256,
+    workflowSemanticSha256: attestation.workflowSemanticSha256,
+    sourceTrust: "trusted_default_branch_revision",
+  });
+}
+
+async function assertActiveWorkflowNamespace(input: {
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+  readonly githubRepositoryId: string;
+  readonly providerInstanceId: string;
+  readonly expectedNamespace: VersionedProviderSecretNamespace;
+}): Promise<void> {
+  const inspection = await inspectCodexRotatingWorkflowNamespace(
+    {
+      workspaceId: input.workspaceId,
+      repositoryId: input.repositoryId,
+      githubRepositoryId: input.githubRepositoryId,
+      providerInstanceId: input.providerInstanceId,
+    },
+    {
+      workflowNamespace: new PrismaCodexRotatingWorkflowNamespace(
+        prisma,
+        requireReviewRouterDatabaseRecoveryWitness(),
+      ),
+    },
+  );
+  if (inspection.source !== "active") {
+    throw new Error("codex_rotating_e2e_namespace_not_active");
+  }
+  assertSameVersionedProviderSecretNamespace({
+    expected: input.expectedNamespace,
+    actual: inspection.namespace,
+  });
+}
+
+function readGitHubRepositoryIdentity(data: unknown): {
+  readonly id: string;
+  readonly fullName: string;
+  readonly defaultBranch: string;
+} {
+  const repository = data as {
+    id?: unknown;
+    full_name?: unknown;
+    default_branch?: unknown;
+  } | null;
+  if (
+    typeof repository?.id !== "number" ||
+    !Number.isSafeInteger(repository.id) ||
+    repository.id <= 0 ||
+    typeof repository.full_name !== "string" ||
+    typeof repository.default_branch !== "string"
+  ) {
+    throw new Error("codex_rotating_e2e_repository_response_invalid");
+  }
+  return {
+    id: String(repository.id),
+    fullName: repository.full_name,
+    defaultBranch: repository.default_branch,
+  };
+}
+
+function readGitHubCommitSha(data: unknown): string {
+  const sha = (data as { object?: { sha?: unknown } } | null)?.object?.sha;
+  if (typeof sha !== "string" || !/^[a-f0-9]{40}$/i.test(sha)) {
+    throw new Error("codex_rotating_e2e_commit_response_invalid");
+  }
+  return sha.toLowerCase();
+}
+
+function readGitHubWorkflowBlob(data: unknown): {
+  readonly source: string;
+  readonly blobSha: string;
+} {
+  const blob = data as {
+    type?: unknown;
+    encoding?: unknown;
+    content?: unknown;
+    sha?: unknown;
+  } | null;
+  if (
+    blob?.type !== "file" ||
+    blob.encoding !== "base64" ||
+    typeof blob.content !== "string" ||
+    typeof blob.sha !== "string" ||
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(blob.sha)
+  ) {
+    throw new Error("codex_rotating_e2e_workflow_response_invalid");
+  }
+  const source = Buffer.from(
+    blob.content.replace(/\s+/g, ""),
+    "base64",
+  ).toString("utf8");
+  const blobSha = blob.sha.toLowerCase();
+  const computedBlobSha = createHash(blobSha.length === 40 ? "sha1" : "sha256")
+    .update(`blob ${Buffer.byteLength(source, "utf8")}\0`, "utf8")
+    .update(source, "utf8")
+    .digest("hex");
+  if (computedBlobSha !== blobSha) {
+    throw new Error("codex_rotating_e2e_workflow_blob_mismatch");
+  }
+  return { source, blobSha };
 }
 
 async function runReviewPullRequest(input: {
   readonly label: string;
   readonly defaultBranch: string;
   readonly providerInstanceId: string;
-  readonly minCompletedWritebacks: number;
-  readonly minGeneration: number;
+  readonly previousProviderState: Readonly<{
+    latestGeneration: number;
+    latestGenerationHash: string;
+    completedWritebacks: number;
+    activeNamespace: VersionedProviderSecretNamespace;
+  }>;
+  readonly githubRepositoryId: string;
 }): Promise<{
   readonly pullRequestUrl: string;
   readonly runUrl: string;
@@ -777,6 +949,14 @@ async function runReviewPullRequest(input: {
     ],
     { cwd: repoWorkdir },
   );
+  const authoredHeadSha = run("git", ["rev-parse", "HEAD"], {
+    cwd: repoWorkdir,
+  })
+    .trim()
+    .toLowerCase();
+  if (!/^[a-f0-9]{40}$/.test(authoredHeadSha)) {
+    throw new Error("codex_rotating_e2e_authored_commit_invalid");
+  }
   run("git", ["push", "-q", "-u", "origin", "HEAD"], { cwd: repoWorkdir });
   const pullRequestUrl = run("gh", [
     "pr",
@@ -798,21 +978,18 @@ async function runReviewPullRequest(input: {
   }
 
   const runView = await waitForReviewRun(branch);
-  const watch = runAllowFailure("gh", [
-    "run",
-    "watch",
-    String(runView.databaseId),
-    "--repo",
-    targetRepo,
-    "--exit-status",
-  ]);
-  const completedRun = await getRun(runView.databaseId);
+  if (runView.headSha.toLowerCase() !== authoredHeadSha) {
+    throw new Error("codex_rotating_e2e_workflow_run_head_mismatch");
+  }
+  const completedRun = await waitForRunCompletion(runView);
   const logs = run("gh", [
     "run",
     "view",
     String(runView.databaseId),
     "--repo",
     targetRepo,
+    "--attempt",
+    String(runView.attempt),
     "--log",
   ]);
   assertNoForbiddenLogFields(logs);
@@ -820,7 +997,7 @@ async function runReviewPullRequest(input: {
   const expectedConclusion = reviewMode === "finding" ? "failure" : "success";
   if (completedRun.conclusion !== expectedConclusion) {
     throw new Error(
-      `Codex rotating workflow conclusion mismatch: expected=${expectedConclusion} watch=${watch.status} conclusion=${completedRun.conclusion} run=${completedRun.url}`,
+      `Codex rotating workflow conclusion mismatch: expected=${expectedConclusion} conclusion=${completedRun.conclusion} run=${completedRun.url}`,
     );
   }
 
@@ -831,26 +1008,57 @@ async function runReviewPullRequest(input: {
       ? await waitForReviewRouterInlineComments(prNumber)
       : [];
   const provider = await readProviderState(input.providerInstanceId);
-  const completedWritebacks = await withPrismaConnectionRetry(
-    "count-completed-writebacks",
-    () =>
-      prisma.codexOAuthWritebackIntent.count({
-        where: {
-          providerInstanceId: input.providerInstanceId,
-          status: "completed",
-        },
-      }),
-  );
-  if (provider.latestGeneration < input.minGeneration) {
+  const completedWritebacks = provider.completedWritebacks;
+  if (
+    provider.latestGeneration !==
+    input.previousProviderState.latestGeneration + 1
+  ) {
     throw new Error(
-      `provider generation did not advance: expected at least ${input.minGeneration}, got ${provider.latestGeneration}`,
+      `provider generation did not advance exactly once: expected ${input.previousProviderState.latestGeneration + 1}, got ${provider.latestGeneration}`,
     );
   }
-  if (completedWritebacks < input.minCompletedWritebacks) {
+  if (
+    completedWritebacks !==
+    input.previousProviderState.completedWritebacks + 1
+  ) {
     throw new Error(
-      `completed writebacks did not advance: expected at least ${input.minCompletedWritebacks}, got ${completedWritebacks}`,
+      `completed writebacks did not advance exactly once: expected ${input.previousProviderState.completedWritebacks + 1}, got ${completedWritebacks}`,
     );
   }
+  if (
+    provider.latestGenerationHash ===
+    input.previousProviderState.latestGenerationHash
+  ) {
+    throw new Error("codex_rotating_e2e_generation_hash_did_not_change");
+  }
+  if (
+    !Number.isSafeInteger(completedRun.attempt) ||
+    completedRun.attempt <= 0
+  ) {
+    throw new Error("codex_rotating_e2e_workflow_run_attempt_invalid");
+  }
+  await assertCompletedVersionedWritebackForRun({
+    providerInstanceId: input.providerInstanceId,
+    githubRepositoryId: input.githubRepositoryId,
+    githubRunId: String(completedRun.databaseId),
+    githubRunAttempt: String(completedRun.attempt),
+    expectedGeneration: provider.latestGeneration,
+    expectedGenerationHash: provider.latestGenerationHash,
+    previousGenerationHash: input.previousProviderState.latestGenerationHash,
+    previousActiveNamespace: input.previousProviderState.activeNamespace,
+    activeNamespace: provider.activeNamespace,
+  });
+  if (
+    !(await isRotatingWorkflowCurrentOnDefaultBranch(
+      input.defaultBranch,
+      input.providerInstanceId,
+      input.githubRepositoryId,
+      provider.activeNamespace,
+    ))
+  ) {
+    throw new Error("codex_rotating_e2e_runtime_workflow_not_current_v4");
+  }
+  assertRetiredStableSecretAbsent();
   if (!keepPullRequests) {
     runAllowFailure("gh", [
       "pr",
@@ -946,7 +1154,7 @@ async function waitForReviewRun(branch: string): Promise<WorkflowRunView> {
         "--limit",
         "1",
         "--json",
-        "databaseId,status,conclusion,url,headSha",
+        "attempt,databaseId,status,conclusion,url,headSha",
       ]),
     ) as WorkflowRunView[];
     if (runs[0]) return runs[0];
@@ -957,7 +1165,44 @@ async function waitForReviewRun(branch: string): Promise<WorkflowRunView> {
   );
 }
 
-async function getRun(databaseId: number): Promise<WorkflowRunView> {
+async function waitForRunCompletion(
+  expected: WorkflowRunView,
+): Promise<WorkflowRunView> {
+  assertWorkflowRunIdentity(expected, expected);
+  const deadline = Date.now() + runTimeoutMs;
+  while (Date.now() < deadline) {
+    const observed = await getRun(expected.databaseId, expected.attempt);
+    assertWorkflowRunIdentity(expected, observed);
+    if (observed.status === "completed") return observed;
+    await sleep(3_000);
+  }
+  throw new Error(
+    `ReviewRouter Codex rotating run did not complete: run=${expected.databaseId} attempt=${expected.attempt}`,
+  );
+}
+
+function assertWorkflowRunIdentity(
+  expected: WorkflowRunView,
+  observed: WorkflowRunView,
+): void {
+  if (
+    !Number.isSafeInteger(expected.databaseId) ||
+    expected.databaseId <= 0 ||
+    !Number.isSafeInteger(expected.attempt) ||
+    expected.attempt <= 0 ||
+    !/^[a-f0-9]{40}$/i.test(expected.headSha) ||
+    observed.databaseId !== expected.databaseId ||
+    observed.attempt !== expected.attempt ||
+    observed.headSha.toLowerCase() !== expected.headSha.toLowerCase()
+  ) {
+    throw new Error("codex_rotating_e2e_workflow_run_identity_changed");
+  }
+}
+
+async function getRun(
+  databaseId: number,
+  attempt: number,
+): Promise<WorkflowRunView> {
   return JSON.parse(
     run("gh", [
       "run",
@@ -965,8 +1210,10 @@ async function getRun(databaseId: number): Promise<WorkflowRunView> {
       String(databaseId),
       "--repo",
       targetRepo,
+      "--attempt",
+      String(attempt),
       "--json",
-      "databaseId,status,conclusion,url,headSha",
+      "attempt,databaseId,status,conclusion,url,headSha",
     ]),
   ) as WorkflowRunView;
 }
@@ -1046,12 +1293,32 @@ function isExpectedReviewRouterFinding(comment: ReviewCommentView): boolean {
 
 async function readProviderState(providerInstanceId: string): Promise<{
   readonly latestGeneration: number;
+  readonly latestGenerationHash: string;
   readonly state: string;
+  readonly completedWritebacks: number;
+  readonly activeNamespace: VersionedProviderSecretNamespace;
 }> {
   const provider = await withPrismaConnectionRetry("read-provider-state", () =>
     prisma.codexOAuthProviderInstance.findUnique({
       where: { providerInstanceId },
-      select: { latestGeneration: true, state: true },
+      select: {
+        latestGeneration: true,
+        latestGenerationHash: true,
+        state: true,
+        activeSecretNamespaceId: true,
+        activeSecretNamespaceEpoch: true,
+        activeSecretNamespaceName: true,
+        activeSecretNamespace: {
+          select: {
+            id: true,
+            githubRepositoryId: true,
+            namespaceEpoch: true,
+            secretName: true,
+            status: true,
+            permanentlyRetired: true,
+          },
+        },
+      },
     }),
   );
   if (!provider) {
@@ -1060,7 +1327,220 @@ async function readProviderState(providerInstanceId: string): Promise<{
   if (provider.state !== "active") {
     throw new Error(`codex_rotating_provider_not_active:${provider.state}`);
   }
-  return provider;
+  if (!provider.latestGenerationHash) {
+    throw new Error("codex_rotating_e2e_generation_hash_missing");
+  }
+  const namespace = provider.activeSecretNamespace;
+  if (
+    !namespace ||
+    namespace.status !== "active" ||
+    namespace.permanentlyRetired ||
+    provider.activeSecretNamespaceId !== namespace.id ||
+    provider.activeSecretNamespaceEpoch !== namespace.namespaceEpoch ||
+    provider.activeSecretNamespaceName !== namespace.secretName
+  ) {
+    throw new Error("codex_rotating_e2e_active_namespace_mismatch");
+  }
+  const completedWritebacks = await withPrismaConnectionRetry(
+    "count-completed-writebacks",
+    () =>
+      prisma.codexOAuthWritebackIntent.count({
+        where: { providerInstanceId, status: "completed" },
+      }),
+  );
+  return {
+    latestGeneration: provider.latestGeneration,
+    latestGenerationHash: provider.latestGenerationHash,
+    state: provider.state,
+    completedWritebacks,
+    activeNamespace: createVersionedProviderSecretNamespace({
+      scope: {
+        repositoryId: namespace.githubRepositoryId,
+        providerInstanceId,
+      },
+      namespaceId: namespace.id,
+      epoch: namespace.namespaceEpoch,
+      name: namespace.secretName,
+    }),
+  };
+}
+
+async function assertCompletedVersionedWritebackForRun(input: {
+  readonly providerInstanceId: string;
+  readonly githubRepositoryId: string;
+  readonly githubRunId: string;
+  readonly githubRunAttempt: string;
+  readonly expectedGeneration: number;
+  readonly expectedGenerationHash: string;
+  readonly previousGenerationHash: string;
+  readonly previousActiveNamespace: VersionedProviderSecretNamespace;
+  readonly activeNamespace: VersionedProviderSecretNamespace;
+}): Promise<void> {
+  if (
+    input.activeNamespace.namespaceId ===
+      input.previousActiveNamespace.namespaceId ||
+    input.activeNamespace.name === input.previousActiveNamespace.name ||
+    input.activeNamespace.epoch <= input.previousActiveNamespace.epoch
+  ) {
+    throw new Error("codex_rotating_e2e_namespace_did_not_advance");
+  }
+  const intents = await withPrismaConnectionRetry(
+    "read-run-completed-versioned-writeback",
+    () =>
+      prisma.codexOAuthWritebackIntent.findMany({
+        where: {
+          providerInstanceId: input.providerInstanceId,
+          status: "completed",
+          lease: {
+            githubRunId: input.githubRunId,
+            githubRunAttempt: input.githubRunAttempt,
+          },
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: 2,
+        select: {
+          leaseId: true,
+          generation: true,
+          latestGenerationHash: true,
+          mutationEpoch: true,
+          dispatchAttemptId: true,
+          secretNamespaceId: true,
+          dispatchAuthorizedAt: true,
+          providerResponseCode: true,
+          providerConfirmedAt: true,
+          completedAt: true,
+          databaseIncarnation: true,
+          databaseRecoveryWitness: true,
+          lease: {
+            select: {
+              id: true,
+              githubRunId: true,
+              githubRunAttempt: true,
+              status: true,
+              restoredGenerationHash: true,
+              nextGeneration: true,
+              completedAt: true,
+              mutationEpoch: true,
+              secretNamespaceId: true,
+              secretNamespaceEpoch: true,
+            },
+          },
+          secretNamespace: {
+            select: {
+              id: true,
+              githubRepositoryId: true,
+              namespaceEpoch: true,
+              secretName: true,
+              status: true,
+              permanentlyRetired: true,
+              workflowPath: true,
+              workflowSourceCommitSha: true,
+              workflowSourceBlobSha: true,
+              workflowSourceSha256: true,
+              workflowSemanticSha256: true,
+              workflowSourceTrust: true,
+              attestedRepositoryId: true,
+            },
+          },
+        },
+      }),
+  );
+  const intent = intents.length === 1 ? intents[0]! : null;
+  if (
+    !intent ||
+    intent.generation !== input.expectedGeneration ||
+    intent.latestGenerationHash !== input.expectedGenerationHash ||
+    intent.latestGenerationHash === input.previousGenerationHash ||
+    !intent.dispatchAttemptId ||
+    !intent.secretNamespaceId ||
+    !intent.dispatchAuthorizedAt ||
+    ![201, 204].includes(intent.providerResponseCode ?? 0) ||
+    !intent.providerConfirmedAt ||
+    !intent.completedAt ||
+    !intent.databaseIncarnation ||
+    !intent.databaseRecoveryWitness ||
+    intent.dispatchAuthorizedAt > intent.providerConfirmedAt ||
+    intent.providerConfirmedAt > intent.completedAt
+  ) {
+    throw new Error("codex_rotating_e2e_writeback_proof_incomplete");
+  }
+  if (
+    intent.leaseId !== intent.lease.id ||
+    intent.lease.githubRunId !== input.githubRunId ||
+    intent.lease.githubRunAttempt !== input.githubRunAttempt ||
+    intent.lease.status !== "completed" ||
+    intent.lease.restoredGenerationHash !== input.previousGenerationHash ||
+    intent.lease.nextGeneration !== input.expectedGeneration ||
+    intent.mutationEpoch === null ||
+    intent.lease.mutationEpoch !== intent.mutationEpoch ||
+    !intent.lease.completedAt ||
+    intent.lease.completedAt.getTime() !== intent.completedAt.getTime() ||
+    intent.lease.secretNamespaceId !== input.activeNamespace.namespaceId ||
+    intent.lease.secretNamespaceEpoch !== input.activeNamespace.epoch
+  ) {
+    throw new Error("codex_rotating_e2e_writeback_lease_proof_incomplete");
+  }
+  const namespace = intent.secretNamespace;
+  if (
+    !namespace ||
+    intent.secretNamespaceId !== namespace.id ||
+    namespace.githubRepositoryId !== input.githubRepositoryId ||
+    namespace.status !== "active" ||
+    namespace.permanentlyRetired ||
+    namespace.workflowPath !== defaultCodexRotatingWorkflowPath ||
+    !namespace.workflowSourceCommitSha ||
+    !namespace.workflowSourceBlobSha ||
+    !namespace.workflowSourceSha256 ||
+    !namespace.workflowSemanticSha256 ||
+    namespace.workflowSourceTrust !==
+      WorkflowSourceTrust.TrustedDefaultBranchRevision ||
+    namespace.attestedRepositoryId !== input.githubRepositoryId
+  ) {
+    throw new Error("codex_rotating_e2e_writeback_namespace_proof_incomplete");
+  }
+  assertSameVersionedProviderSecretNamespace({
+    expected: input.activeNamespace,
+    actual: createVersionedProviderSecretNamespace({
+      scope: {
+        repositoryId: namespace.githubRepositoryId,
+        providerInstanceId: input.providerInstanceId,
+      },
+      namespaceId: namespace.id,
+      epoch: namespace.namespaceEpoch,
+      name: namespace.secretName,
+    }),
+  });
+  const previousNamespace = await withPrismaConnectionRetry(
+    "read-retired-prior-versioned-namespace",
+    () =>
+      prisma.codexOAuthSecretNamespace.findUnique({
+        where: { id: input.previousActiveNamespace.namespaceId },
+        select: {
+          id: true,
+          githubRepositoryId: true,
+          namespaceEpoch: true,
+          secretName: true,
+          status: true,
+          permanentlyRetired: true,
+          retiredAt: true,
+          providerInstance: { select: { providerInstanceId: true } },
+        },
+      }),
+  );
+  if (
+    !previousNamespace ||
+    previousNamespace.id !== input.previousActiveNamespace.namespaceId ||
+    previousNamespace.githubRepositoryId !== input.githubRepositoryId ||
+    previousNamespace.namespaceEpoch !== input.previousActiveNamespace.epoch ||
+    previousNamespace.secretName !== input.previousActiveNamespace.name ||
+    previousNamespace.providerInstance.providerInstanceId !==
+      input.providerInstanceId ||
+    previousNamespace.status !== "retired_superseded" ||
+    !previousNamespace.permanentlyRetired ||
+    !previousNamespace.retiredAt
+  ) {
+    throw new Error("codex_rotating_e2e_prior_namespace_not_retired");
+  }
 }
 
 async function assertNoArtifacts(runId: number): Promise<void> {
@@ -1082,11 +1562,36 @@ function assertNoForbiddenLogFields(logs: string): void {
     /REVIEWROUTER_CODEX_AUTH_JSON\s*[:=]\s*\{/i,
     /encryptedValue["'\s:=]+[A-Za-z0-9+/=_-]{80,}/i,
     /encrypted_payload_digest["'\s:=]+[A-Za-z0-9+/=_-]{32,}/i,
+    /codex_claim_[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}/i,
   ];
   const match = forbidden.find((pattern) => pattern.test(logs));
   if (match) {
     throw new Error(
       `Codex rotating E2E logs contain forbidden auth material pattern: ${match.source}`,
+    );
+  }
+}
+
+function assertRetiredStableSecretAbsent(): void {
+  const secrets = JSON.parse(
+    run("gh", ["secret", "list", "--repo", targetRepo, "--json", "name"]),
+  ) as Array<{ readonly name?: string }>;
+  if (
+    secrets.some((secret) => secret.name === "REVIEWROUTER_CODEX_AUTH_JSON")
+  ) {
+    throw new Error("codex_rotating_e2e_retired_stable_secret_present");
+  }
+}
+
+function assertLiveE2EMutationAuthorized(): void {
+  if (process.env.REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E !== "1") {
+    throw new Error(
+      "codex_rotating_e2e_mutation_opt_in_required: set REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E=1",
+    );
+  }
+  if (!/(^rr-|reviewrouter|e2e|smoke|test|disposable)/i.test(repoName)) {
+    throw new Error(
+      `codex_rotating_e2e_disposable_repository_required:${targetRepo}`,
     );
   }
 }
@@ -1101,13 +1606,13 @@ function assertTargetRepoAllowlisted(repositoryFullName: string): void {
     .filter(Boolean);
   if (
     !enabled ||
-    (allowlist.length > 0 &&
-      !allowlist.includes(repositoryFullName.toLowerCase()))
+    allowlist.length !== 1 ||
+    !allowlist.includes(repositoryFullName.toLowerCase())
   ) {
     throw new Error(
       [
         `codex_rotating_e2e_repo_not_enabled:${repositoryFullName}`,
-        "Set REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH=1 for both the E2E process and the deployed API handling the GitHub runner. REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES can optionally restrict the live E2E to selected repositories.",
+        "Set REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH=1 for both the E2E process and the deployed API handling the GitHub runner, and put exactly this one disposable target in REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES.",
       ].join(" "),
     );
   }
@@ -1179,12 +1684,7 @@ function normalizePublicHttpsUrl(value: string): string {
   if (parsed.protocol !== "https:") {
     throw new Error("codex_rotating_e2e_api_url_must_be_https");
   }
-  if (
-    parsed.hostname === "localhost" ||
-    parsed.hostname === "127.0.0.1" ||
-    parsed.hostname === "::1" ||
-    parsed.hostname.endsWith(".localhost")
-  ) {
+  if (isLoopbackHostname(parsed.hostname)) {
     throw new Error(
       "codex_rotating_e2e_api_url_must_be_reachable_from_github_hosted_runner",
     );
@@ -1254,53 +1754,42 @@ function run(
   }
 }
 
-function runAsync(
+function runSensitiveInstallerCommand(
   command: string,
-  args: readonly string[],
-  options: {
-    readonly cwd?: string;
-    readonly env?: NodeJS.ProcessEnv;
-    readonly timeoutMs?: number;
-  } = {},
-): Promise<string> {
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ["ignore", "pipe", "pipe"],
+    const child = spawn("bash", [], {
+      cwd: process.cwd(),
+      env,
+      stdio: ["pipe", "inherit", "inherit"],
     });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    const timeout =
-      options.timeoutMs && options.timeoutMs > 0
-        ? setTimeout(() => {
-            child.kill("SIGTERM");
-            reject(
-              new Error(
-                `command_timeout:${command} ${args.join(" ")} timeoutMs=${options.timeoutMs}`,
-              ),
-            );
-          }, options.timeoutMs)
-        : undefined;
-
-    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
-    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
-    child.on("error", (error) => {
-      if (timeout) clearTimeout(timeout);
-      reject(error);
-    });
-    child.on("close", (status) => {
-      if (timeout) clearTimeout(timeout);
-      if (status === 0) {
-        resolve(Buffer.concat(stdout).toString("utf8"));
-        return;
-      }
+    const timeout = setTimeout(
+      () => {
+        child.kill("SIGTERM");
+        reject(new Error("codex_rotating_e2e_installer_timeout"));
+      },
+      Number(
+        process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_SETUP_TIMEOUT_MS ?? 90_000,
+      ),
+    );
+    child.once("error", (error) => {
+      clearTimeout(timeout);
       reject(
-        new Error(
-          `command_failed:${command} ${args.join(" ")} status=${status ?? "unknown"} ${Buffer.concat(stderr).toString("utf8").trim()}`,
-        ),
+        new Error("codex_rotating_e2e_installer_failed", { cause: error }),
       );
     });
+    child.once("close", (status) => {
+      clearTimeout(timeout);
+      if (status === 0) resolve();
+      else
+        reject(
+          new Error(
+            `codex_rotating_e2e_installer_failed:status=${status ?? "unknown"}`,
+          ),
+        );
+    });
+    child.stdin.end(command);
   });
 }
 

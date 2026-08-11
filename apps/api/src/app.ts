@@ -11,6 +11,7 @@ import {
   PrismaActionControlPlaneRepository,
   PrismaActionOidcReplayNonceStore,
   PrismaCodexRotatingOAuthRepository,
+  CodexRotatingVersionedWritebackDispatcher,
   registerActionControlPlaneRoutes,
   StaticActionRuntimeCompatibilityPolicy,
   assertCodexRotatingNewWorkAdmitted,
@@ -83,9 +84,10 @@ import {
   isConflictReviewFallbackEnabled,
   isCodexRotatingOAuthAllowedForRepository,
   readGitHubAppPrivateKey,
-  resolveReviewRouterActionRef,
+  requireReviewRouterDatabaseRecoveryWitness,
+  resolveReviewRouterCodexRotatingActionRef,
+  resolveReviewRouterCodexRotatingTrustedActionRefs,
   resolveReviewRouterPublicApiUrl,
-  resolveReviewRouterTrustedActionRefs,
 } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import {
@@ -182,6 +184,7 @@ export async function createApiApp(
   const logger = new ConsoleLogger();
   const app = Fastify({ logger: false });
   const reviewActionV2Env = options.reviewActionV2Env ?? process.env;
+  const publicApiUrl = resolveReviewRouterPublicApiUrl(reviewActionV2Env);
   const operatorCredentialSha256 =
     readOperatorCredentialSha256(reviewActionV2Env);
   const investigationPromotionCredentialSha256 = readCredentialSha256(
@@ -227,11 +230,7 @@ export async function createApiApp(
   registerApiDemoRoutes(app, {
     clock,
     ...definedOption("webUrl", process.env.REVIEW_ROUTER_WEB_URL),
-    ...definedOption(
-      "apiUrl",
-      process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
-        process.env.REVIEW_ROUTER_API_URL,
-    ),
+    ...definedOption("apiUrl", publicApiUrl),
     ...definedOption(
       "actionVersion",
       process.env.REVIEW_ROUTER_ACTION_REF ??
@@ -341,6 +340,14 @@ export async function createApiApp(
           const githubAppPrivateKey = readGitHubAppPrivateKey();
           const conflictReviewFallbackEnabled =
             isConflictReviewFallbackEnabled();
+          const codexRotatingActionRef =
+            resolveReviewRouterCodexRotatingActionRef(reviewActionV2Env);
+          const codexRotatingTrustedActionRefs =
+            resolveReviewRouterCodexRotatingTrustedActionRefs(
+              reviewActionV2Env,
+            );
+          const databaseRecoveryWitness =
+            requireReviewRouterDatabaseRecoveryWitness(reviewActionV2Env);
           const conflictPostingGatewayEnabled = Boolean(
             conflictReviewFallbackEnabled &&
             process.env.GITHUB_APP_ID &&
@@ -359,20 +366,28 @@ export async function createApiApp(
               ? new OctokitCodexRotatingGitHubSecretGateway({
                   appId: process.env.GITHUB_APP_ID,
                   privateKey: githubAppPrivateKey,
-                  expectedApiUrl: resolveReviewRouterPublicApiUrl(),
-                  trustedActionRefs: resolveReviewRouterTrustedActionRefs(),
+                  expectedApiUrl: publicApiUrl,
+                  trustedActionRefs: codexRotatingTrustedActionRefs,
                 })
               : undefined;
           const codexRotatingOAuth = new PrismaCodexRotatingOAuthRepository(
             prisma,
             {
-              actionRef: resolveReviewRouterActionRef(),
-              allowedActionRefs: resolveReviewRouterTrustedActionRefs(),
-              actionOwnerRepo: resolveActionOwnerRepo(
-                process.env.REVIEW_ROUTER_ACTION_REF,
-              ),
+              actionRef: codexRotatingActionRef,
+              allowedActionRefs: codexRotatingTrustedActionRefs,
+              actionOwnerRepo: resolveActionOwnerRepo(codexRotatingActionRef),
+              databaseRecoveryWitness,
             },
           );
+          const codexRotatingVersionedWriteback =
+            codexRotatingGitHubSecretGateway
+              ? new CodexRotatingVersionedWritebackDispatcher(
+                  codexRotatingOAuth,
+                  codexRotatingGitHubSecretGateway,
+                  codexRotatingGitHubSecretGateway,
+                  clock,
+                )
+              : undefined;
           const requestedIntentStore = new PrismaReviewRequestedIntentStore(
             prisma,
           );
@@ -488,6 +503,8 @@ export async function createApiApp(
                   codexRotatingSecretsReadTokens:
                     codexRotatingGitHubSecretGateway,
                   codexRotatingSecretWriter: codexRotatingGitHubSecretGateway,
+                  codexRotatingVersionedWriteback:
+                    codexRotatingVersionedWriteback!,
                   codexRotatingCheckoutTokens: codexRotatingGitHubSecretGateway,
                   codexRotatingWorkflowSourceVerifier:
                     codexRotatingGitHubSecretGateway,

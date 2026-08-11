@@ -1,25 +1,47 @@
 export type Sha256Digest = `sha256:${string}`;
 
+export const supportedWorkflowSchemaVersions = [1, 2, 3, 4] as const;
+export type SupportedWorkflowSchemaVersion =
+  (typeof supportedWorkflowSchemaVersions)[number];
+
+type ProductionDatabaseIdentity = Readonly<{
+  currentDatabase: string;
+  currentSchema: "public";
+  serverAddress: string;
+  systemIdentifier: string;
+}>;
+
 export type ProductionWriterObservation = Readonly<{
-  observationVersion: 2;
+  observationVersion: 4;
   source: "production-postgresql-writer";
   captureKind: "database-query";
   rehearsal: false;
-  databaseIdentity: Readonly<{
-    currentDatabase: string;
-    serverAddress: string;
+  databaseIdentity: ProductionDatabaseIdentity;
+  isWriter: true;
+  recoveryWitnessSha256: string;
+  databaseGenerationBinding: Readonly<{
+    version: 1;
     systemIdentifier: string;
+    recoveryWitnessSha256: string;
   }>;
   callerIdentity: Readonly<{
     id: "release-migration";
     kind: "immutable-release-migration";
     commit: string;
     imageDigest: Sha256Digest;
-    databaseRole: string;
-    sessionUser: string;
-    applicationName: "reviewrouter-release-migration";
+    databaseRole: "reviewrouter_release_migration";
+    sessionUser: "reviewrouter_release_migration";
+    platform: "render";
+    platformDeployObservationSha256: string;
+    serviceId: string;
+    deployId: string;
+    jobId: string;
+    observedAt: string;
   }>;
   drainObservations: readonly Readonly<{
+    databaseIdentity: ProductionDatabaseIdentity;
+    isWriter: true;
+    recoveryWitnessSha256: string;
     activeLeases: number;
     fetchedSetups: number;
     pendingIntents: number;
@@ -29,16 +51,33 @@ export type ProductionWriterObservation = Readonly<{
 }>;
 
 export type WorkflowRunInventoryObservation = Readonly<{
-  observationVersion: 1;
+  observationVersion: 2;
   source: "github-actions-api";
+  supportedWorkflowSchemaVersions: typeof supportedWorkflowSchemaVersions;
+  captureIdentity: CaptureIdentity;
+  cohort: Readonly<{
+    repositoryId: string;
+    repositoryFullName: string;
+    workflow: string;
+    statuses: readonly ["queued", "in_progress"];
+    perPage: 100;
+  }>;
+  rawResponses: readonly RawApiResponse[];
   observations: readonly Readonly<{
+    captureIdentity: CaptureIdentity;
+    cohort: WorkflowRunInventoryObservation["cohort"];
+    rawResponses: readonly RawApiResponse[];
     observedAt: string;
+    inventoriedWorkflowSchemaVersions: typeof supportedWorkflowSchemaVersions;
     runs: readonly Readonly<{
       runId: string;
       status: "queued" | "in_progress";
-      workflowSchemaVersion: 1 | 2;
+      workflowSchemaVersion: SupportedWorkflowSchemaVersion;
       workflowPath: string;
       headSha: string;
+      event: string;
+      repositoryId: string;
+      workflowBlobSha: string;
     }>[];
   }>[];
 }>;
@@ -67,13 +106,28 @@ export type RolloutObservationBundle = Readonly<{
   artifacts: Readonly<{
     database: SourceBoundArtifactDescriptor;
     compatibilityProbe: SourceBoundArtifactDescriptor;
-    deployments: ArtifactDescriptor;
+    deployments: SourceBoundArtifactDescriptor;
     events: ArtifactDescriptor;
     canaryRuntime: ArtifactDescriptor;
-    workflowRuns: ArtifactDescriptor;
+    workflowRuns: SourceBoundArtifactDescriptor;
   }>;
 }>;
 
 type ArtifactDescriptor = Readonly<{ path: string; sha256: string }>;
 type SourceBoundArtifactDescriptor = ArtifactDescriptor &
   Readonly<{ sourceFile: string; sourceFileSha256: string }>;
+
+type CaptureIdentity = Readonly<{
+  apiHost: string;
+  authenticated: true;
+  observedAt: string;
+  rawResponsesSha256: string;
+}> &
+  Readonly<Record<string, unknown>>;
+
+type RawApiResponse = Readonly<{
+  url: string;
+  status: number;
+  bodySha256: string;
+  body: unknown;
+}>;

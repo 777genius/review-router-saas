@@ -15,6 +15,24 @@ describe("Codex rotating recovery HTTP contract", () => {
     ).toThrow("codex_rotating_setup_recovery_request_invalid");
   });
 
+  it("does not infer account-switch authority from the ordinary recovery acknowledgement", () => {
+    expect(() =>
+      assertCodexRotatingSetupRecoveryHttpFields({
+        acknowledgement: "all_prior_installers_and_writers_are_stopped",
+        accountSwitch: true,
+        recoveryRequestId: "recovery:account-switch",
+      }),
+    ).toThrow("codex_rotating_setup_recovery_acknowledgement_required");
+    expect(() =>
+      assertCodexRotatingSetupRecoveryHttpFields({
+        acknowledgement:
+          "all_prior_installers_and_writers_are_stopped_and_account_switch_is_intended",
+        accountSwitch: true,
+        recoveryRequestId: "recovery:account-switch",
+      }),
+    ).not.toThrow();
+  });
+
   it.each([
     ["codex_rotating_setup_recovery_request_invalid", 400],
     ["codex_rotating_provider_identity_mismatch", 409],

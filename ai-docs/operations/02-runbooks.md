@@ -19,8 +19,8 @@ GitHub App, workflow provisioning, rotating provider setup, Action runtime, or
 control-plane Action ref. Use only a clearly disposable repository.
 
 Before opening the review fixture PR, enroll that disposable repository with
-`review-v2:admin cohort stage` and `mutation initialize-direct-v2`. Never bypass
-the T0 authority gate by reverting the workflow to rotating schema v1.
+the current App-first cohort and mutation-admission controls. Never bypass the
+T0 authority gate by reverting the workflow to an earlier rotating schema.
 
 ```bash
 REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E=1 \
@@ -30,13 +30,22 @@ REVIEW_ROUTER_CODEX_ROTATING_E2E_ACTION_REF=OWNER/review-router@FULL_40_CHAR_SHA
 pnpm subscription-runtime:live-e2e
 ```
 
+Create the disposable repository before either preflight or execution, then set
+`REVIEW_ROUTER_CODEX_ROTATING_E2E_DISPOSABLE_REPOSITORY_ID` to the immutable
+numeric ID returned by `gh api repos/OWNER/REPO --jq .id`. The read-only
+`--check-only` preflight and live harness both resolve that same REST numeric ID
+and reject a missing repository, a mismatch, or deletion and recreation under
+the same name. A GraphQL node ID is not this identifier.
+
 The production gate is complete only when all of these are proven:
 
 1. the production GitHub App creates the setup PR
-2. `.github/workflows/reviewrouter-codex.yml` is client-triggered T0 schema v2,
+2. `.github/workflows/reviewrouter-codex.yml` is client-triggered T0 schema v4,
    calls the immutable `reviewrouter-t0-reusable.yml`, uses the
    repository-scoped `provider_instance_id`, OIDC `id-token: write`, and
-   `REVIEWROUTER_CODEX_AUTH_JSON`
+   the exact active
+   `REVIEWROUTER_CODEX_AUTH_JSON_R<repository-id>_P<provider-hash>_E<epoch>_<entropy>`
+   versioned namespace
 3. `.github/workflows/reviewrouter.yml`, `pull_request_target`, rotating schema
    v1/direct mode, direct `CODEX_AUTH_JSON`, and review publication through
    `github.token` are absent
@@ -107,9 +116,11 @@ Use this when a setup PR for a Codex repository creates
 Production Codex must always use the rotating workflow:
 
 1. `.github/workflows/reviewrouter-codex.yml`
-2. `mode: codex-oauth-rotating`
-3. `auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}`
-4. action ref: `777genius/review-router@main` unless an explicit rollback ref is configured
+2. client-triggered T0 `workflow_schema_version: 4`
+3. `CODEX_AUTH_JSON` sourced from the exact active versioned namespace named in
+   the workflow, never the deprecated stable `REVIEWROUTER_CODEX_AUTH_JSON`
+4. the configured `REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF` pinned to an exact
+   40-character commit SHA
 
 Do not merge a Codex setup PR that uses `REVIEW_AUTH_MODE=codex-oauth`,
 `CODEX_AUTH_JSON`, `OPENAI_API_KEY`, `reviewrouter-reusable.yml`, or
@@ -124,21 +135,36 @@ Expected recovery:
 3. rerun setup from the dashboard
 4. run the local/prod smoke against the affected repo
 
-Do not repair rotating Codex by running `gh secret set
-REVIEWROUTER_CODEX_AUTH_JSON` directly. Use the generated setup command or
-`scripts/reseed-codex-rotating-auth.sh`; otherwise the repository secret can be
-newer than the confirmed generation and live review can fail as an older queued
-secret generation.
+Do not repair rotating Codex with a direct `gh secret set`. Use the generated
+setup command or `scripts/reseed-codex-rotating-auth.sh`; only the fenced setup
+flow may allocate, write, attest, and activate a never-reused versioned
+namespace. A direct stable or versioned secret write is not activation proof.
 
 ### Recover a fetched setup with an unknown confirmation result
 
 A setup manifest that reached `fetched` has a bounded 24-hour response-recovery
 window independent of its short issue/fetch TTL. Issued-never-fetched manifests
-still expire on the short TTL. Before `gh secret set`, the installer stores a
-0600 repo-scoped retry marker and ReviewRouter transactionally admits the exact
-payload metadata (generation hash, account fingerprint, exact byte size, and
-payload/installer version). The first valid claim wins; only that same claim is
-idempotent. ReviewRouter never receives plaintext auth.
+still expire on the short TTL. Before dispatch authorization, the installer
+atomically stages the exact compact payload and a 0600 repo-scoped journal,
+fsyncs both files and their directory, and ReviewRouter transactionally admits
+only safe payload metadata. Stable account identity is derived from provider
+issuer, subject, and account id; the payload generation hash remains separate.
+ReviewRouter never receives plaintext auth.
+
+Successful prepare returns a server-generated `codex_claim_<UUIDv4>` claim id.
+That value is the continuation bearer capability for dispatch, outcome, and
+status: UUID v4 contributes 122 unpredictable bits after its fixed version and
+variant bits. It is not derivable from the public repository id, provider id,
+workflow namespace, or setup nonce. The durable claim binds it to the exact
+repository, provider, manifest, recovery epoch, database witness, and current
+provider mutation fence; those bindings are rechecked before every mutation.
+Keep the claim id only in the installer’s 0600 journal. Never put it in a URL,
+shell trace, command argument, support bundle, access log, or telemetry field,
+and do not configure request-body logging for these endpoints. Status recovery
+is `POST /api/codex-rotating/setup-status` with `{ "claimId": "..." }` in the
+JSON body. Public repository/provider/setup-nonce metadata cannot continue a
+claim. Treat any suspected claim-id disclosure as an abandoned setup and use
+the acknowledged forced-recovery flow to retire its generation.
 
 A repository operator with write, maintain, or admin access must reopen the
 Codex provider setup in the dashboard, stop every prior installer and runtime
@@ -146,20 +172,48 @@ writer, read the warning, check the explicit acknowledgement, and choose
 **Recover and issue forced reseed**. The equivalent authenticated CLI API is
 `POST /api/codex-rotating/cli/setup-recovery` with the repository, a stable
 operator-generated `recoveryRequestId`, and the exact acknowledgement
-`all_prior_installers_and_writers_are_stopped`. Retry a dropped fetch, prepare,
-PUT, or confirmation response with the same command and unchanged dedicated
-auth during the response-recovery window. The installer reuses the exact
-compact payload and proves the same durable claim. If local retry state/auth is
-missing or differs, or the recovery window has closed, it refuses login and
-refuses any GitHub write; use a versioned secret and manual operator recovery.
-If ReviewRouter already consumed the byte-identical confirmation, prepare
-returns `already_confirmed`; the installer closes its local retry marker without
-redispatching the old payload, because the provider may already have advanced
-to a newer generation.
+`all_prior_installers_and_writers_are_stopped`. A dropped fetch or prepare is
+replayed without a PUT. Every dispatch attempt receives a never-reused
+`REVIEWROUTER_CODEX_AUTH_JSON_R<repository-id>_P<provider-hash>_E<epoch>_<entropy>` name and issues at most one
+GitHub PUT. A lost/unknown PUT response or crash after the durable dispatch
+marker permanently retires that name and allocates another. A definite PUT
+success followed by a lost confirmation is repaired only with status or the
+same idempotent confirmation. Missing or tampered staged state after possible
+dispatch fails closed; a fresh recovery epoch tombstones the old authorization
+before allocating another namespace. Deletion never makes a name reusable.
 Never infer an external PUT outcome from a timeout, elapsed grace period, or
 absent response. A different request ID conflicts while recovery is active.
-The recovery ledger and payload claim store only safe identifiers and metadata,
-never plaintext.
+Activation occurs only after repository numeric identity, trusted default-branch
+workflow commit, blob, byte digest, semantic digest, exact workflow path,
+namespace id/name, and namespace epoch are attested.
+Old queued namespace epochs fail preflight. The recovery ledger stores only
+safe identifiers and metadata, never plaintext.
+
+Dashboard forced recovery always requires a fresh live GitHub
+repository-manager permission check, including for workspace admins; workspace
+role alone never proves repository ownership. This admission check is
+read-only with respect to the durable permission cache and completes before
+the database recovery witness is admitted.
+
+Token refreshes that change `iat`, `exp`, `jti`, access tokens, or refresh
+tokens do not change account identity. If issuer, subject, or ChatGPT account
+id changes, ordinary recovery fails closed with
+`codex_rotating_account_switch_epoch_required`. An operator must explicitly
+request an account-switch epoch through the CLI API with `accountSwitch: true`
+and acknowledgement
+`all_prior_installers_and_writers_are_stopped_and_account_switch_is_intended`.
+That authority is bound to the resulting recovery request, mutation epoch, and
+manifest; it is not inferred from a normal forced reseed.
+
+After a database restore or writer promotion, the same forced-reseed endpoint
+is also the only admitted W1-to-W2 witness transition. Automatic runtime and
+ordinary setup remain blocked on W1 evidence after processes restart with W2.
+The acknowledged recovery tombstones every live W1 namespace and unresolved
+attempt under the provider fence without changing historical fingerprints;
+the next setup allocates a fresh namespace carrying W2. Runtime is not restored
+until that W2 namespace is definitely activated. Any partial/mixed retirement
+returns a safe conflict and allocates no namespace; never use direct SQL to
+rewrite fingerprints or bindings.
 
 Do not use setup recovery for `codex_rotating_identity_quarantined`. Authorized
 operators can inspect safe quarantine details through
@@ -182,8 +236,9 @@ workflow/action repository does not match the selected repository.
 
 Why it happens:
 
-1. Codex OAuth rotating workflows must match the configured ReviewRouter Action
-   ref, normally `777genius/review-router@main`.
+1. Codex OAuth rotating workflows must match the exact
+   `REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF`; they never inherit the general
+   `REVIEW_ROUTER_ACTION_REF=@main` channel.
 2. The SaaS API validates the workflow source at GitHub's `workflow_sha` before
    issuing checkout, comment, or secret writeback tokens.
 3. The workflow file and Render config can diverge if a rollback or smoke ref is
@@ -191,21 +246,12 @@ Why it happens:
 4. The correct behavior is fail closed. Fix the configured action ref instead
    of bypassing owner, provider, or schema checks.
 
-Normal recovery:
-
-```bash
-pnpm ops:sync-action-ref --dry-run --no-deploy
-pnpm ops:sync-action-ref --wait
-```
-
-Expected sync output:
-
-1. `actionRef` is `777genius/review-router@main` unless an explicit rollback ref was passed
-2. `allowedActionRefs` contains only full SHA refs
-3. services are exactly `reviewrouter-web`, `reviewrouter-api`, and
-   `reviewrouter-worker`
-4. deploy ids are printed for all three services
-5. with `--wait`, each requested deploy reaches `live`
+Normal recovery is a phased exact-SHA configuration change, not a mutable ref
+sync. First expand `REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS` to trust
+both old A and new B on every web/API instance and wait for all deploys. Only
+then set `REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF` to B for new setup
+candidates. Keep active namespaces pinned to A until their queued/in-progress
+runs and mutation leases drain; migrate them through a fresh fenced setup.
 
 Post-sync verification:
 
@@ -215,30 +261,22 @@ curl -fsS -o /dev/null -w '%{http_code}\n' https://reviewrouter.site
 pnpm ops:sync-action-ref --dry-run --no-deploy
 ```
 
-The final dry-run should show the same `actionRef` and
-`allowedActionRefs` that are already live. If the failing PR intentionally used
-a rollback SHA, rerun the sync with that explicit ref:
-
-```bash
-pnpm ops:sync-action-ref \
-  --action-ref 777genius/review-router@<40-char-sha>
-```
+The final general-ref dry-run does not prove rotating convergence. Inspect the
+rotating primary and overlap on every writer without printing unrelated secret
+values.
 
 Rollback:
 
-1. If the new Action commit is bad, publish a fixed Action commit on `main` or
-   temporarily sync a known-good full SHA.
-2. Keep temporary rollback SHAs in `REVIEW_ROUTER_ALLOWED_ACTION_REFS` during
-   the transition.
-3. After workflows converge, shrink the window:
-
-```bash
-pnpm ops:sync-action-ref --allowlist-window 1
-```
+1. If B is bad, retain both A and B in rotating trust and restore A as the
+   rotating primary for new candidates.
+2. Do not rewrite existing namespace attestations as a rollback shortcut.
+3. Remove B or A only after repeated inventory proves no active namespace,
+   queued/in-progress workflow, or unexpired lease still references it.
 
 Do not store provider auth JSON, API keys, PR diffs, prompts, or model output in
-Render env while debugging. The action-ref sync only changes
-`REVIEW_ROUTER_ACTION_REF` and `REVIEW_ROUTER_ALLOWED_ACTION_REFS`.
+Render env while debugging. Never print
+`REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS`; compare only its fingerprint through
+the supported readiness/recovery flow.
 
 ## Rotate GitHub App Private Key
 

@@ -805,13 +805,18 @@ class SameObjectMemoryTransaction implements MemoryTransactionPort {
 
 class StaticActionOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
   public calls = 0;
+  public readonly audiences: string[] = [];
 
   constructor(
     private readonly overrides: Partial<GitHubActionsOidcClaims> = {},
   ) {}
 
-  async verify(): Promise<GitHubActionsOidcClaims> {
+  async verify(input: {
+    readonly token: string;
+    readonly audience: string;
+  }): Promise<GitHubActionsOidcClaims> {
     this.calls += 1;
+    this.audiences.push(input.audience);
     return {
       iss: githubActionsOidcIssuer,
       aud: defaultActionOidcAudience,
@@ -1241,10 +1246,38 @@ function actionMemorySuggestionSnapshot(
 const expectedApiUrl = (
   process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
   process.env.REVIEW_ROUTER_API_URL ??
-  "https://api.reviewrouter.site"
+  "http://localhost:4000"
 ).replace(/\/+$/, "");
 
 describe("API app", () => {
+  it("fails production composition closed without an explicit valid public API identity", async () => {
+    await expect(
+      createApiApp({ reviewActionV2Env: { NODE_ENV: "production" } }),
+    ).rejects.toThrow("missing_env:REVIEW_ROUTER_PUBLIC_API_URL");
+    await expect(
+      createApiApp({
+        reviewActionV2Env: {
+          NODE_ENV: "production",
+          REVIEW_ROUTER_PUBLIC_API_URL: "not-a-url",
+        },
+      }),
+    ).rejects.toThrow("invalid_workflow_api_url");
+  });
+
+  it("uses one canonical explicit public API identity in production composition", async () => {
+    const app = await createApiApp({
+      reviewActionV2Env: {
+        NODE_ENV: "production",
+        REVIEW_ROUTER_PUBLIC_API_URL: "https://api.example.test/",
+      },
+    });
+    const response = await app.inject({ method: "GET", url: "/" });
+    expect(response.json()).toMatchObject({
+      links: { health: "https://api.example.test/health" },
+    });
+    await app.close();
+  });
+
   it("serves a public API index for demos", async () => {
     const app = await createApiApp();
     const response = await app.inject({ method: "GET", url: "/" });
@@ -1824,11 +1857,12 @@ describe("API app", () => {
       }),
     ]);
     const actionMemory = createActionMemoryDependencies({ memoryItems });
+    const oidcVerifier = new StaticActionOidcVerifier();
     const app = await createApiApp({
       actionControlPlaneDependencies: {
         repositories,
         commentTokens,
-        oidcVerifier: new StaticActionOidcVerifier(),
+        oidcVerifier,
         sessions,
         clock: fixedClock,
         oidcAudience: defaultActionOidcAudience,
@@ -1841,12 +1875,32 @@ describe("API app", () => {
       },
     });
 
+    const wrongAudience = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: {
+        oidcToken: "otherwise-valid-wrong-audience-token",
+        audience: "another-relying-party",
+      },
+    });
+    expect(wrongAudience.statusCode).toBe(401);
+    expect(wrongAudience.json()).toEqual({
+      error: {
+        code: "invalid_action_token",
+        message:
+          "GitHub Actions OIDC token is invalid, expired, or already used.",
+        retryable: false,
+      },
+    });
+    expect(oidcVerifier.calls).toBe(0);
+
     const exchange = await app.inject({
       method: "POST",
       url: "/api/action/v1/session/exchange",
       payload: { oidcToken: "opaque-github-oidc-token" },
     });
     expect(exchange.statusCode).toBe(200);
+    expect(oidcVerifier.audiences).toEqual([defaultActionOidcAudience]);
     const session = exchange.json<{ sessionToken: string }>();
     expect(exchange.json()).toMatchObject({
       protocolVersion: 1,

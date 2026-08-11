@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { assertDashboardRepositoryMutationAllowed } from "../../../../../src/server/dashboard-mutations";
 import { getPrisma } from "../../../../../src/server/prisma";
 import { issueCodexRotatingSetupForRepository } from "../../../../../src/server/codex-rotating-setup-command";
-import { codexRotatingSecretName } from "@reviewrouter/features-provider-setup";
 
 export async function POST(request: Request): Promise<
   NextResponse<
@@ -10,7 +9,6 @@ export async function POST(request: Request): Promise<
         readonly command: string;
         readonly expiresAt: string;
         readonly providerInstanceId: string;
-        readonly secretNames: readonly string[];
       }
     | { readonly error: string }
   >
@@ -70,7 +68,6 @@ export async function POST(request: Request): Promise<
       command: setup.command,
       expiresAt: setup.expiresAt,
       providerInstanceId: setup.providerInstanceId,
-      secretNames: [codexRotatingSecretName],
     });
   } catch (error) {
     const code = codexRotatingSetupCommandErrorCode(error);

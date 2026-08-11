@@ -88,6 +88,7 @@ describe("Review Action v2 production composition", () => {
   it.each([
     "GITHUB_APP_ID",
     "GITHUB_APP_PRIVATE_KEY",
+    "REVIEW_ROUTER_PUBLIC_API_URL",
     "REVIEW_ROUTER_ACTION_OIDC_AUDIENCE",
     "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID",
     "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON",
@@ -551,6 +552,7 @@ function productionEnv(): Record<string, string> {
     GITHUB_APP_ID: "123",
     GITHUB_APP_PRIVATE_KEY:
       "-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----",
+    REVIEW_ROUTER_PUBLIC_API_URL: "https://api.reviewrouter.dev",
     REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "https://api.reviewrouter.dev",
     REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID: "active-v2",
     REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON: signingKeys,

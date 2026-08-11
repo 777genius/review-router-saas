@@ -1,13 +1,141 @@
-# Fenced rotating OAuth cutover (000060 through 000063)
+# Fenced rotating OAuth cutover (000060 through 000064)
+
+> `REVIEWROUTER_CODEX_AUTH_JSON` is an unsafe, deprecated stable namespace.
+> Its legacy confirmation endpoint is permanently removed and has no runtime
+> override. Versioned mode never falls back to or mixes with that path. Deleting a
+> versioned GitHub secret does not permit reuse: allocated namespaces and their
+> permanent tombstones are retained because GitHub has no compare-and-swap or
+> bounded completion guarantee for secret PUTs.
 
 This is the fail-closed release gate for the ordered combined release
 `000060_codex_oauth_setup_serialization` then
 `000061_codex_oauth_provider_mutation_fence`,
 `000062_codex_oauth_remote_outcome_unknown`, then
-`000063_codex_oauth_setup_payload_claim`. The general release and git-flow
+`000063_codex_oauth_setup_payload_claim`, then
+`000064_codex_oauth_versioned_secret_namespaces`. The general release and git-flow
 rules remain in
 [`07-environments-and-release-management.md`](./07-environments-and-release-management.md).
 Never apply only one migration as a completed production rollout.
+
+Before the migration caller applies anything, run
+`pnpm codex-rotating:migration-preflight` against the target writer. It fails if
+any `_prisma_migrations` row already uses the edited
+`000061_codex_oauth_provider_mutation_fence` name, regardless of checksum or
+rollback status. Do not resolve, overwrite, or bless such history; stop the
+rollout and produce a new forward migration plan.
+
+It also requires the first-release, transaction-wrapped 000063 source checksum
+`33100d6f5f3f59cd9a4c22f041d19caba6a0e0be88de4a0ee4d543af50619481`.
+The earlier non-atomic checksum
+`a0693a88ea2c9a60d673e5be48e44047b865fabcecd46b8b66640381b4ed7667`
+is not deployed history and must never be marked applied, resolved, or blessed.
+If that row exists in a local sandbox, discard and recreate the sandbox database
+from a clean baseline before rerunning preflight. If it appears anywhere claimed
+to be shared or production, stop the rollout and investigate the provenance;
+do not use manual migration-history edits as recovery.
+
+## 000063 first-release migration decision record (2026-08-10)
+
+Repository and deployment evidence establishes that the non-atomic 000063 was
+an unpublished local side-branch artifact:
+
+- `origin/main` has no `000063_codex_oauth_setup_payload_claim` path.
+- Integration commit `097aa56` has no such migration path.
+- Local commit `4750275` is not contained in any remote ref.
+
+Accordingly, the transaction-wrapped migration with checksum
+`33100d6f5f3f59cd9a4c22f041d19caba6a0e0be88de4a0ee4d543af50619481`
+is the first-release 000063 artifact. Its explicit `BEGIN`/`COMMIT` boundary is
+part of the release contract: a late statement failure must leave no payload
+claim columns, constraints, or index behind, and replay from the unchanged
+baseline must succeed. The non-atomic checksum above is rejected rather than
+treated as production-safe compatibility history. After this atomic artifact is
+merged and released, its checksum is immutable and every later schema repair or
+evolution must use a new forward migration.
+
+000063 remains limited to the setup-manifest payload-claim fields, checks, and
+recovery-expiry index. Versioned secret namespaces, dispatch attempts, mutation
+guard evolution, and all related repair remain in forward 000064; they must not
+be moved backward into 000063.
+
+## 000064 forward-publication policy
+
+`000064_codex_oauth_versioned_secret_namespaces` is the unpublished forward
+migration for this release. Its exact checked-in SHA-256 is
+`906aa45f86a6139120d55a28813cf723f6f213a4cfbfd1a45f52d5f5f0932ad6`.
+Before its first publication, migration preflight hashes those exact bytes and
+rejects every existing `_prisma_migrations` row named 000064, including failed,
+rolled-back, duplicate, or apparently successful rows. Do not resolve or bless
+an early row; stop and investigate its provenance.
+
+The one immutable release-migration caller may then apply those pinned bytes as
+the final member of the drained combined release. Post-release verification
+requires exactly one current successful 000064 row with that checksum and one
+applied step. After the first production publication is accepted, the next
+release must deliberately reclassify this digest from `forwardUnpublished` to
+the immutable-history set and replace the reject-any prepublication rule with
+the same allow-one-exact rule used by released migrations. Until that explicit
+handoff is checked in and tested, preflight intentionally blocks every later
+release rather than guessing that publication occurred. Any later schema
+change uses a new forward migration; never edit 000064 after publication.
+
+## Database recovery witness
+
+Every API and web writer must receive the same
+`REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS`: a cryptographically random,
+base64url value of at least 32 bytes. Rotate it to a never-used value before a
+restored snapshot or promoted writer is allowed to receive traffic. Durable
+setup claims and runtime writeback intents store only its SHA-256 fingerprint;
+confirmation and activation fail closed if the current fingerprint differs or
+the witness is unavailable.
+
+The value is an explicit runtime secret, not a build input. Configure it once
+in the shared Render environment group or self-hosted common env file, then
+restart every web/API writer from that same value. Deployment and readiness
+must reject a missing, malformed, or placeholder value before traffic or any
+host mutation. Logs, dry-run output, support diagnostics, and thrown errors may
+name the variable but must never contain its value.
+
+`pg_control_system().system_identifier` remains useful cluster identity but is
+not a restore or promotion witness. The residual assumption is explicit: the
+infrastructure control plane must serialize writer promotion/restore and never
+reuse or copy an environment witness into a new writer generation. If two
+writable database generations are exposed with the same witness, this protocol
+cannot distinguish them. Keep traffic disabled until the witness is rotated
+and all writer processes restart with the new value.
+
+For a restore or writer promotion, use this exact sequence:
+
+1. Quiesce API, web, worker, installers, and runtime jobs while the old writer
+   still uses witness W1.
+2. Restore/promote the database with traffic disabled, generate never-used W2,
+   configure every writer with W2, and restart them. Automatic runtime work is
+   expected to remain blocked on persisted W1 fingerprints and must perform no
+   provider write.
+3. Submit the operator recovery with a stable `recoveryRequestId` and the exact
+   acknowledgement `all_prior_installers_and_writers_are_stopped` (or the
+   distinct account-switch acknowledgement when that mode is intended).
+4. Under the provider lock, recovery permanently retires W1 active,
+   dispatch-authorized, confirmed-candidate, and remote-unknown namespaces,
+   preserves their W1 fingerprints, and advances the mutation fence. A missing
+   acknowledgement or partial retirement fails closed and allocates nothing.
+5. Fetch the new recovery manifest and complete setup. Its claim and fresh,
+   never-reused namespace carry only the W2 fingerprint. Keep runtime traffic
+   disabled until that W2 namespace is definitely written, workflow-attested,
+   and active; only then does W2 runtime become usable.
+
+Never rewrite W1 evidence to W2, reuse a W1 namespace/ciphertext, or repair the
+rotation with direct database edits.
+
+The remaining trust is narrow and explicit: Render's authenticated API must
+truthfully bind service/deploy/job IDs to immutable commit and image digests;
+the database provider must protect the release credential and report
+`pg_control_system()` honestly; and the operator must admit a new witness hash
+in the database-owner-only generation comment only while all prior writers are
+stopped. The proof does not claim to defeat a compromised Render control plane,
+database superuser, or operator holding the release credential. It does prevent
+web/API/worker credentials and arbitrary environment/application-name labels
+from forging the accepted rollout identity.
 
 Production starts with both
 `REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH=0` and
@@ -37,7 +165,10 @@ expired leases, pending intents, quarantine, and recovery cases, then invokes
 the Prisma migration runner for the combined release. It observes 000061's
 15-second lock timeout after 000060 commits, resolves that failed runner attempt,
 injects a late 000061 failure, proves transaction rollback, resolves it, and
-successfully reruns. It checks the exact migration-history checksums, catalog
+successfully reruns. A separate late-failure matrix retains both 000063 and
+000064, proves each leaves zero partial catalog state after rollback, removes
+only the injected collision, and proves clean replay through the migration
+runner. It checks the exact migration-history checksums, catalog
 trigger/check/index/foreign-key sets and flags, deterministic historical
 unknown-outcome provenance, the recovery ledger, exact-payload claim, zero
 unsafe active work, and the bounded fetched recovery marker. Its final JSON line is the
@@ -56,10 +187,14 @@ rolling mixed-version deploy is prohibited.
    is read/idempotency behavior, not permission for a new secret write. Prove
    it boots against a schema ending at 000060, then record its exact commit and
    image digest. The bridge is not a post-000061 rollback candidate.
-2. Publish both installer v1 and v2 plus the v2 workflow/runtime artifacts before
-   issuing any v2 setup command. Verify their immutable digests. Inventory
-   queued and in-progress v1 and v2 GitHub workflows by workflow SHA; stop new
-   dispatch admission and let or cancel every old queued workflow explicitly.
+2. Publish the required installer and workflow/runtime artifacts, including the
+   current V4 versioned-namespace workflow, before issuing a setup command.
+   Verify their immutable digests. Inventory queued and in-progress GitHub
+   workflows by workflow SHA across every supported/deployed schema v1 through
+   v4. Each observation must explicitly cover all four schemas even when a
+   schema has zero runs; an unknown future schema or omitted schema blocks the
+   drain. Stop new dispatch admission and let or cancel every old queued
+   workflow explicitly.
 3. Deploy the bridge everywhere while the database is still pre-000061. First
    set `REVIEW_ROUTER_CODEX_ROTATING_SETUP_ISSUANCE_ENABLED=0`. A setup-command
    request must return HTTP 503 and
@@ -81,7 +216,7 @@ rolling mixed-version deploy is prohibited.
    shape had independent web, API, and worker callers; the checked-in Blueprint
    and deploy helper now clear them). Nominate exactly one `release-migration`
    job and prove no other caller can start. Apply the ordered
-   checked-in 000060+000061+000062+000063 batch once. A lock or statement timeout stops the
+   exact ordered checked-in 000060+000061+000062+000063+000064 batch once. A lock or statement timeout stops the
    batch; inspect it and begin a separately recorded retry, never concurrent
    retries.
 6. With both switches still off, converge API, web, and worker to the same exact
@@ -92,8 +227,9 @@ rolling mixed-version deploy is prohibited.
    configure an allowlist containing one disposable canary repository. Verify
    the allowlist count is exactly one, then deliberately set all three flags to
    exact `1` for that allowlisted scope.
-   Prove v1 queued-workflow rejection/compatibility and v2 issuance/fetch/write/
-   confirmation/replay using the published artifacts. Return all three flags to
+   Prove legacy queued-workflow rejection/compatibility and V4 versioned-
+   namespace issuance/fetch/write/attestation/activation/replay using the
+   published artifacts. Return all three flags to
    `0` before deleting the canary allowlist. Only after the artifact-backed proof
    passes may operators configure a nonempty explicitly approved widening
    cohort and reopen both flags. Clearing the allowlist while either admission
@@ -104,16 +240,17 @@ artifact. Every count, including queued old workflows from the GitHub workflow
 inventory, must be zero:
 
 Run the checked-in capture executable from the one immutable release-migration
-runtime. The database connection must set
-`application_name=reviewrouter-release-migration`; loopback/rehearsal databases
-and missing exact commit/image bindings are rejected. Redirect stdout directly
-to the artifact file without editing it:
+runtime. Its `current_user` and `session_user` must both be
+`reviewrouter_release_migration`; `application_name` and caller-provided
+commit/image labels have no evidentiary value. First save the raw Render API
+observation containing the PostgreSQL version, three runtime deploys, and
+exactly one successful release-migration job. Redirect stdout directly to the
+artifact file without editing it:
 
 ```bash
 REVIEW_ROUTER_PRODUCTION_WRITER_OBSERVATION=1 \
 REVIEW_ROUTER_PRODUCTION_WRITER_DATABASE_URL="$PRODUCTION_WRITER_URL" \
-REVIEW_ROUTER_RELEASE_COMMIT_SHA="$EXACT_RELEASE_SHA" \
-REVIEW_ROUTER_RELEASE_IMAGE_DIGEST="$EXACT_RELEASE_IMAGE_DIGEST" \
+REVIEW_ROUTER_RENDER_OBSERVATION_PATH="$RAW_RENDER_OBSERVATION_JSON" \
 pnpm codex-rotating:production-writer-observation > production-writer.json
 ```
 
@@ -148,9 +285,20 @@ derives the result from those observations. Self-reported
 rejected.
 
 The database artifact must identify the actual database (`current_database`,
-server address, and system identifier), identify the one immutable
-`release-migration` caller, and contain two time-separated stable zero drain
-observations. It must also contain all four migration IDs, checked-in source
+server address, and system identifier), prove `NOT pg_is_in_recovery()`,
+prove the canonical release role exclusively owns database/schema DDL,
+migration history, rotating tables, and functions, and prove the three distinct
+runtime roles cannot create database/schema objects, own catalog objects, use
+DDL table privileges, or assume the release role. It identifies the immutable
+caller by copying the IDs, commit, and image from the raw Render API
+observation, and contains two time-separated stable zero drain observations.
+The base observation and both drain samples independently report the same
+database identity, writer status, and SHA-256 fingerprint from the
+database-owner-only generation-binding comment. Every admitted durable recovery
+witness and database-incarnation value must equal that stored binding.
+The recovery owner must be an identity production can create:
+`setup-recovery:*` or the migration-owned
+`versioned-namespace-cutover:*`. It must also contain all five ordered migration IDs, checked-in source
 digests, one current successful runner-history record for each source checksum,
 PostgreSQL 17 catalog output, zero unsafe work, recovery-ledger constraints and
 foreign keys, payload-claim/recovery-window constraints, and the fetched
@@ -158,9 +306,15 @@ recovery owner.
 Its descriptor must bind the exact checked-in production-writer capture
 executable and source digest; rehearsal output or an operator-authored success
 boolean is not accepted.
-The Render API artifact must report API/web/worker exact commits and immutable
-image digests with mutation admission off, a null `preDeployCommand`, and no
-service-level migration caller. The compatibility artifact is the actual probe
+The Render API artifact must report the real `reviewrouter-api`,
+`reviewrouter-web`, and `reviewrouter-worker` service names, their canonical
+API/web/worker roles, immutable Render service/deploy IDs, exact commits, and
+immutable image digests with mutation admission off, a null `preDeployCommand`,
+and no service-level migration caller. It also contains exactly one successful
+one-off release-migration job. Fresh hosted databases and existing
+`reviewrouter-db` instances must use PostgreSQL 17; `render.yaml` pins
+`postgresMajorVersion: "17"`, and the API helper independently rejects a
+mismatch. The compatibility artifact is the actual probe
 output and has its own byte digest plus the checked-in executable's source
 digest. It binds both the exact bridge commit/image and final candidate
 commit/image. Each case carries raw observations and a digest that the verifier
@@ -170,10 +324,12 @@ recomputes; a `passed` boolean or arbitrary digest is rejected:
 - a queued v1 workflow after v2 installer/workflow publication;
 - a fence-aware v2 workflow against the candidate image.
 
-The GitHub inventory must list every queued/in-progress schema-v1 and schema-v2
-run with run ID, workflow path, workflow schema, and head SHA twice and prove no
-new arrival. Canary runtime evidence binds the exact installer-v1, installer-v2,
-workflow-v2, runtime-publication, commit, and image digests.
+The GitHub inventory must explicitly cover every supported/deployed schema v1
+through v4 in both samples and list every queued/in-progress run with run ID,
+workflow path, workflow schema, and head SHA. It must reject unknown schemas and
+prove no new arrival; an omitted zero-count schema is not drain evidence. Canary
+runtime evidence binds the exact installer-v1, installer-v2, workflow-v2,
+runtime-publication, commit, and image digests retained by this bridge proof.
 
 The event artifact records the bridge's pre-000061 schema compatibility,
 publication-before-issuance, the separate issuance-503 probe, both zero-drain

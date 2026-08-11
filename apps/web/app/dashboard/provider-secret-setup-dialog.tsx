@@ -40,6 +40,7 @@ export function ProviderSecretSetupDialog({
   triggerSize = "sm",
   triggerClassName,
   disabled = false,
+  rotatingPreparationOnly = false,
 }: {
   readonly workspaceId: string;
   readonly repositoryId: string;
@@ -55,6 +56,7 @@ export function ProviderSecretSetupDialog({
   readonly triggerSize?: "sm" | "md" | "lg";
   readonly triggerClassName?: string | undefined;
   readonly disabled?: boolean;
+  readonly rotatingPreparationOnly?: boolean;
 }): React.ReactElement {
   const [open, setOpen] = useState(false);
 
@@ -99,12 +101,11 @@ export function ProviderSecretSetupDialog({
                   Connect model credentials for {repositoryFullName}
                 </DialogTitle>
                 <DialogDescription className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
-                  Merge the setup PR first, then run one command from your own
-                  computer. The command connects your AI provider to{" "}
-                  {repositoryFullName}; secrets are written directly to GitHub
-                  Actions, while ReviewRouter SaaS stores only metadata and
-                  model settings. The command includes the repository target, so
-                  it can run from any directory on your machine.
+                  {rotatingPreparationOnly
+                    ? "Prepare the server-authorized rotating Codex credential first. The setup PR will then reference that exact versioned namespace."
+                    : "Follow the provider-specific sequence below. Rotating Codex prepares a server-authorized versioned credential before its exact workflow is merged; other provider credentials are connected after the setup PR."}{" "}
+                  Secrets are written directly to GitHub Actions, while
+                  ReviewRouter SaaS stores only metadata and model settings.
                 </DialogDescription>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -131,6 +132,7 @@ export function ProviderSecretSetupDialog({
               openRouterApiKeyGuidance={guidanceSet.openRouterApiKey}
               codexRotatingOAuthEnabled={codexRotatingOAuthEnabled}
               claudeCodeProviderEnabled={claudeCodeProviderEnabled}
+              rotatingPreparationOnly={rotatingPreparationOnly}
             />
           </div>
         </DialogPopup>

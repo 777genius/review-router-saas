@@ -1,8 +1,12 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("Codex OAuth payload-claim migrations", () => {
+  const atomicReleaseChecksum =
+    "33100d6f5f3f59cd9a4c22f041d19caba6a0e0be88de4a0ee4d543af50619481";
+
   it("adds an all-or-none durable claim and bounded fetched recovery window", () => {
     const sql = readFileSync(
       resolve(
@@ -22,6 +26,15 @@ describe("Codex OAuth payload-claim migrations", () => {
     );
     expect(sql).toContain('"recoveryExpiresAt" IS NOT NULL');
     expect(sql).toContain("\"status\" IN ('fetched', 'consumed')");
+    expect(sql.trimStart()).toMatch(/^BEGIN;/);
+    expect(sql.trimEnd()).toMatch(/COMMIT;$/);
+    expect(sql).toContain("SET LOCAL lock_timeout = '15s';");
+    expect(sql).toContain("SET LOCAL statement_timeout = '5min';");
+    expect(createHash("sha256").update(sql).digest("hex")).toBe(
+      atomicReleaseChecksum,
+    );
+    expect(sql).not.toContain("CodexOAuthSecretNamespace");
+    expect(sql).not.toContain("CodexOAuthSetupDispatchAttempt");
   });
 
   it("selects deterministic provenance for multiple historical intents", () => {

@@ -81,7 +81,7 @@ const providerAuthOptionCopyByAuthMode = {
   codex_subscription_oauth_rotating: {
     label: "Codex OAuth with refresh",
     description:
-      "Uses REVIEWROUTER_CODEX_AUTH_JSON with automatic GitHub-hosted refresh.",
+      "Uses a server-authorized versioned namespace with automatic GitHub-hosted refresh.",
   },
   codex_subscription_oauth: {
     label: "Codex legacy OAuth",
@@ -202,7 +202,7 @@ const secretCopyByAuthMode = {
   codex_subscription_oauth_rotating: {
     label: "Codex OAuth with refresh",
     description:
-      "Rotating Codex OAuth uses REVIEWROUTER_CODEX_AUTH_JSON from repository GitHub Actions secrets.",
+      "Rotating Codex OAuth uses a server-authorized, never-reused versioned namespace.",
     commandSuffix: "",
     recovery:
       "Run the rotating Codex OAuth setup command from the provider setup panel.",
@@ -258,19 +258,23 @@ function ProviderSecretNotice({
   readonly secretCheckTarget?: RepositorySecretCheckTarget | undefined;
   readonly sharedProviderCount?: number;
 }): React.ReactElement {
+  const rotatingCodex = authMode === "codex_subscription_oauth_rotating";
   const [secretStatus, setSecretStatus] = useState<ProviderSecretStatus>(
     secretCheckTarget ? "checking" : "missing",
   );
   const [refreshVersion, setRefreshVersion] = useState(0);
-  const metadata = getSecretMetadata(authMode);
-  const command = repositoryFullName
-    ? `gh secret set ${metadata.secretName} --repo ${repositoryFullName}${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`
-    : `gh secret set ${metadata.secretName} --repo <owner>/<repo>${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`;
+  const authMetadata = getProviderAuthModeMetadata(authMode);
+  const metadata = rotatingCodex ? null : getSecretMetadata(authMode);
+  const command = metadata
+    ? repositoryFullName
+      ? `gh secret set ${metadata.secretName} --repo ${repositoryFullName}${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`
+      : `gh secret set ${metadata.secretName} --repo <owner>/<repo>${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`
+    : null;
   const secretWorkspaceId = secretCheckTarget?.workspaceId;
   const secretRepositoryId = secretCheckTarget?.repositoryId;
   const sharedProviderCopy =
     sharedProviderCount > 1
-      ? `Checked once for ${sharedProviderCount} providers using ${metadata.label}.`
+      ? `Checked once for ${sharedProviderCount} providers using ${providerAuthOptionCopyByAuthMode[authMode].label}.`
       : null;
 
   useEffect(() => {
@@ -283,7 +287,7 @@ function ProviderSecretNotice({
     const formData = new FormData();
     formData.set("workspaceId", secretWorkspaceId);
     formData.set("repositoryId", secretRepositoryId);
-    formData.set("providerKind", metadata.providerKind);
+    formData.set("providerKind", authMetadata.providerKind);
     formData.set("authMode", authMode);
     setSecretStatus("checking");
 
@@ -307,11 +311,55 @@ function ProviderSecretNotice({
     };
   }, [
     authMode,
-    metadata.providerKind,
+    authMetadata.providerKind,
     refreshVersion,
     secretRepositoryId,
     secretWorkspaceId,
   ]);
+
+  if (rotatingCodex) {
+    return (
+      <div
+        role={secretStatus === "missing" ? "note" : "status"}
+        className={
+          secretStatus === "checking"
+            ? "rounded-xl border border-cyan-300/25 bg-cyan-300/[0.045] p-3 text-xs leading-5 text-cyan-100"
+            : secretStatus === "available_repository" ||
+                secretStatus === "available_organization"
+              ? "rounded-xl border border-emerald-300/30 bg-emerald-300/[0.07] p-3 text-xs leading-5 text-emerald-100"
+              : "rounded-xl border border-amber-300/30 bg-amber-300/[0.06] p-3 text-xs leading-5 text-amber-100"
+        }
+      >
+        <p className="font-semibold">
+          {secretStatus === "checking"
+            ? "Checking authorized versioned setup..."
+            : secretStatus === "available_repository" ||
+                secretStatus === "available_organization"
+              ? "Authorized versioned Codex setup is active for this repository."
+              : "Rotating Codex setup is not ready for this repository."}
+        </p>
+        <p className="mt-1 opacity-85">
+          {secretStatus === "checking"
+            ? "ReviewRouter is validating the exact server-owned claim, confirmed attempt, active namespace, workflow evidence, and provider activation outcome."
+            : secretStatus === "available_repository" ||
+                secretStatus === "available_organization"
+              ? "Readiness comes from the confirmed versioned claim and namespace activation chain; GitHub-hosted runs can now refresh into new versioned namespaces."
+              : "Run the rotating OAuth setup command from the provider setup panel. A generic repository secret cannot satisfy this readiness check."}
+        </p>
+        {sharedProviderCopy ? (
+          <p className="mt-1 opacity-75">{sharedProviderCopy}</p>
+        ) : null}
+        <SecretRefreshButton
+          busy={secretStatus === "checking"}
+          onRefresh={() => setRefreshVersion((value) => value + 1)}
+        />
+      </div>
+    );
+  }
+
+  if (!metadata || !command) {
+    throw new Error(`missing_provider_secret_metadata:${authMode}`);
+  }
 
   if (secretStatus === "checking") {
     return (
@@ -354,9 +402,7 @@ function ProviderSecretNotice({
             : "is available to this repository from organization GitHub Actions secrets."}
         </p>
         <p className="mt-1 text-emerald-100/85">
-          {authMode === "codex_subscription_oauth_rotating"
-            ? "GitHub-hosted ReviewRouter runs refresh this Codex session before review and write the rotated secret back automatically."
-            : `${metadata.label} can use this secret in CI.`}
+          {metadata.label} can use this secret in CI.
         </p>
         {sharedProviderCopy ? (
           <p className="mt-1 text-emerald-100/75">{sharedProviderCopy}</p>

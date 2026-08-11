@@ -49,6 +49,7 @@ import {
   codexRotatingRuntimeAuthMode,
   compactCodexAuthJson,
   computeCodexAuthGenerationHash,
+  computeCodexRotatingAccountIdentityHash,
   encryptCodexRotatingAuthForGitHubSecret,
   classifyCodexRuntimeFailure,
   pruneCodexRotatingChildEnv,
@@ -168,6 +169,7 @@ type PullRequestEvent = {
 type PreleaseResponse = {
   readonly leaseId: string;
   readonly generationHashSalt: string;
+  readonly accountFingerprintSalt: string;
 };
 
 type FinalizeResponse =
@@ -200,6 +202,7 @@ type WritebackResponse = {
   readonly status:
     | "accepted"
     | "idempotent_replay"
+    | "in_progress"
     | "github_put_failed"
     | "writeback_recovery_required"
     | "writeback_idempotency_conflict";
@@ -1462,7 +1465,6 @@ async function requestCodexRotatingPreleaseWithFreshOidc(input: {
           url: `${input.apiUrl}/api/action/v1/codex-oauth/prelease`,
           body: {
             oidcToken,
-            audience: defaultOidcAudience,
             providerInstanceId: input.providerInstanceId,
             workflowSchemaVersion: input.workflowSchemaVersion,
           },
@@ -2737,6 +2739,10 @@ async function writeRefreshedCodexAuthJson(input: {
     githubKeyId: input.publicKey.key_id,
     generationHashSalt: input.prelease.generationHashSalt,
   });
+  const accountIdentityHash = computeCodexRotatingAccountIdentityHash({
+    authJsonBytes: compact.compactAuthJsonBytes,
+    accountFingerprintSalt: input.prelease.accountFingerprintSalt,
+  });
 
   const writeback = await postJson<WritebackResponse>({
     fetchImpl: input.fetchImpl,
@@ -2748,6 +2754,8 @@ async function writeRefreshedCodexAuthJson(input: {
       providerInstanceId: input.inputs.providerInstanceId,
       generation: input.finalize.nextGeneration,
       latestGenerationHash: encrypted.latestGenerationHash,
+      accountIdentityHash,
+      accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
       encryptedValue: encrypted.encryptedValue,
       keyId: encrypted.keyId,
       idempotencyKey: buildWritebackIdempotencyKey(

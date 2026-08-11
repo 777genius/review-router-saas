@@ -1,13 +1,23 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import {
+  allocateVersionedProviderSecretNamespace,
+  assertProviderSecretTransitionAuthorized,
+  assertSameVersionedProviderSecretNamespace,
   assertCanonicalCodexRotatingProviderId,
   classifyCodexRotatingMutationOwnership,
+  assertExternalRecoveryWitnessAdmission,
+  classifyExternalRecoveryWitnessRelation,
+  fingerprintDatabaseRecoveryWitness,
   codexRotatingAuthMode,
   codexRotatingCanonicalT0WorkflowSchemaVersions,
   codexRotatingSecretName,
-  createCodexRotatingSalt,
+  mapActiveVersionedProviderSecretNamespace,
+  parseVersionedProviderSecretName,
+  RuntimeVersionedDurableMarker,
   type CodexRotatingEncryptedWritebackRequest,
   type CodexRotatingProviderBinding,
+  type VersionedSecretWorkflowSourceAttestation,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
 import {
@@ -15,17 +25,11 @@ import {
   codexRotatingReviewSnapshotAccessTtlMs,
   isCodexRotatingCompletedLeasePostingWindowActive,
 } from "../../domain/codex-rotating-oauth-posting-window.js";
-import {
-  codexRotatingWritebackClaimMarker,
-  codexRotatingWritebackDispatchedMarker,
-  decideCodexRotatingWritebackConfirmation,
-  decideCodexRotatingWritebackPreparation,
-  mayFailCodexRotatingWritebackClaim,
-} from "../../domain/codex-rotating-writeback-policy.js";
 import type {
   CodexRotatingOAuthRepositoryPort,
   CodexRotatingPreleaseRecord,
   CodexRotatingSecretWriteTarget,
+  CodexRotatingVersionedWritebackLedgerPort,
 } from "../../application/ports/codex-rotating-oauth-repository-port.js";
 import type { CodexRotatingReviewSnapshotAccessPort } from "../../application/ports/codex-rotating-review-snapshot-access-port.js";
 import type { CodexRotatingReviewExecutionCheckpointAccessPort } from "../../application/ports/codex-rotating-review-execution-checkpoint-access-port.js";
@@ -50,6 +54,7 @@ const codexRotatingRepositoryContextSelect = {
 export class PrismaCodexRotatingOAuthRepository
   implements
     CodexRotatingOAuthRepositoryPort,
+    CodexRotatingVersionedWritebackLedgerPort,
     CodexRotatingReviewSnapshotAccessPort,
     CodexRotatingReviewExecutionCheckpointAccessPort
 {
@@ -60,6 +65,7 @@ export class PrismaCodexRotatingOAuthRepository
       readonly allowedActionRefs?: readonly string[] | undefined;
       readonly actionOwnerRepo: string;
       readonly workflowPath?: string;
+      readonly databaseRecoveryWitness?: string;
     },
   ) {}
 
@@ -81,6 +87,66 @@ export class PrismaCodexRotatingOAuthRepository
       githubRepositoryId: input.repository.githubRepositoryId,
     });
 
+    const provider = await this.prisma.codexOAuthProviderInstance.findUnique({
+      where: { providerInstanceId: input.providerInstanceId },
+      select: {
+        id: true,
+        workspaceId: true,
+        repositoryId: true,
+        authMode: true,
+        activeSecretNamespaceId: true,
+        activeSecretNamespaceEpoch: true,
+        activeSecretNamespace: {
+          select: {
+            id: true,
+            githubRepositoryId: true,
+            namespaceEpoch: true,
+            secretName: true,
+            status: true,
+            workflowPath: true,
+            workflowSourceCommitSha: true,
+            workflowSourceBlobSha: true,
+            workflowSourceSha256: true,
+            workflowSemanticSha256: true,
+            workflowSourceTrust: true,
+            attestedRepositoryId: true,
+          },
+        },
+      },
+    });
+    if (
+      !provider ||
+      provider.workspaceId !== input.repository.workspaceId ||
+      provider.repositoryId !== input.repository.repositoryId ||
+      provider.authMode !== codexRotatingAuthMode
+    ) {
+      return null;
+    }
+    let activeSecretNamespace;
+    try {
+      activeSecretNamespace = mapActiveVersionedProviderSecretNamespace({
+        scope: {
+          repositoryId: input.repository.githubRepositoryId,
+          providerInstanceId: input.providerInstanceId,
+        },
+        row: provider,
+      });
+    } catch {
+      return null;
+    }
+    const source = provider.activeSecretNamespace;
+    if (
+      !source?.workflowPath ||
+      !source.workflowSourceCommitSha ||
+      !source.workflowSourceBlobSha ||
+      !source.workflowSourceSha256 ||
+      source.workflowSourceTrust !== "trusted_default_branch_revision" ||
+      !source.attestedRepositoryId ||
+      !source.workflowSemanticSha256
+    ) {
+      return null;
+    }
+
     return {
       providerInstanceId: input.providerInstanceId,
       repositoryFullName: input.repository.fullName,
@@ -94,6 +160,16 @@ export class PrismaCodexRotatingOAuthRepository
       workflowPath:
         this.options.workflowPath ?? ".github/workflows/reviewrouter-codex.yml",
       workflowSchemaVersion: input.workflowSchemaVersion,
+      activeSecretNamespace,
+      activeWorkflowSource: {
+        workflowPath: source.workflowPath,
+        workflowSourceCommitSha: source.workflowSourceCommitSha,
+        workflowSourceBlobSha: source.workflowSourceBlobSha,
+        workflowSourceSha256: source.workflowSourceSha256,
+        workflowSemanticSha256: source.workflowSemanticSha256,
+        sourceTrust: source.workflowSourceTrust,
+        repositoryId: source.attestedRepositoryId,
+      },
     };
   }
 
@@ -101,6 +177,13 @@ export class PrismaCodexRotatingOAuthRepository
     readonly repository: ActionRepositoryContext;
     readonly binding: CodexRotatingProviderBinding;
   }): Promise<void> {
+    if (
+      !input.binding.activeSecretNamespace ||
+      !input.binding.activeWorkflowSource
+    ) {
+      throw new Error("codex_rotating_active_secret_namespace_required");
+    }
+    const activeSecretNamespace = input.binding.activeSecretNamespace;
     if (
       input.binding.githubRepositoryId !==
         input.repository.githubRepositoryId ||
@@ -128,39 +211,13 @@ export class PrismaCodexRotatingOAuthRepository
           existing.repositoryId !== input.repository.repositoryId ||
           existing.providerInstanceId !== input.binding.providerInstanceId ||
           existing.authMode !== codexRotatingAuthMode ||
-          existing.secretName !== codexRotatingSecretName
+          existing.activeSecretNamespaceId !== activeSecretNamespace.namespaceId
         ) {
           throw new Error("codex_rotating_provider_identity_mismatch");
         }
         return;
       }
-      await tx.codexOAuthProviderInstance.createMany({
-        data: {
-          workspaceId: input.repository.workspaceId,
-          repositoryId: input.repository.repositoryId,
-          providerInstanceId: input.binding.providerInstanceId,
-          authMode: codexRotatingAuthMode,
-          secretName: codexRotatingSecretName,
-          generationHashSalt: createCodexRotatingSalt(),
-          accountFingerprintSalt: createCodexRotatingSalt(),
-        },
-        skipDuplicates: true,
-      });
-      const persisted = await tx.codexOAuthProviderInstance.findUniqueOrThrow({
-        where: {
-          repositoryId_authMode: {
-            repositoryId: input.repository.repositoryId,
-            authMode: codexRotatingAuthMode,
-          },
-        },
-      });
-      if (
-        persisted.workspaceId !== input.repository.workspaceId ||
-        persisted.providerInstanceId !== input.binding.providerInstanceId ||
-        persisted.secretName !== codexRotatingSecretName
-      ) {
-        throw new Error("codex_rotating_provider_identity_mismatch");
-      }
+      throw new Error("codex_rotating_provider_binding_not_found");
     });
   }
 
@@ -210,10 +267,21 @@ export class PrismaCodexRotatingOAuthRepository
           mutationEpoch: true,
           mutationOwner: true,
           mutationOwnerId: true,
+          activeSecretNamespaceId: true,
+          activeSecretNamespaceEpoch: true,
+          activeSecretNamespaceName: true,
+          activeSecretNamespace: {
+            select: {
+              secretName: true,
+              status: true,
+              databaseRecoveryWitness: true,
+            },
+          },
           state: true,
           latestGeneration: true,
           latestGenerationHash: true,
           generationHashSalt: true,
+          accountFingerprintSalt: true,
         },
       });
       if (!provider) {
@@ -228,6 +296,11 @@ export class PrismaCodexRotatingOAuthRepository
       ) {
         throw new Error("codex_rotating_provider_identity_mismatch");
       }
+      const activeNamespace = requireActiveNamespaceBinding(provider);
+      assertAutomaticRuntimeDatabaseRecoveryWitness(
+        provider.activeSecretNamespace?.databaseRecoveryWitness,
+        this.options.databaseRecoveryWitness,
+      );
       // The final policy assertion deliberately runs after the provider row is
       // locked and in the same transaction that creates the lease. This is the
       // admission barrier: a closed or malformed fence cannot race a lease.
@@ -242,7 +315,13 @@ export class PrismaCodexRotatingOAuthRepository
       const pendingIntent = await tx.codexOAuthWritebackIntent.findFirst({
         where: {
           providerInstanceRowId: provider.id,
-          status: { in: ["pending", "remote_outcome_unknown"] },
+          OR: [
+            { status: "pending" },
+            {
+              status: "remote_outcome_unknown",
+              recoveryResolvedAt: null,
+            },
+          ],
         },
         select: { id: true },
       });
@@ -257,6 +336,7 @@ export class PrismaCodexRotatingOAuthRepository
         select: { id: true },
       });
       if (
+        provider.mutationOwner === "setup" ||
         provider.mutationOwner === "recovery" ||
         pendingIntent ||
         blockingSetup
@@ -278,6 +358,8 @@ export class PrismaCodexRotatingOAuthRepository
             status: true,
             expiresAt: true,
             mutationEpoch: true,
+            secretNamespaceId: true,
+            secretNamespaceEpoch: true,
           },
         });
         if (
@@ -288,7 +370,10 @@ export class PrismaCodexRotatingOAuthRepository
           if (
             activeLease.githubRunId === input.githubRunId &&
             activeLease.githubRunAttempt === input.githubRunAttempt &&
-            activeLease.status === "preleased"
+            activeLease.status === "preleased" &&
+            (activeNamespace.id === null ||
+              (activeLease.secretNamespaceId === activeNamespace.id &&
+                activeLease.secretNamespaceEpoch === activeNamespace.epoch))
           ) {
             return {
               leaseId: activeLease.id,
@@ -299,9 +384,16 @@ export class PrismaCodexRotatingOAuthRepository
               expiresAt: activeLease.expiresAt,
               repository: input.repository,
               generationHashSalt: provider.generationHashSalt,
+              accountFingerprintSalt: provider.accountFingerprintSalt,
               currentGeneration: provider.latestGeneration,
               mutationEpoch:
                 activeLease.mutationEpoch ?? provider.mutationEpoch,
+              ...(activeLease.secretNamespaceId
+                ? { secretNamespaceId: activeLease.secretNamespaceId }
+                : {}),
+              ...(activeLease.secretNamespaceEpoch !== null
+                ? { secretNamespaceEpoch: activeLease.secretNamespaceEpoch }
+                : {}),
               ...(provider.latestGenerationHash
                 ? { currentGenerationHash: provider.latestGenerationHash }
                 : {}),
@@ -328,6 +420,7 @@ export class PrismaCodexRotatingOAuthRepository
               expiresAt: activeLease.expiresAt,
               repository: input.repository,
               generationHashSalt: provider.generationHashSalt,
+              accountFingerprintSalt: provider.accountFingerprintSalt,
               currentGeneration: provider.latestGeneration,
               mutationEpoch:
                 activeLease.mutationEpoch ?? provider.mutationEpoch,
@@ -354,6 +447,8 @@ export class PrismaCodexRotatingOAuthRepository
           status: "preleased",
           expiresAt,
           mutationEpoch,
+          secretNamespaceId: activeNamespace.id,
+          secretNamespaceEpoch: activeNamespace.epoch,
           ...(input.pullRequestNumber
             ? { pullRequestNumber: input.pullRequestNumber }
             : {}),
@@ -372,6 +467,8 @@ export class PrismaCodexRotatingOAuthRepository
           status: "preleased",
           expiresAt,
           mutationEpoch,
+          secretNamespaceId: activeNamespace.id,
+          secretNamespaceEpoch: activeNamespace.epoch,
         },
       });
       await tx.codexOAuthProviderInstance.update({
@@ -395,8 +492,15 @@ export class PrismaCodexRotatingOAuthRepository
         expiresAt,
         repository: input.repository,
         generationHashSalt: provider.generationHashSalt,
+        accountFingerprintSalt: provider.accountFingerprintSalt,
         currentGeneration: provider.latestGeneration,
         mutationEpoch,
+        ...(activeNamespace.id
+          ? { secretNamespaceId: activeNamespace.id }
+          : {}),
+        ...(activeNamespace.epoch !== null
+          ? { secretNamespaceEpoch: activeNamespace.epoch }
+          : {}),
         ...(provider.latestGenerationHash
           ? { currentGenerationHash: provider.latestGenerationHash }
           : {}),
@@ -428,6 +532,9 @@ export class PrismaCodexRotatingOAuthRepository
           mutationOwnerId: true,
           latestGeneration: true,
           latestGenerationHash: true,
+          activeSecretNamespace: {
+            select: { databaseRecoveryWitness: true },
+          },
           repository: {
             select: codexRotatingRepositoryContextSelect,
           },
@@ -449,6 +556,10 @@ export class PrismaCodexRotatingOAuthRepository
       ) {
         throw new Error("codex_rotating_lease_not_active");
       }
+      assertAutomaticRuntimeDatabaseRecoveryWitness(
+        provider.activeSecretNamespace?.databaseRecoveryWitness,
+        this.options.databaseRecoveryWitness,
+      );
 
       const nextGeneration = provider.latestGeneration + 1;
       if (
@@ -524,6 +635,9 @@ export class PrismaCodexRotatingOAuthRepository
           mutationEpoch: true,
           mutationOwner: true,
           mutationOwnerId: true,
+          activeSecretNamespace: {
+            select: { databaseRecoveryWitness: true },
+          },
           leases: {
             where: { id: input.leaseId },
             take: 1,
@@ -532,6 +646,8 @@ export class PrismaCodexRotatingOAuthRepository
               status: true,
               expiresAt: true,
               mutationEpoch: true,
+              secretNamespaceId: true,
+              secretNamespaceEpoch: true,
             },
           },
         },
@@ -565,6 +681,10 @@ export class PrismaCodexRotatingOAuthRepository
       ) {
         return { status: "lease_not_active" as const };
       }
+      assertAutomaticRuntimeDatabaseRecoveryWitness(
+        provider.activeSecretNamespace?.databaseRecoveryWitness,
+        this.options.databaseRecoveryWitness,
+      );
 
       await tx.codexOAuthLease.update({
         where: { id: input.leaseId },
@@ -616,6 +736,16 @@ export class PrismaCodexRotatingOAuthRepository
           mutationEpoch: true,
           mutationOwner: true,
           mutationOwnerId: true,
+          activeSecretNamespaceId: true,
+          activeSecretNamespaceEpoch: true,
+          activeSecretNamespaceName: true,
+          activeSecretNamespace: {
+            select: {
+              secretName: true,
+              status: true,
+              databaseRecoveryWitness: true,
+            },
+          },
           repository: { select: codexRotatingRepositoryContextSelect },
           leases: {
             where: { id: input.leaseId },
@@ -626,6 +756,8 @@ export class PrismaCodexRotatingOAuthRepository
               expiresAt: true,
               nextGeneration: true,
               mutationEpoch: true,
+              secretNamespaceId: true,
+              secretNamespaceEpoch: true,
             },
           },
         },
@@ -660,6 +792,18 @@ export class PrismaCodexRotatingOAuthRepository
       if (lease.status === "stale_queued_secret") {
         return { status: "stale_queued_secret" as const };
       }
+      const activeNamespace = requireActiveNamespaceBinding(provider);
+      assertAutomaticRuntimeDatabaseRecoveryWitness(
+        provider.activeSecretNamespace?.databaseRecoveryWitness,
+        this.options.databaseRecoveryWitness,
+      );
+      if (
+        activeNamespace.id !== null &&
+        (lease.secretNamespaceId !== activeNamespace.id ||
+          lease.secretNamespaceEpoch !== activeNamespace.epoch)
+      ) {
+        return { status: "stale_queued_secret" as const };
+      }
       if (
         lease.status !== "finalized" ||
         !lease.nextGeneration ||
@@ -680,59 +824,224 @@ export class PrismaCodexRotatingOAuthRepository
         status: "ready" as const,
         writeTarget: toSecretWriteTarget(
           requireGitHubRepositoryContext(provider.repository),
+          requireActiveSecretNamespace(provider),
         ),
       };
     });
   }
 
-  async prepareEncryptedWriteback(input: {
+  async prepareVersionedWriteback(input: {
     readonly request: CodexRotatingEncryptedWritebackRequest;
     readonly encryptedPayloadDigest: string;
     readonly now: Date;
-  }): Promise<
-    | {
-        readonly status: "ready";
-        readonly intentId: string;
-        readonly writeTarget: CodexRotatingSecretWriteTarget;
-      }
-    | {
-        readonly status:
-          | "idempotent_replay"
-          | "writeback_recovery_required"
-          | "writeback_idempotency_conflict";
-      }
-  > {
+  }) {
     return this.prisma.$transaction(async (tx) => {
       await lockProviderByInstanceId(tx, input.request.providerInstanceId);
-
-      const existing = await tx.codexOAuthWritebackIntent.findUnique({
-        where: {
-          providerInstanceId_idempotencyKey: {
-            providerInstanceId: input.request.providerInstanceId,
-            idempotencyKey: input.request.idempotencyKey,
-          },
-        },
+      const existingForLease = await tx.codexOAuthWritebackIntent.findFirst({
+        where: { leaseId: input.request.leaseId },
         select: {
           id: true,
+          providerInstanceRowId: true,
+          leaseId: true,
+          providerInstanceId: true,
+          idempotencyKey: true,
           encryptedPayloadDigest: true,
+          keyId: true,
+          latestGenerationHash: true,
+          generation: true,
           status: true,
+          mutationEpoch: true,
+          dispatchAttemptId: true,
+          secretNamespaceId: true,
+          databaseIncarnation: true,
+          databaseRecoveryWitness: true,
+          accountIdentityHash: true,
+          accountIdentityAlgorithm: true,
+          executorOwner: true,
+          executorLeaseExpiresAt: true,
         },
       });
-      const decision = decideCodexRotatingWritebackPreparation({
-        existing: existing ?? undefined,
-        encryptedPayloadDigest: input.encryptedPayloadDigest,
-      });
-      if (decision.status !== "claim") return decision;
+      const existing =
+        existingForLease ??
+        (await tx.codexOAuthWritebackIntent.findUnique({
+          where: {
+            providerInstanceId_idempotencyKey: {
+              providerInstanceId: input.request.providerInstanceId,
+              idempotencyKey: input.request.idempotencyKey,
+            },
+          },
+          select: {
+            id: true,
+            providerInstanceRowId: true,
+            leaseId: true,
+            providerInstanceId: true,
+            idempotencyKey: true,
+            encryptedPayloadDigest: true,
+            keyId: true,
+            latestGenerationHash: true,
+            generation: true,
+            status: true,
+            mutationEpoch: true,
+            dispatchAttemptId: true,
+            secretNamespaceId: true,
+            databaseIncarnation: true,
+            databaseRecoveryWitness: true,
+            accountIdentityHash: true,
+            accountIdentityAlgorithm: true,
+            executorOwner: true,
+            executorLeaseExpiresAt: true,
+          },
+        }));
+      if (existing) {
+        if (
+          existing.providerInstanceId !== input.request.providerInstanceId ||
+          existing.idempotencyKey !== input.request.idempotencyKey ||
+          existing.accountIdentityHash !== input.request.accountIdentityHash ||
+          existing.accountIdentityAlgorithm !==
+            input.request.accountIdentityAlgorithm ||
+          existing.leaseId !== input.request.leaseId ||
+          existing.generation !== input.request.generation ||
+          existing.latestGenerationHash !==
+            input.request.latestGenerationHash ||
+          existing.keyId !== input.request.keyId
+        ) {
+          return { status: "writeback_idempotency_conflict" as const };
+        }
+        if (existing.status === "completed") {
+          if (
+            existing.encryptedPayloadDigest !== input.encryptedPayloadDigest
+          ) {
+            return { status: "writeback_idempotency_conflict" as const };
+          }
+          await assertDatabaseIncarnation(
+            tx,
+            existing.databaseIncarnation,
+            existing.databaseRecoveryWitness,
+            this.options.databaseRecoveryWitness,
+          );
+          return {
+            status: "idempotent_replay" as const,
+            generation: existing.generation,
+          };
+        }
+        if (existing.encryptedPayloadDigest !== input.encryptedPayloadDigest) {
+          return { status: "writeback_idempotency_conflict" as const };
+        }
+        if (
+          existing.status === "pending" &&
+          existing.dispatchAttemptId &&
+          existing.secretNamespaceId &&
+          existing.mutationEpoch !== null
+        ) {
+          await assertDatabaseIncarnation(
+            tx,
+            existing.databaseIncarnation,
+            existing.databaseRecoveryWitness,
+            this.options.databaseRecoveryWitness,
+          );
+          if (
+            existing.executorOwner &&
+            existing.executorLeaseExpiresAt &&
+            existing.executorLeaseExpiresAt > input.now
+          ) {
+            return {
+              status: "in_progress" as const,
+              retryAfter: existing.executorLeaseExpiresAt,
+            };
+          }
+          const retiredNamespace =
+            await tx.codexOAuthSecretNamespace.updateMany({
+              where: {
+                id: existing.secretNamespaceId,
+                status: { in: ["dispatch_authorized", "confirmed_candidate"] },
+              },
+              data: {
+                status: "retired_ambiguous",
+                permanentlyRetired: true,
+                retiredAt: input.now,
+              },
+            });
+          if (retiredNamespace.count !== 1) {
+            throw new Error(
+              "codex_rotating_interrupted_namespace_retirement_conflict",
+            );
+          }
+          const retiredIntent = await tx.codexOAuthWritebackIntent.updateMany({
+            where: { id: existing.id, status: "pending" },
+            data: {
+              status: "remote_outcome_unknown",
+              safeErrorCode:
+                RuntimeVersionedDurableMarker.InterruptedAttemptRecoveredV1,
+              namespaceRetiredAt: input.now,
+            },
+          });
+          if (retiredIntent.count !== 1) {
+            throw new Error(
+              "codex_rotating_interrupted_intent_retirement_conflict",
+            );
+          }
+          const recoveredProvider =
+            await tx.codexOAuthProviderInstance.updateMany({
+              where: {
+                id: existing.providerInstanceRowId,
+                mutationEpoch: existing.mutationEpoch,
+                mutationOwner: "runtime",
+                mutationOwnerId: existing.leaseId,
+              },
+              data: {
+                state: "unknown_auth_state",
+                activeLeaseId: null,
+                activeLeaseExpiresAt: null,
+                mutationEpoch: { increment: 1 },
+                mutationOwner: "recovery",
+                mutationOwnerId: existing.id,
+              },
+            });
+          if (recoveredProvider.count !== 1) {
+            throw new Error(
+              "codex_rotating_interrupted_provider_fence_conflict",
+            );
+          }
+          const expiredLease = await tx.codexOAuthLease.updateMany({
+            where: {
+              id: existing.leaseId,
+              status: { in: ["preleased", "finalized"] },
+            },
+            data: { status: "unknown_auth_state", expiresAt: input.now },
+          });
+          if (expiredLease.count !== 1) {
+            throw new Error(
+              "codex_rotating_interrupted_lease_retirement_conflict",
+            );
+          }
+          return { status: "writeback_recovery_required" as const };
+        }
+        return { status: "writeback_recovery_required" as const };
+      }
 
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.request.providerInstanceId },
         select: {
           id: true,
+          providerInstanceId: true,
           activeLeaseId: true,
           activeLeaseExpiresAt: true,
           mutationEpoch: true,
           mutationOwner: true,
           mutationOwnerId: true,
+          latestGeneration: true,
+          latestGenerationHash: true,
+          activeAccountIdentityHash: true,
+          activeSecretNamespaceId: true,
+          activeSecretNamespaceEpoch: true,
+          activeSecretNamespaceName: true,
+          activeSecretNamespace: {
+            select: {
+              secretName: true,
+              status: true,
+              databaseRecoveryWitness: true,
+            },
+          },
           repository: { select: codexRotatingRepositoryContextSelect },
           leases: {
             where: { id: input.request.leaseId },
@@ -742,79 +1051,759 @@ export class PrismaCodexRotatingOAuthRepository
               status: true,
               expiresAt: true,
               nextGeneration: true,
+              restoredGenerationHash: true,
               writebackPreflightKeyId: true,
               mutationEpoch: true,
+              secretNamespaceId: true,
+              secretNamespaceEpoch: true,
             },
+          },
+          secretNamespaces: {
+            orderBy: { namespaceEpoch: "desc" },
+            take: 1,
+            select: { namespaceEpoch: true },
           },
         },
       });
       const lease = provider?.leases[0];
-      const ownership =
-        provider && lease
-          ? classifyCodexRotatingMutationOwnership({
-              owner: provider.mutationOwner,
-              ownerId: provider.mutationOwnerId,
-              now: input.now,
-              runtimeLease: {
-                id: lease.id,
-                status: lease.status,
-                expiresAt: lease.expiresAt,
-              },
-            })
-          : { classification: "ambiguous" as const };
       if (
         !provider ||
         !lease ||
-        provider.activeLeaseId !== input.request.leaseId ||
+        provider.activeLeaseId !== lease.id ||
+        provider.mutationOwner !== "runtime" ||
+        provider.mutationOwnerId !== lease.id ||
+        lease.mutationEpoch !== provider.mutationEpoch ||
         !provider.activeLeaseExpiresAt ||
         provider.activeLeaseExpiresAt <= input.now ||
-        lease.status !== "finalized" ||
         lease.expiresAt <= input.now ||
+        lease.status !== "finalized" ||
         lease.nextGeneration !== input.request.generation ||
-        lease.writebackPreflightKeyId !== input.request.keyId ||
-        provider.mutationOwner !== "runtime" ||
-        provider.mutationOwnerId !== input.request.leaseId ||
-        ownership.classification !== "active" ||
-        lease.mutationEpoch === null ||
-        lease.mutationEpoch !== provider.mutationEpoch
+        lease.writebackPreflightKeyId !== input.request.keyId
       ) {
         throw new Error("codex_rotating_lease_not_active");
       }
+      const activeNamespace = requireActiveNamespaceBinding(provider);
+      assertAutomaticRuntimeDatabaseRecoveryWitness(
+        provider.activeSecretNamespace?.databaseRecoveryWitness,
+        this.options.databaseRecoveryWitness,
+      );
+      if (
+        !activeNamespace.id ||
+        lease.secretNamespaceId !== activeNamespace.id ||
+        lease.secretNamespaceEpoch !== activeNamespace.epoch
+      ) {
+        throw new Error("codex_rotating_stale_secret_namespace");
+      }
+      if (
+        !provider.activeAccountIdentityHash ||
+        provider.activeAccountIdentityHash !== input.request.accountIdentityHash
+      ) {
+        throw new Error("codex_rotating_account_switch_epoch_required");
+      }
+      const databaseIncarnation = await readDatabaseIncarnation(tx);
+      const databaseRecoveryWitness = fingerprintDatabaseRecoveryWitness(
+        this.options.databaseRecoveryWitness ?? "",
+      );
 
-      const blockingIntent = await tx.codexOAuthWritebackIntent.findFirst({
-        where: {
-          providerInstanceRowId: provider.id,
-          status: { in: ["pending", "remote_outcome_unknown"] },
-        },
-        select: { id: true },
-      });
-      if (blockingIntent) {
-        return { status: "writeback_recovery_required" as const };
+      // A no-op is legal only with positive, three-way generation proof: the
+      // bytes restored into this lease, the database-active generation, and
+      // the freshly compacted runtime bytes are identical.
+      if (
+        lease.restoredGenerationHash === input.request.latestGenerationHash &&
+        provider.latestGenerationHash === input.request.latestGenerationHash
+      ) {
+        const noOpIntent = await tx.codexOAuthWritebackIntent.create({
+          data: {
+            providerInstanceRowId: provider.id,
+            leaseId: lease.id,
+            providerInstanceId: provider.providerInstanceId,
+            idempotencyKey: input.request.idempotencyKey,
+            generation: input.request.generation,
+            latestGenerationHash: input.request.latestGenerationHash,
+            encryptedPayloadDigest: input.encryptedPayloadDigest,
+            keyId: input.request.keyId,
+            status: "pending",
+            mutationEpoch: provider.mutationEpoch,
+            databaseIncarnation,
+            databaseRecoveryWitness,
+            accountIdentityHash: input.request.accountIdentityHash,
+            accountIdentityAlgorithm: input.request.accountIdentityAlgorithm,
+          },
+        });
+        await tx.codexOAuthLease.update({
+          where: { id: lease.id },
+          data: { status: "completed", completedAt: input.now },
+        });
+        await tx.codexOAuthProviderInstance.update({
+          where: { id: provider.id },
+          data: {
+            latestGeneration: input.request.generation,
+            activeLeaseId: null,
+            activeLeaseExpiresAt: null,
+            mutationEpoch: { increment: 1 },
+          },
+        });
+        const released = await tx.codexOAuthProviderInstance.updateMany({
+          where: {
+            id: provider.id,
+            mutationOwner: "runtime",
+            mutationOwnerId: lease.id,
+            mutationEpoch: provider.mutationEpoch + 1n,
+          },
+          data: { mutationOwner: null, mutationOwnerId: null, state: "active" },
+        });
+        if (released.count !== 1) {
+          throw new Error("codex_rotating_unchanged_generation_release_failed");
+        }
+        await tx.codexOAuthWritebackIntent.update({
+          where: { id: noOpIntent.id },
+          data: {
+            status: "completed",
+            safeErrorCode: "unchanged_generation_positive_proof_v1",
+            completedAt: input.now,
+          },
+        });
+        return {
+          status: "unchanged_generation" as const,
+          generation: input.request.generation,
+        };
       }
 
+      const namespace = allocateVersionedProviderSecretNamespace({
+        scope: {
+          repositoryId: provider.repository.githubRepositoryId!.toString(),
+          providerInstanceId: provider.providerInstanceId,
+        },
+        epoch: (provider.secretNamespaces[0]?.namespaceEpoch ?? 0n) + 1n,
+      });
+      const attemptId = `wba_${randomUUID()}`;
+      const executorOwner = `wbe_${randomUUID()}`;
+      const executorLeaseExpiresAt = new Date(
+        Math.min(
+          lease.expiresAt.getTime(),
+          provider.activeLeaseExpiresAt.getTime(),
+          input.now.getTime() + 5 * 60_000,
+        ),
+      );
+      await tx.codexOAuthSecretNamespace.create({
+        data: {
+          id: namespace.namespaceId,
+          providerInstanceRowId: provider.id,
+          githubRepositoryId:
+            provider.repository.githubRepositoryId!.toString(),
+          namespaceEpoch: namespace.epoch,
+          secretName: namespace.name,
+          databaseRecoveryWitness,
+          status: "dispatch_authorized",
+        },
+      });
       const intent = await tx.codexOAuthWritebackIntent.create({
         data: {
           providerInstanceRowId: provider.id,
-          leaseId: input.request.leaseId,
-          providerInstanceId: input.request.providerInstanceId,
+          leaseId: lease.id,
+          providerInstanceId: provider.providerInstanceId,
           idempotencyKey: input.request.idempotencyKey,
           generation: input.request.generation,
           latestGenerationHash: input.request.latestGenerationHash,
           encryptedPayloadDigest: input.encryptedPayloadDigest,
           keyId: input.request.keyId,
           status: "pending",
-          safeErrorCode: codexRotatingWritebackClaimMarker,
-          mutationEpoch: lease.mutationEpoch,
+          safeErrorCode: RuntimeVersionedDurableMarker.DispatchAuthorizedV1,
+          mutationEpoch: provider.mutationEpoch,
+          dispatchAttemptId: attemptId,
+          dispatchAuthorizedAt: input.now,
+          secretNamespaceId: namespace.namespaceId,
+          databaseIncarnation,
+          databaseRecoveryWitness,
+          accountIdentityHash: input.request.accountIdentityHash,
+          accountIdentityAlgorithm: input.request.accountIdentityAlgorithm,
+          executorOwner,
+          executorLeaseExpiresAt,
         },
-        select: { id: true },
       });
+      const repository = requireGitHubRepositoryContext(provider.repository);
       return {
         status: "ready" as const,
         intentId: intent.id,
-        writeTarget: toSecretWriteTarget(
-          requireGitHubRepositoryContext(provider.repository),
-        ),
+        attemptId,
+        executorOwner,
+        namespace,
+        repository: toActionRepositoryContext(repository),
+        writeTarget: toSecretWriteTarget(repository, namespace.name),
       };
+    });
+  }
+
+  async confirmVersionedProviderWrite(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly statusCode: 201 | 204;
+    readonly now: Date;
+  }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const locator = await tx.codexOAuthWritebackIntent.findUnique({
+        where: { id: input.intentId },
+        select: { providerInstanceRowId: true },
+      });
+      if (!locator) {
+        throw new Error("codex_rotating_versioned_attempt_mismatch");
+      }
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "CodexOAuthProviderInstance"
+        WHERE "id" = ${locator.providerInstanceRowId} FOR UPDATE
+      `);
+      const intent = await tx.codexOAuthWritebackIntent.findUnique({
+        where: { id: input.intentId },
+        select: {
+          leaseId: true,
+          dispatchAttemptId: true,
+          secretNamespaceId: true,
+          status: true,
+          mutationEpoch: true,
+          databaseIncarnation: true,
+          databaseRecoveryWitness: true,
+          accountIdentityHash: true,
+          accountIdentityAlgorithm: true,
+          executorOwner: true,
+          executorLeaseExpiresAt: true,
+          providerInstance: {
+            select: {
+              activeLeaseId: true,
+              activeLeaseExpiresAt: true,
+              mutationEpoch: true,
+              mutationOwner: true,
+              mutationOwnerId: true,
+            },
+          },
+          lease: { select: { status: true, expiresAt: true } },
+        },
+      });
+      if (
+        !intent?.secretNamespaceId ||
+        intent.dispatchAttemptId !== input.attemptId ||
+        intent.executorOwner !== input.executorOwner ||
+        !intent.executorLeaseExpiresAt ||
+        intent.executorLeaseExpiresAt <= input.now ||
+        !intent.accountIdentityHash ||
+        intent.accountIdentityAlgorithm !==
+          "provider_issuer_subject_account_v1" ||
+        intent.status !== "pending" ||
+        intent.mutationEpoch === null ||
+        intent.providerInstance.activeLeaseId !== intent.leaseId ||
+        intent.lease.status !== "finalized"
+      ) {
+        throw new Error("codex_rotating_versioned_attempt_mismatch");
+      }
+      await assertDatabaseIncarnation(
+        tx,
+        intent.databaseIncarnation,
+        intent.databaseRecoveryWitness,
+        this.options.databaseRecoveryWitness,
+      );
+      try {
+        assertProviderSecretTransitionAuthorized({
+          expectedOwner: "runtime",
+          expectedOwnerId: intent.leaseId,
+          expectedEpoch: intent.mutationEpoch,
+          actualFence: {
+            owner:
+              intent.providerInstance.mutationOwner === "setup" ||
+              intent.providerInstance.mutationOwner === "runtime" ||
+              intent.providerInstance.mutationOwner === "recovery"
+                ? intent.providerInstance.mutationOwner
+                : null,
+            ownerId: intent.providerInstance.mutationOwnerId,
+            epoch: intent.providerInstance.mutationEpoch,
+          },
+          authorizationExpiresAt:
+            intent.providerInstance.activeLeaseExpiresAt &&
+            intent.providerInstance.activeLeaseExpiresAt <
+              intent.lease.expiresAt
+              ? intent.providerInstance.activeLeaseExpiresAt
+              : intent.lease.expiresAt,
+          now: input.now,
+        });
+      } catch {
+        throw new Error("codex_rotating_versioned_confirmation_stale_epoch");
+      }
+      const updated = await tx.codexOAuthWritebackIntent.updateMany({
+        where: {
+          id: input.intentId,
+          dispatchAttemptId: input.attemptId,
+          status: "pending",
+        },
+        data: {
+          safeErrorCode: RuntimeVersionedDurableMarker.ProviderConfirmedV1,
+          providerResponseCode: input.statusCode,
+          providerConfirmedAt: input.now,
+        },
+      });
+      if (updated.count !== 1) {
+        throw new Error("codex_rotating_versioned_confirmation_conflict");
+      }
+      const confirmedNamespace = await tx.codexOAuthSecretNamespace.updateMany({
+        where: { id: intent.secretNamespaceId, status: "dispatch_authorized" },
+        data: { status: "confirmed_candidate", confirmedAt: input.now },
+      });
+      if (confirmedNamespace.count !== 1) {
+        throw new Error(
+          "codex_rotating_versioned_namespace_confirmation_conflict",
+        );
+      }
+    });
+  }
+
+  async retireAmbiguousVersionedWriteback(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly safeErrorCode: string;
+    readonly now: Date;
+  }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const locator = await tx.codexOAuthWritebackIntent.findUnique({
+        where: { id: input.intentId },
+        select: { providerInstanceRowId: true, dispatchAttemptId: true },
+      });
+      if (!locator || locator.dispatchAttemptId !== input.attemptId) return;
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "CodexOAuthProviderInstance"
+        WHERE "id" = ${locator.providerInstanceRowId} FOR UPDATE
+      `);
+      const intent = await tx.codexOAuthWritebackIntent.findUnique({
+        where: { id: input.intentId },
+        select: {
+          providerInstanceRowId: true,
+          leaseId: true,
+          dispatchAttemptId: true,
+          secretNamespaceId: true,
+          status: true,
+          mutationEpoch: true,
+          databaseIncarnation: true,
+          databaseRecoveryWitness: true,
+          executorOwner: true,
+          executorLeaseExpiresAt: true,
+        },
+      });
+      if (!intent || intent.dispatchAttemptId !== input.attemptId) return;
+      if (
+        intent.executorOwner !== input.executorOwner ||
+        !intent.executorLeaseExpiresAt ||
+        intent.executorLeaseExpiresAt <= input.now
+      ) {
+        throw new Error("codex_rotating_versioned_executor_lease_conflict");
+      }
+      await assertDatabaseIncarnation(
+        tx,
+        intent.databaseIncarnation,
+        intent.databaseRecoveryWitness,
+        this.options.databaseRecoveryWitness,
+      );
+      if (
+        intent.status === "completed" ||
+        intent.status === "remote_outcome_unknown"
+      )
+        return;
+      if (intent.mutationEpoch === null) {
+        throw new Error("codex_rotating_versioned_attempt_epoch_missing");
+      }
+      if (intent.secretNamespaceId) {
+        const retiredNamespace = await tx.codexOAuthSecretNamespace.updateMany({
+          where: {
+            id: intent.secretNamespaceId,
+            status: { in: ["dispatch_authorized", "confirmed_candidate"] },
+          },
+          data: {
+            status: "retired_ambiguous",
+            permanentlyRetired: true,
+            retiredAt: input.now,
+          },
+        });
+        if (retiredNamespace.count !== 1) {
+          throw new Error(
+            "codex_rotating_versioned_retirement_namespace_conflict",
+          );
+        }
+      }
+      const retiredIntent = await tx.codexOAuthWritebackIntent.updateMany({
+        where: { id: input.intentId, status: { not: "completed" } },
+        data: {
+          status: "remote_outcome_unknown",
+          safeErrorCode: input.safeErrorCode,
+          namespaceRetiredAt: input.now,
+        },
+      });
+      if (retiredIntent.count !== 1) {
+        throw new Error("codex_rotating_versioned_retirement_intent_conflict");
+      }
+      const recoveredProvider = await tx.codexOAuthProviderInstance.updateMany({
+        where: {
+          id: intent.providerInstanceRowId,
+          mutationEpoch: intent.mutationEpoch,
+          mutationOwner: "runtime",
+          mutationOwnerId: intent.leaseId,
+        },
+        data: {
+          state: "unknown_auth_state",
+          activeLeaseId: null,
+          activeLeaseExpiresAt: null,
+          mutationEpoch: { increment: 1 },
+          mutationOwner: "recovery",
+          mutationOwnerId: input.intentId,
+        },
+      });
+      if (recoveredProvider.count !== 1) {
+        throw new Error("codex_rotating_versioned_retirement_fence_conflict");
+      }
+      const retiredLease = await tx.codexOAuthLease.updateMany({
+        where: {
+          id: intent.leaseId,
+          status: { in: ["preleased", "finalized"] },
+        },
+        data: { status: "unknown_auth_state", expiresAt: input.now },
+      });
+      if (retiredLease.count !== 1) {
+        throw new Error("codex_rotating_versioned_retirement_lease_conflict");
+      }
+    });
+  }
+
+  async retirePreDispatchVersionedWriteback(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly safeErrorCode: string;
+    readonly now: Date;
+  }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const locator = await tx.codexOAuthWritebackIntent.findUnique({
+        where: { id: input.intentId },
+        select: { providerInstanceRowId: true, dispatchAttemptId: true },
+      });
+      if (!locator || locator.dispatchAttemptId !== input.attemptId) return;
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "CodexOAuthProviderInstance"
+        WHERE "id" = ${locator.providerInstanceRowId} FOR UPDATE
+      `);
+      const intent = await tx.codexOAuthWritebackIntent.findUnique({
+        where: { id: input.intentId },
+        select: {
+          providerInstanceRowId: true,
+          leaseId: true,
+          dispatchAttemptId: true,
+          secretNamespaceId: true,
+          status: true,
+          providerConfirmedAt: true,
+          mutationEpoch: true,
+          databaseIncarnation: true,
+          databaseRecoveryWitness: true,
+          executorOwner: true,
+          executorLeaseExpiresAt: true,
+        },
+      });
+      if (!intent || intent.dispatchAttemptId !== input.attemptId) return;
+      if (
+        intent.executorOwner !== input.executorOwner ||
+        !intent.executorLeaseExpiresAt ||
+        intent.executorLeaseExpiresAt <= input.now
+      ) {
+        throw new Error("codex_rotating_versioned_executor_lease_conflict");
+      }
+      await assertDatabaseIncarnation(
+        tx,
+        intent.databaseIncarnation,
+        intent.databaseRecoveryWitness,
+        this.options.databaseRecoveryWitness,
+      );
+      if (intent.status === "failed") return;
+      if (
+        intent.status !== "pending" ||
+        intent.providerConfirmedAt !== null ||
+        intent.mutationEpoch === null ||
+        !intent.secretNamespaceId
+      ) {
+        throw new Error(
+          "codex_rotating_versioned_predispatch_retirement_conflict",
+        );
+      }
+      const retiredNamespace = await tx.codexOAuthSecretNamespace.updateMany({
+        where: {
+          id: intent.secretNamespaceId,
+          status: "dispatch_authorized",
+        },
+        data: {
+          status: "retired_predispatch",
+          permanentlyRetired: true,
+          retiredAt: input.now,
+        },
+      });
+      if (retiredNamespace.count !== 1) {
+        throw new Error(
+          "codex_rotating_versioned_retirement_namespace_conflict",
+        );
+      }
+      const retiredIntent = await tx.codexOAuthWritebackIntent.updateMany({
+        where: {
+          id: input.intentId,
+          dispatchAttemptId: input.attemptId,
+          status: "pending",
+          providerConfirmedAt: null,
+        },
+        data: {
+          status: "failed",
+          safeErrorCode: input.safeErrorCode,
+          namespaceRetiredAt: input.now,
+          completedAt: input.now,
+        },
+      });
+      if (retiredIntent.count !== 1) {
+        throw new Error("codex_rotating_versioned_retirement_intent_conflict");
+      }
+      const releasedProvider = await tx.codexOAuthProviderInstance.updateMany({
+        where: {
+          id: intent.providerInstanceRowId,
+          mutationEpoch: intent.mutationEpoch,
+          mutationOwner: "runtime",
+          mutationOwnerId: intent.leaseId,
+        },
+        data: {
+          state: "active",
+          activeLeaseId: null,
+          activeLeaseExpiresAt: null,
+          mutationEpoch: { increment: 1 },
+        },
+      });
+      if (releasedProvider.count !== 1) {
+        throw new Error("codex_rotating_versioned_retirement_fence_conflict");
+      }
+      const clearedOwner = await tx.codexOAuthProviderInstance.updateMany({
+        where: {
+          id: intent.providerInstanceRowId,
+          mutationEpoch: intent.mutationEpoch + 1n,
+          mutationOwner: "runtime",
+          mutationOwnerId: intent.leaseId,
+        },
+        data: { mutationOwner: null, mutationOwnerId: null },
+      });
+      if (clearedOwner.count !== 1) {
+        throw new Error("codex_rotating_versioned_retirement_release_failed");
+      }
+      const retiredLease = await tx.codexOAuthLease.updateMany({
+        where: {
+          id: intent.leaseId,
+          status: "finalized",
+          mutationEpoch: intent.mutationEpoch,
+        },
+        data: { status: "failed", expiresAt: input.now },
+      });
+      if (retiredLease.count !== 1) {
+        throw new Error("codex_rotating_versioned_retirement_lease_conflict");
+      }
+    });
+  }
+
+  async activateVersionedWriteback(input: {
+    readonly intentId: string;
+    readonly attemptId: string;
+    readonly executorOwner: string;
+    readonly attestation: VersionedSecretWorkflowSourceAttestation;
+    readonly now: Date;
+  }): Promise<{ readonly generation: number }> {
+    return this.prisma.$transaction(async (tx) => {
+      const locator = await tx.codexOAuthWritebackIntent.findUniqueOrThrow({
+        where: { id: input.intentId },
+        select: { providerInstanceRowId: true },
+      });
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "CodexOAuthProviderInstance"
+        WHERE "id" = ${locator.providerInstanceRowId} FOR UPDATE
+      `);
+      const intent = await tx.codexOAuthWritebackIntent.findUniqueOrThrow({
+        where: { id: input.intentId },
+        select: {
+          id: true,
+          leaseId: true,
+          generation: true,
+          latestGenerationHash: true,
+          accountIdentityHash: true,
+          accountIdentityAlgorithm: true,
+          mutationEpoch: true,
+          dispatchAttemptId: true,
+          providerResponseCode: true,
+          providerConfirmedAt: true,
+          databaseIncarnation: true,
+          databaseRecoveryWitness: true,
+          executorOwner: true,
+          executorLeaseExpiresAt: true,
+          secretNamespace: true,
+          providerInstance: {
+            select: {
+              id: true,
+              providerInstanceId: true,
+              activeLeaseId: true,
+              activeLeaseExpiresAt: true,
+              mutationEpoch: true,
+              mutationOwner: true,
+              mutationOwnerId: true,
+            },
+          },
+          lease: { select: { status: true, expiresAt: true } },
+        },
+      });
+      const namespace = intent.secretNamespace;
+      await assertDatabaseIncarnation(
+        tx,
+        intent.databaseIncarnation,
+        intent.databaseRecoveryWitness,
+        this.options.databaseRecoveryWitness,
+      );
+      if (
+        intent.mutationEpoch === null ||
+        intent.executorOwner !== input.executorOwner ||
+        !intent.executorLeaseExpiresAt ||
+        intent.executorLeaseExpiresAt <= input.now ||
+        intent.lease.status !== "finalized"
+      ) {
+        throw new Error("codex_rotating_versioned_activation_stale_epoch");
+      }
+      try {
+        assertProviderSecretTransitionAuthorized({
+          expectedOwner: "runtime",
+          expectedOwnerId: intent.leaseId,
+          expectedEpoch: intent.mutationEpoch,
+          actualFence: {
+            owner:
+              intent.providerInstance.mutationOwner === "setup" ||
+              intent.providerInstance.mutationOwner === "runtime" ||
+              intent.providerInstance.mutationOwner === "recovery"
+                ? intent.providerInstance.mutationOwner
+                : null,
+            ownerId: intent.providerInstance.mutationOwnerId,
+            epoch: intent.providerInstance.mutationEpoch,
+          },
+          authorizationExpiresAt:
+            intent.providerInstance.activeLeaseExpiresAt &&
+            intent.providerInstance.activeLeaseExpiresAt <
+              intent.lease.expiresAt
+              ? intent.providerInstance.activeLeaseExpiresAt
+              : intent.lease.expiresAt,
+          now: input.now,
+        });
+      } catch {
+        throw new Error("codex_rotating_versioned_activation_stale_epoch");
+      }
+      if (
+        intent.dispatchAttemptId !== input.attemptId ||
+        !intent.accountIdentityHash ||
+        intent.accountIdentityAlgorithm !==
+          "provider_issuer_subject_account_v1" ||
+        !intent.providerConfirmedAt ||
+        (intent.providerResponseCode !== 201 &&
+          intent.providerResponseCode !== 204) ||
+        !namespace ||
+        namespace.status !== "confirmed_candidate" ||
+        intent.providerInstance.activeLeaseId !== intent.leaseId ||
+        intent.providerInstance.mutationEpoch !== intent.mutationEpoch ||
+        intent.providerInstance.mutationOwner !== "runtime" ||
+        intent.providerInstance.mutationOwnerId !== intent.leaseId
+      ) {
+        throw new Error("codex_rotating_versioned_activation_stale_epoch");
+      }
+      const expectedNamespace = {
+        mode: input.attestation.secretNamespace.mode,
+        scope: {
+          repositoryId: namespace.githubRepositoryId,
+          providerInstanceId: intent.providerInstance.providerInstanceId,
+        },
+        namespaceId: namespace.id,
+        name: namespace.secretName,
+        epoch: namespace.namespaceEpoch,
+      } as const;
+      assertSameVersionedProviderSecretNamespace({
+        expected: expectedNamespace,
+        actual: input.attestation.secretNamespace,
+      });
+      if (
+        input.attestation.repositoryId !== namespace.githubRepositoryId ||
+        input.attestation.sourceTrust !== "trusted_default_branch_revision"
+      ) {
+        throw new Error("codex_rotating_versioned_attestation_invalid");
+      }
+      await tx.codexOAuthSecretNamespace.updateMany({
+        where: {
+          providerInstanceRowId: locator.providerInstanceRowId,
+          status: "active",
+          id: { not: namespace.id },
+        },
+        data: {
+          status: "retired_superseded",
+          permanentlyRetired: true,
+          retiredAt: input.now,
+        },
+      });
+      await tx.codexOAuthSecretNamespace.update({
+        where: { id: namespace.id },
+        data: {
+          status: "active",
+          workflowPath: input.attestation.workflowPath,
+          workflowSourceCommitSha: input.attestation.workflowSourceCommitSha,
+          workflowSourceBlobSha: input.attestation.workflowSourceBlobSha,
+          workflowSourceSha256: input.attestation.workflowSourceSha256,
+          workflowSemanticSha256: input.attestation.workflowSemanticSha256,
+          workflowSourceTrust: input.attestation.sourceTrust,
+          attestedRepositoryId: input.attestation.repositoryId,
+          activatedAt: input.now,
+        },
+      });
+      await tx.codexOAuthProviderInstance.update({
+        where: { id: locator.providerInstanceRowId },
+        data: {
+          activeSecretNamespaceId: namespace.id,
+          activeSecretNamespaceEpoch: namespace.namespaceEpoch,
+          activeSecretNamespaceName: namespace.secretName,
+          latestGeneration: intent.generation,
+          latestGenerationHash: intent.latestGenerationHash,
+          activeAccountIdentityHash: intent.accountIdentityHash,
+          state: "active",
+          activeLeaseId: null,
+          activeLeaseExpiresAt: null,
+          mutationEpoch: { increment: 1 },
+        },
+      });
+      const released = await tx.codexOAuthProviderInstance.updateMany({
+        where: {
+          id: locator.providerInstanceRowId,
+          mutationOwner: "runtime",
+          mutationOwnerId: intent.leaseId,
+          mutationEpoch: intent.mutationEpoch + 1n,
+        },
+        data: { mutationOwner: null, mutationOwnerId: null },
+      });
+      if (released.count !== 1) {
+        throw new Error("codex_rotating_versioned_activation_release_failed");
+      }
+      const completedLease = await tx.codexOAuthLease.updateMany({
+        where: {
+          id: intent.leaseId,
+          status: "finalized",
+          mutationEpoch: intent.mutationEpoch,
+        },
+        data: {
+          status: "completed",
+          completedAt: input.now,
+          secretNamespaceId: namespace.id,
+          secretNamespaceEpoch: namespace.namespaceEpoch,
+        },
+      });
+      if (completedLease.count !== 1) {
+        throw new Error("codex_rotating_versioned_activation_stale_epoch");
+      }
+      await tx.codexOAuthWritebackIntent.update({
+        where: { id: intent.id },
+        data: { status: "completed", completedAt: input.now },
+      });
+      return { generation: intent.generation };
     });
   }
 
@@ -836,7 +1825,7 @@ export class PrismaCodexRotatingOAuthRepository
     if (context.status !== "ready") return context;
     return {
       status: "ready" as const,
-      writeTarget: toSecretWriteTarget(context.repository),
+      writeTarget: toSecretWriteTarget(context.repository, context.secretName),
     };
   }
 
@@ -916,6 +1905,22 @@ export class PrismaCodexRotatingOAuthRepository
         githubRunId: true,
         githubRunAttempt: true,
         pullRequestNumber: true,
+        secretNamespaceId: true,
+        secretNamespaceEpoch: true,
+        providerInstance: {
+          select: {
+            activeSecretNamespaceId: true,
+            activeSecretNamespaceEpoch: true,
+            activeSecretNamespaceName: true,
+            activeSecretNamespace: {
+              select: {
+                secretName: true,
+                status: true,
+                databaseRecoveryWitness: true,
+              },
+            },
+          },
+        },
       },
     });
     if (!lease) {
@@ -942,317 +1947,28 @@ export class PrismaCodexRotatingOAuthRepository
     if (repository.workspaceId !== lease.workspaceId) {
       return { status: "lease_not_active" as const };
     }
+    const completedNamespace = requireActiveNamespaceBinding(
+      lease.providerInstance,
+    );
+    assertAutomaticRuntimeDatabaseRecoveryWitness(
+      lease.providerInstance.activeSecretNamespace?.databaseRecoveryWitness,
+      this.options.databaseRecoveryWitness,
+    );
+    if (
+      completedNamespace.id !== null &&
+      (lease.secretNamespaceId !== completedNamespace.id ||
+        lease.secretNamespaceEpoch !== completedNamespace.epoch)
+    ) {
+      return { status: "lease_not_active" as const };
+    }
     return {
       status: "ready" as const,
       repository,
+      secretName: requireActiveSecretNamespace(lease.providerInstance),
       sourceRunId: lease.githubRunId,
       sourceRunAttempt: lease.githubRunAttempt,
       pullRequestNumber: lease.pullRequestNumber,
     };
-  }
-
-  async markEncryptedWritebackDispatched(input: {
-    readonly intentId: string;
-    readonly now: Date;
-  }): Promise<boolean> {
-    return this.prisma.$transaction(async (tx) => {
-      await setBoundedProviderRowWaits(tx);
-      const locator = await tx.codexOAuthWritebackIntent.findUnique({
-        where: { id: input.intentId },
-        select: { providerInstanceRowId: true },
-      });
-      if (!locator) return false;
-      await tx.$queryRaw(Prisma.sql`
-        SELECT "id" FROM "CodexOAuthProviderInstance"
-        WHERE "id" = ${locator.providerInstanceRowId}
-        FOR UPDATE
-      `);
-      const intent = await tx.codexOAuthWritebackIntent.findUnique({
-        where: { id: input.intentId },
-        select: {
-          id: true,
-          leaseId: true,
-          status: true,
-          safeErrorCode: true,
-          mutationEpoch: true,
-          providerInstance: {
-            select: {
-              activeLeaseId: true,
-              mutationEpoch: true,
-              mutationOwner: true,
-              mutationOwnerId: true,
-            },
-          },
-        },
-      });
-      if (
-        !intent ||
-        intent.status !== "pending" ||
-        intent.safeErrorCode !== codexRotatingWritebackClaimMarker ||
-        intent.mutationEpoch === null ||
-        intent.providerInstance.activeLeaseId !== intent.leaseId ||
-        intent.providerInstance.mutationEpoch !== intent.mutationEpoch ||
-        intent.providerInstance.mutationOwner !== "runtime" ||
-        intent.providerInstance.mutationOwnerId !== intent.leaseId
-      ) {
-        return false;
-      }
-      const updated = await tx.codexOAuthWritebackIntent.updateMany({
-        where: {
-          id: intent.id,
-          status: "pending",
-          safeErrorCode: codexRotatingWritebackClaimMarker,
-          mutationEpoch: intent.mutationEpoch,
-        },
-        data: {
-          status: "remote_outcome_unknown",
-          safeErrorCode: codexRotatingWritebackDispatchedMarker,
-        },
-      });
-      return updated.count === 1;
-    });
-  }
-
-  async confirmEncryptedWriteback(input: {
-    readonly intentId: string;
-    readonly now: Date;
-  }) {
-    return this.prisma.$transaction(async (tx) => {
-      const intent = await tx.codexOAuthWritebackIntent.findUnique({
-        where: { id: input.intentId },
-        select: {
-          id: true,
-          leaseId: true,
-          providerInstanceId: true,
-          generation: true,
-          latestGenerationHash: true,
-          status: true,
-          mutationEpoch: true,
-          providerInstance: {
-            select: {
-              id: true,
-              activeLeaseId: true,
-              mutationEpoch: true,
-              mutationOwner: true,
-              mutationOwnerId: true,
-            },
-          },
-        },
-      });
-      if (!intent) {
-        throw new Error("codex_rotating_writeback_intent_not_found");
-      }
-      await setBoundedProviderRowWaits(tx);
-      await tx.$queryRaw(Prisma.sql`
-        SELECT "id" FROM "CodexOAuthProviderInstance"
-        WHERE "id" = ${intent.providerInstance.id}
-        FOR UPDATE
-      `);
-      const current = await tx.codexOAuthProviderInstance.findUniqueOrThrow({
-        where: { id: intent.providerInstance.id },
-        select: {
-          activeLeaseId: true,
-          mutationEpoch: true,
-          mutationOwner: true,
-          mutationOwnerId: true,
-        },
-      });
-      const currentIntent =
-        await tx.codexOAuthWritebackIntent.findUniqueOrThrow({
-          where: { id: intent.id },
-          select: { status: true, safeErrorCode: true },
-        });
-      const confirmationDecision =
-        decideCodexRotatingWritebackConfirmation(currentIntent);
-      if (confirmationDecision === "idempotent") {
-        return { status: "idempotent" as const, generation: intent.generation };
-      }
-      if (
-        confirmationDecision !== "confirm" ||
-        intent.mutationEpoch === null ||
-        current.activeLeaseId !== intent.leaseId ||
-        current.mutationEpoch !== intent.mutationEpoch ||
-        current.mutationOwner !== "runtime" ||
-        current.mutationOwnerId !== intent.leaseId
-      ) {
-        await tx.codexOAuthWritebackIntent.updateMany({
-          where: {
-            id: intent.id,
-            status: { in: ["pending", "remote_outcome_unknown"] },
-          },
-          data: {
-            status: "remote_outcome_unknown",
-            safeErrorCode: "post_put_stale_mutation_epoch",
-          },
-        });
-        await tx.codexOAuthProviderInstance.update({
-          where: { id: intent.providerInstance.id },
-          data: {
-            state: "unknown_auth_state",
-            mutationEpoch: current.mutationEpoch + 1n,
-            mutationOwner: "recovery",
-            mutationOwnerId: intent.id,
-          },
-        });
-        return {
-          status: "recovery_required" as const,
-          reason:
-            current.mutationEpoch !== intent.mutationEpoch
-              ? ("stale_epoch" as const)
-              : ("owner_mismatch" as const),
-        };
-      }
-      await tx.codexOAuthLease.update({
-        where: { id: intent.leaseId },
-        data: {
-          status: "completed",
-          safeErrorCode: null,
-          completedAt: input.now,
-        },
-      });
-      await tx.codexOAuthWritebackIntent.update({
-        where: { id: intent.id },
-        data: {
-          status: "completed",
-          completedAt: input.now,
-        },
-      });
-      await tx.codexOAuthProviderInstance.update({
-        where: { id: intent.providerInstance.id },
-        data: {
-          state: "active",
-          latestGeneration: intent.generation,
-          latestGenerationHash: intent.latestGenerationHash,
-          activeLeaseId: null,
-          activeLeaseExpiresAt: null,
-          mutationOwner: null,
-          mutationOwnerId: null,
-        },
-      });
-      return { status: "confirmed" as const, generation: intent.generation };
-    });
-  }
-
-  async markEncryptedWritebackFailed(input: {
-    readonly intentId: string;
-    readonly safeErrorCode: string;
-    readonly now: Date;
-  }): Promise<void> {
-    await this.markEncryptedWritebackOutcome(input, "failed");
-  }
-
-  async markEncryptedWritebackRemoteOutcomeUnknown(input: {
-    readonly intentId: string;
-    readonly safeErrorCode: string;
-    readonly now: Date;
-  }): Promise<void> {
-    await this.markEncryptedWritebackOutcome(input, "remote_outcome_unknown");
-  }
-
-  private async markEncryptedWritebackOutcome(
-    input: {
-      readonly intentId: string;
-      readonly safeErrorCode: string;
-      readonly now: Date;
-    },
-    status: "failed" | "remote_outcome_unknown",
-  ): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
-      await setBoundedProviderRowWaits(tx);
-      const locator = await tx.codexOAuthWritebackIntent.findUnique({
-        where: { id: input.intentId },
-        select: { providerInstanceRowId: true },
-      });
-      if (!locator) return;
-
-      await tx.$queryRaw(Prisma.sql`
-        SELECT "id" FROM "CodexOAuthProviderInstance"
-        WHERE "id" = ${locator.providerInstanceRowId}
-        FOR UPDATE
-      `);
-      const intent = await tx.codexOAuthWritebackIntent.findUnique({
-        where: { id: input.intentId },
-        select: {
-          id: true,
-          leaseId: true,
-          status: true,
-          safeErrorCode: true,
-          mutationEpoch: true,
-          lease: { select: { status: true, mutationEpoch: true } },
-          providerInstance: {
-            select: {
-              id: true,
-              activeLeaseId: true,
-              mutationEpoch: true,
-              mutationOwner: true,
-              mutationOwnerId: true,
-            },
-          },
-        },
-      });
-      if (
-        !intent ||
-        !mayFailCodexRotatingWritebackClaim(intent) ||
-        intent.mutationEpoch === null ||
-        intent.lease.status !== "finalized" ||
-        intent.lease.mutationEpoch !== intent.mutationEpoch ||
-        intent.providerInstance.activeLeaseId !== intent.leaseId ||
-        intent.providerInstance.mutationEpoch !== intent.mutationEpoch ||
-        intent.providerInstance.mutationOwner !== "runtime" ||
-        intent.providerInstance.mutationOwnerId !== intent.leaseId
-      )
-        return;
-      const failed = await tx.codexOAuthWritebackIntent.updateMany({
-        where: {
-          id: intent.id,
-          mutationEpoch: intent.mutationEpoch,
-          OR: [
-            {
-              status: "pending",
-              safeErrorCode: codexRotatingWritebackClaimMarker,
-            },
-            {
-              status: "remote_outcome_unknown",
-              safeErrorCode: codexRotatingWritebackDispatchedMarker,
-            },
-          ],
-        },
-        data: {
-          status,
-          safeErrorCode: sanitizeCodexRotatingSafeErrorCode(
-            input.safeErrorCode,
-          ),
-        },
-      });
-      if (failed.count !== 1) return;
-      await tx.codexOAuthLease.updateMany({
-        where: {
-          id: intent.leaseId,
-          status: "finalized",
-          mutationEpoch: intent.mutationEpoch,
-        },
-        data: {
-          status: "unknown_auth_state",
-        },
-      });
-      await tx.codexOAuthProviderInstance.updateMany({
-        where: {
-          id: intent.providerInstance.id,
-          activeLeaseId: intent.leaseId,
-          mutationEpoch: intent.mutationEpoch,
-          mutationOwner: "runtime",
-          mutationOwnerId: intent.leaseId,
-        },
-        data: {
-          state: "unknown_auth_state",
-          mutationEpoch: { increment: 1 },
-          mutationOwner: "recovery",
-          mutationOwnerId: intent.id,
-          activeLeaseId: null,
-          activeLeaseExpiresAt: null,
-        },
-      });
-    });
   }
 }
 
@@ -1300,6 +2016,7 @@ function toActionRepositoryContext(
 
 function toSecretWriteTarget(
   repository: GitHubCodexRotatingRepositoryContextRow,
+  secretName: string,
 ): CodexRotatingSecretWriteTarget {
   return {
     expectedProviderInstanceId: `codex-rotating:${repository.githubRepositoryId.toString()}`,
@@ -1309,7 +2026,58 @@ function toSecretWriteTarget(
     repositoryFullName: repository.fullName,
     owner: repository.owner,
     repo: repository.name,
-    secretName: codexRotatingSecretName,
+    secretName,
+  };
+}
+
+function requireActiveSecretNamespace(provider: {
+  readonly activeSecretNamespaceId: string | null;
+  readonly activeSecretNamespaceName: string | null;
+  readonly activeSecretNamespace: {
+    readonly secretName: string;
+    readonly status: string;
+  } | null;
+}): string {
+  let validName = false;
+  try {
+    if (provider.activeSecretNamespace) {
+      parseVersionedProviderSecretName(
+        provider.activeSecretNamespace.secretName,
+      );
+      validName = true;
+    }
+  } catch {
+    validName = false;
+  }
+  if (
+    !provider.activeSecretNamespaceId ||
+    provider.activeSecretNamespaceName !==
+      provider.activeSecretNamespace?.secretName ||
+    provider.activeSecretNamespace?.status !== "active" ||
+    !validName
+  ) {
+    throw new Error("codex_rotating_active_secret_namespace_required");
+  }
+  return provider.activeSecretNamespace.secretName;
+}
+
+function requireActiveNamespaceBinding(provider: {
+  readonly activeSecretNamespaceId: string | null;
+  readonly activeSecretNamespaceEpoch: bigint | null;
+  readonly activeSecretNamespaceName: string | null;
+  readonly activeSecretNamespace: {
+    readonly secretName: string;
+    readonly status: string;
+  } | null;
+}): { readonly id: string | null; readonly epoch: bigint | null } {
+  requireActiveSecretNamespace(provider);
+  if (!provider.activeSecretNamespaceId) return { id: null, epoch: null };
+  if (provider.activeSecretNamespaceEpoch === null) {
+    throw new Error("codex_rotating_active_secret_namespace_required");
+  }
+  return {
+    id: provider.activeSecretNamespaceId,
+    epoch: provider.activeSecretNamespaceEpoch,
   };
 }
 
@@ -1332,10 +2100,69 @@ async function setBoundedProviderRowWaits(
   await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '5s'");
 }
 
-function sanitizeCodexRotatingSafeErrorCode(value: string): string {
-  const sanitized = value
-    .trim()
-    .replace(/[^A-Za-z0-9_.:-]/g, "_")
-    .slice(0, 120);
-  return sanitized || "runtime_write_failed";
+async function readDatabaseIncarnation(
+  tx: Prisma.TransactionClient,
+): Promise<string> {
+  const rows = await tx.$queryRaw<Array<{ databaseIncarnation: string }>>(
+    Prisma.sql`SELECT "system_identifier"::text AS "databaseIncarnation" FROM pg_control_system()`,
+  );
+  const value = rows[0]?.databaseIncarnation;
+  if (!value || !/^[1-9][0-9]+$/.test(value)) {
+    throw new Error("codex_rotating_database_incarnation_unproven");
+  }
+  return value;
+}
+
+async function assertDatabaseIncarnation(
+  tx: Prisma.TransactionClient,
+  expected: string | null,
+  expectedRecoveryWitness: string | null,
+  currentRecoveryWitness: string | undefined,
+): Promise<void> {
+  let currentWitnessFingerprint: string;
+  try {
+    currentWitnessFingerprint = fingerprintDatabaseRecoveryWitness(
+      currentRecoveryWitness ?? "",
+    );
+  } catch {
+    throw new Error("codex_rotating_database_recovery_witness_unproven");
+  }
+  if (
+    !expected ||
+    !expectedRecoveryWitness ||
+    (await readDatabaseIncarnation(tx)) !== expected
+  ) {
+    throw new Error("codex_rotating_database_incarnation_mismatch");
+  }
+  assertExternalRecoveryWitnessAdmission({
+    transition: "automatic_runtime",
+    relation: classifyExternalRecoveryWitnessRelation({
+      persistedFingerprint: expectedRecoveryWitness,
+      currentFingerprint: currentWitnessFingerprint,
+    }),
+  });
+}
+
+function assertAutomaticRuntimeDatabaseRecoveryWitness(
+  persistedFingerprint: string | null | undefined,
+  currentRecoveryWitness: string | undefined,
+): void {
+  if (!persistedFingerprint) {
+    throw new Error("codex_rotating_database_recovery_witness_unproven");
+  }
+  let currentFingerprint: string;
+  try {
+    currentFingerprint = fingerprintDatabaseRecoveryWitness(
+      currentRecoveryWitness ?? "",
+    );
+  } catch {
+    throw new Error("codex_rotating_database_recovery_witness_unproven");
+  }
+  assertExternalRecoveryWitnessAdmission({
+    transition: "automatic_runtime",
+    relation: classifyExternalRecoveryWitnessRelation({
+      persistedFingerprint,
+      currentFingerprint,
+    }),
+  });
 }

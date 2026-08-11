@@ -20,6 +20,7 @@ CODEX_AUTH_FILE="${REVIEW_ROUTER_CODEX_AUTH_FILE:-}"
 CODEX_AUTH_FILE_EXPLICIT="${REVIEW_ROUTER_CODEX_AUTH_FILE:+1}"
 CODEX_CONFIG_FILE="${REVIEW_ROUTER_CODEX_CONFIG_FILE:-$CODEX_BASE_HOME/config.toml}"
 CODEX_AUTH_STALE_DAYS="${REVIEW_ROUTER_CODEX_AUTH_STALE_DAYS:-30}"
+ENABLE_LEGACY_CODEX_AUTH_SEED="${REVIEW_ROUTER_ENABLE_LEGACY_CODEX_AUTH_SEED:-0}"
 
 if [ -t 1 ]; then
   GREEN='\033[0;32m'
@@ -547,6 +548,7 @@ print_completion_summary() {
 
 main() {
   parse_args "$@"
+  is_true "$ENABLE_LEGACY_CODEX_AUTH_SEED" || fatal "Legacy fixed-name CODEX_AUTH_JSON seeding is disabled. Use the rotating repository setup flow, or explicitly set REVIEW_ROUTER_ENABLE_LEGACY_CODEX_AUTH_SEED=1 for a documented legacy-only recovery."
   log "${PRODUCT_NAME} Codex OAuth secret seeding"
   require_cmd gh
   normalize_secret_scope
