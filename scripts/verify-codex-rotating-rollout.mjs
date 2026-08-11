@@ -1118,8 +1118,7 @@ function verifyDatabaseAuthorization(authorization, need) {
             "setOption",
           ]) &&
           entry.member === bootstrapRole &&
-          typeof entry.grantor === "string" &&
-          entry.grantor.length > 0 &&
+          entry.grantor === bootstrapRole &&
           entry.adminOption === true &&
           entry.inheritOption === false &&
           entry.setOption === false,

@@ -58,6 +58,7 @@ describe("canonical exclusive release migration caller", () => {
       bootstrapMemberships: names.map((granted) => ({
         granted,
         member: "reviewrouter_role_bootstrap",
+        grantor: "reviewrouter_role_bootstrap",
         adminOption: true,
         inheritOption: false,
         setOption: false,
@@ -93,6 +94,15 @@ describe("canonical exclusive release migration caller", () => {
           observation.setRoleMatrix[1],
           ...observation.setRoleMatrix.slice(1),
         ],
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
+        bootstrapMemberships: observation.bootstrapMemberships.map(
+          (entry, index) =>
+            index === 0 ? { ...entry, grantor: "foreign_role_admin" } : entry,
+        ),
       }),
     ).toThrow("release_migration_role_observation_failed");
     expect(() =>
@@ -141,12 +151,15 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "refusing to take over public objects owned by unexpected role",
     );
+    expect(provisioning).toContain("refusing foreign role membership grant");
     expect(provisioning).toContain(
-      "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
+      "REVOKE %I FROM %I GRANTED BY reviewrouter_role_bootstrap",
     );
-    expect(provisioning).not.toContain(
-      "TO reviewrouter_role_bootstrap WITH ADMIN TRUE",
-    );
+    expect(
+      provisioning.match(
+        /TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY reviewrouter_role_bootstrap/g,
+      ),
+    ).toHaveLength(5);
     expect(provisioning).not.toContain("ALTER DATABASE");
     expect(provisioning).toContain(
       "GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration",
@@ -352,6 +365,7 @@ describe("canonical exclusive release migration caller", () => {
           bootstrapMemberships: roleNames.map((granted) => ({
             granted,
             member: "reviewrouter_role_bootstrap",
+            grantor: "reviewrouter_role_bootstrap",
             adminOption: true,
             inheritOption: false,
             setOption: false,

@@ -108,6 +108,21 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(privilegeProof).not.toContain("sequence.oid");
   });
 
+  it("rehearses fail-closed grantor topology and an idempotent second bootstrap", () => {
+    expect(source).toContain("adversarial_foreign_grantor_role_provisioning");
+    expect(source).toContain("refusing foreign role membership grant");
+    expect(source).toContain("idempotent_second_role_provisioning");
+    expect(source).toContain(
+      "second role bootstrap changed the canonical membership topology",
+    );
+    expect(source).toContain(
+      "adversarial grantor retained role membership revoke authority",
+    );
+    expect(source).toContain(
+      "AND grantor.rolname = 'reviewrouter_role_bootstrap'",
+    );
+  });
+
   it("asserts the two locking guards' exact and distinct execution contracts", () => {
     const privilegeProof =
       /function proveDatabasePrivileges\(url\) \{([\s\S]+?)\n\}/u.exec(

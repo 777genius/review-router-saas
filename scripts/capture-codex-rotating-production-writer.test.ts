@@ -165,6 +165,12 @@ describe("production-writer rollout observation capture", () => {
     expect(codexRotatingProductionWriterBaseObservationSql).toContain(
       "FROM pg_auth_members m",
     );
+    expect(codexRotatingProductionWriterBaseObservationSql).toContain(
+      "'grantor', grantor.rolname",
+    );
+    expect(codexRotatingProductionWriterBaseObservationSql).toContain(
+      "JOIN pg_roles grantor ON grantor.oid = m.grantor",
+    );
   });
 
   it("guards sequence privilege checks from planner predicate reordering", () => {

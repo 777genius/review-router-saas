@@ -106,6 +106,7 @@ export function canonicalRoleTopologyObservationSql() {
     'bootstrapMemberships', (SELECT json_agg(json_build_object(
       'granted', granted.rolname,
       'member', member.rolname,
+      'grantor', grantor.rolname,
       'adminOption', membership.admin_option,
       'inheritOption', membership.inherit_option,
       'setOption', membership.set_option
@@ -113,6 +114,7 @@ export function canonicalRoleTopologyObservationSql() {
     FROM pg_auth_members membership
     JOIN pg_roles granted ON granted.oid = membership.roleid
     JOIN pg_roles member ON member.oid = membership.member
+    JOIN pg_roles grantor ON grantor.oid = membership.grantor
     WHERE granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
        OR member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
        OR granted.rolname = '${canonicalBootstrapRoleName}'
@@ -212,6 +214,7 @@ export function assertCanonicalRoleTopology(verifiedRoles) {
       (entry) =>
         !canonicalRoleNames.includes(entry.granted) ||
         entry.member !== canonicalBootstrapRoleName ||
+        entry.grantor !== canonicalBootstrapRoleName ||
         entry.adminOption !== true ||
         entry.inheritOption !== false ||
         entry.setOption !== false,
@@ -345,7 +348,11 @@ BEGIN
         AND member.rolname = 'reviewrouter_role_bootstrap'
       )
   LOOP
-    EXECUTE format('REVOKE %I FROM %I', membership.granted_name, membership.member_name);
+    EXECUTE format(
+      'REVOKE %I FROM %I GRANTED BY reviewrouter_role_bootstrap',
+      membership.granted_name,
+      membership.member_name
+    );
   END LOOP;
 END
 $membership$;
@@ -354,6 +361,35 @@ $membership$;
     .join("\n");
   return `\\set ON_ERROR_STOP on
 BEGIN;
+DO $grantor_topology$
+DECLARE foreign_grant record;
+BEGIN
+  SELECT granted.rolname AS granted_name,
+         member.rolname AS member_name,
+         grantor.rolname AS grantor_name
+  INTO foreign_grant
+  FROM pg_auth_members membership
+  JOIN pg_roles granted ON granted.oid = membership.roleid
+  JOIN pg_roles member ON member.oid = membership.member
+  JOIN pg_roles grantor ON grantor.oid = membership.grantor
+  WHERE (
+      granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+      OR member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+      OR granted.rolname = '${canonicalBootstrapRoleName}'
+      OR member.rolname = '${canonicalBootstrapRoleName}'
+    )
+    AND grantor.rolname <> '${canonicalBootstrapRoleName}'
+  ORDER BY granted.rolname, member.rolname, grantor.rolname
+  LIMIT 1;
+  IF FOUND THEN
+    RAISE EXCEPTION
+      'refusing foreign role membership grant: role %, member %, grantor %',
+      foreign_grant.granted_name,
+      foreign_grant.member_name,
+      foreign_grant.grantor_name;
+  END IF;
+END
+$grantor_topology$;
 ${createAndConverge}
 SELECT 'REVOKE CREATE ON SCHEMA public FROM PUBLIC'
 WHERE EXISTS (
@@ -454,7 +490,12 @@ $transfer_public_ownership$;
 SELECT 'ALTER SCHEMA public OWNER TO reviewrouter_release_migration'
 WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'public') <> 'reviewrouter_release_migration'
 \\gexec
-REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE;
+${canonicalRoleNames
+  .map(
+    (role) =>
+      `GRANT ${role} TO ${canonicalBootstrapRoleName} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY ${canonicalBootstrapRoleName};`,
+  )
+  .join("\n")}
 CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap;
 DO $bootstrap_schema$
 BEGIN

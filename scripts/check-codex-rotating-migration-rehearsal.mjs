@@ -1629,6 +1629,7 @@ function proveDatabasePrivileges(url) {
           count(*) FILTER (
             WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
               AND member.rolname = 'reviewrouter_role_bootstrap'
+              AND grantor.rolname = 'reviewrouter_role_bootstrap'
               AND membership.admin_option
               AND NOT membership.inherit_option
               AND NOT membership.set_option
@@ -1637,6 +1638,7 @@ function proveDatabasePrivileges(url) {
             WHERE NOT (
               granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
               AND member.rolname = 'reviewrouter_role_bootstrap'
+              AND grantor.rolname = 'reviewrouter_role_bootstrap'
               AND membership.admin_option
               AND NOT membership.inherit_option
               AND NOT membership.set_option
@@ -1646,6 +1648,7 @@ function proveDatabasePrivileges(url) {
         FROM pg_auth_members membership
         JOIN pg_roles granted ON granted.oid = membership.roleid
         JOIN pg_roles member ON member.oid = membership.member
+        JOIN pg_roles grantor ON grantor.oid = membership.grantor
         WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
            OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
            OR granted.rolname = 'reviewrouter_role_bootstrap'
@@ -1751,38 +1754,118 @@ function prepareCanonicalReleaseRoles(url) {
      CREATE FUNCTION public.rr_legacy_bootstrap_owned_fn() RETURNS integer
        LANGUAGE sql IMMUTABLE AS 'SELECT 1';`,
   ]);
+  const canonicalProvisioningSql = roleProvisioningSql({
+    releasePassword: passwords.get("reviewrouter_release_migration"),
+    roles: [
+      {
+        role: "api",
+        username: "reviewrouter_api",
+        password: passwords.get("reviewrouter_api"),
+      },
+      {
+        role: "web",
+        username: "reviewrouter_web",
+        password: passwords.get("reviewrouter_web"),
+      },
+      {
+        role: "worker",
+        username: "reviewrouter_worker",
+        password: passwords.get("reviewrouter_worker"),
+      },
+      {
+        role: "effect-authority",
+        username: "reviewrouter_codex_effect_authority",
+        password: passwords.get("reviewrouter_codex_effect_authority"),
+      },
+    ],
+  });
   runRehearsalReleaseSubprocess(
     "initial_role_provisioning",
     "psql",
     [bootstrap.toString(), "--no-psqlrc", "--quiet"],
     {
       env: { ...environment, DATABASE_URL: bootstrap.toString() },
-      input: roleProvisioningSql({
-        releasePassword: passwords.get("reviewrouter_release_migration"),
-        roles: [
-          {
-            role: "api",
-            username: "reviewrouter_api",
-            password: passwords.get("reviewrouter_api"),
-          },
-          {
-            role: "web",
-            username: "reviewrouter_web",
-            password: passwords.get("reviewrouter_web"),
-          },
-          {
-            role: "worker",
-            username: "reviewrouter_worker",
-            password: passwords.get("reviewrouter_worker"),
-          },
-          {
-            role: "effect-authority",
-            username: "reviewrouter_codex_effect_authority",
-            password: passwords.get("reviewrouter_codex_effect_authority"),
-          },
-        ],
-      }),
+      input: canonicalProvisioningSql,
     },
+  );
+  const observeMembershipTopology = () =>
+    psql(bootstrap, [
+      "-Atc",
+      `SELECT coalesce(jsonb_agg(jsonb_build_object(
+        'role', granted.rolname,
+        'member', member.rolname,
+        'grantor', grantor.rolname,
+        'adminOption', membership.admin_option,
+        'inheritOption', membership.inherit_option,
+        'setOption', membership.set_option
+      ) ORDER BY granted.rolname, member.rolname, grantor.rolname), '[]'::jsonb)::text
+      FROM pg_auth_members membership
+      JOIN pg_roles granted ON granted.oid = membership.roleid
+      JOIN pg_roles member ON member.oid = membership.member
+      JOIN pg_roles grantor ON grantor.oid = membership.grantor
+      WHERE granted.rolname IN (${canonicalRoleLiterals})
+         OR member.rolname IN (${canonicalRoleLiterals})
+         OR granted.rolname = 'reviewrouter_role_bootstrap'
+         OR member.rolname = 'reviewrouter_role_bootstrap'`,
+    ]).stdout.trim();
+  const firstBootstrapTopology = observeMembershipTopology();
+  const foreignGrantor = "reviewrouter_rehearsal_foreign_grantor";
+  psql(url, [
+    "-c",
+    `CREATE ROLE ${foreignGrantor} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+     GRANT reviewrouter_api TO ${foreignGrantor} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+     SET ROLE ${foreignGrantor};
+     GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY ${foreignGrantor};
+     RESET ROLE;`,
+  ]);
+  let rejectedForeignGrantor = false;
+  try {
+    runRehearsalReleaseSubprocess(
+      "adversarial_foreign_grantor_role_provisioning",
+      "psql",
+      [bootstrap.toString(), "--no-psqlrc", "--quiet"],
+      {
+        env: { ...environment, DATABASE_URL: bootstrap.toString() },
+        input: canonicalProvisioningSql,
+      },
+    );
+  } catch (error) {
+    rejectedForeignGrantor = String(error).includes(
+      "refusing foreign role membership grant",
+    );
+  } finally {
+    psql(url, [
+      "-c",
+      `SET ROLE ${foreignGrantor};
+       REVOKE reviewrouter_api FROM reviewrouter_role_bootstrap GRANTED BY ${foreignGrantor};
+       RESET ROLE;
+       REVOKE reviewrouter_api FROM ${foreignGrantor};
+       DROP ROLE ${foreignGrantor};`,
+    ]);
+  }
+  assert(
+    rejectedForeignGrantor,
+    "role bootstrap did not reject an adversarial foreign membership grantor",
+  );
+  runRehearsalReleaseSubprocess(
+    "idempotent_second_role_provisioning",
+    "psql",
+    [bootstrap.toString(), "--no-psqlrc", "--quiet"],
+    {
+      env: { ...environment, DATABASE_URL: bootstrap.toString() },
+      input: canonicalProvisioningSql,
+    },
+  );
+  assert(
+    observeMembershipTopology() === firstBootstrapTopology,
+    "second role bootstrap changed the canonical membership topology",
+  );
+  assert(
+    psql(url, [
+      "-Atc",
+      `SELECT count(*) FROM pg_roles WHERE rolname = ${quoteLiteral(foreignGrantor)}`,
+    ]).stdout.trim() === "0",
+    "adversarial grantor retained role membership revoke authority",
   );
   psql(release, [
     "-c",
