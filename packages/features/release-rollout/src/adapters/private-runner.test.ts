@@ -14,6 +14,7 @@ import {
 } from "./render-private-runner";
 import { RenderProviderFreezeAdapter } from "./render-provider-freeze";
 import { RenderTargetServicesAdapter } from "./render-target-services";
+import { RenderBackupIdentityAdapter } from "./render-backup-identity";
 
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {
@@ -280,6 +281,48 @@ describe("Render target staging adapter", () => {
   });
 });
 
+describe("Render backup identity adapter", () => {
+  const observed = {
+    id: "backup-source-1",
+    databaseId: "dpg-source-pg16",
+    status: "available",
+    createdAt: "2026-08-11T00:00:00.000Z",
+    pitr: { identity: "pitr-source-lsn-1" },
+  };
+  it("captures an authenticated source backup and PITR identity", async () => {
+    await expect(
+      new RenderBackupIdentityAdapter(
+        vi.fn().mockResolvedValue(json(observed)),
+      ).capture({
+        apiKey: "secret",
+        sourceDatabaseId: observed.databaseId,
+        expectedBackupId: observed.id,
+        expectedPitrIdentity: observed.pitr.identity,
+      }),
+    ).resolves.toEqual({
+      backupId: observed.id,
+      pitrIdentity: observed.pitr.identity,
+      capturedAt: observed.createdAt,
+    });
+  });
+  it.each([
+    ["wrong database", { ...observed, databaseId: "dpg-target-pg17" }],
+    ["unavailable", { ...observed, status: "creating" }],
+    ["drift", { ...observed, extra: true }],
+  ])("fails closed on %s", async (_name, response) => {
+    await expect(
+      new RenderBackupIdentityAdapter(
+        vi.fn().mockResolvedValue(json(response)),
+      ).capture({
+        apiKey: "secret",
+        sourceDatabaseId: observed.databaseId,
+        expectedBackupId: observed.id,
+        expectedPitrIdentity: observed.pitr.identity,
+      }),
+    ).rejects.toThrow("render_backup_identity_response_invalid");
+  });
+});
+
 describe("GitHub JIT bootstrap", () => {
   it("removes every bootstrap credential from a real workflow subprocess", async () => {
     const directory = mkdtempSync(join(tmpdir(), "rr-runner-proof-"));
@@ -350,6 +393,8 @@ describe("GitHub JIT bootstrap", () => {
       id: 123,
       run_attempt: 2,
       head_sha: context.commitSha,
+      head_branch: "main",
+      event: "workflow_dispatch",
       actor: { login: context.actor },
       path: ".github/workflows/release.yml",
     };
@@ -370,6 +415,12 @@ describe("GitHub JIT bootstrap", () => {
       .mockResolvedValue(json({ ...run, head_sha: "b".repeat(40) }));
     await expect(
       requestJitConfiguration(context, "token", wrongSha),
+    ).rejects.toThrow("github_jit_run_identity_mismatch");
+    const wrongBranch = vi
+      .fn()
+      .mockResolvedValue(json({ ...run, head_branch: "feature" }));
+    await expect(
+      requestJitConfiguration(context, "token", wrongBranch),
     ).rejects.toThrow("github_jit_run_identity_mismatch");
     const reused = vi
       .fn()

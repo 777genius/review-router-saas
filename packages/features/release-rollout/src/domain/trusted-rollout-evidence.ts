@@ -37,6 +37,7 @@ export interface CleanupEvidence {
   readonly renderJobTerminal: true;
   readonly workspaceRemoved: true;
   readonly bootstrapCredentialsAbsent: true;
+  readonly renderJobId: string;
   readonly observedAt: string;
 }
 
@@ -44,7 +45,7 @@ export interface TrustedRolloutEvidence {
   readonly schemaVersion: 1;
   readonly rolloutId: string;
   readonly releaseCommitSha: string;
-  readonly runner: RunnerIdentity;
+  readonly runners: readonly [RunnerIdentity, RunnerIdentity];
   readonly source: DatabaseGenerationIdentity;
   readonly target: DatabaseGenerationIdentity;
   readonly backup: BackupIdentity;
@@ -53,7 +54,7 @@ export interface TrustedRolloutEvidence {
   readonly equivalence: EquivalenceEvidence;
   readonly aclGateBeforeActivation: "closed";
   readonly activation: ActivationReceipt;
-  readonly cleanup: CleanupEvidence;
+  readonly cleanups: readonly [CleanupEvidence, CleanupEvidence];
   readonly evidenceSha256: string;
 }
 
@@ -91,7 +92,7 @@ export function assertTrustedRolloutEvidence(
       "schemaVersion",
       "rolloutId",
       "releaseCommitSha",
-      "runner",
+      "runners",
       "source",
       "target",
       "backup",
@@ -100,20 +101,27 @@ export function assertTrustedRolloutEvidence(
       "equivalence",
       "aclGateBeforeActivation",
       "activation",
-      "cleanup",
+      "cleanups",
       "evidenceSha256",
     ]) ||
-    !exact(value.runner, [
-      "repository",
-      "runId",
-      "runAttempt",
-      "commitSha",
-      "jitLabel",
-      "runnerName",
-      "baseServiceId",
-      "baseDeployId",
-      "imageDigest",
-    ]) ||
+    value.runners.length !== 2 ||
+    value.runners.some(
+      (runner) =>
+        !exact(runner, [
+          "repository",
+          "runId",
+          "runAttempt",
+          "commitSha",
+          "jitLabel",
+          "runnerName",
+          "renderJobId",
+          "baseServiceId",
+          "baseDeployId",
+          "imageDigest",
+        ]),
+    ) ||
+    value.runners[0].jitLabel === value.runners[1].jitLabel ||
+    value.runners[0].runnerName === value.runners[1].runnerName ||
     !exact(value.source, [
       "renderResourceId",
       "systemIdentifier",
@@ -161,12 +169,17 @@ export function assertTrustedRolloutEvidence(
       "transactionId",
       "firstWriteBoundary",
     ]) ||
-    !exact(value.cleanup, [
-      "renderJobTerminal",
-      "workspaceRemoved",
-      "bootstrapCredentialsAbsent",
-      "observedAt",
-    ]) ||
+    value.cleanups.length !== 2 ||
+    value.cleanups.some(
+      (cleanup) =>
+        !exact(cleanup, [
+          "renderJobTerminal",
+          "workspaceRemoved",
+          "bootstrapCredentialsAbsent",
+          "renderJobId",
+          "observedAt",
+        ]),
+    ) ||
     value.schemaVersion !== 1 ||
     !identifier.test(value.rolloutId) ||
     !sha.test(value.releaseCommitSha) ||
@@ -199,10 +212,14 @@ export function assertTrustedRolloutEvidence(
     value.activation.step !== "activate_target_generation" ||
     value.activation.sourceSystemIdentifier !== value.source.systemIdentifier ||
     value.activation.targetSystemIdentifier !== value.target.systemIdentifier ||
-    value.cleanup.renderJobTerminal !== true ||
-    value.cleanup.workspaceRemoved !== true ||
-    value.cleanup.bootstrapCredentialsAbsent !== true ||
-    !timestamp.test(value.cleanup.observedAt)
+    value.cleanups.some(
+      (cleanup, index) =>
+        cleanup.renderJobTerminal !== true ||
+        cleanup.workspaceRemoved !== true ||
+        cleanup.bootstrapCredentialsAbsent !== true ||
+        !timestamp.test(cleanup.observedAt) ||
+        cleanup.renderJobId !== value.runners[index]?.renderJobId,
+    )
   )
     throw new Error("trusted_rollout_evidence_invariant_failed");
   const { evidenceSha256, ...unsigned } = value;

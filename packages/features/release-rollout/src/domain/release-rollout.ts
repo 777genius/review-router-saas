@@ -131,6 +131,7 @@ export interface RunnerIdentity {
   readonly commitSha: string;
   readonly jitLabel: string;
   readonly runnerName: string;
+  readonly renderJobId: string;
   readonly baseServiceId: string;
   readonly baseDeployId: string;
   readonly imageDigest: string;
@@ -318,7 +319,8 @@ export function assertRunnerIdentity(
     !digestPattern.test(identity.imageDigest) ||
     !identifierPattern.test(identity.baseServiceId) ||
     !identifierPattern.test(identity.baseDeployId) ||
-    !identifierPattern.test(identity.runnerName)
+    !identifierPattern.test(identity.runnerName) ||
+    !identifierPattern.test(identity.renderJobId)
   )
     throw new Error("runner_immutable_identity_invalid");
 }

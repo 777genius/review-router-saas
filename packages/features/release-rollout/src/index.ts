@@ -8,3 +8,4 @@ export * from "./adapters/render-provider-freeze";
 export * from "./adapters/process-command";
 export * from "./adapters/postgres-generation";
 export * from "./adapters/render-target-services";
+export * from "./adapters/render-backup-identity";

@@ -35,7 +35,7 @@ const context = {
   commitSha: values.get("--sha"),
   actor: required("REVIEW_ROUTER_RUNNER_EXPECTED_ACTOR"),
   label: values.get("--label"),
-  runnerName: `rr-${values.get("--run-id")}-${values.get("--run-attempt")}`,
+  runnerName: values.get("--label"),
 };
 if (context.repository !== required("REVIEW_ROUTER_RUNNER_EXPECTED_REPOSITORY"))
   throw new Error("private_runner_context_mismatch");

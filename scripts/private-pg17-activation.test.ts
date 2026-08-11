@@ -1,27 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
   canonicalActivationSql,
+  roleProvisioningSql,
   runtimeAclGateStatements,
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
 
 const configuration = {
   roles: [
-    { role: "api", username: "reviewrouter_api" },
-    { role: "web", username: "reviewrouter_web" },
-    { role: "worker", username: "reviewrouter_worker" },
+    { role: "api", username: "reviewrouter_api", password: "api-pass" },
+    { role: "web", username: "reviewrouter_web", password: "web-pass" },
+    {
+      role: "worker",
+      username: "reviewrouter_worker",
+      password: "worker-pass",
+    },
     {
       role: "effect-authority",
       username: "reviewrouter_codex_effect_authority",
+      password: "effect-pass",
     },
   ],
+  releasePassword: "release-pass",
 };
 
 describe("transactional PG17 activation", () => {
   it("keeps every runtime role closed in the migration transaction", () => {
     const sql = runtimeGrantSql(configuration, { gateClosed: true });
     expect(sql).toContain("BEGIN;");
-    expect(sql).toContain("ReleaseGenerationActivationReceipt");
     for (const role of configuration.roles) {
       expect(sql).toContain(
         `REVOKE CONNECT ON DATABASE :"DBNAME" FROM ${role.username}`,
@@ -46,12 +52,28 @@ describe("transactional PG17 activation", () => {
     );
     expect(activation.sql).toContain("BEGIN;");
     expect(activation.sql).toContain(
-      'INSERT INTO public."ReleaseGenerationActivationReceipt"',
+      "reviewrouter_bootstrap.activate_generation(",
     );
-    expect(activation.sql).toContain("firstWriteBoundary");
     expect(activation.sql.trim().endsWith("COMMIT;")).toBe(true);
     expect(activation.sql.indexOf("GRANT CONNECT")).toBeLessThan(
-      activation.sql.indexOf("INSERT INTO"),
+      activation.sql.indexOf("activate_generation("),
+    );
+  });
+
+  it("keeps the receipt behind a bootstrap-owned security-definer function", () => {
+    const sql = roleProvisioningSql(configuration);
+    expect(sql).toContain(
+      "reviewrouter_bootstrap.release_generation_activation_receipt",
+    );
+    expect(sql).toContain("SECURITY DEFINER");
+    expect(sql).toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.activate_generation",
+    );
+    expect(sql).toContain(
+      "role bootstrap forbidden after generation activation",
+    );
+    expect(sql).not.toContain(
+      "GRANT SELECT ON TABLE reviewrouter_bootstrap.release_generation_activation_receipt",
     );
   });
 

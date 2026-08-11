@@ -206,6 +206,7 @@ describe("release rollout domain", () => {
       commitSha: "d".repeat(40),
       jitLabel: "rr-123-2-deadbeef",
       runnerName: "render-runner-123",
+      renderJobId: "job-123",
       baseServiceId: "srv-runner-base",
       baseDeployId: "dep-runner-v1",
       imageDigest: digest,

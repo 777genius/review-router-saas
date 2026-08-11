@@ -154,7 +154,7 @@ export class RenderPrivateRunnerAdapter {
       created.imageDigest !== request.imageDigest
     )
       throw new Error("render_runner_create_response_invalid");
-    const runnerName = `rr-${request.runId}-${request.runAttempt}`;
+    const runnerName = request.jitLabel;
     const identity: RunnerIdentity = Object.freeze({
       repository: request.repository,
       runId: request.runId,
@@ -162,6 +162,7 @@ export class RenderPrivateRunnerAdapter {
       commitSha: request.commitSha,
       jitLabel: request.jitLabel,
       runnerName,
+      renderJobId: created.id,
       baseServiceId: request.baseServiceId,
       baseDeployId: request.baseDeployId,
       imageDigest: request.imageDigest,
@@ -188,6 +189,7 @@ export class RenderPrivateRunnerAdapter {
         renderJobTerminal: true;
         workspaceRemoved: true;
         bootstrapCredentialsAbsent: true;
+        renderJobId: string;
         observedAt: string;
       };
     }
@@ -224,6 +226,7 @@ export class RenderPrivateRunnerAdapter {
         renderJobTerminal: true as const,
         workspaceRemoved: true as const,
         bootstrapCredentialsAbsent: true as const,
+        renderJobId: request.jobId,
         observedAt,
       },
     });

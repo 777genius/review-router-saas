@@ -9,6 +9,19 @@ const targetUrl =
   "postgresql://target_user:target_secret@target.internal:5432/reviewrouter?sslmode=disable";
 
 describe("PostgreSQL generation adapter", () => {
+  it("rejects public database hosts before process execution", () => {
+    const commands: CommandExecutor = {
+      execute() {
+        throw new Error("must not execute");
+      },
+    };
+    expect(() =>
+      new PostgreSqlGenerationAdapter(commands).quiesceSource(
+        "postgresql://user:secret@public.example.com/reviewrouter",
+      ),
+    ).toThrow("postgres_generation_connection_invalid");
+  });
+
   it("uses a custom no-owner/no-ACL dump without putting secrets in argv", () => {
     const dumpPath = "/tmp/reviewrouter-pg17-rehearsal/copy.dump";
     mkdirSync("/tmp/reviewrouter-pg17-rehearsal", { recursive: true });

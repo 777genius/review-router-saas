@@ -32,6 +32,8 @@ function connection(value: string): Connection {
   if (
     !["postgres:", "postgresql:"].includes(url.protocol) ||
     !url.hostname ||
+    (!/\.internal$/u.test(url.hostname) &&
+      !/^dpg-[a-z0-9-]+$/u.test(url.hostname)) ||
     !url.pathname.slice(1) ||
     !url.username ||
     !url.password
@@ -245,7 +247,7 @@ COMMIT;`,
     for (const table of tableNames) {
       const rows = this.psql(
         url,
-        `SELECT row_to_json(value)::text FROM public."${table}" value ORDER BY row_to_json(value)::text`,
+        `SELECT encode(convert_to(row_to_json(value)::text, 'UTF8'), 'hex') FROM public."${table}" value ORDER BY row_to_json(value)::text`,
       );
       tables.set(table, {
         rows: rows ? rows.split("\n").length : 0,
@@ -256,7 +258,7 @@ COMMIT;`,
     return {
       tables,
       sequencesSha256: metadata(
-        "SELECT json_agg(value ORDER BY value->>'name') FROM (SELECT json_build_object('name', sequencename, 'start', start_value, 'min', min_value, 'max', max_value, 'increment', increment_by, 'cycle', cycle) value FROM pg_sequences WHERE schemaname='public') observed",
+        "SELECT json_agg(value ORDER BY value->>'name') FROM (SELECT json_build_object('name', sequencename, 'dataType', data_type, 'start', start_value, 'min', min_value, 'max', max_value, 'increment', increment_by, 'cycle', cycle, 'cache', cache_size, 'last', last_value) value FROM pg_sequences WHERE schemaname='public') observed",
       ),
       constraintsSha256: metadata(
         "SELECT json_agg(value ORDER BY value->>'table', value->>'name') FROM (SELECT json_build_object('table', c.conrelid::regclass::text, 'name', c.conname, 'definition', pg_get_constraintdef(c.oid)) value FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname='public') observed",

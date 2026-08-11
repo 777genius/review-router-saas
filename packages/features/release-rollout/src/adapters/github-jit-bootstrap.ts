@@ -130,6 +130,8 @@ export async function requestJitConfiguration(
     run.actor === null ||
     typeof run.actor !== "object" ||
     (run.actor as Record<string, unknown>).login !== context.actor ||
+    run.head_branch !== "main" ||
+    !["workflow_dispatch", "workflow_call"].includes(String(run.event)) ||
     run.path === undefined
   )
     throw new Error("github_jit_run_identity_mismatch");

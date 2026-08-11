@@ -3,12 +3,14 @@ import { readFileSync } from "node:fs";
 import {
   applyStepReceipt,
   createReleaseRollout,
-  PostgreSqlGenerationAdapter,
-  RedactedProcessCommandAdapter,
   RenderTargetServicesAdapter,
+  RolloutPhase,
   RolloutStep,
   sha256Canonical,
-  type DatabaseGenerationIdentity,
+  type EquivalenceEvidence,
+  type QuiescenceEvidence,
+  type ReleaseRollout,
+  type RunnerIdentity,
   type StepReceipt,
 } from "../packages/features/release-rollout/src/index";
 import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
@@ -33,76 +35,31 @@ const syntheticReceipt = (
     payloadSha256: `sha256:${hash}`,
   };
 };
-
-const source: DatabaseGenerationIdentity = {
-  renderResourceId: required("REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID"),
-  systemIdentifier: required("REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER"),
-  majorVersion: 16,
-  recoveryWitnessSha256: required(
-    "REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256",
-  ),
-};
-const target: DatabaseGenerationIdentity = {
-  renderResourceId: required("REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID"),
-  systemIdentifier: required("REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER"),
-  majorVersion: 17,
-  recoveryWitnessSha256: required(
-    "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256",
-  ),
+const copy = JSON.parse(
+  readFileSync(required("REVIEW_ROUTER_COPY_BOOTSTRAP_EVIDENCE_FILE"), "utf8"),
+) as {
+  rollout: ReleaseRollout;
+  roleBootstrapRunner: RunnerIdentity;
+  backup: { backupId: string; pitrIdentity: string; capturedAt: string };
+  dumpSha256: string;
+  quiescence: QuiescenceEvidence;
+  equivalence: EquivalenceEvidence;
 };
 let rollout = createReleaseRollout({
-  rolloutId: required("REVIEW_ROUTER_ROLLOUT_ID"),
-  expectedCommitSha: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
-  source,
-  target,
+  rolloutId: copy.rollout.rolloutId,
+  expectedCommitSha: copy.rollout.expectedCommitSha,
+  source: copy.rollout.source,
+  target: copy.rollout.target,
 });
-rollout = applyStepReceipt(
-  rollout,
-  decode<StepReceipt>("REVIEW_ROUTER_FREEZE_RECEIPT"),
-);
-const runnerIdentity = decode<unknown>("REVIEW_ROUTER_RUNNER_IDENTITY");
-rollout = applyStepReceipt(
-  rollout,
-  syntheticReceipt(RolloutStep.ProvisionPrivateRunner, runnerIdentity),
-);
-
-const database = new PostgreSqlGenerationAdapter(
-  new RedactedProcessCommandAdapter(),
-);
-const sourceUrl = required("REVIEW_ROUTER_SOURCE_DATABASE_URL");
-const targetCopyUrl = required("REVIEW_ROUTER_TARGET_COPY_DATABASE_URL");
-database.observeIdentity(sourceUrl, source);
-database.observeIdentity(targetCopyUrl, target);
-const backup = database.captureBackup({
-  sourceUrl,
-  dumpPath: `/runner/_work/job/${required("REVIEW_ROUTER_ROLLOUT_ID")}.dump`,
-  backup: {
-    backupId: required("REVIEW_ROUTER_SOURCE_BACKUP_ID"),
-    pitrIdentity: required("REVIEW_ROUTER_SOURCE_PITR_IDENTITY"),
-    capturedAt: required("REVIEW_ROUTER_SOURCE_BACKUP_CAPTURED_AT"),
-  },
-});
-rollout = applyStepReceipt(rollout, backup.receipt);
-const quiescence = database.quiesceSource(sourceUrl);
-rollout = applyStepReceipt(rollout, quiescence.receipt);
-rollout = applyStepReceipt(
-  rollout,
-  database.restoreCopy({
-    targetUrl: targetCopyUrl,
-    dumpPath: `/runner/_work/job/${required("REVIEW_ROUTER_ROLLOUT_ID")}.dump`,
-    dumpSha256: backup.dumpSha256,
-  }),
-);
-const equivalence = database.verifyEquivalence(sourceUrl, targetCopyUrl);
-rollout = applyStepReceipt(rollout, equivalence.receipt);
-
-const roleBootstrap = JSON.parse(
-  readFileSync(required("REVIEW_ROUTER_ROLE_BOOTSTRAP_RECEIPT_FILE"), "utf8"),
-) as unknown;
-rollout = applyStepReceipt(
-  rollout,
-  syntheticReceipt(RolloutStep.BootstrapTargetRoles, roleBootstrap),
-);
+for (const receipt of copy.rollout.receipts)
+  rollout = applyStepReceipt(rollout, receipt);
+if (
+  rollout.phase !== RolloutPhase.TargetRolesBootstrapped ||
+  rollout.rolloutId !== required("REVIEW_ROUTER_ROLLOUT_ID") ||
+  rollout.expectedCommitSha !== required("REVIEW_ROUTER_RELEASE_COMMIT_SHA")
+)
+  throw new Error("private_pg17_rollout_copy_evidence_mismatch");
+const cutoverRunner = decode<RunnerIdentity>("REVIEW_ROUTER_RUNNER_IDENTITY");
 const migrationEnvironment = {
   ...process.env,
   REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
@@ -112,36 +69,37 @@ if (migration.aclGateState !== "closed")
   throw new Error("private_pg17_rollout_acl_gate_not_closed");
 rollout = applyStepReceipt(
   rollout,
-  syntheticReceipt(RolloutStep.RunReleaseMigration, migration),
+  syntheticReceipt(RolloutStep.RunReleaseMigration, {
+    migration,
+    cutoverRunner,
+  }),
 );
-
 const serviceExpectations = JSON.parse(
   required("REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON"),
 ) as { serviceId: string; deployId: string; imageDigest: string }[];
-const stageReceipt = await new RenderTargetServicesAdapter().stage({
-  apiKey: required("RENDER_API_KEY"),
-  targetDatabaseResourceId: target.renderResourceId,
-  releaseCommitSha: rollout.expectedCommitSha,
-  services: serviceExpectations,
-});
-rollout = applyStepReceipt(rollout, stageReceipt);
-
+rollout = applyStepReceipt(
+  rollout,
+  await new RenderTargetServicesAdapter().stage({
+    apiKey: required("RENDER_API_KEY"),
+    targetDatabaseResourceId: rollout.target.renderResourceId,
+    releaseCommitSha: rollout.expectedCommitSha,
+    services: serviceExpectations,
+  }),
+);
 const activation = executePrivateGenerationActivation(migrationEnvironment);
 rollout = applyStepReceipt(rollout, activation);
 const evidenceBody = {
-  schemaVersion: 1,
   rolloutId: rollout.rolloutId,
   releaseCommitSha: rollout.expectedCommitSha,
-  runner: runnerIdentity,
-  source,
-  target,
-  backup: backup.backup,
-  quiescence: quiescence.evidence,
-  dumpSha256: backup.dumpSha256,
-  equivalence: equivalence.evidence,
+  runners: [copy.roleBootstrapRunner, cutoverRunner],
+  source: rollout.source,
+  target: rollout.target,
+  backup: copy.backup,
+  quiescence: copy.quiescence,
+  dumpSha256: copy.dumpSha256,
+  equivalence: copy.equivalence,
   aclGateBeforeActivation: "closed",
   activation,
-  receipts: rollout.receipts,
 };
 rollout = applyStepReceipt(
   rollout,

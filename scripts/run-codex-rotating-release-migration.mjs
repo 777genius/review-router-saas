@@ -68,6 +68,11 @@ function quoted(value) {
 
 function databaseIdentity(value) {
   const url = new URL(value);
+  if (
+    !/\.internal$/u.test(url.hostname) &&
+    !/^dpg-[a-z0-9-]+$/u.test(url.hostname)
+  )
+    throw new Error("release_migration_private_database_host_required");
   const port = url.port || "5432";
   return `${url.hostname.toLowerCase()}:${port}${url.pathname}`;
 }
@@ -497,6 +502,14 @@ BEGIN
   END IF;
 END
 $ownership$;
+DO $activation_boundary$
+BEGIN
+  IF to_regclass('reviewrouter_bootstrap.release_generation_activation_receipt') IS NOT NULL
+     AND EXISTS (SELECT 1 FROM reviewrouter_bootstrap.release_generation_activation_receipt) THEN
+    RAISE EXCEPTION 'role bootstrap forbidden after generation activation';
+  END IF;
+END
+$activation_boundary$;
 DROP FUNCTION IF EXISTS reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text);
 DROP FUNCTION IF EXISTS reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text);
 DROP SCHEMA IF EXISTS reviewrouter_bootstrap;
@@ -561,6 +574,73 @@ END
 $bootstrap_schema$;
 REVOKE ALL ON SCHEMA reviewrouter_bootstrap FROM PUBLIC;
 GRANT USAGE ON SCHEMA reviewrouter_bootstrap TO reviewrouter_release_migration;
+CREATE TABLE reviewrouter_bootstrap.release_generation_activation_receipt (
+  rollout_id text PRIMARY KEY,
+  source_system_identifier text NOT NULL,
+  target_system_identifier text NOT NULL,
+  canonical_privileges_sha256 text NOT NULL CHECK (canonical_privileges_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  transaction_id bigint NOT NULL,
+  activated_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
+  CHECK (source_system_identifier ~ '^[0-9]+$'),
+  CHECK (target_system_identifier ~ '^[0-9]+$'),
+  CHECK (source_system_identifier <> target_system_identifier)
+);
+ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON TABLE reviewrouter_bootstrap.release_generation_activation_receipt FROM PUBLIC;
+CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.activate_generation(
+  requested_rollout_id text,
+  requested_source_system_identifier text,
+  requested_target_system_identifier text,
+  requested_canonical_privileges_sha256 text
+) RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $activation$
+DECLARE observed reviewrouter_bootstrap.release_generation_activation_receipt%ROWTYPE;
+BEGIN
+  IF session_user <> 'reviewrouter_release_migration'
+     OR requested_rollout_id !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$'
+     OR requested_source_system_identifier !~ '^[0-9]+$'
+     OR requested_target_system_identifier !~ '^[0-9]+$'
+     OR requested_source_system_identifier = requested_target_system_identifier
+     OR requested_canonical_privileges_sha256 !~ '^sha256:[a-f0-9]{64}$' THEN
+    RAISE EXCEPTION 'generation activation receipt invalid';
+  END IF;
+  PERFORM pg_advisory_xact_lock(1381126735, 1094931534);
+  SELECT * INTO observed
+  FROM reviewrouter_bootstrap.release_generation_activation_receipt
+  WHERE rollout_id = requested_rollout_id;
+  IF FOUND AND (
+    observed.source_system_identifier <> requested_source_system_identifier
+    OR observed.target_system_identifier <> requested_target_system_identifier
+    OR observed.canonical_privileges_sha256 <> requested_canonical_privileges_sha256
+  ) THEN
+    RAISE EXCEPTION 'conflicting activation receipt replay';
+  ELSIF NOT FOUND THEN
+    INSERT INTO reviewrouter_bootstrap.release_generation_activation_receipt (
+      rollout_id, source_system_identifier, target_system_identifier,
+      canonical_privileges_sha256, transaction_id
+    ) VALUES (
+      requested_rollout_id, requested_source_system_identifier,
+      requested_target_system_identifier,
+      requested_canonical_privileges_sha256, txid_current()
+    ) RETURNING * INTO observed;
+  END IF;
+  RETURN jsonb_build_object(
+    'rolloutId', observed.rollout_id,
+    'sourceSystemIdentifier', observed.source_system_identifier,
+    'targetSystemIdentifier', observed.target_system_identifier,
+    'canonicalPrivilegesSha256', observed.canonical_privileges_sha256,
+    'transactionId', observed.transaction_id::text,
+    'activatedAt', to_char(observed.activated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'firstWriteBoundary', true
+  );
+END
+$activation$;
+ALTER FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text) OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text) TO reviewrouter_release_migration;
 CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.consume_migration_evidence(
   artifact_digest text,
   artifact_id text,
@@ -929,25 +1009,7 @@ export function runtimeAclGateStatements(configuration) {
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM ${username};
 REVOKE USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA public FROM ${username};`,
     )
-    .join("\n")}
-CREATE TABLE IF NOT EXISTS public."ReleaseGenerationActivationReceipt" (
-  "rolloutId" text PRIMARY KEY,
-  "sourceSystemIdentifier" text NOT NULL,
-  "targetSystemIdentifier" text NOT NULL,
-  "canonicalPrivilegesSha256" text NOT NULL CHECK ("canonicalPrivilegesSha256" ~ '^sha256:[a-f0-9]{64}$'),
-  "transactionId" bigint NOT NULL,
-  "activatedAt" timestamptz NOT NULL DEFAULT transaction_timestamp(),
-  CHECK ("sourceSystemIdentifier" ~ '^[0-9]+$'),
-  CHECK ("targetSystemIdentifier" ~ '^[0-9]+$'),
-  CHECK ("sourceSystemIdentifier" <> "targetSystemIdentifier")
-);
-REVOKE ALL ON TABLE public."ReleaseGenerationActivationReceipt" FROM PUBLIC;
-${configuration.roles
-  .map(
-    ({ username }) =>
-      `REVOKE ALL ON TABLE public."ReleaseGenerationActivationReceipt" FROM ${username};`,
-  )
-  .join("\n")}`;
+    .join("\n")}`;
 }
 
 export function runtimeGrantSql(configuration, { gateClosed = false } = {}) {
@@ -975,35 +1037,13 @@ export function canonicalActivationSql(configuration, activation) {
     canonicalPrivilegesSha256: grantDigest,
     sql: `\\set ON_ERROR_STOP on
 BEGIN;
-DO $activation_replay$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM public."ReleaseGenerationActivationReceipt"
-    WHERE "rolloutId" = ${literal(activation.rolloutId)}
-      AND ("sourceSystemIdentifier" <> ${literal(activation.sourceSystemIdentifier)}
-        OR "targetSystemIdentifier" <> ${literal(activation.targetSystemIdentifier)}
-        OR "canonicalPrivilegesSha256" <> ${literal(grantDigest)})
-  ) THEN RAISE EXCEPTION 'conflicting activation receipt replay'; END IF;
-END
-$activation_replay$;
 ${runtimeGrantStatements(configuration)}
-INSERT INTO public."ReleaseGenerationActivationReceipt" (
-  "rolloutId", "sourceSystemIdentifier", "targetSystemIdentifier",
-  "canonicalPrivilegesSha256", "transactionId"
-) VALUES (
-  ${literal(activation.rolloutId)}, ${literal(activation.sourceSystemIdentifier)},
-  ${literal(activation.targetSystemIdentifier)}, ${literal(grantDigest)}, txid_current()
-) ON CONFLICT ("rolloutId") DO NOTHING;
-SELECT json_build_object(
-  'rolloutId', "rolloutId",
-  'sourceSystemIdentifier', "sourceSystemIdentifier",
-  'targetSystemIdentifier', "targetSystemIdentifier",
-  'canonicalPrivilegesSha256', "canonicalPrivilegesSha256",
-  'transactionId', "transactionId"::text,
-  'activatedAt', to_char("activatedAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
-  'firstWriteBoundary', true
-) FROM public."ReleaseGenerationActivationReceipt"
-WHERE "rolloutId" = ${literal(activation.rolloutId)};
+SELECT reviewrouter_bootstrap.activate_generation(
+  ${literal(activation.rolloutId)},
+  ${literal(activation.sourceSystemIdentifier)},
+  ${literal(activation.targetSystemIdentifier)},
+  ${literal(grantDigest)}
+);
 COMMIT;
 `,
   };

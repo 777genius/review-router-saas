@@ -55,6 +55,7 @@ describe("release rollout application boundary", () => {
       commitSha: "d".repeat(40),
       jitLabel: "rr-12-1",
       runnerName: "runner-12",
+      renderJobId: "job-12",
       baseServiceId: "srv-base",
       baseDeployId: "dep-pinned",
       imageDigest: `sha256:${"a".repeat(64)}`,
