@@ -895,22 +895,6 @@ validate_and_compact_auth() {
   [ -f "$auth_file" ] || fatal "Codex auth file not found: $auth_file"
   [ -r "$auth_file" ] || fatal "Codex auth file is not readable: $auth_file"
 
-  if ! node - "$auth_file" <<'NODE'
-const fs = require("node:fs");
-try {
-  const parsed = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-  if (
-    typeof parsed?.tokens?.id_token === "string" &&
-    parsed.tokens.id_token.split(".").length !== 3
-  ) process.exit(1);
-} catch {
-  // The canonical validator below owns all non-segment diagnostics.
-}
-NODE
-  then
-    fatal "auth.json cannot establish stable provider account identity: not a JWT"
-  fi
-
   compact_file="$(mktemp)"
   auth_metadata="$(node - "$auth_file" "$compact_file" "$MANIFEST_JSON" <<'NODE'
 const crypto = require("node:crypto");
@@ -925,8 +909,8 @@ function fail(message) {
 let parsed;
 try {
   parsed = JSON.parse(fs.readFileSync(sourcePath, "utf8"));
-} catch (error) {
-  fail(`auth.json is not valid JSON: ${error.message}`);
+} catch {
+  fail("auth.json is not valid JSON");
 }
 if (parsed.auth_mode !== "chatgpt") fail("auth.json auth_mode must be chatgpt");
 if (!parsed.tokens || typeof parsed.tokens.refresh_token !== "string" || parsed.tokens.refresh_token.length === 0) {
@@ -945,7 +929,25 @@ let identity;
 try {
   const parts = parsed.tokens.id_token.split(".");
   if (parts.length !== 3) throw new Error("not a JWT");
-  const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  const encodedClaims = parts[1];
+  if (
+    !encodedClaims ||
+    !/^[A-Za-z0-9_-]+$/.test(encodedClaims) ||
+    encodedClaims.length % 4 === 1
+  ) throw new Error("JWT payload is not valid base64url");
+  const claimsBytes = Buffer.from(encodedClaims, "base64url");
+  if (claimsBytes.toString("base64url") !== encodedClaims) {
+    throw new Error("JWT payload is not valid base64url");
+  }
+  let claims;
+  try {
+    claims = JSON.parse(claimsBytes.toString("utf8"));
+  } catch {
+    throw new Error("JWT payload is not valid JSON");
+  }
+  if (!claims || typeof claims !== "object" || Array.isArray(claims)) {
+    throw new Error("issuer, subject, or account id is missing");
+  }
   const authClaims = claims["https://api.openai.com/auth"] || {};
   const issuer = claims.iss;
   const subject = claims.sub;
@@ -959,7 +961,16 @@ try {
   if (process.env.REVIEW_ROUTER_DRY_RUN === "1") {
     identity = JSON.stringify({ issuer: "dry-run", subject: "dry-run", chatgptAccountId: "dry-run" });
   } else {
-    fail(`auth.json cannot establish stable provider account identity: ${error.message}`);
+    const safeIdentityDiagnostics = new Set([
+      "not a JWT",
+      "JWT payload is not valid base64url",
+      "JWT payload is not valid JSON",
+      "issuer, subject, or account id is missing",
+    ]);
+    const diagnostic = error instanceof Error && safeIdentityDiagnostics.has(error.message)
+      ? error.message
+      : "token validation failed";
+    fail(`auth.json cannot establish stable provider account identity: ${diagnostic}`);
   }
 }
 const accountFingerprint = crypto.createHmac("sha256", accountSalt).update(identity, "utf8").digest("base64url");

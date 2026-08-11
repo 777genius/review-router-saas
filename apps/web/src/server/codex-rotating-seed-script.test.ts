@@ -408,6 +408,98 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     );
   });
 
+  it.each([
+    [
+      "malformed base64url",
+      "e30.%%%ATTACKER_CONTROLLED_SENTINEL%%%.signature",
+      "JWT payload is not valid base64url",
+    ],
+    [
+      "malformed JSON",
+      `e30.${Buffer.from('{"cookie":"ATTACKER_CONTROLLED_SENTINEL"').toString("base64url")}.signature`,
+      "JWT payload is not valid JSON",
+    ],
+    [
+      "non-object payload",
+      `e30.${Buffer.from("null").toString("base64url")}.signature`,
+      "issuer, subject, or account id is missing",
+    ],
+    [
+      "missing issuer",
+      `e30.${Buffer.from(JSON.stringify({ sub: "user:test", account_id: "account:test" })).toString("base64url")}.signature`,
+      "issuer, subject, or account id is missing",
+    ],
+    [
+      "invalid subject",
+      `e30.${Buffer.from(JSON.stringify({ iss: "https://auth.openai.com", sub: 42, account_id: "account:test" })).toString("base64url")}.signature`,
+      "issuer, subject, or account id is missing",
+    ],
+    [
+      "missing account id",
+      `e30.${Buffer.from(JSON.stringify({ iss: "https://auth.openai.com", sub: "user:test" })).toString("base64url")}.signature`,
+      "issuer, subject, or account id is missing",
+    ],
+    [
+      "ambiguous account ids",
+      `e30.${Buffer.from(JSON.stringify({ iss: "https://auth.openai.com", sub: "user:test", account_id: "account:one", chatgpt_account_id: "account:two" })).toString("base64url")}.signature`,
+      "issuer, subject, or account id is missing",
+    ],
+  ])(
+    "installer reports fixed secret-safe diagnostics for a %s identity token",
+    (_, idToken, diagnostic) => {
+      const fixture = createRotatingInstallerFixture();
+      writeFileSync(
+        join(fixture.codexHome, "auth.json"),
+        JSON.stringify({
+          auth_mode: "chatgpt",
+          tokens: { refresh_token: "refresh-token", id_token: idToken },
+        }),
+      );
+
+      const result = spawnSync(
+        "bash",
+        [fixture.scriptPath, "--confirm-write"],
+        {
+          cwd: process.cwd(),
+          env: recoveryInstallerEnv(fixture, {
+            REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT: "1",
+          }),
+          encoding: "utf8",
+        },
+      );
+      const output = `${result.stdout}${result.stderr}`;
+
+      expect(result.status).not.toBe(0);
+      expect(output).toContain(
+        `auth.json cannot establish stable provider account identity: ${diagnostic}`,
+      );
+      expect(output).not.toContain("ATTACKER_CONTROLLED_SENTINEL");
+      expect(output).not.toContain("Unexpected end of JSON input");
+      expect(output).not.toContain(idToken);
+    },
+  );
+
+  it("does not include auth bytes or parser excerpts for malformed auth JSON", () => {
+    const fixture = createRotatingInstallerFixture();
+    writeFileSync(
+      join(fixture.codexHome, "auth.json"),
+      '{"tokens":{"refresh_token":"ATTACKER_CONTROLLED_SENTINEL"',
+    );
+
+    const result = spawnSync("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: recoveryInstallerEnv(fixture, {
+        REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT: "1",
+      }),
+      encoding: "utf8",
+    });
+    const output = `${result.stdout}${result.stderr}`;
+
+    expect(result.status).not.toBe(0);
+    expect(output).not.toContain("ATTACKER_CONTROLLED_SENTINEL");
+    expect(output).not.toContain("Unexpected end of JSON input");
+  });
+
   it("installer refuses preexisting dedicated auth by default before writing the GitHub secret", () => {
     const fixture = createRotatingInstallerFixture({
       ghSecretSetFailsIfCalled: true,
