@@ -241,9 +241,11 @@ jobs:
             reseed: { url: reseedUrl, sha256: reseedSha256 },
           }, null, 2)}\n`);
           NODE
+          descriptor_sha256="$(sha256sum "$descriptor_path" | awk '{print $1}')"
           echo "path=$descriptor_path" >> "$GITHUB_OUTPUT"
           echo "url=$seed_url" >> "$GITHUB_OUTPUT"
           echo "sha256=$seed_sha256" >> "$GITHUB_OUTPUT"
+          echo "descriptor_sha256=$descriptor_sha256" >> "$GITHUB_OUTPUT"
 
       - name: Upload immutable rotating installer descriptor
         uses: actions/upload-artifact@v4
@@ -336,6 +338,7 @@ jobs:
           VERSION_TAG_EXISTS: ${{ steps.release.outputs.version_tag_exists }}
           INSTALLER_URL: ${{ steps.installer.outputs.url }}
           INSTALLER_SHA256: ${{ steps.installer.outputs.sha256 }}
+          INSTALLER_DESCRIPTOR_SHA256: ${{ steps.installer.outputs.descriptor_sha256 }}
         run: |
           {
             echo "Released $VERSION"
@@ -347,6 +350,7 @@ jobs:
             echo "- Rotating installer URL: $INSTALLER_URL"
             echo "- Rotating installer version: $VERSION"
             echo "- Rotating installer SHA-256: $INSTALLER_SHA256"
+            echo "- Rotating installer descriptor SHA-256: $INSTALLER_DESCRIPTOR_SHA256"
             echo "- Production Action ref override sync: $SYNC_PRODUCTION_ACTION_REF"
             if [[ "$SYNC_PRODUCTION_ACTION_REF" == "true" ]]; then
               echo "- Override Action ref: $ACTION_REF"

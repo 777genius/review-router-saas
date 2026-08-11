@@ -68,16 +68,49 @@ describe("Codex rotating immutable migration history policy", () => {
     );
   });
 
-  it("derives the documented 000064 digest from the enforced migration policy", () => {
+  it("derives every documented immutable/forward digest from policy and actual migration bytes", () => {
     const runbook = readFileSync(
       resolve("ai-docs/operations/08-codex-rotating-serialization-cutover.md"),
       "utf8",
     );
-    const documented =
+    const section =
+      /## Immutable migration byte contract\n([\s\S]+?)\n## /u.exec(
+        runbook,
+      )?.[1];
+    expect(section).toBeDefined();
+    const documented = Object.fromEntries(
+      [
+        ...(section ?? "").matchAll(
+          /\|\s+`([^`]+)`\s+\|\s+`([a-f0-9]{64})`\s+\|/gu,
+        ),
+      ].map((match) => [match[1], match[2]]),
+    );
+    expect(documented).toEqual(checkedInCodexRotatingMigrationChecksums);
+    for (const [migrationName, policyDigest] of Object.entries(
+      checkedInCodexRotatingMigrationChecksums,
+    )) {
+      const actualDigest = createHash("sha256")
+        .update(
+          readFileSync(
+            resolve(
+              "packages/platform/db/prisma/migrations",
+              migrationName,
+              "migration.sql",
+            ),
+          ),
+        )
+        .digest("hex");
+      expect(documented[migrationName], migrationName).toBe(policyDigest);
+      expect(actualDigest, migrationName).toBe(policyDigest);
+    }
+
+    const forwardDigest =
       /000064 forward-publication policy[\s\S]+?exact checked-in SHA-256 is\s+`([a-f0-9]{64})`/u.exec(
         runbook,
       )?.[1];
-    expect(documented).toBe(forwardUnpublishedCodexRotatingMigration.checksum);
+    expect(forwardDigest).toBe(
+      forwardUnpublishedCodexRotatingMigration.checksum,
+    );
   });
 
   it("accepts an empty catalog before first rollout", () => {

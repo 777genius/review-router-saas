@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { reviewV2ContextEnvForRole } from "./review-v2-render-env.mjs";
 import { isLoopbackHostname } from "../packages/shared/src/validation/loopback-hostname.mjs";
+import { resolveCodexRotatingInstallerDescriptor } from "../packages/shared/src/validation/codex-rotating-installer-descriptor.mjs";
 import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
 import {
   assertTrustedGitHubEvidence,
@@ -55,6 +56,128 @@ const stableSecretNames = Object.freeze([
   "REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY",
   "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
 ]);
+
+const installerDescriptorSchema =
+  "reviewrouter.codex-rotating-installer-descriptor.v1";
+const installerDescriptorEnvironmentNames = Object.freeze([
+  "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL",
+  "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION",
+  "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256",
+]);
+
+function sha256Bytes(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function assertExactObjectKeys(value, expected, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (
+    actual.length !== wanted.length ||
+    actual.some((key, i) => key !== wanted[i])
+  ) {
+    throw new Error(`${label} fields are not canonical`);
+  }
+}
+
+/**
+ * Read the release-produced descriptor only through a separately pinned digest.
+ * Keeping the digest outside the file prevents a locally substituted descriptor
+ * from selecting its own installer bytes.
+ */
+export function readVerifiedInstallerReleaseDescriptor(source) {
+  const descriptorPath = requiredEnv(
+    "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_FILE",
+    source,
+  );
+  const expectedDigest = requiredEnv(
+    "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256",
+    source,
+  );
+  if (!/^[a-f0-9]{64}$/u.test(expectedDigest)) {
+    throw new Error(
+      "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256 must be an exact lowercase SHA-256",
+    );
+  }
+  const bytes = fs.readFileSync(descriptorPath);
+  if (sha256Bytes(bytes) !== expectedDigest) {
+    throw new Error(
+      "immutable rotating installer release descriptor digest mismatch",
+    );
+  }
+  let descriptor;
+  try {
+    descriptor = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error(
+      "immutable rotating installer release descriptor is not valid JSON",
+    );
+  }
+  assertExactObjectKeys(
+    descriptor,
+    ["schemaVersion", "url", "version", "sha256", "actionRef", "reseed"],
+    "immutable rotating installer release descriptor",
+  );
+  assertExactObjectKeys(
+    descriptor.reseed,
+    ["url", "sha256"],
+    "immutable rotating reseed descriptor",
+  );
+  if (descriptor.schemaVersion !== installerDescriptorSchema) {
+    throw new Error(
+      "immutable rotating installer release descriptor schema mismatch",
+    );
+  }
+  const actionRef = resolveHostedCodexRotatingActionRef(source);
+  if (String(descriptor.actionRef).toLowerCase() !== actionRef) {
+    throw new Error(
+      "immutable rotating installer release descriptor Action ref mismatch",
+    );
+  }
+  const tupleEnv = {
+    ...source,
+    REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: descriptor.url,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: descriptor.version,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: descriptor.sha256,
+  };
+  const tuple = resolveCodexRotatingInstallerDescriptor(tupleEnv);
+  const actionRepository = actionRef.slice(0, actionRef.lastIndexOf("@"));
+  const actionSha = actionRef.slice(actionRef.lastIndexOf("@") + 1);
+  const expectedReseedUrl = `https://raw.githubusercontent.com/${actionRepository}/${actionSha}/scripts/reseed-codex-rotating-auth.sh`;
+  if (
+    descriptor.reseed.url !== expectedReseedUrl ||
+    !/^[a-f0-9]{64}$/u.test(descriptor.reseed.sha256)
+  ) {
+    throw new Error("immutable rotating reseed descriptor mismatch");
+  }
+  return Object.freeze({
+    descriptorPath,
+    descriptorSha256: expectedDigest,
+    actionRef,
+    tuple: Object.freeze(tuple),
+  });
+}
+
+function installerDescriptorIdentity(value) {
+  return JSON.stringify({
+    descriptorSha256: value.descriptorSha256,
+    actionRef: value.actionRef,
+    tuple: value.tuple,
+  });
+}
+
+function applyInstallerTuple(source, verified) {
+  return {
+    ...source,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: verified.tuple.url,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: verified.tuple.version,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: verified.tuple.sha256,
+  };
+}
 
 export function resolveStableSecuritySecrets(source) {
   return Object.fromEntries(
@@ -456,6 +579,7 @@ export function buildServiceEnv({
   apiUrl,
 }) {
   const stableSecrets = resolveStableSecuritySecrets(env);
+  const installer = resolveCodexRotatingInstallerDescriptor(env);
   const values = {
     AUTH_SECRET: stableSecrets.AUTH_SECRET,
     AUTH_TRUST_HOST: "true",
@@ -479,6 +603,9 @@ export function buildServiceEnv({
       resolveHostedCodexRotatingActionRef(env),
     REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS:
       resolveHostedCodexRotatingAllowedActionRefs(env),
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: installer.url,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: installer.version,
+    REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: installer.sha256,
     REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS:
       stableSecrets.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS,
     REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter",
@@ -698,15 +825,76 @@ export async function syncService(client, service, spec, common) {
   await verifyControlPlaneScope(client, common);
   await addToEnvironment(client, common.environmentId, [service.id]);
   await verifyResourceScope(client, "services", service.id, common, spec.name);
-  await client.request(
-    "PUT",
-    `/services/${service.id}/env-vars`,
-    buildServiceEnv({
-      ...common,
-      databaseUrl: common.databaseUrls[spec.role],
-      role: spec.role,
+  // Re-read the digest-pinned release descriptor after all scope reads and
+  // immediately before constructing the secret-bearing PUT. A path swap or
+  // local edit fails closed unless the bytes still match the release digest.
+  const rereadDescriptor = readVerifiedInstallerReleaseDescriptor(common.env);
+  if (
+    installerDescriptorIdentity(rereadDescriptor) !==
+    installerDescriptorIdentity(common.installerDescriptor)
+  ) {
+    throw new Error(
+      "immutable rotating installer release descriptor changed before mutation",
+    );
+  }
+  const expectedEnv = buildServiceEnv({
+    ...common,
+    env: applyInstallerTuple(common.env, rereadDescriptor),
+    databaseUrl: common.databaseUrls[spec.role],
+    role: spec.role,
+  });
+  await client.request("PUT", `/services/${service.id}/env-vars`, expectedEnv);
+  await verifyServiceEnvConvergence(client, service, expectedEnv);
+}
+
+function renderEnvVars(value) {
+  const candidate = Array.isArray(value)
+    ? value
+    : (value?.envVars ??
+      value?.environmentVariables ??
+      value?.service?.envVars);
+  if (!Array.isArray(candidate)) {
+    throw new Error(
+      "Render service environment convergence response is invalid",
+    );
+  }
+  return Object.fromEntries(
+    candidate.map((item) => {
+      const envVar = item?.envVar ?? item;
+      return [
+        envVar?.key,
+        String(envVar?.value ?? envVar?.envVarValue?.value ?? ""),
+      ];
     }),
   );
+}
+
+export async function verifyServiceEnvConvergence(
+  client,
+  service,
+  expectedEnv,
+) {
+  const observed = renderEnvVars(
+    await client.request("GET", `/services/${service.id}/env-vars?limit=100`),
+  );
+  for (const { key, value } of expectedEnv) {
+    if (observed[key] !== String(value)) {
+      throw new Error(
+        `Render service ${service.name} environment did not converge for ${key}`,
+      );
+    }
+  }
+  // Exercise the same hosted readiness contracts against the provider read,
+  // including exact tuple shape and the stable encryption/recovery secrets.
+  resolveCodexRotatingInstallerDescriptor(observed);
+  resolveStableSecuritySecrets(observed);
+  for (const key of installerDescriptorEnvironmentNames) {
+    if (!observed[key]) {
+      throw new Error(
+        `Render service ${service.name} readiness is missing ${key}`,
+      );
+    }
+  }
 }
 
 export async function disableAndVerifyPreDeployCommand(client, service) {
@@ -1138,6 +1326,8 @@ export async function main() {
     resolveHostedCodexRotatingAllowedActionRefs(env);
   const stableSecrets = resolveStableSecuritySecrets(env);
   Object.assign(env, stableSecrets);
+  const installerDescriptor = readVerifiedInstallerReleaseDescriptor(env);
+  Object.assign(env, applyInstallerTuple(env, installerDescriptor));
   const databaseUrls =
     phase === "runtime-deploy" ? resolveDistinctDatabaseRoleUrls(env) : null;
   const privateKey =
@@ -1184,6 +1374,7 @@ export async function main() {
     branch,
     databaseUrls,
     env,
+    installerDescriptor,
     environmentId,
     ownerId,
     projectId,

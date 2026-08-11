@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
 import {
   addToEnvironment,
@@ -13,15 +15,73 @@ import {
   ensureDatabase,
   ensureService,
   main,
+  readVerifiedInstallerReleaseDescriptor,
   resolveDistinctDatabaseRoleUrls,
   resolveStableSecuritySecrets,
   serviceDetails,
   syncService,
   triggerAndVerifyDeploy,
   verifyControlPlaneScope,
+  verifyServiceEnvConvergence,
 } from "./deploy-render-hosted-beta.mjs";
 
+const actionSha = "0123456789abcdef0123456789abcdef01234567";
+const actionRef = `777genius/review-router@${actionSha}`;
+const installerTuple = Object.freeze({
+  REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: `https://raw.githubusercontent.com/777genius/review-router/${actionSha}/scripts/seed-codex-rotating-auth.sh`,
+  REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
+  REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
+});
+
+function releaseDescriptor(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: "reviewrouter.codex-rotating-installer-descriptor.v1",
+    url: installerTuple.REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL,
+    version: installerTuple.REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION,
+    sha256: installerTuple.REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256,
+    actionRef,
+    reseed: {
+      url: `https://raw.githubusercontent.com/777genius/review-router/${actionSha}/scripts/reseed-codex-rotating-auth.sh`,
+      sha256: "d".repeat(64),
+    },
+    ...overrides,
+  };
+}
+
+function descriptorFixture() {
+  const directory = mkdtempSync(join(tmpdir(), "render-installer-descriptor-"));
+  const file = join(directory, "descriptor.json");
+  const bytes = `${JSON.stringify(releaseDescriptor(), null, 2)}\n`;
+  writeFileSync(file, bytes);
+  return {
+    directory,
+    file,
+    env: {
+      REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_FILE: file,
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256: createHash(
+        "sha256",
+      )
+        .update(bytes)
+        .digest("hex"),
+    },
+  };
+}
+
 describe("Render hosted deploy hardening", () => {
+  it("keeps beta and agent entry points on dashboard-issued rotating setup and recovery", () => {
+    const guidance = ["ai-docs/BETA_RUNBOOK.md", "ai-docs/AGENT_START_HERE.md"]
+      .map((file) => readFileSync(file, "utf8"))
+      .join("\n");
+    expect(guidance).not.toMatch(
+      /CODEX_AUTH_JSON|\/install\/codex|gh secret set/u,
+    );
+    expect(guidance).not.toMatch(/curl[^\n]*\|[^\n]*(?:bash|sh)/u);
+    expect(guidance).toContain("dashboard-issued command");
+    expect(guidance).toContain("Recover and issue forced reseed");
+    expect(guidance).toContain("operations/02-runbooks.md");
+  });
+
   it("checks in immutable exclusive migration and rollout evidence workflows", () => {
     const migration = readFileSync(
       ".github/workflows/codex-rotating-release-migration.yml",
@@ -57,6 +117,57 @@ describe("Render hosted deploy hardening", () => {
     expect(blueprint).not.toContain("property: connectionString");
     expect(blueprint.match(/autoDeployTrigger: off/g)).toHaveLength(3);
     expect(blueprint).not.toContain("autoDeployTrigger: commit");
+    for (const key of [
+      "REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY",
+      "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL",
+      "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION",
+      "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256",
+    ]) {
+      expect(blueprint.match(new RegExp(`key: ${key}`, "g")), key).toHaveLength(
+        1,
+      );
+    }
+  });
+
+  it("derives the exact hosted tuple only from a digest-pinned release descriptor", () => {
+    const fixture = descriptorFixture();
+    try {
+      expect(
+        readVerifiedInstallerReleaseDescriptor({
+          ...fixture.env,
+          REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL:
+            "https://attacker.invalid/mutable.sh",
+          REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v9.9.9",
+          REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "0".repeat(64),
+        }),
+      ).toMatchObject({
+        actionRef,
+        descriptorSha256:
+          fixture.env.REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256,
+        tuple: {
+          url: installerTuple.REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL,
+          version:
+            installerTuple.REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION,
+          sha256: installerTuple.REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256,
+        },
+      });
+      writeFileSync(
+        fixture.file,
+        `${JSON.stringify(releaseDescriptor({ version: "v9.9.9" }))}\n`,
+      );
+      expect(() => readVerifiedInstallerReleaseDescriptor(fixture.env)).toThrow(
+        "release descriptor digest mismatch",
+      );
+      expect(() =>
+        readVerifiedInstallerReleaseDescriptor({
+          ...fixture.env,
+          REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256:
+            fixture.env.REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256.toUpperCase(),
+        }),
+      ).toThrow("must be an exact lowercase SHA-256");
+    } finally {
+      rmSync(fixture.directory, { recursive: true, force: true });
+    }
   });
   it("creates the hosted database on PostgreSQL 17", async () => {
     const client = {
@@ -291,6 +402,7 @@ describe("Render hosted deploy hardening", () => {
           REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: "t".repeat(32),
           REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
             "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+          ...installerTuple,
           REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
           REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
           REVIEW_ROUTER_CODEX_ROTATING_NEW_WORK_ADMISSION_ENABLED: "1",
@@ -332,6 +444,9 @@ describe("Render hosted deploy hardening", () => {
         "777genius/review-router@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS:
         "777genius/review-router@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: `https://raw.githubusercontent.com/777genius/review-router/${"a".repeat(40)}/scripts/seed-codex-rotating-auth.sh`,
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
       REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: witness,
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
         "postgresql://reviewrouter_codex_effect_authority:authority@db.internal/review_router",
@@ -454,6 +569,114 @@ describe("Render hosted deploy hardening", () => {
       "PUT",
       expect.anything(),
       expect.anything(),
+    );
+  });
+
+  it("re-reads the pinned installer descriptor after scope checks and before the secret PUT", async () => {
+    const fixture = descriptorFixture();
+    const initial = readVerifiedInstallerReleaseDescriptor(fixture.env);
+    let calls = 0;
+    const request = vi.fn(async (method: string, endpoint: string) => {
+      calls += 1;
+      if (endpoint === "/projects/project-1") {
+        return { id: "project-1", ownerId: "owner-1" };
+      }
+      if (endpoint === "/environments/production") {
+        return { id: "production", ownerId: "owner-1", projectId: "project-1" };
+      }
+      if (endpoint === "/environments/production/resources") {
+        return [{ id: "srv-1" }];
+      }
+      if (method === "GET" && endpoint === "/services/srv-1") {
+        writeFileSync(
+          fixture.file,
+          `${JSON.stringify(releaseDescriptor({ version: "v9.9.9" }))}\n`,
+        );
+        return {
+          service: {
+            id: "srv-1",
+            ownerId: "owner-1",
+            projectId: "project-1",
+            environmentId: "production",
+          },
+        };
+      }
+      throw new Error(`unexpected request ${method} ${endpoint}`);
+    });
+    try {
+      await expect(
+        syncService(
+          { request } as never,
+          { id: "srv-1", name: "reviewrouter-api" },
+          { name: "reviewrouter-api", role: "api" },
+          {
+            ownerId: "owner-1",
+            projectId: "project-1",
+            environmentId: "production",
+            env: fixture.env,
+            installerDescriptor: initial,
+          } as never,
+        ),
+      ).rejects.toThrow("release descriptor digest mismatch");
+      expect(calls).toBe(4);
+      expect(request).not.toHaveBeenCalledWith(
+        "PUT",
+        expect.anything(),
+        expect.anything(),
+      );
+    } finally {
+      rmSync(fixture.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("GET-verifies exact environment convergence through hosted readiness contracts", async () => {
+    const expected = buildServiceEnv({
+      databaseUrl: "postgres://internal/db",
+      privateKey: "private-key-not-logged",
+      role: "worker",
+      webUrl: "https://reviewrouter.example",
+      apiUrl: "https://api.reviewrouter.example",
+      env: {
+        GITHUB_APP_CLIENT_ID: "client",
+        GITHUB_APP_CLIENT_SECRET: "secret",
+        GITHUB_APP_ID: "1",
+        GITHUB_APP_SLUG: "reviewrouter",
+        GITHUB_WEBHOOK_SECRET: "secret",
+        AUTH_SECRET: "a".repeat(32),
+        REVIEW_ROUTER_ACTION_SESSION_SECRET: "s".repeat(32),
+        REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: "t".repeat(32),
+        REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
+        REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+        ...installerTuple,
+      },
+    });
+    const client = {
+      request: vi
+        .fn()
+        .mockResolvedValue(expected.map((envVar) => ({ envVar }))),
+    };
+    await expect(
+      verifyServiceEnvConvergence(
+        client as never,
+        { id: "srv-1", name: "reviewrouter-worker" },
+        expected,
+      ),
+    ).resolves.toBeUndefined();
+    client.request.mockResolvedValueOnce(
+      expected.map((item) =>
+        item.key === "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256"
+          ? { ...item, value: "e".repeat(64) }
+          : item,
+      ),
+    );
+    await expect(
+      verifyServiceEnvConvergence(
+        client as never,
+        { id: "srv-1", name: "reviewrouter-worker" },
+        expected,
+      ),
+    ).rejects.toThrow(
+      "environment did not converge for REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256",
     );
   });
 
@@ -682,6 +905,9 @@ describe("Render hosted deploy hardening", () => {
       REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: "t".repeat(32),
       REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF:
         "777genius/review-router@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: `https://raw.githubusercontent.com/777genius/review-router/${"a".repeat(40)}/scripts/seed-codex-rotating-auth.sh`,
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
+      REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
     };
     vi.stubEnv("REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS", "");
     expect(() =>

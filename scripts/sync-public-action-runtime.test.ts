@@ -192,6 +192,12 @@ describe("public Action runtime sync", () => {
     expect(workflow).toContain(
       "Upload immutable rotating installer descriptor",
     );
+    expect(workflow).toContain(
+      'descriptor_sha256="$(sha256sum "$descriptor_path"',
+    );
+    expect(workflow).toContain(
+      "Rotating installer descriptor SHA-256: $INSTALLER_DESCRIPTOR_SHA256",
+    );
     expect(workflow).toContain('gh release upload "$VERSION"');
   });
 });

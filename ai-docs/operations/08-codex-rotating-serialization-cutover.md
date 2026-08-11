@@ -58,6 +58,20 @@ recovery-expiry index. Versioned secret namespaces, dispatch attempts, mutation
 guard evolution, and all related repair remain in forward 000064; they must not
 be moved backward into 000063.
 
+## Immutable migration byte contract
+
+These are the SHA-256 digests of the exact checked-in `migration.sql` bytes.
+The migration-history policy is authoritative; this operator-facing projection
+is checked against both that policy and the files on every test run.
+
+| Migration                                        | Exact SHA-256                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------------ |
+| `000060_codex_oauth_setup_serialization`         | `f24ab69f681349332e47e121adc72bd3edb14e24bcbffcd26fce4f03ba0d7395` |
+| `000061_codex_oauth_provider_mutation_fence`     | `bba689c8b80580ec649cc3262fb2ee9c97be758f3c4ab7094c48c84d002aeb30` |
+| `000062_codex_oauth_remote_outcome_unknown`      | `0e8bb62933a270d745530f2c4984520e1753f42d8531c24ffdfa4acfe46a73f4` |
+| `000063_codex_oauth_setup_payload_claim`         | `33100d6f5f3f59cd9a4c22f041d19caba6a0e0be88de4a0ee4d543af50619481` |
+| `000064_codex_oauth_versioned_secret_namespaces` | `d349e7bc2a114571070cf451e07ac2c9b0124dfa7565eb4e2e2ccd1c3d788718` |
+
 ## 000064 forward-publication policy
 
 `000064_codex_oauth_versioned_secret_namespaces` is the unpublished forward

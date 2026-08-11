@@ -134,6 +134,17 @@ envVarGroups:
         sync: false
       - key: REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS
         sync: false
+      # Copy this exact, inseparable tuple from the digest-verified installer
+      # descriptor attached to the immutable release. Never use a branch URL.
+      - key: REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL
+        sync: false
+      - key: REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION
+        sync: false
+      - key: REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256
+        sync: false
+      # Stable secret-manager value; Blueprint sync must never rotate it.
+      - key: REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY
+        sync: false
       # One operator-managed value is shared by every database writer. It is
       # fingerprinted at runtime and must never be emitted to logs.
       - key: REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS

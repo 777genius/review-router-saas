@@ -51,6 +51,8 @@ export REVIEW_ROUTER_WEB_URL=https://reviewrouter.site
 export REVIEW_ROUTER_API_URL=https://api.reviewrouter.site
 export REVIEW_ROUTER_RENDER_COMMIT_SHA=<exact-40-character-release-sha>
 export REVIEW_ROUTER_RENDER_IMAGE_DIGEST=sha256:<exact-64-character-image-digest>
+export REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_FILE=/secure/path/reviewrouter-codex-rotating-installer-descriptor.json
+export REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256=<exact-release-summary-descriptor-sha256>
 export REVIEW_ROUTER_RENDER_PHASE=prepare
 pnpm deploy:render:hosted-beta
 ```
@@ -92,6 +94,9 @@ REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY=<strong random secret for encrypted user toke
 REVIEW_ROUTER_ACTION_REF=777genius/review-router@main
 REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF=777genius/review-router@<exact-40-character-action-sha>
 REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS=
+REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL=<exact descriptor url>
+REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION=<exact descriptor version>
+REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256=<exact descriptor installer sha256>
 REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS=<one unpadded base64url value from at least 32 random bytes>
 REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL=<private URL for reviewrouter_release_migration>
 REVIEW_ROUTER_WEB_DATABASE_URL=<private URL for reviewrouter_web>
@@ -135,6 +140,27 @@ use the separate exact SHA. For A -> B, deploy trust `{A,B}` everywhere before
 making B primary. New setup candidates use B; existing active namespaces stay
 pinned to A until a fenced drain and fresh namespace setup. Keep A trusted
 while any namespace, queued/in-progress run, or lease can reference it.
+
+The Blueprint and API helper are the two supported hosted configuration paths.
+For Blueprint sync, download the JSON descriptor attached to the immutable
+release, compare its file SHA-256 with the separately printed release-summary
+digest, check that its `actionRef` is the exact rotating Action ref above, and
+copy its URL/version/SHA-256 tuple as one unit into the three Blueprint fields.
+Do not type, infer, or mix tuple members from separate releases. The Blueprint
+also requires the stable `REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY`; a sync that
+generates or omits that value is not supported.
+
+For the API helper, provide the descriptor file and its separately published
+digest through
+`REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_FILE` and
+`REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256`. The helper ignores
+direct tuple overrides, derives all three service values from the verified
+descriptor, and re-reads the digest-pinned bytes after Render scope checks and
+immediately before every secret-bearing environment PUT. It then GET-verifies
+the complete environment, including the exact installer tuple and stable token
+encryption key, and requires each explicit deploy to reach Render `live` with
+the evidence-bound commit and image digest. Any mismatch is fatal and no
+cutover flag is enabled.
 
 For GitLab support, `reviewrouter-api` also needs API-side integration values:
 
@@ -330,9 +356,12 @@ provider-digested artifact.
 REVIEW_ROUTER_RENDER_PHASE=runtime-deploy pnpm deploy:render:hosted-beta
 ```
 
-The helper revalidates every resource scope immediately before each complete
-secret-bearing environment PUT, then explicitly deploys web, API, and worker
-at the evidence-bound commit/image. Missing or mismatched evidence is fatal.
+The helper revalidates every resource scope and the digest-pinned release
+descriptor immediately before each complete secret-bearing environment PUT,
+GET-verifies exact environment convergence/readiness, then explicitly deploys
+web, API, and worker at the evidence-bound commit/image. Missing or mismatched
+evidence, descriptor bytes, environment values, or live deploy identity is
+fatal.
 
 5. Confirm the API health endpoint:
 
