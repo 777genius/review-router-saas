@@ -270,34 +270,54 @@ major, not necessarily 17. The deploy helper also sends `version: "17"` on
 create and rejects both an existing database and the final ready-database
 response unless they report major 17.
 
-The Blueprint creates only the owner `reviewrouter_release_migration`. After
-the helper's `prepare` phase, dispatch the checked-in
+The Blueprint creates the database container with
+`reviewrouter_role_bootstrap` as its owner. After the helper's `prepare` phase,
+dispatch the protected
+`.github/workflows/codex-rotating-role-bootstrap.yml` workflow when role
+provisioning is required, then dispatch the checked-in
 `.github/workflows/codex-rotating-release-migration.yml` workflow at the exact
-release commit with a new, never-reused rollout ID. That workflow is the only
-supported migration initiator. It creates exactly one Render one-off job whose
-command is the checked-in `pnpm codex-rotating:release-migration` caller. The
-caller creates or converges login roles
+release commit with a new, never-reused rollout ID. Both workflows use the same
+repository-wide, non-cancelling concurrency group, so their database mutations
+cannot overlap. Bootstrap alone receives its protected external direct URL; the
+release workflow never receives it.
+
+The release workflow is the only supported migration initiator. From its
+checkout at exact `github.sha`, it runs the checked-in canonical migration
+application service against the release role's protected Render Postgres
+external direct URL. Render one-off jobs are not migration authority: the
+create-job mutation cannot bind a deploy ID and instead snapshots the base
+service's latest successful build, leaving a pre-mutation image race. The
+obsolete Render migration launchers have therefore been removed.
+
+The bootstrap caller creates or converges login roles
 `reviewrouter_web`, `reviewrouter_api`, and `reviewrouter_worker`, then verifies
-them. They receive CONNECT, public-schema USAGE, required
+the exact five canonical membership edges and every role attribute. The release
+caller verifies the same contract, including superuser, createdb, createrole,
+replication, and bypass-RLS. Runtime roles receive CONNECT, public-schema USAGE, required
 SELECT/INSERT/UPDATE/DELETE and sequence USAGE only. Revoke CREATE on the
 database and schema plus TRUNCATE, REFERENCES, and TRIGGER on application
 tables. They must own no application object, have no membership in any other
 canonical role, and must not be able to `SET ROLE
-reviewrouter_release_migration`. The workflow captures the successful job and
-its exact service/deploy/job, command, commit, image, database, and canonical
-caller log output through authenticated Render API calls. It uploads a strict
-version-3 GitHub artifact whose digest, immutable workflow blob, repository,
+reviewrouter_release_migration`. The workflow captures canonical migration
+output locally and makes only read-only authenticated Render API observations
+of database owner identity and PostgreSQL version. It uploads a strict
+version-4 provider-neutral GitHub execution artifact whose digest, immutable workflow blob, repository,
 run, attempt, job, and artifact identities are independently re-fetched before
 use. Local JSON and local checksums are never deployment authority.
 Supply each role's distinct private URL only to `runtime-deploy`; the helper
 checks all four URLs against the selected Render database connection before any
 secret-bearing mutation.
 
-The release role owns the database, public schema, `_prisma_migrations`, every
-rotating-OAuth table, and every `codex_oauth_*` function. After a restore or
+The bootstrap role owns the database container. The release role owns the
+`public` schema, `_prisma_migrations`, every rotating-OAuth table, and every
+`codex_oauth_*` function; it is the sole DDL owner for release-managed public
+objects. After a restore or
 promotion and before traffic, the exclusive release job admits the generation
-by storing this database-owner-only comment (substitute observed values; never
-store the witness itself):
+through the narrowly granted
+`reviewrouter_bootstrap.consume_migration_evidence` security-definer function.
+The bootstrap-owned function validates the exact trusted GitHub receipt and
+stores it alongside this database-owner generation comment (substitute observed
+values; never store the witness itself):
 
 ```sql
 COMMENT ON DATABASE review_router IS
@@ -312,7 +332,7 @@ provider signs arbitrary Render response bodies. The immutable GitHub job
 therefore performs those authenticated reads itself, archives the exact bodies
 under GitHub's provider-computed artifact digest, and the consumer independently
 re-fetches the fixed repository/workflow/run/job/artifact tuple. Missing API
-fields, unsupported Render job/log inventory, redirects outside the allowed
+fields, redirects outside the allowed
 GitHub artifact hosts, and any identity or digest mismatch fail closed.
 
 The rollout-evidence workflow also requires the production environment's fixed
@@ -325,23 +345,26 @@ provider-digested artifact.
 
 1. Run `REVIEW_ROUTER_RENDER_PHASE=prepare pnpm deploy:render:hosted-beta`.
    Keep web, API, and worker mutation admission off and deploy no runtime
-   service yet. Dispatch the canonical workflow once. Its Render job receives
-   the release credential only for that invocation, runs the preflight,
-   migration, grants, and role verification, and emits one sanitized JSON log
-   record. Never run the caller as a cron, worker, service
+   service yet. Dispatch the canonical workflow once. Its trusted GitHub job
+   receives the release credential only for that invocation, runs the
+   preflight, migration, grants, and role verification, and emits one sanitized
+   JSON artifact input. Never run the caller as a cron, worker, service
    `preDeployCommand`, or manual shell command. A failed attempt requires a new
    rollout ID and run; artifacts from failed or superseded attempts are not
    accepted.
 
-2. Capture the Render API database version and the single successful migration
-   job's service/deploy/job IDs, commit, image digest, status, and timestamp.
-   The rollout verifier rejects zero or multiple callers. Runtime services have
+2. Capture the Render API database owner and version as read-only observations.
+   Migration success and execution identity come only from the authenticated
+   GitHub run/job/artifact tuple and canonical output. Runtime services have
    canonical `preDeployCommand: null` and cannot use the release credential.
 
-3. Run the production-writer capture with the release credential and the raw,
-   byte-for-byte Render observation path. It copies immutable deploy identity
-   from that observation; commit/image/application-name environment labels are
-   not accepted as identity.
+3. Claim the authenticated migration evidence into the database generation
+   binding. The receipt stores its rollout, artifact, run/attempt/job, workflow
+   path, exact commit, and target image digest. Run the production-writer
+   capture with the release credential and the raw, byte-for-byte Render runtime
+   observation path. It selects exactly one receipt for the requested rollout;
+   it never derives the caller from a historical Render job or application
+   labels.
 
 4. Record the workflow repository ID, run ID, run attempt, job ID, artifact ID,
    artifact name, and rollout ID returned by GitHub. Set the corresponding

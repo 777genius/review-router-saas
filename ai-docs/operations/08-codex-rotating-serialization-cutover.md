@@ -184,15 +184,18 @@ For a restore or writer promotion, use this exact sequence:
 Never rewrite W1 evidence to W2, reuse a W1 namespace/ciphertext, or repair the
 rotation with direct database edits.
 
-The remaining trust is narrow and explicit: Render's authenticated API must
-truthfully bind service/deploy/job IDs to immutable commit and image digests;
-the database provider must protect the release credential and report
-`pg_control_system()` honestly; and the operator must admit a new witness hash
-in the database-owner-only generation comment only while all prior writers are
-stopped. The proof does not claim to defeat a compromised Render control plane,
-database superuser, or operator holding the release credential. It does prevent
-web/API/worker credentials and arbitrary environment/application-name labels
-from forging the accepted rollout identity.
+The remaining trust is narrow and explicit: the protected GitHub Actions
+environment must keep the bootstrap and release database credentials secret;
+the exact checked-out workflow SHA is the only database-mutation caller. Render
+is read-only evidence here: its authenticated API must truthfully bind the
+runtime service/deploy IDs to immutable commit and image digests. The database
+provider must protect the release credential and report `pg_control_system()`
+honestly, and the operator must admit a new witness hash in the
+database-owner-only generation comment only while all prior writers are
+stopped. The proof does not claim to defeat a compromised GitHub environment,
+Render control plane, database superuser, or operator holding the release
+credential. It does prevent web/API/worker credentials and arbitrary
+environment/application-name labels from forging the accepted rollout identity.
 
 Production starts with both
 `REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH=0` and
@@ -271,11 +274,14 @@ rolling mixed-version deploy is prohibited.
    gate: investigate and recover it; do not mark it expired.
 5. Verify the Render services have no `preDeployCommand` (the old deployment
    shape had independent web, API, and worker callers; the checked-in Blueprint
-   and deploy helper now clear them). Nominate exactly one `release-migration`
-   job and prove no other caller can start. Apply the ordered
-   exact ordered checked-in 000060+000061+000062+000063+000064 batch once. A lock or statement timeout stops the
-   batch; inspect it and begin a separately recorded retry, never concurrent
-   retries.
+   and deploy helper now clear them). Dispatch the protected
+   `codex-rotating-release-migration.yml` workflow at the exact release SHA.
+   Role bootstrap and release migration share the repository-wide
+   `codex-rotating-database-mutation-production` concurrency group with
+   cancellation disabled, so only one database mutation can run. Apply the
+   exact ordered checked-in 000060 through 000066 batch once. A lock or
+   statement timeout stops the batch; inspect it and begin a separately
+   recorded retry, never concurrent retries.
 6. With both switches still off, converge API, web, and worker to the same exact
    final fence-aware commit and image digest. The minimum rollback floor after
    000061 is this final fence-aware commit. Database rollback is prohibited.
@@ -296,26 +302,27 @@ The drain query must be executed on the writer database and captured as an
 artifact. Every count, including queued old workflows from the GitHub workflow
 inventory, must be zero:
 
-Run the checked-in capture executable from the one immutable release-migration
-runtime. Its `current_user` and `session_user` must both be
+Run the checked-in capture executable after the protected immutable
+release-migration workflow. Its `current_user` and `session_user` must both be
 `reviewrouter_release_migration`; `application_name` and caller-provided
-commit/image labels have no evidentiary value. First save the raw Render API
-observation containing the PostgreSQL version, three runtime deploys, and
-exactly one successful release-migration job. Redirect stdout directly to the
-artifact file without editing it:
+commit/image labels have no evidentiary value. Save the raw read-only Render API
+observations for the PostgreSQL resource and the three runtime deploys. Render
+must never receive a bootstrap or migration database credential. Redirect
+stdout directly to the artifact file without editing it.
 
-The trusted migration job requires two explicit database connections.
+The two protected GitHub workflows require two explicit database connections.
 `REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL` authenticates as
 `reviewrouter_role_bootstrap` and is used only to create and converge the five
 canonical roles and retain database ownership while transferring schema and
-migration-object ownership to the release role. PostgreSQL requires CREATEDB
-to transfer database ownership, so the helper deliberately keeps the narrower
-LOGIN, NOSUPERUSER, NOCREATEDB, CREATEROLE identity. The helper then drops that
-connection and performs preflight, migrations, grant convergence, and evidence
-queries through `REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL`, authenticated
-directly as the LOGIN, NOCREATEROLE `reviewrouter_release_migration` role. Both
-URLs must name the same explicit host, port, and database; they are never
-interchangeable and there is no ambient owner or superuser fallback.
+migration-object ownership to the release role. The bootstrap identity remains
+the database owner and is deliberately limited to LOGIN, NOSUPERUSER,
+NOCREATEDB, CREATEROLE. The bootstrap workflow then drops that connection. The
+release workflow performs preflight, migrations, grant convergence, and
+evidence queries through `REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL`,
+authenticated directly as the LOGIN, NOCREATEROLE
+`reviewrouter_release_migration` role. Both URLs must name the same explicit
+host, port, and database; they are never interchangeable and there is no
+ambient owner or superuser fallback.
 
 ```bash
 REVIEW_ROUTER_PRODUCTION_WRITER_OBSERVATION=1 \
@@ -346,8 +353,8 @@ recovery ownership, `_prisma_migrations`, `pg_trigger`, `pg_constraint`,
 
 ## Observation-backed rollout proof
 
-`scripts/verify-codex-rotating-rollout.mjs` accepts only evidence version 2 with
-six SHA-256-bound JSON artifacts: production-writer database observations,
+`scripts/verify-codex-rotating-rollout.mjs` accepts only receipt-bound rollout
+evidence version 3 with six SHA-256-bound JSON artifacts: production-writer database observations,
 Render API deployments, compatibility-probe output, two GitHub Actions run
 inventories, canary-runtime evidence, and the append-only transition log. It
 derives the result from those observations. Self-reported
@@ -374,9 +381,10 @@ different only in fixture mechanics: migrations run as its superuser, so its
 synthetic NOLOGIN release function owner receives explicit full DML and
 reference privileges on public tables plus usage, read, and update privileges
 on public sequences to reproduce the production owner's effective data access.
-It identifies the immutable
-caller by copying the IDs, commit, and image from the raw Render API
-observation, and contains two time-separated stable zero drain observations.
+It identifies the immutable caller from the consumed GitHub Actions migration
+receipt, cross-binds that receipt's rollout ID, commit, and image digest to the
+authenticated runtime deployment observation, and contains two time-separated
+stable zero drain observations.
 The base observation and both drain samples independently report the same
 database identity, writer status, and SHA-256 fingerprint from the
 database-owner-only generation-binding comment. Every admitted durable recovery
@@ -395,8 +403,8 @@ The Render API artifact must report the real `reviewrouter-api`,
 `reviewrouter-web`, and `reviewrouter-worker` service names, their canonical
 API/web/worker roles, immutable Render service/deploy IDs, exact commits, and
 immutable image digests with mutation admission off, a null `preDeployCommand`,
-and no service-level migration caller. It also contains exactly one successful
-one-off release-migration job. Fresh hosted databases and existing
+and no service-level migration caller. It contains no migration job: Render is
+not a database-mutation authority. Fresh hosted databases and existing
 `reviewrouter-db` instances must use PostgreSQL 17; `render.yaml` pins
 `postgresMajorVersion: "17"`, and the API helper independently rejects a
 mismatch. The compatibility artifact is the actual probe
@@ -419,7 +427,7 @@ runtime-publication, commit, and image digests retained by this bridge proof.
 The event artifact records the bridge's pre-000061 schema compatibility,
 publication-before-issuance, the separate issuance-503 probe, both zero-drain
 observations around the full kill switch (including queued old workflows), the
-single Render migration caller, ordered migrations, exact service convergence,
+single receipt-bound GitHub migration caller, ordered migrations, exact service convergence,
 canary allowlist/pass/close/delete, an explicit nonempty widening cohort, and
 the rollback floor. The migration and
 canary events carry the exact database and compatibility artifact digests
