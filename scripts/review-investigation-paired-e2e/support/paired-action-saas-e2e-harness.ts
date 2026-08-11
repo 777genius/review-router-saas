@@ -879,8 +879,10 @@ function productionEnvironment(input: {
     },
   ]);
   return {
+    NODE_ENV: "production",
     GITHUB_APP_ID: "1",
     GITHUB_APP_PRIVATE_KEY: input.appPrivateKey,
+    REVIEW_ROUTER_PUBLIC_API_URL: "https://api.reviewrouter.test",
     REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter-paired-e2e",
     REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID: capabilityKeyId,
     REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON: signingKeys,
