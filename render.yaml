@@ -25,6 +25,9 @@ services:
         # Provision reviewrouter_web as a non-owner runtime role, then enter
         # its private URL during Blueprint sync. Never use the database owner.
         sync: false
+      - key: REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL
+        # Isolated signer login; it has EXECUTE only on the authority signer.
+        sync: false
 
   - type: web
     name: reviewrouter-api
@@ -46,6 +49,9 @@ services:
         value: 10000
       - key: DATABASE_URL
         # Provision reviewrouter_api as a non-owner runtime role.
+        sync: false
+      - key: REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL
+        # Isolated signer login; it has no direct rotating-table privileges.
         sync: false
       # GitLab integration is API-only. Runtime/model credentials still stay in
       # the user's GitLab CI/CD variables.

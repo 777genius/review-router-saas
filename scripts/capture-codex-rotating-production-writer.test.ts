@@ -110,7 +110,7 @@ describe("production-writer rollout observation capture", () => {
       functionsEnd,
     );
 
-    expect(codexRotatingFunctionBodyDigests).toHaveLength(12);
+    expect(codexRotatingFunctionBodyDigests).toHaveLength(18);
     expect(functionsSql).toContain("'bodySha256'");
     expect(functionsSql).toContain("p.prosrc");
     expect(functionsSql).toContain("sha256(convert_to(btrim(");

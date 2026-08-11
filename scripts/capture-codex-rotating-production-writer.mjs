@@ -67,7 +67,11 @@ const catalogTriggerTables = [
 ];
 const releaseMigrationRole = codexRotatingDatabaseRoles.releaseMigration;
 const runtimeDatabaseRoles = codexRotatingDatabaseRoles.runtime;
-const allDatabaseRoles = [releaseMigrationRole, ...runtimeDatabaseRoles];
+const allDatabaseRoles = [
+  releaseMigrationRole,
+  codexRotatingDatabaseRoles.effectAuthority,
+  ...runtimeDatabaseRoles,
+];
 
 export const codexRotatingProductionWriterBaseObservationSql = String.raw`
 SELECT jsonb_build_object(
@@ -124,6 +128,7 @@ SELECT jsonb_build_object(
         'bypassRls', r.rolbypassrls,
         'databaseCreate', has_database_privilege(r.rolname, current_database(), 'CREATE'),
         'schemaCreate', has_schema_privilege(r.rolname, current_schema(), 'CREATE'),
+        'schemaUsage', has_schema_privilege(r.rolname, current_schema(), 'USAGE'),
         'canSetReleaseRole', coalesce(pg_has_role(
           r.oid,
           (SELECT oid FROM pg_roles WHERE rolname = '${releaseMigrationRole}'),
@@ -398,8 +403,9 @@ SELECT jsonb_build_object(
       JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE con.contype = 'c'
         AND n.nspname = current_schema()
-        AND c.relname IN ('CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent','CodexOAuthSetupRecoveryRequest','CodexOAuthSetupPayloadClaim','CodexOAuthSecretNamespace','CodexOAuthSetupDispatchAttempt')
+        AND c.relname IN ('CodexOAuthDatabaseAuthorityKey','CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent','CodexOAuthSetupRecoveryRequest','CodexOAuthSetupPayloadClaim','CodexOAuthSecretNamespace','CodexOAuthSetupDispatchAttempt')
         AND con.conname IN (
+          'CodexOAuthDatabaseAuthorityKey_singleton_check',
           'CodexOAuthProviderInstance_mutation_fence_check',
           'CodexOAuthLease_pullRequestNumber_check',
           'CodexOAuthSetupManifest_epoch_check',

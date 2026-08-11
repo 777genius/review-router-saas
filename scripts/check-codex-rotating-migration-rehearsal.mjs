@@ -51,6 +51,7 @@ try {
       .startsWith("17"),
     "the rehearsal database server must be PostgreSQL 17",
   );
+  ensureRuntimeRoles(rehearsalUrl);
   applyBaselineThrough59(rehearsalUrl);
   seedDirtyFixtures(rehearsalUrl);
   await proveMigration60LockTimeout(rehearsalUrl);
@@ -64,10 +65,12 @@ try {
   proveInjected61Rollback(rehearsalUrl);
   migrateResolve(rehearsalUrl, "--rolled-back", migration61Name);
   migrateDeploy(rehearsalUrl);
+  convergeRuntimePrivileges(rehearsalUrl);
 
   proveSuccessfulCombinedRelease(rehearsalUrl);
   proveDatabasePrivileges(rehearsalUrl);
   proveTerminalInsertGuards(rehearsalUrl);
+  proveSequentialFabricationDeniedForEveryRuntimeRole(rehearsalUrl);
   proveRuntimeVersionedWriteback(rehearsalUrl);
   proveAccountSwitchRecoveryContract(rehearsalUrl);
   proveCompletedRecoveryEvidenceRetention(rehearsalUrl);
@@ -1020,7 +1023,7 @@ function proveDatabasePrivileges(url) {
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = current_schema() AND p.proname LIKE 'codex_oauth_%';
-        IF function_count <> 12 OR unsafe_function_count <> 0 THEN
+        IF function_count <> 18 OR unsafe_function_count <> 0 THEN
           RAISE EXCEPTION 'Codex OAuth function privilege mismatch: %, %', function_count, unsafe_function_count;
         END IF;
 
@@ -1035,18 +1038,266 @@ function proveDatabasePrivileges(url) {
         WHERE n.nspname = current_schema() AND c.relkind = 'r'
           AND c.relname IN (
             'CodexOAuthChildIdentityQuarantine',
+            'CodexOAuthDatabaseAuthorityKey',
+            'CodexOAuthDatabaseAuthorityReceipt',
             'CodexOAuthProviderIdentityQuarantine',
             'CodexOAuthSecretNamespace',
             'CodexOAuthSetupDispatchAttempt',
             'CodexOAuthSetupPayloadClaim',
             'CodexOAuthSetupRecoveryRequest'
           );
-        IF table_count <> 6 OR unsafe_table_count <> 0 THEN
+        IF table_count <> 8 OR unsafe_table_count <> 0 THEN
           RAISE EXCEPTION 'Codex OAuth table privilege mismatch: %, %', table_count, unsafe_table_count;
         END IF;
       END $$;
     `,
   ]);
+}
+
+function ensureRuntimeRoles(url) {
+  psql(url, [
+    "-c",
+    String.raw`DO $$
+      DECLARE role_name text;
+      BEGIN
+        FOREACH role_name IN ARRAY ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'] LOOP
+          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+            EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', role_name);
+          END IF;
+        END LOOP;
+      END $$;`,
+  ]);
+}
+
+function convergeRuntimePrivileges(url) {
+  psql(url, [
+    "-c",
+    String.raw`DO $$
+      DECLARE role_name text;
+      BEGIN
+        FOREACH role_name IN ARRAY ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker'] LOOP
+          EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', role_name);
+          EXECUTE format('GRANT SELECT ON TABLE "Workspace", "RepositoryConnection" TO %I', role_name);
+          EXECUTE format(
+            'GRANT SELECT, INSERT, UPDATE ON TABLE "CodexOAuthChildIdentityQuarantine", "CodexOAuthLease", "CodexOAuthProviderIdentityQuarantine", "CodexOAuthProviderInstance", "CodexOAuthSecretNamespace", "CodexOAuthSetupDispatchAttempt", "CodexOAuthSetupManifest", "CodexOAuthSetupPayloadClaim", "CodexOAuthSetupRecoveryRequest", "CodexOAuthWritebackIntent" TO %I',
+            role_name
+          );
+          EXECUTE format('REVOKE ALL ON TABLE "CodexOAuthDatabaseAuthorityReceipt" FROM %I', role_name);
+          EXECUTE format('REVOKE ALL ON TABLE "CodexOAuthDatabaseAuthorityKey" FROM %I', role_name);
+        END LOOP;
+      END $$;`,
+  ]);
+}
+
+function proveSequentialFabricationDeniedForEveryRuntimeRole(url) {
+  for (const [ordinal, role] of [
+    [1, "reviewrouter_api"],
+    [2, "reviewrouter_web"],
+    [3, "reviewrouter_worker"],
+  ]) {
+    const signer = psql(
+      url,
+      [
+        "-c",
+        `BEGIN; SET LOCAL ROLE ${quoteIdentifier(role)}; SELECT "codex_oauth_sign_database_authority"('forged'); COMMIT;`,
+      ],
+      false,
+    );
+    assert(
+      signer.status !== 0 &&
+        `${signer.stdout}${signer.stderr}`.includes(
+          "permission denied for function codex_oauth_sign_database_authority",
+        ),
+      `${role} could invoke the isolated database effect signer`,
+    );
+    const setup = psql(
+      url,
+      [
+        "-c",
+        String.raw`BEGIN;
+          SET LOCAL ROLE ${quoteIdentifier(role)};
+          UPDATE "CodexOAuthProviderInstance"
+          SET "mutationEpoch" = "mutationEpoch" + 1,
+              "mutationOwner" = 'setup',
+              "mutationOwnerId" = 'fabricated-manifest-${ordinal}',
+              "state" = 'setup_pending', "updatedAt" = now()
+          WHERE "id" = 'p-clean';
+          INSERT INTO "CodexOAuthSetupManifest" (
+            "id", "workspaceId", "repositoryId", "providerInstanceRowId",
+            "providerInstanceId", "setupNonce", "manifestJson", "status",
+            "expiresAt", "mutationEpoch", "databaseRecoveryWitness"
+          ) VALUES (
+            'fabricated-manifest-${ordinal}', 'ws-proof', 'repo-7', 'p-clean',
+            'codex-rotating:900007', 'fabricated-nonce-${ordinal}', '{}', 'issued',
+            now() + interval '1 hour',
+            (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE "id"='p-clean'),
+            repeat('a',64)
+          );
+          UPDATE "CodexOAuthSetupManifest"
+          SET "status"='fetched', "lastFetchedAt"=now(),
+              "recoveryExpiresAt"=now()+interval '1 hour'
+          WHERE "id"='fabricated-manifest-${ordinal}';
+          INSERT INTO "CodexOAuthSetupPayloadClaim" (
+            "id", "providerInstanceRowId", "workspaceId", "repositoryId", "githubRepositoryId",
+            "manifestId", "manifestDigest", "recoveryEpoch", "operationId", "payloadVersion",
+            "canonicalizationVersion", "generationHash", "accountIdentityHash", "accountIdentityAlgorithm",
+            "authByteSize", "installerVersion", "installerDigest", "databaseIncarnation",
+            "databaseRecoveryWitness", "status", "prepareReplayExpiresAt", "recoveryExpiresAt", "updatedAt"
+          ) VALUES (
+            'fabricated-claim-${ordinal}', 'p-clean', 'ws-proof', 'repo-7', '900007',
+            'fabricated-manifest-${ordinal}', repeat('b',64),
+            (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE "id"='p-clean'),
+            'fabricated-operation-${ordinal}', 2, 1, repeat('g',43), repeat('i',43),
+            'provider_issuer_subject_account_v1', 100, 'proof', repeat('e',64),
+            '7612345678901234567', repeat('a',64), 'prepared', now(), now()+interval '1 hour', now()
+          );
+          INSERT INTO "CodexOAuthSecretNamespace" (
+            "id", "providerInstanceRowId", "githubRepositoryId", "namespaceEpoch",
+            "secretName", "databaseRecoveryWitness", "status"
+          ) VALUES (
+            'fabricated-namespace-${ordinal}', 'p-clean', '900007', ${100 + ordinal},
+            'REVIEWROUTER_CODEX_AUTH_JSON_R900007_P0123456789abcdef_E${100 + ordinal}_${String(ordinal).repeat(32)}',
+            repeat('a',64), 'dispatch_authorized'
+          );
+          INSERT INTO "CodexOAuthSetupDispatchAttempt" (
+            "id", "claimId", "namespaceId", "ordinal", "idempotencyKey", "status",
+            "authorizedAt", "dispatchExpiresAt", "updatedAt"
+          ) VALUES (
+            'fabricated-attempt-${ordinal}', 'fabricated-claim-${ordinal}', 'fabricated-namespace-${ordinal}',
+            1, 'fabricated-key-${ordinal}', 'dispatch_authorized', now(), now()+interval '1 hour', now()
+          );
+          SELECT "codex_oauth_database_authority_challenge"(
+            'setup_confirmation', 'fabricated-attempt-${ordinal}', 204
+          );
+          SELECT "codex_oauth_authorize_setup_confirmation"(
+            'fabricated-attempt-${ordinal}', 204, repeat('0',64)
+          );
+          UPDATE "CodexOAuthSetupDispatchAttempt"
+          SET "status"='confirmed', "definiteResponseCode"=204,
+              "confirmedAt"=now(), "updatedAt"=now()
+          WHERE "id"='fabricated-attempt-${ordinal}';
+          COMMIT;`,
+      ],
+      false,
+    );
+    assert(
+      setup.status !== 0 &&
+        /(codex_oauth_database_authority_signature_invalid|permission denied for function codex_oauth_authorize_setup_confirmation)/u.test(
+          `${setup.stdout}${setup.stderr}`,
+        ),
+      `${role} fabricated setup sequence did not fail on database authority`,
+    );
+
+    const runtime = psql(
+      url,
+      [
+        "-c",
+        String.raw`BEGIN;
+          SET LOCAL ROLE ${quoteIdentifier(role)};
+          UPDATE "CodexOAuthProviderInstance"
+          SET "mutationEpoch" = "mutationEpoch" + 1,
+              "mutationOwner" = 'runtime',
+              "mutationOwnerId" = 'fabricated-lease-${ordinal}',
+              "state" = 'active', "updatedAt" = now()
+          WHERE "id" = 'p-clean';
+          INSERT INTO "CodexOAuthLease" (
+            "id", "providerInstanceRowId", "providerInstanceId", "workspaceId", "repositoryId",
+            "githubRunId", "githubRunAttempt", "leaseKey", "status", "expiresAt", "mutationEpoch"
+          ) VALUES (
+            'fabricated-lease-${ordinal}', 'p-clean', 'codex-rotating:900007', 'ws-proof', 'repo-7',
+            'fabricated-run-${ordinal}', '1', 'fabricated-lease-key-${ordinal}', 'preleased',
+            now()+interval '1 hour',
+            (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE "id"='p-clean')
+          );
+          UPDATE "CodexOAuthProviderInstance"
+          SET "activeLeaseId"='fabricated-lease-${ordinal}',
+              "activeLeaseExpiresAt"=now()+interval '1 hour', "updatedAt"=now()
+          WHERE "id"='p-clean';
+          UPDATE "CodexOAuthLease"
+          SET "status"='finalized', "nextGeneration"=2, "restoredGenerationHash"='old',
+              "writebackPreflightKeyId"='kid', "writebackPreflightedAt"=now(), "finalizedAt"=now()
+          WHERE "id"='fabricated-lease-${ordinal}';
+          INSERT INTO "CodexOAuthSecretNamespace" (
+            "id", "providerInstanceRowId", "githubRepositoryId", "namespaceEpoch",
+            "secretName", "databaseRecoveryWitness", "status"
+          ) VALUES (
+            'fabricated-runtime-namespace-${ordinal}', 'p-clean', '900007', ${200 + ordinal},
+            'REVIEWROUTER_CODEX_AUTH_JSON_R900007_P0123456789abcdef_E${200 + ordinal}_${String(ordinal + 3).repeat(32)}',
+            repeat('a',64), 'dispatch_authorized'
+          );
+          INSERT INTO "CodexOAuthWritebackIntent" (
+            "id", "providerInstanceRowId", "leaseId", "providerInstanceId", "idempotencyKey",
+            "generation", "latestGenerationHash", "encryptedPayloadDigest", "keyId", "status",
+            "safeErrorCode", "mutationEpoch", "dispatchAttemptId", "secretNamespaceId",
+            "dispatchAuthorizedAt", "databaseIncarnation", "databaseRecoveryWitness",
+            "accountIdentityHash", "accountIdentityAlgorithm", "executorOwner", "executorLeaseExpiresAt", "updatedAt"
+          ) VALUES (
+            'fabricated-intent-${ordinal}', 'p-clean', 'fabricated-lease-${ordinal}', 'codex-rotating:900007',
+            'fabricated-intent-key-${ordinal}', 2, 'new', 'digest', 'kid', 'pending',
+            'versioned_dispatch_authorized_v1',
+            (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE "id"='p-clean'),
+            'fabricated-runtime-attempt-${ordinal}', 'fabricated-runtime-namespace-${ordinal}', now(),
+            '7612345678901234567', repeat('a',64), repeat('i',43),
+            'provider_issuer_subject_account_v1', 'fabricated-executor-${ordinal}', now()+interval '1 hour', now()
+          );
+          SELECT "codex_oauth_database_authority_challenge"(
+            'runtime_confirmation', 'fabricated-intent-${ordinal}', 204
+          );
+          SELECT "codex_oauth_authorize_runtime_confirmation"(
+            'fabricated-intent-${ordinal}', 'fabricated-executor-${ordinal}',
+            204, repeat('0',64)
+          );
+          UPDATE "CodexOAuthWritebackIntent"
+          SET "providerResponseCode"=204, "providerConfirmedAt"=now(),
+              "safeErrorCode"='versioned_provider_confirmed_v1', "updatedAt"=now()
+          WHERE "id"='fabricated-intent-${ordinal}';
+          UPDATE "CodexOAuthSecretNamespace"
+          SET "status"='confirmed_candidate', "confirmedAt"=now()
+          WHERE "id"='fabricated-runtime-namespace-${ordinal}';
+          UPDATE "CodexOAuthSecretNamespace"
+          SET "status"='active',
+              "workflowPath"='.github/workflows/reviewrouter-codex.yml',
+              "workflowSourceCommitSha"=repeat('a',40),
+              "workflowSourceBlobSha"=repeat('b',40),
+              "workflowSourceSha256"=repeat('c',64),
+              "workflowSemanticSha256"=repeat('d',64),
+              "workflowSourceTrust"='trusted_default_branch_revision',
+              "attestedRepositoryId"='900007', "activatedAt"=now()
+          WHERE "id"='fabricated-runtime-namespace-${ordinal}';
+          UPDATE "CodexOAuthProviderInstance"
+          SET "activeSecretNamespaceId"='fabricated-runtime-namespace-${ordinal}',
+              "activeSecretNamespaceEpoch"=${200 + ordinal},
+              "activeSecretNamespaceName"=
+                'REVIEWROUTER_CODEX_AUTH_JSON_R900007_P0123456789abcdef_E${200 + ordinal}_${String(ordinal + 3).repeat(32)}',
+              "latestGeneration"=2, "latestGenerationHash"='new',
+              "activeAccountIdentityHash"=repeat('i',43),
+              "state"='active', "activeLeaseId"=NULL,
+              "activeLeaseExpiresAt"=NULL,
+              "mutationEpoch"="mutationEpoch"+1, "updatedAt"=now()
+          WHERE "id"='p-clean';
+          UPDATE "CodexOAuthProviderInstance"
+          SET "mutationOwner"=NULL, "mutationOwnerId"=NULL, "updatedAt"=now()
+          WHERE "id"='p-clean';
+          UPDATE "CodexOAuthLease"
+          SET "status"='completed', "completedAt"=now(),
+              "secretNamespaceId"='fabricated-runtime-namespace-${ordinal}',
+              "secretNamespaceEpoch"=${200 + ordinal}
+          WHERE "id"='fabricated-lease-${ordinal}';
+          UPDATE "CodexOAuthWritebackIntent"
+          SET "status"='completed', "completedAt"=now(), "updatedAt"=now()
+          WHERE "id"='fabricated-intent-${ordinal}';
+          COMMIT;`,
+      ],
+      false,
+    );
+    assert(
+      runtime.status !== 0 &&
+        /(codex_oauth_database_authority_signature_invalid|permission denied for function codex_oauth_authorize_runtime_confirmation)/u.test(
+          `${runtime.stdout}${runtime.stderr}`,
+        ),
+      `${role} fabricated runtime sequence did not fail on database authority`,
+    );
+  }
 }
 
 function proveTerminalInsertGuards(url) {

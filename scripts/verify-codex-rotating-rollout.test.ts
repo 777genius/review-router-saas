@@ -29,7 +29,7 @@ import {
 const atomicSetupPayloadClaimReleaseChecksum =
   "33100d6f5f3f59cd9a4c22f041d19caba6a0e0be88de4a0ee4d543af50619481";
 const versionedSecretNamespaceForwardChecksum =
-  "c356b9a434992811a52acc8cb985d1325c9f669e4f54933669aba766bde74c2b";
+  "d349e7bc2a114571070cf451e07ac2c9b0124dfa7565eb4e2e2ccd1c3d788718";
 
 describe("observation-backed Codex rotating rollout verifier", () => {
   it("keeps the exhaustive column inventory synchronized with Prisma", () => {
@@ -73,7 +73,7 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         "utf8",
       );
       for (const match of sql.matchAll(
-        /CREATE OR REPLACE FUNCTION "([^"]+)"\s*\([\s\S]*?\)\s*RETURNS?\s+[\s\S]*?LANGUAGE plpgsql AS \$\$([\s\S]*?)\$\$;/gu,
+        /CREATE (?:OR REPLACE )?FUNCTION "([^"]+)"\s*\([\s\S]*?\)\s*RETURNS?\s+[\s\S]*?LANGUAGE plpgsql[\s\S]*?AS \$\$([\s\S]*?)\$\$;/gu,
       )) {
         finalBodies.set(match[1], match[2]);
       }
@@ -767,6 +767,30 @@ describe("observation-backed Codex rotating rollout verifier", () => {
         ).publicExecute = true),
       "database owned function privileges are not exact",
     ],
+    [
+      "runtime role can invoke isolated effect signer",
+      (catalog: any) =>
+        catalog.privileges.functions.push({
+          name: "codex_oauth_sign_database_authority",
+          grantee: "reviewrouter_api",
+          grantor: "reviewrouter_release_migration",
+          privilege: "EXECUTE",
+          grantable: false,
+        }),
+      "database owned function privileges are not exact",
+    ],
+    [
+      "effect authority can read signing key",
+      (catalog: any) =>
+        catalog.privileges.tables.push({
+          name: "CodexOAuthDatabaseAuthorityKey",
+          grantee: "reviewrouter_codex_effect_authority",
+          grantor: "reviewrouter_release_migration",
+          privilege: "SELECT",
+          grantable: false,
+        }),
+      "database owned table privileges are not exact",
+    ],
   ])("rejects catalog mutation: %s", (_name, mutate, expected) => {
     const fixture = observedFixture();
     mutate(fixture.artifacts.database.catalog);
@@ -827,6 +851,7 @@ function observedFixture(): any {
         schemaOwner: "reviewrouter_release_migration",
         roles: [
           "reviewrouter_release_migration",
+          "reviewrouter_codex_effect_authority",
           "reviewrouter_api",
           "reviewrouter_web",
           "reviewrouter_worker",
@@ -841,6 +866,7 @@ function observedFixture(): any {
             bypassRls: false,
             databaseCreate: release,
             schemaCreate: release,
+            schemaUsage: true,
             canSetReleaseRole: release,
             ownsCatalogObject: release,
             ddlTablePrivileges: release,
@@ -1010,16 +1036,41 @@ function observedFixture(): any {
         })),
         primaryKeys: codexRotatingPrimaryKeys.map((key) => ({ ...key })),
         privileges: {
-          functions: codexRotatingFunctions.map((name) => ({
-            name,
-            grantee: "reviewrouter_release_migration",
-            grantor: "reviewrouter_release_migration",
-            privilege: "EXECUTE",
-            grantable: false,
-          })),
+          functions: codexRotatingFunctions.flatMap((name) =>
+            [
+              "reviewrouter_release_migration",
+              ...(name === "codex_oauth_consume_database_authority"
+                ? [
+                    "reviewrouter_api",
+                    "reviewrouter_web",
+                    "reviewrouter_worker",
+                  ]
+                : name === "codex_oauth_database_authority_challenge"
+                  ? [
+                      "reviewrouter_api",
+                      "reviewrouter_web",
+                      "reviewrouter_worker",
+                    ]
+                  : name === "codex_oauth_sign_database_authority"
+                    ? ["reviewrouter_codex_effect_authority"]
+                    : name === "codex_oauth_authorize_setup_confirmation"
+                      ? ["reviewrouter_web"]
+                      : name === "codex_oauth_authorize_runtime_confirmation" ||
+                          name === "codex_oauth_authorize_runtime_completion"
+                        ? ["reviewrouter_api"]
+                        : []),
+            ].map((grantee) => ({
+              name,
+              grantee,
+              grantor: "reviewrouter_release_migration",
+              privilege: "EXECUTE",
+              grantable: false,
+            })),
+          ),
           tables: codexRotatingCatalogTables.flatMap((name) =>
             [
               "reviewrouter_release_migration",
+              "reviewrouter_codex_effect_authority",
               "reviewrouter_api",
               "reviewrouter_web",
               "reviewrouter_worker",
@@ -1035,7 +1086,11 @@ function observedFixture(): any {
                     "TRUNCATE",
                     "UPDATE",
                   ]
-                : ["DELETE", "INSERT", "SELECT", "UPDATE"]
+                : grantee === "reviewrouter_codex_effect_authority" ||
+                    name === "CodexOAuthDatabaseAuthorityKey" ||
+                    name === "CodexOAuthDatabaseAuthorityReceipt"
+                  ? []
+                  : ["INSERT", "SELECT", "UPDATE"]
               ).map((privilege) => ({
                 name,
                 grantee,
@@ -1135,23 +1190,54 @@ function observedFixture(): any {
             prosupport: null,
             procost: 100,
             prorows: 0,
-            securityDefiner: false,
-            config: null,
+            securityDefiner:
+              name.startsWith("codex_oauth_authorize_") ||
+              name === "codex_oauth_consume_database_authority" ||
+              name === "codex_oauth_sign_database_authority",
+            config:
+              name.startsWith("codex_oauth_authorize_") ||
+              name === "codex_oauth_consume_database_authority" ||
+              name === "codex_oauth_database_authority_challenge" ||
+              name === "codex_oauth_sign_database_authority"
+                ? ["search_path=pg_catalog, public"]
+                : null,
             language: "plpgsql",
             volatility: "v",
             parallel: "u",
             leakproof: false,
             strict: false,
-            resultType: name.includes("repair") ? "void" : "trigger",
+            resultType: name.startsWith("codex_oauth_authorize_")
+              ? "void"
+              : name === "codex_oauth_consume_database_authority"
+                ? "boolean"
+                : name === "codex_oauth_database_authority_challenge" ||
+                    name === "codex_oauth_sign_database_authority"
+                  ? "text"
+                  : name.includes("repair")
+                    ? "void"
+                    : "trigger",
             arguments:
-              name === "codex_oauth_repair_quarantined_child"
-                ? "target_kind text, target_id text, replacement_lease_id text DEFAULT NULL::text"
-                : name === "codex_oauth_repair_quarantined_provider"
-                  ? "target_provider_instance_row_id text, target_github_repository_id bigint DEFAULT NULL::bigint"
-                  : "",
+              name === "codex_oauth_authorize_runtime_completion"
+                ? "target_intent_id text, target_signature text"
+                : name === "codex_oauth_authorize_runtime_confirmation"
+                  ? "target_intent_id text, target_executor_owner text, target_response_code integer, target_signature text"
+                  : name === "codex_oauth_authorize_setup_confirmation"
+                    ? "target_attempt_id text, target_response_code integer, target_signature text"
+                    : name === "codex_oauth_consume_database_authority"
+                      ? "target_effect text, target_owner_id text, target_effect_code integer"
+                      : name === "codex_oauth_database_authority_challenge"
+                        ? "target_effect text, target_owner_id text, target_effect_code integer"
+                        : name === "codex_oauth_sign_database_authority"
+                          ? "target_challenge text"
+                          : name === "codex_oauth_repair_quarantined_child"
+                            ? "target_kind text, target_id text, replacement_lease_id text DEFAULT NULL::text"
+                            : name === "codex_oauth_repair_quarantined_provider"
+                              ? "target_provider_instance_row_id text, target_github_repository_id bigint DEFAULT NULL::bigint"
+                              : "",
           }),
         ),
         checks: [
+          ["CodexOAuthDatabaseAuthorityKey_singleton_check", "singleton", true],
           [
             "CodexOAuthWritebackIntent_executor_lease_check",
             "dispatchAttemptId executorOwner executorLeaseExpiresAt dispatchAuthorizedAt",

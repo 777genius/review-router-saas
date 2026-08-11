@@ -51,6 +51,34 @@ const codexRotatingRepositoryContextSelect = {
   },
 } as const;
 
+async function signDatabaseAuthorityChallenge(input: {
+  readonly tx: Prisma.TransactionClient;
+  readonly authority: Pick<PrismaClient, "$queryRaw">;
+  readonly effect: string;
+  readonly ownerId: string;
+  readonly effectCode: number;
+}): Promise<string> {
+  const challengeRows = await input.tx.$queryRaw<
+    readonly { challenge: string }[]
+  >`
+    SELECT "codex_oauth_database_authority_challenge"(
+      ${input.effect}, ${input.ownerId}, ${input.effectCode}
+    ) AS challenge
+  `;
+  const challenge = challengeRows[0]?.challenge;
+  if (!challenge) throw new Error("codex_oauth_database_authority_unavailable");
+  const signatureRows = await input.authority.$queryRaw<
+    readonly { signature: string }[]
+  >`
+    SELECT "codex_oauth_sign_database_authority"(${challenge}) AS signature
+  `;
+  const signature = signatureRows[0]?.signature;
+  if (!signature || !/^[a-f0-9]{64}$/u.test(signature)) {
+    throw new Error("codex_oauth_database_authority_unavailable");
+  }
+  return signature;
+}
+
 export class PrismaCodexRotatingOAuthRepository
   implements
     CodexRotatingOAuthRepositoryPort,
@@ -66,6 +94,7 @@ export class PrismaCodexRotatingOAuthRepository
       readonly actionOwnerRepo: string;
       readonly workflowPath?: string;
       readonly databaseRecoveryWitness?: string;
+      readonly databaseEffectAuthority?: Pick<PrismaClient, "$queryRaw">;
     },
   ) {}
 
@@ -1130,6 +1159,20 @@ export class PrismaCodexRotatingOAuthRepository
             accountIdentityAlgorithm: input.request.accountIdentityAlgorithm,
           },
         });
+        const databaseAuthoritySignature = await signDatabaseAuthorityChallenge(
+          {
+            tx,
+            authority: this.options.databaseEffectAuthority ?? this.prisma,
+            effect: "runtime_completion",
+            ownerId: noOpIntent.id,
+            effectCode: 0,
+          },
+        );
+        await tx.$executeRaw`
+          SELECT "codex_oauth_authorize_runtime_completion"(
+            ${noOpIntent.id}, ${databaseAuthoritySignature}
+          )
+        `;
         await tx.codexOAuthLease.update({
           where: { id: lease.id },
           data: { status: "completed", completedAt: input.now },
@@ -1327,6 +1370,19 @@ export class PrismaCodexRotatingOAuthRepository
       } catch {
         throw new Error("codex_rotating_versioned_confirmation_stale_epoch");
       }
+      const databaseAuthoritySignature = await signDatabaseAuthorityChallenge({
+        tx,
+        authority: this.options.databaseEffectAuthority ?? this.prisma,
+        effect: "runtime_confirmation",
+        ownerId: input.intentId,
+        effectCode: input.statusCode,
+      });
+      await tx.$executeRaw`
+        SELECT "codex_oauth_authorize_runtime_confirmation"(
+          ${input.intentId}, ${input.executorOwner}, ${input.statusCode},
+          ${databaseAuthoritySignature}
+        )
+      `;
       const updated = await tx.codexOAuthWritebackIntent.updateMany({
         where: {
           id: input.intentId,
@@ -1730,6 +1786,18 @@ export class PrismaCodexRotatingOAuthRepository
       ) {
         throw new Error("codex_rotating_versioned_attestation_invalid");
       }
+      const databaseAuthoritySignature = await signDatabaseAuthorityChallenge({
+        tx,
+        authority: this.options.databaseEffectAuthority ?? this.prisma,
+        effect: "runtime_completion",
+        ownerId: intent.id,
+        effectCode: 0,
+      });
+      await tx.$executeRaw`
+        SELECT "codex_oauth_authorize_runtime_completion"(
+          ${intent.id}, ${databaseAuthoritySignature}
+        )
+      `;
       await tx.codexOAuthSecretNamespace.updateMany({
         where: {
           providerInstanceRowId: locator.providerInstanceRowId,

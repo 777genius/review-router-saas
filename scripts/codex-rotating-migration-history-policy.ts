@@ -19,7 +19,7 @@ export const immutableCodexRotatingMigrationChecksums = Object.freeze({
 
 export const forwardUnpublishedCodexRotatingMigration = Object.freeze({
   name: "000064_codex_oauth_versioned_secret_namespaces",
-  checksum: "c356b9a434992811a52acc8cb985d1325c9f669e4f54933669aba766bde74c2b",
+  checksum: "d349e7bc2a114571070cf451e07ac2c9b0124dfa7565eb4e2e2ccd1c3d788718",
 });
 
 export const checkedInCodexRotatingMigrationChecksums = Object.freeze({

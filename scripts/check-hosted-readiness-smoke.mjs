@@ -53,6 +53,31 @@ try {
   );
   expectStatus(localhostEnv, 1, "localhost public API URL should fail");
 
+  for (const [label, authorityUrl] of [
+    ["missing", ""],
+    [
+      "runtime-role",
+      "postgresql://reviewrouter_api:authority-password@db.reviewrouter.example:5432/review_router?schema=public",
+    ],
+    [
+      "different-database",
+      "postgresql://reviewrouter_codex_effect_authority:authority-password@other.reviewrouter.example:5432/review_router?schema=public",
+    ],
+  ]) {
+    const authorityEnv = join(tempDir, `effect-authority-${label}.env`);
+    writeFileSync(
+      authorityEnv,
+      hostedEnv({
+        REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: authorityUrl,
+      }),
+    );
+    expectStatus(
+      authorityEnv,
+      1,
+      `${label} database effect authority should fail`,
+    );
+  }
+
   for (const [index, origin] of [
     "https://127.0.0.2",
     "https://127.255.255.255",
@@ -160,6 +185,8 @@ function hostedEnv(overrides = {}) {
     NODE_ENV: "production",
     DATABASE_URL:
       "postgresql://reviewrouter:password@db.reviewrouter.example:5432/review_router?schema=public",
+    REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+      "postgresql://reviewrouter_codex_effect_authority:authority-password@db.reviewrouter.example:5432/review_router?schema=public",
     REVIEW_ROUTER_WEB_URL: "https://app.reviewrouter.example",
     REVIEW_ROUTER_API_URL: "https://api.reviewrouter.example",
     REVIEW_ROUTER_PUBLIC_API_URL: "https://api.reviewrouter.example",

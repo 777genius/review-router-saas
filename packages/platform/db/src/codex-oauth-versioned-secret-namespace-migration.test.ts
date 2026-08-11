@@ -85,7 +85,38 @@ describe("000064 never-reused versioned namespace ledger", () => {
     expect(sql).toContain("codex_oauth_secret_namespace_delete_forbidden");
     expect(sql).toContain("codex_oauth_setup_claim_delete_forbidden");
     expect(sql).toContain("codex_oauth_setup_attempt_delete_forbidden");
-    expect(sql.match(/REVOKE EXECUTE ON FUNCTION/g)).toHaveLength(12);
+    expect(sql.match(/REVOKE EXECUTE ON FUNCTION/g)).toHaveLength(18);
+    expect(sql).toContain('CREATE TABLE "CodexOAuthDatabaseAuthorityKey"');
+    expect(sql).toContain(
+      'CREATE FUNCTION "codex_oauth_sign_database_authority"',
+    );
+    expect(sql).toContain("codex_oauth_database_authority_signature_invalid");
+    expect(sql).toContain('CREATE TABLE "CodexOAuthDatabaseAuthorityReceipt"');
+    expect(sql).toContain(
+      'CREATE FUNCTION "codex_oauth_authorize_setup_confirmation"',
+    );
+    expect(sql).toContain(
+      'CREATE FUNCTION "codex_oauth_authorize_runtime_confirmation"',
+    );
+    expect(sql).toContain(
+      'CREATE FUNCTION "codex_oauth_authorize_runtime_completion"',
+    );
+    expect(sql.match(/^SECURITY DEFINER$/gmu)).toHaveLength(5);
+    expect(sql).toContain("codex_oauth_database_authority_receipt_required");
+    expect(sql).toContain(
+      '\'setup_confirmation\', OLD."id", NEW."definiteResponseCode"',
+    );
+    expect(sql).toContain(
+      '\'runtime_confirmation\', OLD."id", NEW."providerResponseCode"',
+    );
+    expect(sql).toContain("'runtime_completion', OLD.\"id\", 0");
+    expect(sql).toContain(
+      'REVOKE ALL ON TABLE "CodexOAuthDatabaseAuthorityReceipt" FROM PUBLIC',
+    );
+    expect(sql).toContain(
+      'REVOKE ALL ON TABLE "CodexOAuthDatabaseAuthorityKey" FROM PUBLIC',
+    );
+    expect(sql).toContain("reviewrouter_codex_effect_authority");
     expect(sql).toContain(
       'CREATE TRIGGER "CodexOAuthWritebackIntent_runtime_evidence_guard"',
     );

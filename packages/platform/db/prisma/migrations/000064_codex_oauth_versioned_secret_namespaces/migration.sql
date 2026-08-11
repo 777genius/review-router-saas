@@ -896,6 +896,285 @@ CREATE TRIGGER "CodexOAuthSetupRecoveryRequest_evidence_guard"
 BEFORE INSERT OR UPDATE OR DELETE ON "CodexOAuthSetupRecoveryRequest"
 FOR EACH ROW EXECUTE FUNCTION "codex_oauth_setup_recovery_evidence_guard"();
 
+-- Provider success is not ordinary relational data. The application login may
+-- stage pending work, but it cannot mint an effect receipt without a signature
+-- from the isolated effect-authority login. The signature is bound to the
+-- runtime role, backend, transaction, effect, owner, and effect code, so it is
+-- neither transferable nor replayable. Runtime and effect-authority roles have
+-- no access to the signing key or receipt tables.
+CREATE TABLE "CodexOAuthDatabaseAuthorityKey" (
+  "singleton" BOOLEAN NOT NULL DEFAULT TRUE,
+  "keyMaterial" TEXT NOT NULL DEFAULT (
+    replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')
+  ),
+  "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "CodexOAuthDatabaseAuthorityKey_pkey" PRIMARY KEY ("singleton"),
+  CONSTRAINT "CodexOAuthDatabaseAuthorityKey_singleton_check" CHECK ("singleton")
+);
+
+INSERT INTO "CodexOAuthDatabaseAuthorityKey" ("singleton") VALUES (TRUE);
+
+CREATE TABLE "CodexOAuthDatabaseAuthorityReceipt" (
+  "databaseRole" TEXT NOT NULL,
+  "backendPid" INTEGER NOT NULL,
+  "transactionId" BIGINT NOT NULL,
+  "effect" TEXT NOT NULL,
+  "ownerId" TEXT NOT NULL,
+  "effectCode" INTEGER NOT NULL,
+  "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "consumedAt" TIMESTAMPTZ(3),
+  CONSTRAINT "CodexOAuthDatabaseAuthorityReceipt_pkey"
+    PRIMARY KEY ("databaseRole", "backendPid", "transactionId", "effect", "ownerId", "effectCode")
+);
+
+CREATE FUNCTION "codex_oauth_database_authority_challenge"(
+  target_effect TEXT,
+  target_owner_id TEXT,
+  target_effect_code INTEGER
+) RETURNS text
+LANGUAGE plpgsql
+VOLATILE
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  RETURN jsonb_build_array(
+    session_user,
+    pg_backend_pid(),
+    txid_current(),
+    target_effect,
+    target_owner_id,
+    target_effect_code
+  )::text;
+END
+$$;
+
+CREATE FUNCTION "codex_oauth_sign_database_authority"(
+  target_challenge TEXT
+) RETURNS text
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE caller_role TEXT := session_user;
+DECLARE authority_key TEXT;
+BEGIN
+  IF caller_role NOT IN ('reviewrouter_codex_effect_authority', 'reviewrouter_release_migration')
+     AND caller_role <> pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid = 'public."CodexOAuthDatabaseAuthorityKey"'::regclass))
+  THEN
+    RAISE EXCEPTION 'codex_oauth_database_effect_authority_role_forbidden' USING ERRCODE = '42501';
+  END IF;
+  IF target_challenge IS NULL OR octet_length(target_challenge) > 4096 THEN
+    RAISE EXCEPTION 'codex_oauth_database_authority_challenge_invalid' USING ERRCODE = '22023';
+  END IF;
+  SELECT "keyMaterial" INTO STRICT authority_key
+  FROM public."CodexOAuthDatabaseAuthorityKey"
+  WHERE "singleton" = TRUE;
+  RETURN encode(sha256(convert_to(
+    authority_key || chr(31) || target_challenge || chr(31) || authority_key,
+    'UTF8'
+  )), 'hex');
+END $$;
+
+CREATE FUNCTION "codex_oauth_authorize_setup_confirmation"(
+  target_attempt_id TEXT,
+  target_response_code INTEGER,
+  target_signature TEXT
+) RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE caller_role TEXT := session_user;
+DECLARE authority_key TEXT;
+DECLARE expected_signature TEXT;
+BEGIN
+  IF caller_role NOT IN ('reviewrouter_web', 'reviewrouter_release_migration')
+     AND caller_role <> pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid = 'public."CodexOAuthDatabaseAuthorityReceipt"'::regclass))
+  THEN
+    RAISE EXCEPTION 'codex_oauth_database_authority_role_forbidden' USING ERRCODE = '42501';
+  END IF;
+  SELECT "keyMaterial" INTO STRICT authority_key
+  FROM public."CodexOAuthDatabaseAuthorityKey"
+  WHERE "singleton" = TRUE;
+  expected_signature := encode(sha256(convert_to(
+    authority_key || chr(31) || public."codex_oauth_database_authority_challenge"(
+      'setup_confirmation', target_attempt_id, target_response_code
+    ) || chr(31) || authority_key,
+    'UTF8'
+  )), 'hex');
+  IF target_signature IS NULL OR target_signature <> expected_signature THEN
+    RAISE EXCEPTION 'codex_oauth_database_authority_signature_invalid' USING ERRCODE = '42501';
+  END IF;
+  IF target_response_code NOT IN (201, 204) OR NOT EXISTS (
+    SELECT 1
+    FROM public."CodexOAuthSetupDispatchAttempt" attempt
+    JOIN public."CodexOAuthSetupPayloadClaim" claim ON claim."id" = attempt."claimId"
+    JOIN public."CodexOAuthSecretNamespace" namespace ON namespace."id" = attempt."namespaceId"
+    JOIN public."CodexOAuthProviderInstance" provider ON provider."id" = claim."providerInstanceRowId"
+    WHERE attempt."id" = target_attempt_id
+      AND attempt."status" = 'dispatch_authorized'
+      AND attempt."dispatchExpiresAt" > clock_timestamp()
+      AND claim."status" = 'prepared'
+      AND namespace."status" = 'dispatch_authorized'
+      AND namespace."providerInstanceRowId" = claim."providerInstanceRowId"
+      AND provider."mutationOwner" = 'setup'
+      AND provider."mutationOwnerId" = claim."manifestId"
+      AND provider."mutationEpoch" = claim."recoveryEpoch"
+  ) THEN
+    RAISE EXCEPTION 'codex_oauth_setup_confirmation_authority_invalid' USING ERRCODE = '23514';
+  END IF;
+  INSERT INTO public."CodexOAuthDatabaseAuthorityReceipt" (
+    "databaseRole", "backendPid", "transactionId", "effect", "ownerId", "effectCode"
+  ) VALUES (
+    caller_role, pg_backend_pid(), txid_current(), 'setup_confirmation', target_attempt_id, target_response_code
+  )
+  ON CONFLICT ("databaseRole", "backendPid", "transactionId", "effect", "ownerId", "effectCode")
+  DO UPDATE SET "createdAt" = clock_timestamp(), "consumedAt" = NULL;
+END $$;
+
+CREATE FUNCTION "codex_oauth_authorize_runtime_confirmation"(
+  target_intent_id TEXT,
+  target_executor_owner TEXT,
+  target_response_code INTEGER,
+  target_signature TEXT
+) RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE caller_role TEXT := session_user;
+DECLARE authority_key TEXT;
+DECLARE expected_signature TEXT;
+BEGIN
+  IF caller_role NOT IN ('reviewrouter_api', 'reviewrouter_release_migration')
+     AND caller_role <> pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid = 'public."CodexOAuthDatabaseAuthorityReceipt"'::regclass))
+  THEN
+    RAISE EXCEPTION 'codex_oauth_database_authority_role_forbidden' USING ERRCODE = '42501';
+  END IF;
+  SELECT "keyMaterial" INTO STRICT authority_key
+  FROM public."CodexOAuthDatabaseAuthorityKey"
+  WHERE "singleton" = TRUE;
+  expected_signature := encode(sha256(convert_to(
+    authority_key || chr(31) || public."codex_oauth_database_authority_challenge"(
+      'runtime_confirmation', target_intent_id, target_response_code
+    ) || chr(31) || authority_key,
+    'UTF8'
+  )), 'hex');
+  IF target_signature IS NULL OR target_signature <> expected_signature THEN
+    RAISE EXCEPTION 'codex_oauth_database_authority_signature_invalid' USING ERRCODE = '42501';
+  END IF;
+  IF target_response_code NOT IN (201, 204) OR NOT EXISTS (
+    SELECT 1
+    FROM public."CodexOAuthWritebackIntent" intent
+    JOIN public."CodexOAuthProviderInstance" provider ON provider."id" = intent."providerInstanceRowId"
+    WHERE intent."id" = target_intent_id
+      AND intent."status" = 'pending'
+      AND intent."providerResponseCode" IS NULL
+      AND intent."providerConfirmedAt" IS NULL
+      AND intent."executorOwner" = target_executor_owner
+      AND intent."executorLeaseExpiresAt" > clock_timestamp()
+      AND provider."mutationOwner" = 'runtime'
+      AND provider."mutationOwnerId" = intent."leaseId"
+      AND provider."mutationEpoch" = intent."mutationEpoch"
+  ) THEN
+    RAISE EXCEPTION 'codex_oauth_runtime_confirmation_authority_invalid' USING ERRCODE = '23514';
+  END IF;
+  INSERT INTO public."CodexOAuthDatabaseAuthorityReceipt" (
+    "databaseRole", "backendPid", "transactionId", "effect", "ownerId", "effectCode"
+  ) VALUES (
+    caller_role, pg_backend_pid(), txid_current(), 'runtime_confirmation', target_intent_id, target_response_code
+  )
+  ON CONFLICT ("databaseRole", "backendPid", "transactionId", "effect", "ownerId", "effectCode")
+  DO UPDATE SET "createdAt" = clock_timestamp(), "consumedAt" = NULL;
+END $$;
+
+CREATE FUNCTION "codex_oauth_authorize_runtime_completion"(
+  target_intent_id TEXT,
+  target_signature TEXT
+) RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE caller_role TEXT := session_user;
+DECLARE authority_key TEXT;
+DECLARE expected_signature TEXT;
+BEGIN
+  IF caller_role NOT IN ('reviewrouter_api', 'reviewrouter_release_migration')
+     AND caller_role <> pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid = 'public."CodexOAuthDatabaseAuthorityReceipt"'::regclass))
+  THEN
+    RAISE EXCEPTION 'codex_oauth_database_authority_role_forbidden' USING ERRCODE = '42501';
+  END IF;
+  SELECT "keyMaterial" INTO STRICT authority_key
+  FROM public."CodexOAuthDatabaseAuthorityKey"
+  WHERE "singleton" = TRUE;
+  expected_signature := encode(sha256(convert_to(
+    authority_key || chr(31) || public."codex_oauth_database_authority_challenge"(
+      'runtime_completion', target_intent_id, 0
+    ) || chr(31) || authority_key,
+    'UTF8'
+  )), 'hex');
+  IF target_signature IS NULL OR target_signature <> expected_signature THEN
+    RAISE EXCEPTION 'codex_oauth_database_authority_signature_invalid' USING ERRCODE = '42501';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public."CodexOAuthWritebackIntent" intent
+    JOIN public."CodexOAuthProviderInstance" provider ON provider."id" = intent."providerInstanceRowId"
+    JOIN public."CodexOAuthLease" lease ON lease."id" = intent."leaseId"
+    WHERE intent."id" = target_intent_id
+      AND intent."status" = 'pending'
+      AND lease."providerInstanceRowId" = intent."providerInstanceRowId"
+      AND provider."mutationOwner" = 'runtime'
+      AND provider."mutationOwnerId" = intent."leaseId"
+      AND provider."mutationEpoch" = intent."mutationEpoch"
+      AND (
+        (intent."providerResponseCode" IN (201, 204)
+         AND intent."providerConfirmedAt" IS NOT NULL
+         AND intent."executorOwner" IS NOT NULL
+         AND intent."executorLeaseExpiresAt" > clock_timestamp())
+        OR
+        (intent."dispatchAttemptId" IS NULL
+         AND intent."secretNamespaceId" IS NULL
+         AND intent."providerResponseCode" IS NULL
+         AND intent."providerConfirmedAt" IS NULL)
+      )
+  ) THEN
+    RAISE EXCEPTION 'codex_oauth_runtime_completion_authority_invalid' USING ERRCODE = '23514';
+  END IF;
+  INSERT INTO public."CodexOAuthDatabaseAuthorityReceipt" (
+    "databaseRole", "backendPid", "transactionId", "effect", "ownerId", "effectCode"
+  ) VALUES (
+    caller_role, pg_backend_pid(), txid_current(), 'runtime_completion', target_intent_id, 0
+  )
+  ON CONFLICT ("databaseRole", "backendPid", "transactionId", "effect", "ownerId", "effectCode")
+  DO UPDATE SET "createdAt" = clock_timestamp(), "consumedAt" = NULL;
+END $$;
+
+CREATE FUNCTION "codex_oauth_consume_database_authority"(
+  target_effect TEXT,
+  target_owner_id TEXT,
+  target_effect_code INTEGER
+) RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE consumed_count INTEGER;
+BEGIN
+  UPDATE public."CodexOAuthDatabaseAuthorityReceipt"
+  SET "consumedAt" = clock_timestamp()
+  WHERE "databaseRole" = session_user
+    AND "backendPid" = pg_backend_pid()
+    AND "transactionId" = txid_current()
+    AND "effect" = target_effect
+    AND "ownerId" = target_owner_id
+    AND "effectCode" = target_effect_code
+    AND "consumedAt" IS NULL;
+  GET DIAGNOSTICS consumed_count = ROW_COUNT;
+  RETURN consumed_count = 1;
+END $$;
+
 CREATE OR REPLACE FUNCTION "codex_oauth_setup_attempt_evidence_guard"()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE promotion_evidence_matches BOOLEAN := FALSE;
@@ -931,6 +1210,11 @@ BEGIN
         AND provider."mutationOwner" = 'setup' AND provider."mutationOwnerId" = claim."manifestId"
         AND provider."mutationEpoch" = claim."recoveryEpoch"
     ) INTO promotion_evidence_matches;
+    IF promotion_evidence_matches AND NOT "codex_oauth_consume_database_authority"(
+      'setup_confirmation', OLD."id", NEW."definiteResponseCode"
+    ) THEN
+      RAISE EXCEPTION 'codex_oauth_database_authority_receipt_required' USING ERRCODE = '42501';
+    END IF;
   ELSE
     promotion_evidence_matches := TRUE;
   END IF;
@@ -1008,6 +1292,16 @@ BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'codex_oauth_runtime_writeback_delete_forbidden' USING ERRCODE = '23514';
   END IF;
+  IF OLD."providerResponseCode" IS NULL
+     AND NEW."providerResponseCode" IN (201,204)
+     AND OLD."providerConfirmedAt" IS NULL
+     AND NEW."providerConfirmedAt" IS NOT NULL
+     AND NOT "codex_oauth_consume_database_authority"(
+       'runtime_confirmation', OLD."id", NEW."providerResponseCode"
+     )
+  THEN
+    RAISE EXCEPTION 'codex_oauth_database_authority_receipt_required' USING ERRCODE = '42501';
+  END IF;
   IF NEW."leaseId" IS DISTINCT FROM OLD."leaseId"
      OR NEW."providerInstanceId" IS DISTINCT FROM OLD."providerInstanceId"
   THEN
@@ -1036,6 +1330,11 @@ BEGIN
     END IF;
   END IF;
   IF OLD."status" = 'pending' AND NEW."status" = 'completed' THEN
+    IF NOT "codex_oauth_consume_database_authority"(
+      'runtime_completion', OLD."id", 0
+    ) THEN
+      RAISE EXCEPTION 'codex_oauth_database_authority_receipt_required' USING ERRCODE = '42501';
+    END IF;
     SELECT EXISTS (
       SELECT 1
       FROM "CodexOAuthLease" lease
@@ -1176,6 +1475,73 @@ BEFORE INSERT OR UPDATE OR DELETE ON "CodexOAuthWritebackIntent"
 FOR EACH ROW EXECUTE FUNCTION "codex_oauth_runtime_writeback_evidence_guard"();
 
 REVOKE EXECUTE ON FUNCTION "codex_oauth_runtime_writeback_evidence_guard"() FROM PUBLIC;
+REVOKE ALL ON TABLE "CodexOAuthDatabaseAuthorityKey" FROM PUBLIC;
+REVOKE ALL ON TABLE "CodexOAuthDatabaseAuthorityReceipt" FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION "codex_oauth_database_authority_challenge"(TEXT, TEXT, INTEGER) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION "codex_oauth_sign_database_authority"(TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION "codex_oauth_authorize_setup_confirmation"(TEXT, INTEGER, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION "codex_oauth_authorize_runtime_confirmation"(TEXT, TEXT, INTEGER, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION "codex_oauth_authorize_runtime_completion"(TEXT, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION "codex_oauth_consume_database_authority"(TEXT, TEXT, INTEGER) FROM PUBLIC;
+
+-- Runtime roles are provisioned before this migration in hosted environments.
+-- Conditional grants keep self-hosted owner connections usable without
+-- creating hosted identities as a side effect of schema migration.
+DO $$
+DECLARE runtime_role TEXT;
+DECLARE runtime_table TEXT;
+BEGIN
+  FOREACH runtime_role IN ARRAY ARRAY['reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker'] LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = runtime_role) THEN
+      EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', runtime_role);
+      EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION "codex_oauth_database_authority_challenge"(TEXT, TEXT, INTEGER) TO %I',
+        runtime_role
+      );
+      EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION "codex_oauth_consume_database_authority"(TEXT, TEXT, INTEGER) TO %I',
+        runtime_role
+      );
+      FOREACH runtime_table IN ARRAY ARRAY[
+        'CodexOAuthChildIdentityQuarantine',
+        'CodexOAuthLease',
+        'CodexOAuthProviderIdentityQuarantine',
+        'CodexOAuthProviderInstance',
+        'CodexOAuthSecretNamespace',
+        'CodexOAuthSetupDispatchAttempt',
+        'CodexOAuthSetupManifest',
+        'CodexOAuthSetupPayloadClaim',
+        'CodexOAuthSetupRecoveryRequest',
+        'CodexOAuthWritebackIntent'
+      ] LOOP
+        EXECUTE format('REVOKE DELETE ON TABLE %I FROM %I', runtime_table, runtime_role);
+      END LOOP;
+      EXECUTE format(
+        'REVOKE ALL ON TABLE %I FROM %I',
+        'CodexOAuthDatabaseAuthorityKey',
+        runtime_role
+      );
+      EXECUTE format(
+        'REVOKE ALL ON TABLE %I FROM %I',
+        'CodexOAuthDatabaseAuthorityReceipt',
+        runtime_role
+      );
+    END IF;
+  END LOOP;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_web') THEN
+    GRANT EXECUTE ON FUNCTION "codex_oauth_authorize_setup_confirmation"(TEXT, INTEGER, TEXT) TO reviewrouter_web;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_api') THEN
+    GRANT EXECUTE ON FUNCTION "codex_oauth_authorize_runtime_confirmation"(TEXT, TEXT, INTEGER, TEXT) TO reviewrouter_api;
+    GRANT EXECUTE ON FUNCTION "codex_oauth_authorize_runtime_completion"(TEXT, TEXT) TO reviewrouter_api;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_codex_effect_authority') THEN
+    GRANT USAGE ON SCHEMA public TO reviewrouter_codex_effect_authority;
+    GRANT EXECUTE ON FUNCTION "codex_oauth_sign_database_authority"(TEXT) TO reviewrouter_codex_effect_authority;
+    REVOKE ALL ON TABLE "CodexOAuthDatabaseAuthorityKey" FROM reviewrouter_codex_effect_authority;
+    REVOKE ALL ON TABLE "CodexOAuthDatabaseAuthorityReceipt" FROM reviewrouter_codex_effect_authority;
+  END IF;
+END $$;
 
 COMMIT;
 

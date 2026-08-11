@@ -21,6 +21,20 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     resolve(import.meta.dirname, "prove-codex-rotating-evidence-prisma.ts"),
     "utf8",
   );
+  const setupAdapterSource = readFileSync(
+    resolve(
+      import.meta.dirname,
+      "../apps/web/src/server/prisma-codex-rotating-setup-payload-claim.ts",
+    ),
+    "utf8",
+  );
+  const runtimeAdapterSource = readFileSync(
+    resolve(
+      import.meta.dirname,
+      "../packages/features/action-control-plane/src/infrastructure/prisma/prisma-codex-rotating-oauth-repository.ts",
+    ),
+    "utf8",
+  );
 
   it("keeps 000063 and 000064 in the late-failure rollback/replay matrix", () => {
     const matrix =
@@ -67,6 +81,59 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "codexRotatingProductionWriterBaseObservationSql",
     );
     expect(collection).toContain(").catalog");
+  });
+
+  it("attempts sequential setup and runtime fabrication under every runtime role", () => {
+    const attack =
+      /function proveSequentialFabricationDeniedForEveryRuntimeRole\(url\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(attack).toBeDefined();
+    for (const role of [
+      "reviewrouter_api",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+    ]) {
+      expect(attack).toContain(role);
+    }
+    for (const table of [
+      "CodexOAuthProviderInstance",
+      "CodexOAuthSetupManifest",
+      "CodexOAuthSetupPayloadClaim",
+      "CodexOAuthSecretNamespace",
+      "CodexOAuthSetupDispatchAttempt",
+      "CodexOAuthLease",
+      "CodexOAuthWritebackIntent",
+    ]) {
+      expect(attack).toContain(table);
+    }
+    expect(attack).toContain(
+      "codex_oauth_database_authority_signature_invalid",
+    );
+    expect(attack).toContain("codex_oauth_database_authority_challenge");
+    expect(attack).toContain("codex_oauth_sign_database_authority");
+    expect(attack).toContain("repeat('0',64)");
+    expect(attack).toContain("definiteResponseCode");
+    expect(attack).toContain("providerResponseCode");
+    expect(attack).toContain("\"status\"='active'");
+    expect(attack).toContain("\"status\"='completed'");
+    expect(attack).toContain('"mutationOwner"=NULL');
+    expect(attack).toContain("setup.status !== 0");
+    expect(attack).toContain("runtime.status !== 0");
+  });
+
+  it("routes production Prisma terminal writers through database authority", () => {
+    expect(setupAdapterSource).toContain(
+      'SELECT "codex_oauth_authorize_setup_confirmation"',
+    );
+    expect(runtimeAdapterSource).toContain(
+      'SELECT "codex_oauth_authorize_runtime_confirmation"',
+    );
+    expect(
+      runtimeAdapterSource.match(
+        /SELECT "codex_oauth_authorize_runtime_completion"/gu,
+      ),
+    ).toHaveLength(2);
   });
 
   it("binds acknowledged W2 recovery issuance to the explicit proof witness", () => {

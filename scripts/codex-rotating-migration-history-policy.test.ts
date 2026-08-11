@@ -62,10 +62,22 @@ describe("Codex rotating immutable migration history policy", () => {
       checkedInCodexRotatingMigrationChecksums[
         forwardUnpublishedCodexRotatingMigration.name
       ],
-    ).toBe("c356b9a434992811a52acc8cb985d1325c9f669e4f54933669aba766bde74c2b");
+    ).toBe("d349e7bc2a114571070cf451e07ac2c9b0124dfa7565eb4e2e2ccd1c3d788718");
     expect(checkedInDigest).toBe(
       forwardUnpublishedCodexRotatingMigration.checksum,
     );
+  });
+
+  it("derives the documented 000064 digest from the enforced migration policy", () => {
+    const runbook = readFileSync(
+      resolve("ai-docs/operations/08-codex-rotating-serialization-cutover.md"),
+      "utf8",
+    );
+    const documented =
+      /000064 forward-publication policy[\s\S]+?exact checked-in SHA-256 is\s+`([a-f0-9]{64})`/u.exec(
+        runbook,
+      )?.[1];
+    expect(documented).toBe(forwardUnpublishedCodexRotatingMigration.checksum);
   });
 
   it("accepts an empty catalog before first rollout", () => {

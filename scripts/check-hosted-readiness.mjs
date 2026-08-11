@@ -18,6 +18,7 @@ if (!envFileExists) {
 
 requireEqual("NODE_ENV", "production");
 requirePostgresUrl("DATABASE_URL", { allowLocalhost: false });
+requireCodexEffectAuthorityDatabaseUrl();
 requireHttpsUrl("REVIEW_ROUTER_WEB_URL");
 requireHttpsUrl("REVIEW_ROUTER_API_URL");
 requireHttpsUrl("REVIEW_ROUTER_PUBLIC_API_URL");
@@ -69,6 +70,39 @@ function requireEqual(name, expected) {
   const actual = read(name);
   if (actual !== expected) {
     errors.push(`${name} must be ${expected}.`);
+  }
+}
+
+function requireCodexEffectAuthorityDatabaseUrl() {
+  const runtimeValue = read("DATABASE_URL");
+  const authorityValue = read(
+    "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
+  );
+  if (!authorityValue) {
+    errors.push(
+      "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL is required.",
+    );
+    return;
+  }
+  try {
+    const runtime = new URL(runtimeValue);
+    const authority = new URL(authorityValue);
+    const identity = (url) =>
+      `${url.hostname.toLowerCase().replace(/\.$/u, "")}:${url.port || "5432"}${url.pathname}`;
+    if (
+      !["postgres:", "postgresql:"].includes(authority.protocol) ||
+      decodeURIComponent(authority.username) !==
+        "reviewrouter_codex_effect_authority" ||
+      !authority.password ||
+      isLoopbackHostname(authority.hostname) ||
+      identity(authority) !== identity(runtime)
+    ) {
+      throw new Error("invalid");
+    }
+  } catch {
+    errors.push(
+      "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL must authenticate as reviewrouter_codex_effect_authority on the DATABASE_URL database generation.",
+    );
   }
 }
 

@@ -453,6 +453,31 @@ model CodexOAuthSetupDispatchAttempt {
   @@index([claimId, status], map: "CodexOAuthSetupDispatchAttempt_claim_status_idx")
 }
 
+/// Private database-authority receipts are minted and consumed only by the
+/// migration-owned SECURITY DEFINER contract. They are intentionally absent
+/// from Prisma Client so application code cannot treat them as ordinary data.
+model CodexOAuthDatabaseAuthorityKey {
+  singleton   Boolean  @id @default(true)
+  keyMaterial String
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  @@ignore
+}
+
+model CodexOAuthDatabaseAuthorityReceipt {
+  databaseRole  String
+  backendPid    Int
+  transactionId BigInt
+  effect        String
+  ownerId       String
+  effectCode    Int
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  consumedAt    DateTime? @db.Timestamptz(3)
+
+  @@id([databaseRole, backendPid, transactionId, effect, ownerId, effectCode], map: "CodexOAuthDatabaseAuthorityReceipt_pkey")
+  @@ignore
+}
+
 model CodexOAuthProviderIdentityQuarantine {
   providerInstanceRowId      String    @id
   observedWorkspaceId        String

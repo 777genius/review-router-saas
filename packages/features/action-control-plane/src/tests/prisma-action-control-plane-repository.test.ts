@@ -752,10 +752,18 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
     };
     const leaseUpdate = vi.fn(async () => ({ count: 1 }));
     const tx = {
+      $executeRaw: vi.fn(
+        async (_strings: TemplateStringsArray, ..._values: unknown[]) => 1,
+      ),
       $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) =>
-        query.strings?.join("").includes("pg_control_system")
-          ? [{ databaseIncarnation: "7777777777777777777" }]
-          : [],
+        (Array.isArray(query)
+          ? Array.from(query).join("")
+          : query.strings?.join("")
+        )?.includes("codex_oauth_database_authority_challenge")
+          ? [{ challenge: '["reviewrouter_api",1,2,"effect","owner",0]' }]
+          : query.strings?.join("").includes("pg_control_system")
+            ? [{ databaseIncarnation: "7777777777777777777" }]
+            : [],
       ),
       codexOAuthWritebackIntent: {
         findUniqueOrThrow: vi
@@ -806,6 +814,7 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
       codexOAuthLease: { updateMany: leaseUpdate },
     };
     const prisma = {
+      $queryRaw: vi.fn(async () => [{ signature: "a".repeat(64) }]),
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) =>
         callback(tx),
       ),
@@ -843,6 +852,12 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
         secretNamespaceEpoch: namespace.namespaceEpoch,
       },
     });
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(
+      Array.from(tx.$executeRaw.mock.calls[0]?.[0] as readonly string[]).join(
+        "?",
+      ),
+    ).toContain("codex_oauth_authorize_runtime_completion");
   });
 });
 

@@ -142,6 +142,7 @@ const databaseUrlEnvironmentByRole = Object.freeze({
   api: "REVIEW_ROUTER_API_DATABASE_URL",
   web: "REVIEW_ROUTER_WEB_DATABASE_URL",
   worker: "REVIEW_ROUTER_WORKER_DATABASE_URL",
+  codexEffectAuthority: "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
   releaseMigration: "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
 });
 
@@ -150,6 +151,7 @@ export function resolveDistinctDatabaseRoleUrls(source) {
     api: "reviewrouter_api",
     web: "reviewrouter_web",
     worker: "reviewrouter_worker",
+    codexEffectAuthority: "reviewrouter_codex_effect_authority",
     releaseMigration: "reviewrouter_release_migration",
   };
   const urls = {};
@@ -179,7 +181,7 @@ export function resolveDistinctDatabaseRoleUrls(source) {
   }
   if (
     new Set(Object.values(urls).map((value) => new URL(value).username))
-      .size !== 4
+      .size !== 5
   ) {
     throw new Error("database role credentials must be distinct");
   }
@@ -438,6 +440,7 @@ export function serviceDetails({ type, startCommand, healthCheckPath }) {
 
 export function buildServiceEnv({
   databaseUrl,
+  databaseUrls,
   env,
   privateKey,
   role,
@@ -502,6 +505,15 @@ export function buildServiceEnv({
     REVIEW_ROUTER_WORKER_ERROR_MS: "5000",
     REVIEW_ROUTER_WORKER_IDLE_MS: "5000",
   };
+  if (role === "api" || role === "web") {
+    const authorityDatabaseUrl =
+      databaseUrls?.codexEffectAuthority ??
+      env.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL;
+    if (authorityDatabaseUrl) {
+      values.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL =
+        authorityDatabaseUrl;
+    }
+  }
   if (role === "api") {
     Object.assign(values, readOptionalEnvVars(env, apiOnlyGitLabEnvKeys));
   }
@@ -778,7 +790,7 @@ export function assertMigrationEvidence(
     ? evidence.runtimeRoles
     : [];
   if (roles.length !== expectedRoles.size) {
-    throw new Error("migration evidence must verify all four database roles");
+    throw new Error("migration evidence must verify all five database roles");
   }
   for (const role of roles) {
     const expected = expectedRoles.get(role.role);

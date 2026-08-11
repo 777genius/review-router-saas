@@ -7,6 +7,8 @@ const c = (table, name, type, nullable, defaultExpression = null) =>
 
 export const codexRotatingOwnedTables = Object.freeze([
   "CodexOAuthChildIdentityQuarantine",
+  "CodexOAuthDatabaseAuthorityKey",
+  "CodexOAuthDatabaseAuthorityReceipt",
   "CodexOAuthProviderIdentityQuarantine",
   "CodexOAuthSecretNamespace",
   "CodexOAuthSetupDispatchAttempt",
@@ -16,6 +18,8 @@ export const codexRotatingOwnedTables = Object.freeze([
 
 export const codexRotatingCatalogTables = Object.freeze([
   "CodexOAuthChildIdentityQuarantine",
+  "CodexOAuthDatabaseAuthorityKey",
+  "CodexOAuthDatabaseAuthorityReceipt",
   "CodexOAuthLease",
   "CodexOAuthProviderIdentityQuarantine",
   "CodexOAuthProviderInstance",
@@ -111,6 +115,42 @@ const legacyCatalogColumns = Object.freeze([
 ]);
 
 export const codexRotatingOwnedColumns = Object.freeze([
+  ...[
+    ["singleton", "boolean", false, "true"],
+    [
+      "keyMaterial",
+      "text",
+      false,
+      "(replace((gen_random_uuid())::text, '-'::text, ''::text) || replace((gen_random_uuid())::text, '-'::text, ''::text))",
+    ],
+    ["createdAt", "timestamp(3) with time zone", false, "CURRENT_TIMESTAMP"],
+  ].map(([name, type, nullable, defaultExpression]) =>
+    c(
+      "CodexOAuthDatabaseAuthorityKey",
+      name,
+      type,
+      nullable,
+      defaultExpression,
+    ),
+  ),
+  ...[
+    ["databaseRole", "text", false],
+    ["backendPid", "integer", false],
+    ["transactionId", "bigint", false],
+    ["effect", "text", false],
+    ["ownerId", "text", false],
+    ["effectCode", "integer", false],
+    ["createdAt", "timestamp(3) with time zone", false, "CURRENT_TIMESTAMP"],
+    ["consumedAt", "timestamp(3) with time zone", true],
+  ].map(([name, type, nullable, defaultExpression]) =>
+    c(
+      "CodexOAuthDatabaseAuthorityReceipt",
+      name,
+      type,
+      nullable,
+      defaultExpression,
+    ),
+  ),
   c("CodexOAuthProviderInstance", "mutationEpoch", "bigint", false, "0"),
   c("CodexOAuthProviderInstance", "mutationOwner", "text", true),
   c("CodexOAuthProviderInstance", "mutationOwnerId", "text", true),
@@ -379,6 +419,7 @@ export const codexRotatingCatalogColumnKeys = Object.freeze(
 );
 
 export const codexRotatingCatalogCheckNames = Object.freeze([
+  "CodexOAuthDatabaseAuthorityKey_singleton_check",
   "CodexOAuthLease_epoch_check",
   "CodexOAuthLease_pullRequestNumber_check",
   "CodexOAuthLease_secret_namespace_pair_check",
@@ -388,8 +429,8 @@ export const codexRotatingCatalogCheckNames = Object.freeze([
   "CodexOAuthSecretNamespace_name_check",
   "CodexOAuthSecretNamespace_recovery_witness_check",
   "CodexOAuthSetupDispatchAttempt_lifecycle_check",
-  "CodexOAuthSetupManifest_epoch_check",
   "CodexOAuthSetupManifest_database_recovery_witness_check",
+  "CodexOAuthSetupManifest_epoch_check",
   "CodexOAuthSetupManifest_payload_claim_complete_check",
   "CodexOAuthSetupManifest_recovery_expiry_check",
   "CodexOAuthSetupPayloadClaim_payload_check",
@@ -410,6 +451,12 @@ export const codexRotatingCatalogCheckNames = Object.freeze([
 // whitespace normalization. Full-definition equality is deliberate: checking
 // for a few tokens would accept weakened expressions such as `... AND false`.
 export const codexRotatingCheckDefinitions = Object.freeze([
+  Object.freeze({
+    name: "CodexOAuthDatabaseAuthorityKey_singleton_check",
+    definitionSha256:
+      "0a780c77dfabbc15def3d17957997d352de196c1233a0d25fccc97a40d2d6f41",
+    validated: true,
+  }),
   Object.freeze({
     name: "CodexOAuthWritebackIntent_executor_lease_check",
     definitionSha256:
@@ -804,6 +851,7 @@ export const codexRotatingIndexDefinitions = Object.freeze([
 
 export const codexRotatingDatabaseRoles = Object.freeze({
   releaseMigration: "reviewrouter_release_migration",
+  effectAuthority: "reviewrouter_codex_effect_authority",
   runtime: Object.freeze([
     "reviewrouter_api",
     "reviewrouter_web",
@@ -814,6 +862,8 @@ export const codexRotatingDatabaseRoles = Object.freeze({
 export const codexRotatingCatalogIndexNames = Object.freeze([
   "CodexOAuthChildIdentityQuarantine_pkey",
   "CodexOAuthChildIdentityQuarantine_provider_idx",
+  "CodexOAuthDatabaseAuthorityKey_pkey",
+  "CodexOAuthDatabaseAuthorityReceipt_pkey",
   "CodexOAuthLease_expiresAt_idx",
   "CodexOAuthLease_leaseKey_key",
   "CodexOAuthLease_pkey",
@@ -1060,6 +1110,16 @@ export const codexRotatingPrimaryKeys = Object.freeze(
       "CodexOAuthChildIdentityQuarantine",
       'PRIMARY KEY ("childKind", "childId")',
     ],
+    [
+      "CodexOAuthDatabaseAuthorityReceipt_pkey",
+      "CodexOAuthDatabaseAuthorityReceipt",
+      'PRIMARY KEY ("databaseRole", "backendPid", "transactionId", effect, "ownerId", "effectCode")',
+    ],
+    [
+      "CodexOAuthDatabaseAuthorityKey_pkey",
+      "CodexOAuthDatabaseAuthorityKey",
+      "PRIMARY KEY (singleton)",
+    ],
     ["CodexOAuthLease_pkey", "CodexOAuthLease", "PRIMARY KEY (id)"],
     [
       "CodexOAuthProviderIdentityQuarantine_pkey",
@@ -1113,8 +1173,28 @@ const functionBody = (name, bodySha256) => Object.freeze({ name, bodySha256 });
 // complete stored PL/pgSQL bodies rather than one easily preserved token.
 export const codexRotatingFunctionBodyDigests = Object.freeze([
   functionBody(
+    "codex_oauth_authorize_runtime_completion",
+    "753dd33a96776039c03a12ad83eddeb9ff5041c5f1aadd62fa6170806caeb694",
+  ),
+  functionBody(
+    "codex_oauth_authorize_runtime_confirmation",
+    "7282244f4ae3649cb8e97668efa351e8b4c8c9e2f5b9ed52badfd215fa138d11",
+  ),
+  functionBody(
+    "codex_oauth_authorize_setup_confirmation",
+    "26eb2db9835230178a23f36c6d44ca58a0832834293b2d43c6d10a8370bf3a7d",
+  ),
+  functionBody(
     "codex_oauth_child_identity_fence_guard",
     "29210f62bd56d1592a30ad0a3672c93d3b9b459d89e55636418a9294c0198088",
+  ),
+  functionBody(
+    "codex_oauth_consume_database_authority",
+    "f78dcb97afb2d078cfee39ecaf7cfd2de9ad7d2beac758d7eb27388bc5ce075a",
+  ),
+  functionBody(
+    "codex_oauth_database_authority_challenge",
+    "478770fa321c3f018db0bc96b571b9b82f0bd771094bde192764923b5f982e10",
   ),
   functionBody(
     "codex_oauth_provider_identity_guard",
@@ -1138,7 +1218,7 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_runtime_writeback_evidence_guard",
-    "9fe0c70cd4af0b2c488f8a1278ea3edbd5ba957df787b40202b99adb59737cc9",
+    "1cbb07bb96c15f56086f9d10fb54039e0c33a117b586b9cbe446f7c78302f096",
   ),
   functionBody(
     "codex_oauth_secret_namespace_tombstone_guard",
@@ -1146,7 +1226,7 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_setup_attempt_evidence_guard",
-    "62a73f075e314caaf55c185f8ef8b69caff31e25ae4f7a2b67aa01ade303b57f",
+    "a7bab78dcb7db3c14b279bf2948c7ae5661e5d037ba414736042dc08c469c7da",
   ),
   functionBody(
     "codex_oauth_setup_claim_evidence_guard",
@@ -1159,6 +1239,10 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   functionBody(
     "codex_oauth_setup_recovery_evidence_guard",
     "3a8fc166c2bf331161e52f7cf24efaed212ef276282b294df98f16e3c53fe4aa",
+  ),
+  functionBody(
+    "codex_oauth_sign_database_authority",
+    "2ece5dafc439c426f32d929d9580fe9fbb7cd65a24ac8733f11a1cf64c3b018f",
   ),
 ]);
 

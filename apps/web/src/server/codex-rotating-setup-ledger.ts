@@ -6,7 +6,7 @@ import {
   recordCodexRotatingSetupDispatchOutcome,
 } from "@reviewrouter/features-provider-setup";
 import { requireReviewRouterDatabaseRecoveryWitness } from "@reviewrouter/platform-config";
-import { getPrisma } from "./prisma";
+import { getCodexEffectAuthorityPrisma, getPrisma } from "./prisma";
 import { PrismaCodexRotatingSetupPayloadClaim } from "./prisma-codex-rotating-setup-payload-claim";
 
 function ledger() {
@@ -16,6 +16,7 @@ function ledger() {
       requireReviewRouterDatabaseRecoveryWitness(),
       undefined,
       process.env,
+      getCodexEffectAuthorityPrisma(),
     ),
   };
 }

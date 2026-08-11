@@ -62,7 +62,7 @@ be moved backward into 000063.
 
 `000064_codex_oauth_versioned_secret_namespaces` is the unpublished forward
 migration for this release. Its exact checked-in SHA-256 is
-`906aa45f86a6139120d55a28813cf723f6f213a4cfbfd1a45f52d5f5f0932ad6`.
+`d349e7bc2a114571070cf451e07ac2c9b0124dfa7565eb4e2e2ccd1c3d788718`.
 Before its first publication, migration preflight hashes those exact bytes and
 rejects every existing `_prisma_migrations` row named 000064, including failed,
 rolled-back, duplicate, or apparently successful rows. Do not resolve or bless
@@ -78,6 +78,30 @@ the same allow-one-exact rule used by released migrations. Until that explicit
 handoff is checked in and tested, preflight intentionally blocks every later
 release rather than guessing that publication occurred. Any later schema
 change uses a new forward migration; never edit 000064 after publication.
+
+The migration also owns the database authority for provider-effect evidence.
+Hosted runtime roles have no access to
+`CodexOAuthDatabaseAuthorityKey` or `CodexOAuthDatabaseAuthorityReceipt`,
+cannot delete rotating evidence, and cannot sign an authority challenge. The
+separate `reviewrouter_codex_effect_authority` login has no table privileges and
+can execute only the signing function; its URL is supplied to web and API as
+`REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL`. Each signature and receipt
+is bound to the runtime login role, backend, transaction, exact attempt/intent
+owner, effect, and response code, then consumed by the evidence trigger. Direct
+table DML—including a sequence of otherwise legal intermediate transitions—or
+direct invocation of a runtime authorization function cannot mint terminal
+provider success. The PostgreSQL 17 rehearsal runs that sequential attack with
+a forged signature under API, web, and worker roles and also exercises the real
+Prisma production writer paths.
+
+GitHub does not issue a database-verifiable receipt for a secret PUT. The exact
+residual assumption is that only the reviewed web/API provider-effect adapters
+receive the isolated signer credential and request a signature after their
+definite provider result; compromise of both a runtime database credential and
+the isolated signer credential can still fabricate evidence. Readiness and the
+catalog verifier fail closed unless the signer is a distinct non-owner login on
+the same database generation, has no table/DDL privileges or role memberships,
+and has only its exact function grant.
 
 ## Database recovery witness
 
@@ -288,8 +312,9 @@ The database artifact must identify the actual database (`current_database`,
 server address, and system identifier), prove `NOT pg_is_in_recovery()`,
 prove the canonical release role exclusively owns database/schema DDL,
 migration history, rotating tables, and functions, and prove the three distinct
-runtime roles cannot create database/schema objects, own catalog objects, use
-DDL table privileges, or assume the release role. It identifies the immutable
+runtime roles plus isolated effect-authority role cannot create database/schema
+objects, own catalog objects, use DDL table privileges, or assume the release
+role. It identifies the immutable
 caller by copying the IDs, commit, and image from the raw Render API
 observation, and contains two time-separated stable zero drain observations.
 The base observation and both drain samples independently report the same

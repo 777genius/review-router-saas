@@ -64,6 +64,7 @@ import {
 } from "@reviewrouter/features-system-health";
 import {
   createPrismaClient,
+  resolveCodexOAuthDatabaseEffectAuthorityUrl,
   type PrismaClient,
 } from "@reviewrouter/platform-db";
 import {
@@ -215,6 +216,18 @@ export async function createApiApp(
     investigationEvaluationImportCredentialSha256
       ? createPrismaClient()
       : undefined);
+  const codexEffectAuthorityDatabaseUrl =
+    resolveCodexOAuthDatabaseEffectAuthorityUrl({
+      env: reviewActionV2Env,
+      runtimeDatabaseUrl:
+        reviewActionV2Env.DATABASE_URL ?? process.env.DATABASE_URL,
+    });
+  const codexEffectAuthorityPrisma = codexEffectAuthorityDatabaseUrl
+    ? createPrismaClient({
+        databaseUrl: codexEffectAuthorityDatabaseUrl,
+        poolMax: 2,
+      })
+    : prisma;
   const clock = new SystemClock();
 
   app.addHook("onSend", async (request, reply, payload) => {
@@ -377,6 +390,9 @@ export async function createApiApp(
               allowedActionRefs: codexRotatingTrustedActionRefs,
               actionOwnerRepo: resolveActionOwnerRepo(codexRotatingActionRef),
               databaseRecoveryWitness,
+              ...(codexEffectAuthorityPrisma
+                ? { databaseEffectAuthority: codexEffectAuthorityPrisma }
+                : {}),
             },
           );
           const codexRotatingVersionedWriteback =
@@ -795,6 +811,11 @@ export async function createApiApp(
   if (prisma && options.prisma === undefined) {
     app.addHook("onClose", async () => {
       await prisma.$disconnect();
+    });
+  }
+  if (codexEffectAuthorityPrisma && codexEffectAuthorityPrisma !== prisma) {
+    app.addHook("onClose", async () => {
+      await codexEffectAuthorityPrisma.$disconnect();
     });
   }
 

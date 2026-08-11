@@ -1,6 +1,8 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 
+export { resolveCodexOAuthDatabaseEffectAuthorityUrl } from "./codex-oauth-database-effect-authority.js";
+
 export type DatabaseHealth = {
   readonly connected: boolean;
   readonly checkedAt: Date;

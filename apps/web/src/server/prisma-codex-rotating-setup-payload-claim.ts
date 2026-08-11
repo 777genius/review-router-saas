@@ -33,6 +33,34 @@ const dispatchWindowMs = 10 * 60 * 1000;
 const maximumAttempts = 3;
 const expiredDispatchRetired = Symbol("expired_dispatch_retired");
 
+async function signDatabaseAuthorityChallenge(input: {
+  readonly tx: Prisma.TransactionClient;
+  readonly authority: Pick<PrismaClient, "$queryRaw">;
+  readonly effect: string;
+  readonly ownerId: string;
+  readonly effectCode: number;
+}): Promise<string> {
+  const challengeRows = await input.tx.$queryRaw<
+    readonly { challenge: string }[]
+  >`
+    SELECT "codex_oauth_database_authority_challenge"(
+      ${input.effect}, ${input.ownerId}, ${input.effectCode}
+    ) AS challenge
+  `;
+  const challenge = challengeRows[0]?.challenge;
+  if (!challenge) throw new Error("codex_oauth_database_authority_unavailable");
+  const signatureRows = await input.authority.$queryRaw<
+    readonly { signature: string }[]
+  >`
+    SELECT "codex_oauth_sign_database_authority"(${challenge}) AS signature
+  `;
+  const signature = signatureRows[0]?.signature;
+  if (!signature || !/^[a-f0-9]{64}$/u.test(signature)) {
+    throw new Error("codex_oauth_database_authority_unavailable");
+  }
+  return signature;
+}
+
 type ManifestRow = {
   id: string;
   workspaceId: string;
@@ -91,6 +119,10 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
       now: () => new Date(),
     },
     private readonly runtimeEnvironment: NodeJS.ProcessEnv = process.env,
+    private readonly databaseEffectAuthority: Pick<
+      PrismaClient,
+      "$queryRaw"
+    > = prisma,
   ) {}
 
   async claim(input: CodexRotatingSetupPayloadClaim) {
@@ -448,6 +480,24 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
         ) {
           throw new Error("codex_rotating_setup_confirmation_conflict");
         }
+        // The database receipt is transaction-, backend-, role-, owner-, and
+        // response-bound. The following guarded updates cannot be reproduced
+        // by direct table DML under the web runtime login.
+        const databaseAuthoritySignature = await signDatabaseAuthorityChallenge(
+          {
+            tx,
+            authority: this.databaseEffectAuthority,
+            effect: "setup_confirmation",
+            ownerId: attempt.attemptId,
+            effectCode: input.responseCode!,
+          },
+        );
+        await tx.$executeRaw`
+          SELECT "codex_oauth_authorize_setup_confirmation"(
+            ${attempt.attemptId}, ${input.responseCode!},
+            ${databaseAuthoritySignature}
+          )
+        `;
         const confirmedAttempt = await tx.$executeRaw`
         UPDATE "CodexOAuthSetupDispatchAttempt"
         SET "status" = 'confirmed', "definiteResponseCode" = ${input.responseCode!},

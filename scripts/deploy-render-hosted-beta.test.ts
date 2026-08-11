@@ -49,7 +49,7 @@ describe("Render hosted deploy hardening", () => {
     );
   });
 
-  it("requires four distinct canonical database roles on one database", () => {
+  it("requires five distinct canonical database roles on one database", () => {
     const urls = resolveDistinctDatabaseRoleUrls({
       REVIEW_ROUTER_API_DATABASE_URL:
         "postgresql://reviewrouter_api:a@db.internal/review_router",
@@ -57,12 +57,17 @@ describe("Render hosted deploy hardening", () => {
         "postgresql://reviewrouter_web:b@db.internal/review_router",
       REVIEW_ROUTER_WORKER_DATABASE_URL:
         "postgresql://reviewrouter_worker:c@db.internal/review_router",
+      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+        "postgresql://reviewrouter_codex_effect_authority:e@db.internal/review_router",
       REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
         "postgresql://reviewrouter_release_migration:d@db.internal/review_router",
     });
     expect(new URL(urls.api).username).toBe("reviewrouter_api");
     expect(new URL(urls.releaseMigration).username).toBe(
       "reviewrouter_release_migration",
+    );
+    expect(new URL(urls.codexEffectAuthority).username).toBe(
+      "reviewrouter_codex_effect_authority",
     );
   });
 
@@ -92,6 +97,8 @@ describe("Render hosted deploy hardening", () => {
           "postgresql://reviewrouter_web:b@db.internal/review_router",
         REVIEW_ROUTER_WORKER_DATABASE_URL:
           "postgresql://reviewrouter_worker:c@db.internal/review_router",
+        REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+          "postgresql://reviewrouter_codex_effect_authority:e@db.internal/review_router",
         REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
           "postgresql://reviewrouter_release_migration:d@db.internal/review_router",
         ...override,
@@ -296,6 +303,8 @@ describe("Render hosted deploy hardening", () => {
       REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS:
         "777genius/review-router@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: witness,
+      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+        "postgresql://reviewrouter_codex_effect_authority:authority@db.internal/review_router",
     };
     const results = [];
     for (const role of ["web", "api", "worker", "api"] as const) {
@@ -318,6 +327,11 @@ describe("Render hosted deploy hardening", () => {
       );
       expect(values.REVIEW_ROUTER_CODEX_ROTATING_ALLOWED_ACTION_REFS).toBe(
         "777genius/review-router@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      );
+      expect(values.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL).toBe(
+        role === "api" || role === "web"
+          ? env.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL
+          : undefined,
       );
       results.push(values);
     }
@@ -356,6 +370,8 @@ describe("Render hosted deploy hardening", () => {
         "postgresql://reviewrouter_web:b@db.internal/review_router",
       REVIEW_ROUTER_WORKER_DATABASE_URL:
         "postgresql://reviewrouter_worker:c@db.internal:5432/review_router",
+      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+        "postgresql://reviewrouter_codex_effect_authority:e@db.internal/review_router",
       REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
         "postgresql://reviewrouter_release_migration:d@db.internal/review_router",
     });
@@ -442,6 +458,8 @@ describe("Render hosted deploy hardening", () => {
         "postgresql://reviewrouter_web:b@db.internal/review_router",
       REVIEW_ROUTER_WORKER_DATABASE_URL:
         "postgresql://reviewrouter_worker:c@db.internal/review_router",
+      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+        "postgresql://reviewrouter_codex_effect_authority:e@db.internal/review_router",
       REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:
         "postgresql://reviewrouter_release_migration:d@db.internal/review_router",
     });
