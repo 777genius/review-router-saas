@@ -167,6 +167,31 @@ Use `--reuse-current-auth` only immediately after creating a known-current
 session in that dedicated home. The default fresh login avoids reseeding stale
 local OAuth state.
 
+If a rotating run reports `refresh token was already used`, run the fresh
+reseed flow above or the repository helper and complete its browser or device
+login:
+
+```bash
+bash scripts/reseed-codex-rotating-auth.sh --repo OWNER/REPOSITORY
+```
+
+Verify only the secret metadata, never its value:
+
+```bash
+gh secret list --repo OWNER/REPOSITORY --json name,updatedAt \
+  --jq '.[] | select(.name == "REVIEWROUTER_CODEX_AUTH_JSON")'
+```
+
+An already running or completed attempt does not receive the new secret. If
+the pull request still has the same head SHA, retry its failed jobs explicitly:
+
+```bash
+gh run rerun RUN_ID --repo OWNER/REPOSITORY --failed
+```
+
+If the head moved, use the new pull request event instead of rerunning stale
+work. Reseeding does not update the workflow's pinned ReviewRouter Action SHA.
+
 ## Review Configuration CLI
 
 Platform operators can read or pin a repository's reasoning effort without

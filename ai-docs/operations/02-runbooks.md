@@ -228,6 +228,36 @@ known non-limited Codex session, then rerun the smoke. Quota-limited sessions
 are an account-capacity condition and should not be diagnosed as an OAuth
 generation-contract failure.
 
+If a rotating run instead reports `refresh token was already used`:
+
+1. Run the repository helper without `--reuse-current-auth` and complete its
+   fresh browser or device login:
+
+   ```bash
+   bash scripts/reseed-codex-rotating-auth.sh --repo OWNER/REPOSITORY
+   ```
+
+2. Verify that the rotating secret metadata has a new update time without
+   reading or printing its value:
+
+   ```bash
+   gh secret list --repo OWNER/REPOSITORY --json name,updatedAt \
+     --jq '.[] | select(.name == "REVIEWROUTER_CODEX_AUTH_JSON")'
+   ```
+
+3. Treat an already running or completed attempt as immutable. If its pull
+   request still has the same head SHA, retry only its failed jobs explicitly:
+
+   ```bash
+   gh run rerun RUN_ID --repo OWNER/REPOSITORY --failed
+   ```
+
+   If the head moved, rely on the new pull request event instead. Do not rerun
+   stale work against a different revision.
+
+4. Check the workflow's pinned ReviewRouter Action SHA separately. Reseeding
+   changes rotating auth, not the workflow runtime version.
+
 ## Codex Rotating Action Ref Mismatch
 
 Use this when a GitHub Actions run fails with `action_repository_mismatch`,
