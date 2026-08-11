@@ -323,8 +323,13 @@ authenticated directly as the LOGIN, NOCREATEROLE
 `reviewrouter_release_migration` role. Both URLs must name the same explicit
 host, port, and database; they are never interchangeable and there is no
 ambient owner or superuser fallback. Never put the bootstrap URL in the normal
-runtime-deploy process environment or `.env.production`; the deploy helper
-excludes that key from both sources and does not parse or forward it.
+runtime-deploy process environment or a general-purpose env file. Invoke the
+runtime deploy only with `pnpm deploy:render:hosted-beta`: its POSIX shell
+boundary unsets the bootstrap key before Node starts. The Node entrypoint reads
+only `REVIEW_ROUTER_RENDER_RUNTIME_DEPLOY_ENV_FILE` (defaulting to the dedicated
+`.env.render-runtime-deploy`) and fails closed if that file contains the
+bootstrap key. Bootstrap credentials remain exclusive to the protected
+role-bootstrap workflow.
 
 PostgreSQL 17 automatically records one ADMIN membership from each role created
 by a CREATEROLE login back to that creator. The recorded grantor is the single

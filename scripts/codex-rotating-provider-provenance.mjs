@@ -117,10 +117,14 @@ export async function captureRenderProvenance(
       "Render mutation-admission capture failed",
     );
     serviceRaw.push(service.raw, deploy.raw, admission.raw);
-    const preDeployCommand =
-      service.value.serviceDetails?.preDeployCommand ??
-      service.value.preDeployCommand ??
-      null;
+    const observedPreDeployCommand =
+      service.value.serviceDetails?.envSpecificDetails?.preDeployCommand;
+    if (typeof observedPreDeployCommand !== "string") {
+      throw new Error(
+        `Render runtime service ${expected.role} pre-deploy command is missing from the canonical API field`,
+      );
+    }
+    const preDeployCommand = observedPreDeployCommand || null;
     serviceFacts.push({
       role: expected.role,
       name: service.value.name,
@@ -131,7 +135,7 @@ export async function captureRenderProvenance(
       status: deploy.value.status,
       rotatingMutationAdmission: admission.value?.value,
       preDeployCommand,
-      serviceMigrationCallerEnabled: preDeployCommand !== null,
+      serviceMigrationCallerEnabled: observedPreDeployCommand !== "",
       observedAt: deploy.value.updatedAt ?? deploy.value.createdAt,
     });
   }

@@ -82,6 +82,9 @@ describe("source-bound provider provenance", () => {
       values[`/v1/services/srv-${role}`] = {
         id: `srv-${role}`,
         name: `reviewrouter-${role}`,
+        serviceDetails: {
+          envSpecificDetails: { preDeployCommand: "" },
+        },
       };
       values[`/v1/services/srv-${role}/deploys/dep-${role}`] = {
         id: `dep-${role}`,
@@ -124,9 +127,51 @@ describe("source-bound provider provenance", () => {
         key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
         sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
       },
+      services: expect.arrayContaining([
+        expect.objectContaining({
+          preDeployCommand: null,
+          serviceMigrationCallerEnabled: false,
+        }),
+      ]),
     });
     expect(observation.rawResponses.length).toBeGreaterThan(8);
     expect(JSON.stringify(observation)).not.toContain("independent-secret");
+
+    values["/v1/services/srv-api"] = {
+      id: "srv-api",
+      name: "reviewrouter-api",
+      serviceDetails: {
+        envSpecificDetails: { preDeployCommand: "pnpm db:migrate" },
+      },
+    };
+    const enabledHookObservation = await captureRenderProvenance(
+      {
+        token: "render-token",
+        ownerId: "own-1",
+        databaseId: "dpg-db",
+        migration: {
+          serviceId: "srv-migration",
+          deployId: "dep-migration",
+          jobId: "job-migration",
+        },
+        witnessServiceId: "srv-api",
+        services: ["api", "web", "worker"].map((role) => ({
+          role,
+          serviceId: `srv-${role}`,
+          deployId: `dep-${role}`,
+        })),
+      },
+      fetchImpl as typeof fetch,
+    );
+    expect(enabledHookObservation.services).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "api",
+          preDeployCommand: "pnpm db:migrate",
+          serviceMigrationCallerEnabled: true,
+        }),
+      ]),
+    );
   });
 
   it("paginates both exact GitHub statuses and derives schema versions from raw workflow blobs", async () => {

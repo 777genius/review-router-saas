@@ -257,6 +257,8 @@ describe("observation-backed Codex rotating rollout verifier", () => {
     fixture.evidence.artifacts.database.sha256 = "0".repeat(64);
     fixture.artifacts.database.history.pop();
     fixture.artifacts.database.unsafeWork.pendingIntents = 1;
+    fixture.artifacts.deployments.services[0].preDeployCommand =
+      "pnpm db:migrate";
     fixture.artifacts.deployments.services[0].serviceMigrationCallerEnabled = true;
     fixture.artifacts.compatibilityProbe.cases[0].observations.replayStatus = 500;
     fixture.artifacts.events.events.find(
@@ -653,6 +655,20 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       (fixture: any) => {
         fixture.artifacts.database.databaseAuthorization.memberships[0].grantor =
           "second_platform_role_authority";
+      },
+      "runtime database roles can perform DDL or assume the release-migration role",
+    ],
+    [
+      "bootstrap has an extra membership edge to an unrelated role",
+      (fixture: any) => {
+        fixture.artifacts.database.databaseAuthorization.memberships.push({
+          role: "unrelated_role",
+          member: "reviewrouter_role_bootstrap",
+          grantor: "platform_role_authority",
+          adminOption: true,
+          inheritOption: false,
+          setOption: false,
+        });
       },
       "runtime database roles can perform DDL or assume the release-migration role",
     ],

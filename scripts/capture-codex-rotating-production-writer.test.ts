@@ -273,6 +273,30 @@ describe("production-writer rollout observation capture", () => {
     );
   });
 
+  it("captures every membership edge touching a canonical or bootstrap role", () => {
+    const membershipsStart =
+      codexRotatingProductionWriterBaseObservationSql.indexOf(
+        "'memberships', coalesce((",
+      );
+    const membershipsEnd =
+      codexRotatingProductionWriterBaseObservationSql.indexOf(
+        "'releaseRoleSettableByLoginRoles'",
+        membershipsStart,
+      );
+    const membershipsSql =
+      codexRotatingProductionWriterBaseObservationSql.slice(
+        membershipsStart,
+        membershipsEnd,
+      );
+
+    expect(membershipsSql).toContain("reviewrouter_role_bootstrap");
+    expect(membershipsSql.match(/reviewrouter_role_bootstrap/gu)).toHaveLength(
+      2,
+    );
+    expect(membershipsSql).toContain("WHERE granted.rolname IN");
+    expect(membershipsSql).toContain("OR member.rolname IN");
+  });
+
   it("requires the exact migration rollout receipt selector", () => {
     expect(() =>
       assertProductionWriterCaptureConfiguration({

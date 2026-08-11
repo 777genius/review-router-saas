@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -24,7 +25,6 @@ import {
   triggerAndVerifyDeploy,
   verifyControlPlaneScope,
   verifyServiceEnvConvergence,
-  withoutRoleBootstrapCredential,
 } from "./deploy-render-hosted-beta.mjs";
 
 const actionSha = "0123456789abcdef0123456789abcdef01234567";
@@ -71,6 +71,51 @@ function descriptorFixture() {
 }
 
 describe("Render hosted deploy hardening", () => {
+  it("removes the bootstrap credential before the real Node entrypoint starts", () => {
+    const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+    expect(packageJson.scripts["deploy:render:hosted-beta"]).toBe(
+      "sh scripts/deploy-render-hosted-beta.sh",
+    );
+    const canary = "bootstrap-boundary-canary-must-not-reach-node";
+    const inheritedEnv = {
+      ...process.env,
+      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: canary,
+    };
+    const unbounded = spawnSync(
+      process.execPath,
+      [
+        "scripts/deploy-render-hosted-beta.mjs",
+        "--assert-runtime-deploy-process-boundary",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: inheritedEnv,
+      },
+    );
+    expect(unbounded.status).not.toBe(0);
+    expect(`${unbounded.stdout}${unbounded.stderr}`).not.toContain(canary);
+
+    const result = spawnSync(
+      "sh",
+      [
+        "scripts/deploy-render-hosted-beta.sh",
+        "--assert-runtime-deploy-process-boundary",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: inheritedEnv,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(
+      "runtime deploy process boundary check passed\n",
+    );
+    expect(`${result.stdout}${result.stderr}`).not.toContain(canary);
+  });
+
   it("keeps beta and agent entry points on dashboard-issued rotating setup and recovery", () => {
     const guidance = ["ai-docs/BETA_RUNBOOK.md", "ai-docs/AGENT_START_HERE.md"]
       .map((file) => readFileSync(file, "utf8"))
@@ -234,17 +279,13 @@ describe("Render hosted deploy hardening", () => {
       "reviewrouter_codex_effect_authority",
     );
     expect(Object.keys(urls)).toHaveLength(5);
-    expect(
-      withoutRoleBootstrapCredential({
-        KEEP: "value",
-        REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: "must-not-be-retained",
-      }),
-    ).toEqual({ KEEP: "value" });
-    expect(
+    expect(() =>
       parseHostedDeployDotenv(
         "KEEP=value\nREVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL='must-not-be-parsed'\n",
       ),
-    ).toEqual({ KEEP: "value" });
+    ).toThrow(
+      "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL is forbidden in the runtime deploy environment file",
+    );
   });
 
   it.each([
@@ -1051,7 +1092,8 @@ describe("Render hosted deploy hardening", () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     for (const [name, value] of Object.entries({
-      REVIEW_ROUTER_RENDER_ENV_FILE: "/tmp/reviewrouter-missing-env-file",
+      REVIEW_ROUTER_RENDER_RUNTIME_DEPLOY_ENV_FILE:
+        "/tmp/reviewrouter-missing-env-file",
       RENDER_OWNER_ID: "owner-1",
       RENDER_PROJECT_ID: "project-1",
       RENDER_ENVIRONMENT_ID: "environment-1",

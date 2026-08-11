@@ -39,21 +39,19 @@ function parseDotenv(text, excludedNames = new Set()) {
   return values;
 }
 
-function readOptionalDotenv(filePath) {
+function readRuntimeDeployDotenv(filePath) {
   if (!fs.existsSync(filePath)) return {};
   return parseHostedDeployDotenv(fs.readFileSync(filePath, "utf8"));
 }
 
 export function parseHostedDeployDotenv(text) {
-  return parseDotenv(text, new Set([roleBootstrapDatabaseUrlEnvironmentName]));
-}
-
-export function withoutRoleBootstrapCredential(source) {
-  return Object.fromEntries(
-    Object.entries(source).filter(
-      ([name]) => name !== roleBootstrapDatabaseUrlEnvironmentName,
-    ),
-  );
+  const values = parseDotenv(text);
+  if (Object.hasOwn(values, roleBootstrapDatabaseUrlEnvironmentName)) {
+    throw new Error(
+      `${roleBootstrapDatabaseUrlEnvironmentName} is forbidden in the runtime deploy environment file`,
+    );
+  }
+  return values;
 }
 
 export function requiredEnv(name, source) {
@@ -492,7 +490,7 @@ export function assertHostedDeployEnv({ apiUrl, env, envFile, webUrl }) {
       [
         "Refusing hosted Render deploy with local-looking configuration.",
         ...issues.map((issue) => `- ${issue}`),
-        "Use REVIEW_ROUTER_RENDER_ENV_FILE=.env.production or set REVIEW_ROUTER_ALLOW_LOCAL_DEPLOY_ENV=1 only for an intentional staging deploy.",
+        "Use REVIEW_ROUTER_RENDER_RUNTIME_DEPLOY_ENV_FILE with a dedicated runtime-deploy file or set REVIEW_ROUTER_ALLOW_LOCAL_DEPLOY_ENV=1 only for an intentional staging deploy.",
       ].join("\n"),
     );
   }
@@ -1440,11 +1438,17 @@ export async function triggerAndVerifyDeploy(
 }
 
 export async function main() {
+  if (Object.hasOwn(process.env, roleBootstrapDatabaseUrlEnvironmentName)) {
+    throw new Error(
+      `${roleBootstrapDatabaseUrlEnvironmentName} crossed the runtime deploy process boundary`,
+    );
+  }
   const envFile =
-    process.env.REVIEW_ROUTER_RENDER_ENV_FILE ?? ".env.production";
+    process.env.REVIEW_ROUTER_RENDER_RUNTIME_DEPLOY_ENV_FILE ??
+    ".env.render-runtime-deploy";
   const env = {
-    ...readOptionalDotenv(envFile),
-    ...withoutRoleBootstrapCredential(process.env),
+    ...readRuntimeDeployDotenv(envFile),
+    ...process.env,
   };
   const ownerId = requiredEnv("RENDER_OWNER_ID", env);
   const projectId = requiredEnv("RENDER_PROJECT_ID", env);
@@ -1640,5 +1644,12 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  await main();
+  if (process.argv[2] === "--assert-runtime-deploy-process-boundary") {
+    if (Object.hasOwn(process.env, roleBootstrapDatabaseUrlEnvironmentName)) {
+      throw new Error("runtime deploy process boundary check failed");
+    }
+    process.stdout.write("runtime deploy process boundary check passed\n");
+  } else {
+    await main();
+  }
 }

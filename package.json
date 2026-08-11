@@ -104,7 +104,7 @@
     "github-app:manifest:smoke": "node scripts/check-github-app-manifest-smoke.mjs",
     "github-app:use-profile": "node scripts/use-github-app-profile.mjs",
     "public-beta:check": "bash scripts/check-public-beta-readiness.sh",
-    "deploy:render:hosted-beta": "node scripts/deploy-render-hosted-beta.mjs",
+    "deploy:render:hosted-beta": "sh scripts/deploy-render-hosted-beta.sh",
     "ops:sync-action-ref": "node scripts/sync-render-action-ref.mjs",
     "hosted:api-demo:check": "node scripts/check-hosted-api-demo.mjs",
     "web:ui-audit": "node scripts/check-ui-layout.mjs",

@@ -78,12 +78,14 @@ const catalogTriggerTables = [
   ...codexRotatingCatalogTables,
 ];
 const releaseMigrationRole = codexRotatingDatabaseRoles.releaseMigration;
+const roleBootstrapRole = "reviewrouter_role_bootstrap";
 const runtimeDatabaseRoles = codexRotatingDatabaseRoles.runtime;
 const allDatabaseRoles = [
   releaseMigrationRole,
   codexRotatingDatabaseRoles.effectAuthority,
   ...runtimeDatabaseRoles,
 ];
+const observedMembershipRoles = [...allDatabaseRoles, roleBootstrapRole];
 
 export const codexRotatingProductionWriterBaseObservationSql = String.raw`
 SELECT jsonb_build_object(
@@ -269,8 +271,8 @@ SELECT jsonb_build_object(
       JOIN pg_roles granted ON granted.oid = m.roleid
       JOIN pg_roles member ON member.oid = m.member
       JOIN pg_roles grantor ON grantor.oid = m.grantor
-      WHERE granted.rolname IN (${sqlLiterals(allDatabaseRoles)})
-         OR member.rolname IN (${sqlLiterals(allDatabaseRoles)})
+      WHERE granted.rolname IN (${sqlLiterals(observedMembershipRoles)})
+         OR member.rolname IN (${sqlLiterals(observedMembershipRoles)})
     ), '[]'::jsonb),
     'releaseRoleSettableByLoginRoles', coalesce((
       SELECT jsonb_agg(r.rolname ORDER BY r.rolname)
