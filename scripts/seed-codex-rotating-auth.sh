@@ -1026,6 +1026,15 @@ NODE
   # The token exists only in this anonymous pipe. It is never placed in argv,
   # the environment, a shell variable, a log, or a file. A fresh curl process
   # performs exactly one HTTP/1.1 request with retries and redirects disabled.
+  curl_max_time=30
+  if [ -n "$CURL_TEST_MAX_TIME" ]; then
+    [ "${REVIEW_ROUTER_SEED_LIBRARY_ONLY:-0}" = "1" ] || fatal "The curl max-time override is test-only."
+    case "$CURL_TEST_MAX_TIME" in
+      ''|*[!0-9]*) fatal "The curl test max-time must be an integer." ;;
+      *) curl_max_time="$CURL_TEST_MAX_TIME" ;;
+    esac
+    [ "$curl_max_time" -ge 1 ] || fatal "The curl test max-time must be positive."
+  fi
   provider_status="$({
     if [ -n "$CURL_TEST_UNIX_SOCKET" ]; then
       [ "${REVIEW_ROUTER_SEED_LIBRARY_ONLY:-0}" = "1" ] || fatal "The curl Unix socket is test-only."
@@ -1037,15 +1046,6 @@ NODE
         *[!A-Za-z0-9_./-]*) fatal "The curl test Unix socket contains unsafe characters." ;;
       esac
       printf 'unix-socket = "%s"\n' "$CURL_TEST_UNIX_SOCKET"
-    fi
-    curl_max_time=30
-    if [ -n "$CURL_TEST_MAX_TIME" ]; then
-      [ "${REVIEW_ROUTER_SEED_LIBRARY_ONLY:-0}" = "1" ] || fatal "The curl max-time override is test-only."
-      case "$CURL_TEST_MAX_TIME" in
-        ''|*[!0-9]*) fatal "The curl test max-time must be an integer." ;;
-        *) curl_max_time="$CURL_TEST_MAX_TIME" ;;
-      esac
-      [ "$curl_max_time" -ge 1 ] || fatal "The curl test max-time must be positive."
     fi
     printf '%s\n' 'silent' 'show-error' 'request = "PUT"' \
       'url = "https://api.github.com/repos/'"$TARGET_REPO"'/actions/secrets/'"$SECRET_NAME"'"' \
