@@ -2,6 +2,11 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 
 export { resolveCodexOAuthDatabaseEffectAuthorityUrl } from "./codex-oauth-database-effect-authority.js";
+export {
+  PostgresTransactionClock,
+  type PostgresTransactionClockClient,
+  type TransactionClock,
+} from "./postgres-transaction-clock.js";
 
 export type DatabaseHealth = {
   readonly connected: boolean;

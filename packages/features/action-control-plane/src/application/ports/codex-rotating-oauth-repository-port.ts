@@ -46,7 +46,6 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
-    readonly now: Date;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;
@@ -56,7 +55,6 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly restoredGenerationHash: string;
-    readonly now: Date;
   }): Promise<{
     readonly leaseId: string;
     readonly nextGeneration: number;
@@ -68,7 +66,6 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly reason: "needs_reconnect" | "unknown_auth_state";
-    readonly now: Date;
   }): Promise<{
     readonly status: "abandoned" | "lease_not_active";
   }>;
@@ -77,7 +74,6 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly githubKeyId: string;
-    readonly now: Date;
   }): Promise<
     | {
         readonly status: "ready";
@@ -190,7 +186,6 @@ export interface CodexRotatingVersionedWritebackLedgerPort {
   prepareVersionedWriteback(input: {
     readonly request: CodexRotatingEncryptedWritebackRequest;
     readonly encryptedPayloadDigest: string;
-    readonly now: Date;
   }): Promise<
     | ({ readonly status: "ready" } & CodexRotatingVersionedWritebackClaim)
     | { readonly status: "unchanged_generation"; readonly generation: number }
@@ -205,7 +200,6 @@ export interface CodexRotatingVersionedWritebackLedgerPort {
     readonly attemptId: string;
     readonly executorOwner: string;
     readonly statusCode: 201 | 204;
-    readonly now: Date;
   }): Promise<void>;
 
   retirePreDispatchVersionedWriteback(input: {
@@ -213,7 +207,6 @@ export interface CodexRotatingVersionedWritebackLedgerPort {
     readonly attemptId: string;
     readonly executorOwner: string;
     readonly safeErrorCode: string;
-    readonly now: Date;
   }): Promise<void>;
 
   retireAmbiguousVersionedWriteback(input: {
@@ -222,7 +215,6 @@ export interface CodexRotatingVersionedWritebackLedgerPort {
     readonly executorOwner: string;
     readonly retirementIdentity: import("@reviewrouter/features-codex-oauth-rotating").RuntimeVersionedWritebackIdentity;
     readonly safeErrorCode: string;
-    readonly now: Date;
   }): Promise<void>;
 
   activateVersionedWriteback(input: {
@@ -230,7 +222,6 @@ export interface CodexRotatingVersionedWritebackLedgerPort {
     readonly attemptId: string;
     readonly executorOwner: string;
     readonly attestation: VersionedSecretWorkflowSourceAttestation;
-    readonly now: Date;
   }): Promise<{ readonly generation: number }>;
 }
 

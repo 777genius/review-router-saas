@@ -5,6 +5,14 @@ const opaqueId = z.string().regex(/^[A-Za-z0-9_.:-]{8,180}$/);
 const digest = z.string().regex(/^[A-Za-z0-9_-]{32,128}$/);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 
+export const codexRotatingSetupDispatchAuthorityTtlMs = 10 * 60_000;
+
+export function reserveCodexRotatingSetupDispatchAuthorityWindow(
+  now: Date,
+): Date {
+  return new Date(now.getTime() + codexRotatingSetupDispatchAuthorityTtlMs);
+}
+
 /**
  * Continuation capability minted only by the setup writer. `crypto.randomUUID()`
  * fixes six UUID v4/variant bits and leaves 122 unpredictable bits. Repository,

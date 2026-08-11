@@ -1,9 +1,7 @@
-import type { Clock } from "@reviewrouter/shared";
 import type { CodexRotatingOAuthRepositoryPort } from "../ports/codex-rotating-oauth-repository-port.js";
 
 export type AbandonCodexRotatingOAuthLeaseDependencies = {
   readonly codexRotatingOAuth: CodexRotatingOAuthRepositoryPort;
-  readonly clock: Clock;
 };
 
 export async function abandonCodexRotatingOAuthLease(
@@ -19,7 +17,6 @@ export async function abandonCodexRotatingOAuthLease(
 }> {
   const result = await dependencies.codexRotatingOAuth.abandonLease({
     ...input,
-    now: dependencies.clock.now(),
   });
   return {
     protocolVersion: 1,

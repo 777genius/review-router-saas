@@ -2,8 +2,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { codexRotatingProductionWriterBaseObservationSql } from "./capture-codex-rotating-production-writer.mjs";
+import { provisionAndAssertRehearsalRoles } from "./codex-rotating-rehearsal-role-provisioning.mjs";
+import { runtimeGrantStatements } from "./run-codex-rotating-release-migration.mjs";
 import { verifyCodexRotatingDatabaseCatalog } from "./verify-codex-rotating-rollout.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -14,11 +17,13 @@ const migration61Name = "000061_codex_oauth_provider_mutation_fence";
 const migration62Name = "000062_codex_oauth_remote_outcome_unknown";
 const migration63Name = "000063_codex_oauth_setup_payload_claim";
 const migration64Name = "000064_codex_oauth_versioned_secret_namespaces";
+const migration65Name = "000065_codex_oauth_authority_acl_hardening";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
 const migration63 = join(migrationsDirectory, migration63Name, "migration.sql");
 const migration64 = join(migrationsDirectory, migration64Name, "migration.sql");
+const migration65 = join(migrationsDirectory, migration65Name, "migration.sql");
 const rotatingMigrationNames = readdirSync(migrationsDirectory)
   .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
   .sort();
@@ -30,6 +35,7 @@ assert(
       migration62Name,
       migration63Name,
       migration64Name,
+      migration65Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -42,6 +48,8 @@ const psqlBinary = requirePostgres17();
 const databaseName = `rr_codex_fence_${process.pid}_${Date.now()}`;
 const adminUrl = databaseUrl(baseUrl, "postgres");
 const rehearsalUrl = databaseUrl(baseUrl, databaseName);
+const rehearsalRoleMarker = `reviewrouter-rehearsal-managed:${process.pid}:${randomUUID()}`;
+let rehearsalRoleClients;
 
 try {
   psql(adminUrl, ["-c", `CREATE DATABASE ${quoteIdentifier(databaseName)}`]);
@@ -51,7 +59,7 @@ try {
       .startsWith("17"),
     "the rehearsal database server must be PostgreSQL 17",
   );
-  ensureRuntimeRoles(rehearsalUrl);
+  rehearsalRoleClients = ensureRuntimeRoles(rehearsalUrl);
   applyBaselineThrough59(rehearsalUrl);
   seedDirtyFixtures(rehearsalUrl);
   await proveMigration60LockTimeout(rehearsalUrl);
@@ -65,13 +73,18 @@ try {
   proveInjected61Rollback(rehearsalUrl);
   migrateResolve(rehearsalUrl, "--rolled-back", migration61Name);
   migrateDeploy(rehearsalUrl);
+  convergeSyntheticReleaseOwnerEquivalentPrivileges(rehearsalUrl);
   convergeRuntimePrivileges(rehearsalUrl);
 
   proveSuccessfulCombinedRelease(rehearsalUrl);
   proveDatabasePrivileges(rehearsalUrl);
+  proveStaleAclProviderIdentityEscalationDenied(
+    rehearsalUrl,
+    rehearsalRoleClients,
+  );
   proveTerminalInsertGuards(rehearsalUrl);
-  proveSequentialFabricationDeniedForEveryRuntimeRole(rehearsalUrl);
-  proveRuntimeVersionedWriteback(rehearsalUrl);
+  proveSequentialFabricationDeniedForEveryRuntimeRole(rehearsalRoleClients);
+  proveRuntimeVersionedWriteback(rehearsalUrl, rehearsalRoleClients);
   proveAccountSwitchRecoveryContract(rehearsalUrl);
   proveCompletedRecoveryEvidenceRetention(rehearsalUrl);
   const versionedNamespaceEvidence =
@@ -79,6 +92,10 @@ try {
   provePrismaCleanupRetention(rehearsalUrl, versionedNamespaceEvidence);
   proveLegacyChildWritesRejected(rehearsalUrl);
   proveParentIdentityWriteRejected(rehearsalUrl);
+  await proveDatabaseAuthorityReceiptOneShot(
+    rehearsalUrl,
+    rehearsalRoleClients,
+  );
   proveQuarantineCleanupPath(rehearsalUrl);
   proveExactProductionCatalogContract(rehearsalUrl);
   proveMigrateDeployNoOp(rehearsalUrl);
@@ -86,7 +103,7 @@ try {
   const observation = collectObservation(rehearsalUrl);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060+000061+000062+000063+000064 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060+000061+000062+000063+000064+000065 rehearsal passed.\n",
   );
 } finally {
   psql(
@@ -97,6 +114,7 @@ try {
     ],
     false,
   );
+  cleanupRuntimeRoles(adminUrl);
 }
 
 function proveLateMigrationRollbackAndReplayMatrix() {
@@ -129,6 +147,22 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       cleanup: 'DROP INDEX "CodexOAuthSecretNamespace_secretName_key"',
       leaked:
         "SELECT count(*) FROM information_schema.tables WHERE table_name='CodexOAuthSecretNamespace'",
+    },
+    {
+      name: migration65Name,
+      source: migration65,
+      prior: [
+        [migration60Name, migration60],
+        [migration61Name, migration61],
+        [migration62Name, migration62],
+        [migration63Name, migration63],
+        [migration64Name, migration64],
+      ],
+      decoy:
+        'CREATE FUNCTION "codex_oauth_database_authority_receipt_guard"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$',
+      cleanup: 'DROP FUNCTION "codex_oauth_database_authority_receipt_guard"()',
+      leaked:
+        "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_authorize_provider_identity_repair'",
     },
   ];
   for (const [index, testCase] of cases.entries()) {
@@ -615,10 +649,11 @@ function proveSuccessfulCombinedRelease(url) {
 
       SELECT array_agg(tgname ORDER BY tgname) INTO actual FROM pg_trigger
       WHERE NOT tgisinternal AND (tgname LIKE 'CodexOAuth%guard' OR tgname = 'RepositoryConnection_codex_oauth_identity_guard');
-      expected := ARRAY['CodexOAuthLease_identity_fence_guard','CodexOAuthProviderInstance_identity_guard','CodexOAuthProviderInstance_mutation_transition_guard','CodexOAuthSecretNamespace_tombstone_guard','CodexOAuthSetupDispatchAttempt_evidence_guard','CodexOAuthSetupManifest_evidence_guard','CodexOAuthSetupManifest_identity_fence_guard','CodexOAuthSetupPayloadClaim_evidence_guard','CodexOAuthSetupRecoveryRequest_evidence_guard','CodexOAuthWritebackIntent_identity_fence_guard','CodexOAuthWritebackIntent_runtime_evidence_guard','RepositoryConnection_codex_oauth_identity_guard'];
+      expected := ARRAY['CodexOAuthDatabaseAuthorityReceipt_one_shot_guard','CodexOAuthLease_identity_fence_guard','CodexOAuthProviderInstance_identity_guard','CodexOAuthProviderInstance_mutation_transition_guard','CodexOAuthSecretNamespace_tombstone_guard','CodexOAuthSetupDispatchAttempt_evidence_guard','CodexOAuthSetupManifest_evidence_guard','CodexOAuthSetupManifest_identity_fence_guard','CodexOAuthSetupPayloadClaim_evidence_guard','CodexOAuthSetupRecoveryRequest_evidence_guard','CodexOAuthWritebackIntent_identity_fence_guard','CodexOAuthWritebackIntent_runtime_evidence_guard','RepositoryConnection_codex_oauth_identity_guard'];
       IF actual <> expected THEN RAISE EXCEPTION 'trigger catalog mismatch: %', actual; END IF;
       IF EXISTS (
         SELECT 1 FROM (VALUES
+          ('CodexOAuthDatabaseAuthorityReceipt_one_shot_guard','CodexOAuthDatabaseAuthorityReceipt','codex_oauth_database_authority_receipt_guard',27::smallint),
           ('CodexOAuthProviderInstance_identity_guard','CodexOAuthProviderInstance','codex_oauth_provider_identity_guard',23::smallint),
           ('CodexOAuthProviderInstance_mutation_transition_guard','CodexOAuthProviderInstance','codex_oauth_provider_mutation_transition_guard',19::smallint),
           ('CodexOAuthSetupManifest_identity_fence_guard','CodexOAuthSetupManifest','codex_oauth_child_identity_fence_guard',23::smallint),
@@ -679,6 +714,7 @@ function proveSuccessfulCombinedRelease(url) {
   proveMigrationRunnerHistory(url, migration62Name, true);
   proveMigrationRunnerHistory(url, migration63Name, true);
   proveMigrationRunnerHistory(url, migration64Name, true);
+  proveMigrationRunnerHistory(url, migration65Name, true);
 }
 
 function proveVersionedNamespaceLedger(url) {
@@ -686,8 +722,8 @@ function proveVersionedNamespaceLedger(url) {
     psql(url, [
       "-Atc",
       String.raw`SELECT json_build_object(
-        'tombstone', (
-          SELECT row_to_json(exact_tombstone) FROM (
+        'initialSetupTombstone', (
+          SELECT row_to_json(exact_initial_setup_tombstone) FROM (
             SELECT claim."id" AS "claimId", attempt."id" AS "attemptId",
               namespace."id" AS "namespaceId", namespace."secretName",
               namespace."namespaceEpoch"::text AS "namespaceEpoch",
@@ -700,10 +736,10 @@ function proveVersionedNamespaceLedger(url) {
             WHERE claim."providerInstanceRowId" = 'p-clean'
               AND claim."operationId" = 'operation:runtime-proof-initial'
               AND attempt."idempotencyKey" = 'dispatch:runtime-proof-initial'
-          ) exact_tombstone
+          ) exact_initial_setup_tombstone
         ),
-        'active', (
-          SELECT row_to_json(exact_active) FROM (
+        'recoverySetupTombstone', (
+          SELECT row_to_json(exact_recovery_setup_tombstone) FROM (
             SELECT claim."id" AS "claimId", attempt."id" AS "attemptId",
               namespace."id" AS "namespaceId", namespace."secretName",
               namespace."namespaceEpoch"::text AS "namespaceEpoch",
@@ -716,18 +752,56 @@ function proveVersionedNamespaceLedger(url) {
             WHERE claim."providerInstanceRowId" = 'p-clean'
               AND claim."operationId" = 'operation:runtime-proof-recovery'
               AND attempt."idempotencyKey" = 'dispatch:runtime-proof-recovery'
-          ) exact_active
+          ) exact_recovery_setup_tombstone
         ),
-        'ambiguous', (
-          SELECT row_to_json(exact_ambiguous) FROM (
+        'definiteRuntimeTombstone', (
+          SELECT row_to_json(exact_definite_runtime_tombstone) FROM (
             SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
+              namespace."namespaceEpoch"::text AS "namespaceEpoch",
+              namespace."status" AS "namespaceStatus", namespace."permanentlyRetired",
+              intent."status" AS "intentStatus"
+            FROM "CodexOAuthWritebackIntent" intent
+            JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
+            WHERE intent."providerInstanceRowId" = 'p-clean'
+              AND intent."idempotencyKey" = 'proof:definite'
+          ) exact_definite_runtime_tombstone
+        ),
+        'ambiguousRuntimeTombstone', (
+          SELECT row_to_json(exact_ambiguous_runtime_tombstone) FROM (
+            SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
+              namespace."namespaceEpoch"::text AS "namespaceEpoch",
               namespace."status" AS "namespaceStatus", namespace."permanentlyRetired",
               intent."status" AS "intentStatus", intent."recoveryRequestRowId"
             FROM "CodexOAuthWritebackIntent" intent
             JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
             WHERE intent."providerInstanceRowId" = 'p-clean'
               AND intent."idempotencyKey" = 'proof:ambiguous'
-          ) exact_ambiguous
+          ) exact_ambiguous_runtime_tombstone
+        ),
+        'activeRuntimeNamespace', (
+          SELECT row_to_json(exact_active_runtime_namespace) FROM (
+            SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
+              namespace."secretName", namespace."namespaceEpoch"::text AS "namespaceEpoch",
+              intent."accountIdentityHash", intent."latestGenerationHash",
+              intent."status" AS "intentStatus",
+              namespace."status" AS "namespaceStatus", namespace."permanentlyRetired"
+            FROM "CodexOAuthWritebackIntent" intent
+            JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
+            WHERE intent."providerInstanceRowId" = 'p-clean'
+              AND intent."idempotencyKey" = 'proof:rollback'
+          ) exact_active_runtime_namespace
+        ),
+        'confirmedRestartRuntimeTombstone', (
+          SELECT row_to_json(exact_confirmed_restart_runtime_tombstone) FROM (
+            SELECT intent."id" AS "intentId", namespace."id" AS "namespaceId",
+              namespace."namespaceEpoch"::text AS "namespaceEpoch",
+              namespace."status" AS "namespaceStatus", namespace."permanentlyRetired",
+              intent."status" AS "intentStatus"
+            FROM "CodexOAuthWritebackIntent" intent
+            JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = intent."secretNamespaceId"
+            WHERE intent."providerInstanceRowId" = 'p-clean'
+              AND intent."idempotencyKey" = 'proof:confirmed-restart'
+          ) exact_confirmed_restart_runtime_tombstone
         ),
         'provider', (
           SELECT row_to_json(exact_provider) FROM (
@@ -735,7 +809,8 @@ function proveVersionedNamespaceLedger(url) {
               repository."githubRepositoryId"::text AS "githubRepositoryId",
               provider."activeSecretNamespaceId",
               provider."activeSecretNamespaceEpoch"::text AS "activeSecretNamespaceEpoch",
-              provider."activeSecretNamespaceName", provider."activeAccountIdentityHash"
+              provider."activeSecretNamespaceName", provider."activeAccountIdentityHash",
+              provider."latestGenerationHash"
             FROM "CodexOAuthProviderInstance" provider
             JOIN "RepositoryConnection" repository ON repository."id" = provider."repositoryId"
             WHERE provider."id" = 'p-clean'
@@ -745,37 +820,78 @@ function proveVersionedNamespaceLedger(url) {
     ]).stdout.trim(),
   );
   assert(
-    evidence.tombstone?.claimStatus === "retired_active" &&
-      evidence.tombstone.attemptStatus === "retired_confirmed" &&
-      evidence.tombstone.namespaceStatus === "retired_superseded" &&
-      evidence.tombstone.permanentlyRetired === true,
-    "runtime production path did not retain the exact superseded setup namespace tombstone",
+    evidence.initialSetupTombstone?.claimStatus === "retired_active" &&
+      evidence.initialSetupTombstone.attemptStatus === "retired_confirmed" &&
+      evidence.initialSetupTombstone.namespaceStatus === "retired_superseded" &&
+      evidence.initialSetupTombstone.permanentlyRetired === true,
+    "runtime production path did not retain the exact initial setup namespace tombstone",
   );
   assert(
-    evidence.active?.claimStatus === "active" &&
-      evidence.active.attemptStatus === "confirmed" &&
-      evidence.active.namespaceStatus === "active" &&
-      evidence.active.permanentlyRetired === false &&
+    evidence.recoverySetupTombstone?.claimStatus === "active" &&
+      evidence.recoverySetupTombstone.attemptStatus === "confirmed" &&
+      evidence.recoverySetupTombstone.namespaceStatus ===
+        "retired_superseded" &&
+      evidence.recoverySetupTombstone.permanentlyRetired === true,
+    "runtime production path did not retain the exact recovery setup namespace tombstone",
+  );
+  assert(
+    evidence.definiteRuntimeTombstone?.intentStatus === "completed" &&
+      evidence.definiteRuntimeTombstone.namespaceStatus ===
+        "retired_superseded" &&
+      evidence.definiteRuntimeTombstone.permanentlyRetired === true,
+    "runtime production path did not retain the exact definite namespace tombstone",
+  );
+  assert(
+    evidence.activeRuntimeNamespace?.intentStatus === "completed" &&
+      evidence.activeRuntimeNamespace.namespaceStatus === "active" &&
+      evidence.activeRuntimeNamespace.permanentlyRetired === false &&
       evidence.provider?.activeSecretNamespaceId ===
-        evidence.active.namespaceId &&
+        evidence.activeRuntimeNamespace.namespaceId &&
       evidence.provider.activeSecretNamespaceEpoch ===
-        evidence.active.namespaceEpoch &&
+        evidence.activeRuntimeNamespace.namespaceEpoch &&
       evidence.provider.activeSecretNamespaceName ===
-        evidence.active.secretName &&
+        evidence.activeRuntimeNamespace.secretName &&
       evidence.provider.activeAccountIdentityHash ===
-        evidence.active.accountIdentityHash,
-    "runtime production path exact active namespace binding is incomplete",
+        evidence.activeRuntimeNamespace.accountIdentityHash &&
+      evidence.provider.latestGenerationHash ===
+        evidence.activeRuntimeNamespace.latestGenerationHash,
+    "runtime production path exact proof:rollback namespace binding is incomplete",
   );
   assert(
-    evidence.ambiguous?.namespaceStatus === "retired_ambiguous" &&
-      evidence.ambiguous.permanentlyRetired === true &&
-      evidence.ambiguous.intentStatus === "remote_outcome_unknown" &&
-      typeof evidence.ambiguous.recoveryRequestRowId === "string",
+    evidence.confirmedRestartRuntimeTombstone?.intentStatus ===
+      "remote_outcome_unknown" &&
+      evidence.confirmedRestartRuntimeTombstone.namespaceStatus ===
+        "retired_ambiguous" &&
+      evidence.confirmedRestartRuntimeTombstone.permanentlyRetired === true,
+    "runtime production path did not retain the exact confirmed-restart namespace tombstone",
+  );
+  assert(
+    BigInt(evidence.initialSetupTombstone.namespaceEpoch) <
+      BigInt(evidence.definiteRuntimeTombstone.namespaceEpoch) &&
+      BigInt(evidence.definiteRuntimeTombstone.namespaceEpoch) <
+        BigInt(evidence.ambiguousRuntimeTombstone.namespaceEpoch) &&
+      BigInt(evidence.ambiguousRuntimeTombstone.namespaceEpoch) <
+        BigInt(evidence.recoverySetupTombstone.namespaceEpoch) &&
+      BigInt(evidence.recoverySetupTombstone.namespaceEpoch) <
+        BigInt(evidence.activeRuntimeNamespace.namespaceEpoch) &&
+      BigInt(evidence.activeRuntimeNamespace.namespaceEpoch) <
+        BigInt(evidence.confirmedRestartRuntimeTombstone.namespaceEpoch),
+    "runtime production path namespace epochs are not monotonic across the evidence chain",
+  );
+  assert(
+    evidence.ambiguousRuntimeTombstone?.namespaceStatus ===
+      "retired_ambiguous" &&
+      evidence.ambiguousRuntimeTombstone.permanentlyRetired === true &&
+      evidence.ambiguousRuntimeTombstone.intentStatus ===
+        "remote_outcome_unknown" &&
+      typeof evidence.ambiguousRuntimeTombstone.recoveryRequestRowId ===
+        "string",
     "runtime production path did not retain the exact ambiguous namespace tombstone",
   );
 
-  const tombstone = evidence.tombstone;
-  const active = evidence.active;
+  const initialSetupTombstone = evidence.initialSetupTombstone;
+  const recoverySetupTombstone = evidence.recoverySetupTombstone;
+  const activeRuntimeNamespace = evidence.activeRuntimeNamespace;
   const provider = evidence.provider;
   const recreate = psql(
     url,
@@ -783,7 +899,7 @@ function proveVersionedNamespaceLedger(url) {
       "-c",
       `INSERT INTO "CodexOAuthSecretNamespace" ("id","providerInstanceRowId","githubRepositoryId","namespaceEpoch","secretName","databaseRecoveryWitness","status")
        SELECT 'namespace-reuse-proof', ${quoteLiteral(provider.id)}, ${quoteLiteral(provider.githubRepositoryId)},
-         max("namespaceEpoch") + 1, ${quoteLiteral(tombstone.secretName)}, ${quoteLiteral(tombstone.databaseRecoveryWitness)}, 'dispatch_authorized'
+         max("namespaceEpoch") + 1, ${quoteLiteral(initialSetupTombstone.secretName)}, ${quoteLiteral(initialSetupTombstone.databaseRecoveryWitness)}, 'dispatch_authorized'
        FROM "CodexOAuthSecretNamespace" WHERE "providerInstanceRowId"=${quoteLiteral(provider.id)}`,
     ],
     false,
@@ -805,7 +921,7 @@ function proveVersionedNamespaceLedger(url) {
       "codex_oauth_provider_mutation_fence_required",
     ],
     [
-      `UPDATE "CodexOAuthProviderInstance" SET "activeSecretNamespaceName"=${quoteLiteral(tombstone.secretName)} WHERE "id"=${quoteLiteral(provider.id)}`,
+      `UPDATE "CodexOAuthProviderInstance" SET "activeSecretNamespaceName"=${quoteLiteral(initialSetupTombstone.secretName)} WHERE "id"=${quoteLiteral(provider.id)}`,
       "codex_oauth_provider_mutation_fence_required",
     ],
     [
@@ -813,43 +929,43 @@ function proveVersionedNamespaceLedger(url) {
       "codex_oauth_provider_mutation_fence_required",
     ],
     [
-      `UPDATE "CodexOAuthSetupPayloadClaim" SET "manifestDigest"=repeat('f',64) WHERE "id"=${quoteLiteral(active.claimId)}`,
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "manifestDigest"=repeat('f',64) WHERE "id"=${quoteLiteral(recoverySetupTombstone.claimId)}`,
       "codex_oauth_setup_claim_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSetupPayloadClaim" SET "recoveryEpoch"="recoveryEpoch"+1 WHERE "id"=${quoteLiteral(active.claimId)}`,
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "recoveryEpoch"="recoveryEpoch"+1 WHERE "id"=${quoteLiteral(recoverySetupTombstone.claimId)}`,
       "codex_oauth_setup_claim_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSetupPayloadClaim" SET "installerDigest"=repeat('f',64) WHERE "id"=${quoteLiteral(active.claimId)}`,
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "installerDigest"=repeat('f',64) WHERE "id"=${quoteLiteral(recoverySetupTombstone.claimId)}`,
       "codex_oauth_setup_claim_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSetupPayloadClaim" SET "databaseRecoveryWitness"=repeat('f',64) WHERE "id"=${quoteLiteral(active.claimId)}`,
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "databaseRecoveryWitness"=repeat('f',64) WHERE "id"=${quoteLiteral(recoverySetupTombstone.claimId)}`,
       "codex_oauth_setup_claim_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSetupPayloadClaim" SET "confirmedAttemptId"=${quoteLiteral(tombstone.attemptId)} WHERE "id"=${quoteLiteral(active.claimId)}`,
+      `UPDATE "CodexOAuthSetupPayloadClaim" SET "confirmedAttemptId"=${quoteLiteral(initialSetupTombstone.attemptId)} WHERE "id"=${quoteLiteral(recoverySetupTombstone.claimId)}`,
       "codex_oauth_setup_claim_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSetupDispatchAttempt" SET "dispatchExpiresAt"="dispatchExpiresAt"+interval '1 minute' WHERE "id"=${quoteLiteral(active.attemptId)}`,
+      `UPDATE "CodexOAuthSetupDispatchAttempt" SET "dispatchExpiresAt"="dispatchExpiresAt"+interval '1 minute' WHERE "id"=${quoteLiteral(recoverySetupTombstone.attemptId)}`,
       "codex_oauth_setup_attempt_evidence_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceBlobSha"=repeat('e',40) WHERE "id"=${quoteLiteral(active.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceBlobSha"=repeat('e',40) WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(active.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSourceSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSemanticSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(active.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "workflowSemanticSha256"=repeat('e',64) WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
     [
-      `UPDATE "CodexOAuthSecretNamespace" SET "attestedRepositoryId"='900008' WHERE "id"=${quoteLiteral(active.namespaceId)}`,
+      `UPDATE "CodexOAuthSecretNamespace" SET "attestedRepositoryId"='900008' WHERE "id"=${quoteLiteral(activeRuntimeNamespace.namespaceId)}`,
       "codex_oauth_secret_namespace_identity_immutable",
     ],
   ];
@@ -864,22 +980,42 @@ function proveVersionedNamespaceLedger(url) {
   for (const [table, id, expectedError] of [
     [
       "CodexOAuthSecretNamespace",
-      tombstone.namespaceId,
+      initialSetupTombstone.namespaceId,
       "codex_oauth_secret_namespace_delete_forbidden",
     ],
     [
       "CodexOAuthSecretNamespace",
-      evidence.ambiguous.namespaceId,
+      recoverySetupTombstone.namespaceId,
+      "codex_oauth_secret_namespace_delete_forbidden",
+    ],
+    [
+      "CodexOAuthSecretNamespace",
+      evidence.definiteRuntimeTombstone.namespaceId,
+      "codex_oauth_secret_namespace_delete_forbidden",
+    ],
+    [
+      "CodexOAuthSecretNamespace",
+      evidence.ambiguousRuntimeTombstone.namespaceId,
+      "codex_oauth_secret_namespace_delete_forbidden",
+    ],
+    [
+      "CodexOAuthSecretNamespace",
+      evidence.confirmedRestartRuntimeTombstone.namespaceId,
+      "codex_oauth_secret_namespace_delete_forbidden",
+    ],
+    [
+      "CodexOAuthSecretNamespace",
+      activeRuntimeNamespace.namespaceId,
       "codex_oauth_secret_namespace_delete_forbidden",
     ],
     [
       "CodexOAuthSetupDispatchAttempt",
-      active.attemptId,
+      recoverySetupTombstone.attemptId,
       "codex_oauth_setup_attempt_delete_forbidden",
     ],
     [
       "CodexOAuthSetupPayloadClaim",
-      active.claimId,
+      recoverySetupTombstone.claimId,
       "codex_oauth_setup_claim_delete_forbidden",
     ],
   ]) {
@@ -920,19 +1056,60 @@ function assertVersionedNamespaceEvidenceRetained(
   const retained = psql(url, [
     "-Atc",
     `SELECT concat_ws(':',
-      (SELECT count(*) FROM "CodexOAuthSetupPayloadClaim" WHERE "id"=${quoteLiteral(evidence.active.claimId)}),
-      (SELECT count(*) FROM "CodexOAuthSetupDispatchAttempt" WHERE "id"=${quoteLiteral(evidence.active.attemptId)}),
-      (SELECT count(*) FROM "CodexOAuthSecretNamespace" WHERE "id"=${quoteLiteral(evidence.tombstone.namespaceId)} AND "permanentlyRetired"),
-      (SELECT count(*) FROM "CodexOAuthSecretNamespace" WHERE "id"=${quoteLiteral(evidence.ambiguous.namespaceId)} AND "permanentlyRetired"),
-      (SELECT count(*) FROM "CodexOAuthSecretNamespace" WHERE "id"=${quoteLiteral(evidence.active.namespaceId)} AND "status"='active'),
+      (SELECT count(*) FROM "CodexOAuthSetupPayloadClaim"
+        WHERE "id"=${quoteLiteral(evidence.recoverySetupTombstone.claimId)}
+          AND "confirmedAttemptId"=${quoteLiteral(evidence.recoverySetupTombstone.attemptId)}
+          AND "status"='active'),
+      (SELECT count(*) FROM "CodexOAuthSetupDispatchAttempt"
+        WHERE "id"=${quoteLiteral(evidence.recoverySetupTombstone.attemptId)}
+          AND "namespaceId"=${quoteLiteral(evidence.recoverySetupTombstone.namespaceId)}
+          AND "status"='confirmed'),
+      (SELECT count(*) FROM "CodexOAuthSecretNamespace"
+        WHERE "id"=${quoteLiteral(evidence.initialSetupTombstone.namespaceId)}
+          AND "status"='retired_superseded' AND "permanentlyRetired"),
+      (SELECT count(*) FROM "CodexOAuthSecretNamespace"
+        WHERE "id"=${quoteLiteral(evidence.recoverySetupTombstone.namespaceId)}
+          AND "status"='retired_superseded' AND "permanentlyRetired"),
+      (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
+        JOIN "CodexOAuthSecretNamespace" namespace
+          ON namespace."id"=intent."secretNamespaceId"
+        WHERE intent."id"=${quoteLiteral(evidence.definiteRuntimeTombstone.intentId)}
+          AND intent."idempotencyKey"='proof:definite'
+          AND intent."status"='completed'
+          AND namespace."id"=${quoteLiteral(evidence.definiteRuntimeTombstone.namespaceId)}
+          AND namespace."status"='retired_superseded' AND namespace."permanentlyRetired"),
+      (SELECT count(*) FROM "CodexOAuthSecretNamespace"
+        WHERE "id"=${quoteLiteral(evidence.ambiguousRuntimeTombstone.namespaceId)}
+          AND "status"='retired_ambiguous' AND "permanentlyRetired"),
+      (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
+        JOIN "CodexOAuthSecretNamespace" namespace
+          ON namespace."id"=intent."secretNamespaceId"
+        WHERE intent."id"=${quoteLiteral(evidence.confirmedRestartRuntimeTombstone.intentId)}
+          AND intent."idempotencyKey"='proof:confirmed-restart'
+          AND intent."status"='remote_outcome_unknown'
+          AND namespace."id"=${quoteLiteral(evidence.confirmedRestartRuntimeTombstone.namespaceId)}
+          AND namespace."status"='retired_ambiguous' AND namespace."permanentlyRetired"),
+      (SELECT count(*) FROM "CodexOAuthWritebackIntent" intent
+        JOIN "CodexOAuthSecretNamespace" namespace
+          ON namespace."id"=intent."secretNamespaceId"
+        WHERE intent."id"=${quoteLiteral(evidence.activeRuntimeNamespace.intentId)}
+          AND intent."idempotencyKey"='proof:rollback'
+          AND intent."status"='completed'
+          AND namespace."id"=${quoteLiteral(evidence.activeRuntimeNamespace.namespaceId)}
+          AND namespace."status"='active' AND NOT namespace."permanentlyRetired"),
+      (SELECT count(*) FROM "CodexOAuthSecretNamespace"
+        WHERE "providerInstanceRowId"=${quoteLiteral(evidence.provider.id)}
+          AND "status"='active' AND NOT "permanentlyRetired"),
       (SELECT count(*) FROM "CodexOAuthProviderInstance" WHERE "id"=${quoteLiteral(evidence.provider.id)}
-        AND "activeSecretNamespaceId"=${quoteLiteral(evidence.active.namespaceId)}
-        AND "activeSecretNamespaceEpoch"=${quoteLiteral(evidence.active.namespaceEpoch)}::bigint
-        AND "activeSecretNamespaceName"=${quoteLiteral(evidence.active.secretName)})
+        AND "activeSecretNamespaceId"=${quoteLiteral(evidence.activeRuntimeNamespace.namespaceId)}
+        AND "activeSecretNamespaceEpoch"=${quoteLiteral(evidence.activeRuntimeNamespace.namespaceEpoch)}::bigint
+        AND "activeSecretNamespaceName"=${quoteLiteral(evidence.activeRuntimeNamespace.secretName)}
+        AND "activeAccountIdentityHash"=${quoteLiteral(evidence.activeRuntimeNamespace.accountIdentityHash)}
+        AND "latestGenerationHash"=${quoteLiteral(evidence.activeRuntimeNamespace.latestGenerationHash)})
     )`,
   ]).stdout.trim();
   assert(
-    retained === "1:1:1:1:1:1",
+    retained === "1:1:1:1:1:1:1:1:1:1",
     `${attemptedTable} cleanup changed the exact runtime evidence chain (${retained})`,
   );
 }
@@ -951,9 +1128,9 @@ function provePrismaCleanupRetention(url, evidence) {
         ...process.env,
         REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL: url.toString(),
         REVIEW_ROUTER_PRISMA_EVIDENCE_IDENTITIES: JSON.stringify({
-          claimId: evidence.active.claimId,
-          attemptId: evidence.active.attemptId,
-          namespaceId: evidence.tombstone.namespaceId,
+          claimId: evidence.recoverySetupTombstone.claimId,
+          attemptId: evidence.recoverySetupTombstone.attemptId,
+          namespaceId: evidence.initialSetupTombstone.namespaceId,
           providerId: evidence.provider.id,
           repositoryId: evidence.provider.repositoryId,
           workspaceId: evidence.provider.workspaceId,
@@ -966,9 +1143,10 @@ function provePrismaCleanupRetention(url, evidence) {
     result.status === 0,
     `Prisma evidence cleanup proof failed (${result.status}): ${result.stderr || result.stdout}`,
   );
+  assertVersionedNamespaceEvidenceRetained(url, evidence, "Prisma");
 }
 
-function proveRuntimeVersionedWriteback(url) {
+function proveRuntimeVersionedWriteback(url, clients) {
   const result = spawnSync(
     process.execPath,
     [
@@ -980,7 +1158,12 @@ function proveRuntimeVersionedWriteback(url) {
       cwd: root,
       env: {
         ...process.env,
-        REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL: url.toString(),
+        REVIEW_ROUTER_PRISMA_EVIDENCE_ADMIN_DATABASE_URL:
+          clients.admin.toString(),
+        REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL: clients.api.toString(),
+        REVIEW_ROUTER_PRISMA_EVIDENCE_WEB_DATABASE_URL: clients.web.toString(),
+        REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL:
+          clients.effectAuthority.toString(),
       },
       encoding: "utf8",
     },
@@ -988,6 +1171,12 @@ function proveRuntimeVersionedWriteback(url) {
   assert(
     result.status === 0,
     `runtime versioned Prisma proof failed (${result.status}): ${result.stderr || result.stdout}`,
+  );
+  assert(
+    !/already connected.*deprecated|deprecated.*already connected/iu.test(
+      result.stderr,
+    ),
+    "runtime proof used a deprecated same-client nested connection",
   );
 }
 
@@ -1016,6 +1205,8 @@ function proveDatabasePrivileges(url) {
       DECLARE unsafe_function_count INTEGER;
       DECLARE table_count INTEGER;
       DECLARE unsafe_table_count INTEGER;
+      DECLARE role_name TEXT;
+      DECLARE membership_count INTEGER;
       BEGIN
         SELECT count(*), count(*) FILTER (
           WHERE has_function_privilege('public', p.oid, 'EXECUTE')
@@ -1023,7 +1214,7 @@ function proveDatabasePrivileges(url) {
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = current_schema() AND p.proname LIKE 'codex_oauth_%';
-        IF function_count <> 18 OR unsafe_function_count <> 0 THEN
+        IF function_count <> 20 OR unsafe_function_count <> 0 THEN
           RAISE EXCEPTION 'Codex OAuth function privilege mismatch: %, %', function_count, unsafe_function_count;
         END IF;
 
@@ -1049,57 +1240,540 @@ function proveDatabasePrivileges(url) {
         IF table_count <> 8 OR unsafe_table_count <> 0 THEN
           RAISE EXCEPTION 'Codex OAuth table privilege mismatch: %, %', table_count, unsafe_table_count;
         END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_proc p
+          JOIN pg_roles owner ON owner.oid = p.proowner
+          WHERE p.oid = 'public.codex_oauth_provider_identity_guard()'::regprocedure
+            AND p.prosecdef
+            AND owner.rolname = 'reviewrouter_release_migration'
+            AND p.proconfig = ARRAY['search_path=pg_catalog, public']::text[]
+            AND position(
+              'FROM public."CodexOAuthProviderIdentityQuarantine"'
+              IN pg_get_functiondef(p.oid)
+            ) > 0
+            AND position(
+              '"CodexOAuthProviderIdentityQuarantine"'
+              IN replace(
+                pg_get_functiondef(p.oid),
+                'public."CodexOAuthProviderIdentityQuarantine"',
+                ''
+              )
+            ) = 0
+            AND position(
+              'FROM public."RepositoryConnection"'
+              IN pg_get_functiondef(p.oid)
+            ) > 0
+            AND position(
+              'public."codex_oauth_consume_database_authority"('
+              IN pg_get_functiondef(p.oid)
+            ) > 0
+            AND position(
+              '''provider_identity_repair'', OLD."id", 0'
+              IN pg_get_functiondef(p.oid)
+            ) > 0
+            AND position(
+              'FROM public."CodexOAuthDatabaseAuthorityReceipt"'
+              IN pg_get_functiondef(p.oid)
+            ) = 0
+            AND position(
+              'receipt."consumedAt" IS NOT NULL'
+              IN pg_get_functiondef(p.oid)
+            ) = 0
+            AND position(
+              '"RepositoryConnection"'
+              IN replace(
+                pg_get_functiondef(p.oid),
+                'public."RepositoryConnection"',
+                ''
+              )
+            ) = 0
+        ) THEN
+          RAISE EXCEPTION 'Codex OAuth provider identity guard execution contract mismatch';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_proc p
+          WHERE p.oid = 'public.codex_oauth_child_identity_fence_guard()'::regprocedure
+            AND NOT p.prosecdef
+            AND p.proconfig IS NULL
+        ) THEN
+          RAISE EXCEPTION 'Codex OAuth child identity fence guard execution contract mismatch';
+        END IF;
+
+        -- Rehearsal fidelity only: Prisma migrations run as this database's
+        -- superuser, unlike production where the LOGIN release caller owns the
+        -- catalog and has implicit full privileges. The synthetic NOLOGIN role
+        -- therefore receives explicit owner-equivalent data privileges.
+        IF EXISTS (
+          SELECT 1 FROM pg_roles
+          WHERE rolname = 'reviewrouter_release_migration' AND rolcanlogin
+        )
+           OR NOT has_schema_privilege('reviewrouter_release_migration', 'public', 'USAGE')
+           OR EXISTS (
+             SELECT 1
+             FROM pg_class relation
+             JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+             WHERE namespace.nspname = 'public'
+               AND relation.relkind IN ('r', 'p')
+               AND NOT has_table_privilege(
+                 'reviewrouter_release_migration', relation.oid,
+                 'SELECT,INSERT,UPDATE,DELETE,REFERENCES'
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_class sequence
+             JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
+             WHERE namespace.nspname = 'public'
+               AND sequence.relkind = 'S'
+               AND NOT has_sequence_privilege(
+                 'reviewrouter_release_migration',
+                 format('%I.%I', namespace.nspname, sequence.relname),
+                 'USAGE,SELECT,UPDATE'
+               )
+           )
+           OR EXISTS (
+             SELECT 1 FROM pg_attribute attribute
+             WHERE attribute.attrelid = 'public."RepositoryConnection"'::regclass
+               AND attribute.attnum > 0 AND NOT attribute.attisdropped
+               AND NOT (
+                 has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'SELECT')
+                 AND has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'INSERT')
+                 AND has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'UPDATE')
+                 AND has_column_privilege('reviewrouter_release_migration', attribute.attrelid, attribute.attnum, 'REFERENCES')
+               )
+           )
+        THEN
+          RAISE EXCEPTION 'Codex OAuth synthetic rehearsal release owner-equivalent privilege mismatch';
+        END IF;
+
+        FOREACH role_name IN ARRAY ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker'] LOOP
+          IF NOT has_table_privilege(role_name, 'public."RepositoryConnection"', 'SELECT')
+             OR has_table_privilege(role_name, 'public."RepositoryConnection"', 'INSERT')
+             OR has_table_privilege(role_name, 'public."RepositoryConnection"', 'UPDATE')
+             OR has_table_privilege(role_name, 'public."RepositoryConnection"', 'DELETE')
+             OR has_table_privilege(role_name, 'public."RepositoryConnection"', 'REFERENCES')
+             OR has_function_privilege(role_name, 'public.codex_oauth_provider_identity_guard()', 'EXECUTE')
+             OR pg_has_role(role_name, 'reviewrouter_release_migration', 'SET')
+             OR EXISTS (
+               SELECT 1
+               FROM pg_class relation
+               JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+               WHERE namespace.nspname = 'public'
+                 AND relation.relkind IN ('r', 'p')
+                 AND relation.relname NOT IN (
+                   'RepositoryConnection',
+                   'CodexOAuthDatabaseAuthorityKey',
+                   'CodexOAuthDatabaseAuthorityReceipt',
+                   'CodexOAuthChildIdentityQuarantine',
+                   'CodexOAuthLease',
+                   'CodexOAuthProviderIdentityQuarantine',
+                   'CodexOAuthProviderInstance',
+                   'CodexOAuthSecretNamespace',
+                   'CodexOAuthSetupDispatchAttempt',
+                   'CodexOAuthSetupManifest',
+                   'CodexOAuthSetupPayloadClaim',
+                   'CodexOAuthSetupRecoveryRequest',
+                   'CodexOAuthWritebackIntent'
+                 )
+                 AND NOT has_table_privilege(
+                   role_name, relation.oid, 'SELECT,INSERT,UPDATE,DELETE'
+                 )
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM pg_class relation
+               JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+               WHERE namespace.nspname = 'public'
+                 AND relation.relname IN (
+                   'CodexOAuthLease',
+                   'CodexOAuthSecretNamespace',
+                   'CodexOAuthSetupDispatchAttempt',
+                   'CodexOAuthSetupManifest',
+                   'CodexOAuthSetupPayloadClaim',
+                   'CodexOAuthSetupRecoveryRequest',
+                   'CodexOAuthWritebackIntent'
+                 )
+                 AND (
+                   NOT has_table_privilege(
+                     role_name, relation.oid, 'SELECT,INSERT,UPDATE'
+                   )
+                   OR has_table_privilege(role_name, relation.oid, 'DELETE')
+                 )
+             )
+             OR NOT has_table_privilege(
+               role_name,
+               'public."CodexOAuthProviderInstance"',
+               'SELECT,INSERT'
+             )
+             OR has_table_privilege(
+               role_name,
+               'public."CodexOAuthProviderInstance"',
+               'UPDATE,DELETE'
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM pg_attribute attribute
+               WHERE attribute.attrelid = 'public."CodexOAuthProviderInstance"'::regclass
+                 AND attribute.attnum > 0
+                 AND NOT attribute.attisdropped
+                 AND has_column_privilege(
+                   role_name, attribute.attrelid, attribute.attnum, 'UPDATE'
+                 ) IS DISTINCT FROM (
+                   attribute.attname IN (
+                     'state','latestGeneration','latestGenerationHash',
+                     'activeLeaseId','activeLeaseExpiresAt','mutationEpoch',
+                     'mutationOwner','mutationOwnerId','activeSecretNamespaceId',
+                     'activeSecretNamespaceEpoch','activeSecretNamespaceName',
+                     'activeAccountIdentityHash','updatedAt'
+                   )
+                 )
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM pg_class relation
+               JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+               WHERE namespace.nspname = 'public'
+                 AND relation.relname IN (
+                   'CodexOAuthChildIdentityQuarantine',
+                   'CodexOAuthProviderIdentityQuarantine'
+                 )
+                 AND (
+                   NOT has_table_privilege(role_name, relation.oid, 'SELECT')
+                   OR has_table_privilege(
+                     role_name, relation.oid, 'INSERT,UPDATE,DELETE'
+                   )
+                 )
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM pg_class sequence
+               JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
+               WHERE namespace.nspname = 'public'
+                 AND sequence.relkind = 'S'
+                 AND NOT has_sequence_privilege(
+                   role_name,
+                   format('%I.%I', namespace.nspname, sequence.relname),
+                   'USAGE'
+                 )
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM pg_class relation
+               JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+               WHERE namespace.nspname = 'public'
+                 AND relation.relname IN (
+                   'CodexOAuthDatabaseAuthorityKey',
+                   'CodexOAuthDatabaseAuthorityReceipt'
+                 )
+                 AND (
+                   has_table_privilege(
+                     role_name, relation.oid,
+                     'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+                   )
+                   OR has_any_column_privilege(
+                     role_name, relation.oid, 'SELECT,INSERT,UPDATE,REFERENCES'
+                   )
+                 )
+             )
+             OR EXISTS (
+               SELECT 1 FROM pg_attribute attribute
+               WHERE attribute.attrelid = 'public."RepositoryConnection"'::regclass
+                 AND attribute.attnum > 0 AND NOT attribute.attisdropped
+                 AND (
+                   NOT has_column_privilege(role_name, attribute.attrelid, attribute.attnum, 'SELECT')
+                   OR has_column_privilege(role_name, attribute.attrelid, attribute.attnum, 'INSERT')
+                   OR has_column_privilege(role_name, attribute.attrelid, attribute.attnum, 'UPDATE')
+                   OR has_column_privilege(role_name, attribute.attrelid, attribute.attnum, 'REFERENCES')
+                 )
+             )
+          THEN
+            RAISE EXCEPTION 'Codex OAuth runtime least privilege mismatch: %', role_name;
+          END IF;
+        END LOOP;
+
+        IF has_database_privilege('reviewrouter_codex_effect_authority', current_database(), 'CREATE')
+           OR has_schema_privilege('reviewrouter_codex_effect_authority', 'public', 'CREATE')
+           OR EXISTS (
+             SELECT 1
+             FROM pg_class relation
+             JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+             WHERE namespace.nspname = 'public'
+               AND relation.relkind IN ('r', 'p')
+               AND (
+                 has_table_privilege(
+                   'reviewrouter_codex_effect_authority', relation.oid,
+                   'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+                 )
+                 OR has_any_column_privilege(
+                   'reviewrouter_codex_effect_authority', relation.oid,
+                   'SELECT,INSERT,UPDATE,REFERENCES'
+                 )
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_class sequence
+             JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
+             WHERE namespace.nspname = 'public'
+               AND sequence.relkind = 'S'
+               AND (
+                 has_sequence_privilege(
+                   'reviewrouter_codex_effect_authority',
+                   format('%I.%I', namespace.nspname, sequence.relname),
+                   'USAGE'
+                 )
+                 OR has_sequence_privilege(
+                   'reviewrouter_codex_effect_authority',
+                   format('%I.%I', namespace.nspname, sequence.relname),
+                   'SELECT'
+                 )
+                 OR has_sequence_privilege(
+                   'reviewrouter_codex_effect_authority',
+                   format('%I.%I', namespace.nspname, sequence.relname),
+                   'UPDATE'
+                 )
+               )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM pg_proc function
+             JOIN pg_namespace namespace ON namespace.oid = function.pronamespace
+             WHERE namespace.nspname = 'public'
+               AND has_function_privilege(
+                 'reviewrouter_codex_effect_authority', function.oid, 'EXECUTE'
+               )
+               AND function.oid <> 'public.codex_oauth_sign_database_authority(text)'::regprocedure
+           )
+        THEN
+          RAISE EXCEPTION 'Codex OAuth effect authority isolation mismatch';
+        END IF;
+
+        SELECT count(*) INTO membership_count
+        FROM pg_auth_members membership
+        JOIN pg_roles granted ON granted.oid = membership.roleid
+        JOIN pg_roles member ON member.oid = membership.member
+        WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+           OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration');
+        IF membership_count <> 0 THEN
+          RAISE EXCEPTION 'Codex OAuth role memberships are not empty: %', membership_count;
+        END IF;
       END $$;
     `,
   ]);
 }
 
 function ensureRuntimeRoles(url) {
+  const loginRoles = [
+    ["reviewrouter_api", "rr-rehearsal-api"],
+    ["reviewrouter_web", "rr-rehearsal-web"],
+    ["reviewrouter_worker", "rr-rehearsal-worker"],
+    ["reviewrouter_codex_effect_authority", "rr-rehearsal-effect-authority"],
+  ];
+  const syntheticRoles = ["reviewrouter_release_migration"];
+  const allRoles = [...loginRoles.map(([role]) => role), ...syntheticRoles];
+  const passwords = new Map(
+    loginRoles.map(([role]) => [role, `${randomUUID()}${randomUUID()}`]),
+  );
+  const statements = allRoles.map((role) => {
+    const password = passwords.get(role);
+    const loginClause = password
+      ? `LOGIN PASSWORD ${quoteLiteral(password)}`
+      : "NOLOGIN";
+    return `DO $role$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=${quoteLiteral(role)}) THEN
+        CREATE ROLE ${quoteIdentifier(role)};
+      END IF;
+    END $role$;
+    ALTER ROLE ${quoteIdentifier(role)} ${loginClause} NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    COMMENT ON ROLE ${quoteIdentifier(role)} IS ${quoteLiteral(rehearsalRoleMarker)};
+    REVOKE ALL ON DATABASE ${quoteIdentifier(databaseName)} FROM ${quoteIdentifier(role)};`;
+  });
+  statements.push(
+    ...loginRoles.map(
+      ([role]) =>
+        `GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(role)};`,
+    ),
+  );
+  const canonicalRoleLiterals = allRoles.map(quoteLiteral).join(",");
+  const provisioningSql = `BEGIN;
+    -- Canonical roles are cluster-global. Serialize the existence check and
+    -- creation so a concurrent rehearsal cannot reuse, remark, or later drop
+    -- roles owned by this rehearsal.
+    SELECT pg_advisory_xact_lock(1919247474, 1869769573);
+    DO $ownership$
+    DECLARE existing_role text;
+    BEGIN
+      SELECT rolname INTO existing_role
+      FROM pg_roles
+      WHERE rolname IN (${canonicalRoleLiterals})
+      ORDER BY rolname
+      LIMIT 1;
+      IF existing_role IS NOT NULL THEN
+        RAISE EXCEPTION 'refusing to take over pre-existing canonical role %', existing_role;
+      END IF;
+    END $ownership$;
+    ${statements.join("\n")}
+    COMMIT;`;
+  provisionAndAssertRehearsalRoles({
+    marker: rehearsalRoleMarker,
+    provisioningSql,
+    psql,
+    url,
+  });
+
+  const clientUrl = (role, applicationName) => {
+    const client = databaseUrl(url, databaseName);
+    client.username = role;
+    client.password = passwords.get(role);
+    client.searchParams.set("application_name", applicationName);
+    return client;
+  };
+  const admin = databaseUrl(url, databaseName);
+  admin.searchParams.set("application_name", "rr-rehearsal-admin");
+  return {
+    admin,
+    api: clientUrl("reviewrouter_api", "rr-rehearsal-api"),
+    web: clientUrl("reviewrouter_web", "rr-rehearsal-web"),
+    worker: clientUrl("reviewrouter_worker", "rr-rehearsal-worker"),
+    effectAuthority: clientUrl(
+      "reviewrouter_codex_effect_authority",
+      "rr-rehearsal-effect-authority",
+    ),
+  };
+}
+
+function cleanupRuntimeRoles(url) {
+  const roles = [
+    "reviewrouter_api",
+    "reviewrouter_web",
+    "reviewrouter_worker",
+    "reviewrouter_codex_effect_authority",
+    "reviewrouter_release_migration",
+  ];
+  for (const role of roles) {
+    const marker = psql(
+      url,
+      [
+        "-Atc",
+        `SELECT coalesce(shobj_description(oid, 'pg_authid'), '') FROM pg_roles WHERE rolname=${quoteLiteral(role)}`,
+      ],
+      false,
+    );
+    if (marker.status === 0 && marker.stdout.trim() === rehearsalRoleMarker) {
+      psql(url, ["-c", `DROP ROLE ${quoteIdentifier(role)}`], false);
+    }
+  }
+}
+
+function convergeSyntheticReleaseOwnerEquivalentPrivileges(url) {
   psql(url, [
     "-c",
-    String.raw`DO $$
-      DECLARE role_name text;
+    String.raw`
+      -- Rehearsal fidelity only. Production migrations are executed by the
+      -- LOGIN catalog owner, whose implicit privileges are intentionally full.
+      -- This rehearsal executes migrations as its superuser and uses a
+      -- synthetic NOLOGIN function owner, so explicitly converge the data
+      -- privileges needed by every release-owned SECURITY DEFINER function.
+      DO $ownership$
+      DECLARE owned_function regprocedure;
       BEGIN
-        FOREACH role_name IN ARRAY ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'] LOOP
-          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
-            EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', role_name);
-          END IF;
+        FOR owned_function IN
+          SELECT function.oid::regprocedure
+          FROM pg_proc function
+          JOIN pg_namespace namespace ON namespace.oid = function.pronamespace
+          WHERE namespace.nspname = 'public'
+            AND function.proname LIKE 'codex_oauth_%'
+        LOOP
+          EXECUTE format(
+            'ALTER FUNCTION %s OWNER TO reviewrouter_release_migration',
+            owned_function
+          );
         END LOOP;
-      END $$;`,
+      END $ownership$;
+      GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;
+      GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES
+        ON ALL TABLES IN SCHEMA public
+        TO reviewrouter_release_migration;
+      GRANT USAGE, SELECT, UPDATE
+        ON ALL SEQUENCES IN SCHEMA public
+        TO reviewrouter_release_migration;
+    `,
   ]);
 }
 
 function convergeRuntimePrivileges(url) {
   psql(url, [
     "-c",
-    String.raw`DO $$
-      DECLARE role_name text;
-      BEGIN
-        FOREACH role_name IN ARRAY ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker'] LOOP
-          EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', role_name);
-          EXECUTE format('GRANT SELECT ON TABLE "Workspace", "RepositoryConnection" TO %I', role_name);
-          EXECUTE format(
-            'GRANT SELECT, INSERT, UPDATE ON TABLE "CodexOAuthChildIdentityQuarantine", "CodexOAuthLease", "CodexOAuthProviderIdentityQuarantine", "CodexOAuthProviderInstance", "CodexOAuthSecretNamespace", "CodexOAuthSetupDispatchAttempt", "CodexOAuthSetupManifest", "CodexOAuthSetupPayloadClaim", "CodexOAuthSetupRecoveryRequest", "CodexOAuthWritebackIntent" TO %I',
-            role_name
-          );
-          EXECUTE format('REVOKE ALL ON TABLE "CodexOAuthDatabaseAuthorityReceipt" FROM %I', role_name);
-          EXECUTE format('REVOKE ALL ON TABLE "CodexOAuthDatabaseAuthorityKey" FROM %I', role_name);
-        END LOOP;
-      END $$;`,
+    `BEGIN;
+${runtimeGrantStatements(
+  {
+    roles: [
+      { role: "api", username: "reviewrouter_api" },
+      { role: "web", username: "reviewrouter_web" },
+      { role: "worker", username: "reviewrouter_worker" },
+      {
+        role: "effect-authority",
+        username: "reviewrouter_codex_effect_authority",
+      },
+    ],
+  },
+  quoteIdentifier(databaseName),
+)}
+COMMIT;`,
   ]);
 }
 
-function proveSequentialFabricationDeniedForEveryRuntimeRole(url) {
-  for (const [ordinal, role] of [
-    [1, "reviewrouter_api"],
-    [2, "reviewrouter_web"],
-    [3, "reviewrouter_worker"],
+function proveSequentialFabricationDeniedForEveryRuntimeRole(clients) {
+  for (const [ordinal, role, expectedSetupFailure, expectedRuntimeFailure] of [
+    [
+      1,
+      "reviewrouter_api",
+      "permission denied for function codex_oauth_authorize_setup_confirmation",
+      "codex_oauth_database_authority_signature_invalid",
+    ],
+    [
+      2,
+      "reviewrouter_web",
+      "codex_oauth_database_authority_signature_invalid",
+      "permission denied for function codex_oauth_authorize_runtime_confirmation",
+    ],
+    [
+      3,
+      "reviewrouter_worker",
+      "permission denied for function codex_oauth_authorize_setup_confirmation",
+      "permission denied for function codex_oauth_authorize_runtime_confirmation",
+    ],
   ]) {
+    const url = clients[role.replace("reviewrouter_", "")];
+    assert(url instanceof URL, `${role} direct rehearsal client is missing`);
+    assert(
+      psql(url, [
+        "-Atc",
+        "SELECT session_user || ':' || current_user",
+      ]).stdout.trim() === `${role}:${role}`,
+      `${role} rehearsal attack did not use a direct production-faithful login`,
+    );
+    const guard = psql(
+      url,
+      ["-c", `SELECT "codex_oauth_provider_identity_guard"();`],
+      false,
+    );
+    assert(
+      guard.status !== 0 &&
+        `${guard.stdout}${guard.stderr}`.includes(
+          "permission denied for function codex_oauth_provider_identity_guard",
+        ),
+      `${role} could invoke the elevated identity guard directly: ${psqlResultDiagnostic(guard)}`,
+    );
     const signer = psql(
       url,
       [
         "-c",
-        `BEGIN; SET LOCAL ROLE ${quoteIdentifier(role)}; SELECT "codex_oauth_sign_database_authority"('forged'); COMMIT;`,
+        `BEGIN; SELECT "codex_oauth_sign_database_authority"('forged'); COMMIT;`,
       ],
       false,
     );
@@ -1108,14 +1782,49 @@ function proveSequentialFabricationDeniedForEveryRuntimeRole(url) {
         `${signer.stdout}${signer.stderr}`.includes(
           "permission denied for function codex_oauth_sign_database_authority",
         ),
-      `${role} could invoke the isolated database effect signer`,
+      `${role} could invoke the isolated database effect signer: ${psqlResultDiagnostic(signer)}`,
+    );
+    const fabricatedQuarantine = psql(
+      url,
+      [
+        "-c",
+        String.raw`INSERT INTO "CodexOAuthProviderIdentityQuarantine" (
+          "providerInstanceRowId", "observedWorkspaceId", "observedRepositoryId",
+          "observedProviderInstanceId", "expectedProviderInstanceId", "reason", "evidenceJson"
+        ) VALUES (
+          'p-clean', 'ws-proof', 'repo-7', 'codex-rotating:900007',
+          'codex-rotating:900007', 'fabricated', '{}'
+        )`,
+      ],
+      false,
+    );
+    assert(
+      fabricatedQuarantine.status !== 0 &&
+        `${fabricatedQuarantine.stdout}${fabricatedQuarantine.stderr}`.includes(
+          "permission denied for table CodexOAuthProviderIdentityQuarantine",
+        ),
+      `${role} could fabricate provider quarantine evidence`,
+    );
+    const fabricatedRepair = psql(
+      url,
+      [
+        "-c",
+        `UPDATE "CodexOAuthProviderInstance" SET "providerInstanceId"='codex-rotating:900006' WHERE "id"='p-quarantine'`,
+      ],
+      false,
+    );
+    assert(
+      fabricatedRepair.status !== 0 &&
+        `${fabricatedRepair.stdout}${fabricatedRepair.stderr}`.includes(
+          "permission denied",
+        ),
+      `${role} retained direct provider identity-column update authority`,
     );
     const setup = psql(
       url,
       [
         "-c",
         String.raw`BEGIN;
-          SET LOCAL ROLE ${quoteIdentifier(role)};
           UPDATE "CodexOAuthProviderInstance"
           SET "mutationEpoch" = "mutationEpoch" + 1,
               "mutationOwner" = 'setup',
@@ -1180,12 +1889,10 @@ function proveSequentialFabricationDeniedForEveryRuntimeRole(url) {
       ],
       false,
     );
-    assert(
-      setup.status !== 0 &&
-        /(codex_oauth_database_authority_signature_invalid|permission denied for function codex_oauth_authorize_setup_confirmation)/u.test(
-          `${setup.stdout}${setup.stderr}`,
-        ),
-      `${role} fabricated setup sequence did not fail on database authority`,
+    assertPsqlFailedWithExactMessage(
+      setup,
+      expectedSetupFailure,
+      `${role} fabricated setup sequence did not fail at its role-specific authorization boundary`,
     );
 
     const runtime = psql(
@@ -1193,7 +1900,6 @@ function proveSequentialFabricationDeniedForEveryRuntimeRole(url) {
       [
         "-c",
         String.raw`BEGIN;
-          SET LOCAL ROLE ${quoteIdentifier(role)};
           UPDATE "CodexOAuthProviderInstance"
           SET "mutationEpoch" = "mutationEpoch" + 1,
               "mutationOwner" = 'runtime',
@@ -1290,14 +1996,252 @@ function proveSequentialFabricationDeniedForEveryRuntimeRole(url) {
       ],
       false,
     );
-    assert(
-      runtime.status !== 0 &&
-        /(codex_oauth_database_authority_signature_invalid|permission denied for function codex_oauth_authorize_runtime_confirmation)/u.test(
-          `${runtime.stdout}${runtime.stderr}`,
-        ),
-      `${role} fabricated runtime sequence did not fail on database authority`,
+    assertPsqlFailedWithExactMessage(
+      runtime,
+      expectedRuntimeFailure,
+      `${role} fabricated runtime sequence did not fail at its role-specific authorization boundary`,
     );
   }
+}
+
+function proveStaleAclProviderIdentityEscalationDenied(adminUrl, clients) {
+  for (const role of [
+    "reviewrouter_api",
+    "reviewrouter_web",
+    "reviewrouter_worker",
+  ]) {
+    const url = clients[role.replace("reviewrouter_", "")];
+    psql(adminUrl, [
+      "-c",
+      `GRANT INSERT ON TABLE "CodexOAuthProviderIdentityQuarantine" TO ${quoteIdentifier(role)};
+       GRANT UPDATE ("workspaceId","repositoryId","providerInstanceId","authMode","secretName")
+         ON TABLE "CodexOAuthProviderInstance" TO ${quoteIdentifier(role)}`,
+    ]);
+    try {
+      const escalation = psql(
+        url,
+        [
+          "-c",
+          String.raw`BEGIN;
+            INSERT INTO "CodexOAuthProviderIdentityQuarantine" (
+              "providerInstanceRowId", "observedWorkspaceId", "observedRepositoryId",
+              "observedProviderInstanceId", "expectedProviderInstanceId", "reason", "evidenceJson"
+            ) VALUES (
+              'p-clean', 'ws-proof', 'repo-7', 'codex-rotating:900007',
+              'codex-rotating:900006', 'fabricated_stale_acl', '{}'
+            );
+            UPDATE "CodexOAuthProviderInstance"
+            SET "mutationEpoch"="mutationEpoch"+1,
+                "mutationOwner"='recovery',
+                "mutationOwnerId"='fabricated-recovery-owner',
+                "updatedAt"=now()
+            WHERE "id"='p-clean';
+            UPDATE "CodexOAuthProviderInstance"
+            SET "repositoryId"='repo-6',
+                "providerInstanceId"='codex-rotating:900006',
+                "updatedAt"=now()
+            WHERE "id"='p-clean';
+            COMMIT;`,
+        ],
+        false,
+      );
+      assertPsqlFailedWithExactMessage(
+        escalation,
+        "codex_oauth_provider_identity_authority_required",
+        `${role} used fabricated quarantine and recovery flags after stale ACL regrant`,
+      );
+    } finally {
+      psql(adminUrl, [
+        "-c",
+        `REVOKE INSERT ON TABLE "CodexOAuthProviderIdentityQuarantine" FROM ${quoteIdentifier(role)};
+         REVOKE UPDATE ("workspaceId","repositoryId","providerInstanceId","authMode","secretName")
+           ON TABLE "CodexOAuthProviderInstance" FROM ${quoteIdentifier(role)}`,
+      ]);
+    }
+  }
+  proveDatabasePrivileges(adminUrl);
+}
+
+async function proveDatabaseAuthorityReceiptOneShot(adminUrl, clients) {
+  psql(adminUrl, [
+    "-c",
+    `GRANT UPDATE ("workspaceId","repositoryId","providerInstanceId","authMode","secretName")
+       ON TABLE "CodexOAuthProviderInstance" TO reviewrouter_web`,
+  ]);
+  const web = spawn(
+    psqlBinary,
+    [clients.web.toString(), "-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+  const webOutput = createInterface({ input: web.stdout });
+  const webLines = webOutput[Symbol.asyncIterator]();
+  let webStderr = "";
+  web.stderr.setEncoding("utf8");
+  web.stderr.on("data", (chunk) => {
+    webStderr += chunk;
+  });
+  const writeWeb = (sql) => {
+    assert(!web.stdin.destroyed, "web authority proof stdin closed");
+    web.stdin.write(`${sql}\n`);
+  };
+  const readWebLine = async (message) => {
+    const line = await webLines.next();
+    assert(!line.done, `${message}: ${webStderr}`);
+    return line.value;
+  };
+  const beginSignedWebTransaction = async () => {
+    writeWeb(String.raw`BEGIN;
+      SELECT "codex_oauth_database_authority_challenge"(
+        'provider_identity_repair', 'p-quarantine', 0
+      );`);
+    const challenge = await readWebLine(
+      "web authority proof did not emit a challenge",
+    );
+    const signature = psql(clients.effectAuthority, [
+      "-Atc",
+      `SELECT "codex_oauth_sign_database_authority"(${quoteLiteral(challenge)})`,
+    ]).stdout.trim();
+    assert(
+      signature.length > 0,
+      "provider identity repair proof was not signed",
+    );
+    return signature;
+  };
+  try {
+    const manuallyConsumedSignature = await beginSignedWebTransaction();
+    writeWeb(
+      String.raw`
+        DO $proof$
+        BEGIN
+          PERFORM "codex_oauth_authorize_provider_identity_repair"(
+            'p-quarantine', ${quoteLiteral(manuallyConsumedSignature)}
+          );
+          IF NOT "codex_oauth_consume_database_authority"(
+            'provider_identity_repair', 'p-quarantine', 0
+          ) THEN
+            RAISE EXCEPTION 'manual consume proof did not consume its receipt';
+          END IF;
+          BEGIN
+            UPDATE "CodexOAuthProviderInstance"
+            SET "providerInstanceId"='codex-rotating:900006'
+            WHERE "id"='p-quarantine';
+            RAISE EXCEPTION 'manually consumed authority authorized an identity mutation';
+          EXCEPTION WHEN insufficient_privilege THEN
+            IF SQLERRM <> 'codex_oauth_provider_identity_authority_required' THEN
+              RAISE;
+            END IF;
+          END;
+        END
+        $proof$;
+        ROLLBACK;
+        SELECT 'manual-consume-rejected';`,
+    );
+    assert(
+      (await readWebLine("manual consume identity proof did not finish")) ===
+        "manual-consume-rejected",
+      `manual consume identity proof returned unexpected output: ${webStderr}`,
+    );
+
+    const mutationSignature = await beginSignedWebTransaction();
+    writeWeb(
+      String.raw`
+        DO $proof$
+        BEGIN
+          PERFORM "codex_oauth_authorize_provider_identity_repair"(
+            'p-quarantine', ${quoteLiteral(mutationSignature)}
+          );
+          BEGIN
+            UPDATE "CodexOAuthProviderInstance"
+            SET "secretName"='not-the-authorized-provider'
+            WHERE "id"='p-parent-external-dirty';
+            RAISE EXCEPTION 'provider-scoped authority authorized a different provider';
+          EXCEPTION WHEN insufficient_privilege THEN
+            IF SQLERRM <> 'codex_oauth_provider_identity_authority_required' THEN
+              RAISE;
+            END IF;
+          END;
+          UPDATE "CodexOAuthProviderInstance"
+          SET "workspaceId"='ws-proof',
+              "repositoryId"='repo-6',
+              "providerInstanceId"='codex-rotating:900006',
+              "authMode"='codex_subscription_oauth_rotating',
+              "secretName"='REVIEWROUTER_CODEX_AUTH_JSON'
+          WHERE "id"='p-quarantine';
+          IF "codex_oauth_consume_database_authority"(
+            'provider_identity_repair', 'p-quarantine', 0
+          ) THEN
+            RAISE EXCEPTION 'identity guard did not consume authority atomically';
+          END IF;
+          BEGIN
+            UPDATE "CodexOAuthProviderInstance"
+            SET "secretName"='second-identity-mutation'
+            WHERE "id"='p-quarantine';
+            RAISE EXCEPTION 'second identity mutation reused one-shot authority';
+          EXCEPTION WHEN insufficient_privilege THEN
+            IF SQLERRM <> 'codex_oauth_provider_identity_authority_required' THEN
+              RAISE;
+            END IF;
+          END;
+        END
+        $proof$;
+        ROLLBACK;
+        SELECT 'one-shot-mutation-rejected';`,
+    );
+    assert(
+      (await readWebLine("one-shot identity mutation proof did not finish")) ===
+        "one-shot-mutation-rejected",
+      `one-shot identity mutation proof returned unexpected output: ${webStderr}`,
+    );
+  } finally {
+    if (!web.stdin.destroyed) web.stdin.end("\\q\n");
+    const webStatus =
+      web.exitCode ??
+      web.signalCode ??
+      (await new Promise((resolveExit) => web.once("close", resolveExit)));
+    webOutput.close();
+    assert(
+      webStatus === 0,
+      `web identity authority proof failed (${webStatus}): ${webStderr}`,
+    );
+    psql(adminUrl, [
+      "-c",
+      `REVOKE UPDATE ("workspaceId","repositoryId","providerInstanceId","authMode","secretName")
+         ON TABLE "CodexOAuthProviderInstance" FROM reviewrouter_web`,
+    ]);
+  }
+  proveDatabasePrivileges(adminUrl);
+  psql(adminUrl, [
+    "-c",
+    String.raw`
+      DO $proof$
+      DECLARE challenge text;
+      DECLARE signature text;
+      BEGIN
+        challenge := "codex_oauth_database_authority_challenge"(
+          'provider_identity_repair', 'p-quarantine', 0
+        );
+        signature := "codex_oauth_sign_database_authority"(challenge);
+        PERFORM "codex_oauth_authorize_provider_identity_repair"(
+          'p-quarantine', signature
+        );
+        IF NOT "codex_oauth_consume_database_authority"(
+          'provider_identity_repair', 'p-quarantine', 0
+        ) THEN
+          RAISE EXCEPTION 'one-shot proof did not consume its receipt';
+        END IF;
+        BEGIN
+          PERFORM "codex_oauth_authorize_provider_identity_repair"(
+            'p-quarantine', signature
+          );
+          RAISE EXCEPTION 'consumed authority receipt was reauthorized';
+        EXCEPTION WHEN insufficient_privilege THEN
+          IF SQLERRM <> 'codex_oauth_database_authority_receipt_replay_forbidden' THEN
+            RAISE;
+          END IF;
+        END;
+      END
+      $proof$;`,
+  ]);
 }
 
 function proveTerminalInsertGuards(url) {
@@ -1658,9 +2602,32 @@ function proveQuarantineCleanupPath(url) {
   psql(url, [
     "-c",
     String.raw`
-      SELECT codex_oauth_repair_quarantined_provider('p-quarantine');
-      SELECT codex_oauth_repair_quarantined_provider('p-parent-dirty',900012);
-      SELECT codex_oauth_repair_quarantined_provider('p-parent-external-dirty');
+      DO $repair$
+      DECLARE provider_id text;
+      DECLARE github_repository_id bigint;
+      DECLARE challenge text;
+      DECLARE signature text;
+      BEGIN
+        FOR provider_id, github_repository_id IN
+          SELECT * FROM (VALUES
+            ('p-quarantine'::text, NULL::bigint),
+            ('p-parent-dirty'::text, 900012::bigint),
+            ('p-parent-external-dirty'::text, NULL::bigint)
+          ) repairs
+        LOOP
+          challenge := codex_oauth_database_authority_challenge(
+            'provider_identity_repair', provider_id, 0
+          );
+          signature := codex_oauth_sign_database_authority(challenge);
+          PERFORM codex_oauth_authorize_provider_identity_repair(
+            provider_id, signature
+          );
+          PERFORM codex_oauth_repair_quarantined_provider(
+            provider_id, github_repository_id
+          );
+        END LOOP;
+      END
+      $repair$;
       SELECT codex_oauth_repair_quarantined_child('lease','lease-provider-dirty');
       SELECT codex_oauth_repair_quarantined_child('setup_manifest','manifest-dirty');
       SELECT codex_oauth_repair_quarantined_child('lease','lease-dirty');
@@ -1694,14 +2661,14 @@ function proveMigrateDeployNoOp(url) {
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces')`,
+      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening')`,
   ]).stdout.trim();
   const rerun = migrateDeploy(url);
   const after = psql(url, [
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces')`,
+      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening')`,
   ]).stdout.trim();
   assert(
     before === after,
@@ -1724,7 +2691,7 @@ function collectObservation(url) {
   const history = JSON.parse(
     psql(url, [
       "-Atc",
-      String.raw`SELECT json_agg(x ORDER BY migration_name) FROM (SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NULL AS current, applied_steps_count FROM "_prisma_migrations" WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces')) x`,
+      String.raw`SELECT json_agg(x ORDER BY migration_name) FROM (SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NULL AS current, applied_steps_count FROM "_prisma_migrations" WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening')) x`,
     ]).stdout,
   );
   const catalog = JSON.parse(
@@ -1884,13 +2851,15 @@ function requirePostgres17() {
     "/usr/lib/postgresql/17/bin/psql",
     "psql",
   ].filter(Boolean);
+  const diagnostics = [];
   for (const candidate of candidates) {
     const result = spawnSync(candidate, ["--version"], { encoding: "utf8" });
     if (result.status === 0 && /\b17\.\d+/u.test(result.stdout))
       return candidate;
+    diagnostics.push(`${candidate}: ${psqlResultDiagnostic(result)}`);
   }
   throw new Error(
-    "PostgreSQL 17 psql is required; the rehearsal never skips or falls back to another major",
+    `PostgreSQL 17 psql is required; the rehearsal never skips or falls back to another major: ${diagnostics.join(" | ")}`,
   );
 }
 
@@ -1918,6 +2887,16 @@ function quoteIdentifier(value) {
 }
 function quoteLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
+}
+function psqlResultDiagnostic(result) {
+  return `status=${result.status}; signal=${result.signal ?? "none"}; error=${JSON.stringify(result.error?.message ?? null)}; stdout=${JSON.stringify(result.stdout)}; stderr=${JSON.stringify(result.stderr)}`;
+}
+function assertPsqlFailedWithExactMessage(result, expectedFailure, message) {
+  assert(
+    result.status !== 0 &&
+      `${result.stdout}${result.stderr}`.includes(expectedFailure),
+    `${message}: expected=${JSON.stringify(expectedFailure)}; ${psqlResultDiagnostic(result)}`,
+  );
 }
 function assert(condition, message) {
   if (!condition) throw new Error(message);

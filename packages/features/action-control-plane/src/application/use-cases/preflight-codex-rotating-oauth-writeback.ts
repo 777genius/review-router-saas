@@ -1,4 +1,3 @@
-import type { Clock } from "@reviewrouter/shared";
 import type {
   CodexRotatingGitHubSecretWriterPort,
   CodexRotatingOAuthRepositoryPort,
@@ -7,7 +6,6 @@ import type {
 export type PreflightCodexRotatingOAuthWritebackDependencies = {
   readonly codexRotatingOAuth: CodexRotatingOAuthRepositoryPort;
   readonly codexRotatingSecretWriter: CodexRotatingGitHubSecretWriterPort;
-  readonly clock: Clock;
 };
 
 export async function preflightCodexRotatingOAuthWriteback(
@@ -30,7 +28,6 @@ export async function preflightCodexRotatingOAuthWriteback(
 > {
   const preflight = await dependencies.codexRotatingOAuth.preflightWriteback({
     ...input,
-    now: dependencies.clock.now(),
   });
   if (preflight.status !== "ready") {
     return {

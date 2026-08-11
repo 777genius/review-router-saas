@@ -26,7 +26,9 @@ export function getCodexEffectAuthorityPrisma(): PrismaClient {
     env: process.env,
     runtimeDatabaseUrl: process.env.DATABASE_URL,
   });
-  if (!databaseUrl) return getPrisma();
+  if (!databaseUrl) {
+    throw new Error("codex_oauth_database_effect_authority_unavailable");
+  }
   const prisma =
     prismaGlobal.reviewRouterCodexEffectAuthorityPrisma ??
     createPrismaClient({ databaseUrl, poolMax: 2 });

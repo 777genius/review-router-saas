@@ -29,6 +29,7 @@
     "@reviewrouter/features-review-snapshots": "workspace:*",
     "@reviewrouter/protocol-review-action-v2": "workspace:*",
     "@reviewrouter/protocol-review-workflow": "workspace:*",
+    "@reviewrouter/platform-db": "workspace:*",
     "@reviewrouter/shared": "workspace:*",
     "jose": "^6.2.3",
     "zod": "^4.4.2"

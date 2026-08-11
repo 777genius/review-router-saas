@@ -5,7 +5,6 @@ import type {
   CodexRotatingVersionedWritebackLedgerPort,
 } from "../ports/codex-rotating-oauth-repository-port.js";
 import { isCodexRotatingSecretPutPreDispatchError } from "../ports/codex-rotating-oauth-repository-port.js";
-import type { Clock } from "@reviewrouter/shared";
 import { RuntimeVersionedDurableMarker } from "@reviewrouter/features-codex-oauth-rotating";
 
 /**
@@ -18,8 +17,10 @@ export class CodexRotatingVersionedWritebackDispatcher implements CodexRotatingV
     private readonly ledger: CodexRotatingVersionedWritebackLedgerPort,
     private readonly provider: CodexRotatingGitHubSecretWriterPort,
     private readonly workflows: CodexRotatingVersionedWorkflowPublisherPort,
-    private readonly clock: Clock,
-  ) {}
+    _legacyClock?: unknown,
+  ) {
+    void _legacyClock;
+  }
 
   async dispatchOneShot(
     input: Parameters<
@@ -28,7 +29,6 @@ export class CodexRotatingVersionedWritebackDispatcher implements CodexRotatingV
   ) {
     const claim = await this.ledger.prepareVersionedWriteback({
       ...input,
-      now: this.clock.now(),
     });
     if (claim.status === "unchanged_generation") {
       return {
@@ -53,14 +53,12 @@ export class CodexRotatingVersionedWritebackDispatcher implements CodexRotatingV
           executorOwner: claim.executorOwner,
           safeErrorCode:
             RuntimeVersionedDurableMarker.ProviderPreDispatchFailedV1,
-          now: this.clock.now(),
         });
         return { status: "github_put_failed" as const };
       }
       await this.retire(
         claim,
         RuntimeVersionedDurableMarker.ProviderPutOutcomeUnknown,
-        this.clock.now(),
       );
       return { status: "writeback_recovery_required" as const };
     }
@@ -71,13 +69,11 @@ export class CodexRotatingVersionedWritebackDispatcher implements CodexRotatingV
         attemptId: claim.attemptId,
         executorOwner: claim.executorOwner,
         statusCode: response.statusCode,
-        now: this.clock.now(),
       });
     } catch {
       await this.retire(
         claim,
         RuntimeVersionedDurableMarker.ProviderConfirmationOutcomeUnknown,
-        this.clock.now(),
       );
       return { status: "writeback_recovery_required" as const };
     }
@@ -94,14 +90,12 @@ export class CodexRotatingVersionedWritebackDispatcher implements CodexRotatingV
         attemptId: claim.attemptId,
         executorOwner: claim.executorOwner,
         attestation,
-        now: this.clock.now(),
       });
       return { status: "accepted" as const, ...activated };
     } catch {
       await this.retire(
         claim,
         RuntimeVersionedDurableMarker.WorkflowOrActivationOutcomeUnknown,
-        this.clock.now(),
       );
       return { status: "writeback_recovery_required" as const };
     }
@@ -115,7 +109,6 @@ export class CodexRotatingVersionedWritebackDispatcher implements CodexRotatingV
       retirementIdentity: import("@reviewrouter/features-codex-oauth-rotating").RuntimeVersionedWritebackIdentity;
     }>,
     safeErrorCode: string,
-    now: Date,
   ): Promise<void> {
     await this.ledger.retireAmbiguousVersionedWriteback({
       intentId: claim.intentId,
@@ -123,7 +116,6 @@ export class CodexRotatingVersionedWritebackDispatcher implements CodexRotatingV
       executorOwner: claim.executorOwner,
       retirementIdentity: claim.retirementIdentity,
       safeErrorCode,
-      now,
     });
   }
 }

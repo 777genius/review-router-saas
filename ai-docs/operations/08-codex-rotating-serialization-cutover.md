@@ -1,4 +1,4 @@
-# Fenced rotating OAuth cutover (000060 through 000064)
+# Fenced rotating OAuth cutover (000060 through 000065)
 
 > `REVIEWROUTER_CODEX_AUTH_JSON` is an unsafe, deprecated stable namespace.
 > Its legacy confirmation endpoint is permanently removed and has no runtime
@@ -12,7 +12,8 @@ This is the fail-closed release gate for the ordered combined release
 `000061_codex_oauth_provider_mutation_fence`,
 `000062_codex_oauth_remote_outcome_unknown`, then
 `000063_codex_oauth_setup_payload_claim`, then
-`000064_codex_oauth_versioned_secret_namespaces`. The general release and git-flow
+`000064_codex_oauth_versioned_secret_namespaces`, then
+`000065_codex_oauth_authority_acl_hardening`. The general release and git-flow
 rules remain in
 [`07-environments-and-release-management.md`](./07-environments-and-release-management.md).
 Never apply only one migration as a completed production rollout.
@@ -70,28 +71,32 @@ is checked against both that policy and the files on every test run.
 | `000061_codex_oauth_provider_mutation_fence`     | `bba689c8b80580ec649cc3262fb2ee9c97be758f3c4ab7094c48c84d002aeb30` |
 | `000062_codex_oauth_remote_outcome_unknown`      | `0e8bb62933a270d745530f2c4984520e1753f42d8531c24ffdfa4acfe46a73f4` |
 | `000063_codex_oauth_setup_payload_claim`         | `33100d6f5f3f59cd9a4c22f041d19caba6a0e0be88de4a0ee4d543af50619481` |
-| `000064_codex_oauth_versioned_secret_namespaces` | `d349e7bc2a114571070cf451e07ac2c9b0124dfa7565eb4e2e2ccd1c3d788718` |
+| `000064_codex_oauth_versioned_secret_namespaces` | `4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666` |
+| `000065_codex_oauth_authority_acl_hardening`     | `ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c` |
 
-## 000064 forward-publication policy
+## 000065 forward-publication policy
 
-`000064_codex_oauth_versioned_secret_namespaces` is the unpublished forward
+`000064_codex_oauth_versioned_secret_namespaces` is immutable at checksum
+`4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666`.
+`000065_codex_oauth_authority_acl_hardening` is the unpublished forward
 migration for this release. Its exact checked-in SHA-256 is
-`d349e7bc2a114571070cf451e07ac2c9b0124dfa7565eb4e2e2ccd1c3d788718`.
+`ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c`.
 Before its first publication, migration preflight hashes those exact bytes and
-rejects every existing `_prisma_migrations` row named 000064, including failed,
+rejects every existing `_prisma_migrations` row named 000065, including failed,
 rolled-back, duplicate, or apparently successful rows. Do not resolve or bless
 an early row; stop and investigate its provenance.
 
 The one immutable release-migration caller may then apply those pinned bytes as
 the final member of the drained combined release. Post-release verification
-requires exactly one current successful 000064 row with that checksum and one
+requires exactly one current successful 000065 row with that checksum and one
 applied step. After the first production publication is accepted, the next
 release must deliberately reclassify this digest from `forwardUnpublished` to
 the immutable-history set and replace the reject-any prepublication rule with
 the same allow-one-exact rule used by released migrations. Until that explicit
 handoff is checked in and tested, preflight intentionally blocks every later
 release rather than guessing that publication occurred. Any later schema
-change uses a new forward migration; never edit 000064 after publication.
+change uses a new forward migration; never edit 000064 or 000065 after
+publication.
 
 The migration also owns the database authority for provider-effect evidence.
 Hosted runtime roles have no access to
@@ -107,6 +112,18 @@ direct invocation of a runtime authorization function cannot mint terminal
 provider success. The PostgreSQL 17 rehearsal runs that sequential attack with
 a forged signature under API, web, and worker roles and also exercises the real
 Prisma production writer paths.
+
+Provider identity repair is likewise bound to a signer-backed, transaction-local
+authority receipt. An unresolved quarantine row plus attacker-selected recovery
+owner fields is insufficient. Runtime roles have read-only quarantine access;
+only the web recovery path can invoke the narrowly scoped repair function. The
+repair function consumes the exact receipt before any provider or repository
+write, and the provider identity guard verifies that consumed authority. Authority
+receipts permit only their initial consume transition: after consumption, the
+same signature cannot reauthorize the effect in the same transaction. Release
+ACL convergence explicitly removes stale table and column ACLs, preserves
+`RepositoryConnection` as SELECT-only for runtime roles, and never restores
+DELETE on rotating evidence.
 
 GitHub does not issue a database-verifiable receipt for a secret PUT. The exact
 residual assumption is that only the reviewed web/API provider-effect adapters
@@ -328,7 +345,21 @@ prove the canonical release role exclusively owns database/schema DDL,
 migration history, rotating tables, and functions, and prove the three distinct
 runtime roles plus isolated effect-authority role cannot create database/schema
 objects, own catalog objects, use DDL table privileges, or assume the release
-role. It identifies the immutable
+migration role. The provider identity trigger is the one configuration-table
+boundary that runs as `reviewrouter_release_migration`. The function remains
+`SECURITY DEFINER`, owned by the canonical release role, with
+`search_path = pg_catalog, public` and schema-qualified protected objects. The
+release role owns the catalog and therefore retains its implicit full
+`RepositoryConnection` `SELECT`, `INSERT`, `UPDATE`, and `DELETE` privileges;
+owner privileges must never be narrowed. Runtime roles retain table-level
+`SELECT` only, cannot execute the trigger function directly, and have neither
+membership nor `SET ROLE` reachability to the release role. The isolated effect
+role has no `RepositoryConnection` access. The PG17 rehearsal is intentionally
+different only in fixture mechanics: migrations run as its superuser, so its
+synthetic NOLOGIN release function owner receives explicit full DML and
+reference privileges on public tables plus usage, read, and update privileges
+on public sequences to reproduce the production owner's effective data access.
+It identifies the immutable
 caller by copying the IDs, commit, and image from the raw Render API
 observation, and contains two time-separated stable zero drain observations.
 The base observation and both drain samples independently report the same

@@ -1904,7 +1904,6 @@ describe("Codex rotating OAuth action control plane", () => {
         leaseId: prelease.leaseId,
         providerInstanceId: "codex-rotating:123456",
         reason: "unknown_auth_state",
-        now,
       });
       return { status: "accepted", statusCode: 204 };
     });
@@ -2003,16 +2002,19 @@ function buildRotatingDependencies(
 ): RotatingDependencies {
   const codexRotatingOAuth =
     overrides.codexRotatingOAuth ??
-    new InMemoryCodexRotatingOAuthRepository([
-      {
-        providerInstanceId: "codex-rotating:123456",
-        repositoryFullName: "777genius/agent-teams-ai",
-        githubRepositoryId: "123456",
-        actionRef: `777genius/review-router@${workflowSha}`,
-        workflowPath: ".github/workflows/reviewrouter-codex.yml",
-        workflowSchemaVersion: 1,
-      },
-    ]);
+    new InMemoryCodexRotatingOAuthRepository(
+      [
+        {
+          providerInstanceId: "codex-rotating:123456",
+          repositoryFullName: "777genius/agent-teams-ai",
+          githubRepositoryId: "123456",
+          actionRef: `777genius/review-router@${workflowSha}`,
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+          workflowSchemaVersion: 1,
+        },
+      ],
+      { clock: { now: () => now } },
+    );
   const codexRotatingSecretWriter = overrides.codexRotatingSecretWriter ?? {
     assertCanWriteRepositorySecret: vi
       .fn()

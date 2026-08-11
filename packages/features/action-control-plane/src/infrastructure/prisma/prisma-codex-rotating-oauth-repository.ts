@@ -1,6 +1,10 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import {
+  PostgresTransactionClock,
+  type TransactionClock,
+} from "@reviewrouter/platform-db";
+import {
   allocateVersionedProviderSecretNamespace,
   assertRuntimeVersionedAmbiguousRetirementAuthorized,
   assertSameRuntimeVersionedWritebackIdentity,
@@ -98,8 +102,20 @@ export class PrismaCodexRotatingOAuthRepository
       readonly workflowPath?: string;
       readonly databaseRecoveryWitness?: string;
       readonly databaseEffectAuthority?: Pick<PrismaClient, "$queryRaw">;
+      readonly transactionClock?: TransactionClock;
     },
   ) {}
+
+  private get transactionClock(): TransactionClock {
+    return this.options.transactionClock ?? new PostgresTransactionClock();
+  }
+
+  private requireDatabaseEffectAuthority(): Pick<PrismaClient, "$queryRaw"> {
+    if (!this.options.databaseEffectAuthority) {
+      throw new Error("codex_oauth_database_effect_authority_unavailable");
+    }
+    return this.options.databaseEffectAuthority;
+  }
 
   async findProviderBinding(input: {
     readonly repository: ActionRepositoryContext;
@@ -259,7 +275,6 @@ export class PrismaCodexRotatingOAuthRepository
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
     readonly pullRequestNumber?: number | undefined;
-    readonly now: Date;
     readonly newWorkAdmissionBarrier: Readonly<{
       assertAdmitted(): void;
     }>;
@@ -268,7 +283,6 @@ export class PrismaCodexRotatingOAuthRepository
       providerInstanceId: input.providerInstanceId,
       githubRepositoryId: input.repository.githubRepositoryId,
     });
-    const expiresAt = new Date(input.now.getTime() + 15 * 60 * 1000);
     const leaseKey = `${input.providerInstanceId}:${input.githubRunId}:${input.githubRunAttempt}`;
 
     return this.prisma.$transaction(async (tx) => {
@@ -285,6 +299,8 @@ export class PrismaCodexRotatingOAuthRepository
         WHERE "providerInstanceId" = ${input.providerInstanceId}
         FOR UPDATE
       `);
+      const now = await this.transactionClock.now(tx);
+      const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.providerInstanceId },
         select: {
@@ -362,7 +378,7 @@ export class PrismaCodexRotatingOAuthRepository
           providerInstanceRowId: provider.id,
           OR: [
             { status: "fetched" },
-            { status: "issued", expiresAt: { gt: input.now } },
+            { status: "issued", expiresAt: { gt: now } },
           ],
         },
         select: { id: true },
@@ -378,7 +394,7 @@ export class PrismaCodexRotatingOAuthRepository
       if (
         provider.activeLeaseId &&
         provider.activeLeaseExpiresAt &&
-        provider.activeLeaseExpiresAt > input.now
+        provider.activeLeaseExpiresAt > now
       ) {
         const activeLease = await tx.codexOAuthLease.findUnique({
           where: { id: provider.activeLeaseId },
@@ -397,7 +413,7 @@ export class PrismaCodexRotatingOAuthRepository
         if (
           activeLease &&
           activeLease.status !== "completed" &&
-          activeLease.expiresAt > input.now
+          activeLease.expiresAt > now
         ) {
           if (
             activeLease.githubRunId === input.githubRunId &&
@@ -439,7 +455,7 @@ export class PrismaCodexRotatingOAuthRepository
               where: { id: activeLease.id },
               data: {
                 status: "expired",
-                expiresAt: input.now,
+                expiresAt: now,
               },
             });
           } else {
@@ -544,7 +560,6 @@ export class PrismaCodexRotatingOAuthRepository
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly restoredGenerationHash: string;
-    readonly now: Date;
   }): Promise<{
     readonly leaseId: string;
     readonly nextGeneration: number;
@@ -553,6 +568,7 @@ export class PrismaCodexRotatingOAuthRepository
   }> {
     return this.prisma.$transaction(async (tx) => {
       await lockProviderByInstanceId(tx, input.providerInstanceId);
+      const now = await this.transactionClock.now(tx);
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.providerInstanceId },
         select: {
@@ -584,7 +600,7 @@ export class PrismaCodexRotatingOAuthRepository
         provider.mutationOwnerId !== input.leaseId ||
         provider.leases[0]?.mutationEpoch !== provider.mutationEpoch ||
         !provider.activeLeaseExpiresAt ||
-        provider.activeLeaseExpiresAt <= input.now
+        provider.activeLeaseExpiresAt <= now
       ) {
         throw new Error("codex_rotating_lease_not_active");
       }
@@ -604,7 +620,7 @@ export class PrismaCodexRotatingOAuthRepository
             status: "stale_queued_secret",
             restoredGenerationHash: input.restoredGenerationHash,
             nextGeneration,
-            finalizedAt: input.now,
+            finalizedAt: now,
           },
         });
         await tx.codexOAuthProviderInstance.update({
@@ -634,7 +650,7 @@ export class PrismaCodexRotatingOAuthRepository
           status: "finalized",
           restoredGenerationHash: input.restoredGenerationHash,
           nextGeneration,
-          finalizedAt: input.now,
+          finalizedAt: now,
         },
       });
       return {
@@ -652,12 +668,12 @@ export class PrismaCodexRotatingOAuthRepository
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly reason: "needs_reconnect" | "unknown_auth_state";
-    readonly now: Date;
   }): Promise<{
     readonly status: "abandoned" | "lease_not_active";
   }> {
     return this.prisma.$transaction(async (tx) => {
       await lockProviderByInstanceId(tx, input.providerInstanceId);
+      const now = await this.transactionClock.now(tx);
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.providerInstanceId },
         select: {
@@ -690,7 +706,7 @@ export class PrismaCodexRotatingOAuthRepository
           ? classifyCodexRotatingMutationOwnership({
               owner: provider.mutationOwner,
               ownerId: provider.mutationOwnerId,
-              now: input.now,
+              now,
               runtimeLease: {
                 id: lease.id,
                 status: lease.status,
@@ -707,8 +723,8 @@ export class PrismaCodexRotatingOAuthRepository
         ownership.classification !== "active" ||
         lease.mutationEpoch !== provider.mutationEpoch ||
         !provider.activeLeaseExpiresAt ||
-        provider.activeLeaseExpiresAt <= input.now ||
-        lease.expiresAt <= input.now ||
+        provider.activeLeaseExpiresAt <= now ||
+        lease.expiresAt <= now ||
         lease.status === "completed"
       ) {
         return { status: "lease_not_active" as const };
@@ -722,7 +738,7 @@ export class PrismaCodexRotatingOAuthRepository
         where: { id: input.leaseId },
         data: {
           status: input.reason,
-          expiresAt: input.now,
+          expiresAt: now,
         },
       });
       await tx.codexOAuthProviderInstance.update({
@@ -744,7 +760,6 @@ export class PrismaCodexRotatingOAuthRepository
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly githubKeyId: string;
-    readonly now: Date;
   }): Promise<
     | {
         readonly status: "ready";
@@ -759,6 +774,7 @@ export class PrismaCodexRotatingOAuthRepository
   > {
     return this.prisma.$transaction(async (tx) => {
       await lockProviderByInstanceId(tx, input.providerInstanceId);
+      const now = await this.transactionClock.now(tx);
       const provider = await tx.codexOAuthProviderInstance.findUnique({
         where: { providerInstanceId: input.providerInstanceId },
         select: {
@@ -800,7 +816,7 @@ export class PrismaCodexRotatingOAuthRepository
           ? classifyCodexRotatingMutationOwnership({
               owner: provider.mutationOwner,
               ownerId: provider.mutationOwnerId,
-              now: input.now,
+              now,
               runtimeLease: {
                 id: lease.id,
                 status: lease.status,
@@ -816,8 +832,8 @@ export class PrismaCodexRotatingOAuthRepository
         provider.mutationOwnerId !== input.leaseId ||
         lease.mutationEpoch !== provider.mutationEpoch ||
         !provider.activeLeaseExpiresAt ||
-        provider.activeLeaseExpiresAt <= input.now ||
-        lease.expiresAt <= input.now
+        provider.activeLeaseExpiresAt <= now ||
+        lease.expiresAt <= now
       ) {
         return { status: "lease_not_active" as const };
       }
@@ -848,7 +864,7 @@ export class PrismaCodexRotatingOAuthRepository
         where: { id: input.leaseId },
         data: {
           writebackPreflightKeyId: input.githubKeyId,
-          writebackPreflightedAt: input.now,
+          writebackPreflightedAt: now,
         },
       });
 
@@ -865,10 +881,10 @@ export class PrismaCodexRotatingOAuthRepository
   async prepareVersionedWriteback(input: {
     readonly request: CodexRotatingEncryptedWritebackRequest;
     readonly encryptedPayloadDigest: string;
-    readonly now: Date;
   }) {
     return this.prisma.$transaction(async (tx) => {
       await lockProviderByInstanceId(tx, input.request.providerInstanceId);
+      const now = await this.transactionClock.now(tx);
       const existingForLease = await tx.codexOAuthWritebackIntent.findFirst({
         where: { leaseId: input.request.leaseId },
         select: {
@@ -974,7 +990,7 @@ export class PrismaCodexRotatingOAuthRepository
           if (
             existing.executorOwner &&
             existing.executorLeaseExpiresAt &&
-            existing.executorLeaseExpiresAt > input.now
+            existing.executorLeaseExpiresAt > now
           ) {
             return {
               status: "in_progress" as const,
@@ -990,7 +1006,7 @@ export class PrismaCodexRotatingOAuthRepository
               data: {
                 status: "retired_ambiguous",
                 permanentlyRetired: true,
-                retiredAt: input.now,
+                retiredAt: now,
               },
             });
           if (retiredNamespace.count !== 1) {
@@ -1004,7 +1020,7 @@ export class PrismaCodexRotatingOAuthRepository
               status: "remote_outcome_unknown",
               safeErrorCode:
                 RuntimeVersionedDurableMarker.InterruptedAttemptRecoveredV1,
-              namespaceRetiredAt: input.now,
+              namespaceRetiredAt: now,
             },
           });
           if (retiredIntent.count !== 1) {
@@ -1039,7 +1055,7 @@ export class PrismaCodexRotatingOAuthRepository
               id: existing.leaseId,
               status: { in: ["preleased", "finalized"] },
             },
-            data: { status: "unknown_auth_state", expiresAt: input.now },
+            data: { status: "unknown_auth_state", expiresAt: now },
           });
           if (expiredLease.count !== 1) {
             throw new Error(
@@ -1106,8 +1122,8 @@ export class PrismaCodexRotatingOAuthRepository
         provider.mutationOwnerId !== lease.id ||
         lease.mutationEpoch !== provider.mutationEpoch ||
         !provider.activeLeaseExpiresAt ||
-        provider.activeLeaseExpiresAt <= input.now ||
-        lease.expiresAt <= input.now ||
+        provider.activeLeaseExpiresAt <= now ||
+        lease.expiresAt <= now ||
         lease.status !== "finalized" ||
         lease.nextGeneration !== input.request.generation ||
         lease.writebackPreflightKeyId !== input.request.keyId
@@ -1165,7 +1181,7 @@ export class PrismaCodexRotatingOAuthRepository
         const databaseAuthoritySignature = await signDatabaseAuthorityChallenge(
           {
             tx,
-            authority: this.options.databaseEffectAuthority ?? this.prisma,
+            authority: this.requireDatabaseEffectAuthority(),
             effect: "runtime_completion",
             ownerId: noOpIntent.id,
             effectCode: 0,
@@ -1178,7 +1194,7 @@ export class PrismaCodexRotatingOAuthRepository
         `;
         await tx.codexOAuthLease.update({
           where: { id: lease.id },
-          data: { status: "completed", completedAt: input.now },
+          data: { status: "completed", completedAt: now },
         });
         await tx.codexOAuthProviderInstance.update({
           where: { id: provider.id },
@@ -1206,7 +1222,7 @@ export class PrismaCodexRotatingOAuthRepository
           data: {
             status: "completed",
             safeErrorCode: "unchanged_generation_positive_proof_v1",
-            completedAt: input.now,
+            completedAt: now,
           },
         });
         return {
@@ -1230,7 +1246,7 @@ export class PrismaCodexRotatingOAuthRepository
           : provider.activeLeaseExpiresAt;
       const executorLeaseExpiresAt =
         reserveRuntimeVersionedEffectConfirmationWindow({
-          now: input.now,
+          now,
           authorizationExpiresAt,
         });
       await tx.codexOAuthSecretNamespace.create({
@@ -1259,7 +1275,7 @@ export class PrismaCodexRotatingOAuthRepository
           safeErrorCode: RuntimeVersionedDurableMarker.DispatchAuthorizedV1,
           mutationEpoch: provider.mutationEpoch,
           dispatchAttemptId: attemptId,
-          dispatchAuthorizedAt: input.now,
+          dispatchAuthorizedAt: now,
           secretNamespaceId: namespace.namespaceId,
           databaseIncarnation,
           databaseRecoveryWitness,
@@ -1297,7 +1313,6 @@ export class PrismaCodexRotatingOAuthRepository
     readonly attemptId: string;
     readonly executorOwner: string;
     readonly statusCode: 201 | 204;
-    readonly now: Date;
   }): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       const locator = await tx.codexOAuthWritebackIntent.findUnique({
@@ -1311,6 +1326,7 @@ export class PrismaCodexRotatingOAuthRepository
         SELECT "id" FROM "CodexOAuthProviderInstance"
         WHERE "id" = ${locator.providerInstanceRowId} FOR UPDATE
       `);
+      const now = await this.transactionClock.now(tx);
       const intent = await tx.codexOAuthWritebackIntent.findUnique({
         where: { id: input.intentId },
         select: {
@@ -1342,7 +1358,7 @@ export class PrismaCodexRotatingOAuthRepository
         intent.dispatchAttemptId !== input.attemptId ||
         intent.executorOwner !== input.executorOwner ||
         !intent.executorLeaseExpiresAt ||
-        intent.executorLeaseExpiresAt <= input.now ||
+        intent.executorLeaseExpiresAt <= now ||
         !intent.accountIdentityHash ||
         intent.accountIdentityAlgorithm !==
           "provider_issuer_subject_account_v1" ||
@@ -1380,14 +1396,14 @@ export class PrismaCodexRotatingOAuthRepository
               intent.lease.expiresAt
               ? intent.providerInstance.activeLeaseExpiresAt
               : intent.lease.expiresAt,
-          now: input.now,
+          now,
         });
       } catch {
         throw new Error("codex_rotating_versioned_confirmation_stale_epoch");
       }
       const databaseAuthoritySignature = await signDatabaseAuthorityChallenge({
         tx,
-        authority: this.options.databaseEffectAuthority ?? this.prisma,
+        authority: this.requireDatabaseEffectAuthority(),
         effect: "runtime_confirmation",
         ownerId: input.intentId,
         effectCode: input.statusCode,
@@ -1407,7 +1423,7 @@ export class PrismaCodexRotatingOAuthRepository
         data: {
           safeErrorCode: RuntimeVersionedDurableMarker.ProviderConfirmedV1,
           providerResponseCode: input.statusCode,
-          providerConfirmedAt: input.now,
+          providerConfirmedAt: now,
         },
       });
       if (updated.count !== 1) {
@@ -1415,7 +1431,7 @@ export class PrismaCodexRotatingOAuthRepository
       }
       const confirmedNamespace = await tx.codexOAuthSecretNamespace.updateMany({
         where: { id: intent.secretNamespaceId, status: "dispatch_authorized" },
-        data: { status: "confirmed_candidate", confirmedAt: input.now },
+        data: { status: "confirmed_candidate", confirmedAt: now },
       });
       if (confirmedNamespace.count !== 1) {
         throw new Error(
@@ -1431,7 +1447,6 @@ export class PrismaCodexRotatingOAuthRepository
     readonly executorOwner: string;
     readonly retirementIdentity: import("@reviewrouter/features-codex-oauth-rotating").RuntimeVersionedWritebackIdentity;
     readonly safeErrorCode: string;
-    readonly now: Date;
   }): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       const locator = await tx.codexOAuthWritebackIntent.findUnique({
@@ -1443,6 +1458,7 @@ export class PrismaCodexRotatingOAuthRepository
         SELECT "id" FROM "CodexOAuthProviderInstance"
         WHERE "id" = ${locator.providerInstanceRowId} FOR UPDATE
       `);
+      const now = await this.transactionClock.now(tx);
       const intent = await tx.codexOAuthWritebackIntent.findUnique({
         where: { id: input.intentId },
         select: {
@@ -1524,7 +1540,7 @@ export class PrismaCodexRotatingOAuthRepository
               intent.providerInstance.activeAccountIdentityHash,
           },
           executorLeaseExpiresAt: intent.executorLeaseExpiresAt,
-          now: input.now,
+          now,
         });
       } catch {
         throw new Error("codex_rotating_versioned_retirement_fence_conflict");
@@ -1538,7 +1554,7 @@ export class PrismaCodexRotatingOAuthRepository
           data: {
             status: "retired_ambiguous",
             permanentlyRetired: true,
-            retiredAt: input.now,
+            retiredAt: now,
           },
         });
         if (retiredNamespace.count !== 1) {
@@ -1552,7 +1568,7 @@ export class PrismaCodexRotatingOAuthRepository
         data: {
           status: "remote_outcome_unknown",
           safeErrorCode: input.safeErrorCode,
-          namespaceRetiredAt: input.now,
+          namespaceRetiredAt: now,
         },
       });
       if (retiredIntent.count !== 1) {
@@ -1582,7 +1598,7 @@ export class PrismaCodexRotatingOAuthRepository
           id: intent.leaseId,
           status: { in: ["preleased", "finalized"] },
         },
-        data: { status: "unknown_auth_state", expiresAt: input.now },
+        data: { status: "unknown_auth_state", expiresAt: now },
       });
       if (retiredLease.count !== 1) {
         throw new Error("codex_rotating_versioned_retirement_lease_conflict");
@@ -1595,7 +1611,6 @@ export class PrismaCodexRotatingOAuthRepository
     readonly attemptId: string;
     readonly executorOwner: string;
     readonly safeErrorCode: string;
-    readonly now: Date;
   }): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       const locator = await tx.codexOAuthWritebackIntent.findUnique({
@@ -1607,6 +1622,7 @@ export class PrismaCodexRotatingOAuthRepository
         SELECT "id" FROM "CodexOAuthProviderInstance"
         WHERE "id" = ${locator.providerInstanceRowId} FOR UPDATE
       `);
+      const now = await this.transactionClock.now(tx);
       const intent = await tx.codexOAuthWritebackIntent.findUnique({
         where: { id: input.intentId },
         select: {
@@ -1627,7 +1643,7 @@ export class PrismaCodexRotatingOAuthRepository
       if (
         intent.executorOwner !== input.executorOwner ||
         !intent.executorLeaseExpiresAt ||
-        intent.executorLeaseExpiresAt <= input.now
+        intent.executorLeaseExpiresAt <= now
       ) {
         throw new Error("codex_rotating_versioned_executor_lease_conflict");
       }
@@ -1656,7 +1672,7 @@ export class PrismaCodexRotatingOAuthRepository
         data: {
           status: "retired_predispatch",
           permanentlyRetired: true,
-          retiredAt: input.now,
+          retiredAt: now,
         },
       });
       if (retiredNamespace.count !== 1) {
@@ -1674,8 +1690,8 @@ export class PrismaCodexRotatingOAuthRepository
         data: {
           status: "failed",
           safeErrorCode: input.safeErrorCode,
-          namespaceRetiredAt: input.now,
-          completedAt: input.now,
+          namespaceRetiredAt: now,
+          completedAt: now,
         },
       });
       if (retiredIntent.count !== 1) {
@@ -1716,7 +1732,7 @@ export class PrismaCodexRotatingOAuthRepository
           status: "finalized",
           mutationEpoch: intent.mutationEpoch,
         },
-        data: { status: "failed", expiresAt: input.now },
+        data: { status: "failed", expiresAt: now },
       });
       if (retiredLease.count !== 1) {
         throw new Error("codex_rotating_versioned_retirement_lease_conflict");
@@ -1729,7 +1745,6 @@ export class PrismaCodexRotatingOAuthRepository
     readonly attemptId: string;
     readonly executorOwner: string;
     readonly attestation: VersionedSecretWorkflowSourceAttestation;
-    readonly now: Date;
   }): Promise<{ readonly generation: number }> {
     return this.prisma.$transaction(async (tx) => {
       const locator = await tx.codexOAuthWritebackIntent.findUniqueOrThrow({
@@ -1740,6 +1755,7 @@ export class PrismaCodexRotatingOAuthRepository
         SELECT "id" FROM "CodexOAuthProviderInstance"
         WHERE "id" = ${locator.providerInstanceRowId} FOR UPDATE
       `);
+      const now = await this.transactionClock.now(tx);
       const intent = await tx.codexOAuthWritebackIntent.findUniqueOrThrow({
         where: { id: input.intentId },
         select: {
@@ -1783,7 +1799,7 @@ export class PrismaCodexRotatingOAuthRepository
         intent.mutationEpoch === null ||
         intent.executorOwner !== input.executorOwner ||
         !intent.executorLeaseExpiresAt ||
-        intent.executorLeaseExpiresAt <= input.now ||
+        intent.executorLeaseExpiresAt <= now ||
         intent.lease.status !== "finalized"
       ) {
         throw new Error("codex_rotating_versioned_activation_stale_epoch");
@@ -1809,7 +1825,7 @@ export class PrismaCodexRotatingOAuthRepository
               intent.lease.expiresAt
               ? intent.providerInstance.activeLeaseExpiresAt
               : intent.lease.expiresAt,
-          now: input.now,
+          now,
         });
       } catch {
         throw new Error("codex_rotating_versioned_activation_stale_epoch");
@@ -1853,7 +1869,7 @@ export class PrismaCodexRotatingOAuthRepository
       }
       const databaseAuthoritySignature = await signDatabaseAuthorityChallenge({
         tx,
-        authority: this.options.databaseEffectAuthority ?? this.prisma,
+        authority: this.requireDatabaseEffectAuthority(),
         effect: "runtime_completion",
         ownerId: intent.id,
         effectCode: 0,
@@ -1872,7 +1888,7 @@ export class PrismaCodexRotatingOAuthRepository
         data: {
           status: "retired_superseded",
           permanentlyRetired: true,
-          retiredAt: input.now,
+          retiredAt: now,
         },
       });
       await tx.codexOAuthSecretNamespace.update({
@@ -1886,7 +1902,7 @@ export class PrismaCodexRotatingOAuthRepository
           workflowSemanticSha256: input.attestation.workflowSemanticSha256,
           workflowSourceTrust: input.attestation.sourceTrust,
           attestedRepositoryId: input.attestation.repositoryId,
-          activatedAt: input.now,
+          activatedAt: now,
         },
       });
       await tx.codexOAuthProviderInstance.update({
@@ -1924,7 +1940,7 @@ export class PrismaCodexRotatingOAuthRepository
         },
         data: {
           status: "completed",
-          completedAt: input.now,
+          completedAt: now,
           secretNamespaceId: namespace.id,
           secretNamespaceEpoch: namespace.namespaceEpoch,
         },
@@ -1934,7 +1950,7 @@ export class PrismaCodexRotatingOAuthRepository
       }
       await tx.codexOAuthWritebackIntent.update({
         where: { id: intent.id },
-        data: { status: "completed", completedAt: input.now },
+        data: { status: "completed", completedAt: now },
       });
       return { generation: intent.generation };
     });

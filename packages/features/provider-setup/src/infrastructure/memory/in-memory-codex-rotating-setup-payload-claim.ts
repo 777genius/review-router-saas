@@ -10,6 +10,7 @@ import {
   isCodexRotatingSetupIdentityBearingClaimStatus,
   isCodexRotatingSetupTerminalClaimStatus,
   retireCodexRotatingSetupAttemptStatus,
+  reserveCodexRotatingSetupDispatchAuthorityWindow,
   retireCodexRotatingSetupClaimStatus,
   type CodexRotatingActivation,
   type CodexRotatingSetupPayloadClaim,
@@ -159,7 +160,8 @@ export class InMemoryCodexRotatingSetupPayloadClaim implements CodexRotatingSetu
       namespaceEpoch: String(sequence),
       secretName: allocated.name,
       status: "dispatch_authorized",
-      dispatchExpiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+      dispatchExpiresAt:
+        reserveCodexRotatingSetupDispatchAuthorityWindow(now).toISOString(),
     };
     stored.attempts.set(input.idempotencyKey, attempt);
     stored.attemptOrder.push(input.idempotencyKey);

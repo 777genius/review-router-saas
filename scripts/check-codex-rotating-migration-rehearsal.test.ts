@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
+import {
+  assertRehearsalRoleObservation,
+  provisionAndAssertRehearsalRoles,
+  rehearsalRoleLoginContract,
+} from "./codex-rotating-rehearsal-role-provisioning.mjs";
 
 describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   const source = readFileSync(
@@ -83,9 +89,173 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(collection).toContain(").catalog");
   });
 
-  it("attempts sequential setup and runtime fabrication under every runtime role", () => {
+  it("checks synthetic release sequence privileges by qualified name", () => {
+    const privilegeProof =
+      /function proveDatabasePrivileges\(url\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(privilegeProof).toBeDefined();
+    expect(privilegeProof).toContain(
+      "format('%I.%I', namespace.nspname, sequence.relname)",
+    );
+    expect(privilegeProof).not.toContain("sequence.oid");
+  });
+
+  it("asserts the two locking guards' exact and distinct execution contracts", () => {
+    const privilegeProof =
+      /function proveDatabasePrivileges\(url\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    const providerGuardContract =
+      /IF NOT EXISTS \(\s+SELECT 1[\s\S]+?p\.oid = 'public\.codex_oauth_provider_identity_guard\(\)'::regprocedure([\s\S]+?)\s+\) THEN\s+RAISE EXCEPTION 'Codex OAuth provider identity guard execution contract mismatch'/u.exec(
+        privilegeProof ?? "",
+      )?.[1];
+    expect(privilegeProof).toBeDefined();
+    expect(providerGuardContract).toBeDefined();
+    expect(privilegeProof).toContain(
+      "p.oid = 'public.codex_oauth_provider_identity_guard()'::regprocedure",
+    );
+    expect(privilegeProof).toContain("AND p.prosecdef");
+    expect(privilegeProof).toContain(
+      "owner.rolname = 'reviewrouter_release_migration'",
+    );
+    expect(privilegeProof).toContain(
+      "p.proconfig = ARRAY['search_path=pg_catalog, public']::text[]",
+    );
+    expect(privilegeProof).toContain("pg_get_functiondef(p.oid)");
+    expect(privilegeProof).toContain(
+      'FROM public."CodexOAuthProviderIdentityQuarantine"',
+    );
+    expect(privilegeProof).toContain('FROM public."RepositoryConnection"');
+    expect(providerGuardContract).toContain(
+      'public."codex_oauth_consume_database_authority"(',
+    );
+    expect(providerGuardContract).toContain(
+      `'''provider_identity_repair'', OLD."id", 0'`,
+    );
+    expect(providerGuardContract).toMatch(
+      /position\(\s+'FROM public\."CodexOAuthDatabaseAuthorityReceipt"'\s+IN pg_get_functiondef\(p\.oid\)\s+\) = 0/u,
+    );
+    expect(providerGuardContract).toMatch(
+      /position\(\s+'receipt\."consumedAt" IS NOT NULL'\s+IN pg_get_functiondef\(p\.oid\)\s+\) = 0/u,
+    );
+    expect(providerGuardContract).not.toMatch(
+      /position\(\s+'FROM public\."CodexOAuthDatabaseAuthorityReceipt"'[\s\S]+?\) > 0/u,
+    );
+    expect(providerGuardContract).not.toMatch(
+      /position\(\s+'receipt\."consumedAt" IS NOT NULL'[\s\S]+?\) > 0/u,
+    );
+    expect(privilegeProof).toContain(
+      "IN replace(\n                pg_get_functiondef(p.oid)",
+    );
+    expect(privilegeProof).toContain(
+      "'public.\"CodexOAuthProviderIdentityQuarantine\"',",
+    );
+    expect(privilegeProof).toContain("'public.\"RepositoryConnection\"',");
+    expect(privilegeProof).toContain(
+      "p.oid = 'public.codex_oauth_child_identity_fence_guard()'::regprocedure",
+    );
+    expect(privilegeProof).toContain("AND NOT p.prosecdef");
+    expect(privilegeProof).toContain("AND p.proconfig IS NULL");
+    expect(privilegeProof).not.toMatch(
+      /p\.proname IN \([\s\S]+?codex_oauth_provider_identity_guard[\s\S]+?codex_oauth_child_identity_fence_guard/u,
+    );
+  });
+
+  it("atomically provisions all five canonical roles before migrations and refuses takeover", () => {
+    const orchestration = source.slice(
+      source.indexOf("try {"),
+      source.indexOf("function proveLateMigrationRollbackAndReplayMatrix"),
+    );
+    const ensureIndex = orchestration.indexOf(
+      "rehearsalRoleClients = ensureRuntimeRoles(rehearsalUrl)",
+    );
+    const migrateIndex = orchestration.indexOf("migrateDeploy(rehearsalUrl)");
+    const convergeIndex = orchestration.indexOf(
+      "convergeSyntheticReleaseOwnerEquivalentPrivileges(rehearsalUrl)",
+    );
+    expect(ensureIndex).toBeGreaterThan(-1);
+    expect(ensureIndex).toBeLessThan(migrateIndex);
+    expect(migrateIndex).toBeLessThan(convergeIndex);
+    expect(source).not.toContain("psqlInput");
+
+    const provisioning =
+      /function ensureRuntimeRoles\(url\) \{([\s\S]+?)\n\}/u.exec(source)?.[1];
+    expect(provisioning).toBeDefined();
+    expect(provisioning).toContain("provisionAndAssertRehearsalRoles");
+    for (const role of [
+      "reviewrouter_api",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+      "reviewrouter_codex_effect_authority",
+      "reviewrouter_release_migration",
+    ]) {
+      expect(provisioning).toContain(role);
+    }
+    expect(provisioning).toContain("pg_advisory_xact_lock");
+    expect(provisioning).toContain(
+      "refusing to take over pre-existing canonical role",
+    );
+    expect(provisioning).not.toContain(
+      'startsWith("reviewrouter-rehearsal-managed:")',
+    );
+    expect(provisioning.indexOf("pg_advisory_xact_lock")).toBeLessThan(
+      provisioning.indexOf("SELECT rolname INTO existing_role"),
+    );
+    expect(
+      provisioning.indexOf("SELECT rolname INTO existing_role"),
+    ).toBeLessThan(provisioning.indexOf('${statements.join("\\n")}'));
+  });
+
+  it("cannot false-green when a zero-exit wrapper discards stdin", () => {
+    const calls: string[][] = [];
+    let provisioned = false;
+    const zeroExitStdinDiscardWrapper = (_url: URL, args: string[]) => {
+      calls.push(args);
+      if (args[0] === "-c" && args[1]?.includes("CREATE ROLE")) {
+        provisioned = true;
+        return { status: 0, stderr: "", stdout: "" };
+      }
+      if (args[0] === "-Atc") {
+        const roles = provisioned
+          ? [...rehearsalRoleLoginContract].map(([username, login]) => ({
+              username,
+              markerExact: true,
+              login,
+              superuser: false,
+              createDatabase: false,
+              createRole: false,
+              replication: false,
+              bypassRls: false,
+            }))
+          : [];
+        return { status: 0, stderr: "", stdout: JSON.stringify(roles) };
+      }
+      return { status: 0, stderr: "", stdout: "" };
+    };
+
+    provisionAndAssertRehearsalRoles({
+      marker: "exact-marker",
+      provisioningSql: "CREATE ROLE rehearsal_fixture",
+      psql: zeroExitStdinDiscardWrapper,
+      url: new URL("postgresql://localhost/rehearsal"),
+    });
+
+    expect(calls[0]).toEqual(["-c", "CREATE ROLE rehearsal_fixture"]);
+    expect(calls[1]?.[0]).toBe("-Atc");
+    expect(calls[1]?.[1]).toContain("shobj_description");
+    expect(calls[1]?.[1]).toContain("'exact-marker'");
+  });
+
+  it("rejects a zero-exit observation that omitted every role", () => {
+    expect(() => assertRehearsalRoleObservation("[]")).toThrow(
+      "rehearsal_role_provisioning_postcondition_failed",
+    );
+  });
+
+  it("expects each runtime role to fail fabrication at its exact ACL boundary", () => {
     const attack =
-      /function proveSequentialFabricationDeniedForEveryRuntimeRole\(url\) \{([\s\S]+?)\n\}/u.exec(
+      /function proveSequentialFabricationDeniedForEveryRuntimeRole\(clients\) \{([\s\S]+?)\n\}/u.exec(
         source,
       )?.[1];
     expect(attack).toBeDefined();
@@ -112,14 +282,190 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(attack).toContain("codex_oauth_database_authority_challenge");
     expect(attack).toContain("codex_oauth_sign_database_authority");
+    expect(attack).toContain("CodexOAuthProviderIdentityQuarantine");
+    expect(source).toContain("proveStaleAclProviderIdentityEscalationDenied");
+    expect(source).toContain(
+      "codex_oauth_provider_identity_authority_required",
+    );
+    expect(source).toContain("fabricated_stale_acl");
+    const oneShotIdentityMutationProof =
+      /async function proveDatabaseAuthorityReceiptOneShot\(adminUrl, clients\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(oneShotIdentityMutationProof).toBeDefined();
+    expect(oneShotIdentityMutationProof).toContain(
+      "manual consume proof did not consume its receipt",
+    );
+    expect(oneShotIdentityMutationProof).toContain(
+      "manually consumed authority authorized an identity mutation",
+    );
+    expect(oneShotIdentityMutationProof).toContain(
+      "provider-scoped authority authorized a different provider",
+    );
+    expect(oneShotIdentityMutationProof).toContain(
+      "identity guard did not consume authority atomically",
+    );
+    expect(oneShotIdentityMutationProof).toContain(
+      "second identity mutation reused one-shot authority",
+    );
+    expect(oneShotIdentityMutationProof).toContain(
+      "codex_oauth_provider_identity_authority_required",
+    );
+    expect(oneShotIdentityMutationProof).toContain("clients.web");
+    expect(oneShotIdentityMutationProof).toContain("clients.effectAuthority");
     expect(attack).toContain("repeat('0',64)");
+    expect(attack).toContain("direct production-faithful login");
+    expect(attack).not.toContain("SET SESSION AUTHORIZATION");
+    expect(attack).not.toContain("SET LOCAL ROLE");
     expect(attack).toContain("definiteResponseCode");
     expect(attack).toContain("providerResponseCode");
     expect(attack).toContain("\"status\"='active'");
     expect(attack).toContain("\"status\"='completed'");
     expect(attack).toContain('"mutationOwner"=NULL');
-    expect(attack).toContain("setup.status !== 0");
-    expect(attack).toContain("runtime.status !== 0");
+    const expectationMatrixSource =
+      /for \(const \[ordinal, role, expectedSetupFailure, expectedRuntimeFailure\] of (\[[\s\S]+?\n {2}\])\) \{/u.exec(
+        attack,
+      )?.[1];
+    expect(expectationMatrixSource).toBeDefined();
+    expect(runInNewContext(expectationMatrixSource!)).toEqual([
+      [
+        1,
+        "reviewrouter_api",
+        "permission denied for function codex_oauth_authorize_setup_confirmation",
+        "codex_oauth_database_authority_signature_invalid",
+      ],
+      [
+        2,
+        "reviewrouter_web",
+        "codex_oauth_database_authority_signature_invalid",
+        "permission denied for function codex_oauth_authorize_runtime_confirmation",
+      ],
+      [
+        3,
+        "reviewrouter_worker",
+        "permission denied for function codex_oauth_authorize_setup_confirmation",
+        "permission denied for function codex_oauth_authorize_runtime_confirmation",
+      ],
+    ]);
+    expect(attack).toContain("assertPsqlFailedWithExactMessage(");
+    expect(attack).toContain("expectedSetupFailure");
+    expect(attack).toContain("expectedRuntimeFailure");
+    expect(attack).toContain("psqlResultDiagnostic(signer)");
+    expect(source).toContain("psqlResultDiagnostic(result)");
+    expect(source).toContain(
+      "Codex OAuth provider identity guard execution contract mismatch",
+    );
+    expect(source).toContain(
+      "Codex OAuth child identity fence guard execution contract mismatch",
+    );
+    expect(source).toContain("Codex OAuth runtime least privilege mismatch");
+    expect(source).toContain(
+      "Codex OAuth synthetic rehearsal release owner-equivalent privilege mismatch",
+    );
+    expect(source).toContain("Codex OAuth role memberships are not empty");
+    expect(source).toContain("Codex OAuth effect authority isolation mismatch");
+    expect(source).toContain("p.prosecdef");
+    expect(source).toContain("search_path=pg_catalog, public");
+    expect(source).toContain(
+      "has_table_privilege(role_name, 'public.\"RepositoryConnection\"', 'UPDATE')",
+    );
+    expect(source).toContain(
+      "convergeSyntheticReleaseOwnerEquivalentPrivileges",
+    );
+    expect(source).not.toContain("grantSyntheticReleaseGuardPrivileges");
+    expect(source).toContain("Rehearsal fidelity only");
+    expect(source).toContain(
+      "GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration",
+    );
+    expect(source).toContain(
+      "GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES",
+    );
+    expect(source).toContain("ON ALL TABLES IN SCHEMA public");
+    expect(source).toContain(
+      "GRANT USAGE, SELECT, UPDATE\n        ON ALL SEQUENCES IN SCHEMA public",
+    );
+    expect(source).toContain(
+      "pg_has_role(role_name, 'reviewrouter_release_migration', 'SET')",
+    );
+    expect(attack).toContain(
+      "could invoke the elevated identity guard directly",
+    );
+    expect(attack).toContain(
+      "permission denied for function codex_oauth_authorize_setup_confirmation",
+    );
+    expect(attack).toContain(
+      "permission denied for function codex_oauth_authorize_runtime_confirmation",
+    );
+  });
+
+  it("rejects unrelated permission-denied failures", () => {
+    const helperSource =
+      /function assertPsqlFailedWithExactMessage\(result, expectedFailure, message\) \{[\s\S]+?\n\}/u.exec(
+        source,
+      )?.[0];
+    expect(helperSource).toBeDefined();
+
+    const observedConditions: boolean[] = [];
+    const assertPsqlFailedWithExactMessage = runInNewContext(
+      `${helperSource}; assertPsqlFailedWithExactMessage`,
+      {
+        assert(condition: boolean) {
+          observedConditions.push(condition);
+        },
+        psqlResultDiagnostic() {
+          return "diagnostic";
+        },
+      },
+    ) as (
+      result: { status: number; stdout: string; stderr: string },
+      expectedFailure: string,
+      message: string,
+    ) => void;
+
+    const exactFailures = [
+      "codex_oauth_database_authority_signature_invalid",
+      "permission denied for function codex_oauth_authorize_setup_confirmation",
+      "permission denied for function codex_oauth_authorize_runtime_confirmation",
+    ];
+    for (const expectedFailure of exactFailures) {
+      assertPsqlFailedWithExactMessage(
+        { status: 1, stdout: "", stderr: `ERROR: ${expectedFailure}` },
+        expectedFailure,
+        "expected failure",
+      );
+      assertPsqlFailedWithExactMessage(
+        {
+          status: 1,
+          stdout: "",
+          stderr:
+            "ERROR: permission denied for table CodexOAuthProviderInstance",
+        },
+        expectedFailure,
+        "unrelated table failure",
+      );
+      assertPsqlFailedWithExactMessage(
+        {
+          status: 1,
+          stdout: "",
+          stderr:
+            "ERROR: permission denied for function codex_oauth_provider_identity_guard",
+        },
+        expectedFailure,
+        "unrelated function failure",
+      );
+    }
+
+    expect(observedConditions).toEqual([
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+    ]);
   });
 
   it("routes production Prisma terminal writers through database authority", () => {
@@ -147,7 +493,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "acknowledgement: codexRotatingSetupRecoveryAcknowledgement",
     );
     expect(recoveryFlow).toMatch(
-      /new PrismaCodexRotatingSetupRecovery\(\s*prisma,\s*databaseRecoveryWitnessW2,\s*\)/u,
+      /new PrismaCodexRotatingSetupRecovery\(\s*webPrisma,\s*databaseRecoveryWitnessW2,\s*\)/u,
     );
     expect(recoveryFlow).toMatch(
       /issueCodexRotatingSetupCommand\(\{[\s\S]+?databaseRecoveryWitness: databaseRecoveryWitnessW2,/u,
@@ -190,15 +536,199 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(ledgerProof).toBeDefined();
     expect(ledgerProof).toContain("operation:runtime-proof-initial");
     expect(ledgerProof).toContain("operation:runtime-proof-recovery");
+    expect(ledgerProof).toContain("proof:definite");
     expect(ledgerProof).toContain("proof:ambiguous");
+    expect(ledgerProof).toContain("proof:rollback");
+    expect(ledgerProof).toContain("proof:confirmed-restart");
+    expect(ledgerProof).toContain("initialSetupTombstone");
+    expect(ledgerProof).toContain("recoverySetupTombstone");
+    expect(ledgerProof).toContain("definiteRuntimeTombstone");
+    expect(ledgerProof).toContain("ambiguousRuntimeTombstone");
+    expect(ledgerProof).toContain("activeRuntimeNamespace");
+    expect(ledgerProof).toContain("confirmedRestartRuntimeTombstone");
+    expect(ledgerProof).toContain(
+      'evidence.recoverySetupTombstone?.claimStatus === "active"',
+    );
+    expect(ledgerProof).toContain(
+      'evidence.recoverySetupTombstone.attemptStatus === "confirmed"',
+    );
+    expect(ledgerProof).toContain(
+      'evidence.recoverySetupTombstone.namespaceStatus ===\n        "retired_superseded"',
+    );
+    expect(ledgerProof).toContain(
+      "evidence.recoverySetupTombstone.permanentlyRetired === true",
+    );
+    expect(ledgerProof).toContain(
+      'evidence.definiteRuntimeTombstone?.intentStatus === "completed"',
+    );
+    expect(ledgerProof).toContain(
+      'evidence.definiteRuntimeTombstone.namespaceStatus ===\n        "retired_superseded"',
+    );
+    expect(ledgerProof).toContain(
+      "evidence.definiteRuntimeTombstone.permanentlyRetired === true",
+    );
+    expect(ledgerProof).toContain(
+      'evidence.confirmedRestartRuntimeTombstone?.intentStatus ===\n      "remote_outcome_unknown"',
+    );
+    expect(ledgerProof).toContain(
+      'evidence.confirmedRestartRuntimeTombstone.namespaceStatus ===\n        "retired_ambiguous"',
+    );
+    expect(ledgerProof).toContain(
+      "evidence.confirmedRestartRuntimeTombstone.permanentlyRetired === true",
+    );
+    const confirmedRestartEvidence =
+      /'confirmedRestartRuntimeTombstone', \(([\s\S]+?)\n {8}\),\n {8}'provider'/u.exec(
+        ledgerProof ?? "",
+      )?.[1];
+    expect(confirmedRestartEvidence).toBeDefined();
+    expect(confirmedRestartEvidence).not.toContain("recoveryRequestRowId");
+    expect(ledgerProof).toContain(
+      "quoteLiteral(recoverySetupTombstone.claimId)",
+    );
+    expect(ledgerProof).toContain(
+      "quoteLiteral(recoverySetupTombstone.attemptId)",
+    );
+    expect(ledgerProof).toContain(
+      'evidence.activeRuntimeNamespace?.intentStatus === "completed"',
+    );
+    expect(ledgerProof).toContain(
+      'evidence.activeRuntimeNamespace.namespaceStatus === "active"',
+    );
+    expect(ledgerProof).toContain(
+      "evidence.activeRuntimeNamespace.namespaceId",
+    );
+    expect(ledgerProof).not.toContain("activeRuntimeNamespace.claimId");
+    expect(ledgerProof).not.toContain("activeRuntimeNamespace.attemptId");
+    expect(source).toContain(
+      '"confirmedAttemptId"=${quoteLiteral(evidence.recoverySetupTombstone.attemptId)}',
+    );
+    expect(source).toContain("intent.\"idempotencyKey\"='proof:rollback'");
+    expect(source).toContain(
+      '"activeAccountIdentityHash"=${quoteLiteral(evidence.activeRuntimeNamespace.accountIdentityHash)}',
+    );
+    expect(source).toContain(
+      '"latestGenerationHash"=${quoteLiteral(evidence.activeRuntimeNamespace.latestGenerationHash)}',
+    );
+    expect(ledgerProof).toMatch(
+      /evidence\.provider\?\.activeSecretNamespaceId ===\s+evidence\.activeRuntimeNamespace\.namespaceId/u,
+    );
+    expect(ledgerProof).toMatch(
+      /evidence\.provider\.activeSecretNamespaceEpoch ===\s+evidence\.activeRuntimeNamespace\.namespaceEpoch/u,
+    );
+    expect(ledgerProof).toMatch(
+      /evidence\.provider\.activeSecretNamespaceName ===\s+evidence\.activeRuntimeNamespace\.secretName/u,
+    );
+    expect(ledgerProof).toMatch(
+      /evidence\.provider\.latestGenerationHash ===\s+evidence\.activeRuntimeNamespace\.latestGenerationHash/u,
+    );
+    expect(source).toContain(
+      '"status"=\'active\' AND NOT "permanentlyRetired"',
+    );
+    expect(ledgerProof).toContain(
+      "BigInt(evidence.initialSetupTombstone.namespaceEpoch) <",
+    );
+    expect(ledgerProof).toContain(
+      "BigInt(evidence.activeRuntimeNamespace.namespaceEpoch) <\n        BigInt(evidence.confirmedRestartRuntimeTombstone.namespaceEpoch)",
+    );
     expect(ledgerProof).toContain("CodexOAuthSecretNamespace_secretName_key");
     expect(ledgerProof).not.toContain("claim-proof");
     expect(ledgerProof).not.toContain("p-fetched");
-    expect(source).toContain('retained === "1:1:1:1:1:1"');
+    expect(source).toContain('retained === "1:1:1:1:1:1:1:1:1:1"');
+    expect(source).toContain(
+      'assertVersionedNamespaceEvidenceRetained(url, evidence, "Prisma")',
+    );
     expect(prismaRetentionProofSource).toContain(
       "REVIEW_ROUTER_PRISMA_EVIDENCE_IDENTITIES",
     );
     expect(prismaRetentionProofSource).not.toContain("claim-proof");
     expect(prismaRetentionProofSource).not.toContain("p-fetched");
+  });
+
+  it("runs the positive proof with isolated identities, database time, and replay evidence", () => {
+    for (const environmentName of [
+      "REVIEW_ROUTER_PRISMA_EVIDENCE_ADMIN_DATABASE_URL",
+      "REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL",
+      "REVIEW_ROUTER_PRISMA_EVIDENCE_WEB_DATABASE_URL",
+      "REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL",
+    ]) {
+      expect(source).toContain(environmentName);
+      expect(runtimeProofSource).toContain(environmentName);
+    }
+    expect(runtimeProofSource).not.toContain(
+      'new Date("2026-08-10T12:00:00.000Z")',
+    );
+    expect(runtimeProofSource.match(/poolMax: 1/gu)).toHaveLength(4);
+    expect(runtimeProofSource).toContain("observeDatabaseSession");
+    expect(runtimeProofSource).toContain("pg_backend_pid()");
+    expect(runtimeProofSource).toContain("assertConsumedReceipt");
+    expect(runtimeProofSource).toContain("runtime_authority_rollback_sentinel");
+    expect(runtimeProofSource).toContain("expectSignatureReplayRejected");
+    expect(runtimeProofSource).toContain(
+      "runtime receipt double consume succeeded",
+    );
+    expect(source).toMatch(
+      /already connected\.\*deprecated\|deprecated\.\*already connected/iu,
+    );
+  });
+
+  it("compares real namespace lifecycle evidence across authority rollback", () => {
+    const rollbackProof =
+      /const rollbackBefore =([\s\S]+?)throw new Error\("runtime authorization rollback left poison state"\);/u.exec(
+        runtimeProofSource,
+      )?.[1];
+    const dateEquality =
+      /function nullableDatesExactlyEqual\([\s\S]+?\n\}/u.exec(
+        runtimeProofSource,
+      )?.[0];
+
+    expect(rollbackProof).toBeDefined();
+    expect(dateEquality).toBeDefined();
+    expect(dateEquality).toContain("left === null || right === null");
+    expect(dateEquality).toContain("left.getTime() === right.getTime()");
+    expect(rollbackProof?.match(/id: true/gu)).toHaveLength(2);
+    for (const field of ["status", "confirmedAt", "activatedAt", "retiredAt"]) {
+      expect(
+        rollbackProof?.match(new RegExp(`${field}: true`, "gu")),
+      ).toHaveLength(2);
+    }
+    expect(rollbackProof).toContain("rollbackBefore.secretNamespace === null");
+    expect(rollbackProof).toContain("rollbackAfter.secretNamespace === null");
+    expect(rollbackProof).toContain(
+      "rollbackAfter.secretNamespace.id !== rollbackBefore.secretNamespace.id",
+    );
+    for (const field of ["confirmedAt", "activatedAt", "retiredAt"]) {
+      expect(rollbackProof).toContain(
+        `rollbackAfter.secretNamespace.${field},\n      rollbackBefore.secretNamespace.${field},`,
+      );
+    }
+    expect(rollbackProof).not.toContain("secretNamespace?.updatedAt");
+    expect(rollbackProof).not.toMatch(
+      /secretNamespace:\s*\{\s*select:\s*\{[^}]*updatedAt/u,
+    );
+  });
+
+  it("reads ignored authority receipts with typed parameterized raw SQL", () => {
+    const receiptAssertion =
+      /async function assertConsumedReceipt\([\s\S]+?\n\}/u.exec(
+        runtimeProofSource,
+      )?.[0];
+
+    expect(receiptAssertion).toBeDefined();
+    expect(receiptAssertion).toContain("admin.$queryRaw<");
+    expect(receiptAssertion).toContain(
+      'FROM public."CodexOAuthDatabaseAuthorityReceipt"',
+    );
+    expect(receiptAssertion).toContain("${input.ownerId}");
+    expect(receiptAssertion).toContain("${input.effect}");
+    expect(receiptAssertion).toContain("${input.effectCode}");
+    expect(receiptAssertion).toContain("receipts.length !== 1");
+    expect(receiptAssertion).toContain(
+      "receipts[0]?.databaseRole !== input.databaseRole",
+    );
+    expect(receiptAssertion).toContain("!receipts[0].consumedAt");
+    expect(receiptAssertion).not.toContain("$queryRawUnsafe");
+    expect(runtimeProofSource).not.toContain(
+      "codexOAuthDatabaseAuthorityReceipt",
+    );
   });
 });

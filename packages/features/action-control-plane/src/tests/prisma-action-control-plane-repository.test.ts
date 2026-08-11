@@ -66,6 +66,7 @@ describe("completed versioned writeback replay fencing", () => {
     const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
       actionOwnerRepo: "777genius/review-router",
       databaseRecoveryWitness: "witness_generation_two_12345678901234567890",
+      transactionClock: fixedClock("2026-08-10T00:00:00.000Z"),
     });
 
     await expect(
@@ -83,7 +84,6 @@ describe("completed versioned writeback replay fencing", () => {
           idempotencyKey: completedIntent.idempotencyKey,
         },
         encryptedPayloadDigest: completedIntent.encryptedPayloadDigest,
-        now: new Date("2026-08-10T00:00:00.000Z"),
       }),
     ).rejects.toThrow("codex_rotating_database_recovery_witness_mismatch");
 
@@ -136,6 +136,7 @@ describe("completed versioned writeback replay fencing", () => {
     const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
       actionOwnerRepo: "777genius/review-router",
       databaseRecoveryWitness,
+      transactionClock: fixedClock("2026-08-10T00:00:00.000Z"),
     });
 
     await expect(
@@ -153,7 +154,6 @@ describe("completed versioned writeback replay fencing", () => {
           idempotencyKey: completedIntent.idempotencyKey,
         },
         encryptedPayloadDigest: completedIntent.encryptedPayloadDigest,
-        now: new Date("2026-08-10T00:00:00.000Z"),
       }),
     ).rejects.toThrow("codex_rotating_database_incarnation_mismatch");
 
@@ -246,6 +246,7 @@ describe("ambiguous versioned writeback lock ordering", () => {
     const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
       actionOwnerRepo: "777genius/review-router",
       databaseRecoveryWitness,
+      transactionClock: fixedClock(intent.executorLeaseExpiresAt),
     });
 
     await repository.retireAmbiguousVersionedWriteback({
@@ -263,7 +264,6 @@ describe("ambiguous versioned writeback lock ordering", () => {
         accountIdentityHash: intent.accountIdentityHash,
       },
       safeErrorCode: "provider_response_unknown",
-      now: intent.executorLeaseExpiresAt,
     });
 
     expect(order).toEqual([
@@ -334,6 +334,7 @@ describe("ambiguous versioned writeback lock ordering", () => {
     const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
       actionOwnerRepo: "777genius/review-router",
       databaseRecoveryWitness,
+      transactionClock: fixedClock("2026-08-10T01:00:00.000Z"),
     });
 
     await expect(
@@ -352,7 +353,6 @@ describe("ambiguous versioned writeback lock ordering", () => {
           accountIdentityHash: intent.accountIdentityHash,
         },
         safeErrorCode: "versioned_provider_put_outcome_unknown",
-        now: new Date("2026-08-10T01:00:00.000Z"),
       }),
     ).resolves.toBeUndefined();
     expect(tx.codexOAuthSecretNamespace.updateMany).not.toHaveBeenCalled();
@@ -413,6 +413,7 @@ describe("ambiguous versioned writeback lock ordering", () => {
     const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
       actionOwnerRepo: "777genius/review-router",
       databaseRecoveryWitness,
+      transactionClock: fixedClock(now),
     });
 
     await repository.retirePreDispatchVersionedWriteback({
@@ -420,7 +421,6 @@ describe("ambiguous versioned writeback lock ordering", () => {
       attemptId: intent.dispatchAttemptId,
       executorOwner: intent.executorOwner,
       safeErrorCode: "versioned_provider_pre_dispatch_failed_v1",
-      now,
     });
 
     expect(tx.codexOAuthSecretNamespace.updateMany).toHaveBeenCalledWith(
@@ -854,9 +854,10 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
     };
     const leaseUpdate = vi.fn(async () => ({ count: 1 }));
     const tx = {
-      $executeRaw: vi.fn(
-        async (_strings: TemplateStringsArray, ..._values: unknown[]) => 1,
-      ),
+      $executeRaw: vi.fn(async (query: unknown) => {
+        void query;
+        return 1;
+      }),
       $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) =>
         (Array.isArray(query)
           ? Array.from(query).join("")
@@ -924,6 +925,8 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
     const repository = new PrismaCodexRotatingOAuthRepository(prisma, {
       actionOwnerRepo: "777genius/review-router",
       databaseRecoveryWitness,
+      transactionClock: fixedClock(now),
+      databaseEffectAuthority: prisma,
     });
     const attestation = createVersionedSecretWorkflowSourceAttestation({
       repositoryId: "123456",
@@ -942,7 +945,6 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
         attemptId: "attempt-1",
         executorOwner: "executor-1",
         attestation,
-        now,
       }),
     ).resolves.toEqual({ generation: 2 });
     expect(leaseUpdate).toHaveBeenCalledWith({
@@ -1033,4 +1035,55 @@ function buildCodexRotatingRepository(lease: {
       databaseRecoveryWitness,
     }),
   };
+}
+
+describe("durable runtime database clock", () => {
+  it("writes nothing when the authoritative clock query fails", async () => {
+    const namespaceCreate = vi.fn();
+    const intentCreate = vi.fn();
+    const tx = {
+      $executeRawUnsafe: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "provider-row-1" }]),
+      codexOAuthSecretNamespace: { create: namespaceCreate },
+      codexOAuthWritebackIntent: { create: intentCreate },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) =>
+        callback(tx),
+      ),
+    };
+    const repository = new PrismaCodexRotatingOAuthRepository(prisma as never, {
+      actionOwnerRepo: "777genius/review-router",
+      databaseRecoveryWitness,
+      transactionClock: {
+        now: async () => {
+          throw new Error("database_clock_unavailable");
+        },
+      },
+    });
+
+    await expect(
+      repository.prepareVersionedWriteback({
+        request: {
+          protocolVersion: 1,
+          leaseId: "lease:clock-failure",
+          providerInstanceId: "codex-rotating:123456",
+          generation: 2,
+          latestGenerationHash: "generation-hash-clock-failure",
+          accountIdentityHash: "account-identity-clock-failure",
+          accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
+          encryptedValue: "Y2lwaGVydGV4dA==",
+          keyId: "key-clock-failure",
+          idempotencyKey: "writeback:clock-failure",
+        },
+        encryptedPayloadDigest: "digest-clock-failure",
+      }),
+    ).rejects.toThrow("database_clock_unavailable");
+    expect(namespaceCreate).not.toHaveBeenCalled();
+    expect(intentCreate).not.toHaveBeenCalled();
+  });
+});
+
+function fixedClock(instant: Date | string) {
+  return { now: async () => new Date(instant) };
 }

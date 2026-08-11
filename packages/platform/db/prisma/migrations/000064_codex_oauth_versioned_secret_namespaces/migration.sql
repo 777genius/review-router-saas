@@ -608,9 +608,55 @@ CREATE TRIGGER "CodexOAuthSetupPayloadClaim_evidence_guard"
 BEFORE INSERT OR UPDATE OR DELETE ON "CodexOAuthSetupPayloadClaim"
 FOR EACH ROW EXECUTE FUNCTION "codex_oauth_setup_claim_evidence_guard"();
 
+-- Provider writes must serialize against repository identity changes. Elevate
+-- only this trigger guard, pin name resolution, schema-qualify protected reads,
+-- and keep direct execution unavailable. In production the canonical release
+-- caller owns the catalog, so its implicit owner privileges must not be narrowed.
+CREATE OR REPLACE FUNCTION "codex_oauth_provider_identity_guard"()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE repository_record RECORD;
+DECLARE identity_changed BOOLEAN := FALSE;
+DECLARE repair_allowed BOOLEAN := FALSE;
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    identity_changed :=
+      NEW."workspaceId" IS DISTINCT FROM OLD."workspaceId" OR
+      NEW."repositoryId" IS DISTINCT FROM OLD."repositoryId" OR
+      NEW."providerInstanceId" IS DISTINCT FROM OLD."providerInstanceId" OR
+      NEW."authMode" IS DISTINCT FROM OLD."authMode" OR
+      NEW."secretName" IS DISTINCT FROM OLD."secretName";
+    repair_allowed := identity_changed
+      AND OLD."mutationOwner" = 'recovery'
+      AND EXISTS (
+        SELECT 1 FROM public."CodexOAuthProviderIdentityQuarantine" q
+        WHERE q."providerInstanceRowId" = OLD."id" AND q."resolvedAt" IS NULL
+      );
+    IF identity_changed AND NOT repair_allowed THEN
+      RAISE EXCEPTION 'codex_oauth_provider_identity_immutable' USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  SELECT "workspaceId", "provider", "githubRepositoryId" INTO repository_record
+  FROM public."RepositoryConnection" WHERE "id" = NEW."repositoryId" FOR SHARE;
+  IF NOT FOUND OR repository_record."provider"::text <> 'github'
+     OR repository_record."githubRepositoryId" IS NULL
+     OR NEW."workspaceId" <> repository_record."workspaceId"
+     OR NEW."providerInstanceId" <> 'codex-rotating:' || repository_record."githubRepositoryId"::text
+     OR NEW."authMode" <> 'codex_subscription_oauth_rotating'
+     OR NEW."secretName" <> 'REVIEWROUTER_CODEX_AUTH_JSON'
+  THEN RAISE EXCEPTION 'codex_oauth_provider_identity_mismatch' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+
 -- A forced recovery may attach an unresolved terminal writeback to its exact
 -- recovery request after the provider epoch advances. All other stale child
--- mutations remain rejected by the original fence contract.
+-- mutations remain rejected by the original fence contract. This guard stays
+-- security-invoker because its locked parent is itself runtime-writable; it
+-- needs no elevated access.
 CREATE OR REPLACE FUNCTION "codex_oauth_child_identity_fence_guard"()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE p RECORD;
@@ -1490,10 +1536,36 @@ REVOKE EXECUTE ON FUNCTION "codex_oauth_consume_database_authority"(TEXT, TEXT, 
 DO $$
 DECLARE runtime_role TEXT;
 DECLARE runtime_table TEXT;
+DECLARE owned_function REGPROCEDURE;
 BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_release_migration') THEN
+    FOR owned_function IN
+      SELECT p.oid::regprocedure
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.proname LIKE 'codex_oauth_%'
+    LOOP
+      EXECUTE format(
+        'ALTER FUNCTION %s OWNER TO reviewrouter_release_migration',
+        owned_function
+      );
+    END LOOP;
+  END IF;
   FOREACH runtime_role IN ARRAY ARRAY['reviewrouter_api', 'reviewrouter_web', 'reviewrouter_worker'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = runtime_role) THEN
       EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', runtime_role);
+      FOR owned_function IN
+        SELECT p.oid::regprocedure
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname LIKE 'codex_oauth_%'
+      LOOP
+        EXECUTE format(
+          'REVOKE EXECUTE ON FUNCTION %s FROM %I',
+          owned_function,
+          runtime_role
+        );
+      END LOOP;
       EXECUTE format(
         'GRANT EXECUTE ON FUNCTION "codex_oauth_database_authority_challenge"(TEXT, TEXT, INTEGER) TO %I',
         runtime_role

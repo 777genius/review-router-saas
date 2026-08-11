@@ -21,6 +21,11 @@ const successfulRow = (
   applied_steps_count: 1,
 });
 
+const preflightSource = readFileSync(
+  resolve("scripts/preflight-codex-rotating-migration-history.ts"),
+  "utf8",
+);
+
 describe("Codex rotating immutable migration history policy", () => {
   it("pins the exact checked-in digest for the atomic 000063 migration", () => {
     const checkedInDigest = createHash("sha256")
@@ -46,7 +51,7 @@ describe("Codex rotating immutable migration history policy", () => {
     );
   });
 
-  it("pins the exact checked-in digest for the unpublished forward 000064 migration", () => {
+  it("pins the exact checked-in digest for the unpublished forward 000065 migration", () => {
     const checkedInDigest = createHash("sha256")
       .update(
         readFileSync(
@@ -62,9 +67,33 @@ describe("Codex rotating immutable migration history policy", () => {
       checkedInCodexRotatingMigrationChecksums[
         forwardUnpublishedCodexRotatingMigration.name
       ],
-    ).toBe("d349e7bc2a114571070cf451e07ac2c9b0124dfa7565eb4e2e2ccd1c3d788718");
+    ).toBe("ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c");
     expect(checkedInDigest).toBe(
       forwardUnpublishedCodexRotatingMigration.checksum,
+    );
+  });
+
+  it("loads the exact 000065 source digest and queries its prepublication history", () => {
+    const expectedMigrationNames = Object.keys(
+      checkedInCodexRotatingMigrationChecksums,
+    );
+    const sourceMigrationNames =
+      /const migrationNames = \[([\s\S]+?)\] as const;/u
+        .exec(preflightSource)?.[1]
+        ?.match(/"[^"]+"/gu)
+        ?.map((name) => JSON.parse(name));
+    const queriedMigrationNames = /WHERE "migration_name" IN \(([\s\S]+?)\)/u
+      .exec(preflightSource)?.[1]
+      ?.match(/'[^']+'/gu)
+      ?.map((name) => name.slice(1, -1));
+
+    expect(sourceMigrationNames).toEqual(expectedMigrationNames);
+    expect(queriedMigrationNames).toEqual(expectedMigrationNames);
+    expect(sourceMigrationNames).toContain(
+      forwardUnpublishedCodexRotatingMigration.name,
+    );
+    expect(queriedMigrationNames).toContain(
+      forwardUnpublishedCodexRotatingMigration.name,
     );
   });
 
@@ -105,7 +134,7 @@ describe("Codex rotating immutable migration history policy", () => {
     }
 
     const forwardDigest =
-      /000064 forward-publication policy[\s\S]+?exact checked-in SHA-256 is\s+`([a-f0-9]{64})`/u.exec(
+      /000065 forward-publication policy[\s\S]+?exact checked-in SHA-256 is\s+`([a-f0-9]{64})`/u.exec(
         runbook,
       )?.[1];
     expect(forwardDigest).toBe(
@@ -119,12 +148,13 @@ describe("Codex rotating immutable migration history policy", () => {
     ).not.toThrow();
   });
 
-  it("accepts successful 000060, 000062, and atomic-release 000063 checksums", () => {
+  it("accepts successful immutable migrations including 000064", () => {
     expect(() =>
       assertCodexRotatingMigrationHistoryIsPristine([
         successfulRow("000060_codex_oauth_setup_serialization"),
         successfulRow("000062_codex_oauth_remote_outcome_unknown"),
         successfulRow("000063_codex_oauth_setup_payload_claim"),
+        successfulRow("000064_codex_oauth_versioned_secret_namespaces"),
       ]),
     ).not.toThrow();
   });
@@ -159,7 +189,7 @@ describe("Codex rotating immutable migration history policy", () => {
     ).toThrow("codex_rotating_000061_preexisting_history_forbidden");
   });
 
-  it("rejects any prepublication history for forward migration 000064", () => {
+  it("rejects any prepublication history for forward migration 000065", () => {
     expect(() =>
       assertCodexRotatingMigrationHistoryIsPristine([
         {
@@ -171,13 +201,13 @@ describe("Codex rotating immutable migration history policy", () => {
         },
       ]),
     ).toThrow(
-      "codex_rotating_000064_prepublication_history_forbidden:" +
+      "codex_rotating_000065_prepublication_history_forbidden:" +
         "use_the_forward_release_migration_once_from_the_immutable_release_caller",
     );
   });
 
   it.each(["rewritten", "unfinished", "rolled_back", "duplicate"] as const)(
-    "rejects %s prepublication 000064 history rather than blessing it",
+    "rejects %s prepublication 000065 history rather than blessing it",
     (kind) => {
       const original: CodexRotatingMigrationHistoryRow = {
         migration_name: forwardUnpublishedCodexRotatingMigration.name,
@@ -198,7 +228,7 @@ describe("Codex rotating immutable migration history policy", () => {
         assertCodexRotatingMigrationHistoryIsPristine(
           kind === "duplicate" ? [row, row] : [row],
         ),
-      ).toThrow("codex_rotating_000064_prepublication_history_forbidden");
+      ).toThrow("codex_rotating_000065_prepublication_history_forbidden");
     },
   );
 

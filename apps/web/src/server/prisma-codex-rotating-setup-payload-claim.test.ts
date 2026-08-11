@@ -169,6 +169,7 @@ describe("Prisma rotating setup writer proof", () => {
     const ledger = new PrismaCodexRotatingSetupPayloadClaim(
       prisma as never,
       recoveryWitness,
+      { now: async () => new Date("2026-08-10T00:00:00.000Z") },
     );
     await expect(ledger.status(claim.id)).rejects.toThrow(
       "codex_rotating_retryable_uncommitted",
@@ -192,6 +193,7 @@ describe("Prisma rotating setup writer proof", () => {
     const ledger = new PrismaCodexRotatingSetupPayloadClaim(
       prisma as never,
       recoveryWitness,
+      { now: async () => new Date("2026-08-10T00:00:00.000Z") },
     );
     await expect(ledger.status(claim.id)).resolves.toMatchObject({
       status: "prepared",
@@ -331,6 +333,7 @@ describe("Prisma rotating setup writer proof", () => {
     const ledger = new PrismaCodexRotatingSetupPayloadClaim(
       prisma as never,
       recoveryWitness,
+      { now: async () => new Date("2026-08-10T00:00:00.000Z") },
     );
 
     try {
@@ -433,6 +436,7 @@ describe("Prisma rotating setup writer proof", () => {
     const ledger = new PrismaCodexRotatingSetupPayloadClaim(
       prisma as never,
       recoveryWitness,
+      { now: async () => new Date("2026-08-10T00:00:00.000Z") },
     );
     const recoveryFence = {
       providerInstanceId: manifest.providerInstanceId,
@@ -502,7 +506,7 @@ describe("Prisma rotating setup writer proof", () => {
     const ledger = new PrismaCodexRotatingSetupPayloadClaim(
       prisma as never,
       recoveryWitness,
-      { now: () => now },
+      { now: async () => now },
     );
 
     await expect(
@@ -530,7 +534,7 @@ describe("Prisma rotating setup writer proof", () => {
   });
 
   it("re-locks and commits an expired outcome tombstone before rejecting confirmation", async () => {
-    const now = new Date("2999-01-01T00:11:00.000Z");
+    const now = new Date("2999-01-01T00:10:00.000Z");
     const attempt = {
       claimId: claim.id,
       attemptId: "attempt:writer-proof",
@@ -579,10 +583,13 @@ describe("Prisma rotating setup writer proof", () => {
         return result;
       }),
     };
+    const authority = { $queryRaw: vi.fn() };
     const ledger = new PrismaCodexRotatingSetupPayloadClaim(
       prisma as never,
       recoveryWitness,
-      { now: () => now },
+      { now: async () => now },
+      process.env,
+      authority as never,
     );
 
     await expect(
@@ -594,6 +601,7 @@ describe("Prisma rotating setup writer proof", () => {
       }),
     ).rejects.toThrow("codex_rotating_setup_dispatch_expired");
     expect(transactionCommitted).toBe(true);
+    expect(authority.$queryRaw).not.toHaveBeenCalled();
     expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
     const sql = tx.$queryRaw.mock.calls.map(([strings]) =>
       Array.from(strings as readonly string[]).join("?"),
@@ -661,7 +669,7 @@ describe("Prisma rotating setup writer proof", () => {
     const ledger = new PrismaCodexRotatingSetupPayloadClaim(
       prisma as never,
       recoveryWitness,
-      { now: () => now },
+      { now: async () => now },
       process.env,
       authority as never,
     );
@@ -891,7 +899,7 @@ describe("Prisma rotating setup writer proof", () => {
     const ledger = new PrismaCodexRotatingSetupPayloadClaim(
       prisma as never,
       recoveryWitness,
-      { now: () => now },
+      { now: async () => now },
     );
 
     await expect(

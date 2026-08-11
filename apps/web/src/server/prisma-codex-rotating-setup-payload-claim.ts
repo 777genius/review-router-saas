@@ -9,6 +9,7 @@ import {
   codexRotatingSetupPayloadClaimsMatch,
   isCodexRotatingSetupLiveClaimStatus,
   isCodexRotatingSetupTerminalClaimStatus,
+  reserveCodexRotatingSetupDispatchAuthorityWindow,
   allocateVersionedProviderSecretNamespace,
   type CodexRotatingActivation,
   type CodexRotatingDispatchAttempt,
@@ -20,6 +21,10 @@ import {
   type CodexRotatingSetupPayloadClaimPort,
   type CodexRotatingSetupStatus,
 } from "@reviewrouter/features-provider-setup";
+import {
+  PostgresTransactionClock,
+  type TransactionClock,
+} from "@reviewrouter/platform-db";
 import { isCodexRotatingOAuthAllowedForRepository } from "@reviewrouter/platform-config";
 import {
   isCodexRotatingSetupFenceOwner,
@@ -29,7 +34,6 @@ import {
 import { retirePriorNamespaceGeneration } from "./prisma-codex-rotating-setup-recovery";
 
 const transactionTimeoutMs = 10_000;
-const dispatchWindowMs = 10 * 60 * 1000;
 const maximumAttempts = 3;
 const expiredDispatchRetired = Symbol("expired_dispatch_retired");
 
@@ -115,14 +119,9 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
   constructor(
     private readonly prisma: PrismaClient,
     private readonly databaseRecoveryWitness?: string,
-    private readonly clock: Readonly<{ now(): Date }> = {
-      now: () => new Date(),
-    },
+    private readonly clock: TransactionClock = new PostgresTransactionClock(),
     private readonly runtimeEnvironment: NodeJS.ProcessEnv = process.env,
-    private readonly databaseEffectAuthority: Pick<
-      PrismaClient,
-      "$queryRaw"
-    > = prisma,
+    private readonly databaseEffectAuthority?: Pick<PrismaClient, "$queryRaw">,
   ) {}
 
   async claim(input: CodexRotatingSetupPayloadClaim) {
@@ -146,7 +145,7 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
         ) {
           throw new Error("codex_rotating_setup_recovery_required");
         }
-        const now = this.clock.now();
+        const now = await this.clock.now(tx);
         const digest = createHash("sha256")
           .update(JSON.stringify(manifest), "utf8")
           .digest("hex");
@@ -324,7 +323,7 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
         await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
         const claim = await findClaimForUpdate(tx, input.claimId);
         assertClaimNotRetired(claim.status);
-        const now = this.clock.now();
+        const now = await this.clock.now(tx);
         await assertClaimOwnsSetupFence(tx, claim, now);
         const replay = await findAttemptByKey(
           tx,
@@ -384,7 +383,8 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
         const namespaceId = allocated.namespaceId;
         const attemptId = `codex_attempt_${randomUUID()}`;
         const secretName = allocated.name;
-        const dispatchExpiresAt = new Date(now.getTime() + dispatchWindowMs);
+        const dispatchExpiresAt =
+          reserveCodexRotatingSetupDispatchAuthorityWindow(now);
         await tx.$executeRaw`
         INSERT INTO "CodexOAuthSecretNamespace" (
           "id", "providerInstanceRowId", "githubRepositoryId", "namespaceEpoch",
@@ -435,7 +435,7 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
         await lockCodexRotatingProviderRow(tx, initial.providerInstanceRowId);
         const claim = await findClaimForUpdate(tx, input.claimId);
         assertClaimNotRetired(claim.status);
-        const now = this.clock.now();
+        const now = await this.clock.now(tx);
         await assertClaimOwnsSetupFence(tx, claim, now);
         const attempt = await findAttemptForUpdate(
           tx,
@@ -483,6 +483,9 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
         // The database receipt is transaction-, backend-, role-, owner-, and
         // response-bound. The following guarded updates cannot be reproduced
         // by direct table DML under the web runtime login.
+        if (!this.databaseEffectAuthority) {
+          throw new Error("codex_oauth_database_effect_authority_unavailable");
+        }
         const databaseAuthoritySignature = await signDatabaseAuthorityChallenge(
           {
             tx,
@@ -589,7 +592,7 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
           input.claimId,
           input.attemptId,
         );
-        const now = this.clock.now();
+        const now = await this.clock.now(tx);
         await assertClaimOwnsSetupFence(tx, claim, now);
         if (
           claim.status !== "confirmed_candidate" ||
@@ -702,7 +705,7 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
         }
         await retirePriorNamespaceGeneration(tx, {
           providerInstanceRowId: provider.id,
-          now: this.clock.now(),
+          now: await this.clock.now(tx),
         });
       },
       { timeout: transactionTimeoutMs },

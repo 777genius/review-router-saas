@@ -14,6 +14,7 @@ const migrationNames = [
   "000062_codex_oauth_remote_outcome_unknown",
   "000063_codex_oauth_setup_payload_claim",
   "000064_codex_oauth_versioned_secret_namespaces",
+  "000065_codex_oauth_authority_acl_hardening",
 ] as const;
 
 const sourceDigests = Object.fromEntries(
@@ -65,7 +66,8 @@ try {
             '000061_codex_oauth_provider_mutation_fence',
             '000062_codex_oauth_remote_outcome_unknown',
             '000063_codex_oauth_setup_payload_claim',
-            '000064_codex_oauth_versioned_secret_namespaces'
+            '000064_codex_oauth_versioned_secret_namespaces',
+            '000065_codex_oauth_authority_acl_hardening'
           )
         `
       : [];

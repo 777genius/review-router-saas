@@ -123,14 +123,12 @@ describe("integrated API to provider to workflow activation faults", () => {
         await ledger.prepareVersionedWriteback({
           request: writebackRequest,
           encryptedPayloadDigest: "digest-fixture",
-          now,
         });
       }
       if (fault === IntegratedFault.RestartAfterProviderConfirmation) {
         const prepared = await ledger.prepareVersionedWriteback({
           request: writebackRequest,
           encryptedPayloadDigest: "digest-fixture",
-          now,
         });
         if (prepared.status !== "ready") throw new Error("fixture_not_ready");
         await provider.putEncryptedRepositorySecret({
@@ -142,7 +140,6 @@ describe("integrated API to provider to workflow activation faults", () => {
           attemptId: prepared.attemptId,
           executorOwner: prepared.executorOwner,
           statusCode: 204,
-          now,
         });
       }
 

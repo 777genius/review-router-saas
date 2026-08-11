@@ -85,7 +85,7 @@ describe("000064 never-reused versioned namespace ledger", () => {
     expect(sql).toContain("codex_oauth_secret_namespace_delete_forbidden");
     expect(sql).toContain("codex_oauth_setup_claim_delete_forbidden");
     expect(sql).toContain("codex_oauth_setup_attempt_delete_forbidden");
-    expect(sql.match(/REVOKE EXECUTE ON FUNCTION/g)).toHaveLength(18);
+    expect(sql.match(/REVOKE EXECUTE ON FUNCTION/g)).toHaveLength(19);
     expect(sql).toContain('CREATE TABLE "CodexOAuthDatabaseAuthorityKey"');
     expect(sql).toContain(
       'CREATE FUNCTION "codex_oauth_sign_database_authority"',
@@ -101,7 +101,20 @@ describe("000064 never-reused versioned namespace ledger", () => {
     expect(sql).toContain(
       'CREATE FUNCTION "codex_oauth_authorize_runtime_completion"',
     );
-    expect(sql.match(/^SECURITY DEFINER$/gmu)).toHaveLength(5);
+    expect(sql.match(/^SECURITY DEFINER$/gmu)).toHaveLength(6);
+    expect(sql).toMatch(
+      /CREATE OR REPLACE FUNCTION "codex_oauth_provider_identity_guard"\(\)[\s\S]+SECURITY DEFINER[\s\S]+SET search_path = pg_catalog, public[\s\S]+FROM public\."RepositoryConnection" WHERE "id" = NEW\."repositoryId" FOR SHARE/u,
+    );
+    expect(sql).toContain(
+      "'ALTER FUNCTION %s OWNER TO reviewrouter_release_migration'",
+    );
+    expect(sql).not.toMatch(
+      /(?:REVOKE|GRANT)[^;]*RepositoryConnection[^;]*reviewrouter_release_migration/iu,
+    );
+    expect(sql).not.toMatch(
+      /GRANT (?:INSERT|DELETE|TRUNCATE|REFERENCES|TRIGGER)[^;]*RepositoryConnection/iu,
+    );
+    expect(sql).toContain("'REVOKE EXECUTE ON FUNCTION %s FROM %I'");
     expect(sql).toContain("codex_oauth_database_authority_receipt_required");
     expect(sql).toContain(
       '\'setup_confirmation\', OLD."id", NEW."definiteResponseCode"',
@@ -243,6 +256,25 @@ describe("000064 never-reused versioned namespace ledger", () => {
       `OLD."confirmedAt" IS NOT NULL AND NEW."confirmedAt" IS DISTINCT FROM OLD."confirmedAt"`,
     );
     expect(sql).toContain("'retired_predispatch'");
+  });
+
+  it("elevates only the trigger lock that crosses the config-table boundary", () => {
+    expect(sql.match(/FOR SHARE;/gu)).toHaveLength(2);
+    expect(sql).toContain(
+      'FROM public."RepositoryConnection" WHERE "id" = NEW."repositoryId" FOR SHARE;',
+    );
+    expect(sql).toContain(
+      'WHERE "id" = NEW."providerInstanceRowId" FOR SHARE;',
+    );
+    const childGuardDeclaration =
+      /CREATE OR REPLACE FUNCTION "codex_oauth_child_identity_fence_guard"\(\)[\s\S]+?AS \$\$/u.exec(
+        sql,
+      )?.[0];
+    expect(childGuardDeclaration).toBeDefined();
+    expect(childGuardDeclaration).not.toContain("SECURITY DEFINER");
+    expect(sql).toContain(
+      'REVOKE EXECUTE ON FUNCTION "codex_oauth_repair_quarantined_provider"(TEXT, BIGINT) FROM PUBLIC;',
+    );
   });
 
   it("models every 000063/000064 timestamp with PostgreSQL timestamptz(3)", () => {

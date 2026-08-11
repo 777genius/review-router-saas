@@ -232,9 +232,10 @@ describe("versioned rotating runtime writeback dispatcher", () => {
         encryptedPayloadDigest: "digest-012345678901234567890123456789",
       }),
     ).resolves.toEqual({ status: "writeback_recovery_required" });
-    expect(h.ledger.prepareVersionedWriteback).toHaveBeenLastCalledWith(
-      expect.objectContaining({ now: executorExpiry }),
-    );
+    expect(h.ledger.prepareVersionedWriteback).toHaveBeenLastCalledWith({
+      request,
+      encryptedPayloadDigest: "digest-012345678901234567890123456789",
+    });
     expect(h.provider.putEncryptedRepositorySecret).toHaveBeenCalledOnce();
 
     rejectPut();
@@ -247,7 +248,6 @@ describe("versioned rotating runtime writeback dispatcher", () => {
         attemptId: "attempt-1",
         executorOwner: "executor-1",
         retirementIdentity,
-        now: executorExpiry,
       }),
     );
   });
@@ -336,7 +336,6 @@ describe("versioned rotating runtime writeback dispatcher", () => {
       executorOwner: "executor-1",
       retirementIdentity,
       safeErrorCode: "versioned_provider_confirmation_outcome_unknown",
-      now,
     });
     expect(
       h.workflows.publishAndVerifyVersionedWorkflow,
@@ -420,7 +419,6 @@ describe("versioned rotating runtime writeback dispatcher", () => {
       expect(h.ledger.retireAmbiguousVersionedWriteback).toHaveBeenCalledOnce();
       expect(h.ledger.retireAmbiguousVersionedWriteback).toHaveBeenCalledWith(
         expect.objectContaining({
-          now: executorExpiry,
           retirementIdentity,
         }),
       );
@@ -457,7 +455,6 @@ describe("versioned rotating runtime writeback dispatcher", () => {
       attemptId: "attempt-1",
       executorOwner: "executor-1",
       safeErrorCode: "versioned_provider_pre_dispatch_failed_v1",
-      now,
     });
     expect(h.ledger.retireAmbiguousVersionedWriteback).not.toHaveBeenCalled();
     expect(h.ledger.confirmVersionedProviderWrite).not.toHaveBeenCalled();
@@ -490,7 +487,7 @@ describe("versioned rotating runtime writeback dispatcher", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("reads the clock again after each external I/O edge", async () => {
+  it("leaves durable clock ownership inside the ledger", async () => {
     const h = harness();
     const instants = [0, 1_000, 2_000].map(
       (offset) => new Date(now.getTime() + offset),
@@ -508,14 +505,18 @@ describe("versioned rotating runtime writeback dispatcher", () => {
       encryptedPayloadDigest: "digest-012345678901234567890123456789",
     });
 
-    expect(h.ledger.prepareVersionedWriteback).toHaveBeenCalledWith(
-      expect.objectContaining({ now: instants[0] }),
-    );
-    expect(h.ledger.confirmVersionedProviderWrite).toHaveBeenCalledWith(
-      expect.objectContaining({ now: instants[1] }),
-    );
-    expect(h.ledger.activateVersionedWriteback).toHaveBeenCalledWith(
-      expect.objectContaining({ now: instants[2] }),
-    );
+    const prepareInput = (
+      h.ledger.prepareVersionedWriteback.mock.calls as unknown[][]
+    )[0]?.[0];
+    const confirmInput = (
+      h.ledger.confirmVersionedProviderWrite.mock.calls as unknown[][]
+    )[0]?.[0];
+    const activateInput = (
+      h.ledger.activateVersionedWriteback.mock.calls as unknown[][]
+    )[0]?.[0];
+    expect(prepareInput).not.toHaveProperty("now");
+    expect(confirmInput).not.toHaveProperty("now");
+    expect(activateInput).not.toHaveProperty("now");
+    expect(clockRead).toBe(0);
   });
 });

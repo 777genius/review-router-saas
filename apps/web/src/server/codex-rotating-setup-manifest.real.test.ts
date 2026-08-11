@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -6,9 +6,12 @@ import {
   type PrismaClient,
 } from "@reviewrouter/platform-db";
 import {
+  authorizeCodexRotatingSetupDispatch,
   codexRotatingSetupRecoveryAcknowledgement,
   codexRotatingSetupManifestSchema,
   fingerprintDatabaseRecoveryWitness,
+  prepareCodexRotatingSetup,
+  recordCodexRotatingSetupDispatchOutcome,
   recoverCodexRotatingSetup,
 } from "@reviewrouter/features-provider-setup";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -18,6 +21,7 @@ import {
   resolveCodexRotatingSetupManifestForNonce,
 } from "./codex-rotating-setup-manifest";
 import { PrismaCodexRotatingSetupRecovery } from "./prisma-codex-rotating-setup-recovery";
+import { PrismaCodexRotatingSetupPayloadClaim } from "./prisma-codex-rotating-setup-payload-claim";
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -529,21 +533,25 @@ describeDatabase("Codex rotating setup serialization", () => {
       await prisma.codexOAuthSetupManifest.findFirstOrThrow({
         where: { repositoryId: recoveryRepositoryId, status: "issued" },
         select: {
-          id: true,
           setupNonce: true,
-          mutationEpoch: true,
           expiresAt: true,
         },
       });
-    await withRotatingRepositoryAllowed(
+    const confirmedAt = new Date(originalManifest.expiresAt.getTime() - 1);
+    const fetched = await withRotatingRepositoryAllowed(
       () =>
         resolveCodexRotatingSetupManifestForNonce({
           prisma,
           setupNonce: originalManifest.setupNonce,
           databaseRecoveryWitness: "v".repeat(43),
-          now: new Date(originalManifest.expiresAt.getTime() - 1),
+          now: confirmedAt,
         }),
       recoveryFullName,
+    );
+    const manifest = codexRotatingSetupManifestSchema.parse(
+      JSON.parse(
+        Buffer.from(fetched.manifestBase64, "base64url").toString("utf8"),
+      ),
     );
     const provider = await prisma.codexOAuthProviderInstance.findFirstOrThrow({
       where: { repositoryId: recoveryRepositoryId },
@@ -559,70 +567,52 @@ describeDatabase("Codex rotating setup serialization", () => {
         state: "configured",
       },
     });
-    const claimId = `claim:${randomUUID()}`;
-    const attemptId = `attempt:${randomUUID()}`;
-    const namespaceId = `namespace:${randomUUID()}`;
-    const confirmedAt = new Date(originalManifest.expiresAt.getTime() - 1);
-    await prisma.$executeRaw`
-        INSERT INTO "CodexOAuthSetupPayloadClaim" (
-          "id", "providerInstanceRowId", "workspaceId", "repositoryId",
-          "githubRepositoryId", "manifestId", "manifestDigest", "recoveryEpoch",
-          "operationId", "payloadVersion", "canonicalizationVersion", "generationHash",
-          "accountIdentityHash", "accountIdentityAlgorithm", "authByteSize",
-          "installerVersion", "installerDigest", "databaseIncarnation",
-          "databaseRecoveryWitness", "status", "prepareReplayExpiresAt",
-          "recoveryExpiresAt", "createdAt", "updatedAt"
-        ) VALUES (
-          ${claimId}, ${provider.id}, ${workspaceId}, ${recoveryRepositoryId},
-          ${recoveryGithubRepositoryId}, ${originalManifest.id}, ${"d".repeat(64)},
-          ${originalManifest.mutationEpoch!}, ${`operation:${randomUUID()}`}, 2, 1,
-          ${"g".repeat(43)}, ${"i".repeat(43)},
-          'provider_issuer_subject_account_v1', 100, ${installer.version},
-          ${installer.sha256}, '7612345678901234567',
-          ${fingerprintDatabaseRecoveryWitness("v".repeat(43))},
-          'prepared', ${originalManifest.expiresAt},
-          ${new Date(originalManifest.expiresAt.getTime() + 86_400_000)},
-          ${confirmedAt}, ${confirmedAt}
-        )
-      `;
-    const secretName = `REVIEWROUTER_CODEX_AUTH_JSON_R${recoveryGithubRepositoryId}_P0123456789abcdef_E1_${"b".repeat(32)}`;
-    await prisma.$executeRaw`
-        INSERT INTO "CodexOAuthSecretNamespace" (
-          "id", "providerInstanceRowId", "githubRepositoryId", "namespaceEpoch",
-          "secretName", "databaseRecoveryWitness", "status"
-        ) VALUES (
-          ${namespaceId}, ${provider.id}, ${recoveryGithubRepositoryId}, 1,
-          ${secretName}, ${fingerprintDatabaseRecoveryWitness("v".repeat(43))},
-          'dispatch_authorized'
-        )
-      `;
-    await prisma.$executeRaw`
-        INSERT INTO "CodexOAuthSetupDispatchAttempt" (
-          "id", "claimId", "namespaceId", "ordinal", "idempotencyKey", "status",
-          "authorizedAt", "dispatchExpiresAt"
-        ) VALUES (
-          ${attemptId}, ${claimId}, ${namespaceId}, 1, ${`dispatch:${randomUUID()}`},
-          'dispatch_authorized', ${confirmedAt},
-          ${new Date(originalManifest.expiresAt.getTime() + 600_000)}
-        )
-      `;
-    await prisma.$executeRaw`
-        UPDATE "CodexOAuthSetupDispatchAttempt"
-        SET "status" = 'confirmed', "definiteResponseCode" = 204,
-            "confirmedAt" = ${confirmedAt}, "updatedAt" = ${confirmedAt}
-        WHERE "id" = ${attemptId} AND "status" = 'dispatch_authorized'
-      `;
-    await prisma.$executeRaw`
-        UPDATE "CodexOAuthSecretNamespace"
-        SET "status" = 'confirmed_candidate', "confirmedAt" = ${confirmedAt}
-        WHERE "id" = ${namespaceId} AND "status" = 'dispatch_authorized'
-      `;
-    await prisma.$executeRaw`
-        UPDATE "CodexOAuthSetupPayloadClaim"
-        SET "status" = 'confirmed_candidate', "confirmedAttemptId" = ${attemptId},
-            "confirmedAt" = ${confirmedAt}, "updatedAt" = ${confirmedAt}
-        WHERE "id" = ${claimId} AND "status" = 'prepared'
-      `;
+    const claims = new PrismaCodexRotatingSetupPayloadClaim(
+      prisma,
+      "v".repeat(43),
+      { now: async () => confirmedAt },
+      process.env,
+      prisma,
+    );
+    const prepared = await prepareCodexRotatingSetup(
+      {
+        payloadVersion: 2,
+        canonicalizationVersion: 1,
+        operationId: `operation:${randomUUID()}`,
+        repositoryId: recoveryGithubRepositoryId,
+        providerInstanceId: original.providerInstanceId,
+        setupNonce: originalManifest.setupNonce,
+        manifestDigest: createHash("sha256")
+          .update(JSON.stringify(manifest), "utf8")
+          .digest("hex"),
+        recoveryEpoch: fetched.recoveryEpoch,
+        generationHash: "g".repeat(43),
+        accountIdentityHash: "i".repeat(43),
+        accountIdentityAlgorithm: "provider_issuer_subject_account_v1",
+        authByteSize: 100,
+        installerVersion: manifest.installer.version,
+        installerDigest: manifest.installer.sha256.toLowerCase(),
+      },
+      { claims },
+    );
+    const authorized = await authorizeCodexRotatingSetupDispatch(
+      {
+        claimId: prepared.claimId,
+        idempotencyKey: `dispatch:${randomUUID()}`,
+      },
+      { claims },
+    );
+    await expect(
+      recordCodexRotatingSetupDispatchOutcome(
+        {
+          claimId: prepared.claimId,
+          attemptId: authorized.attemptId,
+          outcome: "definite_success",
+          responseCode: 204,
+        },
+        { claims },
+      ),
+    ).resolves.toEqual({ status: "confirmed_candidate" });
     const recoveryRequestId = `recovery:${randomUUID()}`;
     const recoveryNow = new Date(new Date(original.expiresAt).getTime() + 1);
     const recoveryAdapter = new PrismaCodexRotatingSetupRecovery(
@@ -791,7 +781,7 @@ describeDatabase("Codex rotating setup serialization", () => {
         FROM "CodexOAuthSetupPayloadClaim" claim
         JOIN "CodexOAuthSetupDispatchAttempt" attempt ON attempt."claimId" = claim."id"
         JOIN "CodexOAuthSecretNamespace" namespace ON namespace."id" = attempt."namespaceId"
-        WHERE claim."id" = ${claimId}
+        WHERE claim."id" = ${prepared.claimId}
       `;
     expect(retiredAuthority).toEqual([
       {
@@ -805,7 +795,7 @@ describeDatabase("Codex rotating setup serialization", () => {
       prisma.$executeRaw`
           UPDATE "CodexOAuthSetupPayloadClaim"
           SET "status" = 'active', "updatedAt" = ${new Date()}
-          WHERE "id" = ${claimId}
+          WHERE "id" = ${prepared.claimId}
         `,
     ).rejects.toThrow();
     await expect(

@@ -38,6 +38,10 @@ const migrationFiles = [
     "000064_codex_oauth_versioned_secret_namespaces",
     "packages/platform/db/prisma/migrations/000064_codex_oauth_versioned_secret_namespaces/migration.sql",
   ],
+  [
+    "000065_codex_oauth_authority_acl_hardening",
+    "packages/platform/db/prisma/migrations/000065_codex_oauth_authority_acl_hardening/migration.sql",
+  ],
 ];
 assertExactMigrationInventory(
   readdirSync(resolve(checkoutRoot, "packages/platform/db/prisma/migrations"))
@@ -129,6 +133,84 @@ SELECT jsonb_build_object(
         'databaseCreate', has_database_privilege(r.rolname, current_database(), 'CREATE'),
         'schemaCreate', has_schema_privilege(r.rolname, current_schema(), 'CREATE'),
         'schemaUsage', has_schema_privilege(r.rolname, current_schema(), 'USAGE'),
+        'providerSetupStateSelect', has_table_privilege(r.rolname, 'public."ProviderSetupState"', 'SELECT'),
+        'providerSetupStateInsert', has_table_privilege(r.rolname, 'public."ProviderSetupState"', 'INSERT'),
+        'providerSetupStateUpdate', has_table_privilege(r.rolname, 'public."ProviderSetupState"', 'UPDATE'),
+        'providerSetupStateDelete', has_table_privilege(r.rolname, 'public."ProviderSetupState"', 'DELETE'),
+        'allSequenceUsage', NOT EXISTS (
+          SELECT 1 FROM pg_class sequence
+          JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
+          WHERE namespace.nspname = current_schema()
+            AND CASE WHEN sequence.relkind = 'S' THEN
+              NOT has_sequence_privilege(r.rolname, sequence.oid, 'USAGE')
+            ELSE FALSE END
+        ),
+        'anySequenceSelectOrUpdate', EXISTS (
+          SELECT 1 FROM pg_class sequence
+          JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
+          WHERE namespace.nspname = current_schema()
+            AND CASE WHEN sequence.relkind = 'S' THEN (
+              has_sequence_privilege(r.rolname, sequence.oid, 'SELECT')
+              OR has_sequence_privilege(r.rolname, sequence.oid, 'UPDATE')
+            ) ELSE FALSE END
+        ),
+        'authorityTablePrivileges', EXISTS (
+          SELECT 1 FROM pg_class authority_table
+          JOIN pg_namespace namespace ON namespace.oid = authority_table.relnamespace
+          WHERE namespace.nspname = current_schema()
+            AND authority_table.relname IN (
+              'CodexOAuthDatabaseAuthorityKey',
+              'CodexOAuthDatabaseAuthorityReceipt'
+            )
+            AND (
+              has_table_privilege(
+                r.rolname, authority_table.oid,
+                'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+              )
+              OR has_any_column_privilege(
+                r.rolname, authority_table.oid,
+                'SELECT,INSERT,UPDATE,REFERENCES'
+              )
+            )
+        ),
+        'repositoryConnectionSelect', has_table_privilege(r.rolname, 'public."RepositoryConnection"', 'SELECT'),
+        'repositoryConnectionInsert', has_table_privilege(r.rolname, 'public."RepositoryConnection"', 'INSERT'),
+        'repositoryConnectionUpdate', has_table_privilege(r.rolname, 'public."RepositoryConnection"', 'UPDATE'),
+        'repositoryConnectionDelete', has_table_privilege(r.rolname, 'public."RepositoryConnection"', 'DELETE'),
+        'repositoryConnectionColumnSelect', coalesce((
+          SELECT jsonb_agg(a.attname ORDER BY a.attname)
+          FROM pg_attribute a
+          WHERE a.attrelid = 'public."RepositoryConnection"'::regclass
+            AND a.attnum > 0 AND NOT a.attisdropped
+            AND has_column_privilege(r.rolname, a.attrelid, a.attnum, 'SELECT')
+        ), '[]'::jsonb),
+        'repositoryConnectionColumnInsert', coalesce((
+          SELECT jsonb_agg(a.attname ORDER BY a.attname)
+          FROM pg_attribute a
+          WHERE a.attrelid = 'public."RepositoryConnection"'::regclass
+            AND a.attnum > 0 AND NOT a.attisdropped
+            AND has_column_privilege(r.rolname, a.attrelid, a.attnum, 'INSERT')
+        ), '[]'::jsonb),
+        'repositoryConnectionColumnUpdate', coalesce((
+          SELECT jsonb_agg(a.attname ORDER BY a.attname)
+          FROM pg_attribute a
+          WHERE a.attrelid = 'public."RepositoryConnection"'::regclass
+            AND a.attnum > 0 AND NOT a.attisdropped
+            AND has_column_privilege(r.rolname, a.attrelid, a.attnum, 'UPDATE')
+        ), '[]'::jsonb),
+        'repositoryConnectionColumnReferences', coalesce((
+          SELECT jsonb_agg(a.attname ORDER BY a.attname)
+          FROM pg_attribute a
+          WHERE a.attrelid = 'public."RepositoryConnection"'::regclass
+            AND a.attnum > 0 AND NOT a.attisdropped
+            AND has_column_privilege(r.rolname, a.attrelid, a.attnum, 'REFERENCES')
+        ), '[]'::jsonb),
+        'ownsRepositoryConnection', EXISTS (
+          SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = current_schema()
+            AND c.relname = 'RepositoryConnection'
+            AND c.relowner = r.oid
+        ),
         'canSetReleaseRole', coalesce(pg_has_role(
           r.oid,
           (SELECT oid FROM pg_roles WHERE rolname = '${releaseMigrationRole}'),
@@ -226,6 +308,7 @@ SELECT jsonb_build_object(
       ,'000062_codex_oauth_remote_outcome_unknown'
       ,'000063_codex_oauth_setup_payload_claim'
       ,'000064_codex_oauth_versioned_secret_namespaces'
+      ,'000065_codex_oauth_authority_acl_hardening'
     )
   ), '[]'::jsonb),
   'catalog', jsonb_build_object(
@@ -344,11 +427,12 @@ SELECT jsonb_build_object(
       WHERE NOT t.tgisinternal
         AND n.nspname = current_schema()
         AND pn.nspname = current_schema()
-        AND c.relname IN ('RepositoryConnection','CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent','CodexOAuthSetupRecoveryRequest','CodexOAuthSetupPayloadClaim','CodexOAuthSecretNamespace','CodexOAuthSetupDispatchAttempt')
+        AND c.relname IN ('RepositoryConnection','CodexOAuthProviderInstance','CodexOAuthSetupManifest','CodexOAuthLease','CodexOAuthWritebackIntent','CodexOAuthSetupRecoveryRequest','CodexOAuthSetupPayloadClaim','CodexOAuthSecretNamespace','CodexOAuthSetupDispatchAttempt','CodexOAuthDatabaseAuthorityReceipt')
     ), '[]'::jsonb),
     'functions', coalesce((
       SELECT jsonb_agg(jsonb_build_object(
         'name', p.proname,
+        'owner', owner.rolname,
         'bodySha256', encode(sha256(convert_to(btrim(
           replace(replace(p.prosrc, E'\r\n', E'\n'), E'\r', E'\n'),
           E' \t\n\r'
@@ -374,6 +458,7 @@ SELECT jsonb_build_object(
       FROM pg_proc p
       JOIN pg_namespace n ON n.oid = p.pronamespace
       JOIN pg_language l ON l.oid = p.prolang
+      JOIN pg_roles owner ON owner.oid = p.proowner
       WHERE n.nspname = current_schema()
         AND (
           p.proname LIKE 'codex_oauth_%'
@@ -507,6 +592,26 @@ SELECT jsonb_build_object(
         AND con.conname IN (${sqlLiterals(codexRotatingPrimaryKeys.map(({ name }) => name))})
     ), '[]'::jsonb),
     'privileges', jsonb_build_object(
+      'columns', coalesce((
+        SELECT jsonb_agg(jsonb_build_object(
+          'name', c.relname || '.' || attribute.attname,
+          'grantee', CASE WHEN acl.grantee = 0 THEN 'PUBLIC' ELSE grantee.rolname END,
+          'grantor', grantor.rolname,
+          'privilege', acl.privilege_type,
+          'grantable', acl.is_grantable
+        ) ORDER BY c.relname, attribute.attname, grantee.rolname NULLS FIRST, acl.privilege_type)
+        FROM pg_attribute attribute
+        JOIN pg_class c ON c.oid = attribute.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN LATERAL aclexplode(attribute.attacl) acl
+        LEFT JOIN pg_roles grantee ON grantee.oid = acl.grantee
+        JOIN pg_roles grantor ON grantor.oid = acl.grantor
+        WHERE n.nspname = current_schema()
+          AND c.relkind = 'r'
+          AND c.relname IN (${sqlLiterals(codexRotatingCatalogTables)})
+          AND attribute.attnum > 0
+          AND NOT attribute.attisdropped
+      ), '[]'::jsonb),
       'functions', coalesce((
         SELECT jsonb_agg(jsonb_build_object(
           'name', p.proname,

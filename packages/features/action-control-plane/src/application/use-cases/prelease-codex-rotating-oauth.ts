@@ -218,7 +218,6 @@ export async function preleaseCodexRotatingOAuth(
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
     ...(pullRequestNumber ? { pullRequestNumber } : {}),
-    now: dependencies.clock.now(),
     newWorkAdmissionBarrier: {
       assertAdmitted: assertNewWorkAdmitted,
     },

@@ -227,7 +227,7 @@ export async function createApiApp(
         databaseUrl: codexEffectAuthorityDatabaseUrl,
         poolMax: 2,
       })
-    : prisma;
+    : undefined;
   const clock = new SystemClock();
 
   app.addHook("onSend", async (request, reply, payload) => {
@@ -383,6 +383,11 @@ export async function createApiApp(
                   trustedActionRefs: codexRotatingTrustedActionRefs,
                 })
               : undefined;
+          if (codexRotatingGitHubSecretGateway && !codexEffectAuthorityPrisma) {
+            throw new Error(
+              "codex_oauth_database_effect_authority_unavailable",
+            );
+          }
           const codexRotatingOAuth = new PrismaCodexRotatingOAuthRepository(
             prisma,
             {

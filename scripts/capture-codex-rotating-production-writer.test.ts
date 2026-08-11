@@ -110,8 +110,9 @@ describe("production-writer rollout observation capture", () => {
       functionsEnd,
     );
 
-    expect(codexRotatingFunctionBodyDigests).toHaveLength(18);
+    expect(codexRotatingFunctionBodyDigests).toHaveLength(20);
     expect(functionsSql).toContain("'bodySha256'");
+    expect(functionsSql).toContain("'owner', owner.rolname");
     expect(functionsSql).toContain("p.prosrc");
     expect(functionsSql).toContain("sha256(convert_to(btrim(");
     expect(functionsSql).toContain("'prokind', p.prokind");
@@ -121,6 +122,73 @@ describe("production-writer rollout observation capture", () => {
     expect(functionsSql).toContain("'procost', p.procost");
     expect(functionsSql).toContain("'prorows', p.prorows");
     expect(functionsSql).not.toContain("pg_get_functiondef");
+  });
+
+  it("observes function ownership and the config-table privilege contract", () => {
+    expect(codexRotatingProductionWriterBaseObservationSql).toContain(
+      "'owner', owner.rolname",
+    );
+    for (const privilege of ["Select", "Insert", "Update", "Delete"]) {
+      expect(codexRotatingProductionWriterBaseObservationSql).toContain(
+        `'repositoryConnection${privilege}'`,
+      );
+    }
+    for (const privilege of ["Select", "Insert", "Update", "References"]) {
+      expect(codexRotatingProductionWriterBaseObservationSql).toContain(
+        `'repositoryConnectionColumn${privilege}'`,
+      );
+    }
+    expect(codexRotatingProductionWriterBaseObservationSql).toContain(
+      "has_column_privilege",
+    );
+    expect(codexRotatingProductionWriterBaseObservationSql).toContain(
+      "'ownsRepositoryConnection'",
+    );
+    expect(codexRotatingProductionWriterBaseObservationSql).toContain(
+      "FROM pg_auth_members m",
+    );
+  });
+
+  it("guards sequence privilege checks from planner predicate reordering", () => {
+    const allSequenceUsageStart =
+      codexRotatingProductionWriterBaseObservationSql.indexOf(
+        "'allSequenceUsage', NOT EXISTS (",
+      );
+    const anySequenceSelectOrUpdateStart =
+      codexRotatingProductionWriterBaseObservationSql.indexOf(
+        "'anySequenceSelectOrUpdate', EXISTS (",
+        allSequenceUsageStart,
+      );
+    const sequenceChecksEnd =
+      codexRotatingProductionWriterBaseObservationSql.indexOf(
+        "'authorityTablePrivileges'",
+        anySequenceSelectOrUpdateStart,
+      );
+    const allSequenceUsageSql =
+      codexRotatingProductionWriterBaseObservationSql.slice(
+        allSequenceUsageStart,
+        anySequenceSelectOrUpdateStart,
+      );
+    const anySequenceSelectOrUpdateSql =
+      codexRotatingProductionWriterBaseObservationSql.slice(
+        anySequenceSelectOrUpdateStart,
+        sequenceChecksEnd,
+      );
+
+    expect(allSequenceUsageStart).toBeGreaterThan(0);
+    expect(anySequenceSelectOrUpdateStart).toBeGreaterThan(
+      allSequenceUsageStart,
+    );
+    expect(sequenceChecksEnd).toBeGreaterThan(anySequenceSelectOrUpdateStart);
+    expect(allSequenceUsageSql).toMatch(
+      /CASE WHEN sequence\.relkind = 'S' THEN\s+NOT has_sequence_privilege\(r\.rolname, sequence\.oid, 'USAGE'\)\s+ELSE FALSE END/u,
+    );
+    expect(anySequenceSelectOrUpdateSql).toMatch(
+      /CASE WHEN sequence\.relkind = 'S' THEN \(\s+has_sequence_privilege\(r\.rolname, sequence\.oid, 'SELECT'\)\s+OR has_sequence_privilege\(r\.rolname, sequence\.oid, 'UPDATE'\)\s+\) ELSE FALSE END/u,
+    );
+    expect(`${allSequenceUsageSql}${anySequenceSelectOrUpdateSql}`).not.toMatch(
+      /WHERE[\s\S]*sequence\.relkind = 'S'\s+AND[\s\S]*has_sequence_privilege/u,
+    );
   });
 
   it("captures an unfiltered rotating-OAuth catalog inventory", () => {
@@ -333,6 +401,10 @@ describe("production-writer rollout observation capture", () => {
         },
         {
           id: "000064_codex_oauth_versioned_secret_namespaces",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
+        {
+          id: "000065_codex_oauth_authority_acl_hardening",
           sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
         },
       ],

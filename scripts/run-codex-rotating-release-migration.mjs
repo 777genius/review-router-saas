@@ -7,7 +7,51 @@ const runtimeRoles = [
   ["api", "reviewrouter_api", "REVIEW_ROUTER_API_DATABASE_URL"],
   ["web", "reviewrouter_web", "REVIEW_ROUTER_WEB_DATABASE_URL"],
   ["worker", "reviewrouter_worker", "REVIEW_ROUTER_WORKER_DATABASE_URL"],
+  [
+    "effect-authority",
+    "reviewrouter_codex_effect_authority",
+    "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
+  ],
 ];
+
+export const rotatingEvidenceTables = Object.freeze([
+  "CodexOAuthChildIdentityQuarantine",
+  "CodexOAuthLease",
+  "CodexOAuthProviderIdentityQuarantine",
+  "CodexOAuthProviderInstance",
+  "CodexOAuthSecretNamespace",
+  "CodexOAuthSetupDispatchAttempt",
+  "CodexOAuthSetupManifest",
+  "CodexOAuthSetupPayloadClaim",
+  "CodexOAuthSetupRecoveryRequest",
+  "CodexOAuthWritebackIntent",
+]);
+
+const quarantineTables = Object.freeze([
+  "CodexOAuthChildIdentityQuarantine",
+  "CodexOAuthProviderIdentityQuarantine",
+]);
+
+const fullyProtectedRuntimeTables = Object.freeze([
+  "CodexOAuthDatabaseAuthorityKey",
+  "CodexOAuthDatabaseAuthorityReceipt",
+]);
+
+export const providerRuntimeUpdateColumns = Object.freeze([
+  "state",
+  "latestGeneration",
+  "latestGenerationHash",
+  "activeLeaseId",
+  "activeLeaseExpiresAt",
+  "mutationEpoch",
+  "mutationOwner",
+  "mutationOwnerId",
+  "activeSecretNamespaceId",
+  "activeSecretNamespaceEpoch",
+  "activeSecretNamespaceName",
+  "activeAccountIdentityHash",
+  "updatedAt",
+]);
 
 function required(env, name) {
   const value = env[name];
@@ -102,29 +146,130 @@ COMMIT;
 `;
 }
 
-export function runtimeGrantSql(configuration) {
-  return `\\set ON_ERROR_STOP on
-BEGIN;
-REVOKE CREATE ON DATABASE :"DBNAME" FROM PUBLIC;
+export function runtimeGrantStatements(
+  configuration,
+  databaseTarget = ':"DBNAME"',
+) {
+  const rotatingEvidenceLiterals = rotatingEvidenceTables
+    .map((table) => `'${table}'`)
+    .join(",");
+  const quarantineLiterals = quarantineTables
+    .map((table) => `'${table}'`)
+    .join(",");
+  const staleColumnAclLiterals = [
+    "RepositoryConnection",
+    ...rotatingEvidenceTables,
+    ...fullyProtectedRuntimeTables,
+  ]
+    .map((table) => `'${table}'`)
+    .join(",");
+  const providerUpdateColumnList = providerRuntimeUpdateColumns
+    .map((column) => `"${column}"`)
+    .join(", ");
+  return `
+REVOKE CREATE ON DATABASE ${databaseTarget} FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ${configuration.roles
+  .filter(({ role }) => role !== "effect-authority")
   .map(
-    ({ username }) => `GRANT CONNECT ON DATABASE :"DBNAME" TO ${username};
+    ({
+      role,
+      username,
+    }) => `GRANT CONNECT ON DATABASE ${databaseTarget} TO ${username};
 GRANT USAGE ON SCHEMA public TO ${username};
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM ${username};
+GRANT EXECUTE ON FUNCTION public."codex_oauth_database_authority_challenge"(text, text, integer) TO ${username};
+GRANT EXECUTE ON FUNCTION public."codex_oauth_consume_database_authority"(text, text, integer) TO ${username};
+${
+  role === "web"
+    ? `GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_setup_confirmation"(text, integer, text) TO ${username};
+GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_provider_identity_repair"(text, text) TO ${username};
+GRANT EXECUTE ON FUNCTION public."codex_oauth_repair_quarantined_provider"(text, bigint) TO ${username};`
+    : role === "api"
+      ? `GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_runtime_confirmation"(text, text, integer, text) TO ${username};
+GRANT EXECUTE ON FUNCTION public."codex_oauth_authorize_runtime_completion"(text, text) TO ${username};`
+      : ""
+}
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ${username};
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${username};
+DO $runtime_acl$
+DECLARE protected_column record;
+BEGIN
+  FOR protected_column IN
+    SELECT relation.relname AS table_name, attribute.attname AS column_name
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+    WHERE namespace.nspname = 'public'
+      AND relation.relname IN (${staleColumnAclLiterals})
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+  LOOP
+    EXECUTE format(
+      'REVOKE ALL (%I) ON TABLE public.%I FROM %I',
+      protected_column.column_name,
+      protected_column.table_name,
+      '${username}'
+    );
+  END LOOP;
+END
+$runtime_acl$;
+REVOKE INSERT, UPDATE, DELETE ON TABLE public."RepositoryConnection" FROM ${username};
+GRANT SELECT ON TABLE public."RepositoryConnection" TO ${username};
+DO $runtime_evidence_acl$
+DECLARE protected_table text;
+BEGIN
+  FOREACH protected_table IN ARRAY ARRAY[${rotatingEvidenceLiterals}] LOOP
+    EXECUTE format(
+      'REVOKE DELETE ON TABLE public.%I FROM %I',
+      protected_table,
+      '${username}'
+    );
+  END LOOP;
+  FOREACH protected_table IN ARRAY ARRAY[${quarantineLiterals}] LOOP
+    EXECUTE format(
+      'REVOKE INSERT, UPDATE, DELETE ON TABLE public.%I FROM %I',
+      protected_table,
+      '${username}'
+    );
+  END LOOP;
+END
+$runtime_evidence_acl$;
+REVOKE UPDATE ON TABLE public."CodexOAuthProviderInstance" FROM ${username};
+GRANT UPDATE (${providerUpdateColumnList}) ON TABLE public."CodexOAuthProviderInstance" TO ${username};
+REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityKey" FROM ${username};
+REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityReceipt" FROM ${username};
 REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM ${username};
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO ${username};
 ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_migration IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${username};
 ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_migration IN SCHEMA public GRANT USAGE ON SEQUENCES TO ${username};`,
   )
   .join("\n")}
+GRANT CONNECT ON DATABASE ${databaseTarget} TO reviewrouter_codex_effect_authority;
+GRANT USAGE ON SCHEMA public TO reviewrouter_codex_effect_authority;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM reviewrouter_codex_effect_authority;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM reviewrouter_codex_effect_authority;
+REVOKE CREATE ON SCHEMA public FROM reviewrouter_codex_effect_authority;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_codex_effect_authority;
+GRANT EXECUTE ON FUNCTION public."codex_oauth_sign_database_authority"(text) TO reviewrouter_codex_effect_authority;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
+`;
+}
+
+export function runtimeGrantSql(configuration) {
+  return `\\set ON_ERROR_STOP on
+BEGIN;
+${runtimeGrantStatements(configuration)}
 COMMIT;
 `;
 }
 
-function run(command, args, { env, input } = {}) {
+export function runReleaseMigrationSubprocess(
+  step,
+  command,
+  args,
+  { env, input } = {},
+) {
   const result = spawnSync(command, args, {
     cwd: new URL("..", import.meta.url),
     encoding: "utf8",
@@ -133,20 +278,24 @@ function run(command, args, { env, input } = {}) {
     maxBuffer: 16 * 1024 * 1024,
   });
   if (result.status !== 0)
-    throw new Error(
-      `release_migration_step_failed:${command}:${args[0] ?? "command"}`,
-    );
+    throw new Error(`release_migration_step_failed:${step}`);
   return result.stdout;
 }
 
 export function executeCanonicalReleaseMigration(env = process.env) {
   const configuration = resolveReleaseMigrationConfiguration(env);
   const childEnv = { ...env, DATABASE_URL: configuration.releaseUrl };
-  run("psql", [configuration.releaseUrl, "--no-psqlrc", "--quiet"], {
-    env: childEnv,
-    input: roleProvisioningSql(configuration),
-  });
-  const preflightOutput = run(
+  runReleaseMigrationSubprocess(
+    "provision_roles",
+    "psql",
+    [configuration.releaseUrl, "--no-psqlrc", "--quiet"],
+    {
+      env: childEnv,
+      input: roleProvisioningSql(configuration),
+    },
+  );
+  const preflightOutput = runReleaseMigrationSubprocess(
+    "migration_history_preflight",
     "node",
     [
       "--import",
@@ -155,15 +304,24 @@ export function executeCanonicalReleaseMigration(env = process.env) {
     ],
     { env: childEnv },
   );
-  run("pnpm", ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"], {
-    env: childEnv,
-  });
-  run("psql", [configuration.releaseUrl, "--no-psqlrc", "--quiet"], {
-    env: childEnv,
-    input: runtimeGrantSql(configuration),
-  });
+  runReleaseMigrationSubprocess(
+    "deploy_migrations",
+    "pnpm",
+    ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"],
+    { env: childEnv },
+  );
+  runReleaseMigrationSubprocess(
+    "converge_runtime_grants",
+    "psql",
+    [configuration.releaseUrl, "--no-psqlrc", "--quiet"],
+    {
+      env: childEnv,
+      input: runtimeGrantSql(configuration),
+    },
+  );
   const verifiedRoles = JSON.parse(
-    run(
+    runReleaseMigrationSubprocess(
+      "verify_roles",
       "psql",
       [
         configuration.releaseUrl,
@@ -171,14 +329,14 @@ export function executeCanonicalReleaseMigration(env = process.env) {
         "--tuples-only",
         "--no-align",
         "--command",
-        `SELECT json_build_object('callerCount', 1, 'roles', json_agg(json_build_object('username', rolname, 'login', rolcanlogin, 'canSetReleaseRole', pg_has_role(rolname, 'reviewrouter_release_migration', 'SET')) ORDER BY rolname)) FROM pg_roles WHERE rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_release_migration') HAVING count(*) = 4`,
+        `SELECT json_build_object('callerCount', 1, 'roles', json_agg(json_build_object('username', rolname, 'login', rolcanlogin, 'canSetReleaseRole', pg_has_role(rolname, 'reviewrouter_release_migration', 'SET')) ORDER BY rolname)) FROM pg_roles WHERE rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration') HAVING count(*) = 5`,
       ],
       { env: childEnv },
     ).trim(),
   );
   if (
     verifiedRoles.callerCount !== 1 ||
-    verifiedRoles.roles.length !== 4 ||
+    verifiedRoles.roles.length !== 5 ||
     verifiedRoles.roles.some(
       (role) =>
         role.login !== true ||

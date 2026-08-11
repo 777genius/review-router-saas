@@ -31,6 +31,22 @@ export const codexRotatingCatalogTables = Object.freeze([
   "CodexOAuthWritebackIntent",
 ]);
 
+export const codexRotatingProviderRuntimeUpdateColumns = Object.freeze([
+  "state",
+  "latestGeneration",
+  "latestGenerationHash",
+  "activeLeaseId",
+  "activeLeaseExpiresAt",
+  "mutationEpoch",
+  "mutationOwner",
+  "mutationOwnerId",
+  "activeSecretNamespaceId",
+  "activeSecretNamespaceEpoch",
+  "activeSecretNamespaceName",
+  "activeAccountIdentityHash",
+  "updatedAt",
+]);
+
 // This inventory is deliberately exhaustive for every rotating-OAuth table,
 // including the columns that predate the migration-owned subset below. The
 // production capture returns the unfiltered catalog names and the verifier
@@ -1173,6 +1189,10 @@ const functionBody = (name, bodySha256) => Object.freeze({ name, bodySha256 });
 // complete stored PL/pgSQL bodies rather than one easily preserved token.
 export const codexRotatingFunctionBodyDigests = Object.freeze([
   functionBody(
+    "codex_oauth_authorize_provider_identity_repair",
+    "90474a7b622a55f6967d9947451bcf8b563f6f0c89ef7dbe09bd58e0f61f20f3",
+  ),
+  functionBody(
     "codex_oauth_authorize_runtime_completion",
     "753dd33a96776039c03a12ad83eddeb9ff5041c5f1aadd62fa6170806caeb694",
   ),
@@ -1197,8 +1217,12 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
     "478770fa321c3f018db0bc96b571b9b82f0bd771094bde192764923b5f982e10",
   ),
   functionBody(
+    "codex_oauth_database_authority_receipt_guard",
+    "f2eb97bd2559fc2434765b24e7358ba21717674ca020d81808bf1661dee5892d",
+  ),
+  functionBody(
     "codex_oauth_provider_identity_guard",
-    "6242f4f4d088367657ea62293b8e94cef5bff24889852e5d0e4c71b7ea7113e6",
+    "a9f070ee7f332c150b7c33ccb5d5e1fc1a2ecf67ec35cd0ad5343b494718e6e8",
   ),
   functionBody(
     "codex_oauth_provider_mutation_transition_guard",
@@ -1210,7 +1234,7 @@ export const codexRotatingFunctionBodyDigests = Object.freeze([
   ),
   functionBody(
     "codex_oauth_repair_quarantined_provider",
-    "ad0549a71f1dfc05ef925f7b4129200b7f0f712d83682a44d0ff89cfa87be494",
+    "8b734e58f5d6cbc79f25bbeac77fc0f9347a2d5c27a3d9018c49db14226986af",
   ),
   functionBody(
     "codex_oauth_repository_identity_guard",
@@ -1251,6 +1275,7 @@ export const codexRotatingFunctions = Object.freeze(
 );
 
 export const codexRotatingTriggers = Object.freeze([
+  "CodexOAuthDatabaseAuthorityReceipt_one_shot_guard",
   "CodexOAuthLease_identity_fence_guard",
   "CodexOAuthProviderInstance_identity_guard",
   "CodexOAuthProviderInstance_mutation_transition_guard",
