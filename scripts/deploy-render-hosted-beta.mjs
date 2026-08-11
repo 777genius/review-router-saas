@@ -18,6 +18,19 @@ import {
 const renderApi = "https://api.render.com/v1";
 const roleBootstrapDatabaseUrlEnvironmentName =
   "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL";
+const forbiddenRuntimeDeployDotenvMessage =
+  "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL is forbidden in the runtime deploy environment file";
+
+function assertRuntimeDeployDotenvAssignmentNames(text) {
+  for (const rawLine of text.split(/\r?\n/)) {
+    const assignment = rawLine.match(
+      /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=/u,
+    );
+    if (assignment?.[1] === roleBootstrapDatabaseUrlEnvironmentName) {
+      throw new Error(forbiddenRuntimeDeployDotenvMessage);
+    }
+  }
+}
 
 function parseDotenv(text, excludedNames = new Set()) {
   const values = {};
@@ -25,7 +38,10 @@ function parseDotenv(text, excludedNames = new Set()) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#") || !line.includes("=")) continue;
     const separator = line.indexOf("=");
-    const key = line.slice(0, separator).trim();
+    const key = line
+      .slice(0, separator)
+      .trim()
+      .replace(/^export[ \t]+(?=[A-Za-z_][A-Za-z0-9_]*$)/u, "");
     if (excludedNames.has(key)) continue;
     let value = line.slice(separator + 1).trim();
     if (
@@ -45,13 +61,8 @@ function readRuntimeDeployDotenv(filePath) {
 }
 
 export function parseHostedDeployDotenv(text) {
-  const values = parseDotenv(text);
-  if (Object.hasOwn(values, roleBootstrapDatabaseUrlEnvironmentName)) {
-    throw new Error(
-      `${roleBootstrapDatabaseUrlEnvironmentName} is forbidden in the runtime deploy environment file`,
-    );
-  }
-  return values;
+  assertRuntimeDeployDotenvAssignmentNames(text);
+  return parseDotenv(text);
 }
 
 export function requiredEnv(name, source) {

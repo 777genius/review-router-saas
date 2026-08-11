@@ -289,6 +289,72 @@ describe("Render hosted deploy hardening", () => {
   });
 
   it.each([
+    ["canonical", "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL=CANARY"],
+    ["export", "export REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL=CANARY"],
+    [
+      "leading whitespace and tabs",
+      " \t export\t REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL \t=CANARY",
+    ],
+    [
+      "quoted value",
+      'export REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL="CANARY"',
+    ],
+    [
+      "malformed quoted value",
+      "\texport  REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL='unterminated-CANARY",
+    ],
+  ])(
+    "rejects the %s forbidden dotenv assignment before runtime validation",
+    (_name, dotenvLine) => {
+      const directory = mkdtempSync(join(tmpdir(), "render-runtime-dotenv-"));
+      const envFile = join(directory, "runtime.env");
+      const canary = "bootstrap-dotenv-value-must-not-be-materialized";
+      writeFileSync(envFile, `${dotenvLine.replace("CANARY", canary)}\n`);
+      try {
+        const result = spawnSync(
+          "sh",
+          ["scripts/deploy-render-hosted-beta.sh"],
+          {
+            cwd: process.cwd(),
+            encoding: "utf8",
+            env: {
+              PATH: process.env.PATH,
+              REVIEW_ROUTER_RENDER_RUNTIME_DEPLOY_ENV_FILE: envFile,
+            },
+          },
+        );
+        const output = `${result.stdout}${result.stderr}`;
+        expect(result.status).not.toBe(0);
+        expect(output).toContain(
+          "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL is forbidden in the runtime deploy environment file",
+        );
+        expect(output).not.toContain("Missing required value");
+        expect(output).not.toContain(canary);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("normalizes allowed export assignments without treating export-prefixed keys as export syntax", () => {
+    expect(
+      parseHostedDeployDotenv(
+        [
+          "# comment",
+          "",
+          " export\tALLOWED_EXPORTED_KEY = allowed",
+          "exportREVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL=near-miss",
+          "export REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL_SUFFIX=also-allowed",
+        ].join("\n"),
+      ),
+    ).toEqual({
+      ALLOWED_EXPORTED_KEY: "allowed",
+      exportREVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: "near-miss",
+      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL_SUFFIX: "also-allowed",
+    });
+  });
+
+  it.each([
     [
       "forged runtime label",
       {
