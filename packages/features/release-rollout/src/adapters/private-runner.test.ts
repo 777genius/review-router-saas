@@ -13,6 +13,7 @@ import {
   type RenderRunnerRequest,
 } from "./render-private-runner";
 import { RenderProviderFreezeAdapter } from "./render-provider-freeze";
+import { RenderTargetServicesAdapter } from "./render-target-services";
 
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {
@@ -111,16 +112,14 @@ describe("Render private runner adapter", () => {
 
   it("requires terminal cleanup and explicit cleanup proof", async () => {
     const adapter = new RenderPrivateRunnerAdapter(
-      vi
-        .fn()
-        .mockResolvedValue(
-          json({
-            id: "job-123",
-            serviceId: request.baseServiceId,
-            status: "succeeded",
-            cleanupVerified: true,
-          }),
-        ),
+      vi.fn().mockResolvedValue(
+        json({
+          id: "job-123",
+          serviceId: request.baseServiceId,
+          status: "succeeded",
+          cleanupVerified: true,
+        }),
+      ),
     );
     await expect(
       adapter.cleanup({
@@ -130,16 +129,14 @@ describe("Render private runner adapter", () => {
       }),
     ).resolves.toMatchObject({ step: "cleanup_ephemeral_runner" });
     const interrupted = new RenderPrivateRunnerAdapter(
-      vi
-        .fn()
-        .mockResolvedValue(
-          json({
-            id: "job-123",
-            serviceId: request.baseServiceId,
-            status: "running",
-            cleanupVerified: false,
-          }),
-        ),
+      vi.fn().mockResolvedValue(
+        json({
+          id: "job-123",
+          serviceId: request.baseServiceId,
+          status: "running",
+          cleanupVerified: false,
+        }),
+      ),
     );
     await expect(
       interrupted.cleanup({
@@ -211,6 +208,75 @@ describe("Render provider freeze adapter", () => {
         apiKey: "secret",
       }),
     ).rejects.toThrow(/render_service_/u);
+  });
+});
+
+describe("Render target staging adapter", () => {
+  const expectation = {
+    serviceId: "srv-target-api",
+    deployId: "dep-target-api",
+    imageDigest: `sha256:${"d".repeat(64)}`,
+  };
+  const observed = {
+    id: expectation.serviceId,
+    suspended: "suspended",
+    serviceDetails: {
+      deployId: expectation.deployId,
+      imageDigest: expectation.imageDigest,
+      commitSha: "a".repeat(40),
+      envSpecificDetails: {
+        databaseResourceId: "dpg-target-pg17",
+        preDeployCommand: "",
+      },
+    },
+  };
+
+  it("requires the exact suspended deploy image commit and PG17 resource", async () => {
+    await expect(
+      new RenderTargetServicesAdapter(
+        vi.fn().mockResolvedValue(json(observed)),
+      ).stage({
+        apiKey: "secret",
+        targetDatabaseResourceId: "dpg-target-pg17",
+        releaseCommitSha: "a".repeat(40),
+        services: [expectation],
+      }),
+    ).resolves.toMatchObject({ step: "stage_target_services" });
+  });
+
+  it.each([
+    [
+      "wrong database",
+      {
+        ...observed,
+        serviceDetails: {
+          ...observed.serviceDetails,
+          envSpecificDetails: {
+            ...observed.serviceDetails.envSpecificDetails,
+            databaseResourceId: "dpg-source-pg16",
+          },
+        },
+      },
+    ],
+    [
+      "wrong deploy",
+      {
+        ...observed,
+        serviceDetails: { ...observed.serviceDetails, deployId: "dep-mutable" },
+      },
+    ],
+    ["API drift", { ...observed, extra: true }],
+  ])("fails closed on %s", async (_name, response) => {
+    await expect(
+      new RenderTargetServicesAdapter(
+        vi.fn().mockResolvedValue(json(response)),
+      ).stage({
+        apiKey: "secret",
+        targetDatabaseResourceId: "dpg-target-pg17",
+        releaseCommitSha: "a".repeat(40),
+        services: [expectation],
+      }),
+    ).rejects.toThrow("render_target_stage_observation_mismatch");
   });
 });
 

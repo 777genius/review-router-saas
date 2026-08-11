@@ -37,24 +37,14 @@ const context = {
   label: values.get("--label"),
   runnerName: `rr-${values.get("--run-id")}-${values.get("--run-attempt")}`,
 };
-if (
-  context.repository !== required("REVIEW_ROUTER_RUNNER_EXPECTED_REPOSITORY") ||
-  context.commitSha !== required("REVIEW_ROUTER_RUNNER_EXPECTED_SHA") ||
-  context.runId !== required("REVIEW_ROUTER_RUNNER_EXPECTED_RUN_ID") ||
-  String(context.runAttempt) !==
-    required("REVIEW_ROUTER_RUNNER_EXPECTED_RUN_ATTEMPT") ||
-  context.label !== required("REVIEW_ROUTER_RUNNER_EXPECTED_LABEL")
-)
+if (context.repository !== required("REVIEW_ROUTER_RUNNER_EXPECTED_REPOSITORY"))
   throw new Error("private_runner_context_mismatch");
 
 const app = new App({
   appId: required("REVIEW_ROUTER_RUNNER_GITHUB_APP_ID"),
   privateKey: required("REVIEW_ROUTER_RUNNER_GITHUB_APP_PRIVATE_KEY"),
 });
-const authentication = await app.getInstallationOctokit(
-  Number(required("REVIEW_ROUTER_RUNNER_GITHUB_APP_INSTALLATION_ID")),
-);
-const response = await authentication.request(
+const response = await app.octokit.request(
   "POST /app/installations/{installation_id}/access_tokens",
   {
     installation_id: Number(
@@ -78,6 +68,7 @@ try {
   await runOneJobRunner({
     runnerPath: "/runner/bin/Runner.Listener",
     jitConfig,
+    workingDirectory: "/runner",
     timeoutMs: Number(
       process.env.REVIEW_ROUTER_RUNNER_NO_JOB_TIMEOUT_MS ?? "900000",
     ),

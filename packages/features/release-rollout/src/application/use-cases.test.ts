@@ -62,12 +62,10 @@ describe("release rollout application boundary", () => {
     const ports = {
       provider: {} as never,
       runner: {
-        provision: vi
-          .fn()
-          .mockResolvedValue({
-            identity,
-            receipt: receipt(RolloutStep.ProvisionPrivateRunner),
-          }),
+        provision: vi.fn().mockResolvedValue({
+          identity,
+          receipt: receipt(RolloutStep.ProvisionPrivateRunner),
+        }),
         cleanup: vi.fn(),
       },
       database: {} as never,

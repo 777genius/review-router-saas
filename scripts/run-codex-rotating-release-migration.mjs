@@ -922,12 +922,91 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 `;
 }
 
-export function runtimeGrantSql(configuration) {
+export function runtimeAclGateStatements(configuration) {
+  return `${configuration.roles
+    .map(
+      ({ username }) => `REVOKE CONNECT ON DATABASE :"DBNAME" FROM ${username};
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM ${username};
+REVOKE USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA public FROM ${username};`,
+    )
+    .join("\n")}
+CREATE TABLE IF NOT EXISTS public."ReleaseGenerationActivationReceipt" (
+  "rolloutId" text PRIMARY KEY,
+  "sourceSystemIdentifier" text NOT NULL,
+  "targetSystemIdentifier" text NOT NULL,
+  "canonicalPrivilegesSha256" text NOT NULL CHECK ("canonicalPrivilegesSha256" ~ '^sha256:[a-f0-9]{64}$'),
+  "transactionId" bigint NOT NULL,
+  "activatedAt" timestamptz NOT NULL DEFAULT transaction_timestamp(),
+  CHECK ("sourceSystemIdentifier" ~ '^[0-9]+$'),
+  CHECK ("targetSystemIdentifier" ~ '^[0-9]+$'),
+  CHECK ("sourceSystemIdentifier" <> "targetSystemIdentifier")
+);
+REVOKE ALL ON TABLE public."ReleaseGenerationActivationReceipt" FROM PUBLIC;
+${configuration.roles
+  .map(
+    ({ username }) =>
+      `REVOKE ALL ON TABLE public."ReleaseGenerationActivationReceipt" FROM ${username};`,
+  )
+  .join("\n")}`;
+}
+
+export function runtimeGrantSql(configuration, { gateClosed = false } = {}) {
   return `\\set ON_ERROR_STOP on
 BEGIN;
 ${runtimeGrantStatements(configuration)}
+${gateClosed ? runtimeAclGateStatements(configuration) : ""}
 COMMIT;
 `;
+}
+
+export function canonicalActivationSql(configuration, activation) {
+  const literal = (value) => `'${String(value).replaceAll("'", "''")}'`;
+  const grantDigest = `sha256:${createHash("sha256")
+    .update(runtimeGrantStatements(configuration))
+    .digest("hex")}`;
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(activation.rolloutId) ||
+    !/^[0-9]+$/u.test(activation.sourceSystemIdentifier) ||
+    !/^[0-9]+$/u.test(activation.targetSystemIdentifier) ||
+    activation.sourceSystemIdentifier === activation.targetSystemIdentifier
+  )
+    throw new Error("release_migration_activation_identity_invalid");
+  return {
+    canonicalPrivilegesSha256: grantDigest,
+    sql: `\\set ON_ERROR_STOP on
+BEGIN;
+DO $activation_replay$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM public."ReleaseGenerationActivationReceipt"
+    WHERE "rolloutId" = ${literal(activation.rolloutId)}
+      AND ("sourceSystemIdentifier" <> ${literal(activation.sourceSystemIdentifier)}
+        OR "targetSystemIdentifier" <> ${literal(activation.targetSystemIdentifier)}
+        OR "canonicalPrivilegesSha256" <> ${literal(grantDigest)})
+  ) THEN RAISE EXCEPTION 'conflicting activation receipt replay'; END IF;
+END
+$activation_replay$;
+${runtimeGrantStatements(configuration)}
+INSERT INTO public."ReleaseGenerationActivationReceipt" (
+  "rolloutId", "sourceSystemIdentifier", "targetSystemIdentifier",
+  "canonicalPrivilegesSha256", "transactionId"
+) VALUES (
+  ${literal(activation.rolloutId)}, ${literal(activation.sourceSystemIdentifier)},
+  ${literal(activation.targetSystemIdentifier)}, ${literal(grantDigest)}, txid_current()
+) ON CONFLICT ("rolloutId") DO NOTHING;
+SELECT json_build_object(
+  'rolloutId', "rolloutId",
+  'sourceSystemIdentifier', "sourceSystemIdentifier",
+  'targetSystemIdentifier', "targetSystemIdentifier",
+  'canonicalPrivilegesSha256', "canonicalPrivilegesSha256",
+  'transactionId', "transactionId"::text,
+  'activatedAt', to_char("activatedAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+  'firstWriteBoundary', true
+) FROM public."ReleaseGenerationActivationReceipt"
+WHERE "rolloutId" = ${literal(activation.rolloutId)};
+COMMIT;
+`,
+  };
 }
 
 export function runReleaseMigrationSubprocess(
@@ -1002,6 +1081,11 @@ export function executeCanonicalReleaseMigration(
   env = process.env,
   run = runReleaseMigrationSubprocess,
 ) {
+  if (
+    env.REVIEW_ROUTER_RELEASE_ACL_GATE_MODE !== undefined &&
+    !["open", "closed"].includes(env.REVIEW_ROUTER_RELEASE_ACL_GATE_MODE)
+  )
+    throw new Error("release_migration_acl_gate_mode_invalid");
   const configuration = resolveReleaseMigrationConfiguration(env);
   const childEnv = { ...env, DATABASE_URL: configuration.releaseUrl };
   assertConnectionRole(
@@ -1036,7 +1120,9 @@ export function executeCanonicalReleaseMigration(
     [configuration.releaseUrl, "--no-psqlrc", "--quiet"],
     {
       env: childEnv,
-      input: runtimeGrantSql(configuration),
+      input: runtimeGrantSql(configuration, {
+        gateClosed: env.REVIEW_ROUTER_RELEASE_ACL_GATE_MODE === "closed",
+      }),
     },
   );
   const verifiedRoles = observeCanonicalRoleTopology(
@@ -1058,6 +1144,8 @@ export function executeCanonicalReleaseMigration(
     databaseGeneration,
     imageDigest: configuration.imageDigest,
     migrationStatus: "succeeded",
+    aclGateState:
+      env.REVIEW_ROUTER_RELEASE_ACL_GATE_MODE === "closed" ? "closed" : "open",
     preflightOutputSha256: createHash("sha256")
       .update(preflightOutput)
       .digest("hex"),

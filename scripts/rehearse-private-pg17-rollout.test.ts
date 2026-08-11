@@ -1,0 +1,30 @@
+import { describe, expect, it } from "vitest";
+import { validateRehearsalConfiguration } from "./rehearse-private-pg17-rollout.mjs";
+
+const digest = "d".repeat(64);
+describe("disposable dual-version rehearsal", () => {
+  it("requires explicit opt-in and immutable PG16.13/PG17 images", () => {
+    expect(
+      validateRehearsalConfiguration({
+        REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1",
+        REVIEW_ROUTER_REHEARSAL_PG16_IMAGE: `postgres:16.13-bookworm@sha256:${digest}`,
+        REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: `postgres:17.5-bookworm@sha256:${digest}`,
+      }),
+    ).toEqual({
+      sourceImage: `postgres:16.13-bookworm@sha256:${digest}`,
+      targetImage: `postgres:17.5-bookworm@sha256:${digest}`,
+    });
+    expect(() =>
+      validateRehearsalConfiguration({
+        REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1",
+        REVIEW_ROUTER_REHEARSAL_PG16_IMAGE: "postgres:16",
+        REVIEW_ROUTER_REHEARSAL_PG17_IMAGE: "postgres:17",
+      }),
+    ).toThrow("private_pg17_rehearsal_immutable_images_required");
+  });
+  it("cannot accidentally target external infrastructure", () => {
+    expect(() => validateRehearsalConfiguration({})).toThrow(
+      "private_pg17_rehearsal_explicit_opt_in_required",
+    );
+  });
+});

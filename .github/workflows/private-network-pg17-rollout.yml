@@ -137,6 +137,7 @@ jobs:
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       REVIEW_ROUTER_RUNNER_JOB_ID: ${{ needs.provision-role-bootstrap-runner.outputs.job_id }}
+      REVIEW_ROUTER_CLEANUP_RECEIPT_FILE: role-bootstrap-runner-cleanup.json
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -144,6 +145,13 @@ jobs:
           ref: ${{ inputs.expected_sha }}
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - run: node --import tsx scripts/release-rollout-render-control.ts cleanup
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: role-bootstrap-runner-cleanup-${{ inputs.rollout_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: role-bootstrap-runner-cleanup.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
 
   provision-cutover-runner:
     name: provision-cutover-runner
@@ -182,6 +190,14 @@ jobs:
       REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST }}
       REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID }}
       REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID }}
+      REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER }}
+      REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER }}
+      REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256 }}
+      REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256 }}
+      REVIEW_ROUTER_SOURCE_BACKUP_ID: ${{ vars.REVIEW_ROUTER_SOURCE_BACKUP_ID }}
+      REVIEW_ROUTER_SOURCE_PITR_IDENTITY: ${{ vars.REVIEW_ROUTER_SOURCE_PITR_IDENTITY }}
+      REVIEW_ROUTER_SOURCE_BACKUP_CAPTURED_AT: ${{ vars.REVIEW_ROUTER_SOURCE_BACKUP_CAPTURED_AT }}
+      REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON: ${{ vars.REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON }}
       REVIEW_ROUTER_SOURCE_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_SOURCE_DATABASE_URL }}
       REVIEW_ROUTER_TARGET_COPY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_TARGET_COPY_DATABASE_URL }}
       REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
@@ -191,6 +207,8 @@ jobs:
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
       REVIEW_ROUTER_RUNNER_IDENTITY: ${{ needs.provision-cutover-runner.outputs.identity }}
       REVIEW_ROUTER_FREEZE_RECEIPT: ${{ needs.freeze-provider-services.outputs.receipt }}
+      REVIEW_ROUTER_ROLE_BOOTSTRAP_RECEIPT_FILE: role-bootstrap/role-bootstrap-output.json
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -198,6 +216,11 @@ jobs:
           ref: ${{ inputs.expected_sha }}
       - name: Install locked release adapter
         run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - name: Download exact role-bootstrap receipt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: role-bootstrap-${{ inputs.rollout_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: role-bootstrap
       - name: Execute side-by-side copy verification migration staging and activation
         run: node --import tsx scripts/run-private-pg17-rollout.ts > private-rollout-evidence.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -218,6 +241,7 @@ jobs:
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       REVIEW_ROUTER_RUNNER_JOB_ID: ${{ needs.provision-cutover-runner.outputs.job_id }}
+      REVIEW_ROUTER_CLEANUP_RECEIPT_FILE: cutover-runner-cleanup.json
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -225,3 +249,10 @@ jobs:
           ref: ${{ inputs.expected_sha }}
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - run: node --import tsx scripts/release-rollout-render-control.ts cleanup
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cutover-runner-cleanup-${{ inputs.rollout_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: cutover-runner-cleanup.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

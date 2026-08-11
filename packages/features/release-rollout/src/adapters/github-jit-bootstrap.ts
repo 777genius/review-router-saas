@@ -23,6 +23,7 @@ export async function runOneJobRunner(options: {
   timeoutMs: number;
   environment?: NodeJS.ProcessEnv;
   spawnImpl?: typeof spawn;
+  workingDirectory?: string;
 }): Promise<void> {
   if (!options.jitConfig || options.jitConfig.length > 65_536)
     throw new Error("github_jit_configuration_invalid");
@@ -37,7 +38,11 @@ export async function runOneJobRunner(options: {
   const child = spawnRunner(
     options.runnerPath,
     ["--jitconfig", options.jitConfig],
-    { env: environment, stdio: "inherit" },
+    {
+      ...(options.workingDirectory ? { cwd: options.workingDirectory } : {}),
+      env: environment,
+      stdio: "inherit",
+    },
   );
   const exitCode = await new Promise<number>((resolve, reject) => {
     const timer = setTimeout(() => {

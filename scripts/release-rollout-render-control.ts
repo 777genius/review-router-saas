@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import {
   RenderPrivateRunnerAdapter,
   RenderProviderFreezeAdapter,
@@ -64,6 +64,12 @@ if (mode === "freeze") {
   output({
     receipt: Buffer.from(JSON.stringify(receipt)).toString("base64url"),
   });
+  const receiptFile = process.env.REVIEW_ROUTER_CLEANUP_RECEIPT_FILE;
+  if (receiptFile)
+    writeFileSync(receiptFile, `${JSON.stringify(receipt)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
 } else {
   throw new Error("release_rollout_control_mode_invalid");
 }

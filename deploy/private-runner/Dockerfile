@@ -12,10 +12,10 @@ RUN test -n "$GITHUB_ACTIONS_RUNNER_VERSION" && test -n "$GITHUB_ACTIONS_RUNNER_
   && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --create-home --uid 10001 runner \
-  && mkdir -p /runner/bin /runner/_work /runner/tmp \
+  && mkdir -p /runner/_work /runner/tmp \
   && curl --fail --silent --show-error --location "https://github.com/actions/runner/releases/download/v${GITHUB_ACTIONS_RUNNER_VERSION}/actions-runner-linux-x64-${GITHUB_ACTIONS_RUNNER_VERSION}.tar.gz" --output /tmp/runner.tgz \
   && echo "${GITHUB_ACTIONS_RUNNER_SHA256}  /tmp/runner.tgz" | sha256sum --check --strict \
-  && tar --extract --gzip --file /tmp/runner.tgz --directory /runner/bin \
+  && tar --extract --gzip --file /tmp/runner.tgz --directory /runner \
   && rm /tmp/runner.tgz \
   && chown -R runner:runner /runner
 WORKDIR /app
@@ -24,4 +24,4 @@ COPY --from=builder /build/node_modules ./node_modules
 COPY deploy/private-runner/bootstrap.mjs /runner/bootstrap.mjs
 RUN chown runner:runner /runner/bootstrap.mjs
 USER runner
-ENTRYPOINT ["node", "/runner/bootstrap.mjs"]
+CMD ["node", "/runner/bootstrap.mjs"]

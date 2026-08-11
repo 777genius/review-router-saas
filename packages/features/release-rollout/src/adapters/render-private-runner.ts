@@ -79,9 +79,7 @@ function exactObject(
 export class RenderPrivateRunnerAdapter {
   constructor(private readonly fetchImpl: RenderFetch = fetch) {}
 
-  async provision(
-    request: RenderRunnerRequest,
-  ): Promise<{
+  async provision(request: RenderRunnerRequest): Promise<{
     identity: RunnerIdentity;
     receipt: StepReceipt;
     jobId: string;
@@ -184,7 +182,16 @@ export class RenderPrivateRunnerAdapter {
     request: Pick<RenderRunnerRequest, "apiKey" | "baseServiceId"> & {
       jobId: string;
     },
-  ): Promise<StepReceipt> {
+  ): Promise<
+    StepReceipt & {
+      cleanup: {
+        renderJobTerminal: true;
+        workspaceRemoved: true;
+        bootstrapCredentialsAbsent: true;
+        observedAt: string;
+      };
+    }
+  > {
     requiredIdentifier(request.baseServiceId, "service");
     requiredIdentifier(request.jobId, "job");
     const response = await this.fetchImpl(
@@ -207,11 +214,18 @@ export class RenderPrivateRunnerAdapter {
       job.cleanupVerified !== true
     )
       throw new Error("render_runner_cleanup_unproven");
+    const observedAt = new Date().toISOString();
     return Object.freeze({
       step: RolloutStep.CleanupEphemeralRunner,
       receiptId: `render-cleanup-${request.jobId}`,
-      observedAt: new Date().toISOString(),
+      observedAt,
       payloadSha256: `sha256:${sha256Canonical(job)}`,
+      cleanup: {
+        renderJobTerminal: true as const,
+        workspaceRemoved: true as const,
+        bootstrapCredentialsAbsent: true as const,
+        observedAt,
+      },
     });
   }
 }
