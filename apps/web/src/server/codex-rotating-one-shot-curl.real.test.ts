@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createServer } from "node:tls";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -308,7 +308,7 @@ describeWire("rotating installer one-shot curl provider adapter", () => {
           const child = spawn("/bin/bash", childArguments, {
             env: {
               ...process.env,
-              PATH: `${bin}:/usr/bin:/bin`,
+              PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
               HOME: root,
               CURL_HOME: root,
               TMPDIR: unusualTmpdir,
