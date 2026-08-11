@@ -1425,6 +1425,11 @@ function proveDatabasePrivileges(url) {
              OR has_table_privilege(role_name, 'public."RepositoryConnection"', 'REFERENCES')
              OR has_function_privilege(role_name, 'public.codex_oauth_provider_identity_guard()', 'EXECUTE')
              OR pg_has_role(role_name, 'reviewrouter_release_migration', 'SET')
+             OR has_table_privilege(
+               role_name,
+               'public."_prisma_migrations"',
+               'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+             )
              OR EXISTS (
                SELECT 1
                FROM pg_class relation
@@ -1433,6 +1438,7 @@ function proveDatabasePrivileges(url) {
                  AND relation.relkind IN ('r', 'p')
                  AND relation.relname NOT IN (
                    'RepositoryConnection',
+                   '_prisma_migrations',
                    'CodexOAuthDatabaseAuthorityKey',
                    'CodexOAuthDatabaseAuthorityReceipt',
                    'CodexOAuthChildIdentityQuarantine',

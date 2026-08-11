@@ -137,6 +137,18 @@ SELECT jsonb_build_object(
         'databaseCreate', has_database_privilege(r.rolname, current_database(), 'CREATE'),
         'schemaCreate', has_schema_privilege(r.rolname, current_schema(), 'CREATE'),
         'schemaUsage', has_schema_privilege(r.rolname, current_schema(), 'USAGE'),
+        'migrationHistoryPrivileges', (
+          has_table_privilege(
+            r.rolname,
+            'public."_prisma_migrations"',
+            'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+          )
+          OR has_any_column_privilege(
+            r.rolname,
+            'public."_prisma_migrations"',
+            'SELECT,INSERT,UPDATE,REFERENCES'
+          )
+        ),
         'providerSetupStateSelect', has_table_privilege(r.rolname, 'public."ProviderSetupState"', 'SELECT'),
         'providerSetupStateInsert', has_table_privilege(r.rolname, 'public."ProviderSetupState"', 'INSERT'),
         'providerSetupStateUpdate', has_table_privilege(r.rolname, 'public."ProviderSetupState"', 'UPDATE'),

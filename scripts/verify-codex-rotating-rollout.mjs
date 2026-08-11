@@ -967,6 +967,7 @@ function verifyDatabaseAuthorization(authorization, need) {
           "createRole",
           "databaseCreate",
           "ddlTablePrivileges",
+          "migrationHistoryPrivileges",
           "name",
           "ownsCatalogObject",
           "ownsRepositoryConnection",
@@ -1038,6 +1039,7 @@ function verifyDatabaseAuthorization(authorization, need) {
         entry.ownsCatalogObject === isRelease &&
         entry.ownsRepositoryConnection === isRelease &&
         entry.ddlTablePrivileges === isRelease &&
+        entry.migrationHistoryPrivileges === isRelease &&
         entry.providerSetupStateSelect === (isRelease || isRuntime) &&
         entry.providerSetupStateInsert === (isRelease || isRuntime) &&
         entry.providerSetupStateUpdate === (isRelease || isRuntime) &&

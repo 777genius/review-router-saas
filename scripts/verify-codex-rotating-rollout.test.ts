@@ -620,6 +620,15 @@ describe("observation-backed Codex rotating rollout verifier", () => {
       "runtime database roles can perform DDL or assume the release-migration role",
     ],
     [
+      "runtime role can forge migration history",
+      (fixture: any) => {
+        fixture.artifacts.database.databaseAuthorization.roles.find(
+          (role: any) => role.name === "reviewrouter_api",
+        ).migrationHistoryPrivileges = true;
+      },
+      "runtime database roles can perform DDL or assume the release-migration role",
+    ],
+    [
       "PostgreSQL major mismatch",
       (fixture: any) => {
         fixture.artifacts.database.postgresVersion = "16.9";
@@ -1106,6 +1115,7 @@ function observedFixture(): any {
             ownsCatalogObject: release,
             ownsRepositoryConnection: release,
             ddlTablePrivileges: release,
+            migrationHistoryPrivileges: release,
             providerSetupStateSelect: release || runtime,
             providerSetupStateInsert: release || runtime,
             providerSetupStateUpdate: release || runtime,
