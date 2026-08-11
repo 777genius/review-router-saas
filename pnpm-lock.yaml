@@ -471,15 +471,15 @@ importers:
       '@reviewrouter/features-review-snapshots':
         specifier: workspace:*
         version: link:../review-snapshots
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
       '@reviewrouter/protocol-review-action-v2':
         specifier: workspace:*
         version: link:../../protocol-review-action-v2
       '@reviewrouter/protocol-review-workflow':
         specifier: workspace:*
         version: link:../../protocol-review-workflow
-      '@reviewrouter/platform-db':
-        specifier: workspace:*
-        version: link:../../platform/db
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
@@ -691,6 +691,12 @@ importers:
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
+
+  packages/features/release-rollout:
+    dependencies:
+      '@octokit/app':
+        specifier: ^16.1.2
+        version: 16.1.2
 
   packages/features/repo-health:
     dependencies:

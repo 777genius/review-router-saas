@@ -1,51 +1,17 @@
-name: Codex rotating trusted role bootstrap
-
+name: Codex rotating trusted role bootstrap (private rollout alias)
 on:
   workflow_dispatch:
     inputs:
       bootstrap_id:
-        description: Unique non-reusable role-bootstrap identifier
         required: true
         type: string
-
 permissions:
   actions: read
   contents: read
-
-concurrency:
-  group: codex-rotating-database-mutation-production
-  cancel-in-progress: false
-
 jobs:
-  trusted-role-bootstrap:
-    name: trusted-role-bootstrap
-    environment: production-role-bootstrap
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ github.sha }}
-      REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RENDER_IMAGE_DIGEST }}
-      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL }}
-      REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
-      REVIEW_ROUTER_API_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_API_DATABASE_URL }}
-      REVIEW_ROUTER_WEB_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WEB_DATABASE_URL }}
-      REVIEW_ROUTER_WORKER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WORKER_DATABASE_URL }}
-      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
-    steps:
-      - name: Checkout immutable release
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-
-      - name: Run isolated role bootstrap
-        run: node scripts/run-codex-rotating-role-bootstrap.mjs > role-bootstrap-output.json
-
-      - name: Upload role-bootstrap receipt
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: reviewrouter-role-bootstrap-${{ inputs.bootstrap_id }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: role-bootstrap-output.json
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
+  private-rollout:
+    uses: ./.github/workflows/private-network-pg17-rollout.yml
+    with:
+      rollout_id: ${{ inputs.bootstrap_id }}
+      expected_sha: ${{ github.sha }}
+    secrets: inherit

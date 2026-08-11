@@ -10,6 +10,9 @@
       "default": "./src/index.ts"
     }
   },
+  "dependencies": {
+    "@octokit/app": "^16.1.2"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"

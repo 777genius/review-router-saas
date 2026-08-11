@@ -1,0 +1,227 @@
+name: Private-network PostgreSQL 17 release rollout
+
+on:
+  workflow_dispatch:
+    inputs:
+      rollout_id:
+        description: Unique non-reusable rollout identifier
+        required: true
+        type: string
+      expected_sha:
+        description: Exact main commit to release
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      rollout_id:
+        required: true
+        type: string
+      expected_sha:
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: private-network-pg17-production
+  cancel-in-progress: false
+
+env:
+  REVIEW_ROUTER_EXPECTED_SHA: ${{ inputs.expected_sha }}
+  REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID }}
+  REVIEW_ROUTER_RUNNER_BASE_DEPLOY_ID: ${{ vars.REVIEW_ROUTER_RUNNER_BASE_DEPLOY_ID }}
+  REVIEW_ROUTER_RUNNER_BASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RUNNER_BASE_IMAGE_DIGEST }}
+
+jobs:
+  freeze-provider-services:
+    name: freeze-provider-services
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      receipt: ${{ steps.freeze.outputs.receipt }}
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
+      REVIEW_ROUTER_RENDER_FROZEN_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_RENDER_FROZEN_SERVICE_IDS }}
+      REVIEW_ROUTER_RELEASE_ACTORS: ${{ vars.REVIEW_ROUTER_RELEASE_ACTORS }}
+    steps:
+      - name: Enforce immutable protected release policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$REVIEW_ROUTER_EXPECTED_SHA"
+          case ",${REVIEW_ROUTER_RELEASE_ACTORS}," in *",${GITHUB_ACTOR},"*) ;; *) exit 1 ;; esac
+          test -n "$REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID"
+          test -n "$REVIEW_ROUTER_RUNNER_BASE_DEPLOY_ID"
+          case "$REVIEW_ROUTER_RUNNER_BASE_IMAGE_DIGEST" in sha256:????????????????????????????????????????????????????????????????) ;; *) exit 1 ;; esac
+      - name: Checkout immutable release
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+      - name: Install locked control adapter
+        run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: freeze
+        name: Prove provider freeze independently of database selection
+        run: node --import tsx scripts/release-rollout-render-control.ts freeze
+
+  provision-role-bootstrap-runner:
+    name: provision-role-bootstrap-runner
+    needs: freeze-provider-services
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      label: ${{ steps.provision.outputs.label }}
+      job_id: ${{ steps.provision.outputs.job_id }}
+      identity: ${{ steps.provision.outputs.identity }}
+      receipt: ${{ steps.provision.outputs.receipt }}
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
+      REVIEW_ROUTER_RUNNER_PURPOSE: role-bootstrap
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: provision
+        run: node --import tsx scripts/release-rollout-render-control.ts provision
+
+  role-bootstrap-private:
+    name: role-bootstrap-private
+    needs: provision-role-bootstrap-runner
+    environment: production-role-bootstrap
+    runs-on:
+      [
+        self-hosted,
+        "${{ needs.provision-role-bootstrap-runner.outputs.label }}",
+      ]
+    timeout-minutes: 30
+    env:
+      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL }}
+      REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
+      REVIEW_ROUTER_API_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_API_DATABASE_URL }}
+      REVIEW_ROUTER_WEB_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WEB_DATABASE_URL }}
+      REVIEW_ROUTER_WORKER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WORKER_DATABASE_URL }}
+      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
+      REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
+      REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+      - name: Run canonical role bootstrap inside private network
+        run: node scripts/run-codex-rotating-role-bootstrap.mjs > role-bootstrap-output.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: role-bootstrap-${{ inputs.rollout_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: role-bootstrap-output.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  cleanup-role-bootstrap-runner:
+    name: cleanup-role-bootstrap-runner
+    if: ${{ always() && needs.provision-role-bootstrap-runner.result == 'success' }}
+    needs: [provision-role-bootstrap-runner, role-bootstrap-private]
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      REVIEW_ROUTER_RUNNER_JOB_ID: ${{ needs.provision-role-bootstrap-runner.outputs.job_id }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - run: node --import tsx scripts/release-rollout-render-control.ts cleanup
+
+  provision-cutover-runner:
+    name: provision-cutover-runner
+    needs: [role-bootstrap-private, cleanup-role-bootstrap-runner]
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      label: ${{ steps.provision.outputs.label }}
+      job_id: ${{ steps.provision.outputs.job_id }}
+      identity: ${{ steps.provision.outputs.identity }}
+      receipt: ${{ steps.provision.outputs.receipt }}
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
+      REVIEW_ROUTER_RUNNER_PURPOSE: cutover
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: provision
+        run: node --import tsx scripts/release-rollout-render-control.ts provision
+
+  pg17-cutover-private:
+    name: pg17-cutover-private
+    needs: [freeze-provider-services, provision-cutover-runner]
+    environment: production
+    runs-on:
+      [self-hosted, "${{ needs.provision-cutover-runner.outputs.label }}"]
+    timeout-minutes: 90
+    env:
+      REVIEW_ROUTER_ROLLOUT_ID: ${{ inputs.rollout_id }}
+      REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
+      REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST }}
+      REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID }}
+      REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID }}
+      REVIEW_ROUTER_SOURCE_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_SOURCE_DATABASE_URL }}
+      REVIEW_ROUTER_TARGET_COPY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_TARGET_COPY_DATABASE_URL }}
+      REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
+      REVIEW_ROUTER_API_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_API_DATABASE_URL }}
+      REVIEW_ROUTER_WEB_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WEB_DATABASE_URL }}
+      REVIEW_ROUTER_WORKER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WORKER_DATABASE_URL }}
+      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
+      REVIEW_ROUTER_RUNNER_IDENTITY: ${{ needs.provision-cutover-runner.outputs.identity }}
+      REVIEW_ROUTER_FREEZE_RECEIPT: ${{ needs.freeze-provider-services.outputs.receipt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+      - name: Install locked release adapter
+        run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - name: Execute side-by-side copy verification migration staging and activation
+        run: node --import tsx scripts/run-private-pg17-rollout.ts > private-rollout-evidence.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: private-pg17-rollout-${{ inputs.rollout_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: private-rollout-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  cleanup-cutover-runner:
+    name: cleanup-cutover-runner
+    if: ${{ always() && needs.provision-cutover-runner.result == 'success' }}
+    needs: [provision-cutover-runner, pg17-cutover-private]
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      REVIEW_ROUTER_RUNNER_JOB_ID: ${{ needs.provision-cutover-runner.outputs.job_id }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - run: node --import tsx scripts/release-rollout-render-control.ts cleanup
