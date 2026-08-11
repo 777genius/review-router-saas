@@ -497,7 +497,7 @@ BEGIN
     RAISE EXCEPTION 'trusted migration evidence receipt invalid';
   END IF;
   PERFORM pg_advisory_xact_lock(1381126735, 1129271120);
-  SELECT obj_description(oid, 'pg_database')::jsonb INTO binding
+  SELECT shobj_description(oid, 'pg_database')::jsonb INTO binding
   FROM pg_database WHERE datname = current_database();
   IF binding IS NULL
      OR binding->>'systemIdentifier' <> (SELECT system_identifier::text FROM pg_control_system())

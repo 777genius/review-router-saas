@@ -154,6 +154,7 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_migration",
     );
+    expect(provisioning).toContain("shobj_description(oid, 'pg_database')");
     expect(provisioning).toContain(
       "CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap",
     );

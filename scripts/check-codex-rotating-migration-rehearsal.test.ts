@@ -42,6 +42,11 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
+  it("reads the database generation binding as shared-object metadata", () => {
+    expect(source).toContain("shobj_description(oid, 'pg_database')");
+    expect(source).not.toMatch(/\bobj_description\(oid, 'pg_database'\)/u);
+  });
+
   it("keeps 000063 through 000066 in the late-failure rollback/replay matrix", () => {
     const matrix =
       /function proveLateMigrationRollbackAndReplayMatrix\(\) \{([\s\S]+?)\n\}/u.exec(

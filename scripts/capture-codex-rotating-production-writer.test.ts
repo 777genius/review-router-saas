@@ -51,6 +51,15 @@ const validEnv = {
 };
 
 describe("production-writer rollout observation capture", () => {
+  it("reads database generation metadata from the shared-object catalog", () => {
+    expect(codexRotatingProductionWriterBaseObservationSql).toContain(
+      "shobj_description(d.oid, 'pg_database')",
+    );
+    expect(codexRotatingProductionWriterBaseObservationSql).not.toContain(
+      "WHEN obj_description(d.oid, 'pg_database')",
+    );
+  });
+
   it("observes every exact rotating-writer foreign key", () => {
     const foreignKeysStart =
       codexRotatingProductionWriterBaseObservationSql.indexOf(

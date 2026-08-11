@@ -1803,7 +1803,7 @@ function prepareCanonicalReleaseRoles(url) {
     `DO $receipt$
     DECLARE binding jsonb;
     BEGIN
-      SELECT obj_description(oid, 'pg_database')::jsonb INTO binding
+      SELECT shobj_description(oid, 'pg_database')::jsonb INTO binding
       FROM pg_database WHERE datname = current_database();
       IF binding->>'version' <> '3'
          OR jsonb_array_length(binding->'consumedMigrationEvidence') <> 1

@@ -97,8 +97,8 @@ SELECT jsonb_build_object(
   ),
   'databaseGenerationBinding', (
     SELECT CASE
-      WHEN obj_description(d.oid, 'pg_database') IS NULL THEN NULL
-      ELSE obj_description(d.oid, 'pg_database')::jsonb
+      WHEN shobj_description(d.oid, 'pg_database') IS NULL THEN NULL
+      ELSE shobj_description(d.oid, 'pg_database')::jsonb
     END
     FROM pg_database d WHERE d.datname = current_database()
   ),
