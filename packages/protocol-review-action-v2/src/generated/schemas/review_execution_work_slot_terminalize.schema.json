@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://reviewrouter.site/schemas/action/v2/review-action.json/review_execution_start",
-  "title": "review_execution_start request and response",
+  "$id": "https://reviewrouter.site/schemas/action/v2/review-action.json/review_execution_work_slot_terminalize",
+  "title": "review_execution_work_slot_terminalize request and response",
   "oneOf": [
     {
       "type": "object",
@@ -13,16 +13,12 @@
         "authorizationToken",
         "idempotencyKey",
         "requestBodyHash",
-        "authorizationId",
         "executionId",
+        "generation",
         "reviewRevisionHash",
-        "compatibilityKey",
-        "planHash",
-        "assignmentManifestCanonicalJson",
-        "assignmentManifestHash",
-        "workSlotsCanonicalJson",
-        "sourceRunId",
-        "sourceRunAttempt"
+        "workSlotId",
+        "terminalState",
+        "reasonCode"
       ],
       "properties": {
         "protocolVersion": {
@@ -54,105 +50,33 @@
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
         },
-        "authorizationId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
-        },
         "executionId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 256,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
         },
+        "generation": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
         "reviewRevisionHash": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
         },
-        "compatibilityKey": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "planHash": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "assignmentManifestCanonicalJson": {
-          "anyOf": [
-            {
-              "type": "string",
-              "minLength": 2
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "assignmentManifestHash": {
-          "anyOf": [
-            {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "workSlotsCanonicalJson": {
-          "type": "string",
-          "minLength": 2
-        },
-        "sourceRunId": {
+        "workSlotId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 256,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
         },
-        "sourceRunAttempt": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        "terminalState": {
+          "enum": ["exhausted", "cancelled"]
+        },
+        "reasonCode": {
+          "enum": ["deadline_reached", "attempt_budget_exhausted"]
         }
-      },
-      "allOf": [
-        {
-          "oneOf": [
-            {
-              "required": [
-                "assignmentManifestCanonicalJson",
-                "assignmentManifestHash"
-              ],
-              "properties": {
-                "assignmentManifestCanonicalJson": {
-                  "type": "string",
-                  "minLength": 2
-                },
-                "assignmentManifestHash": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                }
-              }
-            },
-            {
-              "required": [
-                "assignmentManifestCanonicalJson",
-                "assignmentManifestHash"
-              ],
-              "properties": {
-                "assignmentManifestCanonicalJson": {
-                  "type": "null"
-                },
-                "assignmentManifestHash": {
-                  "type": "null"
-                }
-              }
-            }
-          ]
-        }
-      ]
+      }
     },
     {
       "oneOf": [
@@ -190,13 +114,11 @@
               "properties": {
                 "status": {
                   "enum": [
-                    "admitted",
+                    "applied",
                     "restored",
-                    "admission_deferred",
-                    "stale_revision",
-                    "authorization_rejected",
-                    "idempotency_conflict",
-                    "concurrency_conflict"
+                    "rejected",
+                    "conflict",
+                    "missing"
                   ]
                 },
                 "executionId": {
@@ -212,11 +134,13 @@
                     }
                   ]
                 },
-                "generation": {
+                "workSlotId": {
                   "anyOf": [
                     {
                       "type": "string",
-                      "pattern": "^(0|[1-9][0-9]*)$"
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
                     },
                     {
                       "type": "null"
@@ -228,28 +152,6 @@
                     {
                       "type": "string",
                       "pattern": "^(0|[1-9][0-9]*)$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "executionVersion": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "pattern": "^(0|[1-9][0-9]*)$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "executionCanonicalJson": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 2
                     },
                     {
                       "type": "null"

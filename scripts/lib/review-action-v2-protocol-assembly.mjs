@@ -6,6 +6,7 @@ export const reviewActionV2BaseOperationOrder = Object.freeze([
   "review_execution_restore",
   "review_execution_start",
   "review_execution_supersede",
+  "review_execution_work_slot_terminalize",
   "review_execution_observation_attach",
   "review_execution_observation_adopt",
   "review_execution_finalize",
@@ -42,18 +43,18 @@ export const reviewInvestigationExtensionV1OperationOrder = Object.freeze([
 ]);
 
 export const reviewActionV2OperationOrder = Object.freeze([
-  ...reviewActionV2BaseOperationOrder.slice(0, 9),
+  ...reviewActionV2BaseOperationOrder.slice(0, 10),
   "review_investigation_open_v2",
-  ...reviewActionV2BaseOperationOrder.slice(9, 11),
+  ...reviewActionV2BaseOperationOrder.slice(10, 12),
   "review_investigation_lease_acquire",
   "review_investigation_lease_renew",
   "review_investigation_lease_release",
-  ...reviewActionV2BaseOperationOrder.slice(11, 15),
+  ...reviewActionV2BaseOperationOrder.slice(12, 16),
   "review_investigation_replay_v2",
-  ...reviewActionV2BaseOperationOrder.slice(15, 21),
+  ...reviewActionV2BaseOperationOrder.slice(16, 22),
   "review_investigation_context_gateway_open",
   "review_investigation_context_gateway_seal",
-  ...reviewActionV2BaseOperationOrder.slice(21),
+  ...reviewActionV2BaseOperationOrder.slice(22),
 ]);
 
 export const reviewInvestigationExtensionV1Id =

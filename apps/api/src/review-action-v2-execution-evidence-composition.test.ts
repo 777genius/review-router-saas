@@ -28,6 +28,7 @@ import {
   ReviewCoverageState,
   ReviewExecutionProviderKind,
   ReviewExecutionFinalizeStatus,
+  ReviewExecutionLifecycleTransitionStatus,
   ReviewExecutionState,
   ReviewInvocationLeasePurpose,
   ReviewInvocationLeaseState,
@@ -36,6 +37,9 @@ import {
   ReviewObservationAttachmentStatus,
   ReviewTaskKind,
   ReviewWorkSlotState,
+  StartReviewExecutionStatus,
+  canonicalReviewAssignmentManifestHashPreimage,
+  canonicalReviewExecutionPlanHashPreimage,
   type ReviewExecutionSnapshot,
   type FinalizedReviewProjectionArtifact,
   type InvocationFlight,
@@ -57,6 +61,8 @@ import {
   ReviewEvidenceCommitResultStatus,
   ReviewExecutionMutationResultStatus,
   ReviewInvocationLeaseResultStatus,
+  ReviewWorkSlotTerminalReason,
+  ReviewWorkSlotTerminalState,
   reviewActionV2PublishedProtocolVersion,
   reviewActionV2PublishedSchemaDigest,
   type ReviewExecutionObservationAttachRequest,
@@ -114,6 +120,114 @@ describe("Review Action v2 execution/evidence composition", () => {
       ),
     ).rejects.toMatchObject({ statusCode: 403 });
     expect(d.executions.startReviewExecution.execute).not.toHaveBeenCalled();
+  });
+
+  it("validates and binds a canonical assignment manifest before starting", async () => {
+    const d = executionDependencies();
+    const handlers = createReviewActionV2ExecutionHandlers(d);
+    const sourceSlot = snapshot.execution.workSlots[0]!;
+    const workSlots = [
+      {
+        workSlotId: sourceSlot.workSlotId,
+        taskKind: sourceSlot.taskKind,
+        providerKind: sourceSlot.providerKind,
+        providerVoteIdentityHash: sourceSlot.providerVoteIdentityHash,
+        shardKey: sourceSlot.shardKey,
+        required: sourceSlot.required,
+        attemptBudget: sourceSlot.attemptBudget,
+        retryPolicyVersion: sourceSlot.retryPolicyVersion,
+      },
+    ];
+    const workSlotsCanonicalJson = canonicalJson(workSlots);
+    const assignmentManifestCanonicalJson = canonicalJson({
+      manifestVersion: 1,
+      assignments: [{ workSlotId: "slot-1", paths: ["src/a.ts"] }],
+      eligiblePaths: ["src/a.ts", "src/b.ts"],
+      uncoveredPaths: ["src/b.ts"],
+      excludedPaths: ["generated/out.ts"],
+    });
+    const assignmentManifestHash = await digest.digestUtf8(
+      canonicalReviewAssignmentManifestHashPreimage(
+        assignmentManifestCanonicalJson,
+      ),
+    );
+    const planHash = await digest.digestUtf8(
+      canonicalReviewExecutionPlanHashPreimage({
+        assignmentManifestHash,
+        compatibilityKey: hash("1"),
+        reviewRevisionHash: authorization.reviewRevisionHash,
+        workSlots,
+      }),
+    );
+    await expect(
+      handlers.start.execute(
+        await startRequest({
+          workSlotsCanonicalJson,
+          assignmentManifestCanonicalJson,
+          assignmentManifestHash,
+          planHash,
+        }),
+      ),
+    ).resolves.toMatchObject({ result: { status: "admitted" } });
+    expect(d.executions.startReviewExecution.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        assignmentManifestCanonicalJson,
+        assignmentManifestHash,
+        planHash,
+      }),
+    );
+    await expect(
+      handlers.start.execute(
+        await startRequest({
+          workSlotsCanonicalJson,
+          assignmentManifestCanonicalJson,
+          assignmentManifestHash: hash("f"),
+          planHash,
+        }),
+      ),
+    ).rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it("terminalizes only the active generation and forwards the safe reason pair", async () => {
+    const terminalizeWorkSlot = vi.fn(async () => ({
+      status: ReviewExecutionLifecycleTransitionStatus.Applied,
+      snapshot,
+    }));
+    const d = executionDependencies();
+    d.executions.executionLifecycle.terminalizeWorkSlot = terminalizeWorkSlot;
+    const handlers = createReviewActionV2ExecutionHandlers(d);
+    const request = {
+      ...envelope("terminalize-1"),
+      authorizationToken: "authorization-token",
+      idempotencyKey: "terminalize-idempotency",
+      requestBodyHash: hash("0"),
+      executionId: snapshot.execution.executionId,
+      generation: snapshot.execution.generation.toString(10),
+      reviewRevisionHash: authorization.reviewRevisionHash,
+      workSlotId: "slot-1",
+      terminalState: ReviewWorkSlotTerminalState.Exhausted,
+      reasonCode: ReviewWorkSlotTerminalReason.AttemptBudgetExhausted,
+    };
+    const signed = await withBodyHash(
+      ReviewActionV2OperationId.ReviewExecutionWorkSlotTerminalize,
+      request,
+    );
+    await expect(
+      handlers.terminalizeWorkSlot.execute(signed),
+    ).resolves.toMatchObject({
+      result: {
+        status: ReviewExecutionMutationResultStatus.Applied,
+        workSlotId: "slot-1",
+      },
+    });
+    expect(terminalizeWorkSlot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        generation: snapshot.execution.generation,
+        reviewRevisionHash: authorization.reviewRevisionHash,
+        workSlotId: "slot-1",
+        terminalState: ReviewWorkSlotState.Exhausted,
+      }),
+    );
   });
 
   it("verifies signed capabilities fail-closed and rejects tampering", async () => {
@@ -1495,7 +1609,12 @@ function executionDependencies(
       ...(overrides.findLease ? { findLease: overrides.findLease } : {}),
     },
     executions: {
-      startReviewExecution: { execute: vi.fn() },
+      startReviewExecution: {
+        execute: vi.fn(async () => ({
+          status: StartReviewExecutionStatus.Admitted,
+          snapshot,
+        })),
+      },
       invocationFlights: {
         execute: overrides.acquire ?? vi.fn(),
       },
@@ -1513,6 +1632,8 @@ function executionDependencies(
       executionLifecycle: {
         supersede: vi.fn(),
         failAbandonedPrepared: vi.fn(),
+        terminalizeWorkSlot: vi.fn(),
+        failExpiredRunning: vi.fn(),
       },
       requestedIntents: {} as never,
       currentRevision: {
@@ -1753,6 +1874,8 @@ async function startRequest(
     reviewRevisionHash: authorization.reviewRevisionHash,
     compatibilityKey: hash("1"),
     planHash: hash("9"),
+    assignmentManifestCanonicalJson: null,
+    assignmentManifestHash: null,
     workSlotsCanonicalJson: "[]",
     sourceRunId: authorization.sourceRunId,
     sourceRunAttempt: authorization.sourceRunAttempt,

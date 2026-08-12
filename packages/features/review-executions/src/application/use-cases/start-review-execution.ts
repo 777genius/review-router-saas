@@ -66,6 +66,8 @@ export type StartReviewExecutionInput = {
   readonly authorizationId: string;
   readonly compatibilityKey: string;
   readonly planHash: string;
+  readonly assignmentManifestCanonicalJson?: string | null;
+  readonly assignmentManifestHash?: string | null;
   readonly workSlots: readonly ReviewWorkSlotPlan[];
   readonly sourceRunId: string;
   readonly sourceRunAttempt: string;
@@ -141,6 +143,9 @@ export class StartReviewExecution {
       revision: authorization.revision,
       planHash: input.planHash,
       canonicalPlan,
+      assignmentManifestCanonicalJson:
+        input.assignmentManifestCanonicalJson ?? null,
+      assignmentManifestHash: input.assignmentManifestHash ?? null,
     });
     const [startIdentityHash, canonicalStartHash] = await Promise.all([
       this.digest.digestUtf8(startPreimage),
@@ -172,6 +177,11 @@ export class StartReviewExecution {
         admissionSafetyDecisionHash: authorization.admissionSafetyDecisionHash,
         compatibilityKey: input.compatibilityKey,
         planHash: input.planHash,
+        assignmentManifestVersion:
+          input.assignmentManifestCanonicalJson == null ? null : 1,
+        assignmentManifestHash: input.assignmentManifestHash ?? null,
+        assignmentManifestCanonicalJson:
+          input.assignmentManifestCanonicalJson ?? null,
         workSlots: input.workSlots,
         limits: authorization.limits,
         sourceRunId: input.sourceRunId,

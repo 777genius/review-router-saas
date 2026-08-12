@@ -504,7 +504,12 @@ export function composeReviewActionV2ProductionRoutes(input: {
       ),
   } as const;
 
-  const executionStore = new PrismaReviewExecutionStore(input.prisma);
+  const executionStore = new PrismaReviewExecutionStore(input.prisma, {
+    progressCaptureEnabled:
+      input.env.REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE === "1",
+    progressFileCoverageEnabled:
+      input.env.REVIEW_ROUTER_PROGRESS_FILE_COVERAGE === "1",
+  });
   const currentRevision = new ProductionCurrentReviewRevisionAdapter({
     prisma: input.prisma,
     identities: repositories.repositoryIdentities,

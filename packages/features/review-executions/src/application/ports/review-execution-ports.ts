@@ -10,6 +10,10 @@ import type {
   ReviewRevision,
   ReviewWorkSlotPlan,
 } from "../../domain/review-execution";
+import {
+  ReviewWorkSlotState,
+  ReviewWorkSlotTerminalReason,
+} from "../../domain/review-execution";
 
 export enum ReviewExecutionPrepareStatus {
   Prepared = "prepared",
@@ -94,6 +98,9 @@ export type PrepareReviewExecutionCommand = {
   readonly admissionSafetyDecisionHash: string;
   readonly compatibilityKey: string;
   readonly planHash: string;
+  readonly assignmentManifestVersion?: 1 | null;
+  readonly assignmentManifestHash?: string | null;
+  readonly assignmentManifestCanonicalJson?: string | null;
   readonly workSlots: readonly ReviewWorkSlotPlan[];
   readonly limits: ReviewExecutionLimits;
   readonly sourceRunId: string;
@@ -263,6 +270,26 @@ export type FailAbandonedPreparedExecutionCommand = {
   readonly now: Date;
 };
 
+export type TerminalizeReviewWorkSlotCommand = {
+  readonly scope: ReviewExecutionScope;
+  readonly executionId: string;
+  readonly generation: bigint;
+  readonly reviewRevisionHash: string;
+  readonly workSlotId: string;
+  readonly terminalState:
+    | ReviewWorkSlotState.Exhausted
+    | ReviewWorkSlotState.Cancelled;
+  readonly reasonCode: ReviewWorkSlotTerminalReason;
+  readonly now: Date;
+};
+
+export type FailExpiredRunningExecutionCommand = {
+  readonly scope: ReviewExecutionScope;
+  readonly executionId: string;
+  readonly expectedStreamVersion: bigint;
+  readonly now: Date;
+};
+
 export type ReviewExecutionPrepareResult = {
   readonly status: ReviewExecutionPrepareStatus;
   readonly snapshot?: ReviewExecutionSnapshot | undefined;
@@ -301,6 +328,10 @@ export type ReviewExecutionLifecycleTransitionResult = {
 };
 
 export interface ReviewExecutionQueryPort {
+  listExpiredRunning(input: {
+    readonly now: Date;
+    readonly limit: number;
+  }): Promise<readonly ReviewExecutionSnapshot[]>;
   findStream(
     scope: ReviewExecutionScope,
   ): Promise<ReviewExecutionStream | null>;
@@ -349,6 +380,12 @@ export interface ReviewExecutionCommandPort {
   ): Promise<ReviewExecutionLifecycleTransitionResult>;
   failAbandonedPreparedExecution(
     command: FailAbandonedPreparedExecutionCommand,
+  ): Promise<ReviewExecutionLifecycleTransitionResult>;
+  terminalizeWorkSlot(
+    command: TerminalizeReviewWorkSlotCommand,
+  ): Promise<ReviewExecutionLifecycleTransitionResult>;
+  failExpiredRunningExecution(
+    command: FailExpiredRunningExecutionCommand,
   ): Promise<ReviewExecutionLifecycleTransitionResult>;
 }
 

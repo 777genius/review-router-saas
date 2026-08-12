@@ -300,6 +300,14 @@ export const reviewActionV2TransportContract = Object.freeze({
             commonCommandErrors,
           ],
           [
+            "review_execution_work_slot_terminalize",
+            "/api/action/v2/review-executions/work-slots/terminalize",
+            10_000,
+            32_768,
+            [200],
+            commonCommandErrors,
+          ],
+          [
             "review_execution_observation_attach",
             "/api/action/v2/review-executions/observations/attach",
             10_000,

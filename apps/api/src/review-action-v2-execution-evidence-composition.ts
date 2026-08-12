@@ -32,7 +32,13 @@ import {
   ReviewObservationAttachmentKind,
   ReviewObservationAttachmentStatus,
   ReviewTaskKind,
+  ReviewWorkSlotState,
+  ReviewWorkSlotTerminalReason as DomainWorkSlotTerminalReason,
   StartReviewExecutionStatus,
+  canonicalReviewAssignmentManifestHashPreimage,
+  canonicalReviewExecutionPlanHashPreimage,
+  reviewAssignmentManifestMaxBytes,
+  validateReviewAssignmentManifest,
   type ReviewExecution,
   type ReviewExecutionLimits,
   type ReviewExecutionObservationRef,
@@ -67,6 +73,8 @@ import {
   ReviewExecutionRestoreResultStatus,
   ReviewExecutionStartResultStatus,
   ReviewInvocationLeaseResultStatus,
+  ReviewWorkSlotTerminalReason,
+  ReviewWorkSlotTerminalState,
   type ReviewActionV2RequestMap,
   type ReviewEvidenceCommitRequest,
   type ReviewEvidenceLookupRequest,
@@ -76,6 +84,7 @@ import {
   type ReviewExecutionRestoreRequest,
   type ReviewExecutionStartRequest,
   type ReviewExecutionSupersedeRequest,
+  type ReviewExecutionWorkSlotTerminalizeRequest,
   type ReviewInvocationLeaseAcquireRequest,
   type ReviewInvocationLeaseReleaseRequest,
   type ReviewInvocationLeaseRenewRequest,
@@ -220,6 +229,10 @@ export function createReviewActionV2ExecutionHandlers(
     supersede: enabled((request: ReviewExecutionSupersedeRequest) =>
       supersedeExecution(request, d),
     ),
+    terminalizeWorkSlot: enabled(
+      (request: ReviewExecutionWorkSlotTerminalizeRequest) =>
+        terminalizeWorkSlot(request, d),
+    ),
     attachObservation: enabled(
       (request: ReviewExecutionObservationAttachRequest) =>
         attachObservation(request, d),
@@ -339,6 +352,15 @@ async function startExecution(
   );
   await executionLimits(authorization, d);
   const workSlots = parseWorkSlots(request.workSlotsCanonicalJson);
+  const assignmentManifest = await validateAssignmentManifest(
+    request.assignmentManifestCanonicalJson,
+    request.assignmentManifestHash,
+    request.planHash,
+    request.compatibilityKey,
+    request.reviewRevisionHash,
+    workSlots,
+    d.digest,
+  );
   const now = d.now();
   const outcome = await d.executions.startReviewExecution.execute({
     scope: toExecutionScope(authorization),
@@ -346,6 +368,8 @@ async function startExecution(
     authorizationId: authorization.authorizationId,
     compatibilityKey: request.compatibilityKey,
     planHash: request.planHash,
+    assignmentManifestCanonicalJson: assignmentManifest?.canonicalJson ?? null,
+    assignmentManifestHash: assignmentManifest?.hash ?? null,
     workSlots,
     sourceRunId: request.sourceRunId,
     sourceRunAttempt: request.sourceRunAttempt,
@@ -363,6 +387,77 @@ async function startExecution(
       ...(outcome.snapshot ? executionResult(outcome.snapshot) : {}),
     },
   };
+}
+
+async function validateAssignmentManifest(
+  canonicalManifest: string | null,
+  manifestHash: string | null,
+  planHash: string,
+  compatibilityKey: string,
+  reviewRevisionHash: string,
+  workSlots: readonly ReviewWorkSlotPlan[],
+  digest: Pick<ReviewActionV2DigestPort, "digestUtf8">,
+): Promise<Readonly<{ canonicalJson: string; hash: string }> | null> {
+  if (canonicalManifest === null && manifestHash === null) return null;
+  if (canonicalManifest === null || manifestHash === null) {
+    throw failure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "assignment_manifest_fields_incomplete",
+    );
+  }
+  if (
+    new TextEncoder().encode(canonicalManifest).byteLength >
+    reviewAssignmentManifestMaxBytes
+  ) {
+    throw failure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "assignment_manifest_too_large",
+    );
+  }
+  let manifest: ReturnType<typeof validateReviewAssignmentManifest>;
+  try {
+    manifest = validateReviewAssignmentManifest(
+      parseCanonicalJson(canonicalManifest, "assignment_manifest_invalid"),
+      workSlots.map((slot) => slot.workSlotId),
+    );
+  } catch {
+    throw failure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "assignment_manifest_invalid",
+    );
+  }
+  if (canonicalJson(manifest) !== canonicalManifest) {
+    throw failure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "assignment_manifest_not_canonical",
+    );
+  }
+  const expectedManifestHash = await digest.digestUtf8(
+    canonicalReviewAssignmentManifestHashPreimage(canonicalManifest),
+  );
+  requireEqual(
+    manifestHash,
+    expectedManifestHash,
+    "assignment_manifest_hash_mismatch",
+  );
+  const expectedPlanHash = await digest.digestUtf8(
+    canonicalReviewExecutionPlanHashPreimage({
+      assignmentManifestHash: manifestHash,
+      compatibilityKey,
+      reviewRevisionHash,
+      workSlots,
+    }),
+  );
+  requireEqual(
+    planHash,
+    expectedPlanHash,
+    "assignment_manifest_plan_hash_mismatch",
+  );
+  return { canonicalJson: canonicalManifest, hash: manifestHash };
 }
 
 async function supersedeExecution(
@@ -402,6 +497,58 @@ async function supersedeExecution(
       request.executionId,
       result.snapshot ?? snapshot,
     ),
+  };
+}
+
+async function terminalizeWorkSlot(
+  request: ReviewExecutionWorkSlotTerminalizeRequest,
+  d: ReviewActionV2ExecutionHandlerDependencies,
+) {
+  await assertBodyHash(
+    ReviewActionV2OperationId.ReviewExecutionWorkSlotTerminalize,
+    request,
+    d.digest,
+  );
+  const authorization = await requireAuthorization(
+    request.authorizationToken,
+    d,
+  );
+  requireEqual(
+    request.reviewRevisionHash,
+    authorization.reviewRevisionHash,
+    "revision_scope_mismatch",
+  );
+  const snapshot = await requireExecution(
+    request.executionId,
+    authorization,
+    d.executionQueries,
+  );
+  const result = await d.executions.executionLifecycle.terminalizeWorkSlot({
+    scope: toExecutionScope(authorization),
+    executionId: request.executionId,
+    generation: decimal(request.generation),
+    reviewRevisionHash: request.reviewRevisionHash,
+    workSlotId: request.workSlotId,
+    terminalState:
+      request.terminalState === ReviewWorkSlotTerminalState.Exhausted
+        ? ReviewWorkSlotState.Exhausted
+        : ReviewWorkSlotState.Cancelled,
+    reasonCode:
+      request.reasonCode === ReviewWorkSlotTerminalReason.AttemptBudgetExhausted
+        ? DomainWorkSlotTerminalReason.AttemptBudgetExhausted
+        : DomainWorkSlotTerminalReason.DeadlineReached,
+    now: d.now(),
+  });
+  return {
+    statusCode: 200 as const,
+    result: {
+      ...mutationResult(
+        result.status,
+        request.executionId,
+        result.snapshot ?? snapshot,
+      ),
+      workSlotId: request.workSlotId,
+    },
   };
 }
 

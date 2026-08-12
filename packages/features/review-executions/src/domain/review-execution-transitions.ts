@@ -5,6 +5,7 @@ import {
   ReviewInvocationLeaseState,
   ReviewObservationAttachmentKind,
   ReviewWorkSlotState,
+  ReviewWorkSlotTerminalReason,
   assertDate,
   assertFinalizationEnvelope,
   assertIdentifier,
@@ -92,6 +93,9 @@ export type PrepareExecutionTransitionInput = {
   readonly admissionSafetyDecisionHash: string;
   readonly compatibilityKey: string;
   readonly planHash: string;
+  readonly assignmentManifestVersion?: 1 | null;
+  readonly assignmentManifestHash?: string | null;
+  readonly assignmentManifestCanonicalJson?: string | null;
   readonly workSlots: readonly ReviewWorkSlotPlan[];
   readonly limits: ReviewExecutionLimits;
   readonly sourceRunId: string;
@@ -122,6 +126,10 @@ export function decideExecutionPreparation(
     state: ReviewExecutionState.Planned,
     compatibilityKey: input.compatibilityKey,
     planHash: input.planHash,
+    assignmentManifestVersion: input.assignmentManifestVersion ?? null,
+    assignmentManifestHash: input.assignmentManifestHash ?? null,
+    assignmentManifestCanonicalJson:
+      input.assignmentManifestCanonicalJson ?? null,
     protocolLimitsProfileId: input.limits.profileId,
     sourceRunId: input.sourceRunId,
     sourceRunAttempt: input.sourceRunAttempt,
@@ -1266,6 +1274,132 @@ export function decideAbandonedPreparationFailure(input: {
       updatedAt: new Date(input.now),
     },
     revokedLeases: [],
+  };
+}
+
+export enum WorkSlotTerminalizationDecisionStatus {
+  Applied = "applied",
+  Restored = "restored",
+  NotEligible = "not_eligible",
+  Conflict = "conflict",
+}
+
+export function decideWorkSlotTerminalization(input: {
+  readonly stream: ReviewExecutionStream;
+  readonly execution: ReviewExecution;
+  readonly workSlotId: string;
+  readonly terminalState:
+    | ReviewWorkSlotState.Exhausted
+    | ReviewWorkSlotState.Cancelled;
+  readonly reasonCode: ReviewWorkSlotTerminalReason;
+  readonly generation: bigint;
+  readonly reviewRevisionHash: string;
+  readonly now: Date;
+}) {
+  assertDate(input.now, "work_slot_terminalized_at");
+  const slot = input.execution.workSlots.find(
+    (candidate) => candidate.workSlotId === input.workSlotId,
+  );
+  if (slot === undefined) {
+    return {
+      status: WorkSlotTerminalizationDecisionStatus.NotEligible,
+    } as const;
+  }
+  const validPair =
+    (input.terminalState === ReviewWorkSlotState.Exhausted &&
+      input.reasonCode ===
+        ReviewWorkSlotTerminalReason.AttemptBudgetExhausted) ||
+    (input.terminalState === ReviewWorkSlotState.Cancelled &&
+      input.reasonCode === ReviewWorkSlotTerminalReason.DeadlineReached);
+  if (!validPair) {
+    return { status: WorkSlotTerminalizationDecisionStatus.Conflict } as const;
+  }
+  if (
+    input.execution.generation !== input.generation ||
+    input.execution.revision.reviewRevisionHash !== input.reviewRevisionHash ||
+    input.stream.activeExecutionId !== input.execution.executionId ||
+    input.execution.state !== ReviewExecutionState.Running ||
+    input.stream.currentRevision === null ||
+    !reviewRevisionsEqual(
+      input.stream.currentRevision,
+      input.execution.revision,
+    )
+  ) {
+    return {
+      status: WorkSlotTerminalizationDecisionStatus.NotEligible,
+    } as const;
+  }
+  if (slot.state === input.terminalState) {
+    return {
+      status: WorkSlotTerminalizationDecisionStatus.Restored,
+      execution: input.execution,
+    } as const;
+  }
+  if (
+    slot.state === ReviewWorkSlotState.Satisfied ||
+    slot.state === ReviewWorkSlotState.Exhausted ||
+    slot.state === ReviewWorkSlotState.Cancelled ||
+    slot.activeLeaseId !== null
+  ) {
+    return { status: WorkSlotTerminalizationDecisionStatus.Conflict } as const;
+  }
+  return {
+    status: WorkSlotTerminalizationDecisionStatus.Applied,
+    execution: replaceExecutionSlot(
+      input.execution,
+      { ...slot, state: input.terminalState, activeLeaseId: null },
+      input.now,
+    ),
+  } as const;
+}
+
+export function decideExpiredRunningExecutionFailure(input: {
+  readonly stream: ReviewExecutionStream;
+  readonly execution: ReviewExecution;
+  readonly activeLeases: readonly ReviewInvocationLease[];
+  readonly now: Date;
+}): ExecutionLifecycleDecision {
+  assertDate(input.now, "execution_expiry_now");
+  if (input.execution.state === ReviewExecutionState.Failed) {
+    return unchangedLifecycle(ExecutionLifecycleDecisionStatus.Restored, input);
+  }
+  if (
+    input.execution.state !== ReviewExecutionState.Running ||
+    input.stream.activeExecutionId !== input.execution.executionId ||
+    input.execution.executionDeadlineAt > input.now
+  ) {
+    return unchangedLifecycle(
+      ExecutionLifecycleDecisionStatus.NotEligible,
+      input,
+    );
+  }
+  return {
+    status: ExecutionLifecycleDecisionStatus.Applied,
+    execution: {
+      ...input.execution,
+      version: input.execution.version + 1n,
+      state: ReviewExecutionState.Failed,
+      workSlots: input.execution.workSlots.map((slot) =>
+        slot.state === ReviewWorkSlotState.Satisfied
+          ? slot
+          : {
+              ...slot,
+              state: ReviewWorkSlotState.Cancelled,
+              activeLeaseId: null,
+            },
+      ),
+      updatedAt: new Date(input.now),
+    },
+    stream: {
+      ...input.stream,
+      version: input.stream.version + 1n,
+      activeExecutionId: null,
+      updatedAt: new Date(input.now),
+    },
+    revokedLeases: revokeActiveLeases(
+      input.activeLeases,
+      input.execution.executionId,
+    ),
   };
 }
 

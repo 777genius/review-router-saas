@@ -2,6 +2,9 @@ export const reviewExecutionAbsoluteMaxWorkSlots = 256;
 export const reviewExecutionAbsoluteMaxAttemptBudget = 32;
 export const reviewExecutionAbsoluteMaxProjectionBytes = 2 * 1024 * 1024;
 export const reviewExecutionAbsoluteMaxFindingCount = 2_000;
+export const reviewAssignmentManifestMaxBytes = 512 * 1024;
+export const reviewAssignmentManifestMaxPaths = 4_096;
+export const reviewAssignmentManifestMaxPathLength = 1_024;
 
 export enum ReviewExecutionProviderKind {
   Codex = "codex",
@@ -29,6 +32,11 @@ export enum ReviewWorkSlotState {
   Satisfied = "satisfied",
   Exhausted = "exhausted",
   Cancelled = "cancelled",
+}
+
+export enum ReviewWorkSlotTerminalReason {
+  DeadlineReached = "deadline_reached",
+  AttemptBudgetExhausted = "attempt_budget_exhausted",
 }
 
 export enum ReviewInvocationLeasePurpose {
@@ -109,6 +117,17 @@ export type ReviewWorkSlot = ReviewWorkSlotPlan & {
   readonly nextAttemptOrdinal: number;
 };
 
+export type ReviewAssignmentManifest = Readonly<{
+  manifestVersion: 1;
+  assignments: readonly Readonly<{
+    workSlotId: string;
+    paths: readonly string[];
+  }>[];
+  eligiblePaths: readonly string[];
+  uncoveredPaths: readonly string[];
+  excludedPaths: readonly string[];
+}>;
+
 export type ReviewExecutionStream = ReviewExecutionScope & {
   readonly version: bigint;
   readonly activeExecutionId: string | null;
@@ -132,6 +151,9 @@ export type ReviewExecution = ReviewExecutionScope & {
   readonly state: ReviewExecutionState;
   readonly compatibilityKey: string;
   readonly planHash: string;
+  readonly assignmentManifestVersion?: 1 | null;
+  readonly assignmentManifestHash?: string | null;
+  readonly assignmentManifestCanonicalJson?: string | null;
   readonly protocolLimitsProfileId: string;
   readonly sourceRunId: string;
   readonly sourceRunAttempt: string;
@@ -324,13 +346,207 @@ export function canonicalReviewExecutionPlanPreimage(
   );
 }
 
+export function canonicalReviewExecutionPlanHashPreimage(input: {
+  readonly assignmentManifestHash: string;
+  readonly compatibilityKey: string;
+  readonly reviewRevisionHash: string;
+  readonly workSlots: readonly ReviewWorkSlotPlan[];
+}): string {
+  assertSha256(input.assignmentManifestHash, "assignment_manifest_hash");
+  assertSha256(input.compatibilityKey, "compatibility_key");
+  assertSha256(input.reviewRevisionHash, "review_revision_hash");
+  const canonicalEnvelope = canonicalObjectJson({
+    assignmentManifestHash: input.assignmentManifestHash,
+    compatibilityKey: input.compatibilityKey,
+    reviewRevisionHash: input.reviewRevisionHash,
+    workSlots: input.workSlots.map((slot) => ({
+      workSlotId: slot.workSlotId,
+      taskKind: slot.taskKind,
+      providerKind: slot.providerKind,
+      providerVoteIdentityHash: slot.providerVoteIdentityHash,
+      shardKey: slot.shardKey,
+      required: slot.required,
+      attemptBudget: slot.attemptBudget,
+      retryPolicyVersion: slot.retryPolicyVersion,
+    })),
+  });
+  return `rr.review-work-plan.v2\0${canonicalEnvelope}`;
+}
+
+function canonicalObjectJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalObjectJson).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const row = value as Record<string, unknown>;
+    return `{${Object.keys(row)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalObjectJson(row[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function canonicalReviewAssignmentManifestHashPreimage(
+  canonicalJson: string,
+): string {
+  return `rr.review-assignment-manifest.v1\0${canonicalJson}`;
+}
+
+export function validateReviewAssignmentManifest(
+  value: unknown,
+  knownWorkSlotIds: readonly string[],
+): ReviewAssignmentManifest {
+  const root = assignmentRecord(value, "assignment_manifest_invalid");
+  assignmentExactKeys(root, [
+    "manifestVersion",
+    "assignments",
+    "eligiblePaths",
+    "uncoveredPaths",
+    "excludedPaths",
+  ]);
+  if (root.manifestVersion !== 1 || !Array.isArray(root.assignments)) {
+    throw new Error("review_assignment_manifest_shape_invalid");
+  }
+  if (root.assignments.length > knownWorkSlotIds.length) {
+    throw new Error("review_assignment_manifest_assignment_count_invalid");
+  }
+  const knownSlots = new Set(knownWorkSlotIds);
+  const assignedSlots = new Set<string>();
+  const assignments = root.assignments.map((entry) => {
+    const assignment = assignmentRecord(
+      entry,
+      "review_assignment_manifest_assignment_invalid",
+    );
+    assignmentExactKeys(assignment, ["workSlotId", "paths"]);
+    if (
+      typeof assignment.workSlotId !== "string" ||
+      !knownSlots.has(assignment.workSlotId) ||
+      assignedSlots.has(assignment.workSlotId)
+    ) {
+      throw new Error("review_assignment_manifest_work_slot_invalid");
+    }
+    assignedSlots.add(assignment.workSlotId);
+    return {
+      workSlotId: assignment.workSlotId,
+      paths: assignmentPaths(assignment.paths),
+    };
+  });
+  assertCodePointSortedUnique(
+    assignments.map((assignment) => assignment.workSlotId),
+    "review_assignment_manifest_assignments_not_canonical",
+  );
+  const eligiblePaths = assignmentPaths(root.eligiblePaths);
+  const uncoveredPaths = assignmentPaths(root.uncoveredPaths);
+  const excludedPaths = assignmentPaths(root.excludedPaths);
+  const eligible = new Set(eligiblePaths);
+  for (const path of assignments.flatMap((assignment) => assignment.paths)) {
+    if (!eligible.has(path)) {
+      throw new Error("review_assignment_manifest_assignment_not_eligible");
+    }
+  }
+  for (const path of uncoveredPaths) {
+    if (!eligible.has(path)) {
+      throw new Error("review_assignment_manifest_uncovered_not_eligible");
+    }
+  }
+  for (const path of excludedPaths) {
+    if (eligible.has(path)) {
+      throw new Error("review_assignment_manifest_excluded_eligible_overlap");
+    }
+  }
+  const pathCount =
+    assignments.reduce(
+      (total, assignment) => total + assignment.paths.length,
+      0,
+    ) +
+    eligiblePaths.length +
+    uncoveredPaths.length +
+    excludedPaths.length;
+  if (pathCount > reviewAssignmentManifestMaxPaths) {
+    throw new Error("review_assignment_manifest_path_count_out_of_bounds");
+  }
+  return {
+    manifestVersion: 1,
+    assignments,
+    eligiblePaths,
+    uncoveredPaths,
+    excludedPaths,
+  };
+}
+
+function assignmentPaths(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.some((path) => typeof path !== "string")) {
+    throw new Error("review_assignment_manifest_paths_invalid");
+  }
+  const paths = value as string[];
+  assertCodePointSortedUnique(
+    paths,
+    "review_assignment_manifest_paths_not_canonical",
+  );
+  for (const path of paths) {
+    if (
+      path.length === 0 ||
+      path.length > reviewAssignmentManifestMaxPathLength ||
+      path.includes("\\") ||
+      path.includes("\0") ||
+      path.startsWith("/") ||
+      path
+        .split("/")
+        .some(
+          (segment) => segment === "" || segment === "." || segment === "..",
+        )
+    ) {
+      throw new Error("review_assignment_manifest_path_invalid");
+    }
+  }
+  return paths;
+}
+
+function assertCodePointSortedUnique(
+  values: readonly string[],
+  error: string,
+): void {
+  for (let index = 1; index < values.length; index += 1) {
+    if ((values[index - 1] as string) >= (values[index] as string)) {
+      throw new Error(error);
+    }
+  }
+}
+
+function assignmentRecord(
+  value: unknown,
+  error: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(error);
+  }
+  return value as Record<string, unknown>;
+}
+
+function assignmentExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): void {
+  const actual = Object.keys(value).sort();
+  const canonicalExpected = [...expected].sort();
+  if (
+    actual.length !== canonicalExpected.length ||
+    actual.some((key, index) => key !== canonicalExpected[index])
+  ) {
+    throw new Error("review_assignment_manifest_shape_invalid");
+  }
+}
+
 export function canonicalReviewExecutionStartPreimage(input: {
   readonly authorizationId: string;
   readonly revision: ReviewRevision;
   readonly planHash: string;
   readonly canonicalPlan: string;
+  readonly assignmentManifestCanonicalJson?: string | null;
+  readonly assignmentManifestHash?: string | null;
 }): string {
-  return [
+  const legacy = [
     "rr.review-execution-start.v1",
     input.authorizationId,
     input.revision.baseSha,
@@ -339,6 +555,24 @@ export function canonicalReviewExecutionStartPreimage(input: {
     input.revision.reviewRevisionHash,
     input.planHash,
     input.canonicalPlan,
+  ];
+  if (
+    input.assignmentManifestCanonicalJson === undefined ||
+    input.assignmentManifestCanonicalJson === null
+  ) {
+    return legacy.join("\0");
+  }
+  if (
+    input.assignmentManifestHash === undefined ||
+    input.assignmentManifestHash === null
+  ) {
+    throw new Error("review_assignment_manifest_fields_incomplete");
+  }
+  return [
+    "rr.review-execution-start.v2",
+    ...legacy.slice(1),
+    input.assignmentManifestHash,
+    input.assignmentManifestCanonicalJson,
   ].join("\0");
 }
 
