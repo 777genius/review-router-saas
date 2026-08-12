@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   createReleaseRollout,
   RolloutStep,
-  transitionFromObservation,
+  sha256Canonical,
+  type ActivationReceipt,
   type RunnerIdentity,
+  type StepReceipt,
 } from "./release-rollout";
 import {
   assembleTrustedRolloutEvidence,
@@ -24,7 +26,8 @@ const base = createReleaseRollout({
     actor: "operator",
     runId: "123",
     runAttempt: 1,
-    expectedJobName: "private-job",
+    roleJobName: "private-role-job",
+    cutoverJobName: "private-cutover-job",
   },
   source: {
     renderResourceId: "dpg-source",
@@ -45,6 +48,7 @@ const base = createReleaseRollout({
 });
 const steps = [
   RolloutStep.ClaimRollout,
+  RolloutStep.VerifyProtectedEnvironment,
   RolloutStep.FreezeProviderServices,
   RolloutStep.ProvisionRoleRunner,
   RolloutStep.CaptureSourceBackup,
@@ -61,23 +65,6 @@ const steps = [
   RolloutStep.ResumeTargetServices,
   RolloutStep.VerifyLiveCanary,
 ] as const;
-let rollout = base;
-steps.forEach((step, index) => {
-  rollout = transitionFromObservation(rollout, {
-    step,
-    observedAt: `2026-08-12T00:00:${String(index).padStart(2, "0")}.000Z`,
-    facts:
-      step === RolloutStep.ActivateTargetGeneration
-        ? {
-            firstWriteBoundary: true,
-            canonicalPrivilegesSha256: digest,
-            catalogFactsSha256: digest,
-            firstWriteReceiptSha256: digest,
-            transactionId: "42",
-          }
-        : { ok: true },
-  });
-});
 const runner = (job: string, name: string): RunnerIdentity => ({
   organization: "rr-control",
   repository: "rr-control/releases",
@@ -88,7 +75,10 @@ const runner = (job: string, name: string): RunnerIdentity => ({
   runId: "123",
   runAttempt: 1,
   workflowJobId: name === "role" ? "1" : "2",
-  workflowJobName: "private-job",
+  workflowJobName:
+    name === "role"
+      ? base.execution.roleJobName
+      : base.execution.cutoverJobName,
   commitSha: base.expectedCommitSha,
   runnerName: `rr-${name}`,
   cleanupCanary: `rr-cleanup:${base.rolloutId}:rr-${name}`,
@@ -101,6 +91,67 @@ const runner = (job: string, name: string): RunnerIdentity => ({
     commitSha: base.expectedCommitSha,
   },
 });
+let previousReceiptSha256 = `sha256:${"0".repeat(64)}`;
+const receipts = steps.map((step, index) => {
+  const provider =
+    step === RolloutStep.ProvisionRoleRunner
+      ? {
+          renderJobId: "job-role",
+          renderDeployId: "dep-pinned",
+          githubWorkflowJobId: "1",
+        }
+      : step === RolloutStep.ProvisionCutoverRunner
+        ? {
+            renderJobId: "job-cutover",
+            renderDeployId: "dep-pinned",
+            githubWorkflowJobId: "2",
+          }
+        : step === RolloutStep.CleanupRoleRunner
+          ? { renderJobId: "job-role" }
+          : step === RolloutStep.CleanupCutoverRunner
+            ? { renderJobId: "job-cutover" }
+            : step === RolloutStep.ResumeTargetServices
+              ? {
+                  renderServiceIds: ["srv-target"],
+                  renderDeployIds: ["dep-release"],
+                }
+              : undefined;
+  const common = {
+    step,
+    receiptId: `${base.rolloutId}:${step}:${index + 1}`,
+    observedAt: `2026-08-12T00:00:${String(index).padStart(2, "0")}.000Z`,
+    rolloutId: base.rolloutId,
+    expectedCommitSha: base.expectedCommitSha,
+    runId: base.execution.runId,
+    runAttempt: 1,
+    sourceSystemIdentifier: base.source.systemIdentifier,
+    targetSystemIdentifier: base.target.systemIdentifier,
+    provider,
+    observationSha256: digest,
+    previousReceiptSha256,
+  };
+  const unsigned =
+    step === RolloutStep.ActivateTargetGeneration
+      ? {
+          ...common,
+          step: RolloutStep.ActivateTargetGeneration,
+          canonicalPrivilegesSha256: digest,
+          catalogFactsSha256: digest,
+          transactionId: "42",
+          firstWriteReceiptSha256: digest,
+          firstWriteBoundary: true as const,
+        }
+      : common;
+  const receipt = {
+    ...unsigned,
+    receiptSha256: `sha256:${sha256Canonical(unsigned)}`,
+  } as StepReceipt;
+  previousReceiptSha256 = receipt.receiptSha256;
+  return receipt;
+});
+const activation = receipts.find(
+  (receipt) => receipt.step === RolloutStep.ActivateTargetGeneration,
+)! as ActivationReceipt;
 const create = () =>
   assembleTrustedRolloutEvidence({
     rolloutId: base.rolloutId,
@@ -163,9 +214,11 @@ const create = () =>
       streamingHash: true,
       maxProcessBufferBytes: 8 * 1024 * 1024,
     },
-    protectedEnvironmentPreflightSha256: digest,
-    receipts: rollout.receipts,
-    activation: rollout.activationReceipt!,
+    protectedEnvironmentPreflightSha256: receipts.find(
+      (receipt) => receipt.step === RolloutStep.VerifyProtectedEnvironment,
+    )!.observationSha256,
+    receipts,
+    activation,
     resumedTargetDeployIds: ["dep-release"],
     liveCanarySha256: digest,
     cleanups: [
@@ -230,6 +283,20 @@ describe("trusted post-cleanup evidence", () => {
           ...v.activation,
           targetSystemIdentifier: v.source.systemIdentifier,
         },
+      }),
+    ],
+    [
+      "resumed deploy transplant",
+      (v: TrustedRolloutEvidence) => ({
+        ...v,
+        resumedTargetDeployIds: ["dep-attacker"],
+      }),
+    ],
+    [
+      "protected preflight substitution",
+      (v: TrustedRolloutEvidence) => ({
+        ...v,
+        protectedEnvironmentPreflightSha256: `sha256:${"b".repeat(64)}`,
       }),
     ],
   ])("rejects %s", (_name, mutate) =>

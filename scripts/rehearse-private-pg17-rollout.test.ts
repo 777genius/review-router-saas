@@ -35,6 +35,9 @@ describe("disposable dual-version rehearsal", () => {
     );
     for (const required of [
       "ReleaseRolloutUseCases",
+      "executeCanonicalRoleBootstrap",
+      "executeCanonicalReleaseMigration",
+      "executePrivateGenerationActivation",
       "roleProvisioningSql",
       "runtimeGrantSql",
       "canonicalActivationSql",
@@ -45,5 +48,9 @@ describe("disposable dual-version rehearsal", () => {
     ])
       expect(source).toContain(required);
     expect(source).not.toContain("writersSuspended: true");
+    expect(source).not.toContain(
+      'command === "pnpm" && step === "deploy_migrations"',
+    );
+    expect(source).not.toContain("rehearsal_001");
   });
 });

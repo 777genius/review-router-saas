@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,15 +12,20 @@ import {
   completeCompensation,
   createReleaseRollout,
   ReleaseRolloutUseCases,
+  RedactedProcessCommandAdapter,
   RolloutStep,
   sha256Canonical,
   transitionFailure,
 } from "../packages/features/release-rollout/src/index.ts";
 import {
   canonicalActivationSql,
+  executeCanonicalReleaseMigration,
+  executeCanonicalRoleBootstrap,
   roleProvisioningSql,
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
+import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
+import { createSecureCanonicalRun } from "./private-pg17-secure-canonical.ts";
 
 const imagePattern =
   /^postgres:(16\.13|17(?:\.[0-9]+)?)-bookworm@sha256:[a-f0-9]{64}$/u;
@@ -47,6 +52,24 @@ function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
+const disposableSqlConfiguration = () => ({
+  roles: [
+    { role: "api", username: "reviewrouter_api", password: "disposable-api" },
+    { role: "web", username: "reviewrouter_web", password: "disposable-web" },
+    {
+      role: "worker",
+      username: "reviewrouter_worker",
+      password: "disposable-worker",
+    },
+    {
+      role: "effect-authority",
+      username: "reviewrouter_codex_effect_authority",
+      password: "disposable-effect",
+    },
+  ],
+  releasePassword: "disposable-release",
+});
+
 export async function executeDisposableRehearsal(
   env = process.env,
   execute = (args, options = {}) => {
@@ -55,8 +78,16 @@ export async function executeDisposableRehearsal(
       input: options.input,
       maxBuffer: 32 * 1024 * 1024,
     });
-    if (result.status !== 0)
-      throw new Error(`private_pg17_rehearsal_docker_failed:${args[0]}`);
+    if (result.status !== 0) {
+      const diagnostic = String(result.stderr ?? "")
+        .replace(/PASSWORD\s+'[^']*'/giu, "PASSWORD '[redacted]'")
+        .replace(/postgres(?:ql)?:\/\/[^\s]+/giu, "[redacted-database-url]")
+        .slice(0, 2_000)
+        .trim();
+      throw new Error(
+        `private_pg17_rehearsal_docker_failed:${args[0]}${diagnostic ? `:${diagnostic}` : ""}`,
+      );
+    }
     return result.stdout;
   },
 ) {
@@ -101,6 +132,8 @@ export async function executeDisposableRehearsal(
         network,
         "--network-alias",
         name,
+        "--publish",
+        "127.0.0.1::5432",
         "--env",
         `POSTGRES_PASSWORD=${password}`,
         "--env",
@@ -135,9 +168,71 @@ export async function executeDisposableRehearsal(
       !sql(target, "SHOW server_version_num").startsWith("170")
     )
       throw new Error("private_pg17_rehearsal_server_version_mismatch");
+    const publishedPort = (container) => {
+      const port = docker("port", container, "5432/tcp")
+        .trim()
+        .split(":")
+        .at(-1);
+      if (!port || !/^[1-9][0-9]*$/u.test(port))
+        throw new Error("private_pg17_rehearsal_published_port_invalid");
+      return port;
+    };
+    const sourcePort = publishedPort(source);
+    const targetPort = publishedPort(target);
+    const preReleasePrisma = join(directory, "pre-release-prisma");
+    cpSync(
+      join(process.cwd(), "packages/platform/db/prisma"),
+      preReleasePrisma,
+      {
+        recursive: true,
+      },
+    );
+    for (const migration of [
+      "000060_codex_oauth_setup_serialization",
+      "000061_codex_oauth_provider_mutation_fence",
+      "000062_codex_oauth_remote_outcome_unknown",
+      "000063_codex_oauth_setup_payload_claim",
+      "000064_codex_oauth_versioned_secret_namespaces",
+      "000065_codex_oauth_authority_acl_hardening",
+      "000066_codex_oauth_rotating_cascade_authority",
+    ])
+      rmSync(join(preReleasePrisma, "migrations", migration), {
+        recursive: true,
+      });
+    const preReleasePrismaConfig = join(directory, "prisma.config.mjs");
+    writeFileSync(
+      preReleasePrismaConfig,
+      `export default { schema: ${JSON.stringify(join(preReleasePrisma, "schema.prisma"))}, migrations: { path: ${JSON.stringify(join(preReleasePrisma, "migrations"))} }, datasource: { url: process.env.DATABASE_URL ?? "" } };\n`,
+      { mode: 0o600 },
+    );
+    const sourceMigration = spawnSync(
+      "pnpm",
+      [
+        "--filter",
+        "@reviewrouter/platform-db",
+        "exec",
+        "prisma",
+        "migrate",
+        "deploy",
+        "--config",
+        preReleasePrismaConfig,
+      ],
+      {
+        cwd: new URL("..", import.meta.url),
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          LANG: "C.UTF-8",
+          DATABASE_URL: `postgresql://postgres:${password}@127.0.0.1:${sourcePort}/reviewrouter?sslmode=disable`,
+        },
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
+    if (sourceMigration.status !== 0)
+      throw new Error("private_pg17_rehearsal_source_migration_failed");
     sql(
       source,
-      `COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE reviewrouter TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); CREATE TABLE "_prisma_migrations"(migration_name text PRIMARY KEY, checksum text NOT NULL); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three'); INSERT INTO "_prisma_migrations" VALUES ('rehearsal_001','${"b".repeat(64)}');`,
+      `COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE reviewrouter TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three');`,
     );
     sql(
       target,
@@ -227,32 +322,104 @@ export async function executeDisposableRehearsal(
     const targetSnapshot = sql(target, snapshotSql);
     if (sourceSnapshot !== targetSnapshot)
       throw new Error("private_pg17_rehearsal_equivalence_failed");
+    const configuration = disposableSqlConfiguration();
     sql(
       target,
-      `CREATE ROLE reviewrouter_api LOGIN; GRANT CONNECT ON DATABASE reviewrouter TO reviewrouter_api; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO reviewrouter_api; BEGIN; REVOKE CONNECT ON DATABASE reviewrouter FROM reviewrouter_api; REVOKE INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public FROM reviewrouter_api; CREATE TABLE "ReleaseGenerationActivationReceipt"("rolloutId" text PRIMARY KEY, "activatedAt" timestamptz NOT NULL DEFAULT transaction_timestamp()); COMMIT;`,
+      `CREATE ROLE reviewrouter_role_bootstrap LOGIN CREATEROLE PASSWORD 'disposable-bootstrap';
+       CREATE ROLE reviewrouter_api LOGIN PASSWORD 'disposable-api';
+       CREATE ROLE reviewrouter_web LOGIN PASSWORD 'disposable-web';
+       CREATE ROLE reviewrouter_worker LOGIN PASSWORD 'disposable-worker';
+       CREATE ROLE reviewrouter_codex_effect_authority LOGIN PASSWORD 'disposable-effect';
+       CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release';
+       ALTER DATABASE reviewrouter OWNER TO reviewrouter_role_bootstrap;
+       GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+       GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+       GRANT reviewrouter_worker TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+       GRANT reviewrouter_codex_effect_authority TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+       GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+       ALTER TABLE rehearsal_items OWNER TO reviewrouter_role_bootstrap;
+       ALTER SEQUENCE rehearsal_items_id_seq OWNER TO reviewrouter_role_bootstrap;
+       GRANT CREATE ON DATABASE reviewrouter TO reviewrouter_role_bootstrap;
+       DO $transfer$ DECLARE item record; BEGIN
+         FOR item IN SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proowner='postgres'::regrole LOOP
+           EXECUTE format('ALTER ROUTINE %s OWNER TO reviewrouter_role_bootstrap', item.oid::regprocedure);
+         END LOOP;
+         FOR item IN SELECT t.typname, t.typtype FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typowner='postgres'::regrole AND t.typtype IN ('d','e','m','r') LOOP
+           EXECUTE CASE WHEN item.typtype='d' THEN format('ALTER DOMAIN public.%I OWNER TO reviewrouter_role_bootstrap',item.typname) ELSE format('ALTER TYPE public.%I OWNER TO reviewrouter_role_bootstrap',item.typname) END;
+         END LOOP;
+       END $transfer$;
+       ALTER SCHEMA public OWNER TO reviewrouter_role_bootstrap;
+       SET ROLE reviewrouter_role_bootstrap;
+       CREATE EXTENSION IF NOT EXISTS pgcrypto;
+       RESET ROLE;
+       DO $extension_owners$ DECLARE item record; BEGIN
+         FOR item IN SELECT c.oid, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relowner='postgres'::regrole AND c.relkind IN ('r','p','v','m','S','f') AND (c.relkind <> 'S' OR NOT EXISTS (SELECT 1 FROM pg_depend dependency WHERE dependency.classid='pg_class'::regclass AND dependency.objid=c.oid AND dependency.refclassid='pg_class'::regclass AND dependency.deptype IN ('a','i'))) LOOP
+           EXECUTE CASE item.relkind WHEN 'S' THEN format('ALTER SEQUENCE %s OWNER TO reviewrouter_role_bootstrap',item.oid::regclass) WHEN 'v' THEN format('ALTER VIEW %s OWNER TO reviewrouter_role_bootstrap',item.oid::regclass) WHEN 'm' THEN format('ALTER MATERIALIZED VIEW %s OWNER TO reviewrouter_role_bootstrap',item.oid::regclass) WHEN 'f' THEN format('ALTER FOREIGN TABLE %s OWNER TO reviewrouter_role_bootstrap',item.oid::regclass) ELSE format('ALTER TABLE %s OWNER TO reviewrouter_role_bootstrap',item.oid::regclass) END;
+         END LOOP;
+         FOR item IN SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proowner='postgres'::regrole LOOP
+           EXECUTE format('ALTER ROUTINE %s OWNER TO reviewrouter_role_bootstrap', item.oid::regprocedure);
+         END LOOP;
+         FOR item IN SELECT t.typname, t.typtype FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typowner='postgres'::regrole AND t.typtype IN ('d','e','m','r') LOOP
+           EXECUTE CASE WHEN item.typtype='d' THEN format('ALTER DOMAIN public.%I OWNER TO reviewrouter_role_bootstrap',item.typname) ELSE format('ALTER TYPE public.%I OWNER TO reviewrouter_role_bootstrap',item.typname) END;
+         END LOOP;
+       END $extension_owners$;
+       COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"c".repeat(64)}"}';`,
     );
-    if (
-      sql(
+    const url = (username, password) =>
+      `postgresql://${username}:${password}@target.internal:${targetPort}/reviewrouter?sslmode=disable`;
+    const canonicalEnv = {
+      REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: url(
+        "reviewrouter_role_bootstrap",
+        "disposable-bootstrap",
+      ),
+      REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: url(
+        "reviewrouter_release_migration",
+        configuration.releasePassword,
+      ),
+      REVIEW_ROUTER_API_DATABASE_URL: url(
+        "reviewrouter_api",
+        configuration.roles[0].password,
+      ),
+      REVIEW_ROUTER_WEB_DATABASE_URL: url(
+        "reviewrouter_web",
+        configuration.roles[1].password,
+      ),
+      REVIEW_ROUTER_WORKER_DATABASE_URL: url(
+        "reviewrouter_worker",
+        configuration.roles[2].password,
+      ),
+      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: url(
+        "reviewrouter_codex_effect_authority",
+        configuration.roles[3].password,
+      ),
+      REVIEW_ROUTER_RELEASE_COMMIT_SHA: "d".repeat(40),
+      REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: sha256(sourceSnapshot),
+      REVIEW_ROUTER_ROLLOUT_ID: "disposable-rehearsal",
+      REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER: sql(
+        source,
+        "SELECT system_identifier::text FROM pg_control_system()",
+      ),
+      REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER: sql(
         target,
-        "SELECT has_table_privilege('reviewrouter_api','rehearsal_items','INSERT')",
-      ) !== "f"
-    )
-      throw new Error("private_pg17_rehearsal_acl_gate_open");
-    sql(
-      target,
-      `BEGIN; GRANT CONNECT ON DATABASE reviewrouter TO reviewrouter_api; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO reviewrouter_api; INSERT INTO "ReleaseGenerationActivationReceipt"("rolloutId") VALUES ('disposable-rehearsal'); COMMIT;`,
+        "SELECT system_identifier::text FROM pg_control_system()",
+      ),
+      REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256: "c".repeat(64),
+    };
+    execute(
+      [
+        "exec",
+        "--interactive",
+        target,
+        "psql",
+        "--username",
+        "reviewrouter_role_bootstrap",
+        "--dbname",
+        "reviewrouter",
+        "--no-psqlrc",
+        "--quiet",
+      ],
+      { input: roleProvisioningSql(configuration) },
     );
-    if (
-      sql(
-        target,
-        'SELECT count(*) FROM "ReleaseGenerationActivationReceipt" WHERE "rolloutId"=\'disposable-rehearsal\'',
-      ) !== "1" ||
-      sql(
-        target,
-        "SELECT has_table_privilege('reviewrouter_api','rehearsal_items','INSERT')",
-      ) !== "t"
-    )
-      throw new Error("private_pg17_rehearsal_activation_failed");
     const productionPath = await verifyProductionPathRehearsal({
       dumpSha256: sha256(dump),
       equivalenceSha256: sha256(sourceSnapshot),
@@ -264,7 +431,22 @@ export async function executeDisposableRehearsal(
         target,
         "SELECT system_identifier::text FROM pg_control_system()",
       ),
+      canonicalEnv,
+      targetPort,
     });
+    if (
+      sql(
+        target,
+        "SELECT count(*) FROM reviewrouter_bootstrap.release_generation_activation_receipt WHERE rollout_id='disposable-rehearsal'",
+      ) !== "1" ||
+      sql(
+        target,
+        "SELECT has_table_privilege('reviewrouter_api','rehearsal_items','INSERT')",
+      ) !== "t"
+    )
+      throw new Error("private_pg17_rehearsal_activation_failed");
+    if (!productionPath.duplicateActivationRejected)
+      throw new Error("private_pg17_rehearsal_duplicate_activation_accepted");
     return Object.freeze({
       schemaVersion: 1,
       disposable: true,
@@ -274,6 +456,7 @@ export async function executeDisposableRehearsal(
       equivalenceSha256: sha256(sourceSnapshot),
       aclGateBeforeActivation: "closed",
       activationReceipt: "disposable-rehearsal",
+      duplicateActivationRejected: true,
       productionPath,
     });
   } finally {
@@ -286,6 +469,96 @@ export async function executeDisposableRehearsal(
 
 async function verifyProductionPathRehearsal(facts) {
   const digest = facts.equivalenceSha256;
+  const redirect = (value) =>
+    typeof value === "string"
+      ? value.replace(
+          `target.internal:${facts.targetPort}`,
+          `127.0.0.1:${facts.targetPort}`,
+        )
+      : value;
+  const connectCanonicalRun = createSecureCanonicalRun(
+    () => "127.0.0.1",
+    (step, detail) => {
+      throw new Error(
+        `private_pg17_rehearsal_canonical_failed:${step}:${detail}`,
+      );
+    },
+  );
+  const canonicalProcessRun = (step, command, args, options = {}) => {
+    if (command !== "psql")
+      return connectCanonicalRun(step, command, args, options);
+    const urlIndex = args.findIndex(
+      (arg) => arg.startsWith("postgres://") || arg.startsWith("postgresql://"),
+    );
+    if (urlIndex < 0) throw new Error("rehearsal_psql_url_missing");
+    const url = new URL(args[urlIndex]);
+    const passDirectory = mkdtempSync(join(tmpdir(), "rr-rehearsal-pass-"));
+    const passfile = join(passDirectory, "pgpass");
+    writeFileSync(
+      passfile,
+      `${url.hostname}:${url.port}:${url.pathname.slice(1)}:${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}\n`,
+      { mode: 0o600 },
+    );
+    const result = spawnSync(
+      "psql",
+      [
+        "--host",
+        url.hostname,
+        "--port",
+        url.port,
+        "--username",
+        decodeURIComponent(url.username),
+        "--dbname",
+        url.pathname.slice(1),
+        ...args.filter((_, index) => index !== urlIndex),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          LANG: "C.UTF-8",
+          PGPASSFILE: passfile,
+          PGHOSTADDR: "127.0.0.1",
+          PGSSLMODE: "disable",
+        },
+        input: options.input,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    );
+    rmSync(passDirectory, { force: true, recursive: true });
+    if (result.status !== 0)
+      throw new Error(
+        `private_pg17_rehearsal_canonical_failed:${step}:${String(result.stderr).slice(0, 2_000)}`,
+      );
+    return result.stdout;
+  };
+  const canonicalRun = (step, command, args, options = {}) =>
+    canonicalProcessRun(step, command, args, {
+      ...options,
+      ...(options.env
+        ? {
+            env: Object.fromEntries(
+              Object.entries(options.env).map(([key, value]) => [
+                key,
+                redirect(value),
+              ]),
+            ),
+          }
+        : {}),
+    });
+  const processCommands = new RedactedProcessCommandAdapter();
+  const activationCommands = {
+    execute(command, args, options) {
+      try {
+        return processCommands.execute(command, args, {
+          ...options,
+          env: { ...options?.env, PGHOSTADDR: "127.0.0.1" },
+        });
+      } catch (error) {
+        throw new Error("activation_process_failed", { cause: error });
+      }
+    },
+  };
   const execution = {
     organization: "disposable-control",
     controlRepository: "disposable-control/releases",
@@ -295,7 +568,8 @@ async function verifyProductionPathRehearsal(facts) {
     actor: "rehearsal",
     runId: "1",
     runAttempt: 1,
-    expectedJobName: "private-job",
+    roleJobName: "private-role-job",
+    cutoverJobName: "private-cutover-job",
   };
   let rollout = createReleaseRollout({
     rolloutId: "disposable-rehearsal",
@@ -328,7 +602,8 @@ async function verifyProductionPathRehearsal(facts) {
     runId: execution.runId,
     runAttempt: 1,
     workflowJobId: lifecycle === "role" ? "10" : "11",
-    workflowJobName: execution.expectedJobName,
+    workflowJobName:
+      lifecycle === "role" ? execution.roleJobName : execution.cutoverJobName,
     commitSha: "d".repeat(40),
     runnerName: `rr-${lifecycle}`,
     cleanupCanary: `rr-cleanup:disposable-rehearsal:rr-${lifecycle}`,
@@ -340,28 +615,13 @@ async function verifyProductionPathRehearsal(facts) {
   const roleRunner = runner("role", "job-role");
   const cutoverRunner = runner("cutover", "job-cutover");
   let tick = 0;
-  const observed = (step, value = {}) => ({
+  const observed = (step, value = {}, provider) => ({
     step,
     observedAt: new Date(Date.UTC(2026, 7, 12, 0, 0, tick++)).toISOString(),
     facts: value,
+    ...(provider ? { provider } : {}),
   });
-  const sqlConfiguration = {
-    roles: [
-      { role: "api", username: "reviewrouter_api", password: "disposable" },
-      { role: "web", username: "reviewrouter_web", password: "disposable" },
-      {
-        role: "worker",
-        username: "reviewrouter_worker",
-        password: "disposable",
-      },
-      {
-        role: "effect-authority",
-        username: "reviewrouter_codex_effect_authority",
-        password: "disposable",
-      },
-    ],
-    releasePassword: "disposable",
-  };
+  const sqlConfiguration = disposableSqlConfiguration();
   const generated = {
     roleBootstrapSha256: `sha256:${sha256Canonical(roleProvisioningSql(sqlConfiguration))}`,
     migrationSha256: `sha256:${sha256Canonical(runtimeGrantSql(sqlConfiguration, { gateClosed: true }))}`,
@@ -370,6 +630,15 @@ async function verifyProductionPathRehearsal(facts) {
       sourceSystemIdentifier: rollout.source.systemIdentifier,
       targetSystemIdentifier: rollout.target.systemIdentifier,
     }),
+  };
+  const catalogSha256 = {
+    sequences: digest,
+    columnsDefaults: digest,
+    constraintsIndexesTriggers: digest,
+    policiesRls: digest,
+    functionsViewsSchemas: digest,
+    aclOwnershipDefaults: digest,
+    migrationHistory: digest,
   };
   let provision = roleRunner;
   let cleanupStep = RolloutStep.CleanupRoleRunner;
@@ -383,15 +652,52 @@ async function verifyProductionPathRehearsal(facts) {
       this.last = input.nextReceiptSha256;
       return true;
     },
+    async markActivationUncertain() {
+      this.uncertain = true;
+    },
   };
   let evidence;
   const useCases = new ReleaseRolloutUseCases({
+    preflight: {
+      observeProtectedEnvironment: async () =>
+        observed(RolloutStep.VerifyProtectedEnvironment, {
+          organization: execution.organization,
+          repository: execution.controlRepository,
+          workflowPath: execution.workflowPath,
+          workflowRef: execution.workflowRef,
+          sha: rollout.expectedCommitSha,
+          event: execution.event,
+          actor: execution.actor,
+          runId: execution.runId,
+          runAttempt: 1,
+          environment: "disposable-rehearsal",
+          requiredReviewerCount: 1,
+          preventSelfReview: true,
+          protectedBranchesOnly: true,
+          runnerGroupId: 1,
+          observationSha256: digest,
+        }),
+    },
     provider: {
       freezeAndObserve: async () =>
-        observed(RolloutStep.FreezeProviderServices, {
-          services: [{ serviceId: "source-writer", suspended: true }],
-          complete: true,
-        }),
+        observed(
+          RolloutStep.FreezeProviderServices,
+          {
+            services: [
+              {
+                serviceId: "source-writer",
+                suspended: true,
+                observedAt: "2026-08-12T00:00:02.000Z",
+                latestSuccessfulDeployId: "dep-source",
+              },
+            ],
+            complete: true,
+          },
+          {
+            renderServiceIds: ["source-writer"],
+            renderDeployIds: ["dep-source"],
+          },
+        ),
       compensateAndObserve: async () =>
         observed(RolloutStep.CompleteCompensation, { resumed: true }),
     },
@@ -403,79 +709,171 @@ async function verifyProductionPathRehearsal(facts) {
             ? RolloutStep.ProvisionRoleRunner
             : RolloutStep.ProvisionCutoverRunner,
           provision,
+          {
+            renderJobId: provision.renderJobId,
+            renderDeployId: provision.provenance.deployId,
+            githubWorkflowJobId: provision.workflowJobId,
+          },
         ),
       }),
-      cleanup: async () =>
-        observed(cleanupStep, {
-          provider: { status: "succeeded" },
-          runner: {
-            listenerStopped: true,
-            workspaceRemoved: true,
-            credentialProcessGone: true,
-            canary: provision.cleanupCanary,
+      cleanup: async () => {
+        const observedAt = new Date(
+          Date.UTC(2026, 7, 12, 0, 0, tick++),
+        ).toISOString();
+        return {
+          step: cleanupStep,
+          observedAt,
+          facts: {
+            provider: { id: provision.renderJobId, status: "succeeded" },
+            runner: {
+              listenerStopped: true,
+              workspaceRemoved: true,
+              credentialProcessGone: true,
+              canary: provision.cleanupCanary,
+              observedAt,
+            },
           },
-        }),
+          provider: { renderJobId: provision.renderJobId },
+        };
+      },
       reconcileOrphans: async () => [],
     },
     database: {
       captureBackup: async () =>
         observed(RolloutStep.CaptureSourceBackup, {
           dumpSha256: facts.dumpSha256,
+          backup: {
+            renderResourceId: rollout.source.renderResourceId,
+            internalHostname: rollout.source.internalHostname,
+            databaseName: rollout.source.databaseName,
+            systemIdentifier: rollout.source.systemIdentifier,
+            lsn: "0/1",
+            capturedAt: "2026-08-12T00:00:03.000Z",
+            recoveryWindowStartsAt: "2026-08-11T00:00:00.000Z",
+            recoveryWindowEndsAt: "2026-08-13T00:00:00.000Z",
+            dumpSha256: facts.dumpSha256,
+            externalWitnessSha256: digest,
+            recoveryStatus: "available",
+          },
         }),
       quiesce: async () =>
         observed(RolloutStep.QuiesceSource, {
+          writerServices: [
+            {
+              serviceId: "source-writer",
+              suspended: true,
+              observedAt: "2026-08-12T00:00:02.000Z",
+            },
+          ],
+          aclSha256: digest,
           stabilizationSeries: [0, 0, 0],
-          reconnectDenied: true,
+          reconnectDeniedRoles: [
+            "reviewrouter_api",
+            "reviewrouter_web",
+            "reviewrouter_worker",
+            "reviewrouter_codex_effect_authority",
+          ],
+          complete: true,
         }),
       copy: async () =>
         observed(RolloutStep.CopyDatabaseGeneration, {
           dumpSha256: facts.dumpSha256,
+          ownershipRestored: false,
+          privilegesRestored: false,
         }),
       verifyEquivalence: async () =>
         observed(RolloutStep.VerifyDataEquivalence, {
+          tables: [
+            {
+              table: "public.rehearsal_items",
+              sourceRows: 3,
+              targetRows: 3,
+              sourceSha256: digest,
+              targetSha256: digest,
+            },
+          ],
+          catalogSha256,
           equivalent: true,
           streamingHash: true,
+          maxProcessBufferBytes: 8 * 1024 * 1024,
         }),
       bootstrapTargetRoles: async () =>
-        observed(RolloutStep.BootstrapTargetRoles, {
-          sqlSha256: generated.roleBootstrapSha256,
-        }),
+        observed(
+          RolloutStep.BootstrapTargetRoles,
+          executeCanonicalRoleBootstrap(facts.canonicalEnv, canonicalRun),
+        ),
       runReleaseMigration: async () =>
-        observed(RolloutStep.RunReleaseMigration, {
-          sqlSha256: generated.migrationSha256,
-          gate: "closed",
-        }),
+        observed(
+          RolloutStep.RunReleaseMigration,
+          executeCanonicalReleaseMigration(
+            {
+              ...facts.canonicalEnv,
+              REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+            },
+            canonicalRun,
+          ),
+        ),
       activate: async () =>
-        observed(RolloutStep.ActivateTargetGeneration, {
-          firstWriteBoundary: true,
-          canonicalPrivilegesSha256:
-            generated.activation.canonicalPrivilegesSha256,
-          catalogFactsSha256: digest,
-          firstWriteReceiptSha256: digest,
-          transactionId: "1",
-        }),
+        executePrivateGenerationActivation(
+          facts.canonicalEnv,
+          activationCommands,
+        ),
       compensateSource: async () =>
         observed(RolloutStep.CompleteCompensation, { aclRestored: true }),
     },
     services: {
       stageTarget: async () =>
-        observed(RolloutStep.StageTargetServices, { suspended: true }),
+        observed(
+          RolloutStep.StageTargetServices,
+          [
+            {
+              serviceId: "srv-target",
+              deployId: "dep-disposable",
+              provenance: {
+                kind: "git",
+                commitSha: rollout.expectedCommitSha,
+              },
+              envSha256: digest,
+              suspended: true,
+            },
+          ],
+          {
+            renderServiceIds: ["srv-target"],
+            renderDeployIds: ["dep-disposable"],
+          },
+        ),
       resumeDeployAndObserve: async () =>
-        observed(RolloutStep.ResumeTargetServices, { resumed: true }),
+        observed(
+          RolloutStep.ResumeTargetServices,
+          [
+            {
+              serviceId: "srv-target",
+              deployId: "dep-disposable",
+              resumed: true,
+            },
+          ],
+          {
+            renderServiceIds: ["srv-target"],
+            renderDeployIds: ["dep-disposable"],
+          },
+        ),
       verifyLiveCanary: async () =>
-        observed(RolloutStep.VerifyLiveCanary, { writeReadRoundTrip: true }),
+        observed(RolloutStep.VerifyLiveCanary, {
+          commitSha: rollout.expectedCommitSha,
+          databaseSystemIdentifier: rollout.target.systemIdentifier,
+          writeReadRoundTrip: true,
+        }),
     },
     evidence: {
       assembleAndVerify: async (current) => {
-        const catalogSha256 = {
-          sequences: digest,
-          columnsDefaults: digest,
-          constraintsIndexesTriggers: digest,
-          policiesRls: digest,
-          functionsViewsSchemas: digest,
-          aclOwnershipDefaults: digest,
-          migrationHistory: digest,
-        };
+        const assembledAt = new Date(
+          Math.max(
+            ...current.receipts.map((receipt) =>
+              Date.parse(receipt.observedAt),
+            ),
+            Date.parse(current.activationReceipt.observedAt),
+          ) + 1_000,
+        ).toISOString();
         evidence = assembleTrustedRolloutEvidence({
           rolloutId: current.rolloutId,
           releaseCommitSha: current.expectedCommitSha,
@@ -529,7 +927,10 @@ async function verifyProductionPathRehearsal(facts) {
             streamingHash: true,
             maxProcessBufferBytes: 8 * 1024 * 1024,
           },
-          protectedEnvironmentPreflightSha256: digest,
+          protectedEnvironmentPreflightSha256: current.receipts.find(
+            (receipt) =>
+              receipt.step === RolloutStep.VerifyProtectedEnvironment,
+          ).observationSha256,
           receipts: current.receipts,
           activation: current.activationReceipt,
           resumedTargetDeployIds: ["dep-disposable"],
@@ -558,7 +959,7 @@ async function verifyProductionPathRehearsal(facts) {
               ).observedAt,
             },
           ],
-          assembledAt: "2026-08-12T00:01:00.000Z",
+          assembledAt,
         });
         return observed(RolloutStep.VerifyTrustedRollout, {
           evidenceSha256: evidence.evidenceSha256,
@@ -568,6 +969,7 @@ async function verifyProductionPathRehearsal(facts) {
     ledger,
   });
   rollout = await useCases.claimRollout(rollout);
+  rollout = await useCases.verifyProtectedEnvironment(rollout);
   rollout = await useCases.freezeProviderServices(rollout);
   ({ rollout } = await useCases.provisionPrivateRunner(rollout));
   rollout = await useCases.captureSourceBackup(rollout);
@@ -586,6 +988,12 @@ async function verifyProductionPathRehearsal(facts) {
   rollout = await useCases.resumeTargetServices(rollout);
   rollout = await useCases.verifyLiveCanary(rollout);
   rollout = await useCases.verifyTrustedRollout(rollout);
+  let duplicateActivationRejected = false;
+  try {
+    executePrivateGenerationActivation(facts.canonicalEnv, activationCommands);
+  } catch {
+    duplicateActivationRejected = true;
+  }
   const uncertain = transitionFailure(rollout, "activation_uncertain");
   let sourceBanProven = false;
   try {
@@ -611,10 +1019,16 @@ async function verifyProductionPathRehearsal(facts) {
   );
   return {
     phase: rollout.phase,
-    generated,
+    generated: {
+      roleBootstrapSha256: generated.roleBootstrapSha256,
+      migrationSha256: generated.migrationSha256,
+      activationSqlSha256: `sha256:${sha256Canonical(generated.activation.sql)}`,
+      canonicalPrivilegesSha256: generated.activation.canonicalPrivilegesSha256,
+    },
     receiptCount: rollout.receipts.length,
     sourceBanProven,
     compensationProven: compensated.phase === "recovery_compensated",
+    duplicateActivationRejected,
     evidenceSha256: evidence.evidenceSha256,
   };
 }

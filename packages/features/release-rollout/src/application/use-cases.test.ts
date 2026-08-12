@@ -18,7 +18,8 @@ const rollout = createReleaseRollout({
     actor: "operator",
     runId: "12",
     runAttempt: 1,
-    expectedJobName: "private-job",
+    roleJobName: "private-role-job",
+    cutoverJobName: "private-cutover-job",
   },
   source: {
     renderResourceId: "dpg-source",
@@ -43,6 +44,7 @@ const observed = (step: StepObservation["step"]): StepObservation => ({
   facts: { ok: true },
 });
 const basePorts = () => ({
+  preflight: { observeProtectedEnvironment: vi.fn() },
   provider: { freezeAndObserve: vi.fn(), compensateAndObserve: vi.fn() },
   runner: {
     provision: vi.fn(),
@@ -55,6 +57,7 @@ const basePorts = () => ({
   ledger: {
     claim: vi.fn().mockResolvedValue("claimed"),
     compareAndSet: vi.fn().mockResolvedValue(true),
+    markActivationUncertain: vi.fn().mockResolvedValue(undefined),
   },
 });
 
@@ -75,6 +78,16 @@ describe("release rollout application boundary", () => {
     const useCases = new ReleaseRolloutUseCases(ports);
     expect((await useCases.claimRollout(rollout)).receipts[0]?.step).toBe(
       RolloutStep.ClaimRollout,
+    );
+    expect(ports.ledger.compareAndSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedCommitSha: rollout.expectedCommitSha,
+        runId: rollout.execution.runId,
+        runAttempt: 1,
+        sourceSystemIdentifier: rollout.source.systemIdentifier,
+        targetSystemIdentifier: rollout.target.systemIdentifier,
+        step: RolloutStep.ClaimRollout,
+      }),
     );
     ports.ledger.claim.mockResolvedValue("duplicate");
     await expect(useCases.claimRollout(rollout)).rejects.toThrow(
@@ -114,5 +127,23 @@ describe("release rollout application boundary", () => {
       new ReleaseRolloutUseCases(ports).provisionPrivateRunner(rollout),
     ).rejects.toThrow("runner_identity_mismatch");
     expect(rollout.receipts).toHaveLength(0);
+  });
+
+  it("permanently marks the source ineligible when activation outcome is unknown", async () => {
+    const ports = basePorts();
+    ports.database = {
+      activate: vi.fn().mockRejectedValue(new Error("connection_lost")),
+    } as never;
+    await expect(
+      new ReleaseRolloutUseCases(ports).activateTargetGeneration(rollout),
+    ).rejects.toThrow("activation_uncertain");
+    expect(ports.ledger.markActivationUncertain).toHaveBeenCalledWith({
+      rolloutId: rollout.rolloutId,
+      expectedCommitSha: rollout.expectedCommitSha,
+      runId: rollout.execution.runId,
+      runAttempt: 1,
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+    });
   });
 });
