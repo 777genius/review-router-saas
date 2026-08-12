@@ -211,16 +211,17 @@ describe("Render hosted deploy hardening", () => {
     expect(guidance).toContain("operations/02-runbooks.md");
   });
 
-  it("retains compatible legacy aliases to one immutable private-network rollout", () => {
+  it("retains the existing legacy production workflows while PG17 stays opt-in", () => {
     for (const path of [
       ".github/workflows/codex-rotating-release-migration.yml",
       ".github/workflows/codex-rotating-rollout-evidence.yml",
       ".github/workflows/codex-rotating-role-bootstrap.yml",
     ]) {
       expect(existsSync(path)).toBe(true);
-      expect(readFileSync(path, "utf8")).toContain(
-        "uses: ./.github/workflows/private-network-pg17-rollout.yml",
-      );
+      const legacy = readFileSync(path, "utf8");
+      expect(legacy).toContain("workflow_dispatch:");
+      expect(legacy).toContain("runs-on: ubuntu-24.04");
+      expect(legacy).not.toContain("private-network-pg17-rollout.yml");
     }
     const privateRollout = readFileSync(
       ".github/workflows/private-network-pg17-rollout.yml",

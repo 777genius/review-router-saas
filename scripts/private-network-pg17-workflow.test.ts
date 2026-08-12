@@ -86,7 +86,7 @@ describe("private-network PG17 workflow security contract", () => {
     expect(workflow).toContain("always-reconcile-runners-and-compensation");
   });
 
-  it("uses only SHA-pinned actions and keeps legacy names as aliases to the fenced rollout", () => {
+  it("uses only SHA-pinned actions and preserves the opt-in legacy workflow contracts", () => {
     expect(`${workflow}\n${controller}`).not.toMatch(
       /uses: [^\n]+@(main|master|v\d+)/u,
     );
@@ -96,12 +96,10 @@ describe("private-network PG17 workflow security contract", () => {
       ".github/workflows/codex-rotating-rollout-evidence.yml",
     ]) {
       expect(existsSync(path)).toBe(true);
-      const alias = readFileSync(path, "utf8");
-      expect(alias).toContain(
-        "uses: ./.github/workflows/private-network-pg17-rollout.yml",
-      );
-      expect(alias).toContain("secrets: inherit");
-      expect(alias).not.toContain("runs-on:");
+      const legacy = readFileSync(path, "utf8");
+      expect(legacy).toContain("workflow_dispatch:");
+      expect(legacy).toContain("runs-on: ubuntu-24.04");
+      expect(legacy).not.toContain("private-network-pg17-rollout.yml");
     }
   });
 
@@ -111,6 +109,9 @@ describe("private-network PG17 workflow security contract", () => {
     );
     expect(dockerfile).toContain("GITHUB_ACTIONS_RUNNER_SHA256");
     expect(dockerfile).toContain("sha256sum --check --strict");
+    expect(dockerfile).toContain("pnpm install --frozen-lockfile");
+    expect(dockerfile).toContain("snapshot.debian.org");
+    expect(dockerfile).not.toContain("npm install --no-save");
     expect(bootstrap).toContain(
       "REVIEW_ROUTER_RUNNER_GITHUB_APP_PRIVATE_KEY_FILE",
     );
