@@ -1,38 +1,27 @@
 #!/usr/bin/env node
 import {
-  applyStepReceipt,
   createReleaseRollout,
+  AuthenticatedRunnerLedgerAdapter,
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
+  ReleaseRolloutUseCases,
   RenderBackupIdentityAdapter,
-  RolloutStep,
-  sha256Canonical,
   type DatabaseGenerationIdentity,
-  type StepReceipt,
+  type RunnerIdentity,
+  type StepObservation,
+  type WriterSuspensionObservation,
 } from "../packages/features/release-rollout/src/index";
-import { executeCanonicalRoleBootstrap } from "./run-codex-rotating-release-migration.mjs";
+import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
 
 const required = (name: string): string => {
   const value = process.env[name];
   if (!value) throw new Error(`private_pg17_copy_required:${name}`);
   return value;
 };
-const decode = <T>(name: string): T =>
-  JSON.parse(Buffer.from(required(name), "base64url").toString("utf8")) as T;
-const syntheticReceipt = (
-  step: StepReceipt["step"],
-  payload: unknown,
-): StepReceipt => {
-  const hash = sha256Canonical(payload);
-  return {
-    step,
-    receiptId: `${step}-${hash.slice(0, 24)}`,
-    observedAt: new Date().toISOString(),
-    payloadSha256: `sha256:${hash}`,
-  };
-};
 const source: DatabaseGenerationIdentity = {
   renderResourceId: required("REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID"),
+  internalHostname: required("REVIEW_ROUTER_SOURCE_INTERNAL_HOSTNAME"),
+  databaseName: required("REVIEW_ROUTER_SOURCE_DATABASE_NAME"),
   systemIdentifier: required("REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER"),
   majorVersion: 16,
   recoveryWitnessSha256: required(
@@ -41,6 +30,8 @@ const source: DatabaseGenerationIdentity = {
 };
 const target: DatabaseGenerationIdentity = {
   renderResourceId: required("REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID"),
+  internalHostname: required("REVIEW_ROUTER_TARGET_INTERNAL_HOSTNAME"),
+  databaseName: required("REVIEW_ROUTER_TARGET_DATABASE_NAME"),
   systemIdentifier: required("REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER"),
   majorVersion: 17,
   recoveryWitnessSha256: required(
@@ -50,57 +41,127 @@ const target: DatabaseGenerationIdentity = {
 let rollout = createReleaseRollout({
   rolloutId: required("REVIEW_ROUTER_ROLLOUT_ID"),
   expectedCommitSha: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+  execution: {
+    organization: required("REVIEW_ROUTER_RELEASE_CONTROL_ORG"),
+    controlRepository: required("GITHUB_REPOSITORY"),
+    workflowPath: required("REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH"),
+    workflowRef: required("GITHUB_REF") as "refs/heads/main",
+    event: required("GITHUB_EVENT_NAME") as "workflow_dispatch",
+    actor: required("GITHUB_ACTOR"),
+    runId: required("GITHUB_RUN_ID"),
+    runAttempt: Number(required("GITHUB_RUN_ATTEMPT")),
+    expectedJobName: required("REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME"),
+  },
   source,
   target,
 });
-rollout = applyStepReceipt(
-  rollout,
-  decode<StepReceipt>("REVIEW_ROUTER_FREEZE_RECEIPT"),
-);
-const runner = decode<unknown>("REVIEW_ROUTER_RUNNER_IDENTITY");
-rollout = applyStepReceipt(
-  rollout,
-  syntheticReceipt(RolloutStep.ProvisionPrivateRunner, runner),
-);
-const database = new PostgreSqlGenerationAdapter(
-  new RedactedProcessCommandAdapter(),
-);
+const commands = new RedactedProcessCommandAdapter();
+const database = new PostgreSqlGenerationAdapter(commands);
 const sourceUrl = required("REVIEW_ROUTER_SOURCE_DATABASE_URL");
-const targetBootstrapUrl = required(
-  "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
+const targetUrl = required("REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL");
+const freezeObservation = decode<
+  StepObservation<{
+    services: WriterSuspensionObservation["services"];
+    complete: true;
+  }>
+>("REVIEW_ROUTER_FREEZE_OBSERVATION");
+let backupResult: ReturnType<PostgreSqlGenerationAdapter["captureBackup"]>;
+let quiescence: ReturnType<PostgreSqlGenerationAdapter["quiesceSource"]>;
+let equivalence: Awaited<
+  ReturnType<PostgreSqlGenerationAdapter["verifyEquivalence"]>
+>;
+let roleBootstrap: StepObservation;
+const unavailable = async (): Promise<never> => {
+  throw new Error("private_pg17_port_not_available_in_copy_phase");
+};
+const ledger = new AuthenticatedRunnerLedgerAdapter(
+  required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
+  required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
 );
-database.observeIdentity(sourceUrl, source);
-database.observeIdentity(targetBootstrapUrl, target);
-const dumpPath = `/runner/_work/job/${rollout.rolloutId}.dump`;
-const backupIdentity = await new RenderBackupIdentityAdapter().capture({
-  apiKey: required("RENDER_API_KEY"),
-  sourceDatabaseId: source.renderResourceId,
-  expectedBackupId: required("REVIEW_ROUTER_SOURCE_BACKUP_ID"),
-  expectedPitrIdentity: required("REVIEW_ROUTER_SOURCE_PITR_IDENTITY"),
+const currentRunner = await ledger.currentRunner(rollout.rolloutId, "role");
+const canonical = new PrivatePg17CanonicalAdapter();
+const runner: RunnerIdentity = currentRunner.identity;
+const runnerObservation: StepObservation = currentRunner.observation;
+const useCases = new ReleaseRolloutUseCases({
+  provider: {
+    freezeAndObserve: async () => freezeObservation,
+    compensateAndObserve: unavailable,
+  },
+  runner: {
+    provision: async () => ({
+      identity: runner,
+      observation: runnerObservation,
+    }),
+    cleanup: unavailable,
+    reconcileOrphans: async () => [],
+  },
+  database: {
+    captureBackup: async () => {
+      database.observeIdentity(sourceUrl, source);
+      database.observeIdentity(targetUrl, target);
+      const backup = await new RenderBackupIdentityAdapter().capture({
+        apiKey: required("RENDER_PROVENANCE_READ_API_KEY"),
+        sourceDatabaseId: source.renderResourceId,
+        externalWitness: JSON.parse(
+          required("REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON"),
+        ),
+      });
+      backupResult = database.captureBackup({
+        sourceUrl,
+        dumpPath: `/runner/_work/job/${rollout.rolloutId}.dump`,
+        backup,
+      });
+      if (backupResult.dumpSha256 !== backup.dumpSha256)
+        throw new Error("private_pg17_dump_external_witness_mismatch");
+      return backupResult.observation;
+    },
+    quiesce: async () => {
+      quiescence = database.quiesceSource({
+        adminUrl: sourceUrl,
+        writerSuspension: {
+          services: freezeObservation.facts.services,
+          complete: true,
+        },
+        reconnectUrls: JSON.parse(
+          required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
+        ),
+      });
+      return quiescence.observation;
+    },
+    copy: async () =>
+      database.restoreCopy({
+        targetUrl,
+        dumpPath: `/runner/_work/job/${rollout.rolloutId}.dump`,
+        dumpSha256: backupResult.dumpSha256,
+      }),
+    verifyEquivalence: async () => {
+      equivalence = await database.verifyEquivalence(sourceUrl, targetUrl);
+      return equivalence.observation;
+    },
+    bootstrapTargetRoles: async () => {
+      roleBootstrap = canonical.bootstrapTargetRoles(process.env);
+      return roleBootstrap;
+    },
+    runReleaseMigration: unavailable,
+    activate: unavailable,
+    compensateSource: unavailable,
+  },
+  services: {
+    stageTarget: unavailable,
+    resumeDeployAndObserve: unavailable,
+    verifyLiveCanary: unavailable,
+  },
+  evidence: { assembleAndVerify: unavailable },
+  ledger,
 });
-const backup = database.captureBackup({
-  sourceUrl,
-  dumpPath,
-  backup: backupIdentity,
-});
-rollout = applyStepReceipt(rollout, backup.receipt);
-const quiescence = database.quiesceSource(sourceUrl);
-rollout = applyStepReceipt(rollout, quiescence.receipt);
-rollout = applyStepReceipt(
-  rollout,
-  database.restoreCopy({
-    targetUrl: targetBootstrapUrl,
-    dumpPath,
-    dumpSha256: backup.dumpSha256,
-  }),
-);
-const equivalence = database.verifyEquivalence(sourceUrl, targetBootstrapUrl);
-rollout = applyStepReceipt(rollout, equivalence.receipt);
-const roleBootstrap = executeCanonicalRoleBootstrap();
-rollout = applyStepReceipt(
-  rollout,
-  syntheticReceipt(RolloutStep.BootstrapTargetRoles, roleBootstrap),
-);
+rollout = await useCases.claimRollout(rollout);
+rollout = await useCases.freezeProviderServices(rollout);
+({ rollout } = await useCases.provisionPrivateRunner(rollout));
+rollout = await useCases.captureSourceBackup(rollout);
+rollout = await useCases.quiesceSource(rollout);
+rollout = await useCases.copyDatabaseGeneration(rollout);
+rollout = await useCases.verifyDataEquivalence(rollout);
+rollout = await useCases.bootstrapTargetRoles(rollout);
 process.stdout.write(
-  `${JSON.stringify({ rollout, roleBootstrapRunner: runner, backup: backup.backup, dumpSha256: backup.dumpSha256, quiescence: quiescence.evidence, equivalence: equivalence.evidence })}\n`,
+  `${JSON.stringify({ rollout, roleBootstrapRunner: runner, backup: backupResult!.backup, quiescence: quiescence!.evidence, equivalence: equivalence!.evidence, roleBootstrap: roleBootstrap!.facts })}\n`,
 );

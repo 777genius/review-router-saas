@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import {
+  AuthenticatedRunnerLedgerAdapter,
   RenderPrivateRunnerAdapter,
   RenderProviderFreezeAdapter,
+  type RunnerIdentity,
 } from "../packages/features/release-rollout/src/index";
 
 const required = (name: string): string => {
@@ -10,8 +12,6 @@ const required = (name: string): string => {
   if (!value) throw new Error(`release_rollout_control_missing:${name}`);
   return value;
 };
-const mode = process.argv[2];
-const apiKey = required("RENDER_API_KEY");
 const output = (values: Record<string, string>) => {
   const path = required("GITHUB_OUTPUT");
   for (const [key, value] of Object.entries(values))
@@ -20,56 +20,183 @@ const output = (values: Record<string, string>) => {
       mode: 0o600,
     });
 };
+const ledger = new AuthenticatedRunnerLedgerAdapter(
+  required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
+  required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
+);
+const runners = new RenderPrivateRunnerAdapter(ledger, ledger);
+const mode = process.argv[2];
+const contextValue = (name: string, fallback: string): string =>
+  process.env[name] ?? required(fallback);
+const resolveWorkflowJobId = async (name: string): Promise<string> => {
+  const response = await fetch(
+    `https://api.github.com/repos/${required("GITHUB_REPOSITORY")}/actions/runs/${required("GITHUB_RUN_ID")}/attempts/${required("GITHUB_RUN_ATTEMPT")}/jobs?filter=latest&per_page=100`,
+    {
+      headers: {
+        Authorization: `Bearer ${required("GITHUB_CONTROL_READ_TOKEN")}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    },
+  );
+  if (!response.ok)
+    throw new Error(`release_rollout_job_lookup_failed:${response.status}`);
+  const value = (await response.json()) as {
+    jobs?: {
+      id?: number;
+      name?: string;
+      status?: string;
+      run_id?: number;
+      run_attempt?: number;
+      head_sha?: string;
+    }[];
+  };
+  const matches =
+    value.jobs?.filter(
+      (job) =>
+        job.name === name &&
+        job.status === "queued" &&
+        job.run_id === Number(required("GITHUB_RUN_ID")) &&
+        job.run_attempt === Number(required("GITHUB_RUN_ATTEMPT")) &&
+        job.head_sha === required("REVIEW_ROUTER_EXPECTED_SHA"),
+    ) ?? [];
+  if (matches.length !== 1 || !Number.isSafeInteger(matches[0]?.id))
+    throw new Error("release_rollout_target_job_identity_unavailable");
+  return String(matches[0]!.id);
+};
 
 if (mode === "freeze") {
-  const receipt = await new RenderProviderFreezeAdapter().freezeAndObserve({
-    apiKey,
+  const observation = await new RenderProviderFreezeAdapter().freezeAndObserve({
+    apiKey: required("RENDER_RUNNER_CONTROL_API_KEY"),
     ownerId: required("RENDER_OWNER_ID"),
-    serviceIds: required("REVIEW_ROUTER_RENDER_FROZEN_SERVICE_IDS").split(","),
+    sourceWriterServiceIds: required(
+      "REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS",
+    ).split(","),
   });
   output({
-    receipt: Buffer.from(JSON.stringify(receipt)).toString("base64url"),
+    observation: Buffer.from(JSON.stringify(observation)).toString("base64url"),
   });
 } else if (mode === "provision") {
-  const runId = required("GITHUB_RUN_ID");
-  const runAttempt = Number(required("GITHUB_RUN_ATTEMPT"));
-  const sha = required("REVIEW_ROUTER_EXPECTED_SHA");
-  const label = `rr-${runId}-${runAttempt}-${sha.slice(0, 12)}-${required("REVIEW_ROUTER_RUNNER_PURPOSE")}`;
-  const result = await new RenderPrivateRunnerAdapter().provision({
-    apiKey,
+  const purpose = required("REVIEW_ROUTER_RUNNER_PURPOSE");
+  const workflowJobName = required("REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME");
+  const targetRunId = contextValue(
+    "REVIEW_ROUTER_TARGET_RUN_ID",
+    "GITHUB_RUN_ID",
+  );
+  const targetRunAttempt = contextValue(
+    "REVIEW_ROUTER_TARGET_RUN_ATTEMPT",
+    "GITHUB_RUN_ATTEMPT",
+  );
+  const targetJobId =
+    process.env.REVIEW_ROUTER_TARGET_WORKFLOW_JOB_ID ??
+    (await resolveWorkflowJobId(workflowJobName));
+  const runResponse = await fetch(
+    `https://api.github.com/repos/${required("GITHUB_REPOSITORY")}/actions/runs/${targetRunId}/attempts/${targetRunAttempt}`,
+    {
+      headers: {
+        Authorization: `Bearer ${required("GITHUB_CONTROL_READ_TOKEN")}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    },
+  );
+  if (!runResponse.ok)
+    throw new Error(
+      `release_rollout_target_run_lookup_failed:${runResponse.status}`,
+    );
+  const targetRun = (await runResponse.json()) as {
+    actor?: { login?: string };
+    event?: string;
+    head_sha?: string;
+    path?: string;
+    run_attempt?: number;
+  };
+  const expectedSha = contextValue(
+    "REVIEW_ROUTER_TARGET_SHA",
+    "REVIEW_ROUTER_EXPECTED_SHA",
+  );
+  if (
+    targetRun.event !== "workflow_dispatch" ||
+    targetRun.head_sha !== expectedSha ||
+    targetRun.path !==
+      `${required("REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH")}@refs/heads/main` ||
+    targetRun.run_attempt !== Number(targetRunAttempt) ||
+    !targetRun.actor?.login
+  )
+    throw new Error("release_rollout_target_run_identity_mismatch");
+  const result = await runners.provision({
+    rolloutId: required("REVIEW_ROUTER_ROLLOUT_ID"),
+    lifecycle: purpose === "role-bootstrap" ? "role" : "cutover",
+    apiKey: required("RENDER_RUNNER_CONTROL_API_KEY"),
     ownerId: required("RENDER_OWNER_ID"),
-    repository: required("GITHUB_REPOSITORY"),
-    runId,
-    runAttempt,
-    commitSha: sha,
-    jitLabel: label,
+    organization: required("REVIEW_ROUTER_RELEASE_CONTROL_ORG"),
+    repository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
+    workflowPath: required("REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH"),
+    workflowRef: required("GITHUB_REF") as "refs/heads/main",
+    event: required("GITHUB_EVENT_NAME") as "workflow_dispatch",
+    actor: targetRun.actor.login,
+    runId: targetRunId,
+    runAttempt: Number(targetRunAttempt),
+    workflowJobId: targetJobId,
+    workflowJobName,
+    commitSha: expectedSha,
+    runnerName: `rr-${targetRunId}-${purpose}`,
+    runnerGroupId: Number(required("REVIEW_ROUTER_RUNNER_GROUP_ID")),
     baseServiceId: required("REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID"),
-    baseDeployId: required("REVIEW_ROUTER_RUNNER_BASE_DEPLOY_ID"),
-    imageDigest: required("REVIEW_ROUTER_RUNNER_BASE_IMAGE_DIGEST"),
+    expectedProvenance: JSON.parse(
+      required("REVIEW_ROUTER_RUNNER_PROVENANCE_JSON"),
+    ) as RunnerIdentity["provenance"],
+    ...(process.env.REVIEW_ROUTER_RUNNER_COMPUTE_PLAN_ID
+      ? { planId: process.env.REVIEW_ROUTER_RUNNER_COMPUTE_PLAN_ID }
+      : {}),
   });
   output({
-    label,
     job_id: result.jobId,
+    cleanup_canary: result.identity.cleanupCanary,
     identity: Buffer.from(JSON.stringify(result.identity)).toString(
       "base64url",
     ),
-    receipt: Buffer.from(JSON.stringify(result.receipt)).toString("base64url"),
+    observation: Buffer.from(JSON.stringify(result.observation)).toString(
+      "base64url",
+    ),
   });
 } else if (mode === "cleanup") {
-  const receipt = await new RenderPrivateRunnerAdapter().cleanup({
-    apiKey,
+  const observation = await runners.cleanup({
+    apiKey: required("RENDER_RUNNER_CONTROL_API_KEY"),
     baseServiceId: required("REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID"),
     jobId: required("REVIEW_ROUTER_RUNNER_JOB_ID"),
+    cleanupCanary: required("REVIEW_ROUTER_RUNNER_CLEANUP_CANARY"),
+    lifecycle:
+      required("REVIEW_ROUTER_RUNNER_PURPOSE") === "role-bootstrap"
+        ? "role"
+        : "cutover",
   });
   output({
-    receipt: Buffer.from(JSON.stringify(receipt)).toString("base64url"),
+    observation: Buffer.from(JSON.stringify(observation)).toString("base64url"),
   });
   const receiptFile = process.env.REVIEW_ROUTER_CLEANUP_RECEIPT_FILE;
   if (receiptFile)
-    writeFileSync(receiptFile, `${JSON.stringify(receipt)}\n`, {
+    writeFileSync(receiptFile, `${JSON.stringify(observation)}\n`, {
       encoding: "utf8",
       mode: 0o600,
     });
-} else {
-  throw new Error("release_rollout_control_mode_invalid");
-}
+} else if (mode === "reconcile" || mode === "cleanup-runners") {
+  const path = required("REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE");
+  const observations = await runners.reconcileOrphans(
+    required("REVIEW_ROUTER_ROLLOUT_ID"),
+    required("RENDER_RUNNER_CONTROL_API_KEY"),
+  );
+  const rollout =
+    mode === "reconcile"
+      ? await ledger.reconcileRollout(required("REVIEW_ROUTER_ROLLOUT_ID"))
+      : null;
+  writeFileSync(
+    path,
+    `${JSON.stringify({ rolloutId: required("REVIEW_ROUTER_ROLLOUT_ID"), observations, rollout })}\n`,
+    { encoding: "utf8", mode: 0o600 },
+  );
+} else if (mode === "verify-cleanup-file") {
+  JSON.parse(
+    readFileSync(required("REVIEW_ROUTER_CLEANUP_RECEIPT_FILE"), "utf8"),
+  );
+} else throw new Error("release_rollout_control_mode_invalid");

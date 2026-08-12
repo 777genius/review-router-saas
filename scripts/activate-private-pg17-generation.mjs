@@ -5,8 +5,11 @@ import {
   canonicalActivationSql,
   canonicalDatabaseGenerationObservationSql,
   resolveReleaseMigrationConfiguration,
-  runReleaseMigrationSubprocess,
 } from "./run-codex-rotating-release-migration.mjs";
+import {
+  decomposePostgresConnection,
+  RedactedProcessCommandAdapter,
+} from "../packages/features/release-rollout/src/index.ts";
 
 const required = (env, name) => {
   const value = env[name];
@@ -17,7 +20,7 @@ const required = (env, name) => {
 
 export function executePrivateGenerationActivation(
   env = process.env,
-  run = runReleaseMigrationSubprocess,
+  commands = new RedactedProcessCommandAdapter(),
 ) {
   const configuration = resolveReleaseMigrationConfiguration(env);
   const sourceSystemIdentifier = required(
@@ -29,21 +32,27 @@ export function executePrivateGenerationActivation(
     "REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER",
   );
   const rolloutId = required(env, "REVIEW_ROUTER_ROLLOUT_ID");
-  const childEnv = { ...env, DATABASE_URL: configuration.releaseUrl };
+  const runPsql = (step, args, options = {}) => {
+    const connection = decomposePostgresConnection(configuration.releaseUrl);
+    try {
+      return commands.execute("psql", [...connection.args, ...args], {
+        env: connection.env,
+        input: options.input,
+      }).stdout;
+    } catch {
+      throw new Error(`release_activation_step_failed:${step}`);
+    } finally {
+      connection.cleanup();
+    }
+  };
   const generation = JSON.parse(
-    run(
-      "activation_target_generation",
-      "psql",
-      [
-        configuration.releaseUrl,
-        "--no-psqlrc",
-        "--tuples-only",
-        "--no-align",
-        "--command",
-        canonicalDatabaseGenerationObservationSql(),
-      ],
-      { env: childEnv },
-    ).trim(),
+    runPsql("activation_target_generation", [
+      "--no-psqlrc",
+      "--tuples-only",
+      "--no-align",
+      "--command",
+      canonicalDatabaseGenerationObservationSql(),
+    ]).trim(),
   );
   if (
     generation.systemIdentifier !== targetSystemIdentifier ||
@@ -56,11 +65,10 @@ export function executePrivateGenerationActivation(
     sourceSystemIdentifier,
     targetSystemIdentifier,
   });
-  const output = run(
+  const output = runPsql(
     "transactional_activation",
-    "psql",
-    [configuration.releaseUrl, "--no-psqlrc", "--tuples-only", "--no-align"],
-    { env: childEnv, input: activation.sql },
+    ["--no-psqlrc", "--tuples-only", "--no-align"],
+    { input: activation.sql },
   );
   const observed = JSON.parse(
     output
@@ -74,22 +82,26 @@ export function executePrivateGenerationActivation(
     observed?.targetSystemIdentifier !== targetSystemIdentifier ||
     observed?.canonicalPrivilegesSha256 !==
       activation.canonicalPrivilegesSha256 ||
+    !/^sha256:[a-f0-9]{64}$/u.test(observed?.catalogFactsSha256 ?? "") ||
+    !/^sha256:[a-f0-9]{64}$/u.test(observed?.firstWriteReceiptSha256 ?? "") ||
     observed?.firstWriteBoundary !== true ||
     !/^[0-9]+$/u.test(observed?.transactionId ?? "")
   )
     throw new Error("release_activation_receipt_unproven");
   return {
     step: "activate_target_generation",
-    receiptId: `activation-${rolloutId}`,
     observedAt: observed.activatedAt,
-    payloadSha256: `sha256:${createHash("sha256")
-      .update(JSON.stringify(observed))
-      .digest("hex")}`,
-    sourceSystemIdentifier,
-    targetSystemIdentifier,
-    canonicalPrivilegesSha256: activation.canonicalPrivilegesSha256,
-    transactionId: observed.transactionId,
-    firstWriteBoundary: true,
+    facts: {
+      rolloutId,
+      sourceSystemIdentifier,
+      targetSystemIdentifier,
+      canonicalPrivilegesSha256: activation.canonicalPrivilegesSha256,
+      catalogFactsSha256: observed.catalogFactsSha256,
+      firstWriteReceiptSha256: observed.firstWriteReceiptSha256,
+      transactionId: observed.transactionId,
+      firstWriteBoundary: true,
+      observationSha256: `sha256:${createHash("sha256").update(JSON.stringify(observed)).digest("hex")}`,
+    },
   };
 }
 

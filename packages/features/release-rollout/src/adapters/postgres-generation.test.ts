@@ -1,151 +1,121 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { PostgreSqlGenerationAdapter } from "./postgres-generation";
+import { existsSync, readFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import {
+  decomposePostgresConnection,
+  PostgreSqlGenerationAdapter,
+} from "./postgres-generation";
 import type { CommandExecutor } from "./process-command";
 
-const sourceUrl =
-  "postgresql://source_user:source_secret@source.internal:5432/reviewrouter?sslmode=disable";
-const targetUrl =
-  "postgresql://target_user:target_secret@target.internal:5432/reviewrouter?sslmode=disable";
-
-describe("PostgreSQL generation adapter", () => {
-  it("rejects public database hosts before process execution", () => {
-    const commands: CommandExecutor = {
-      execute() {
-        throw new Error("must not execute");
-      },
-    };
-    expect(() =>
-      new PostgreSqlGenerationAdapter(commands).quiesceSource(
-        "postgresql://user:secret@public.example.com/reviewrouter",
-      ),
-    ).toThrow("postgres_generation_connection_invalid");
+describe("PostgreSQL secret and connection boundary", () => {
+  it("decomposes private URLs into nonsecret argv and a non-workspace 0600 passfile", () => {
+    const connection = decomposePostgresConnection(
+      "postgresql://runtime:s3cret@source.internal:5432/reviewrouter?sslmode=require",
+    );
+    const passfile = connection.env.PGPASSFILE!;
+    expect(connection.args.join(" ")).not.toContain("s3cret");
+    expect(JSON.stringify(connection.env)).not.toContain("s3cret");
+    expect(passfile.startsWith("/tmp/rr-pgpass-")).toBe(true);
+    expect(readFileSync(passfile, "utf8")).toContain("s3cret");
+    connection.cleanup();
+    expect(existsSync(passfile)).toBe(false);
   });
+  it.each(["localhost", "db.example.com", "public.render.com"])(
+    "rejects public hostname %s",
+    (host) => {
+      expect(() =>
+        decomposePostgresConnection(`postgresql://u:p@${host}/db`),
+      ).toThrow("postgres_generation_connection_invalid");
+    },
+  );
+});
 
-  it("uses a custom no-owner/no-ACL dump without putting secrets in argv", () => {
-    const dumpPath = "/tmp/reviewrouter-pg17-rehearsal/copy.dump";
-    mkdirSync("/tmp/reviewrouter-pg17-rehearsal", { recursive: true });
-    const calls: {
-      command: string;
-      args: readonly string[];
-      env?: NodeJS.ProcessEnv;
-    }[] = [];
-    const commands: CommandExecutor = {
-      execute(command, args, options) {
-        calls.push({
-          command,
-          args,
-          ...(options?.env ? { env: options.env } : {}),
-        });
-        writeFileSync(dumpPath, "custom-dump");
-        return { stdout: "" };
-      },
-    };
-    const result = new PostgreSqlGenerationAdapter(commands).captureBackup({
-      sourceUrl,
-      dumpPath,
-      backup: {
-        backupId: "backup-1",
-        pitrIdentity: "pitr-lsn-1",
-        capturedAt: "2026-08-11T00:00:00.000Z",
-      },
+describe("source quiescence", () => {
+  it("requires observed writer suspension, committed effective ACL denial, bounded zeros, and failed reconnect probes", () => {
+    const execute = vi.fn((_command, args: readonly string[]) => {
+      const sql = args.at(-1) ?? "";
+      if (sql === "SELECT 1")
+        throw new Error("release_rollout_process_failed:psql");
+      if (sql.includes("json_build_object('effectiveConnectDenied'"))
+        return {
+          stdout:
+            '{"effectiveConnectDenied":true,"publicConnectDenied":true,"membershipSha256":"abc"}\n',
+        };
+      if (sql.startsWith("SELECT count(*) FROM pg_stat_activity"))
+        return { stdout: "0\n" };
+      return { stdout: "" };
     });
-    expect(calls[0]?.args).toEqual(
-      expect.arrayContaining([
-        "--format=custom",
-        "--no-owner",
-        "--no-privileges",
+    const commands: CommandExecutor = { execute, hashStdout: vi.fn() };
+    const adapter = new PostgreSqlGenerationAdapter(commands);
+    const urls = Object.fromEntries(
+      [
+        "reviewrouter_api",
+        "reviewrouter_web",
+        "reviewrouter_worker",
+        "reviewrouter_codex_effect_authority",
+      ].map((role) => [
+        role,
+        `postgresql://${role}:secret@source.internal/reviewrouter`,
       ]),
     );
-    expect(calls[0]?.args.join(" ")).not.toContain("source_secret");
-    expect(calls[0]?.env?.PGPASSWORD).toBe("source_secret");
-    expect(result.dumpSha256).toMatch(/^sha256:[a-f0-9]{64}$/u);
-  });
-
-  it("rejects digest changes and non-empty restore targets", () => {
-    const dumpPath = "/tmp/reviewrouter-pg17-rehearsal/changed.dump";
-    mkdirSync("/tmp/reviewrouter-pg17-rehearsal", { recursive: true });
-    writeFileSync(dumpPath, "changed");
-    const commands: CommandExecutor = {
-      execute() {
-        return { stdout: "0" };
+    const result = adapter.quiesceSource({
+      adminUrl: "postgresql://admin:secret@source.internal/reviewrouter",
+      writerSuspension: {
+        services: [
+          {
+            serviceId: "srv-api",
+            suspended: true,
+            observedAt: "2026-08-12T00:00:00.000Z",
+          },
+        ],
+        complete: true,
       },
-    };
-    expect(() =>
-      new PostgreSqlGenerationAdapter(commands).restoreCopy({
-        targetUrl,
-        dumpPath,
-        dumpSha256: `sha256:${"0".repeat(64)}`,
-      }),
-    ).toThrow("postgres_generation_dump_digest_mismatch");
-  });
-
-  it("requires zero sessions and revoked runtime connect", () => {
-    const good: CommandExecutor = {
-      execute() {
-        return {
-          stdout:
-            'BEGIN\n{"writersSuspended":true,"nonCutoverSessionCount":0,"sourceRuntimeConnectRevoked":true}\nCOMMIT\n',
-        };
-      },
-    };
-    expect(
-      new PostgreSqlGenerationAdapter(good).quiesceSource(sourceUrl).evidence
-        .nonCutoverSessionCount,
-    ).toBe(0);
-    const bypass: CommandExecutor = {
-      execute() {
-        return {
-          stdout:
-            '{"writersSuspended":true,"nonCutoverSessionCount":1,"sourceRuntimeConnectRevoked":true}',
-        };
-      },
-    };
-    expect(() =>
-      new PostgreSqlGenerationAdapter(bypass).quiesceSource(sourceUrl),
-    ).toThrow("postgres_generation_quiescence_failed");
-  });
-
-  it("compares rows hashes sequences constraints indexes and migration history", () => {
-    const metadata = `sha256:${"f".repeat(64)}`;
-    void metadata;
-    const commands: CommandExecutor = {
-      execute(_command, args) {
-        const sql = args.at(-1) ?? "";
-        if (sql.includes("pg_tables")) return { stdout: '["Workspace"]' };
-        if (sql.includes("row_to_json(value)"))
-          return { stdout: '{"id":"1"}\n{"id":"2"}' };
-        return { stdout: "[]" };
-      },
-    };
-    const result = new PostgreSqlGenerationAdapter(commands).verifyEquivalence(
-      sourceUrl,
-      targetUrl,
-    );
-    expect(result.evidence).toMatchObject({
-      equivalent: true,
-      tables: [{ table: "Workspace", sourceRows: 2, targetRows: 2 }],
+      reconnectUrls: urls,
     });
+    expect(result.evidence.stabilizationSeries).toEqual([0, 0, 0]);
+    expect(result.evidence.reconnectDeniedRoles).toHaveLength(4);
+    expect(
+      execute.mock.calls
+        .find((call) => String(call[1].at(-1)).includes("REVOKE CONNECT"))?.[1]
+        .at(-1),
+    ).toContain("COMMIT");
   });
 
-  it("fails closed on a row splice", () => {
-    const commands: CommandExecutor = {
-      execute(_command, args) {
-        const sql = args.at(-1) ?? "";
-        const host = args[args.indexOf("--host") + 1];
-        if (sql.includes("pg_tables")) return { stdout: '["Workspace"]' };
-        if (sql.includes("row_to_json(value)"))
-          return {
-            stdout: host === "source.internal" ? '{"id":"1"}' : '{"id":"2"}',
-          };
-        return { stdout: "[]" };
-      },
-    };
+  it("never synthesizes writer suspension and fails if any reconnect succeeds", () => {
+    const adapter = new PostgreSqlGenerationAdapter({
+      execute: vi.fn(),
+      hashStdout: vi.fn(),
+    });
     expect(() =>
-      new PostgreSqlGenerationAdapter(commands).verifyEquivalence(
-        sourceUrl,
-        targetUrl,
-      ),
-    ).toThrow("postgres_generation_equivalence_failed");
+      adapter.quiesceSource({
+        adminUrl: "postgresql://admin:s@source.internal/db",
+        writerSuspension: { services: [], complete: true },
+        reconnectUrls: {},
+      }),
+    ).toThrow("postgres_generation_writers_not_observably_suspended");
+  });
+});
+
+describe("generation equivalence", () => {
+  it("streams table rows and binds the complete catalog matrix", async () => {
+    const execute = vi.fn((_command, args: readonly string[]) => {
+      const sql = args.at(-1) ?? "";
+      if (sql.includes("json_agg(n.nspname||'.'||c.relname"))
+        return { stdout: '["public.items"]\n' };
+      return { stdout: "[]\n" };
+    });
+    const hashStdout = vi
+      .fn()
+      .mockResolvedValue({ rows: 3, sha256: `sha256:${"a".repeat(64)}` });
+    const adapter = new PostgreSqlGenerationAdapter({ execute, hashStdout });
+    const result = await adapter.verifyEquivalence(
+      "postgresql://a:s@source.internal/db",
+      "postgresql://a:s@target.internal/db",
+    );
+    expect(result.evidence.streamingHash).toBe(true);
+    expect(Object.keys(result.evidence.catalogSha256)).toHaveLength(7);
+    expect(hashStdout).toHaveBeenCalledTimes(2);
+    expect(String(hashStdout.mock.calls[0]?.[1].at(-1))).toContain(
+      "COPY (SELECT",
+    );
   });
 });

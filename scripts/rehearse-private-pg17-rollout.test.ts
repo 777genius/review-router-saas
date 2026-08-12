@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { validateRehearsalConfiguration } from "./rehearse-private-pg17-rollout.mjs";
 
 const digest = "d".repeat(64);
@@ -26,5 +27,23 @@ describe("disposable dual-version rehearsal", () => {
     expect(() => validateRehearsalConfiguration({})).toThrow(
       "private_pg17_rehearsal_explicit_opt_in_required",
     );
+  });
+  it("routes rehearsal state through production use cases, SQL generators, and evidence verifier", () => {
+    const source = readFileSync(
+      "scripts/rehearse-private-pg17-rollout.mjs",
+      "utf8",
+    );
+    for (const required of [
+      "ReleaseRolloutUseCases",
+      "roleProvisioningSql",
+      "runtimeGrantSql",
+      "canonicalActivationSql",
+      "assembleTrustedRolloutEvidence",
+      "reconnectDenied",
+      "beginCompensation",
+      "assertPromotionAllowed",
+    ])
+      expect(source).toContain(required);
+    expect(source).not.toContain("writersSuspended: true");
   });
 });

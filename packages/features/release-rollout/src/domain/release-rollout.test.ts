@@ -1,234 +1,155 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyStepReceipt,
-  assertRollbackTargetAllowed,
-  assertRunnerIdentity,
-  canonicalJson,
+  assertPromotionAllowed,
+  beginCompensation,
+  completeCompensation,
   createReleaseRollout,
-  parseRolloutPhase,
-  parseRolloutStep,
   RolloutPhase,
   RolloutStep,
-  sha256Canonical,
-  type ActivationReceipt,
-  type StepReceipt,
+  transitionFailure,
+  transitionFromObservation,
 } from "./release-rollout";
 
 const digest = `sha256:${"a".repeat(64)}`;
-const source = {
-  renderResourceId: "dpg-source-pg16",
-  systemIdentifier: "741991001",
-  majorVersion: 16 as const,
-  recoveryWitnessSha256: "b".repeat(64),
-};
-const target = {
-  renderResourceId: "dpg-target-pg17",
-  systemIdentifier: "852002002",
-  majorVersion: 17 as const,
-  recoveryWitnessSha256: "c".repeat(64),
-};
 const create = () =>
   createReleaseRollout({
-    rolloutId: "rollout-2026-08-11",
+    rolloutId: "rollout-2026-08-12",
     expectedCommitSha: "d".repeat(40),
-    source,
-    target,
+    execution: {
+      organization: "reviewrouter-control",
+      controlRepository: "reviewrouter-control/releases",
+      workflowPath: ".github/workflows/private-network-pg17-rollout.yml",
+      workflowRef: "refs/heads/main",
+      event: "workflow_dispatch",
+      actor: "release-operator",
+      runId: "123",
+      runAttempt: 1,
+      expectedJobName: "copy-and-role-bootstrap-private",
+    },
+    source: {
+      renderResourceId: "dpg-source",
+      internalHostname: "dpg-source.internal",
+      databaseName: "reviewrouter",
+      systemIdentifier: "100",
+      majorVersion: 16,
+      recoveryWitnessSha256: "b".repeat(64),
+    },
+    target: {
+      renderResourceId: "dpg-target",
+      internalHostname: "dpg-target.internal",
+      databaseName: "reviewrouter",
+      systemIdentifier: "200",
+      majorVersion: 17,
+      recoveryWitnessSha256: "c".repeat(64),
+    },
   });
-const order = [
+const steps = [
+  RolloutStep.ClaimRollout,
   RolloutStep.FreezeProviderServices,
-  RolloutStep.ProvisionPrivateRunner,
+  RolloutStep.ProvisionRoleRunner,
   RolloutStep.CaptureSourceBackup,
   RolloutStep.QuiesceSource,
   RolloutStep.CopyDatabaseGeneration,
   RolloutStep.VerifyDataEquivalence,
   RolloutStep.BootstrapTargetRoles,
+  RolloutStep.CleanupRoleRunner,
+  RolloutStep.ProvisionCutoverRunner,
   RolloutStep.RunReleaseMigration,
   RolloutStep.StageTargetServices,
   RolloutStep.ActivateTargetGeneration,
+  RolloutStep.CleanupCutoverRunner,
+  RolloutStep.ResumeTargetServices,
+  RolloutStep.VerifyLiveCanary,
   RolloutStep.VerifyTrustedRollout,
-  RolloutStep.CleanupEphemeralRunner,
 ] as const;
+const observe = (step: (typeof steps)[number], index: number) => ({
+  step,
+  observedAt: `2026-08-12T00:00:${String(index).padStart(2, "0")}.000Z`,
+  facts:
+    step === RolloutStep.ActivateTargetGeneration
+      ? {
+          firstWriteBoundary: true,
+          canonicalPrivilegesSha256: digest,
+          catalogFactsSha256: digest,
+          firstWriteReceiptSha256: digest,
+          transactionId: "42",
+        }
+      : { observed: true },
+});
 
-function receipt(
-  step: (typeof order)[number],
-  index: number,
-): StepReceipt | ActivationReceipt {
-  const common = {
-    step,
-    receiptId: `receipt-${index}`,
-    observedAt: `2026-08-11T00:00:${String(index).padStart(2, "0")}.000Z`,
-    payloadSha256: digest,
-  };
-  if (step !== RolloutStep.ActivateTargetGeneration) return common;
-  return {
-    ...common,
-    step: RolloutStep.ActivateTargetGeneration,
-    sourceSystemIdentifier: source.systemIdentifier,
-    targetSystemIdentifier: target.systemIdentifier,
-    canonicalPrivilegesSha256: digest,
-    transactionId: "transaction-activate-1",
-    firstWriteBoundary: true,
-  };
-}
-
-describe("release rollout domain", () => {
-  it("runs the exact closed transition sequence and preserves activation", () => {
+describe("release rollout domain policy", () => {
+  it("hash-chains observation-derived receipts through activation, resume, cleanup, and verification", () => {
     let rollout = create();
-    order.forEach((step, index) => {
-      rollout = applyStepReceipt(rollout, receipt(step, index));
+    steps.forEach((step, index) => {
+      rollout = transitionFromObservation(rollout, observe(step, index));
     });
-    expect(rollout.phase).toBe(RolloutPhase.RunnerCleaned);
-    expect(rollout.receipts.map((item) => item.step)).toEqual(order);
-    expect(rollout.activated).toBe(true);
-    expect(rollout.activationReceipt?.firstWriteBoundary).toBe(true);
-  });
-
-  it("accepts only byte-equivalent replay and rejects splice replay", () => {
-    const first = receipt(order[0], 0);
-    const rollout = applyStepReceipt(create(), first);
-    expect(applyStepReceipt(rollout, { ...first })).toBe(rollout);
-    expect(() =>
-      applyStepReceipt(rollout, {
-        ...first,
-        payloadSha256: `sha256:${"e".repeat(64)}`,
-      }),
-    ).toThrow("rollout_receipt_conflicting_replay");
-    expect(() =>
-      applyStepReceipt(rollout, {
-        ...receipt(order[1], 1),
-        receiptId: first.receiptId,
-      }),
-    ).toThrow("rollout_receipt_conflicting_replay");
-  });
-
-  it.each(order.slice(1).map((step, index) => [step, index] as const))(
-    "rejects out-of-order %s",
-    (step, index) => {
-      expect(() =>
-        applyStepReceipt(create(), receipt(step, index + 1)),
-      ).toThrow("rollout_transition_stale_or_out_of_order");
-    },
-  );
-
-  it("rejects stale steps after advancement", () => {
-    const rollout = applyStepReceipt(create(), receipt(order[0], 0));
-    expect(() => applyStepReceipt(rollout, receipt(order[0], 2))).toThrow(
-      "rollout_receipt_conflicting_replay",
+    expect(rollout.phase).toBe(RolloutPhase.RolloutVerified);
+    expect(rollout.receipts[0]?.previousReceiptSha256).toBe(
+      `sha256:${"0".repeat(64)}`,
     );
+    expect(rollout.receipts[1]?.previousReceiptSha256).toBe(
+      rollout.receipts[0]?.receiptSha256,
+    );
+    expect(rollout.sourcePermanentlyIneligible).toBe(true);
   });
 
-  it("rejects wrong and non-distinct generations", () => {
+  it("rejects replay, transplant secrets, out-of-order transitions, and retry attempts", () => {
+    const first = transitionFromObservation(
+      create(),
+      observe(RolloutStep.ClaimRollout, 0),
+    );
     expect(() =>
-      createReleaseRollout({
-        rolloutId: "rollout-x",
-        expectedCommitSha: "d".repeat(40),
-        source: { ...source, majorVersion: 17 },
-        target,
+      transitionFromObservation(first, observe(RolloutStep.ClaimRollout, 1)),
+    ).toThrow("rollout_receipt_replay_forbidden");
+    expect(() =>
+      transitionFromObservation(
+        create(),
+        observe(RolloutStep.QuiesceSource, 1),
+      ),
+    ).toThrow("rollout_transition_stale_or_out_of_order");
+    expect(() =>
+      transitionFromObservation(create(), {
+        ...observe(RolloutStep.ClaimRollout, 0),
+        facts: { url: "postgresql://user:password@db.internal/x" },
       }),
-    ).toThrow("database_generation_major_version_mismatch");
+    ).toThrow("rollout_observation_contains_secret");
     expect(() =>
       createReleaseRollout({
-        rolloutId: "rollout-x",
-        expectedCommitSha: "d".repeat(40),
-        source,
-        target: { ...target, systemIdentifier: source.systemIdentifier },
+        ...create(),
+        execution: { ...create().execution, runAttempt: 2 },
+      }),
+    ).toThrow("release_run_retry_forbidden");
+  });
+
+  it("permits complete pre-activation compensation but permanently bans PG16 after activation uncertainty", () => {
+    const pre = transitionFailure(create(), "definite_pre_activation");
+    expect(completeCompensation(beginCompensation(pre)).phase).toBe(
+      RolloutPhase.RecoveryCompensated,
+    );
+    const uncertain = transitionFailure(create(), "activation_uncertain");
+    expect(() => beginCompensation(uncertain)).toThrow(
+      "source_compensation_forbidden",
+    );
+    expect(() =>
+      assertPromotionAllowed(uncertain, uncertain.source.systemIdentifier),
+    ).toThrow("source_generation_permanently_ineligible");
+    expect(() =>
+      assertPromotionAllowed(uncertain, uncertain.target.systemIdentifier),
+    ).not.toThrow();
+  });
+
+  it("requires an organization-owned control repository and distinct observed generations", () => {
+    expect(() =>
+      createReleaseRollout({
+        ...create(),
+        execution: { ...create().execution, organization: "other" },
+      }),
+    ).toThrow("release_control_repository_not_organization_owned");
+    expect(() =>
+      createReleaseRollout({
+        ...create(),
+        target: { ...create().target, systemIdentifier: "100" },
       }),
     ).toThrow("database_generations_not_distinct");
-  });
-
-  it("binds activation to both generations and a transactional first-write receipt", () => {
-    let rollout = create();
-    order.slice(0, 9).forEach((step, index) => {
-      rollout = applyStepReceipt(rollout, receipt(step, index));
-    });
-    const activation = receipt(
-      RolloutStep.ActivateTargetGeneration,
-      9,
-    ) as ActivationReceipt;
-    const wrongGeneration: ActivationReceipt = {
-      ...activation,
-      targetSystemIdentifier: "900",
-    };
-    expect(() => applyStepReceipt(rollout, wrongGeneration)).toThrow(
-      "activation_receipt_invalid",
-    );
-    expect(() =>
-      applyStepReceipt(rollout, {
-        ...activation,
-        firstWriteBoundary: false,
-      } as unknown as ActivationReceipt),
-    ).toThrow("activation_receipt_invalid");
-    rollout = applyStepReceipt(rollout, activation);
-    expect(() =>
-      assertRollbackTargetAllowed(rollout, source.systemIdentifier),
-    ).toThrow("source_generation_promotion_forbidden_after_first_write");
-    expect(() =>
-      assertRollbackTargetAllowed(rollout, target.systemIdentifier),
-    ).not.toThrow();
-  });
-
-  it("permits PG16 rollback before activation only", () => {
-    expect(() =>
-      assertRollbackTargetAllowed(create(), source.systemIdentifier),
-    ).not.toThrow();
-    expect(() => assertRollbackTargetAllowed(create(), "12345")).toThrow(
-      "rollback_generation_unknown",
-    );
-  });
-
-  it("uses strict enums with no unknown extension", () => {
-    expect(parseRolloutPhase(RolloutPhase.Planned)).toBe(RolloutPhase.Planned);
-    expect(parseRolloutStep(RolloutStep.QuiesceSource)).toBe(
-      RolloutStep.QuiesceSource,
-    );
-    expect(() => parseRolloutPhase("pending-ish")).toThrow(
-      "rollout_phase_unknown",
-    );
-    expect(() => parseRolloutStep("custom_step")).toThrow(
-      "rollout_step_unknown",
-    );
-  });
-
-  it("canonicalizes object keys and hashes deterministically", () => {
-    expect(canonicalJson({ z: 1, a: { y: 2, x: 3 } })).toBe(
-      '{"a":{"x":3,"y":2},"z":1}',
-    );
-    expect(sha256Canonical({ b: 2, a: 1 })).toBe(
-      sha256Canonical({ a: 1, b: 2 }),
-    );
-  });
-
-  it("binds the runner to the exact repository run attempt SHA and unique label", () => {
-    const identity = {
-      repository: "777genius/review-router",
-      runId: "123",
-      runAttempt: 2,
-      commitSha: "d".repeat(40),
-      jitLabel: "rr-123-2-deadbeef",
-      runnerName: "render-runner-123",
-      renderJobId: "job-123",
-      baseServiceId: "srv-runner-base",
-      baseDeployId: "dep-runner-v1",
-      imageDigest: digest,
-    };
-    const expected = {
-      repository: identity.repository,
-      runId: identity.runId,
-      runAttempt: identity.runAttempt,
-      commitSha: identity.commitSha,
-      jitLabel: identity.jitLabel,
-    };
-    expect(() => assertRunnerIdentity(identity, expected)).not.toThrow();
-    for (const mutation of [
-      { repository: "attacker/repo" },
-      { runId: "124" },
-      { runAttempt: 1 },
-      { commitSha: "e".repeat(40) },
-      { jitLabel: "reused" },
-    ]) {
-      expect(() =>
-        assertRunnerIdentity({ ...identity, ...mutation }, expected),
-      ).toThrow("runner_identity_mismatch");
-    }
   });
 });

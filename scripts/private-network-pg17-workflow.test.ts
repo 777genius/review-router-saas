@@ -1,101 +1,120 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const workflowPath = ".github/workflows/private-network-pg17-rollout.yml";
-const workflow = readFileSync(workflowPath, "utf8");
-const runnerDockerfile = readFileSync(
-  "deploy/private-runner/Dockerfile",
+const workflow = readFileSync(
+  ".github/workflows/private-network-pg17-rollout.yml",
   "utf8",
 );
+const controller = readFileSync(
+  ".github/workflows/private-pg17-runner-controller.yml",
+  "utf8",
+);
+const dockerfile = readFileSync("deploy/private-runner/Dockerfile", "utf8");
 const bootstrap = readFileSync("deploy/private-runner/bootstrap.mjs", "utf8");
-
-function jobBlocks(source: string): string[] {
+const launcher = readFileSync(
+  "deploy/private-runner/launch-and-cleanup.mjs",
+  "utf8",
+);
+function jobs(source: string): string[] {
   return source
     .split(/^ {2}(?=[a-z][a-z0-9-]+:\n)/mu)
     .slice(1)
     .map((block) => `  ${block}`);
 }
 
-describe("private-network PG17 workflow contract", () => {
-  it("allows GitHub-hosted jobs to perform Render control operations only", () => {
-    const hosted = jobBlocks(workflow).filter((block) =>
-      block.includes("runs-on: ubuntu-24.04"),
-    );
-    expect(hosted.length).toBeGreaterThanOrEqual(5);
-    for (const block of hosted) {
-      expect(block).not.toContain("DATABASE_URL");
-      expect(block).not.toContain("psql");
-      expect(block).not.toContain("pg_dump");
-      expect(block).not.toContain("pg_restore");
-    }
-  });
-
-  it("places every database URL on a unique private runner job", () => {
-    const databaseJobs = jobBlocks(workflow).filter((block) =>
+describe("private-network PG17 workflow security contract", () => {
+  it("keeps database credentials exclusively on exact execution steps of runner-group jobs", () => {
+    const databaseJobs = jobs(workflow).filter((block) =>
       block.includes("DATABASE_URL"),
     );
     expect(databaseJobs).toHaveLength(2);
     for (const block of databaseJobs) {
-      expect(block).toContain("self-hosted");
-      expect(block).toContain("needs.");
-      expect(block).toContain("outputs.label");
-      expect(block).toContain("persist-credentials: false");
+      expect(block).toContain(
+        "group: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}",
+      );
+      expect(block.indexOf("pnpm install --frozen-lockfile")).toBeLessThan(
+        block.indexOf("REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL:"),
+      );
+      expect(block.slice(0, block.indexOf("steps:"))).not.toContain("secrets.");
+    }
+    for (const block of jobs(workflow).filter((item) =>
+      item.includes("runs-on: ubuntu-24.04"),
+    )) {
+      expect(block).not.toContain("DATABASE_URL");
+      expect(block).not.toMatch(/\bpsql\b|\bpg_dump\b|\bpg_restore\b/u);
     }
   });
 
-  it("isolates role-bootstrap credential from migration and runtime", () => {
-    const roleJob = jobBlocks(workflow).find((block) =>
-      block.startsWith("  role-bootstrap-private:"),
+  it("uses a workflow_job controller so exact queued job identity exists before JIT generation", () => {
+    expect(controller).toContain("workflow_job:");
+    expect(controller).toContain("types: [queued, completed]");
+    expect(controller).toContain(
+      "REVIEW_ROUTER_TARGET_WORKFLOW_JOB_ID: ${{ github.event.workflow_job.id }}",
     );
-    const cutoverJob = jobBlocks(workflow).find((block) =>
-      block.startsWith("  pg17-cutover-private:"),
-    );
-    expect(roleJob).toContain("environment: production-role-bootstrap");
-    expect(roleJob).toContain("REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL");
-    expect(cutoverJob).toContain("environment: production");
-    expect(cutoverJob).not.toContain(
-      "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
-    );
+    expect(controller).toContain("REVIEW_ROUTER_RUNNER_GROUP_ID");
+    expect(controller).toContain("cleanup-runners");
+    expect(workflow).not.toContain("outputs.label");
   });
 
-  it("pins Actions and immutable runner artifact facts", () => {
-    expect(workflow).not.toMatch(/uses: [^\n]+@(main|master|v\d+)/u);
-    expect(workflow).toContain("REVIEW_ROUTER_RUNNER_BASE_DEPLOY_ID");
-    expect(workflow).toContain("REVIEW_ROUTER_RUNNER_BASE_IMAGE_DIGEST");
-    expect(workflow).toContain('test "$GITHUB_REF" = refs/heads/main');
+  it("fails closed on control-repository, protected environment, retry, and unique rollout preconditions", () => {
     expect(workflow).toContain(
-      'test "$GITHUB_SHA" = "$REVIEW_ROUTER_EXPECTED_SHA"',
+      "run-name: private-pg17:${{ inputs.rollout_id }}",
     );
+    expect(workflow).toContain("production-release-preflight");
+    expect(workflow).toContain("observe-private-pg17-protected-environment.ts");
+    expect(workflow).toContain("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY");
+    expect(workflow).toContain("cancel-in-progress: false");
   });
 
-  it("keeps the runner base free of database credentials", () => {
-    expect(runnerDockerfile).not.toMatch(
-      /DATABASE_URL|PGPASSWORD|postgresql:\/\//u,
+  it("splits runner control, provenance read, and service suspension credentials", () => {
+    expect(workflow).toContain("RENDER_RUNNER_CONTROL_API_KEY");
+    expect(workflow).toContain("RENDER_PROVENANCE_READ_API_KEY");
+    expect(workflow).toContain("RENDER_SERVICE_SUSPENSION_API_KEY");
+    const finalize = jobs(workflow).find((block) =>
+      block.startsWith("  finalize-trusted-rollout:"),
+    )!;
+    expect(finalize).not.toContain("RENDER_RUNNER_CONTROL_API_KEY");
+    expect(finalize).not.toContain("DATABASE_URL");
+  });
+
+  it("runs cleanup before target resume/live canary/evidence and always reconciles compensation", () => {
+    expect(workflow.indexOf("await-cutover-runner-cleanup:")).toBeLessThan(
+      workflow.indexOf("finalize-trusted-rollout:"),
     );
-    expect(runnerDockerfile).toContain("GITHUB_ACTIONS_RUNNER_SHA256");
-    expect(runnerDockerfile).toContain("sha256sum --check --strict");
+    expect(workflow).toContain("finalize-private-pg17-rollout.ts");
+    expect(workflow).toContain("if: ${{ always() }}");
+    expect(workflow).toContain("always-reconcile-runners-and-compensation");
   });
 
-  it("removes bootstrap credentials before the workflow process", () => {
-    const deleteOffset = bootstrap.indexOf("delete process.env[name]");
-    const spawnOffset = bootstrap.indexOf("runOneJobRunner({");
-    expect(deleteOffset).toBeGreaterThan(0);
-    expect(spawnOffset).toBeGreaterThan(deleteOffset);
-    expect(bootstrap).not.toMatch(/console\.|process\.stdout|process\.stderr/u);
-  });
-
-  it("retires all legacy GitHub-hosted DB workflow bodies", () => {
+  it("uses only SHA-pinned actions and removes retired bypass workflows", () => {
+    expect(`${workflow}\n${controller}`).not.toMatch(
+      /uses: [^\n]+@(main|master|v\d+)/u,
+    );
     for (const path of [
       ".github/workflows/codex-rotating-role-bootstrap.yml",
       ".github/workflows/codex-rotating-release-migration.yml",
       ".github/workflows/codex-rotating-rollout-evidence.yml",
-    ]) {
-      const alias = readFileSync(path, "utf8");
-      expect(alias).toContain(
-        "uses: ./.github/workflows/private-network-pg17-rollout.yml",
-      );
-      expect(alias).not.toContain("DATABASE_URL");
-      expect(alias).not.toContain("runs-on: ubuntu");
-    }
+    ])
+      expect(existsSync(path)).toBe(false);
+  });
+
+  it("pins base image and runner download, and never supplies the App private key by env", () => {
+    expect(dockerfile).toMatch(
+      /^FROM node:24-bookworm-slim@sha256:[a-f0-9]{64}/mu,
+    );
+    expect(dockerfile).toContain("GITHUB_ACTIONS_RUNNER_SHA256");
+    expect(dockerfile).toContain("sha256sum --check --strict");
+    expect(bootstrap).toContain(
+      "REVIEW_ROUTER_RUNNER_GITHUB_APP_PRIVATE_KEY_FILE",
+    );
+    expect(bootstrap).toContain(
+      "private_runner_private_key_environment_forbidden",
+    );
+    expect(bootstrap).toContain("process.execve");
+    expect(launcher).toContain('runnerPath: "/runner/bin/Runner.Listener"');
+    expect(launcher).toContain("cleanupRunnerWorkspace");
+    expect(launcher.indexOf("cleanupRunnerWorkspace")).toBeLessThan(
+      launcher.indexOf("process.stdout.write"),
+    );
   });
 });

@@ -512,7 +512,6 @@ END
 $activation_boundary$;
 DROP FUNCTION IF EXISTS reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text);
 DROP FUNCTION IF EXISTS reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text);
-DROP SCHEMA IF EXISTS reviewrouter_bootstrap;
 DO $transfer_public_ownership$
 DECLARE owned_object record;
 BEGIN
@@ -574,19 +573,61 @@ END
 $bootstrap_schema$;
 REVOKE ALL ON SCHEMA reviewrouter_bootstrap FROM PUBLIC;
 GRANT USAGE ON SCHEMA reviewrouter_bootstrap TO reviewrouter_release_migration;
-CREATE TABLE reviewrouter_bootstrap.release_generation_activation_receipt (
+CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_generation_activation_receipt (
   rollout_id text PRIMARY KEY,
   source_system_identifier text NOT NULL,
   target_system_identifier text NOT NULL,
   canonical_privileges_sha256 text NOT NULL CHECK (canonical_privileges_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  catalog_facts_sha256 text NOT NULL CHECK (catalog_facts_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  first_write_receipt_sha256 text NOT NULL CHECK (first_write_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   transaction_id bigint NOT NULL,
   activated_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
   CHECK (source_system_identifier ~ '^[0-9]+$'),
   CHECK (target_system_identifier ~ '^[0-9]+$'),
   CHECK (source_system_identifier <> target_system_identifier)
 );
+ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt
+  ADD COLUMN IF NOT EXISTS catalog_facts_sha256 text NOT NULL CHECK (catalog_facts_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  ADD COLUMN IF NOT EXISTS first_write_receipt_sha256 text NOT NULL CHECK (first_write_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$');
 ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON TABLE reviewrouter_bootstrap.release_generation_activation_receipt FROM PUBLIC;
+CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_rollout_ledger (
+  rollout_id text PRIMARY KEY,
+  expected_commit_sha text NOT NULL CHECK (expected_commit_sha ~ '^[a-f0-9]{40}$'),
+  run_id text NOT NULL CHECK (run_id ~ '^[1-9][0-9]*$'),
+  run_attempt integer NOT NULL CHECK (run_attempt = 1),
+  source_system_identifier text NOT NULL CHECK (source_system_identifier ~ '^[0-9]+$'),
+  target_system_identifier text NOT NULL CHECK (target_system_identifier ~ '^[0-9]+$'),
+  authoritative_system_identifier text NOT NULL,
+  activation_boundary text NOT NULL CHECK (activation_boundary IN ('before','activated','uncertain')),
+  source_permanently_ineligible boolean NOT NULL DEFAULT false,
+  last_receipt_sha256 text NOT NULL CHECK (last_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  claimed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  CHECK (source_system_identifier <> target_system_identifier),
+  CHECK (authoritative_system_identifier IN (source_system_identifier,target_system_identifier)),
+  CHECK (NOT source_permanently_ineligible OR authoritative_system_identifier <> source_system_identifier)
+);
+ALTER TABLE reviewrouter_bootstrap.release_rollout_ledger OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON TABLE reviewrouter_bootstrap.release_rollout_ledger FROM PUBLIC;
+CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_runner_job_ledger (
+  job_id text PRIMARY KEY,
+  rollout_id text NOT NULL REFERENCES reviewrouter_bootstrap.release_rollout_ledger(rollout_id),
+  service_id text NOT NULL,
+  observed_at timestamptz NOT NULL,
+  cleanup_canary text NOT NULL,
+  lifecycle text NOT NULL CHECK (lifecycle IN ('role','cutover')),
+  terminal_at timestamptz,
+  cleanup_observation jsonb,
+  runner_identity jsonb,
+  provision_observation jsonb,
+  CHECK (terminal_at IS NULL OR terminal_at >= observed_at)
+);
+ALTER TABLE reviewrouter_bootstrap.release_runner_job_ledger
+  ADD COLUMN IF NOT EXISTS cleanup_observation jsonb,
+  ADD COLUMN IF NOT EXISTS runner_identity jsonb,
+  ADD COLUMN IF NOT EXISTS provision_observation jsonb;
+ALTER TABLE reviewrouter_bootstrap.release_runner_job_ledger OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON TABLE reviewrouter_bootstrap.release_runner_job_ledger FROM PUBLIC;
 CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.activate_generation(
   requested_rollout_id text,
   requested_source_system_identifier text,
@@ -598,6 +639,9 @@ SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $activation$
 DECLARE observed reviewrouter_bootstrap.release_generation_activation_receipt%ROWTYPE;
+DECLARE catalog_facts_sha256 text;
+DECLARE first_write_receipt_sha256 text;
+DECLARE unexpected_schema text;
 BEGIN
   IF session_user <> 'reviewrouter_release_migration'
      OR requested_rollout_id !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$'
@@ -608,23 +652,48 @@ BEGIN
     RAISE EXCEPTION 'generation activation receipt invalid';
   END IF;
   PERFORM pg_advisory_xact_lock(1381126735, 1094931534);
+  SELECT nspname INTO unexpected_schema FROM pg_namespace
+  WHERE nspname NOT IN ('public','reviewrouter_bootstrap','pg_catalog','information_schema')
+    AND nspname !~ '^pg_(toast|temp|toast_temp)' ORDER BY nspname LIMIT 1;
+  IF unexpected_schema IS NOT NULL THEN
+    RAISE EXCEPTION 'unclassified application schema % blocks activation', unexpected_schema;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_roles
+    WHERE rolname = ANY (ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])
+      AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
+  ) OR EXISTS (
+    SELECT 1 FROM pg_roles runtime
+    JOIN pg_class relation ON relation.relowner=runtime.oid
+    JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+    WHERE runtime.rolname = ANY (ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])
+      AND namespace.nspname='public'
+  ) OR has_database_privilege('public', current_database(), 'CONNECT')
+     OR has_schema_privilege('public', 'public', 'CREATE') THEN
+    RAISE EXCEPTION 'canonical runtime role/ownership/PUBLIC matrix invalid';
+  END IF;
+  SELECT 'sha256:' || encode(digest(convert_to(jsonb_build_object(
+    'roles', (SELECT jsonb_agg(jsonb_build_object('role',rolname,'connect',has_database_privilege(rolname,current_database(),'CONNECT'),'bypassRls',rolbypassrls) ORDER BY rolname) FROM pg_roles WHERE rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])),
+    'schemas', (SELECT jsonb_agg(jsonb_build_object('schema',nspname,'owner',pg_get_userbyid(nspowner),'acl',nspacl) ORDER BY nspname) FROM pg_namespace WHERE nspname IN ('public','reviewrouter_bootstrap')),
+    'defaultPrivileges', (SELECT coalesce(jsonb_agg(jsonb_build_object('owner',pg_get_userbyid(defaclrole),'namespace',defaclnamespace,'type',defaclobjtype,'acl',defaclacl) ORDER BY defaclrole,defaclnamespace,defaclobjtype),'[]'::jsonb) FROM pg_default_acl),
+    'rls', (SELECT coalesce(jsonb_agg(jsonb_build_object('table',oid::regclass::text,'enabled',relrowsecurity,'forced',relforcerowsecurity) ORDER BY oid::regclass::text),'[]'::jsonb) FROM pg_class WHERE relnamespace='public'::regnamespace AND relkind IN ('r','p'))
+  )::text,'UTF8'),'sha256'),'hex') INTO catalog_facts_sha256;
   SELECT * INTO observed
   FROM reviewrouter_bootstrap.release_generation_activation_receipt
   WHERE rollout_id = requested_rollout_id;
-  IF FOUND AND (
-    observed.source_system_identifier <> requested_source_system_identifier
-    OR observed.target_system_identifier <> requested_target_system_identifier
-    OR observed.canonical_privileges_sha256 <> requested_canonical_privileges_sha256
-  ) THEN
-    RAISE EXCEPTION 'conflicting activation receipt replay';
-  ELSIF NOT FOUND THEN
+  IF FOUND THEN
+    RAISE EXCEPTION 'duplicate activation receipt rejected';
+  ELSE
+    first_write_receipt_sha256 := 'sha256:' || encode(digest(convert_to(requested_rollout_id || ':' || requested_source_system_identifier || ':' || requested_target_system_identifier || ':' || requested_canonical_privileges_sha256 || ':' || catalog_facts_sha256,'UTF8'),'sha256'),'hex');
     INSERT INTO reviewrouter_bootstrap.release_generation_activation_receipt (
       rollout_id, source_system_identifier, target_system_identifier,
-      canonical_privileges_sha256, transaction_id
+      canonical_privileges_sha256, catalog_facts_sha256,
+      first_write_receipt_sha256, transaction_id
     ) VALUES (
       requested_rollout_id, requested_source_system_identifier,
       requested_target_system_identifier,
-      requested_canonical_privileges_sha256, txid_current()
+      requested_canonical_privileges_sha256, catalog_facts_sha256,
+      first_write_receipt_sha256, txid_current()
     ) RETURNING * INTO observed;
   END IF;
   RETURN jsonb_build_object(
@@ -632,6 +701,8 @@ BEGIN
     'sourceSystemIdentifier', observed.source_system_identifier,
     'targetSystemIdentifier', observed.target_system_identifier,
     'canonicalPrivilegesSha256', observed.canonical_privileges_sha256,
+    'catalogFactsSha256', observed.catalog_facts_sha256,
+    'firstWriteReceiptSha256', observed.first_write_receipt_sha256,
     'transactionId', observed.transaction_id::text,
     'activatedAt', to_char(observed.activated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
     'firstWriteBoundary', true

@@ -1,0 +1,96 @@
+name: Private PG17 runner controller
+
+on:
+  workflow_job:
+    types: [queued, completed]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: private-pg17-runner-${{ github.event.workflow_job.run_id }}-${{ github.event.workflow_job.name }}
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    if: >-
+      github.event.action == 'queued' &&
+      github.event.workflow_job.workflow_name == 'Private-network PostgreSQL 17 release rollout' &&
+      (github.event.workflow_job.name == 'copy-and-role-bootstrap-private' || github.event.workflow_job.name == 'pg17-cutover-private')
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_job.head_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: context
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_job.run_id }}
+          REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+        run: node --import tsx scripts/resolve-private-pg17-run-context.ts
+      - name: Validate target workflow job and provision exact JIT runner
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
+          REVIEW_ROUTER_EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
+          REVIEW_ROUTER_TARGET_SHA: ${{ steps.context.outputs.expected_sha }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_job.run_id }}
+          REVIEW_ROUTER_TARGET_RUN_ATTEMPT: ${{ steps.context.outputs.run_attempt }}
+          REVIEW_ROUTER_TARGET_WORKFLOW_JOB_ID: ${{ github.event.workflow_job.id }}
+          REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: ${{ github.event.workflow_job.name }}
+          REVIEW_ROUTER_RUNNER_PURPOSE: ${{ github.event.workflow_job.name == 'copy-and-role-bootstrap-private' && 'role-bootstrap' || 'cutover' }}
+          REVIEW_ROUTER_RELEASE_CONTROL_ORG: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_ORG }}
+          REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY }}
+          REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+          REVIEW_ROUTER_RUNNER_GROUP_ID: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_ID }}
+          REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID }}
+          REVIEW_ROUTER_RUNNER_PROVENANCE_JSON: ${{ vars.REVIEW_ROUTER_RUNNER_PROVENANCE_JSON }}
+          REVIEW_ROUTER_RUNNER_COMPUTE_PLAN_ID: ${{ vars.REVIEW_ROUTER_RUNNER_COMPUTE_PLAN_ID }}
+          RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
+        run: node --import tsx scripts/release-rollout-render-control.ts provision
+      - name: Unconditionally reconcile created or orphaned runner jobs
+        if: ${{ always() }}
+        env:
+          RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
+          REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: provision-reconciliation.json
+        run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
+
+  cleanup:
+    if: >-
+      always() && github.event.action == 'completed' &&
+      github.event.workflow_job.workflow_name == 'Private-network PostgreSQL 17 release rollout' &&
+      (github.event.workflow_job.name == 'copy-and-role-bootstrap-private' || github.event.workflow_job.name == 'pg17-cutover-private')
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_job.head_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: context
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_job.run_id }}
+          REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+        run: node --import tsx scripts/resolve-private-pg17-run-context.ts
+      - name: Poll terminal state, prove cleanup canary, reconcile orphan ledger
+        env:
+          RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
+          REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: runner-cleanup-reconciliation.json
+        run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners

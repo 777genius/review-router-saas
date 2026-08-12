@@ -1,37 +1,50 @@
 import type { BackupIdentity } from "../domain/trusted-rollout-evidence";
-import type { RenderFetch } from "./render-private-runner";
+import type { RenderFetch } from "./render-api";
 
-function exact(
-  value: unknown,
-  keys: readonly string[],
-): value is Record<string, unknown> {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    Object.keys(value).length === keys.length &&
-    keys.every((key) => Object.hasOwn(value, key))
-  );
+const digest = /^sha256:[a-f0-9]{64}$/u;
+const timestamp = (value: string): boolean => {
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
+};
+export interface ExternalBackupWitness {
+  readonly witnessSha256: string;
+  readonly sourceResourceId: string;
+  readonly internalHostname: string;
+  readonly databaseName: string;
+  readonly systemIdentifier: string;
+  readonly lsn: string;
+  readonly capturedAt: string;
+  readonly recoveryWindowEndsAt: string;
+  readonly dumpSha256: string;
 }
 
 export class RenderBackupIdentityAdapter {
   constructor(private readonly fetchImpl: RenderFetch = fetch) {}
-
   async capture(input: {
     apiKey: string;
     sourceDatabaseId: string;
-    expectedBackupId: string;
-    expectedPitrIdentity: string;
+    externalWitness: ExternalBackupWitness;
   }): Promise<BackupIdentity> {
+    const witness = input.externalWitness;
     if (
       !input.apiKey ||
       !/^dpg-[A-Za-z0-9-]+$/u.test(input.sourceDatabaseId) ||
-      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(input.expectedBackupId) ||
-      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(input.expectedPitrIdentity)
+      witness.sourceResourceId !== input.sourceDatabaseId ||
+      !/^[a-z0-9.-]+\.internal$/u.test(witness.internalHostname) ||
+      !/^[A-Za-z_][A-Za-z0-9_-]*$/u.test(witness.databaseName) ||
+      !/^[0-9]+$/u.test(witness.systemIdentifier) ||
+      !/^[0-9A-F]+\/[0-9A-F]+$/u.test(witness.lsn) ||
+      !timestamp(witness.capturedAt) ||
+      !timestamp(witness.recoveryWindowEndsAt) ||
+      !digest.test(witness.witnessSha256) ||
+      !digest.test(witness.dumpSha256)
     )
-      throw new Error("render_backup_identity_context_invalid");
+      throw new Error("render_backup_witness_invalid");
     const response = await this.fetchImpl(
-      `https://api.render.com/v1/postgres/${input.sourceDatabaseId}/backups/${input.expectedBackupId}`,
+      `https://api.render.com/v1/postgres/${encodeURIComponent(input.sourceDatabaseId)}/recovery`,
       {
         headers: {
           Authorization: `Bearer ${input.apiKey}`,
@@ -40,25 +53,34 @@ export class RenderBackupIdentityAdapter {
       },
     );
     if (!response.ok)
-      throw new Error(
-        `render_backup_identity_lookup_failed:${response.status}`,
-      );
-    const value = (await response.json()) as unknown;
+      throw new Error(`render_recovery_lookup_failed:${response.status}`);
+    const value = (await response.json()) as Record<string, unknown>;
     if (
-      !exact(value, ["id", "databaseId", "status", "createdAt", "pitr"]) ||
-      value.id !== input.expectedBackupId ||
-      value.databaseId !== input.sourceDatabaseId ||
-      value.status !== "available" ||
-      typeof value.createdAt !== "string" ||
-      new Date(value.createdAt).toISOString() !== value.createdAt ||
-      !exact(value.pitr, ["identity"]) ||
-      value.pitr.identity !== input.expectedPitrIdentity
+      typeof value !== "object" ||
+      typeof value.recoveryStatus !== "string" ||
+      !["available", "ready"].includes(value.recoveryStatus) ||
+      (value.startsAt !== undefined &&
+        (typeof value.startsAt !== "string" || !timestamp(value.startsAt)))
     )
-      throw new Error("render_backup_identity_response_invalid");
+      throw new Error("render_recovery_response_invalid");
+    if (
+      value.startsAt &&
+      new Date(witness.capturedAt) < new Date(value.startsAt)
+    )
+      throw new Error("render_backup_witness_outside_recovery_window");
     return Object.freeze({
-      backupId: input.expectedBackupId,
-      pitrIdentity: input.expectedPitrIdentity,
-      capturedAt: value.createdAt,
+      renderResourceId: witness.sourceResourceId,
+      internalHostname: witness.internalHostname,
+      databaseName: witness.databaseName,
+      systemIdentifier: witness.systemIdentifier,
+      lsn: witness.lsn,
+      capturedAt: witness.capturedAt,
+      recoveryWindowStartsAt:
+        typeof value.startsAt === "string" ? value.startsAt : null,
+      recoveryWindowEndsAt: witness.recoveryWindowEndsAt,
+      dumpSha256: witness.dumpSha256,
+      externalWitnessSha256: witness.witnessSha256,
+      recoveryStatus: value.recoveryStatus as "available" | "ready",
     });
   }
 }

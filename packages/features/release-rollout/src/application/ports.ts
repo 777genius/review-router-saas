@@ -1,40 +1,59 @@
 import type {
-  ActivationReceipt,
+  AuthoritativeGenerationLedger,
   DatabaseGenerationIdentity,
+  ReleaseRollout,
   RunnerIdentity,
-  StepReceipt,
+  StepObservation,
 } from "../domain/release-rollout";
 
-export interface ProviderFreezePort {
-  freezeAndObserve(): Promise<StepReceipt>;
+export interface ProviderControlPort {
+  freezeAndObserve(): Promise<StepObservation>;
+  compensateAndObserve(): Promise<StepObservation>;
 }
+
 export interface PrivateRunnerPort {
-  provision(): Promise<{ identity: RunnerIdentity; receipt: StepReceipt }>;
-  cleanup(identity: RunnerIdentity): Promise<StepReceipt>;
+  provision(): Promise<{
+    identity: RunnerIdentity;
+    observation: StepObservation;
+  }>;
+  cleanup(identity: RunnerIdentity): Promise<StepObservation>;
+  reconcileOrphans(rolloutId: string): Promise<readonly StepObservation[]>;
 }
+
 export interface DatabaseRolloutPort {
-  captureBackup(source: DatabaseGenerationIdentity): Promise<StepReceipt>;
-  quiesce(source: DatabaseGenerationIdentity): Promise<StepReceipt>;
+  captureBackup(source: DatabaseGenerationIdentity): Promise<StepObservation>;
+  quiesce(source: DatabaseGenerationIdentity): Promise<StepObservation>;
   copy(
     source: DatabaseGenerationIdentity,
     target: DatabaseGenerationIdentity,
-  ): Promise<StepReceipt>;
+  ): Promise<StepObservation>;
   verifyEquivalence(
     source: DatabaseGenerationIdentity,
     target: DatabaseGenerationIdentity,
-  ): Promise<StepReceipt>;
+  ): Promise<StepObservation>;
   bootstrapTargetRoles(
     target: DatabaseGenerationIdentity,
-  ): Promise<StepReceipt>;
-  runReleaseMigration(target: DatabaseGenerationIdentity): Promise<StepReceipt>;
+  ): Promise<StepObservation>;
+  runReleaseMigration(
+    target: DatabaseGenerationIdentity,
+  ): Promise<StepObservation>;
   activate(
     source: DatabaseGenerationIdentity,
     target: DatabaseGenerationIdentity,
-  ): Promise<ActivationReceipt>;
+  ): Promise<StepObservation>;
+  compensateSource(
+    source: DatabaseGenerationIdentity,
+  ): Promise<StepObservation>;
 }
-export interface ServiceStagingPort {
-  stageTarget(): Promise<StepReceipt>;
+
+export interface TargetServicesPort {
+  stageTarget(): Promise<StepObservation>;
+  resumeDeployAndObserve(): Promise<StepObservation>;
+  verifyLiveCanary(): Promise<StepObservation>;
 }
+
 export interface TrustedEvidencePort {
-  verify(): Promise<StepReceipt>;
+  assembleAndVerify(rollout: ReleaseRollout): Promise<StepObservation>;
 }
+
+export type RolloutLedgerPort = AuthoritativeGenerationLedger;
