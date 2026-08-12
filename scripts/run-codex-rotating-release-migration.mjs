@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const runtimeRoles = [
@@ -339,9 +342,27 @@ export function resolveReleaseMigrationConfiguration(env) {
   });
   const commit = required(env, "REVIEW_ROUTER_RELEASE_COMMIT_SHA");
   const imageDigest = required(env, "REVIEW_ROUTER_RELEASE_IMAGE_DIGEST");
+  let applicationSchemas;
+  try {
+    applicationSchemas = JSON.parse(
+      env.REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON ?? '["public"]',
+    );
+  } catch {
+    throw new Error("release_migration_application_schemas_invalid");
+  }
   if (
     !/^[a-f0-9]{40}$/u.test(commit) ||
-    !/^sha256:[a-f0-9]{64}$/u.test(imageDigest)
+    !/^sha256:[a-f0-9]{64}$/u.test(imageDigest) ||
+    !Array.isArray(applicationSchemas) ||
+    !applicationSchemas.length ||
+    new Set(applicationSchemas).size !== applicationSchemas.length ||
+    applicationSchemas.some(
+      (schema) =>
+        typeof schema !== "string" ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(schema) ||
+        schema === "information_schema" ||
+        schema.startsWith("pg_"),
+    )
   )
     throw new Error("release_migration_immutable_release_identity_invalid");
   return {
@@ -351,6 +372,7 @@ export function resolveReleaseMigrationConfiguration(env) {
     releaseUrl: releaseUrl.toString(),
     releasePassword,
     roles,
+    applicationSchemas,
   };
 }
 
@@ -371,6 +393,8 @@ export function resolveRoleBootstrapConfiguration(env) {
 }
 
 export function roleProvisioningSql(configuration) {
+  const applicationSchemas = configuration.applicationSchemas ?? ["public"];
+  const applicationSchemaLiterals = applicationSchemas.map(quoted).join(",");
   const createAndConverge = [
     ...configuration.roles,
     {
@@ -419,6 +443,14 @@ $membership$;
     .join("\n");
   return `\\set ON_ERROR_STOP on
 BEGIN;
+DO $receipt_guard$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='reviewrouter_activation_receipt_guard') THEN
+    CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+  END IF;
+END
+$receipt_guard$;
+ALTER ROLE reviewrouter_activation_receipt_guard NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ${createAndConverge}
 DO $grantor_topology$
 DECLARE total_count integer;
@@ -663,6 +695,9 @@ CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_rollout_ledger (
   activation_fence_version integer NOT NULL DEFAULT 0 CHECK (activation_fence_version >= 0),
   activation_job_id text CHECK (activation_job_id ~ '^[1-9][0-9]*$'),
   claim_version integer NOT NULL DEFAULT 1 CHECK (claim_version > 0),
+  target_switch_nonce text CHECK (target_switch_nonce ~ '^[a-f0-9]{32}$'),
+  target_switch_version integer NOT NULL DEFAULT 0 CHECK (target_switch_version >= 0),
+  target_switch_fenced_at timestamptz,
   activation_target_deploy_ids jsonb,
   activation_fenced_at timestamptz,
   activation_receipt jsonb,
@@ -677,6 +712,9 @@ ALTER TABLE reviewrouter_bootstrap.release_rollout_ledger
   ADD COLUMN IF NOT EXISTS activation_fence_version integer NOT NULL DEFAULT 0 CHECK (activation_fence_version >= 0),
   ADD COLUMN IF NOT EXISTS activation_job_id text CHECK (activation_job_id ~ '^[1-9][0-9]*$'),
   ADD COLUMN IF NOT EXISTS claim_version integer NOT NULL DEFAULT 1 CHECK (claim_version > 0),
+  ADD COLUMN IF NOT EXISTS target_switch_nonce text CHECK (target_switch_nonce ~ '^[a-f0-9]{32}$'),
+  ADD COLUMN IF NOT EXISTS target_switch_version integer NOT NULL DEFAULT 0 CHECK (target_switch_version >= 0),
+  ADD COLUMN IF NOT EXISTS target_switch_fenced_at timestamptz,
   ADD COLUMN IF NOT EXISTS activation_target_deploy_ids jsonb,
   ADD COLUMN IF NOT EXISTS activation_fenced_at timestamptz,
   ADD COLUMN IF NOT EXISTS activation_receipt jsonb;
@@ -784,7 +822,7 @@ BEGIN
   END IF;
   PERFORM pg_advisory_xact_lock(1381126735, 1094931534);
   SELECT nspname INTO unexpected_schema FROM pg_namespace
-  WHERE nspname NOT IN ('public','reviewrouter_bootstrap','pg_catalog','information_schema')
+  WHERE nspname <> ALL(ARRAY[${applicationSchemaLiterals},'reviewrouter_bootstrap','pg_catalog','information_schema'])
     AND nspname !~ '^pg_(toast|temp|toast_temp)' ORDER BY nspname LIMIT 1;
   IF unexpected_schema IS NOT NULL THEN
     RAISE EXCEPTION 'unclassified application schema % blocks activation', unexpected_schema;
@@ -798,16 +836,21 @@ BEGIN
     JOIN pg_class relation ON relation.relowner=runtime.oid
     JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
     WHERE runtime.rolname = ANY (ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])
-      AND namespace.nspname='public'
+      AND namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}])
   ) OR has_database_privilege('public', current_database(), 'CONNECT')
-     OR has_schema_privilege('public', 'public', 'CREATE') THEN
+     OR EXISTS (SELECT 1 FROM pg_namespace WHERE nspname=ANY(ARRAY[${applicationSchemaLiterals}]) AND has_schema_privilege('public',oid,'CREATE')) THEN
     RAISE EXCEPTION 'canonical runtime role/ownership/PUBLIC matrix invalid';
   END IF;
   SELECT 'sha256:' || encode(public.digest(convert_to(jsonb_build_object(
-    'roles', (SELECT jsonb_agg(jsonb_build_object('role',rolname,'connect',has_database_privilege(rolname,current_database(),'CONNECT'),'bypassRls',rolbypassrls) ORDER BY rolname) FROM pg_roles WHERE rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])),
-    'schemas', (SELECT jsonb_agg(jsonb_build_object('schema',nspname,'owner',pg_get_userbyid(nspowner),'acl',nspacl) ORDER BY nspname) FROM pg_namespace WHERE nspname IN ('public','reviewrouter_bootstrap')),
-    'defaultPrivileges', (SELECT coalesce(jsonb_agg(jsonb_build_object('owner',pg_get_userbyid(defaclrole),'namespace',defaclnamespace,'type',defaclobjtype,'acl',defaclacl) ORDER BY defaclrole,defaclnamespace,defaclobjtype),'[]'::jsonb) FROM pg_default_acl),
-    'rls', (SELECT coalesce(jsonb_agg(jsonb_build_object('table',oid::regclass::text,'enabled',relrowsecurity,'forced',relforcerowsecurity) ORDER BY oid::regclass::text),'[]'::jsonb) FROM pg_class WHERE relnamespace='public'::regnamespace AND relkind IN ('r','p'))
+    'roles', (SELECT jsonb_agg(jsonb_build_object('role',rolname,'inherit',rolinherit,'connect',has_database_privilege(rolname,current_database(),'CONNECT'),'bypassRls',rolbypassrls) ORDER BY rolname) FROM pg_roles WHERE rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])),
+    'effectiveMemberships', (SELECT coalesce(jsonb_agg(jsonb_build_object('member',runtime.rolname,'role',parent.rolname,'effectiveMember',pg_has_role(runtime.oid,parent.oid,'MEMBER'),'effectiveUsage',pg_has_role(runtime.oid,parent.oid,'USAGE')) ORDER BY runtime.rolname,parent.rolname),'[]'::jsonb) FROM pg_roles runtime CROSS JOIN pg_roles parent WHERE runtime.rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority']) AND (pg_has_role(runtime.oid,parent.oid,'MEMBER') OR pg_has_role(runtime.oid,parent.oid,'USAGE'))),
+    'membershipEdges', (SELECT coalesce(jsonb_agg(jsonb_build_object('member',member.rolname,'role',parent.rolname,'admin',membership.admin_option,'inherit',membership.inherit_option,'set',membership.set_option) ORDER BY member.rolname,parent.rolname),'[]'::jsonb) FROM pg_auth_members membership JOIN pg_roles member ON member.oid=membership.member JOIN pg_roles parent ON parent.oid=membership.roleid),
+    'schemas', (SELECT jsonb_agg(jsonb_build_object('schema',nspname,'owner',pg_get_userbyid(nspowner),'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'grantor',grantor.rolname,'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(coalesce(namespace.nspacl,acldefault('n',namespace.nspowner))) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee JOIN pg_roles grantor ON grantor.oid=expanded.grantor)) ORDER BY nspname) FROM pg_namespace namespace WHERE nspname=ANY(ARRAY[${applicationSchemaLiterals},'reviewrouter_bootstrap'])),
+    'relations', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'name',relation.relname,'kind',relation.relkind,'owner',pg_get_userbyid(relation.relowner),'rls',relation.relrowsecurity,'forceRls',relation.relforcerowsecurity,'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(coalesce(relation.relacl,acldefault(CASE WHEN relation.relkind='S' THEN 's'::"char" ELSE 'r'::"char" END,relation.relowner))) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY namespace.nspname,relation.relname),'[]'::jsonb) FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}]) AND relation.relkind IN ('r','p','v','m','S')),
+    'columns', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'table',relation.relname,'column',attribute.attname,'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(coalesce(attribute.attacl,'{}'::aclitem[])) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY namespace.nspname,relation.relname,attribute.attnum),'[]'::jsonb) FROM pg_attribute attribute JOIN pg_class relation ON relation.oid=attribute.attrelid JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}]) AND attribute.attnum>0 AND NOT attribute.attisdropped),
+    'routines', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'name',procedure.proname,'identityArguments',pg_get_function_identity_arguments(procedure.oid),'kind',procedure.prokind,'owner',pg_get_userbyid(procedure.proowner),'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(coalesce(procedure.proacl,acldefault('f',procedure.proowner))) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY namespace.nspname,procedure.proname,pg_get_function_identity_arguments(procedure.oid)),'[]'::jsonb) FROM pg_proc procedure JOIN pg_namespace namespace ON namespace.oid=procedure.pronamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}])),
+    'policies', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'table',relation.relname,'name',policy.polname,'command',policy.polcmd,'permissive',policy.polpermissive,'roles',(SELECT jsonb_agg(coalesce(role.rolname,'PUBLIC') ORDER BY coalesce(role.rolname,'PUBLIC')) FROM unnest(policy.polroles) role_id LEFT JOIN pg_roles role ON role.oid=role_id),'using',pg_get_expr(policy.polqual,policy.polrelid),'check',pg_get_expr(policy.polwithcheck,policy.polrelid)) ORDER BY namespace.nspname,relation.relname,policy.polname),'[]'::jsonb) FROM pg_policy policy JOIN pg_class relation ON relation.oid=policy.polrelid JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}])),
+    'defaultPrivileges', (SELECT coalesce(jsonb_agg(jsonb_build_object('owner',pg_get_userbyid(defaults.defaclrole),'schema',coalesce(namespace.nspname,'*'),'type',defaults.defaclobjtype,'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(defaults.defaclacl) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY pg_get_userbyid(defaults.defaclrole),coalesce(namespace.nspname,'*'),defaults.defaclobjtype),'[]'::jsonb) FROM pg_default_acl defaults LEFT JOIN pg_namespace namespace ON namespace.oid=defaults.defaclnamespace WHERE defaults.defaclnamespace=0 OR namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}]))
   )::text,'UTF8'),'sha256'),'hex') INTO catalog_facts_sha256;
   SELECT * INTO observed
   FROM reviewrouter_bootstrap.release_generation_activation_receipt
@@ -1057,6 +1100,11 @@ $receipt$;
 ALTER FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) TO reviewrouter_release_migration;
+ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_activation_receipt_guard;
+ALTER FUNCTION reviewrouter_bootstrap.reject_activation_receipt_mutation() OWNER TO reviewrouter_activation_receipt_guard;
+ALTER FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,integer,jsonb,text) OWNER TO reviewrouter_activation_receipt_guard;
+ALTER SCHEMA reviewrouter_bootstrap OWNER TO reviewrouter_activation_receipt_guard;
+REVOKE reviewrouter_activation_receipt_guard FROM reviewrouter_role_bootstrap;
 COMMIT;
 `;
 }
@@ -1295,16 +1343,81 @@ export function runReleaseMigrationSubprocess(
   args,
   { env, input } = {},
 ) {
-  const result = spawnSync(command, args, {
-    cwd: new URL("..", import.meta.url),
-    encoding: "utf8",
-    env,
-    input,
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.status !== 0)
-    throw new Error(`release_migration_step_failed:${step}`);
-  return result.stdout;
+  const databaseUrl = env?.DATABASE_URL;
+  if (!databaseUrl)
+    throw new Error(`release_migration_step_failed:${step}:credential_missing`);
+  const directory = mkdtempSync(join(tmpdir(), "rr-canonical-db-"));
+  chmodSync(directory, 0o700);
+  try {
+    let childArgs = [...args];
+    let childEnv;
+    if (command === "psql") {
+      const urlIndex = childArgs.findIndex(
+        (arg) =>
+          arg.startsWith("postgres://") || arg.startsWith("postgresql://"),
+      );
+      if (urlIndex < 0)
+        throw new Error(`release_migration_step_failed:${step}:url_missing`);
+      let url;
+      try {
+        url = new URL(childArgs[urlIndex]);
+      } catch {
+        throw new Error(`release_migration_step_failed:${step}:url_invalid`);
+      }
+      const passfile = join(directory, "pgpass");
+      const escape = (value) =>
+        value.replaceAll("\\", "\\\\").replaceAll(":", "\\:");
+      writeFileSync(
+        passfile,
+        `${escape(url.hostname)}:${escape(url.port || "5432")}:${escape(decodeURIComponent(url.pathname.slice(1)))}:${escape(decodeURIComponent(url.username))}:${escape(decodeURIComponent(url.password))}\n`,
+        { mode: 0o600, flag: "wx" },
+      );
+      childArgs.splice(
+        urlIndex,
+        1,
+        "--host",
+        url.hostname,
+        "--port",
+        url.port || "5432",
+        "--username",
+        decodeURIComponent(url.username),
+        "--dbname",
+        decodeURIComponent(url.pathname.slice(1)),
+      );
+      childEnv = {
+        PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+        LANG: "C.UTF-8",
+        PGPASSFILE: passfile,
+        ...(url.searchParams.get("sslmode")
+          ? { PGSSLMODE: url.searchParams.get("sslmode") }
+          : {}),
+      };
+    } else if (command === "node" || command === "pnpm") {
+      const credentialPath = join(directory, "database-url");
+      writeFileSync(credentialPath, databaseUrl, { mode: 0o600, flag: "wx" });
+      childEnv = {
+        PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+        LANG: "C.UTF-8",
+        REVIEW_ROUTER_DATABASE_URL_FILE: credentialPath,
+      };
+    } else {
+      throw new Error(
+        `release_migration_step_failed:${step}:command_forbidden`,
+      );
+    }
+    const result = spawnSync(command, childArgs, {
+      cwd: new URL("..", import.meta.url),
+      encoding: "utf8",
+      env: childEnv,
+      input,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (result.status !== 0)
+      throw new Error(`release_migration_step_failed:${step}`);
+    return result.stdout;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 export function executeCanonicalRoleBootstrap(

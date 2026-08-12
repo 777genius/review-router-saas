@@ -72,7 +72,7 @@ describe("transactional PG17 activation", () => {
     expect(activation.sql).toContain(activationFence.previousReceiptSha256);
   });
 
-  it("keeps the receipt behind a bootstrap-owned security-definer function", () => {
+  it("keeps the receipt behind an inaccessible append-only guard role", () => {
     const sql = roleProvisioningSql(configuration);
     expect(sql).toContain(
       "reviewrouter_bootstrap.release_generation_activation_receipt",
@@ -85,6 +85,14 @@ describe("transactional PG17 activation", () => {
       "role bootstrap forbidden after generation activation",
     );
     expect(sql).toContain("activation receipt is append-only");
+    expect(sql).toContain(
+      "ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_activation_receipt_guard",
+    );
+    expect(sql).toContain("'effectiveMemberships'");
+    expect(sql).toContain("'membershipEdges'");
+    expect(sql).toContain("'columns'");
+    expect(sql).toContain("'routines'");
+    expect(sql).toContain("'policies'");
     expect(sql).not.toContain(
       "GRANT SELECT ON TABLE reviewrouter_bootstrap.release_generation_activation_receipt",
     );

@@ -83,6 +83,7 @@ const canonical = new PrivatePg17CanonicalAdapter();
 const runner: RunnerIdentity = currentRunner.identity;
 const dumpDirectory = mkdtempSync(join(required("RUNNER_TEMP"), "rr-dump-"));
 chmodSync(dumpDirectory, 0o700);
+const dumpPath = join(dumpDirectory, "source.dump");
 const runnerObservation: StepObservation = currentRunner.observation;
 const useCases = new ReleaseRolloutUseCases({
   preflight: { observeProtectedEnvironment: unavailable },
@@ -111,7 +112,7 @@ const useCases = new ReleaseRolloutUseCases({
       });
       backupResult = database.captureBackup({
         sourceUrl,
-        dumpPath: join(dumpDirectory, "source.dump"),
+        dumpPath,
         backup,
       });
       if (backupResult.dumpSha256 !== backup.dumpSha256)
@@ -134,7 +135,7 @@ const useCases = new ReleaseRolloutUseCases({
     copy: async () =>
       database.restoreCopy({
         targetUrl,
-        dumpPath: `/runner/_work/job/${rollout.rolloutId}.dump`,
+        dumpPath,
         dumpSha256: backupResult.dumpSha256,
       }),
     verifyEquivalence: async () => {

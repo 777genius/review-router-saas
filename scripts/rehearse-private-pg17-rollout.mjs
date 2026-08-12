@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -99,6 +106,12 @@ export async function executeDisposableRehearsal(
   const directory = mkdtempSync(join(tmpdir(), "reviewrouter-pg17-rehearsal-"));
   const dumpPath = join(directory, "source.dump");
   const password = "disposable-reviewrouter-only";
+  const postgresEnvFile = join(directory, "postgres.env");
+  writeFileSync(
+    postgresEnvFile,
+    `POSTGRES_PASSWORD=${password}\nPOSTGRES_DB=reviewrouter\n`,
+    { mode: 0o600, flag: "wx" },
+  );
   let networkCreated = false;
   const createdContainers = [];
   const docker = (...args) => execute(args);
@@ -134,10 +147,8 @@ export async function executeDisposableRehearsal(
         name,
         "--publish",
         "127.0.0.1::5432",
-        "--env",
-        `POSTGRES_PASSWORD=${password}`,
-        "--env",
-        "POSTGRES_DB=reviewrouter",
+        "--env-file",
+        postgresEnvFile,
         image,
       );
       createdContainers.push(name);
@@ -200,9 +211,15 @@ export async function executeDisposableRehearsal(
         recursive: true,
       });
     const preReleasePrismaConfig = join(directory, "prisma.config.mjs");
+    const sourceDatabaseCredential = join(directory, "source-database-url");
+    writeFileSync(
+      sourceDatabaseCredential,
+      `postgresql://postgres:${password}@127.0.0.1:${sourcePort}/reviewrouter?sslmode=disable`,
+      { mode: 0o600, flag: "wx" },
+    );
     writeFileSync(
       preReleasePrismaConfig,
-      `export default { schema: ${JSON.stringify(join(preReleasePrisma, "schema.prisma"))}, migrations: { path: ${JSON.stringify(join(preReleasePrisma, "migrations"))} }, datasource: { url: process.env.DATABASE_URL ?? "" } };\n`,
+      `import { readFileSync } from "node:fs"; export default { schema: ${JSON.stringify(join(preReleasePrisma, "schema.prisma"))}, migrations: { path: ${JSON.stringify(join(preReleasePrisma, "migrations"))} }, datasource: { url: readFileSync(process.env.REVIEW_ROUTER_DATABASE_URL_FILE, "utf8").trim() } };\n`,
       { mode: 0o600 },
     );
     const sourceMigration = spawnSync(
@@ -223,7 +240,7 @@ export async function executeDisposableRehearsal(
         env: {
           PATH: process.env.PATH,
           LANG: "C.UTF-8",
-          DATABASE_URL: `postgresql://postgres:${password}@127.0.0.1:${sourcePort}/reviewrouter?sslmode=disable`,
+          REVIEW_ROUTER_DATABASE_URL_FILE: sourceDatabaseCredential,
         },
         maxBuffer: 16 * 1024 * 1024,
       },
@@ -232,7 +249,7 @@ export async function executeDisposableRehearsal(
       throw new Error("private_pg17_rehearsal_source_migration_failed");
     sql(
       source,
-      `COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE reviewrouter TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three');`,
+      `COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE reviewrouter TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three'); CREATE SCHEMA app_private; CREATE TABLE app_private.rehearsal_private(id integer PRIMARY KEY, value text); INSERT INTO app_private.rehearsal_private VALUES (1,'private'); CREATE SEQUENCE app_private.called_sequence; SELECT nextval('app_private.called_sequence'); CREATE SEQUENCE app_private.uncalled_sequence;`,
     );
     sql(
       target,
@@ -317,11 +334,13 @@ export async function executeDisposableRehearsal(
       "--exit-on-error",
       "/tmp/source.dump",
     );
-    const snapshotSql = `SELECT json_build_object('rows',(SELECT count(*) FROM rehearsal_items),'hash',(SELECT md5(string_agg(row_to_json(t)::text,'' ORDER BY id)) FROM rehearsal_items t),'sequence',(SELECT last_value FROM rehearsal_items_id_seq),'constraints',(SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace),'indexes',(SELECT count(*) FROM pg_indexes WHERE schemaname='public'),'migrations',(SELECT json_agg(m ORDER BY migration_name) FROM "_prisma_migrations" m))`;
+    const snapshotSql = `SELECT json_build_object('rows',(SELECT count(*) FROM rehearsal_items),'hash',(SELECT md5(string_agg(row_to_json(t)::text,'' ORDER BY id)) FROM rehearsal_items t),'sequence',(SELECT json_build_object('lastValue',last_value,'isCalled',is_called) FROM rehearsal_items_id_seq),'privateRows',(SELECT json_agg(row_to_json(t) ORDER BY id) FROM app_private.rehearsal_private t),'calledSequence',(SELECT json_build_object('lastValue',last_value,'isCalled',is_called) FROM app_private.called_sequence),'uncalledSequence',(SELECT json_build_object('lastValue',last_value,'isCalled',is_called) FROM app_private.uncalled_sequence),'constraints',(SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace),'indexes',(SELECT count(*) FROM pg_indexes WHERE schemaname='public'),'migrations',(SELECT json_agg(m ORDER BY migration_name) FROM "_prisma_migrations" m))`;
     const sourceSnapshot = sql(source, snapshotSql);
     const targetSnapshot = sql(target, snapshotSql);
     if (sourceSnapshot !== targetSnapshot)
       throw new Error("private_pg17_rehearsal_equivalence_failed");
+    sql(source, "DROP SCHEMA app_private CASCADE");
+    sql(target, "DROP SCHEMA app_private CASCADE");
     const configuration = disposableSqlConfiguration();
     sql(
       target,
@@ -436,6 +455,7 @@ export async function executeDisposableRehearsal(
       ),
       canonicalEnv,
       targetPort,
+      rehearsalDirectory: directory,
     });
     if (
       sql(
@@ -617,6 +637,12 @@ async function verifyProductionPathRehearsal(facts) {
     uniqueRunnerLabel: `rr-${lifecycle}`,
     workFolder: `_work/rr-${lifecycle}`,
     provenance: { kind: "image", deployId: "dep-disposable", imageSha: digest },
+    imageAttestation: {
+      subjectDigest: digest,
+      sourceCommitSha: "d".repeat(40),
+      statementSha256: digest,
+      builderId: "disposable-rehearsal-builder",
+    },
   });
   const roleRunner = runner("role", "job-role");
   const cutoverRunner = runner("cutover", "job-cutover");
@@ -644,19 +670,57 @@ async function verifyProductionPathRehearsal(facts) {
   };
   let provision = roleRunner;
   let cleanupStep = RolloutStep.CleanupRoleRunner;
+  const ledgerPath = join(
+    facts.rehearsalDirectory,
+    "durable-rollout-ledger.json",
+  );
+  const persistLedger = (value) => {
+    const temporary = `${ledgerPath}.next`;
+    let previous = {};
+    try {
+      previous = JSON.parse(readFileSync(ledgerPath, "utf8"));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    writeFileSync(temporary, `${JSON.stringify({ ...previous, ...value })}\n`, {
+      mode: 0o600,
+    });
+    renameSync(temporary, ledgerPath);
+  };
   const ledger = {
     last: `sha256:${"0".repeat(64)}`,
     state: "before",
     async claim() {
+      persistLedger({ last: this.last, state: this.state, claimed: true });
       return "claimed";
     },
     async compareAndSet(input) {
       if (input.expectedReceiptSha256 !== this.last) return false;
       this.last = input.nextReceiptSha256;
+      persistLedger({ last: this.last, state: this.state, step: input.step });
       return true;
     },
     async markActivationUncertain() {
       this.uncertain = true;
+      this.state = "uncertain";
+      persistLedger({ last: this.last, state: this.state });
+    },
+    async fenceTargetSwitch(input) {
+      if (this.state !== "before" || input.previousReceiptSha256 !== this.last)
+        return null;
+      this.targetSwitchFence = {
+        schemaVersion: 1,
+        ...input,
+        nonce: "b".repeat(32),
+        version: 1,
+        fencedAt: "2026-08-12T00:00:12.500Z",
+      };
+      persistLedger({
+        last: this.last,
+        state: this.state,
+        targetSwitchFence: this.targetSwitchFence,
+      });
+      return this.targetSwitchFence;
     },
     async fenceActivation(input) {
       if (this.state !== "before" || input.previousReceiptSha256 !== this.last)
@@ -669,6 +733,7 @@ async function verifyProductionPathRehearsal(facts) {
         version: 1,
         fencedAt: "2026-08-12T00:00:13.500Z",
       };
+      persistLedger({ last: this.last, state: this.state, fence: this.fence });
       generated.activation = canonicalActivationSql(sqlConfiguration, {
         rolloutId: input.rolloutId,
         expectedCommitSha: input.expectedCommitSha,
@@ -688,10 +753,24 @@ async function verifyProductionPathRehearsal(facts) {
         return false;
       this.state = "activated";
       this.last = input.nextReceiptSha256;
+      this.activationReceipt = input.activationReceipt;
+      persistLedger({
+        last: this.last,
+        state: this.state,
+        fence: this.fence,
+        activationReceipt: this.activationReceipt,
+      });
       return true;
     },
     async observeActivationState() {
       return this.state;
+    },
+    async verifyFinalAuthority(input) {
+      return (
+        this.state === "activated" &&
+        input.expectedReceiptSha256 === this.last &&
+        input.activationReceipt?.fenceNonce === this.fence?.nonce
+      );
     },
   };
   let evidence;
@@ -865,7 +944,7 @@ async function verifyProductionPathRehearsal(facts) {
         observed(RolloutStep.CompleteCompensation, { aclRestored: true }),
     },
     services: {
-      stageTarget: async () =>
+      stageTarget: async (fence) =>
         observed(
           RolloutStep.StageTargetServices,
           [
@@ -878,6 +957,8 @@ async function verifyProductionPathRehearsal(facts) {
               },
               envSha256: digest,
               suspended: true,
+              targetSwitchFenceNonce: fence.nonce,
+              targetSwitchFenceVersion: fence.version,
             },
           ],
           {
@@ -1034,6 +1115,14 @@ async function verifyProductionPathRehearsal(facts) {
   rollout = await useCases.resumeTargetServices(rollout);
   rollout = await useCases.verifyLiveCanary(rollout);
   rollout = await useCases.verifyTrustedRollout(rollout);
+  const durableLedger = JSON.parse(readFileSync(ledgerPath, "utf8"));
+  if (
+    durableLedger.state !== "activated" ||
+    durableLedger.last !== rollout.receipts.at(-1).receiptSha256 ||
+    durableLedger.activationReceipt?.fenceNonce !== ledger.fence.nonce ||
+    durableLedger.targetSwitchFence?.nonce !== ledger.targetSwitchFence.nonce
+  )
+    throw new Error("private_pg17_rehearsal_durable_ledger_unproven");
   let duplicateActivationRejected = false;
   try {
     executePrivateGenerationActivation(
