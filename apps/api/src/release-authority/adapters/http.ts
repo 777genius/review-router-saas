@@ -6,7 +6,6 @@ import type {
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
 import type {
-  PersistedProviderCleanupWitness,
   PersistRunnerRegistrationInput,
   ProvisioningIntent,
   RolloutBinding,
@@ -16,29 +15,19 @@ import type {
   ProviderAuthorityDecisionService,
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
-  RunnerCleanupWitnessService,
   RunnerOperationsService,
 } from "../application/services.js";
 export type ReleaseRolloutLedgerRouteDependencies = {
   authority: ReleaseAuthorityService;
   runnerOperations: RunnerOperationsService;
-  cleanupWitness?: RunnerCleanupWitnessService;
   reconciliation: ReleaseRolloutReconciliationService;
   providerAuthority?: ProviderAuthorityDecisionService;
   providerAuthorityTokenSha256?: string;
   controlTokenSha256: string;
-  witnessTokenSha256?: string;
 };
 
-export type ReleaseControlRouteDependencies = Omit<
-  ReleaseRolloutLedgerRouteDependencies,
-  "cleanupWitness" | "witnessTokenSha256"
->;
-
-export type ReleaseWitnessRouteDependencies = Pick<
-  ReleaseRolloutLedgerRouteDependencies,
-  "cleanupWitness" | "witnessTokenSha256"
->;
+export type ReleaseControlRouteDependencies =
+  ReleaseRolloutLedgerRouteDependencies;
 
 function authorize(request: FastifyRequest, expected: string): void {
   const header = request.headers.authorization;
@@ -136,60 +125,12 @@ const registrationRequest = (
     },
   };
 };
-const providerWitnessRequest = (
-  value: unknown,
-): PersistedProviderCleanupWitness => {
-  const body = record(value);
-  if (
-    !exactKeys(body, [
-      "jobId",
-      "canary",
-      "providerStatus",
-      "containerTerminated",
-      "logSha256",
-      "removedPaths",
-      "remainingPaths",
-      "providerLogId",
-      "providerObservedAt",
-    ]) ||
-    !nonemptyString(body.jobId) ||
-    !nonemptyString(body.canary) ||
-    body.providerStatus !== "succeeded" ||
-    body.containerTerminated !== true ||
-    !/^sha256:[a-f0-9]{64}$/u.test(String(body.logSha256)) ||
-    !Array.isArray(body.removedPaths) ||
-    body.removedPaths.length === 0 ||
-    body.removedPaths.some(
-      (path) =>
-        typeof path !== "string" ||
-        !/^\/runner\/_work\/rr-[A-Za-z0-9][A-Za-z0-9._-]{1,125}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})*$/u.test(
-          path,
-        ),
-    ) ||
-    !Array.isArray(body.remainingPaths) ||
-    body.remainingPaths.length !== 0 ||
-    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(String(body.providerLogId)) ||
-    typeof body.providerObservedAt !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(
-      body.providerObservedAt,
-    ) ||
-    Date.parse(body.providerObservedAt) > Date.now() + 300_000
-  )
-    throw Object.assign(
-      new Error("release_runner_provider_witness_request_invalid"),
-      { statusCode: 400 },
-    );
-  return body as PersistedProviderCleanupWitness;
-};
-
 export async function registerReleaseRolloutLedgerRoutes(
   app: FastifyInstance,
   dependencies: ReleaseRolloutLedgerRouteDependencies,
 ): Promise<void> {
   const control = async (request: FastifyRequest) =>
     authorize(request, dependencies.controlTokenSha256);
-  const witness = async (request: FastifyRequest) =>
-    authorize(request, dependencies.witnessTokenSha256 ?? "");
   app.post("/v1/rollouts/claim", { preHandler: control }, async (request) => ({
     result: await dependencies.authority.claim(
       record(request.body) as RolloutBinding,
@@ -385,18 +326,6 @@ export async function registerReleaseRolloutLedgerRoutes(
     async (request) =>
       dependencies.runnerOperations.cleanupWitness(request.params.jobId),
   );
-  if (dependencies.cleanupWitness && dependencies.witnessTokenSha256)
-    app.put<{ Params: { jobId: string } }>(
-      "/v1/runner-jobs/:jobId/provider-witness",
-      { preHandler: witness },
-      async (request, reply) => {
-        await dependencies.cleanupWitness!.persistProviderWitness(
-          request.params.jobId,
-          providerWitnessRequest(request.body),
-        );
-        return reply.code(204).send();
-      },
-    );
   app.post(
     "/v1/runner-jobs/registration",
     { preHandler: control },
@@ -455,23 +384,4 @@ export async function registerReleaseControlRoutes(
   await registerReleaseRolloutLedgerRoutes(app, {
     ...dependencies,
   });
-}
-
-export async function registerReleaseWitnessRoutes(
-  app: FastifyInstance,
-  dependencies: ReleaseWitnessRouteDependencies,
-): Promise<void> {
-  const witness = async (request: FastifyRequest) =>
-    authorize(request, dependencies.witnessTokenSha256 ?? "");
-  app.put<{ Params: { jobId: string } }>(
-    "/v1/runner-jobs/:jobId/provider-witness",
-    { preHandler: witness },
-    async (request, reply) => {
-      await dependencies.cleanupWitness!.persistProviderWitness(
-        request.params.jobId,
-        providerWitnessRequest(request.body),
-      );
-      return reply.code(204).send();
-    },
-  );
 }

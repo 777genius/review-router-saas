@@ -68,7 +68,7 @@ describe("application database release-authority isolation", () => {
     );
     expect(sql).toContain("REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC;");
     expect(sql).toContain("current_database())\n\\gexec\nSELECT format(");
-    expect(sql).toContain("\n\\gexec\nDO $installer_database_acl$");
+    expect(sql).toContain("DO $installer_database_acl$");
     expect(sql).not.toContain(
       "GRANT EXECUTE ON FUNCTION reviewrouter_activation.activate_generation(text,text) TO reviewrouter_activation_permit_installer",
     );

@@ -7,6 +7,7 @@ import {
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
   RoutineReleaseControlLedgerAdapter,
+  RoutineTargetActivationReceiptReaderAdapter,
   RunnerOperationsService,
   type ActivationPermitInstallerPort,
   type ReleaseControlRouteDependencies,
@@ -26,6 +27,7 @@ type DatabaseReadiness = Readonly<{
   controlRoutine: boolean;
   providerRoutine: boolean;
   installerRoutine: boolean;
+  readerRoutine: boolean;
 }>;
 
 async function observeDatabaseReadiness(
@@ -37,7 +39,8 @@ async function observeDatabaseReadiness(
       current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
       to_regprocedure('release_authority.release_rollout_claim(text,text,text,integer,text,text)') IS NOT NULL AS "controlRoutine",
       to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') IS NOT NULL AS "providerRoutine",
-      to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL AS "installerRoutine"
+      to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL AS "installerRoutine",
+      to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NOT NULL AS "readerRoutine"
   `);
   if (rows.length !== 1 || !rows[0])
     throw new Error("release_control_database_identity_unavailable");
@@ -49,6 +52,7 @@ export function composeReleaseControlDependencies(
   providerAuthorityPrisma: PrismaClient,
   credentials: ReleaseControlCredentials,
   permitInstallerPrisma?: PrismaClient,
+  targetReceiptReaderPrisma?: PrismaClient,
 ): ReleaseControlRouteDependencies {
   if (
     !credentialSha256.test(credentials.controlTokenSha256) ||
@@ -90,8 +94,15 @@ export function composeReleaseControlDependencies(
           },
         }
       : undefined;
+  const targetReceiptReader = targetReceiptReaderPrisma
+    ? new RoutineTargetActivationReceiptReaderAdapter(targetReceiptReaderPrisma)
+    : undefined;
   return {
-    authority: new ReleaseAuthorityService(adapter, permitInstaller),
+    authority: new ReleaseAuthorityService(
+      adapter,
+      permitInstaller,
+      targetReceiptReader,
+    ),
     providerAuthority: new ProviderAuthorityDecisionService(
       providerAuthorityAdapter,
     ),
@@ -105,6 +116,7 @@ export async function createReleaseControlApp(input: {
   readonly controlPrisma: PrismaClient;
   readonly providerAuthorityPrisma: PrismaClient;
   readonly permitInstallerPrisma: PrismaClient;
+  readonly targetReceiptReaderPrisma: PrismaClient;
   readonly credentials: ReleaseControlCredentials;
 }): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
@@ -113,26 +125,32 @@ export async function createReleaseControlApp(input: {
     input.providerAuthorityPrisma,
     input.credentials,
     input.permitInstallerPrisma,
+    input.targetReceiptReaderPrisma,
   );
   app.get("/health", async (_request, reply) => {
     try {
-      const [control, provider, installer] = await Promise.all([
+      const [control, provider, installer, reader] = await Promise.all([
         observeDatabaseReadiness(input.controlPrisma),
         observeDatabaseReadiness(input.providerAuthorityPrisma),
         observeDatabaseReadiness(input.permitInstallerPrisma),
+        observeDatabaseReadiness(input.targetReceiptReaderPrisma),
       ]);
       if (
         control.roleName !== "reviewrouter_release_control" ||
         provider.roleName !== "reviewrouter_provider_authority" ||
         installer.roleName !== "reviewrouter_activation_permit_installer" ||
+        reader.roleName !== "reviewrouter_activation_receipt_reader" ||
         control.systemIdentifier !== provider.systemIdentifier ||
         control.systemIdentifier === installer.systemIdentifier ||
+        installer.systemIdentifier !== reader.systemIdentifier ||
         control.postgresMajor !== 17 ||
         provider.postgresMajor !== 17 ||
         installer.postgresMajor !== 17 ||
+        reader.postgresMajor !== 17 ||
         !control.controlRoutine ||
         !provider.providerRoutine ||
-        !installer.installerRoutine
+        !installer.installerRoutine ||
+        !reader.readerRoutine
       )
         throw new Error("release_control_database_identity_invalid");
       return { status: "ok", service: "release-control" };

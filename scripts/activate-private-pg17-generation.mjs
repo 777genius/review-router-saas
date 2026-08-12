@@ -60,8 +60,7 @@ export function executePrivateGenerationActivation(
   );
   if (
     observed?.rolloutId !== rolloutId ||
-    observed?.canonicalPrivilegesSha256 !==
-      activation.canonicalPrivilegesSha256 ||
+    !/^sha256:[a-f0-9]{64}$/u.test(observed?.canonicalPrivilegesSha256 ?? "") ||
     !/^[0-9]+$/u.test(observed?.sourceSystemIdentifier ?? "") ||
     !/^[0-9]+$/u.test(observed?.targetSystemIdentifier ?? "") ||
     observed?.sourceSystemIdentifier === observed?.targetSystemIdentifier ||

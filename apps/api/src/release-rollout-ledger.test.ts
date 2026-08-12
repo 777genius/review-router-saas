@@ -9,12 +9,10 @@ import {
   registerReleaseRolloutLedgerRoutes,
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
-  RunnerCleanupWitnessService,
   RunnerOperationsService,
   type ReleaseAuthorityLedgerPort,
   type ReleaseRolloutReconciliationPort,
   type RunnerOperationsLedgerPort,
-  type RunnerCleanupWitnessPort,
 } from "./release-rollout-ledger";
 
 const binding = {
@@ -28,11 +26,10 @@ const binding = {
 
 type CombinedLedgerPort = ReleaseAuthorityLedgerPort &
   RunnerOperationsLedgerPort &
-  RunnerCleanupWitnessPort &
   ReleaseRolloutReconciliationPort;
 
 class ConcurrentRepository
-  implements CombinedLedgerPort, RunnerCleanupWitnessPort
+  implements CombinedLedgerPort
 {
   private claimed: typeof binding | undefined;
   private receipt = `sha256:${"0".repeat(64)}`;
@@ -41,7 +38,6 @@ class ConcurrentRepository
   private activationJobId: string | undefined;
   private targetSwitchFenced = false;
   private readonly intents = new Map<string, Record<string, unknown>>();
-  providerWitness: Record<string, unknown> | undefined;
   registration:
     | Parameters<RunnerOperationsLedgerPort["persistRegistration"]>[0]
     | undefined;
@@ -169,12 +165,6 @@ class ConcurrentRepository
   async cleanupObservation(): Promise<never> {
     throw new Error("unused");
   }
-  async persistProviderWitness(
-    _jobId: string,
-    witness: Parameters<RunnerCleanupWitnessPort["persistProviderWitness"]>[1],
-  ) {
-    this.providerWitness = witness;
-  }
   async cleanupWitness(): Promise<never> {
     throw new Error("unused");
   }
@@ -193,10 +183,8 @@ const tokenSha256 = createHash("sha256").update(token).digest("hex");
 const services = (repository: CombinedLedgerPort) => ({
   authority: new ReleaseAuthorityService(repository),
   runnerOperations: new RunnerOperationsService(repository),
-  cleanupWitness: new RunnerCleanupWitnessService(repository),
   reconciliation: new ReleaseRolloutReconciliationService(repository),
   controlTokenSha256: tokenSha256,
-  witnessTokenSha256: createHash("sha256").update("witness").digest("hex"),
 });
 
 describe("release rollout ledger internal API", () => {
@@ -293,60 +281,6 @@ describe("release rollout ledger internal API", () => {
     await expect(
       service.persistIntent({ ...intent, serviceId: "srv-attacker" }),
     ).rejects.toThrow("intent_conflict");
-  });
-
-  it("isolates provider cleanup evidence behind the distinct witness credential", async () => {
-    const repository = new ConcurrentRepository();
-    const app = Fastify();
-    await registerReleaseRolloutLedgerRoutes(app, {
-      ...services(repository),
-    });
-    const payload = {
-      jobId: "job-1",
-      canary: "rr-cleanup:rollout:runner",
-      providerStatus: "succeeded",
-      containerTerminated: true,
-      logSha256: `sha256:${"a".repeat(64)}`,
-      removedPaths: ["/runner/_work/rr-runner"],
-      remainingPaths: [],
-      providerLogId: "log-1",
-      providerObservedAt: "2026-08-12T00:00:00.000Z",
-    };
-    expect(
-      (
-        await app.inject({
-          method: "PUT",
-          url: "/v1/runner-jobs/job-1/provider-witness",
-          headers: { authorization: `Bearer ${token}` },
-          payload,
-        })
-      ).statusCode,
-    ).toBe(401);
-    expect(
-      (
-        await app.inject({
-          method: "PUT",
-          url: "/v1/runner-jobs/job-1/provider-witness",
-          headers: { authorization: "Bearer witness" },
-          payload,
-        })
-      ).statusCode,
-    ).toBe(204);
-    expect(repository.providerWitness).toEqual(payload);
-
-    const missingStatus = { ...payload } as Record<string, unknown>;
-    delete missingStatus.providerStatus;
-    expect(
-      (
-        await app.inject({
-          method: "PUT",
-          url: "/v1/runner-jobs/job-2/provider-witness",
-          headers: { authorization: "Bearer witness" },
-          payload: missingStatus,
-        })
-      ).statusCode,
-    ).toBe(400);
-    await app.close();
   });
 
   it("persists only allowlisted non-secret JIT registration metadata", async () => {

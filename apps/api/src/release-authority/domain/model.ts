@@ -147,6 +147,26 @@ export interface ActivationPermitInstallerPort {
   ): Promise<"installed" | "existing">;
 }
 
+export type TargetActivationFacts = Readonly<
+  Pick<
+    ActivationReceipt,
+    | "canonicalPrivilegesSha256"
+    | "catalogFactsSha256"
+    | "transactionId"
+    | "firstWriteReceiptSha256"
+    | "firstWriteBoundary"
+    | "postgresMajor"
+    | "migrationChecksum"
+    | "permitEpoch"
+    | "permitNonce"
+    | "targetDeployIds"
+  >
+>;
+
+export interface TargetActivationReceiptReaderPort {
+  read(rolloutId: string): Promise<TargetActivationFacts | null>;
+}
+
 export interface RunnerOperationsLedgerPort {
   persistIntent(input: ProvisioningIntent): Promise<"created" | "existing">;
   listIntents(rolloutId: string): Promise<readonly ProvisioningIntent[]>;

@@ -27,10 +27,15 @@ const permitInstallerPrisma = createPrismaClient({
   ),
   poolMax: 2,
 });
+const targetReceiptReaderPrisma = createPrismaClient({
+  databaseUrl: required("REVIEW_ROUTER_ACTIVATION_RECEIPT_READER_DATABASE_URL"),
+  poolMax: 2,
+});
 const app = await createReleaseControlApp({
   controlPrisma,
   providerAuthorityPrisma,
   permitInstallerPrisma,
+  targetReceiptReaderPrisma,
   credentials: {
     controlTokenSha256: required("REVIEW_ROUTER_RELEASE_CONTROL_TOKEN_SHA256"),
     providerAuthorityTokenSha256: required(
@@ -44,6 +49,7 @@ app.addHook("onClose", async () => {
     controlPrisma.$disconnect(),
     providerAuthorityPrisma.$disconnect(),
     permitInstallerPrisma.$disconnect(),
+    targetReceiptReaderPrisma.$disconnect(),
   ]);
 });
 await app.listen({

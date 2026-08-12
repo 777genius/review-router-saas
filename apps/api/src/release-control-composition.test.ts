@@ -20,6 +20,7 @@ const authorityReadiness = (
     controlRoutine: true,
     providerRoutine: true,
     installerRoutine: false,
+    readerRoutine: false,
   },
 ];
 const installerReadiness = [
@@ -30,13 +31,26 @@ const installerReadiness = [
     controlRoutine: false,
     providerRoutine: false,
     installerRoutine: true,
+    readerRoutine: true,
+  },
+];
+const readerReadiness = [
+  {
+    roleName: "reviewrouter_activation_receipt_reader",
+    systemIdentifier: "target-system",
+    postgresMajor: 17,
+    controlRoutine: false,
+    providerRoutine: false,
+    installerRoutine: false,
+    readerRoutine: true,
   },
 ];
 const witnessReadiness = [
   {
     roleName: "reviewrouter_release_witness",
     postgresMajor: 17,
-    witnessRoutine: true,
+    seedRoutine: true,
+    persistRoutine: true,
   },
 ];
 
@@ -66,7 +80,8 @@ describe("release authority process composition", () => {
     await expect(
       createReleaseWitnessApp({
         witnessPrisma: {} as never,
-        witnessTokenSha256: "invalid",
+        triggerTokenSha256: "invalid",
+        renderReadToken: "read-only",
       }),
     ).rejects.toThrow("release_witness_credential_hash_invalid");
   });
@@ -130,6 +145,104 @@ describe("release authority process composition", () => {
     );
   });
 
+  it("keeps target receipt reads isolated from installer and authority connections", async () => {
+    const authorization = {
+      rolloutId: "rollout-proof",
+      expectedCommitSha: "c".repeat(40),
+      postgresMajor: 17 as const,
+      migrationChecksum: `sha256:${"7".repeat(64)}`,
+      epoch: 2,
+      nonce: "a".repeat(32),
+      sourceSystemIdentifier: "100",
+      targetSystemIdentifier: "200",
+      previousReceiptSha256: `sha256:${"b".repeat(64)}`,
+      targetDeployIds: ["deploy-1"],
+      authorizedAt: "2026-08-12T00:00:00.000Z",
+    };
+    const receipt = {
+      step: "activate_target_generation" as const,
+      receiptId: "receipt-1",
+      observedAt: "2026-08-12T00:01:00.000Z",
+      rolloutId: authorization.rolloutId,
+      expectedCommitSha: authorization.expectedCommitSha,
+      runId: "run-1",
+      runAttempt: 1,
+      sourceSystemIdentifier: authorization.sourceSystemIdentifier,
+      targetSystemIdentifier: authorization.targetSystemIdentifier,
+      provider: { renderDeployIds: ["deploy-1"] },
+      observationSha256: `sha256:${"d".repeat(64)}`,
+      previousReceiptSha256: authorization.previousReceiptSha256,
+      receiptSha256: `sha256:${"e".repeat(64)}`,
+      canonicalPrivilegesSha256: `sha256:${"1".repeat(64)}`,
+      catalogFactsSha256: `sha256:${"2".repeat(64)}`,
+      transactionId: "12345",
+      firstWriteReceiptSha256: `sha256:${"3".repeat(64)}`,
+      firstWriteBoundary: true as const,
+      postgresMajor: 17 as const,
+      migrationChecksum: authorization.migrationChecksum,
+      permitEpoch: authorization.epoch,
+      permitNonce: authorization.nonce,
+      targetDeployIds: authorization.targetDeployIds,
+    };
+    const authorityQuery = vi.fn().mockResolvedValue([{ value: true }]);
+    const installerQuery = vi.fn();
+    const readerQuery = vi.fn().mockResolvedValue([
+      {
+        value: {
+          canonicalPrivilegesSha256: receipt.canonicalPrivilegesSha256,
+          catalogFactsSha256: receipt.catalogFactsSha256,
+          transactionId: receipt.transactionId,
+          firstWriteReceiptSha256: receipt.firstWriteReceiptSha256,
+          firstWriteBoundary: receipt.firstWriteBoundary,
+          postgresMajor: receipt.postgresMajor,
+          migrationChecksum: receipt.migrationChecksum,
+          permitEpoch: receipt.permitEpoch,
+          permitNonce: receipt.permitNonce,
+          targetDeployIds: receipt.targetDeployIds,
+        },
+      },
+    ]);
+    const app = await createReleaseControlApp({
+      controlPrisma: { $queryRaw: authorityQuery } as never,
+      providerAuthorityPrisma: {} as never,
+      permitInstallerPrisma: { $queryRaw: installerQuery } as never,
+      targetReceiptReaderPrisma: { $queryRaw: readerQuery } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+    });
+    const finalize = (activationReceipt: typeof receipt) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/rollouts/${authorization.rolloutId}/activation-finalize`,
+        headers: { authorization: "Bearer control" },
+        payload: {
+          authorization,
+          provider: receipt.provider,
+          nextReceiptSha256: receipt.receiptSha256,
+          activationReceipt,
+        },
+      });
+
+    expect(
+      (await finalize({ ...receipt, transactionId: "forged" })).statusCode,
+    ).toBe(500);
+    expect(authorityQuery).not.toHaveBeenCalled();
+
+    expect((await finalize(receipt)).json()).toEqual({ changed: true });
+    expect(readerQuery).toHaveBeenCalledTimes(2);
+    expect(authorityQuery).toHaveBeenCalledOnce();
+    expect(installerQuery).not.toHaveBeenCalled();
+    expect(String(readerQuery.mock.calls[0]?.[0].text)).toContain(
+      "read_activation_receipt",
+    );
+    expect(String(authorityQuery.mock.calls[0]?.[0].text)).toContain(
+      "release_rollout_finalize_activation",
+    );
+    await app.close();
+  });
+
   it("retries the same committed authorization after an install timeout", async () => {
     const authorization = {
       rolloutId: "rollout-retry",
@@ -155,6 +268,7 @@ describe("release authority process composition", () => {
       controlPrisma: { $queryRaw: authorityQuery } as never,
       providerAuthorityPrisma: {} as never,
       permitInstallerPrisma: { $queryRaw: installerQuery } as never,
+      targetReceiptReaderPrisma: {} as never,
       credentials: {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
@@ -209,6 +323,9 @@ describe("release authority process composition", () => {
       permitInstallerPrisma: {
         $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
       } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+      } as never,
       credentials: {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
@@ -243,6 +360,7 @@ describe("release authority process composition", () => {
       controlPrisma: {} as never,
       providerAuthorityPrisma: {} as never,
       permitInstallerPrisma: {} as never,
+      targetReceiptReaderPrisma: {} as never,
       credentials: {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
@@ -292,6 +410,7 @@ describe("release authority process composition", () => {
       controlPrisma: { $queryRaw: controlQuery } as never,
       providerAuthorityPrisma: { $queryRaw: providerQuery } as never,
       permitInstallerPrisma: {} as never,
+      targetReceiptReaderPrisma: {} as never,
       credentials: {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
@@ -338,6 +457,7 @@ describe("release authority process composition", () => {
       controlPrisma: {} as never,
       providerAuthorityPrisma: { $queryRaw: providerQuery } as never,
       permitInstallerPrisma: {} as never,
+      targetReceiptReaderPrisma: {} as never,
       credentials: {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
@@ -367,7 +487,8 @@ describe("release authority process composition", () => {
       witnessPrisma: {
         $queryRaw: vi.fn().mockResolvedValue(witnessReadiness),
       } as never,
-      witnessTokenSha256: digest("witness"),
+      triggerTokenSha256: digest("witness"),
+      renderReadToken: "read-only",
     });
     expect(
       (await app.inject({ method: "GET", url: "/health" })).json(),
@@ -398,6 +519,9 @@ describe("release authority process composition", () => {
       } as never,
       permitInstallerPrisma: {
         $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
       } as never,
       credentials: {
         controlTokenSha256: digest("control"),

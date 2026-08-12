@@ -27,7 +27,7 @@ const receipt = {
   targetDeployIds: ["dep-target"],
   permitEpoch: 1,
   permitNonce: "d".repeat(32),
-  canonicalPrivilegesSha256: "",
+  canonicalPrivilegesSha256: `sha256:${"9".repeat(64)}`,
   catalogFactsSha256: `sha256:${"e".repeat(64)}`,
   firstWriteReceiptSha256: `sha256:${"f".repeat(64)}`,
   transactionId: "42",
@@ -45,9 +45,8 @@ describe("private target activation runner", () => {
         options: { input: string },
       ) => {
         input = options.input;
-        const digest = input.match(/'(sha256:[a-f0-9]{64})'\n\);/u)?.[1];
         return {
-          stdout: `${JSON.stringify({ ...receipt, canonicalPrivilegesSha256: digest })}\n`,
+          stdout: `${JSON.stringify(receipt)}\n`,
         };
       },
     };
@@ -56,6 +55,7 @@ describe("private target activation runner", () => {
     expect(input).toContain("reviewrouter_activation.activate_generation");
     expect(input).not.toContain(receipt.permitNonce);
     expect(input).not.toContain(receipt.targetDeployIds[0]);
+    expect(input).not.toContain(receipt.canonicalPrivilegesSha256);
   });
 
   it.each([
