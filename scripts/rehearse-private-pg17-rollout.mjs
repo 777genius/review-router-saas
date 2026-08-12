@@ -964,6 +964,8 @@ async function verifyProductionPathRehearsal(facts) {
           {
             renderServiceIds: ["srv-target"],
             renderDeployIds: ["dep-disposable"],
+            targetSwitchFenceNonce: fence.nonce,
+            targetSwitchFenceVersion: fence.version,
           },
         ),
       resumeDeployAndObserve: async () =>

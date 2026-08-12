@@ -177,6 +177,18 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
           sourceSystemIdentifier: input.sourceSystemIdentifier,
           targetSystemIdentifier: input.targetSystemIdentifier,
           lastReceiptSha256: input.expectedReceiptSha256,
+          ...(input.step === "stage_target_services"
+            ? {
+                targetSwitchNonce: String(
+                  (input.provider as Record<string, unknown> | undefined)
+                    ?.targetSwitchFenceNonce,
+                ),
+                targetSwitchVersion: Number(
+                  (input.provider as Record<string, unknown> | undefined)
+                    ?.targetSwitchFenceVersion,
+                ),
+              }
+            : {}),
           activationBoundary: "before",
           sourcePermanentlyIneligible: false,
         },

@@ -228,6 +228,8 @@ export interface StepObservation<T = unknown> {
     readonly renderDeployIds?: readonly string[];
     readonly renderServiceIds?: readonly string[];
     readonly githubWorkflowJobId?: string;
+    readonly targetSwitchFenceNonce?: string;
+    readonly targetSwitchFenceVersion?: number;
   };
 }
 

@@ -158,6 +158,8 @@ export class RenderTargetServicesAdapter {
       provider: {
         renderServiceIds: Object.freeze(facts.map((item) => item.serviceId)),
         renderDeployIds: Object.freeze(facts.map((item) => item.deployId)),
+        targetSwitchFenceNonce: input.fence.nonce,
+        targetSwitchFenceVersion: input.fence.version,
       },
     };
   }
