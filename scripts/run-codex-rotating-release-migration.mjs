@@ -97,6 +97,7 @@ const canonicalRoleNames = Object.freeze([
 ]);
 
 const canonicalBootstrapRoleName = "reviewrouter_role_bootstrap";
+const activationReceiptGuardRoleName = "reviewrouter_activation_receipt_guard";
 
 export function canonicalRoleTopologyObservationSql() {
   return `SELECT json_build_object(
@@ -131,10 +132,49 @@ export function canonicalRoleTopologyObservationSql() {
     JOIN pg_roles granted ON granted.oid = membership.roleid
     JOIN pg_roles member ON member.oid = membership.member
     JOIN pg_roles grantor ON grantor.oid = membership.grantor
-    WHERE granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
-       OR member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
-       OR granted.rolname = '${canonicalBootstrapRoleName}'
-       OR member.rolname = '${canonicalBootstrapRoleName}'),
+    WHERE (
+        granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+        OR member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+        OR granted.rolname = '${canonicalBootstrapRoleName}'
+        OR member.rolname = '${canonicalBootstrapRoleName}'
+      )
+      AND granted.rolname <> '${activationReceiptGuardRoleName}'
+      AND member.rolname <> '${activationReceiptGuardRoleName}'),
+    'guard', (SELECT json_build_object(
+      'username', role.rolname,
+      'login', role.rolcanlogin,
+      'superuser', role.rolsuper,
+      'createDatabase', role.rolcreatedb,
+      'createRole', role.rolcreaterole,
+      'replication', role.rolreplication,
+      'bypassRls', role.rolbypassrls,
+      'bootstrapCanSet', pg_has_role('${canonicalBootstrapRoleName}', role.oid, 'SET'),
+      'bootstrapMembershipAdminOption', (SELECT bool_or(membership.admin_option)
+        FROM pg_auth_members membership
+        WHERE membership.roleid = role.oid
+          AND membership.member = '${canonicalBootstrapRoleName}'::regrole),
+      'bootstrapMembershipInheritOption', (SELECT bool_or(membership.inherit_option)
+        FROM pg_auth_members membership
+        WHERE membership.roleid = role.oid
+          AND membership.member = '${canonicalBootstrapRoleName}'::regrole),
+      'bootstrapMembershipSetOption', (SELECT bool_or(membership.set_option)
+        FROM pg_auth_members membership
+        WHERE membership.roleid = role.oid
+          AND membership.member = '${canonicalBootstrapRoleName}'::regrole),
+      'bootstrapMembershipCount', (SELECT count(*)
+        FROM pg_auth_members membership
+        WHERE membership.roleid = role.oid
+          AND membership.member = '${canonicalBootstrapRoleName}'::regrole),
+      'bootstrapGrantorCount', (SELECT count(DISTINCT membership.grantor)
+        FROM pg_auth_members membership
+        WHERE membership.roleid = role.oid
+          AND membership.member = '${canonicalBootstrapRoleName}'::regrole),
+      'unexpectedMembershipCount', (SELECT count(*)
+        FROM pg_auth_members membership
+        WHERE (membership.roleid = role.oid OR membership.member = role.oid)
+          AND NOT (membership.roleid = role.oid
+            AND membership.member = '${canonicalBootstrapRoleName}'::regrole))
+    ) FROM pg_roles role WHERE role.rolname = '${activationReceiptGuardRoleName}'),
     'ownership', json_build_object(
       'databaseOwner', (SELECT owner.rolname
         FROM pg_database database
@@ -240,6 +280,20 @@ export function assertCanonicalRoleTopology(verifiedRoles) {
       .size !== canonicalRoleNames.length ||
     new Set(verifiedRoles.bootstrapMemberships.map((entry) => entry.grantor))
       .size !== 1 ||
+    verifiedRoles.guard?.username !== activationReceiptGuardRoleName ||
+    verifiedRoles.guard?.login !== false ||
+    verifiedRoles.guard?.superuser !== false ||
+    verifiedRoles.guard?.createDatabase !== false ||
+    verifiedRoles.guard?.createRole !== false ||
+    verifiedRoles.guard?.replication !== false ||
+    verifiedRoles.guard?.bypassRls !== false ||
+    verifiedRoles.guard?.bootstrapCanSet !== true ||
+    verifiedRoles.guard?.bootstrapMembershipAdminOption !== true ||
+    verifiedRoles.guard?.bootstrapMembershipInheritOption !== false ||
+    verifiedRoles.guard?.bootstrapMembershipSetOption !== true ||
+    verifiedRoles.guard?.bootstrapMembershipCount !== 2 ||
+    verifiedRoles.guard?.bootstrapGrantorCount !== 2 ||
+    verifiedRoles.guard?.unexpectedMembershipCount !== 0 ||
     verifiedRoles.ownership?.databaseOwner !== canonicalBootstrapRoleName ||
     verifiedRoles.ownership?.publicSchemaOwner !==
       "reviewrouter_release_migration" ||
@@ -410,7 +464,10 @@ BEGIN
   SELECT * INTO observed FROM pg_roles WHERE rolname = '${username}';
   IF NOT FOUND THEN
     CREATE ROLE ${username} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoted(password)};
-  ELSIF observed.rolsuper OR observed.rolcreatedb OR observed.rolreplication OR observed.rolbypassrls THEN
+  ELSIF observed.rolsuper
+     OR observed.rolcreatedb
+     OR observed.rolreplication
+     OR observed.rolbypassrls THEN
     RAISE EXCEPTION 'refusing to converge unexpectedly privileged role ${username}';
   END IF;
 END
@@ -444,13 +501,59 @@ $membership$;
   return `\\set ON_ERROR_STOP on
 BEGIN;
 DO $receipt_guard$
+DECLARE observed record;
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='reviewrouter_activation_receipt_guard') THEN
+  SELECT * INTO observed
+  FROM pg_roles
+  WHERE rolname = '${activationReceiptGuardRoleName}';
+  IF NOT FOUND THEN
     CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+  ELSIF observed.rolcanlogin
+     OR observed.rolsuper
+     OR observed.rolcreatedb
+     OR observed.rolcreaterole
+     OR observed.rolreplication
+     OR observed.rolbypassrls THEN
+    RAISE EXCEPTION 'refusing unexpectedly privileged activation receipt guard role';
   END IF;
 END
 $receipt_guard$;
-ALTER ROLE reviewrouter_activation_receipt_guard NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+GRANT reviewrouter_activation_receipt_guard TO reviewrouter_role_bootstrap
+  WITH INHERIT FALSE, SET TRUE;
+DO $receipt_guard_membership$
+DECLARE total_count integer;
+DECLARE authority_count integer;
+DECLARE set_count integer;
+BEGIN
+  SELECT count(*),
+         count(*) FILTER (
+           WHERE granted.rolname = '${activationReceiptGuardRoleName}'
+             AND member.rolname = '${canonicalBootstrapRoleName}'
+             AND membership.admin_option
+             AND NOT membership.inherit_option
+             AND NOT membership.set_option
+             AND grantor.rolname <> '${canonicalBootstrapRoleName}'
+         ),
+         count(*) FILTER (
+           WHERE granted.rolname = '${activationReceiptGuardRoleName}'
+             AND member.rolname = '${canonicalBootstrapRoleName}'
+             AND grantor.rolname = '${canonicalBootstrapRoleName}'
+             AND NOT membership.admin_option
+             AND NOT membership.inherit_option
+             AND membership.set_option
+         )
+  INTO total_count, authority_count, set_count
+  FROM pg_auth_members membership
+  JOIN pg_roles granted ON granted.oid = membership.roleid
+  JOIN pg_roles member ON member.oid = membership.member
+  JOIN pg_roles grantor ON grantor.oid = membership.grantor
+  WHERE granted.rolname = '${activationReceiptGuardRoleName}'
+     OR member.rolname = '${activationReceiptGuardRoleName}';
+  IF total_count <> 2 OR authority_count <> 1 OR set_count <> 1 THEN
+    RAISE EXCEPTION 'activation receipt guard ownership authority is non-canonical';
+  END IF;
+END
+$receipt_guard_membership$;
 ${createAndConverge}
 DO $grantor_topology$
 DECLARE total_count integer;
@@ -484,6 +587,8 @@ BEGIN
       OR granted.rolname = '${canonicalBootstrapRoleName}'
       OR member.rolname = '${canonicalBootstrapRoleName}'
     )
+    AND granted.rolname <> '${activationReceiptGuardRoleName}'
+    AND member.rolname <> '${activationReceiptGuardRoleName}'
   ;
   IF total_count <> ${canonicalRoleNames.length}
      OR canonical_count <> ${canonicalRoleNames.length}
@@ -847,7 +952,7 @@ BEGIN
     'membershipEdges', (SELECT coalesce(jsonb_agg(jsonb_build_object('member',member.rolname,'role',parent.rolname,'admin',membership.admin_option,'inherit',membership.inherit_option,'set',membership.set_option) ORDER BY member.rolname,parent.rolname),'[]'::jsonb) FROM pg_auth_members membership JOIN pg_roles member ON member.oid=membership.member JOIN pg_roles parent ON parent.oid=membership.roleid),
     'schemas', (SELECT jsonb_agg(jsonb_build_object('schema',nspname,'owner',pg_get_userbyid(nspowner),'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'grantor',grantor.rolname,'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(coalesce(namespace.nspacl,acldefault('n',namespace.nspowner))) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee JOIN pg_roles grantor ON grantor.oid=expanded.grantor)) ORDER BY nspname) FROM pg_namespace namespace WHERE nspname=ANY(ARRAY[${applicationSchemaLiterals},'reviewrouter_bootstrap'])),
     'relations', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'name',relation.relname,'kind',relation.relkind,'owner',pg_get_userbyid(relation.relowner),'rls',relation.relrowsecurity,'forceRls',relation.relforcerowsecurity,'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(coalesce(relation.relacl,acldefault(CASE WHEN relation.relkind='S' THEN 's'::"char" ELSE 'r'::"char" END,relation.relowner))) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY namespace.nspname,relation.relname),'[]'::jsonb) FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}]) AND relation.relkind IN ('r','p','v','m','S')),
-    'columns', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'table',relation.relname,'column',attribute.attname,'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(coalesce(attribute.attacl,'{}'::aclitem[])) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY namespace.nspname,relation.relname,attribute.attnum),'[]'::jsonb) FROM pg_attribute attribute JOIN pg_class relation ON relation.oid=attribute.attrelid JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}]) AND attribute.attnum>0 AND NOT attribute.attisdropped),
+    'columns', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'table',relation.relname,'column',attribute.attname,'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(attribute.attacl) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY namespace.nspname,relation.relname,attribute.attnum),'[]'::jsonb) FROM pg_attribute attribute JOIN pg_class relation ON relation.oid=attribute.attrelid JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}]) AND attribute.attnum>0 AND NOT attribute.attisdropped),
     'routines', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'name',procedure.proname,'identityArguments',pg_get_function_identity_arguments(procedure.oid),'kind',procedure.prokind,'owner',pg_get_userbyid(procedure.proowner),'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(coalesce(procedure.proacl,acldefault('f',procedure.proowner))) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY namespace.nspname,procedure.proname,pg_get_function_identity_arguments(procedure.oid)),'[]'::jsonb) FROM pg_proc procedure JOIN pg_namespace namespace ON namespace.oid=procedure.pronamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}])),
     'policies', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'table',relation.relname,'name',policy.polname,'command',policy.polcmd,'permissive',policy.polpermissive,'roles',(SELECT jsonb_agg(coalesce(role.rolname,'PUBLIC') ORDER BY coalesce(role.rolname,'PUBLIC')) FROM unnest(policy.polroles) role_id LEFT JOIN pg_roles role ON role.oid=role_id),'using',pg_get_expr(policy.polqual,policy.polrelid),'check',pg_get_expr(policy.polwithcheck,policy.polrelid)) ORDER BY namespace.nspname,relation.relname,policy.polname),'[]'::jsonb) FROM pg_policy policy JOIN pg_class relation ON relation.oid=policy.polrelid JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}])),
     'defaultPrivileges', (SELECT coalesce(jsonb_agg(jsonb_build_object('owner',pg_get_userbyid(defaults.defaclrole),'schema',coalesce(namespace.nspname,'*'),'type',defaults.defaclobjtype,'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(defaults.defaclacl) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY pg_get_userbyid(defaults.defaclrole),coalesce(namespace.nspname,'*'),defaults.defaclobjtype),'[]'::jsonb) FROM pg_default_acl defaults LEFT JOIN pg_namespace namespace ON namespace.oid=defaults.defaclnamespace WHERE defaults.defaclnamespace=0 OR namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}]))
@@ -876,6 +981,21 @@ BEGIN
       first_write_receipt_sha256, txid_current()
     ) RETURNING * INTO observed;
   END IF;
+  EXECUTE format(
+    'GRANT CREATE ON DATABASE %I TO reviewrouter_activation_receipt_guard',
+    current_database()
+  );
+  GRANT USAGE, CREATE ON SCHEMA reviewrouter_bootstrap TO reviewrouter_activation_receipt_guard;
+  ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_activation_receipt_guard;
+  ALTER FUNCTION reviewrouter_bootstrap.reject_activation_receipt_mutation() OWNER TO reviewrouter_activation_receipt_guard;
+  ALTER FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,integer,jsonb,text) OWNER TO reviewrouter_activation_receipt_guard;
+  REVOKE USAGE, CREATE ON SCHEMA reviewrouter_bootstrap FROM reviewrouter_activation_receipt_guard;
+  ALTER SCHEMA reviewrouter_bootstrap OWNER TO reviewrouter_activation_receipt_guard;
+  EXECUTE format(
+    'REVOKE CREATE ON DATABASE %I FROM reviewrouter_activation_receipt_guard',
+    current_database()
+  );
+  REVOKE reviewrouter_activation_receipt_guard FROM reviewrouter_role_bootstrap;
   RETURN jsonb_build_object(
     'rolloutId', observed.rollout_id,
     'sourceSystemIdentifier', observed.source_system_identifier,
@@ -1100,11 +1220,6 @@ $receipt$;
 ALTER FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) TO reviewrouter_release_migration;
-ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_activation_receipt_guard;
-ALTER FUNCTION reviewrouter_bootstrap.reject_activation_receipt_mutation() OWNER TO reviewrouter_activation_receipt_guard;
-ALTER FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,integer,jsonb,text) OWNER TO reviewrouter_activation_receipt_guard;
-ALTER SCHEMA reviewrouter_bootstrap OWNER TO reviewrouter_activation_receipt_guard;
-REVOKE reviewrouter_activation_receipt_guard FROM reviewrouter_role_bootstrap;
 COMMIT;
 `;
 }

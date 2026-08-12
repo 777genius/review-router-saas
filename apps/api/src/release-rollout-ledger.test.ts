@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import type { ActivationFence } from "@reviewrouter/features-release-rollout";
 import {
+  PrismaReleaseRolloutLedgerRepository,
   registerReleaseRolloutLedgerRoutes,
   ReleaseRolloutLedgerService,
   type ReleaseRolloutLedgerRepository,
@@ -138,6 +139,52 @@ const token = "ledger-control-secret";
 const tokenSha256 = createHash("sha256").update(token).digest("hex");
 
 describe("release rollout ledger internal API", () => {
+  it("appends receipts against the durable boundary on both sides of activation", async () => {
+    const boundaries: unknown[] = [];
+    const receiptBoundaries: unknown[] = [];
+    const transaction = {
+      releaseRolloutLedger: {
+        updateMany: (input: { where: Record<string, unknown> }) => {
+          boundaries.push(input.where.activationBoundary);
+          return { count: 1 };
+        },
+      },
+      releaseRolloutReceipt: {
+        create: (input: { data: Record<string, unknown> }) => {
+          receiptBoundaries.push(input.data.activationBoundary);
+          return input.data;
+        },
+      },
+    };
+    const repository = new PrismaReleaseRolloutLedgerRepository({
+      $transaction: (operation: (client: typeof transaction) => unknown) =>
+        operation(transaction),
+    } as never);
+
+    expect(
+      await repository.compareAndSet({
+        ...binding,
+        step: "freeze_provider_services",
+        expectedReceiptSha256: `sha256:${"0".repeat(64)}`,
+        nextReceiptSha256: `sha256:${"1".repeat(64)}`,
+        authoritativeSystemIdentifier: binding.sourceSystemIdentifier,
+        activationBoundary: "before",
+      }),
+    ).toBe(true);
+    expect(
+      await repository.compareAndSet({
+        ...binding,
+        step: "resume_target_services",
+        expectedReceiptSha256: `sha256:${"1".repeat(64)}`,
+        nextReceiptSha256: `sha256:${"2".repeat(64)}`,
+        authoritativeSystemIdentifier: binding.targetSystemIdentifier,
+        activationBoundary: "activated",
+      }),
+    ).toBe(true);
+    expect(boundaries).toEqual(["before", "activated"]);
+    expect(receiptBoundaries).toEqual(["before", "activated"]);
+  });
+
   it("authenticates internal callers and keeps claim idempotent", async () => {
     const app = Fastify();
     await registerReleaseRolloutLedgerRoutes(app, {

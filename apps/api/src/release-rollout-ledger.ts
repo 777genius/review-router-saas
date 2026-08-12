@@ -152,7 +152,9 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
         existing.sourceSystemIdentifier !== input.sourceSystemIdentifier ||
         existing.targetSystemIdentifier !== input.targetSystemIdentifier
       )
-        throw new Error("release_rollout_claim_identity_conflict");
+        throw new Error("release_rollout_claim_identity_conflict", {
+          cause: error,
+        });
       return "duplicate";
     }
   }
@@ -189,8 +191,8 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
                 ),
               }
             : {}),
-          activationBoundary: "before",
-          sourcePermanentlyIneligible: false,
+          activationBoundary: input.activationBoundary,
+          sourcePermanentlyIneligible: input.activationBoundary !== "before",
         },
         data: {
           lastReceiptSha256: input.nextReceiptSha256,
@@ -462,7 +464,9 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
         existing.workflowJobId !== input.workflowJobId ||
         existing.runnerName !== input.runnerName
       )
-        throw new Error("release_runner_intent_identity_conflict");
+        throw new Error("release_runner_intent_identity_conflict", {
+          cause: error,
+        });
       return "existing";
     }
   }

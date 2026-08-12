@@ -63,7 +63,7 @@ const registration = await requestJitConfiguration(
   context,
   response.data.token,
 );
-const ledgerResponse = await fetch(
+const ledgerResponse = await globalThis.fetch(
   `${required("REVIEW_ROUTER_RUNNER_LEDGER_URL").replace(/\/$/u, "")}/v1/runner-jobs/registration`,
   {
     method: "POST",

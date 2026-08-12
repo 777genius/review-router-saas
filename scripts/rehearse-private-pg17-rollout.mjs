@@ -731,6 +731,7 @@ async function verifyProductionPathRehearsal(facts) {
         ...input,
         nonce: "a".repeat(32),
         version: 1,
+        claimVersion: 1,
         fencedAt: "2026-08-12T00:00:13.500Z",
       };
       persistLedger({ last: this.last, state: this.state, fence: this.fence });
@@ -745,6 +746,8 @@ async function verifyProductionPathRehearsal(facts) {
         previousReceiptSha256: input.previousReceiptSha256,
         fenceNonce: this.fence.nonce,
         fenceVersion: this.fence.version,
+        claimVersion: this.fence.claimVersion,
+        targetDeployIds: this.fence.targetDeployIds,
       });
       return this.fence;
     },

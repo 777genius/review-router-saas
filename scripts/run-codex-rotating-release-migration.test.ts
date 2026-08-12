@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertCanonicalRoleTopology,
+  canonicalRoleTopologyObservationSql,
   canonicalDatabaseGenerationObservationSql,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
@@ -64,6 +65,22 @@ describe("canonical exclusive release migration caller", () => {
         inheritOption: false,
         setOption: false,
       })),
+      guard: {
+        username: "reviewrouter_activation_receipt_guard",
+        login: false,
+        superuser: false,
+        createDatabase: false,
+        createRole: false,
+        replication: false,
+        bypassRls: false,
+        bootstrapCanSet: true,
+        bootstrapMembershipAdminOption: true,
+        bootstrapMembershipInheritOption: false,
+        bootstrapMembershipSetOption: true,
+        bootstrapMembershipCount: 2,
+        bootstrapGrantorCount: 2,
+        unexpectedMembershipCount: 0,
+      },
       ownership: {
         databaseOwner: "reviewrouter_role_bootstrap",
         publicSchemaOwner: "reviewrouter_release_migration",
@@ -109,6 +126,18 @@ describe("canonical exclusive release migration caller", () => {
     expect(() =>
       assertCanonicalRoleTopology({
         ...observation,
+        guard: { ...observation.guard, superuser: true },
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
+        guard: { ...observation.guard, bootstrapGrantorCount: 3 },
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
         ownership: {
           ...observation.ownership,
           publicSchemaOwner: "reviewrouter_role_bootstrap",
@@ -127,9 +156,83 @@ describe("canonical exclusive release migration caller", () => {
     ]);
     const provisioning = roleProvisioningSql(configuration);
     const grants = runtimeGrantSql(configuration);
-    expect(provisioning.match(/CREATE ROLE/g)).toHaveLength(5);
-    expect(provisioning.match(/NOCREATEDB/g)).toHaveLength(5);
-    expect(provisioning.match(/NOCREATEROLE/g)).toHaveLength(10);
+    const observationSql = canonicalRoleTopologyObservationSql();
+    const createdRoleIdentities = [
+      ...provisioning.matchAll(/CREATE ROLE ([a-z_]+) ([^;]+);/gu),
+    ].map(([, username, attributes]) => ({ attributes, username }));
+    expect(createdRoleIdentities).toEqual([
+      {
+        username: "reviewrouter_activation_receipt_guard",
+        attributes:
+          "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+      },
+      ...[
+        "reviewrouter_api",
+        "reviewrouter_web",
+        "reviewrouter_worker",
+        "reviewrouter_codex_effect_authority",
+        "reviewrouter_release_migration",
+      ].map((username) => ({
+        username,
+        attributes:
+          "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '" +
+          (username === "reviewrouter_api"
+            ? "api-secret"
+            : username === "reviewrouter_web"
+              ? "web-secret"
+              : username === "reviewrouter_worker"
+                ? "worker-secret"
+                : username === "reviewrouter_codex_effect_authority"
+                  ? "signer-secret"
+                  : "release") +
+          "'",
+      })),
+    ]);
+    expect(provisioning).not.toMatch(
+      /ALTER ROLE [^;]+\b(?:SUPERUSER|NOSUPERUSER|CREATEDB|NOCREATEDB|REPLICATION|NOREPLICATION|BYPASSRLS|NOBYPASSRLS)\b/gu,
+    );
+    expect(provisioning).not.toContain(
+      "ALTER ROLE reviewrouter_activation_receipt_guard",
+    );
+    expect(provisioning).not.toContain(
+      "aclexplode(coalesce(attribute.attacl,'{}'::aclitem[]))",
+    );
+    expect(provisioning).toContain("aclexplode(attribute.attacl)");
+    expect(provisioning).toContain("ELSIF observed.rolcanlogin");
+    expect(provisioning).toContain("OR observed.rolsuper");
+    expect(provisioning).toContain("OR observed.rolcreatedb");
+    expect(provisioning).toContain("OR observed.rolcreaterole");
+    expect(provisioning).toContain("OR observed.rolreplication");
+    expect(provisioning).toContain("OR observed.rolbypassrls");
+    expect(provisioning).toContain(
+      "refusing unexpectedly privileged activation receipt guard role",
+    );
+    expect(provisioning).toContain(
+      "GRANT reviewrouter_activation_receipt_guard TO reviewrouter_role_bootstrap\n  WITH INHERIT FALSE, SET TRUE",
+    );
+    expect(provisioning).toContain(
+      "activation receipt guard ownership authority is non-canonical",
+    );
+    expect(provisioning).toContain(
+      "AND granted.rolname <> 'reviewrouter_activation_receipt_guard'",
+    );
+    expect(observationSql).toContain(
+      "'bootstrapMembershipAdminOption', (SELECT bool_or(membership.admin_option)",
+    );
+    expect(observationSql).toContain(
+      "'bootstrapMembershipInheritOption', (SELECT bool_or(membership.inherit_option)",
+    );
+    expect(observationSql).toContain(
+      "'bootstrapMembershipSetOption', (SELECT bool_or(membership.set_option)",
+    );
+    expect(observationSql).toContain(
+      "AND granted.rolname <> 'reviewrouter_activation_receipt_guard'",
+    );
+    expect(
+      provisioning.match(
+        /ALTER ROLE reviewrouter_[a-z_]+ LOGIN NOCREATEROLE PASSWORD/gu,
+      ),
+    ).toHaveLength(5);
     expect(provisioning).toContain(
       "refusing to converge unexpectedly privileged role",
     );
@@ -366,6 +469,22 @@ describe("canonical exclusive release migration caller", () => {
             inheritOption: false,
             setOption: false,
           })),
+          guard: {
+            username: "reviewrouter_activation_receipt_guard",
+            login: false,
+            superuser: false,
+            createDatabase: false,
+            createRole: false,
+            replication: false,
+            bypassRls: false,
+            bootstrapCanSet: true,
+            bootstrapMembershipAdminOption: true,
+            bootstrapMembershipInheritOption: false,
+            bootstrapMembershipSetOption: true,
+            bootstrapMembershipCount: 2,
+            bootstrapGrantorCount: 2,
+            unexpectedMembershipCount: 0,
+          },
           ownership: {
             databaseOwner: "reviewrouter_role_bootstrap",
             publicSchemaOwner: "reviewrouter_release_migration",

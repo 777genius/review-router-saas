@@ -88,6 +88,40 @@ describe("transactional PG17 activation", () => {
     expect(sql).toContain(
       "ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_activation_receipt_guard",
     );
+    const insertIndex = sql.indexOf(
+      "INSERT INTO reviewrouter_bootstrap.release_generation_activation_receipt",
+    );
+    const guardOwnershipIndex = sql.indexOf(
+      "ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_activation_receipt_guard",
+    );
+    const grantDatabaseIndex = sql.indexOf(
+      "GRANT CREATE ON DATABASE %I TO reviewrouter_activation_receipt_guard",
+    );
+    const grantSchemaIndex = sql.indexOf(
+      "GRANT USAGE, CREATE ON SCHEMA reviewrouter_bootstrap TO reviewrouter_activation_receipt_guard",
+    );
+    const revokeSchemaIndex = sql.indexOf(
+      "REVOKE USAGE, CREATE ON SCHEMA reviewrouter_bootstrap FROM reviewrouter_activation_receipt_guard",
+    );
+    const schemaOwnershipIndex = sql.indexOf(
+      "ALTER SCHEMA reviewrouter_bootstrap OWNER TO reviewrouter_activation_receipt_guard",
+    );
+    const revokeDatabaseIndex = sql.indexOf(
+      "REVOKE CREATE ON DATABASE %I FROM reviewrouter_activation_receipt_guard",
+    );
+    const revokeGuardIndex = sql.indexOf(
+      "REVOKE reviewrouter_activation_receipt_guard FROM reviewrouter_role_bootstrap",
+    );
+    expect(insertIndex).toBeGreaterThan(-1);
+    expect(grantDatabaseIndex).toBeGreaterThan(insertIndex);
+    expect(grantSchemaIndex).toBeGreaterThan(grantDatabaseIndex);
+    expect(guardOwnershipIndex).toBeGreaterThan(insertIndex);
+    expect(revokeSchemaIndex).toBeGreaterThan(guardOwnershipIndex);
+    expect(schemaOwnershipIndex).toBeGreaterThan(revokeSchemaIndex);
+    expect(revokeDatabaseIndex).toBeGreaterThan(schemaOwnershipIndex);
+    expect(revokeGuardIndex).toBeGreaterThan(revokeDatabaseIndex);
+    expect(revokeGuardIndex).toBeGreaterThan(guardOwnershipIndex);
+    expect(sql.indexOf("COMMIT;")).toBeGreaterThan(revokeGuardIndex);
     expect(sql).toContain("'effectiveMemberships'");
     expect(sql).toContain("'membershipEdges'");
     expect(sql).toContain("'columns'");

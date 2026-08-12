@@ -41,6 +41,8 @@ describe("disposable dual-version rehearsal", () => {
       "roleProvisioningSql",
       "runtimeGrantSql",
       "canonicalActivationSql",
+      "claimVersion: this.fence.claimVersion",
+      "targetDeployIds: this.fence.targetDeployIds",
       "assembleTrustedRolloutEvidence",
       "reconnectDenied",
       "beginCompensation",

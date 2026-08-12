@@ -122,11 +122,13 @@ export async function cleanupRunnerWorkspace(
         )
           throw error;
         if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-          throw new Error("github_jit_cleanup_verification_failed");
+          throw new Error("github_jit_cleanup_verification_failed", {
+            cause: error,
+          });
       }
       removed.push(path);
-    } catch {
-      throw new Error("github_jit_cleanup_remove_failed");
+    } catch (error) {
+      throw new Error("github_jit_cleanup_remove_failed", { cause: error });
     }
   }
   const remaining = (await readdir("/runner/_work"))
