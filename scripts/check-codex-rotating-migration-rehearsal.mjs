@@ -23,6 +23,7 @@ const migration63Name = "000063_codex_oauth_setup_payload_claim";
 const migration64Name = "000064_codex_oauth_versioned_secret_namespaces";
 const migration65Name = "000065_codex_oauth_authority_acl_hardening";
 const migration66Name = "000066_codex_oauth_rotating_cascade_authority";
+const migration67Name = "000067_release_rollout_ledger";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -30,6 +31,7 @@ const migration63 = join(migrationsDirectory, migration63Name, "migration.sql");
 const migration64 = join(migrationsDirectory, migration64Name, "migration.sql");
 const migration65 = join(migrationsDirectory, migration65Name, "migration.sql");
 const migration66 = join(migrationsDirectory, migration66Name, "migration.sql");
+const migration67 = join(migrationsDirectory, migration67Name, "migration.sql");
 const rotatingMigrationNames = readdirSync(migrationsDirectory)
   .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
   .sort();
@@ -43,6 +45,7 @@ assert(
       migration64Name,
       migration65Name,
       migration66Name,
+      migration67Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -82,9 +85,17 @@ try {
   proveInjected61Rollback(rehearsalUrl);
   migrateResolve(rehearsalUrl, "--rolled-back", migration61Name);
   discardRehearsalOnlyRolledBackMigrationHistory(rehearsalUrl);
-  executeCanonicalReleaseMigration(
-    rehearsalRelease.environment,
+  const releaseMigrationResult = executeCanonicalReleaseMigration(
+    {
+      ...rehearsalRelease.environment,
+      REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open",
+    },
     runRehearsalReleaseSubprocess,
+    loopbackRehearsalDatabaseIdentity,
+  );
+  assert(
+    releaseMigrationResult.aclGateState === "open",
+    "combined migration rehearsal must exercise the open runtime ACL state",
   );
 
   proveSuccessfulCombinedRelease(rehearsalUrl);
@@ -112,7 +123,7 @@ try {
   const observation = collectObservation(rehearsalUrl);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060+000061+000062+000063+000064+000065+000066 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000067 rehearsal passed.\n",
   );
 } finally {
   psql(
@@ -189,6 +200,23 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       cleanup: 'DROP FUNCTION "codex_oauth_runtime_referential_action_guard"()',
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_provider_identity_repair_challenge'",
+    },
+    {
+      name: migration67Name,
+      source: migration67,
+      prior: [
+        [migration60Name, migration60],
+        [migration61Name, migration61],
+        [migration62Name, migration62],
+        [migration63Name, migration63],
+        [migration64Name, migration64],
+        [migration65Name, migration65],
+        [migration66Name, migration66],
+      ],
+      decoy: 'CREATE TABLE "release_rollout_receipt_ledger" (id text)',
+      cleanup: 'DROP TABLE "release_rollout_receipt_ledger"',
+      leaked:
+        "SELECT count(*) FROM information_schema.tables WHERE table_name='release_rollout_ledger'",
     },
   ];
   for (const [index, testCase] of cases.entries()) {
@@ -1646,10 +1674,14 @@ function proveDatabasePrivileges(url) {
         JOIN pg_roles granted ON granted.oid = membership.roleid
         JOIN pg_roles member ON member.oid = membership.member
         JOIN pg_roles grantor ON grantor.oid = membership.grantor
-        WHERE granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
-           OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
-           OR granted.rolname = 'reviewrouter_role_bootstrap'
-           OR member.rolname = 'reviewrouter_role_bootstrap';
+        WHERE (
+               granted.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+            OR member.rolname IN ('reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority','reviewrouter_release_migration')
+            OR granted.rolname = 'reviewrouter_role_bootstrap'
+            OR member.rolname = 'reviewrouter_role_bootstrap'
+        )
+          AND granted.rolname <> 'reviewrouter_activation_receipt_guard'
+          AND member.rolname <> 'reviewrouter_activation_receipt_guard';
         IF membership_count <> 5
            OR canonical_membership_count <> 5
            OR membership_role_count <> 5
@@ -1724,6 +1756,46 @@ function prepareCanonicalReleaseRoles(url) {
     "rr-rehearsal-role-bootstrap",
   );
   bootstrap.password = bootstrapPassword;
+  psql(bootstrap, ["-c", "CREATE EXTENSION IF NOT EXISTS pgcrypto"]);
+  psql(url, [
+    "-c",
+    `DO $extension_owners$
+     DECLARE item record;
+     BEGIN
+       FOR item IN
+         SELECT routine.oid
+         FROM pg_proc routine
+         JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+         WHERE namespace.nspname = 'public'
+           AND routine.proowner = 'postgres'::regrole
+       LOOP
+         EXECUTE format(
+           'ALTER ROUTINE %s OWNER TO reviewrouter_role_bootstrap',
+           item.oid::regprocedure
+         );
+       END LOOP;
+       FOR item IN
+         SELECT type.typname, type.typtype
+         FROM pg_type type
+         JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+         WHERE namespace.nspname = 'public'
+           AND type.typowner = 'postgres'::regrole
+           AND type.typtype IN ('d','e','m','r')
+       LOOP
+         EXECUTE CASE
+           WHEN item.typtype = 'd' THEN format(
+             'ALTER DOMAIN public.%I OWNER TO reviewrouter_role_bootstrap',
+             item.typname
+           )
+           ELSE format(
+             'ALTER TYPE public.%I OWNER TO reviewrouter_role_bootstrap',
+             item.typname
+           )
+         END;
+       END LOOP;
+     END
+     $extension_owners$;`,
+  ]);
   const release = clientUrl(
     "reviewrouter_release_migration",
     "rr-rehearsal-release-migration",
@@ -2372,6 +2444,14 @@ function proveRuntimeParentCascadesDenied(adminUrl, clients) {
     ["reviewrouter_codex_effect_authority", clients.effectAuthority],
   ];
   for (const [role, url] of roles) {
+    const canConnect = psql(adminUrl, [
+      "-Atc",
+      `SELECT has_database_privilege(${quoteLiteral(role)}, current_database(), 'CONNECT')`,
+    ]).stdout.trim();
+    assert(
+      canConnect === "t",
+      `${role} must retain CONNECT before runtime cascade proofs`,
+    );
     psql(adminUrl, [
       "-c",
       `GRANT SELECT, UPDATE, DELETE ON TABLE "Workspace", "GitHubInstallation", "GitLabInstallation", "ScmRepositoryIdentity" TO ${quoteIdentifier(role)};
@@ -3033,18 +3113,19 @@ function proveQuarantineCleanupPathV2(url) {
 }
 
 function proveMigrateDeployNoOp(url) {
+  const migrationNameSql = rotatingMigrationNames.map(quoteLiteral).join(",");
   const before = psql(url, [
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening','000066_codex_oauth_rotating_cascade_authority')`,
+      WHERE migration_name IN (${migrationNameSql})`,
   ]).stdout.trim();
   const rerun = migrateDeploy(url);
   const after = psql(url, [
     "-Atc",
     String.raw`SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY migration_name, started_at)::text)
       FROM "_prisma_migrations" m
-      WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening','000066_codex_oauth_rotating_cascade_authority')`,
+      WHERE migration_name IN (${migrationNameSql})`,
   ]).stdout.trim();
   assert(
     before === after,
@@ -3063,13 +3144,15 @@ function proveMigrateDeployNoOp(url) {
   proveMigrationRunnerHistory(url, migration64Name, true);
   proveMigrationRunnerHistory(url, migration65Name, true);
   proveMigrationRunnerHistory(url, migration66Name, true);
+  proveMigrationRunnerHistory(url, migration67Name, true);
 }
 
 function collectObservation(url) {
+  const migrationNameSql = rotatingMigrationNames.map(quoteLiteral).join(",");
   const history = JSON.parse(
     psql(url, [
       "-Atc",
-      String.raw`SELECT json_agg(x ORDER BY migration_name) FROM (SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NULL AS current, applied_steps_count FROM "_prisma_migrations" WHERE migration_name IN ('000060_codex_oauth_setup_serialization','000061_codex_oauth_provider_mutation_fence','000062_codex_oauth_remote_outcome_unknown','000063_codex_oauth_setup_payload_claim','000064_codex_oauth_versioned_secret_namespaces','000065_codex_oauth_authority_acl_hardening','000066_codex_oauth_rotating_cascade_authority')) x`,
+      String.raw`SELECT json_agg(x ORDER BY migration_name) FROM (SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NULL AS current, applied_steps_count FROM "_prisma_migrations" WHERE migration_name IN (${migrationNameSql})) x`,
     ]).stdout,
   );
   const catalog = JSON.parse(
@@ -3258,6 +3341,11 @@ function requireLocalPostgres(value) {
   )
     throw new Error("migration rehearsal only accepts loopback PostgreSQL");
   return url;
+}
+
+function loopbackRehearsalDatabaseIdentity(value) {
+  const url = requireLocalPostgres(String(value));
+  return `${url.hostname.toLowerCase()}:${url.port || "5432"}${url.pathname}`;
 }
 
 function requirePostgres17() {

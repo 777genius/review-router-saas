@@ -370,7 +370,10 @@ function observeDatabaseGeneration(run, url, env) {
   return Object.freeze(generation);
 }
 
-export function resolveReleaseMigrationConfiguration(env) {
+export function resolveReleaseMigrationConfiguration(
+  env,
+  resolveDatabaseIdentity = databaseIdentity,
+) {
   const releaseUrl = parseDatabaseUrl(
     required(env, "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL"),
   );
@@ -378,7 +381,7 @@ export function resolveReleaseMigrationConfiguration(env) {
     decodeURIComponent(releaseUrl.username) !== "reviewrouter_release_migration"
   )
     throw new Error("release_migration_caller_role_mismatch");
-  const identity = databaseIdentity(releaseUrl);
+  const identity = resolveDatabaseIdentity(releaseUrl);
   const releasePassword = decodeURIComponent(releaseUrl.password);
   if (!releasePassword)
     throw new Error("release_migration_release_password_missing");
@@ -386,7 +389,7 @@ export function resolveReleaseMigrationConfiguration(env) {
     const url = parseDatabaseUrl(required(env, environmentName));
     if (
       decodeURIComponent(url.username) !== username ||
-      databaseIdentity(url) !== identity
+      resolveDatabaseIdentity(url) !== identity
     )
       throw new Error(`release_migration_runtime_role_mismatch:${role}`);
     const password = decodeURIComponent(url.password);
@@ -612,8 +615,33 @@ WHERE EXISTS (
 \\gexec
 SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())
 \\gexec
-SELECT format('GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration', current_database())
+SELECT format('GRANT CREATE ON DATABASE %I TO reviewrouter_release_migration', current_database())
 \\gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO reviewrouter_release_migration WITH GRANT OPTION', current_database())
+\\gexec
+DO $database_delegation$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_database database,
+         LATERAL aclexplode(coalesce(database.datacl, acldefault('d', database.datdba))) acl
+    WHERE database.datname = current_database()
+      AND acl.grantee = 'reviewrouter_release_migration'::regrole
+      AND acl.privilege_type = 'CONNECT'
+      AND acl.is_grantable
+  ) OR EXISTS (
+    SELECT 1
+    FROM pg_database database,
+         LATERAL aclexplode(coalesce(database.datacl, acldefault('d', database.datdba))) acl
+    WHERE database.datname = current_database()
+      AND acl.grantee = 'reviewrouter_release_migration'::regrole
+      AND acl.privilege_type = 'CREATE'
+      AND acl.is_grantable
+  ) THEN
+    RAISE EXCEPTION 'release migration database delegation is non-canonical';
+  END IF;
+END
+$database_delegation$;
 GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_migration;
 GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH SET TRUE;
 DO $ownership$
@@ -1395,10 +1423,27 @@ REVOKE USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA public FROM ${username};`,
 }
 
 export function runtimeGrantSql(configuration, { gateClosed = false } = {}) {
+  const runtimeRoleLiterals = configuration.roles
+    .map(({ username }) => quoted(username))
+    .join(",");
   return `\\set ON_ERROR_STOP on
 BEGIN;
 ${runtimeGrantStatements(configuration)}
 ${gateClosed ? runtimeAclGateStatements(configuration) : ""}
+DO $runtime_connect_acl$
+DECLARE role_name text;
+BEGIN
+  FOREACH role_name IN ARRAY ARRAY[${runtimeRoleLiterals}] LOOP
+    IF has_database_privilege(role_name, current_database(), 'CONNECT')
+       IS DISTINCT FROM ${gateClosed ? "false" : "true"} THEN
+      RAISE EXCEPTION 'runtime CONNECT state mismatch for %', role_name;
+    END IF;
+  END LOOP;
+  IF has_database_privilege('public', current_database(), 'CONNECT') THEN
+    RAISE EXCEPTION 'PUBLIC retained database CONNECT';
+  END IF;
+END
+$runtime_connect_acl$;
 COMMIT;
 `;
 }
@@ -1588,13 +1633,17 @@ export function executeCanonicalRoleBootstrap(
 export function executeCanonicalReleaseMigration(
   env = process.env,
   run = runReleaseMigrationSubprocess,
+  resolveDatabaseIdentity = databaseIdentity,
 ) {
   if (
     env.REVIEW_ROUTER_RELEASE_ACL_GATE_MODE !== undefined &&
     !["open", "closed"].includes(env.REVIEW_ROUTER_RELEASE_ACL_GATE_MODE)
   )
     throw new Error("release_migration_acl_gate_mode_invalid");
-  const configuration = resolveReleaseMigrationConfiguration(env);
+  const configuration = resolveReleaseMigrationConfiguration(
+    env,
+    resolveDatabaseIdentity,
+  );
   const childEnv = { ...env, DATABASE_URL: configuration.releaseUrl };
   assertConnectionRole(
     observeConnectionRole(

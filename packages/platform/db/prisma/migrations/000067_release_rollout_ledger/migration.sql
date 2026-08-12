@@ -1,3 +1,8 @@
+BEGIN;
+
+SET LOCAL lock_timeout = '15s';
+SET LOCAL statement_timeout = '5min';
+
 CREATE TABLE "release_rollout_ledger" (
   "rollout_id" text PRIMARY KEY,
   "expected_commit_sha" text NOT NULL CHECK ("expected_commit_sha" ~ '^[a-f0-9]{40}$'),
@@ -74,3 +79,5 @@ REVOKE ALL ON TABLE "release_rollout_ledger" FROM PUBLIC;
 REVOKE ALL ON TABLE "release_rollout_receipt_ledger" FROM PUBLIC;
 REVOKE ALL ON TABLE "release_runner_provisioning_intent" FROM PUBLIC;
 REVOKE ALL ON TABLE "release_runner_job_ledger" FROM PUBLIC;
+
+COMMIT;

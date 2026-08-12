@@ -47,7 +47,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toMatch(/\bobj_description\(oid, 'pg_database'\)/u);
   });
 
-  it("keeps 000063 through 000066 in the late-failure rollback/replay matrix", () => {
+  it("keeps 000063 through 000067 in the late-failure rollback/replay matrix", () => {
     const matrix =
       /function proveLateMigrationRollbackAndReplayMatrix\(\) \{([\s\S]+?)\n\}/u.exec(
         source,
@@ -57,6 +57,11 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(matrix).toContain("name: migration64Name");
     expect(matrix).toContain("name: migration65Name");
     expect(matrix).toContain("name: migration66Name");
+    expect(matrix).toContain("name: migration67Name");
+    expect(matrix).toContain(
+      `'CREATE TABLE "release_rollout_receipt_ledger" (id text)'`,
+    );
+    expect(matrix).toContain(`table_name='release_rollout_ledger'`);
     expect(matrix).toContain('psql(url, ["-c", testCase.decoy])');
     expect(matrix).toContain("`${testCase.name} injected failure missing`");
     expect(matrix).toContain(
@@ -77,6 +82,17 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(matrix).not.toContain("registerDirectMigrationSuccess");
     expect(source).not.toContain("function registerDirectMigrationSuccess");
+  });
+
+  it("requires the release rollout ledger migration to be transactional", () => {
+    const migration = readFileSync(
+      resolve(
+        import.meta.dirname,
+        "../packages/platform/db/prisma/migrations/000067_release_rollout_ledger/migration.sql",
+      ),
+      "utf8",
+    );
+    expect(migration).toMatch(/^BEGIN;[\s\S]+COMMIT;\s*$/u);
   });
 
   it("uses the production exact catalog observation and verifier", () => {
@@ -120,7 +136,24 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain("membership_grantor_count <> 1");
     expect(source).toContain(
+      "granted.rolname <> 'reviewrouter_activation_receipt_guard'",
+    );
+    expect(source).toContain(
+      "member.rolname <> 'reviewrouter_activation_receipt_guard'",
+    );
+    expect(source).toContain(
       "Codex OAuth role membership authority mismatch: total %, canonical %, roles %, grantors %",
+    );
+  });
+
+  it("proves runtime roles retain database access before cascade denial checks", () => {
+    expect(source).toContain('REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "open"');
+    expect(source).toContain('releaseMigrationResult.aclGateState === "open"');
+    expect(source).toContain(
+      "must retain CONNECT before runtime cascade proofs",
+    );
+    expect(source).toContain(
+      "has_database_privilege(${quoteLiteral(role)}, current_database(), 'CONNECT')",
     );
   });
 
@@ -211,6 +244,19 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       )?.[1];
     expect(provisioning).toBeDefined();
     expect(provisioning).toContain("reviewrouter_role_bootstrap");
+    expect(provisioning).toContain("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    expect(provisioning).toContain("DO $extension_owners$");
+    expect(provisioning).toContain(
+      "ALTER ROUTINE %s OWNER TO reviewrouter_role_bootstrap",
+    );
+    expect(provisioning).toContain(
+      "ALTER TYPE public.%I OWNER TO reviewrouter_role_bootstrap",
+    );
+    expect(
+      provisioning.indexOf("bootstrap.password = bootstrapPassword"),
+    ).toBeLessThan(
+      provisioning.indexOf("CREATE EXTENSION IF NOT EXISTS pgcrypto"),
+    );
     expect(provisioning).toContain("CREATEROLE");
     expect(provisioning).toContain("REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL");
     expect(provisioning).toContain(
@@ -447,6 +493,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).not.toContain("grantSyntheticReleaseGuardPrivileges");
     expect(source).toContain("executeCanonicalReleaseMigration(");
+    expect(source).toContain("loopbackRehearsalDatabaseIdentity");
+    expect(source).toContain("const url = requireLocalPostgres(String(value))");
     expect(source).toContain(
       "pg_has_role(role_name, 'reviewrouter_release_migration', 'SET')",
     );

@@ -261,7 +261,13 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(provisioning).not.toContain("ALTER DATABASE");
     expect(provisioning).toContain(
-      "GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration",
+      "GRANT CREATE ON DATABASE %I TO reviewrouter_release_migration",
+    );
+    expect(provisioning).toContain(
+      "GRANT CONNECT ON DATABASE %I TO reviewrouter_release_migration WITH GRANT OPTION",
+    );
+    expect(provisioning).toContain(
+      "release migration database delegation is non-canonical",
     );
     expect(provisioning).toContain(
       "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_migration",
@@ -282,6 +288,8 @@ describe("canonical exclusive release migration caller", () => {
       "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
     );
     expect(grants).not.toContain("GRANT reviewrouter_release_migration");
+    expect(grants).toContain("runtime CONNECT state mismatch for %");
+    expect(grants).toContain("PUBLIC retained database CONNECT");
     expect(grants).toContain(
       'GRANT EXECUTE ON FUNCTION public."codex_oauth_sign_database_authority"(text) TO reviewrouter_codex_effect_authority',
     );
@@ -558,6 +566,28 @@ describe("canonical exclusive release migration caller", () => {
     };
     expect(resolveReleaseMigrationConfiguration(env).releaseUrl).toContain(
       "reviewrouter_release_migration",
+    );
+  });
+
+  it("keeps loopback identity available only through an explicit test dependency", () => {
+    const env = Object.fromEntries(
+      Object.entries(environment()).map(([name, value]) => [
+        name,
+        typeof value === "string"
+          ? value.replaceAll("db.internal", "127.0.0.1:55432")
+          : value,
+      ]),
+    );
+    expect(() => resolveReleaseMigrationConfiguration(env)).toThrow(
+      "release_migration_private_database_host_required",
+    );
+    const configuration = resolveReleaseMigrationConfiguration(env, (value) => {
+      const url = value instanceof URL ? value : new URL(value);
+      if (url.hostname !== "127.0.0.1") throw new Error("test_non_loopback");
+      return `${url.hostname}:${url.port}${url.pathname}`;
+    });
+    expect(configuration.databaseIdentity).toBe(
+      "127.0.0.1:55432/review_router",
     );
   });
 
