@@ -249,6 +249,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       )?.[1];
     expect(provisioning).toBeDefined();
     expect(provisioning).toContain("reviewrouter_role_bootstrap");
+    expect(provisioning).toContain(
+      "CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN",
+    );
     expect(provisioning).toContain("CREATE EXTENSION IF NOT EXISTS pgcrypto");
     expect(provisioning).toContain("DO $extension_owners$");
     expect(provisioning).toContain(
