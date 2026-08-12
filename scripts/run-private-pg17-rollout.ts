@@ -76,8 +76,8 @@ const useCases = new ReleaseRolloutUseCases({
       migration = observation.facts;
       return observation;
     },
-    activate: async () => {
-      activation = canonical.activateTarget(process.env);
+    activate: async (_source, _target, fence) => {
+      activation = canonical.activateTarget(process.env, fence);
       return activation;
     },
     compensateSource: unavailable,
@@ -105,7 +105,10 @@ rollout = await useCases.cleanupRoleRunner(rollout, copy.roleBootstrapRunner);
 rollout = await useCases.runReleaseMigration(rollout);
 rollout = await useCases.stageTargetServices(rollout);
 try {
-  rollout = await useCases.activateTargetGeneration(rollout);
+  rollout = await useCases.activateTargetGeneration(
+    rollout,
+    cutoverRunner.workflowJobId,
+  );
 } catch (error) {
   throw new Error(
     `private_pg17_activation_uncertain:${error instanceof Error ? error.message : "unknown"}`,

@@ -404,6 +404,9 @@ export async function executeDisposableRehearsal(
         "SELECT system_identifier::text FROM pg_control_system()",
       ),
       REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256: "c".repeat(64),
+      GITHUB_RUN_ID: "1",
+      GITHUB_RUN_ATTEMPT: "1",
+      REVIEW_ROUTER_CUTOVER_WORKFLOW_JOB_ID: "11",
     };
     execute(
       [
@@ -625,11 +628,7 @@ async function verifyProductionPathRehearsal(facts) {
   const generated = {
     roleBootstrapSha256: `sha256:${sha256Canonical(roleProvisioningSql(sqlConfiguration))}`,
     migrationSha256: `sha256:${sha256Canonical(runtimeGrantSql(sqlConfiguration, { gateClosed: true }))}`,
-    activation: canonicalActivationSql(sqlConfiguration, {
-      rolloutId: rollout.rolloutId,
-      sourceSystemIdentifier: rollout.source.systemIdentifier,
-      targetSystemIdentifier: rollout.target.systemIdentifier,
-    }),
+    activation: undefined,
   };
   const catalogSha256 = {
     sequences: digest,
@@ -644,6 +643,7 @@ async function verifyProductionPathRehearsal(facts) {
   let cleanupStep = RolloutStep.CleanupRoleRunner;
   const ledger = {
     last: `sha256:${"0".repeat(64)}`,
+    state: "before",
     async claim() {
       return "claimed";
     },
@@ -654,6 +654,41 @@ async function verifyProductionPathRehearsal(facts) {
     },
     async markActivationUncertain() {
       this.uncertain = true;
+    },
+    async fenceActivation(input) {
+      if (this.state !== "before" || input.previousReceiptSha256 !== this.last)
+        return null;
+      this.state = "uncertain";
+      this.fence = {
+        schemaVersion: 1,
+        ...input,
+        nonce: "a".repeat(32),
+        version: 1,
+        fencedAt: "2026-08-12T00:00:13.500Z",
+      };
+      generated.activation = canonicalActivationSql(sqlConfiguration, {
+        rolloutId: input.rolloutId,
+        expectedCommitSha: input.expectedCommitSha,
+        runId: input.runId,
+        jobId: input.jobId,
+        runAttempt: input.runAttempt,
+        sourceSystemIdentifier: input.sourceSystemIdentifier,
+        targetSystemIdentifier: input.targetSystemIdentifier,
+        previousReceiptSha256: input.previousReceiptSha256,
+        fenceNonce: this.fence.nonce,
+        fenceVersion: this.fence.version,
+      });
+      return this.fence;
+    },
+    async finalizeActivation(input) {
+      if (this.state !== "uncertain" || input.fence !== this.fence)
+        return false;
+      this.state = "activated";
+      this.last = input.nextReceiptSha256;
+      return true;
+    },
+    async observeActivationState() {
+      return this.state;
     },
   };
   let evidence;
@@ -813,10 +848,11 @@ async function verifyProductionPathRehearsal(facts) {
             canonicalRun,
           ),
         ),
-      activate: async () =>
+      activate: async (_source, _target, fence) =>
         executePrivateGenerationActivation(
           facts.canonicalEnv,
           activationCommands,
+          fence,
         ),
       compensateSource: async () =>
         observed(RolloutStep.CompleteCompensation, { aclRestored: true }),
@@ -982,7 +1018,10 @@ async function verifyProductionPathRehearsal(facts) {
   ({ rollout } = await useCases.provisionCutoverRunner(rollout));
   rollout = await useCases.runReleaseMigration(rollout);
   rollout = await useCases.stageTargetServices(rollout);
-  rollout = await useCases.activateTargetGeneration(rollout);
+  rollout = await useCases.activateTargetGeneration(
+    rollout,
+    cutoverRunner.workflowJobId,
+  );
   cleanupStep = RolloutStep.CleanupCutoverRunner;
   rollout = await useCases.cleanupCutoverRunner(rollout, cutoverRunner);
   rollout = await useCases.resumeTargetServices(rollout);
@@ -990,7 +1029,11 @@ async function verifyProductionPathRehearsal(facts) {
   rollout = await useCases.verifyTrustedRollout(rollout);
   let duplicateActivationRejected = false;
   try {
-    executePrivateGenerationActivation(facts.canonicalEnv, activationCommands);
+    executePrivateGenerationActivation(
+      facts.canonicalEnv,
+      activationCommands,
+      ledger.fence,
+    );
   } catch {
     duplicateActivationRejected = true;
   }

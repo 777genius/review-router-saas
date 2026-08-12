@@ -21,6 +21,7 @@ const required = (env, name) => {
 export function executePrivateGenerationActivation(
   env = process.env,
   commands = new RedactedProcessCommandAdapter(),
+  fence,
 ) {
   const configuration = resolveReleaseMigrationConfiguration(env);
   const sourceSystemIdentifier = required(
@@ -32,6 +33,18 @@ export function executePrivateGenerationActivation(
     "REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER",
   );
   const rolloutId = required(env, "REVIEW_ROUTER_ROLLOUT_ID");
+  if (
+    !fence ||
+    fence.rolloutId !== rolloutId ||
+    fence.expectedCommitSha !==
+      required(env, "REVIEW_ROUTER_RELEASE_COMMIT_SHA") ||
+    fence.runId !== required(env, "GITHUB_RUN_ID") ||
+    fence.jobId !== required(env, "REVIEW_ROUTER_CUTOVER_WORKFLOW_JOB_ID") ||
+    fence.runAttempt !== Number(required(env, "GITHUB_RUN_ATTEMPT")) ||
+    fence.sourceSystemIdentifier !== sourceSystemIdentifier ||
+    fence.targetSystemIdentifier !== targetSystemIdentifier
+  )
+    throw new Error("release_activation_fence_binding_invalid");
   const runPsql = (step, args, options = {}) => {
     const connection = decomposePostgresConnection(configuration.releaseUrl);
     try {
@@ -64,8 +77,15 @@ export function executePrivateGenerationActivation(
     throw new Error("release_activation_target_generation_mismatch");
   const activation = canonicalActivationSql(configuration, {
     rolloutId,
+    expectedCommitSha: fence.expectedCommitSha,
+    runId: fence.runId,
+    jobId: fence.jobId,
+    runAttempt: fence.runAttempt,
     sourceSystemIdentifier,
     targetSystemIdentifier,
+    previousReceiptSha256: fence.previousReceiptSha256,
+    fenceNonce: fence.nonce,
+    fenceVersion: fence.version,
   });
   const output = runPsql(
     "transactional_activation",
@@ -82,6 +102,13 @@ export function executePrivateGenerationActivation(
     observed?.rolloutId !== rolloutId ||
     observed?.sourceSystemIdentifier !== sourceSystemIdentifier ||
     observed?.targetSystemIdentifier !== targetSystemIdentifier ||
+    observed?.expectedCommitSha !== fence.expectedCommitSha ||
+    observed?.runId !== fence.runId ||
+    observed?.jobId !== fence.jobId ||
+    observed?.runAttempt !== fence.runAttempt ||
+    observed?.previousReceiptSha256 !== fence.previousReceiptSha256 ||
+    observed?.fenceNonce !== fence.nonce ||
+    observed?.fenceVersion !== fence.version ||
     observed?.canonicalPrivilegesSha256 !==
       activation.canonicalPrivilegesSha256 ||
     !/^sha256:[a-f0-9]{64}$/u.test(observed?.catalogFactsSha256 ?? "") ||
@@ -102,6 +129,8 @@ export function executePrivateGenerationActivation(
       firstWriteReceiptSha256: observed.firstWriteReceiptSha256,
       transactionId: observed.transactionId,
       firstWriteBoundary: true,
+      fenceNonce: fence.nonce,
+      fenceVersion: fence.version,
       observationSha256: `sha256:${createHash("sha256").update(JSON.stringify(observed)).digest("hex")}`,
     },
   };
@@ -113,7 +142,7 @@ if (
 ) {
   try {
     process.stdout.write(
-      `${JSON.stringify(executePrivateGenerationActivation())}\n`,
+      `${JSON.stringify(executePrivateGenerationActivation(process.env, undefined, JSON.parse(required(process.env, "REVIEW_ROUTER_ACTIVATION_FENCE_JSON"))))}\n`,
     );
   } catch (error) {
     process.stderr.write(

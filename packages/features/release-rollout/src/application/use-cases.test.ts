@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createReleaseRollout,
+  RolloutPhase,
   RolloutStep,
   type StepObservation,
 } from "../domain/release-rollout";
@@ -43,6 +44,44 @@ const observed = (step: StepObservation["step"]): StepObservation => ({
   observedAt: "2026-08-12T00:00:00.000Z",
   facts: { ok: true },
 });
+const stagedRollout = {
+  ...rollout,
+  phase: RolloutPhase.TargetStaged,
+  receipts: [
+    {
+      step: RolloutStep.StageTargetServices,
+      receiptId: `${rollout.rolloutId}:stage_target_services:1`,
+      observedAt: "2026-08-12T00:00:00.000Z",
+      rolloutId: rollout.rolloutId,
+      expectedCommitSha: rollout.expectedCommitSha,
+      runId: rollout.execution.runId,
+      runAttempt: 1,
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+      provider: undefined,
+      observationSha256: `sha256:${"1".repeat(64)}`,
+      previousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      receiptSha256: `sha256:${"2".repeat(64)}`,
+    },
+  ],
+} as const;
+const activationObservation: StepObservation = {
+  step: RolloutStep.ActivateTargetGeneration,
+  observedAt: "2026-08-12T00:00:01.000Z",
+  facts: {
+    rolloutId: rollout.rolloutId,
+    sourceSystemIdentifier: rollout.source.systemIdentifier,
+    targetSystemIdentifier: rollout.target.systemIdentifier,
+    firstWriteBoundary: true,
+    canonicalPrivilegesSha256: `sha256:${"3".repeat(64)}`,
+    catalogFactsSha256: `sha256:${"4".repeat(64)}`,
+    firstWriteReceiptSha256: `sha256:${"5".repeat(64)}`,
+    observationSha256: `sha256:${"6".repeat(64)}`,
+    transactionId: "42",
+    fenceNonce: "a".repeat(32),
+    fenceVersion: 1,
+  },
+};
 const basePorts = () => ({
   preflight: { observeProtectedEnvironment: vi.fn() },
   provider: { freezeAndObserve: vi.fn(), compensateAndObserve: vi.fn() },
@@ -58,6 +97,22 @@ const basePorts = () => ({
     claim: vi.fn().mockResolvedValue("claimed"),
     compareAndSet: vi.fn().mockResolvedValue(true),
     markActivationUncertain: vi.fn().mockResolvedValue(undefined),
+    fenceActivation: vi.fn().mockResolvedValue({
+      schemaVersion: 1,
+      rolloutId: rollout.rolloutId,
+      expectedCommitSha: rollout.expectedCommitSha,
+      runId: rollout.execution.runId,
+      jobId: "44",
+      runAttempt: 1,
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+      previousReceiptSha256: stagedRollout.receipts[0].receiptSha256,
+      nonce: "a".repeat(32),
+      version: 1,
+      fencedAt: "2026-08-12T00:00:00.000Z",
+    }),
+    finalizeActivation: vi.fn().mockResolvedValue(true),
+    observeActivationState: vi.fn().mockResolvedValue("before"),
   },
 });
 
@@ -135,7 +190,10 @@ describe("release rollout application boundary", () => {
       activate: vi.fn().mockRejectedValue(new Error("connection_lost")),
     } as never;
     await expect(
-      new ReleaseRolloutUseCases(ports).activateTargetGeneration(rollout),
+      new ReleaseRolloutUseCases(ports).activateTargetGeneration(
+        stagedRollout,
+        "44",
+      ),
     ).rejects.toThrow("activation_uncertain");
     expect(ports.ledger.markActivationUncertain).toHaveBeenCalledWith({
       rolloutId: rollout.rolloutId,
@@ -145,5 +203,68 @@ describe("release rollout application boundary", () => {
       sourceSystemIdentifier: rollout.source.systemIdentifier,
       targetSystemIdentifier: rollout.target.systemIdentifier,
     });
+  });
+
+  it("does not enter the activation transaction when the durable fence CAS fails", async () => {
+    const ports = basePorts();
+    ports.ledger.fenceActivation.mockResolvedValue(null);
+    const activate = vi.fn();
+    ports.database = { activate } as never;
+    await expect(
+      new ReleaseRolloutUseCases(ports).activateTargetGeneration(
+        stagedRollout,
+        "44",
+      ),
+    ).rejects.toThrow("activation_fence_cas_failed");
+    expect(activate).not.toHaveBeenCalled();
+    expect(ports.ledger.markActivationUncertain).not.toHaveBeenCalled();
+  });
+
+  it("remains forward-only after a crash between the fence and database transaction", async () => {
+    const ports = basePorts();
+    ports.database = {
+      activate: vi.fn().mockRejectedValue(new Error("crash_before_db")),
+    } as never;
+    await expect(
+      new ReleaseRolloutUseCases(ports).activateTargetGeneration(
+        stagedRollout,
+        "44",
+      ),
+    ).rejects.toThrow("activation_uncertain");
+    expect(ports.ledger.markActivationUncertain).toHaveBeenCalledOnce();
+  });
+
+  it("remains forward-only after database COMMIT and before ledger finalize", async () => {
+    const ports = basePorts();
+    ports.database = {
+      activate: vi.fn().mockResolvedValue(activationObservation),
+    } as never;
+    ports.ledger.finalizeActivation.mockRejectedValue(
+      new Error("crash_before_finalize"),
+    );
+    await expect(
+      new ReleaseRolloutUseCases(ports).activateTargetGeneration(
+        stagedRollout,
+        "44",
+      ),
+    ).rejects.toThrow("activation_uncertain");
+    expect(ports.ledger.markActivationUncertain).toHaveBeenCalledOnce();
+  });
+
+  it("finalizes activated authority only with the receipt bound to the same fence", async () => {
+    const ports = basePorts();
+    ports.database = {
+      activate: vi.fn().mockResolvedValue(activationObservation),
+    } as never;
+    const activated = await new ReleaseRolloutUseCases(
+      ports,
+    ).activateTargetGeneration(stagedRollout, "44");
+    expect(activated.phase).toBe(RolloutPhase.TargetActivated);
+    expect(activated.activationReceipt).toMatchObject({
+      fenceNonce: "a".repeat(32),
+      fenceVersion: 1,
+    });
+    expect(ports.ledger.finalizeActivation).toHaveBeenCalledOnce();
+    expect(ports.ledger.markActivationUncertain).not.toHaveBeenCalled();
   });
 });

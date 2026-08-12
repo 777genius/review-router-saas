@@ -37,6 +37,8 @@ export class ReleaseRolloutUseCases {
     observation: StepObservation,
     step: string,
   ): Promise<ReleaseRollout> {
+    if (step === RolloutStep.ActivateTargetGeneration)
+      throw new Error("activation_requires_durable_fence");
     if (observation.step !== step)
       throw new Error("adapter_observation_step_mismatch");
     const next = transitionFromObservation(r, observation);
@@ -180,14 +182,48 @@ export class ReleaseRolloutUseCases {
       RolloutStep.StageTargetServices,
     );
   }
-  async activateTargetGeneration(r: ReleaseRollout) {
+  async activateTargetGeneration(r: ReleaseRollout, jobId: string) {
+    const previousReceiptSha256 =
+      r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
+    let fenced = false;
     try {
-      return await this.accept(
-        r,
-        await this.ports.database.activate(r.source, r.target),
-        RolloutStep.ActivateTargetGeneration,
+      const fence = await this.ports.ledger.fenceActivation({
+        rolloutId: r.rolloutId,
+        expectedCommitSha: r.expectedCommitSha,
+        runId: r.execution.runId,
+        jobId,
+        runAttempt: r.execution.runAttempt,
+        sourceSystemIdentifier: r.source.systemIdentifier,
+        targetSystemIdentifier: r.target.systemIdentifier,
+        previousReceiptSha256,
+      });
+      if (!fence) throw new Error("activation_fence_cas_failed");
+      fenced = true;
+      const observation = await this.ports.database.activate(
+        r.source,
+        r.target,
+        fence,
       );
+      if (
+        observation.step !== RolloutStep.ActivateTargetGeneration ||
+        (observation.facts as Record<string, unknown>).fenceNonce !==
+          fence.nonce ||
+        (observation.facts as Record<string, unknown>).fenceVersion !==
+          fence.version
+      )
+        throw new Error("activation_receipt_fence_mismatch");
+      const next = transitionFromObservation(r, observation);
+      const changed = await this.ports.ledger.finalizeActivation({
+        fence,
+        provider: observation.provider,
+        nextReceiptSha256: next.receipts.at(-1)!.receiptSha256,
+        activationReceipt: next.activationReceipt!,
+      });
+      if (!changed)
+        throw new Error("authoritative_generation_activation_finalize_failed");
+      return next;
     } catch (error) {
+      if (!fenced) throw error;
       try {
         await this.ports.ledger.markActivationUncertain({
           rolloutId: r.rolloutId,
@@ -245,9 +281,16 @@ export class ReleaseRolloutUseCases {
   ): Promise<ReleaseRollout> {
     const failed = transitionFailure(r, failure);
     await this.ports.runner.reconcileOrphans(r.rolloutId);
+    const durableActivationState =
+      await this.ports.ledger.observeActivationState({
+        rolloutId: r.rolloutId,
+        sourceSystemIdentifier: r.source.systemIdentifier,
+        targetSystemIdentifier: r.target.systemIdentifier,
+      });
     if (
       failure === "activation_uncertain" ||
-      failed.sourcePermanentlyIneligible
+      failed.sourcePermanentlyIneligible ||
+      durableActivationState !== "before"
     ) {
       await this.ports.ledger.markActivationUncertain({
         rolloutId: r.rolloutId,

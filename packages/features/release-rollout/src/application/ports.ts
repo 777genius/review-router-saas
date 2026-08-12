@@ -1,5 +1,6 @@
 import type {
   AuthoritativeGenerationLedger,
+  ActivationFence,
   DatabaseGenerationIdentity,
   ReleaseRollout,
   RunnerIdentity,
@@ -44,6 +45,7 @@ export interface DatabaseRolloutPort {
   activate(
     source: DatabaseGenerationIdentity,
     target: DatabaseGenerationIdentity,
+    fence: ActivationFence,
   ): Promise<StepObservation>;
   compensateSource(
     source: DatabaseGenerationIdentity,

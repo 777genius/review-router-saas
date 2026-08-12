@@ -301,6 +301,8 @@ const observe = (step: (typeof steps)[number], index: number) => {
           firstWriteReceiptSha256: digest,
           observationSha256: digest,
           transactionId: "42",
+          fenceNonce: "a".repeat(32),
+          fenceVersion: 1,
         },
       };
     case RolloutStep.ResumeTargetServices:

@@ -1,5 +1,6 @@
 import {
   RolloutStep,
+  type ActivationFence,
   type StepObservation,
 } from "../../packages/features/release-rollout/src/index";
 import { executePrivateGenerationActivation } from "../activate-private-pg17-generation.mjs";
@@ -34,7 +35,14 @@ export class PrivatePg17CanonicalAdapter {
     };
   }
 
-  activateTarget(env: NodeJS.ProcessEnv): StepObservation {
-    return executePrivateGenerationActivation(env) as StepObservation;
+  activateTarget(
+    env: NodeJS.ProcessEnv,
+    fence: ActivationFence,
+  ): StepObservation {
+    return executePrivateGenerationActivation(
+      env,
+      undefined,
+      fence,
+    ) as StepObservation;
   }
 }

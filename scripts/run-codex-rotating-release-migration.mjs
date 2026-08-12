@@ -591,8 +591,15 @@ REVOKE ALL ON SCHEMA reviewrouter_bootstrap FROM PUBLIC;
 GRANT USAGE ON SCHEMA reviewrouter_bootstrap TO reviewrouter_release_migration;
 CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_generation_activation_receipt (
   rollout_id text PRIMARY KEY,
+  expected_commit_sha text NOT NULL CHECK (expected_commit_sha ~ '^[a-f0-9]{40}$'),
+  run_id text NOT NULL CHECK (run_id ~ '^[1-9][0-9]*$'),
+  job_id text NOT NULL CHECK (job_id ~ '^[1-9][0-9]*$'),
+  run_attempt integer NOT NULL CHECK (run_attempt = 1),
   source_system_identifier text NOT NULL,
   target_system_identifier text NOT NULL,
+  previous_receipt_sha256 text NOT NULL CHECK (previous_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  fence_nonce text NOT NULL CHECK (fence_nonce ~ '^[a-f0-9]{32}$'),
+  fence_version integer NOT NULL CHECK (fence_version > 0),
   canonical_privileges_sha256 text NOT NULL CHECK (canonical_privileges_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   catalog_facts_sha256 text NOT NULL CHECK (catalog_facts_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   first_write_receipt_sha256 text NOT NULL CHECK (first_write_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
@@ -600,13 +607,34 @@ CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_generation_activation_
   activated_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
   CHECK (source_system_identifier ~ '^[0-9]+$'),
   CHECK (target_system_identifier ~ '^[0-9]+$'),
-  CHECK (source_system_identifier <> target_system_identifier)
+  CHECK (source_system_identifier <> target_system_identifier),
+  UNIQUE (target_system_identifier)
 );
 ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt
   ADD COLUMN IF NOT EXISTS catalog_facts_sha256 text NOT NULL CHECK (catalog_facts_sha256 ~ '^sha256:[a-f0-9]{64}$'),
-  ADD COLUMN IF NOT EXISTS first_write_receipt_sha256 text NOT NULL CHECK (first_write_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$');
+  ADD COLUMN IF NOT EXISTS first_write_receipt_sha256 text NOT NULL CHECK (first_write_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  ADD COLUMN IF NOT EXISTS expected_commit_sha text NOT NULL CHECK (expected_commit_sha ~ '^[a-f0-9]{40}$'),
+  ADD COLUMN IF NOT EXISTS run_id text NOT NULL CHECK (run_id ~ '^[1-9][0-9]*$'),
+  ADD COLUMN IF NOT EXISTS job_id text NOT NULL CHECK (job_id ~ '^[1-9][0-9]*$'),
+  ADD COLUMN IF NOT EXISTS run_attempt integer NOT NULL CHECK (run_attempt = 1),
+  ADD COLUMN IF NOT EXISTS previous_receipt_sha256 text NOT NULL CHECK (previous_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  ADD COLUMN IF NOT EXISTS fence_nonce text NOT NULL CHECK (fence_nonce ~ '^[a-f0-9]{32}$'),
+  ADD COLUMN IF NOT EXISTS fence_version integer NOT NULL CHECK (fence_version > 0);
 ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON TABLE reviewrouter_bootstrap.release_generation_activation_receipt FROM PUBLIC;
+CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.reject_activation_receipt_mutation()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $immutable_activation_receipt$
+BEGIN
+  RAISE EXCEPTION 'activation receipt is append-only';
+END
+$immutable_activation_receipt$;
+ALTER FUNCTION reviewrouter_bootstrap.reject_activation_receipt_mutation() OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON FUNCTION reviewrouter_bootstrap.reject_activation_receipt_mutation() FROM PUBLIC;
+DROP TRIGGER IF EXISTS release_generation_activation_receipt_immutable ON reviewrouter_bootstrap.release_generation_activation_receipt;
+CREATE TRIGGER release_generation_activation_receipt_immutable
+BEFORE UPDATE OR DELETE ON reviewrouter_bootstrap.release_generation_activation_receipt
+FOR EACH ROW EXECUTE FUNCTION reviewrouter_bootstrap.reject_activation_receipt_mutation();
 CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_rollout_ledger (
   rollout_id text PRIMARY KEY,
   expected_commit_sha text NOT NULL CHECK (expected_commit_sha ~ '^[a-f0-9]{40}$'),
@@ -618,12 +646,23 @@ CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_rollout_ledger (
   activation_boundary text NOT NULL CHECK (activation_boundary IN ('before','activated','uncertain')),
   source_permanently_ineligible boolean NOT NULL DEFAULT false,
   last_receipt_sha256 text NOT NULL CHECK (last_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  activation_fence_nonce text CHECK (activation_fence_nonce ~ '^[a-f0-9]{32}$'),
+  activation_fence_version integer NOT NULL DEFAULT 0 CHECK (activation_fence_version >= 0),
+  activation_job_id text CHECK (activation_job_id ~ '^[1-9][0-9]*$'),
+  activation_fenced_at timestamptz,
+  activation_receipt jsonb,
   claimed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   CHECK (source_system_identifier <> target_system_identifier),
   CHECK (authoritative_system_identifier IN (source_system_identifier,target_system_identifier)),
   CHECK (NOT source_permanently_ineligible OR authoritative_system_identifier <> source_system_identifier)
 );
 ALTER TABLE reviewrouter_bootstrap.release_rollout_ledger OWNER TO reviewrouter_role_bootstrap;
+ALTER TABLE reviewrouter_bootstrap.release_rollout_ledger
+  ADD COLUMN IF NOT EXISTS activation_fence_nonce text CHECK (activation_fence_nonce ~ '^[a-f0-9]{32}$'),
+  ADD COLUMN IF NOT EXISTS activation_fence_version integer NOT NULL DEFAULT 0 CHECK (activation_fence_version >= 0),
+  ADD COLUMN IF NOT EXISTS activation_job_id text CHECK (activation_job_id ~ '^[1-9][0-9]*$'),
+  ADD COLUMN IF NOT EXISTS activation_fenced_at timestamptz,
+  ADD COLUMN IF NOT EXISTS activation_receipt jsonb;
 REVOKE ALL ON TABLE reviewrouter_bootstrap.release_rollout_ledger FROM PUBLIC;
 CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_rollout_receipt_ledger (
   receipt_sha256 text PRIMARY KEY CHECK (receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
@@ -662,10 +701,18 @@ ALTER TABLE reviewrouter_bootstrap.release_runner_job_ledger
   ADD COLUMN IF NOT EXISTS provision_observation jsonb;
 ALTER TABLE reviewrouter_bootstrap.release_runner_job_ledger OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON TABLE reviewrouter_bootstrap.release_runner_job_ledger FROM PUBLIC;
+DROP FUNCTION IF EXISTS reviewrouter_bootstrap.activate_generation(text,text,text,text);
 CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.activate_generation(
   requested_rollout_id text,
+  requested_expected_commit_sha text,
+  requested_run_id text,
+  requested_job_id text,
+  requested_run_attempt integer,
   requested_source_system_identifier text,
   requested_target_system_identifier text,
+  requested_previous_receipt_sha256 text,
+  requested_fence_nonce text,
+  requested_fence_version integer,
   requested_canonical_privileges_sha256 text
 ) RETURNS jsonb
 LANGUAGE plpgsql
@@ -679,9 +726,16 @@ DECLARE unexpected_schema text;
 BEGIN
   IF session_user <> 'reviewrouter_release_migration'
      OR requested_rollout_id !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$'
+     OR requested_expected_commit_sha !~ '^[a-f0-9]{40}$'
+     OR requested_run_id !~ '^[1-9][0-9]*$'
+     OR requested_job_id !~ '^[1-9][0-9]*$'
+     OR requested_run_attempt <> 1
      OR requested_source_system_identifier !~ '^[0-9]+$'
      OR requested_target_system_identifier !~ '^[0-9]+$'
      OR requested_source_system_identifier = requested_target_system_identifier
+     OR requested_previous_receipt_sha256 !~ '^sha256:[a-f0-9]{64}$'
+     OR requested_fence_nonce !~ '^[a-f0-9]{32}$'
+     OR requested_fence_version < 1
      OR requested_canonical_privileges_sha256 !~ '^sha256:[a-f0-9]{64}$' THEN
     RAISE EXCEPTION 'generation activation receipt invalid';
   END IF;
@@ -718,14 +772,18 @@ BEGIN
   IF FOUND THEN
     RAISE EXCEPTION 'duplicate activation receipt rejected';
   ELSE
-    first_write_receipt_sha256 := 'sha256:' || encode(public.digest(convert_to(requested_rollout_id || ':' || requested_source_system_identifier || ':' || requested_target_system_identifier || ':' || requested_canonical_privileges_sha256 || ':' || catalog_facts_sha256,'UTF8'),'sha256'),'hex');
+    first_write_receipt_sha256 := 'sha256:' || encode(public.digest(convert_to(requested_rollout_id || ':' || requested_expected_commit_sha || ':' || requested_run_id || ':' || requested_job_id || ':' || requested_run_attempt::text || ':' || requested_source_system_identifier || ':' || requested_target_system_identifier || ':' || requested_previous_receipt_sha256 || ':' || requested_fence_nonce || ':' || requested_fence_version::text || ':' || requested_canonical_privileges_sha256 || ':' || catalog_facts_sha256,'UTF8'),'sha256'),'hex');
     INSERT INTO reviewrouter_bootstrap.release_generation_activation_receipt (
-      rollout_id, source_system_identifier, target_system_identifier,
+      rollout_id, expected_commit_sha, run_id, job_id, run_attempt,
+      source_system_identifier, target_system_identifier,
+      previous_receipt_sha256, fence_nonce, fence_version,
       canonical_privileges_sha256, catalog_facts_sha256,
       first_write_receipt_sha256, transaction_id
     ) VALUES (
-      requested_rollout_id, requested_source_system_identifier,
+      requested_rollout_id, requested_expected_commit_sha, requested_run_id,
+      requested_job_id, requested_run_attempt, requested_source_system_identifier,
       requested_target_system_identifier,
+      requested_previous_receipt_sha256, requested_fence_nonce, requested_fence_version,
       requested_canonical_privileges_sha256, catalog_facts_sha256,
       first_write_receipt_sha256, txid_current()
     ) RETURNING * INTO observed;
@@ -734,6 +792,13 @@ BEGIN
     'rolloutId', observed.rollout_id,
     'sourceSystemIdentifier', observed.source_system_identifier,
     'targetSystemIdentifier', observed.target_system_identifier,
+    'expectedCommitSha', observed.expected_commit_sha,
+    'runId', observed.run_id,
+    'jobId', observed.job_id,
+    'runAttempt', observed.run_attempt,
+    'previousReceiptSha256', observed.previous_receipt_sha256,
+    'fenceNonce', observed.fence_nonce,
+    'fenceVersion', observed.fence_version,
     'canonicalPrivilegesSha256', observed.canonical_privileges_sha256,
     'catalogFactsSha256', observed.catalog_facts_sha256,
     'firstWriteReceiptSha256', observed.first_write_receipt_sha256,
@@ -743,9 +808,9 @@ BEGIN
   );
 END
 $activation$;
-ALTER FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text) OWNER TO reviewrouter_role_bootstrap;
-REVOKE ALL ON FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text) TO reviewrouter_release_migration;
+ALTER FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,text) OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,text) TO reviewrouter_release_migration;
 CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.consume_migration_evidence(
   artifact_digest text,
   artifact_id text,
@@ -1137,7 +1202,15 @@ export function canonicalActivationSql(configuration, activation) {
     !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(activation.rolloutId) ||
     !/^[0-9]+$/u.test(activation.sourceSystemIdentifier) ||
     !/^[0-9]+$/u.test(activation.targetSystemIdentifier) ||
-    activation.sourceSystemIdentifier === activation.targetSystemIdentifier
+    activation.sourceSystemIdentifier === activation.targetSystemIdentifier ||
+    !/^[a-f0-9]{40}$/u.test(activation.expectedCommitSha) ||
+    !/^[1-9][0-9]*$/u.test(activation.runId) ||
+    !/^[1-9][0-9]*$/u.test(activation.jobId) ||
+    activation.runAttempt !== 1 ||
+    !/^sha256:[a-f0-9]{64}$/u.test(activation.previousReceiptSha256) ||
+    !/^[a-f0-9]{32}$/u.test(activation.fenceNonce) ||
+    !Number.isSafeInteger(activation.fenceVersion) ||
+    activation.fenceVersion < 1
   )
     throw new Error("release_migration_activation_identity_invalid");
   return {
@@ -1147,8 +1220,15 @@ BEGIN;
 ${runtimeGrantStatements(configuration)}
 SELECT reviewrouter_bootstrap.activate_generation(
   ${literal(activation.rolloutId)},
+  ${literal(activation.expectedCommitSha)},
+  ${literal(activation.runId)},
+  ${literal(activation.jobId)},
+  ${activation.runAttempt},
   ${literal(activation.sourceSystemIdentifier)},
   ${literal(activation.targetSystemIdentifier)},
+  ${literal(activation.previousReceiptSha256)},
+  ${literal(activation.fenceNonce)},
+  ${activation.fenceVersion},
   ${literal(grantDigest)}
 );
 COMMIT;

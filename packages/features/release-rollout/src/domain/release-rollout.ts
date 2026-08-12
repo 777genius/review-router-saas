@@ -243,6 +243,23 @@ export interface ActivationReceipt extends StepReceipt {
   readonly transactionId: string;
   readonly firstWriteReceiptSha256: string;
   readonly firstWriteBoundary: true;
+  readonly fenceNonce: string;
+  readonly fenceVersion: number;
+}
+
+export interface ActivationFence {
+  readonly schemaVersion: 1;
+  readonly rolloutId: string;
+  readonly expectedCommitSha: string;
+  readonly runId: string;
+  readonly jobId: string;
+  readonly runAttempt: number;
+  readonly sourceSystemIdentifier: string;
+  readonly targetSystemIdentifier: string;
+  readonly previousReceiptSha256: string;
+  readonly nonce: string;
+  readonly version: number;
+  readonly fencedAt: string;
 }
 
 export interface ReleaseRollout {
@@ -802,7 +819,10 @@ export function transitionFromObservation(
       !digestPattern.test(String(facts.canonicalPrivilegesSha256)) ||
       !digestPattern.test(String(facts.catalogFactsSha256)) ||
       !digestPattern.test(String(facts.firstWriteReceiptSha256)) ||
-      !/^[0-9]+$/u.test(String(facts.transactionId))
+      !/^[0-9]+$/u.test(String(facts.transactionId)) ||
+      !/^[a-f0-9]{32}$/u.test(String(facts.fenceNonce)) ||
+      !Number.isSafeInteger(facts.fenceVersion) ||
+      Number(facts.fenceVersion) < 1
     )
       throw new Error("activation_observation_invalid");
     const activationBase = {
@@ -813,6 +833,8 @@ export function transitionFromObservation(
       transactionId: String(facts.transactionId),
       firstWriteReceiptSha256: String(facts.firstWriteReceiptSha256),
       firstWriteBoundary: true as const,
+      fenceNonce: String(facts.fenceNonce),
+      fenceVersion: Number(facts.fenceVersion),
     };
     receipt = {
       ...activationBase,
@@ -952,4 +974,25 @@ export interface AuthoritativeGenerationLedger {
     sourceSystemIdentifier: string;
     targetSystemIdentifier: string;
   }): Promise<void>;
+  fenceActivation(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    jobId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    previousReceiptSha256: string;
+  }): Promise<ActivationFence | null>;
+  finalizeActivation(input: {
+    fence: ActivationFence;
+    provider: StepObservation["provider"];
+    nextReceiptSha256: string;
+    activationReceipt: ActivationReceipt;
+  }): Promise<boolean>;
+  observeActivationState(input: {
+    rolloutId: string;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+  }): Promise<"before" | "uncertain" | "activated">;
 }
