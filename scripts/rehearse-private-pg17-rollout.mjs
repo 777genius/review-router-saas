@@ -546,6 +546,10 @@ export async function executeDisposableRehearsal(
         headers: init?.headers,
         payload: init?.body,
       });
+      if (response.statusCode >= 500)
+        process.stderr.write(
+          `rehearsal_control_request_failed:${init?.method ?? "GET"}:${requestUrl.pathname}:${response.statusCode}\n`,
+        );
       return new globalThis.Response(response.body, {
         status: response.statusCode,
         headers: response.headers,
