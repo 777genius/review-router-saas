@@ -63,6 +63,13 @@ const registration = await requestJitConfiguration(
   context,
   response.data.token,
 );
+const registrationMetadata = Object.freeze({
+  runnerId: registration.runnerId,
+  runnerGroupId: registration.runnerGroupId,
+  labels: registration.labels,
+  uniqueLabel: registration.uniqueLabel,
+  workFolder: registration.workFolder,
+});
 const ledgerResponse = await globalThis.fetch(
   `${required("REVIEW_ROUTER_RUNNER_LEDGER_URL").replace(/\/$/u, "")}/v1/runner-jobs/registration`,
   {
@@ -76,7 +83,7 @@ const ledgerResponse = await globalThis.fetch(
       rolloutId: context.rolloutId,
       lifecycle: context.lifecycle,
       workflowJobId: context.workflowJobId,
-      registration,
+      registration: registrationMetadata,
     }),
   },
 );

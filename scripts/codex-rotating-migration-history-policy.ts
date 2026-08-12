@@ -19,11 +19,13 @@ export const immutableCodexRotatingMigrationChecksums = Object.freeze({
     "4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666",
   "000065_codex_oauth_authority_acl_hardening":
     "ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c",
+  "000066_codex_oauth_rotating_cascade_authority":
+    "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8",
 });
 
 export const forwardUnpublishedCodexRotatingMigration = Object.freeze({
-  name: "000066_codex_oauth_rotating_cascade_authority",
-  checksum: "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8",
+  name: "000067_release_rollout_ledger",
+  checksum: "a66a344ba6fa2cfea9184d548b1b5965b1bbea528cf34f1600ac70108577552e",
 });
 
 export const checkedInCodexRotatingMigrationChecksums = Object.freeze({
@@ -44,8 +46,8 @@ const editedBeforeRolloutMigration =
  * other historical migrations may be absent or have exactly one successful
  * row bearing the immutable checked-in checksum. The non-atomic 000063 digest
  * existed only on an unpublished local side branch and is never accepted as
- * released history. Forward migration 000066 is pinned above but remains
- * unpublished, so this pre-release policy rejects every preexisting 000066
+ * released history. Forward migration 000067 is pinned above but remains
+ * unpublished, so this pre-release policy rejects every preexisting 000067
  * history row; the post-release verifier separately requires one exact success.
  */
 export function assertCodexRotatingMigrationHistoryIsPristine(
@@ -58,7 +60,7 @@ export function assertCodexRotatingMigrationHistoryIsPristine(
     )
   ) {
     throw new Error(
-      "codex_rotating_000066_prepublication_history_forbidden:" +
+      "codex_rotating_000067_prepublication_history_forbidden:" +
         "use_the_forward_release_migration_once_from_the_immutable_release_caller",
     );
   }

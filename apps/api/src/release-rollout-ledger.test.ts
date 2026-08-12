@@ -26,6 +26,9 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
   private targetSwitchFenced = false;
   private readonly intents = new Map<string, Record<string, unknown>>();
   providerWitness: Record<string, unknown> | undefined;
+  registration:
+    | Parameters<ReleaseRolloutLedgerRepository["persistRegistration"]>[0]
+    | undefined;
 
   async claim(input: typeof binding) {
     if (!this.claimed) {
@@ -129,7 +132,11 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
   async cleanupWitness(): Promise<never> {
     throw new Error("unused");
   }
-  async persistRegistration() {}
+  async persistRegistration(
+    input: Parameters<ReleaseRolloutLedgerRepository["persistRegistration"]>[0],
+  ) {
+    this.registration = input;
+  }
   async reconcile() {
     return { state: "activation_uncertain_forward_only" };
   }
@@ -305,6 +312,62 @@ describe("release rollout ledger internal API", () => {
       ).statusCode,
     ).toBe(204);
     expect(repository.providerWitness).toEqual(payload);
+    await app.close();
+  });
+
+  it("persists only allowlisted non-secret JIT registration metadata", async () => {
+    const repository = new ConcurrentRepository();
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      service: new ReleaseRolloutLedgerService(repository),
+      tokenSha256,
+      witnessTokenSha256: createHash("sha256").update("witness").digest("hex"),
+    });
+    const registration = {
+      runnerId: 123,
+      runnerGroupId: 456,
+      labels: ["self-hosted", "rr-rollout-role"],
+      uniqueLabel: "rr-rollout-role",
+      workFolder: "_work/rr-rollout-role",
+    };
+    const payload = {
+      rolloutId: "rollout-1",
+      lifecycle: "role",
+      workflowJobId: "789",
+      registration,
+    };
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v1/runner-jobs/registration",
+          headers: { authorization: `Bearer ${token}` },
+          payload: {
+            ...payload,
+            registration: {
+              ...registration,
+              encodedJitConfig: "must-never-cross-the-ledger-boundary",
+            },
+          },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(repository.registration).toBeUndefined();
+
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v1/runner-jobs/registration",
+          headers: { authorization: `Bearer ${token}` },
+          payload,
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(repository.registration).toEqual(payload);
+    expect(JSON.stringify(repository.registration)).not.toContain(
+      "encodedJitConfig",
+    );
     await app.close();
   });
 });

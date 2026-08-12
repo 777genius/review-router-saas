@@ -1,4 +1,4 @@
-# Fenced rotating OAuth cutover (000060 through 000066)
+# Fenced rotating OAuth cutover (000060 through 000067)
 
 > `REVIEWROUTER_CODEX_AUTH_JSON` is an unsafe, deprecated stable namespace.
 > Its legacy confirmation endpoint is permanently removed and has no runtime
@@ -14,7 +14,8 @@ This is the fail-closed release gate for the ordered combined release
 `000063_codex_oauth_setup_payload_claim`, then
 `000064_codex_oauth_versioned_secret_namespaces`, then
 `000065_codex_oauth_authority_acl_hardening`, then
-`000066_codex_oauth_rotating_cascade_authority`. The general release and git-flow
+`000066_codex_oauth_rotating_cascade_authority`, then
+`000067_release_rollout_ledger`. The general release and git-flow
 rules remain in
 [`07-environments-and-release-management.md`](./07-environments-and-release-management.md).
 Never apply only one migration as a completed production rollout.
@@ -75,30 +76,31 @@ is checked against both that policy and the files on every test run.
 | `000064_codex_oauth_versioned_secret_namespaces` | `4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666` |
 | `000065_codex_oauth_authority_acl_hardening`     | `ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c` |
 | `000066_codex_oauth_rotating_cascade_authority`  | `3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8` |
+| `000067_release_rollout_ledger`                  | `a66a344ba6fa2cfea9184d548b1b5965b1bbea528cf34f1600ac70108577552e` |
 
-## 000066 forward-publication policy
+## 000067 forward-publication policy
 
-`000065_codex_oauth_authority_acl_hardening` is immutable at checksum
-`ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c`.
-`000066_codex_oauth_rotating_cascade_authority` is the unpublished forward
-migration for this release. Its exact checked-in SHA-256 is
+`000066_codex_oauth_rotating_cascade_authority` is immutable at checksum
 `3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8`.
+`000067_release_rollout_ledger` is the unpublished forward
+migration for this release. Its exact checked-in SHA-256 is
+`a66a344ba6fa2cfea9184d548b1b5965b1bbea528cf34f1600ac70108577552e`.
 Before its first publication, migration preflight hashes those exact bytes and
-rejects every existing `_prisma_migrations` row named 000066, including failed,
+rejects every existing `_prisma_migrations` row named 000067, including failed,
 rolled-back, duplicate, or apparently successful rows. Do not resolve or bless
 an early row; stop and investigate its provenance.
 
 The one immutable release-migration caller may then apply those pinned bytes as
 the final member of the drained combined release. Post-release verification
-requires exactly one current successful 000066 row with that checksum and one
+requires exactly one current successful 000067 row with that checksum and one
 applied step. After the first production publication is accepted, the next
 release must deliberately reclassify this digest from `forwardUnpublished` to
 the immutable-history set and replace the reject-any prepublication rule with
 the same allow-one-exact rule used by released migrations. Until that explicit
 handoff is checked in and tested, preflight intentionally blocks every later
 release rather than guessing that publication occurred. Any later schema
-change uses a new forward migration; never edit 000064, 000065, or 000066 after
-publication.
+change uses a new forward migration; never edit 000064, 000065, 000066, or 000067
+after publication.
 
 The migration also owns the database authority for provider-effect evidence.
 Hosted runtime roles have no access to

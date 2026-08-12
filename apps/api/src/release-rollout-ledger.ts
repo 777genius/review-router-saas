@@ -36,6 +36,19 @@ type PersistedJob = {
   lifecycle: "role" | "cutover";
   provisioningIntentId: string;
 };
+type PersistedRunnerRegistration = Readonly<{
+  runnerId: number;
+  runnerGroupId: number;
+  labels: readonly string[];
+  uniqueLabel: string;
+  workFolder: string;
+}>;
+type PersistRunnerRegistrationInput = Readonly<{
+  rolloutId: string;
+  lifecycle: "role" | "cutover";
+  workflowJobId: string;
+  registration: PersistedRunnerRegistration;
+}>;
 
 export interface ReleaseRolloutLedgerRepository {
   claim(input: RolloutBinding): Promise<"claimed" | "duplicate">;
@@ -113,12 +126,7 @@ export interface ReleaseRolloutLedgerRepository {
     witness: Record<string, unknown>,
   ): Promise<void>;
   cleanupWitness(jobId: string): Promise<Record<string, unknown>>;
-  persistRegistration(input: {
-    rolloutId: string;
-    lifecycle: "role" | "cutover";
-    workflowJobId: string;
-    registration: Record<string, unknown>;
-  }): Promise<void>;
+  persistRegistration(input: PersistRunnerRegistrationInput): Promise<void>;
   reconcile(rolloutId: string): Promise<Record<string, unknown>>;
 }
 
@@ -648,12 +656,9 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
     };
   }
 
-  async persistRegistration(input: {
-    rolloutId: string;
-    lifecycle: "role" | "cutover";
-    workflowJobId: string;
-    registration: Record<string, unknown>;
-  }): Promise<void> {
+  async persistRegistration(
+    input: PersistRunnerRegistrationInput,
+  ): Promise<void> {
     await this.prisma.$transaction(async (transaction) => {
       const intent =
         await transaction.releaseRunnerProvisioningIntent.findFirstOrThrow({
@@ -836,6 +841,82 @@ const record = (value: unknown): Record<string, unknown> => {
       statusCode: 400,
     });
   return value as Record<string, unknown>;
+};
+const invalidRegistrationRequest = (): never => {
+  throw Object.assign(
+    new Error("release_runner_registration_request_invalid"),
+    {
+      statusCode: 400,
+    },
+  );
+};
+const exactKeys = (
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean => {
+  const actual = Object.keys(value).sort();
+  return JSON.stringify(actual) === JSON.stringify([...expected].sort());
+};
+const nonemptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value.length <= 256;
+const registrationRequest = (
+  value: unknown,
+): PersistRunnerRegistrationInput => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "lifecycle",
+      "workflowJobId",
+      "registration",
+    ]) ||
+    !nonemptyString(body.rolloutId) ||
+    (body.lifecycle !== "role" && body.lifecycle !== "cutover") ||
+    !nonemptyString(body.workflowJobId)
+  )
+    return invalidRegistrationRequest();
+  const registration = record(body.registration);
+  if (
+    !exactKeys(registration, [
+      "runnerId",
+      "runnerGroupId",
+      "labels",
+      "uniqueLabel",
+      "workFolder",
+    ]) ||
+    !Number.isSafeInteger(registration.runnerId) ||
+    Number(registration.runnerId) <= 0 ||
+    !Number.isSafeInteger(registration.runnerGroupId) ||
+    Number(registration.runnerGroupId) <= 0 ||
+    !Array.isArray(registration.labels) ||
+    registration.labels.length === 0 ||
+    registration.labels.length > 32 ||
+    registration.labels.some(
+      (label) =>
+        typeof label !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(label),
+    ) ||
+    typeof registration.uniqueLabel !== "string" ||
+    !/^rr-[A-Za-z0-9][A-Za-z0-9._-]{1,125}$/u.test(registration.uniqueLabel) ||
+    !registration.labels.includes(registration.uniqueLabel) ||
+    typeof registration.workFolder !== "string" ||
+    !/^_work\/rr-[A-Za-z0-9][A-Za-z0-9._-]{1,125}$/u.test(
+      registration.workFolder,
+    )
+  )
+    return invalidRegistrationRequest();
+  return {
+    rolloutId: body.rolloutId,
+    lifecycle: body.lifecycle,
+    workflowJobId: body.workflowJobId,
+    registration: {
+      runnerId: Number(registration.runnerId),
+      runnerGroupId: Number(registration.runnerGroupId),
+      labels: Object.freeze([...registration.labels] as string[]),
+      uniqueLabel: registration.uniqueLabel,
+      workFolder: registration.workFolder,
+    },
+  };
 };
 
 export async function registerReleaseRolloutLedgerRoutes(
@@ -1039,7 +1120,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     { preHandler: control },
     async (request, reply) => {
       await dependencies.service.persistRegistration(
-        record(request.body) as never,
+        registrationRequest(request.body),
       );
       return reply.code(204).send();
     },

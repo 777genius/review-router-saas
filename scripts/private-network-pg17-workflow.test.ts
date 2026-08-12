@@ -135,4 +135,13 @@ describe("private-network PG17 workflow security contract", () => {
     expect(bootstrap).toContain('metadata: "read"');
     expect(bootstrap).not.toMatch(/\badministration\s*:/u);
   });
+
+  it("keeps the JIT configuration out of persisted registration metadata", () => {
+    expect(bootstrap).toContain("const registrationMetadata = Object.freeze({");
+    expect(bootstrap).toContain("registration: registrationMetadata");
+    expect(bootstrap).toContain(
+      "writeFileSync(jitPath, registration.encodedJitConfig",
+    );
+    expect(bootstrap).not.toContain("registration: registration,");
+  });
 });
