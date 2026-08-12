@@ -1,24 +1,37 @@
 import { Prisma } from "@prisma/client";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { PrismaClient } from "@reviewrouter/platform-db";
+import { ObserveRunnerCleanup } from "./release-witness-application.js";
 import {
-  registerReleaseWitnessRoutes,
-  RoutineRunnerCleanupWitnessAdapter,
-  RunnerCleanupWitnessService,
-} from "./release-rollout-ledger.js";
+  PostgresCleanupObservationAdapter,
+  RenderCleanupObservationAdapter,
+} from "./release-witness-adapters.js";
+import { registerReleaseWitnessRoutes } from "./release-witness-routes.js";
 
 type WitnessDatabaseReadiness = Readonly<{
   roleName: string;
   postgresMajor: number;
-  witnessRoutine: boolean;
+  seedRoutine: boolean;
+  persistRoutine: boolean;
 }>;
 
 export async function createReleaseWitnessApp(input: {
   readonly witnessPrisma: PrismaClient;
-  readonly witnessTokenSha256: string;
+  readonly triggerTokenSha256: string;
+  readonly renderReadToken: string;
+  readonly renderFetch?: typeof fetch;
 }): Promise<FastifyInstance> {
-  if (!/^[a-f0-9]{64}$/u.test(input.witnessTokenSha256))
+  if (!/^[a-f0-9]{64}$/u.test(input.triggerTokenSha256))
     throw new Error("release_witness_credential_hash_invalid");
+  const postgres = new PostgresCleanupObservationAdapter(input.witnessPrisma);
+  const observeCleanup = new ObserveRunnerCleanup(
+    postgres,
+    new RenderCleanupObservationAdapter(
+      input.renderReadToken,
+      input.renderFetch,
+    ),
+    postgres,
+  );
   const app = Fastify({ logger: false });
   app.get("/health", async (_request, reply) => {
     try {
@@ -27,13 +40,15 @@ export async function createReleaseWitnessApp(input: {
       >(Prisma.sql`
         SELECT current_user AS "roleName",
           current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
-          to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)') IS NOT NULL AS "witnessRoutine"
+          to_regprocedure('release_authority.release_runner_cleanup_observation_seed(text)') IS NOT NULL AS "seedRoutine",
+          to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)') IS NOT NULL AS "persistRoutine"
       `);
       if (
         rows.length !== 1 ||
         rows[0]?.roleName !== "reviewrouter_release_witness" ||
         rows[0].postgresMajor !== 17 ||
-        !rows[0].witnessRoutine
+        !rows[0].seedRoutine ||
+        !rows[0].persistRoutine
       )
         throw new Error("release_witness_database_identity_invalid");
       return { status: "ok", service: "release-witness" };
@@ -46,10 +61,8 @@ export async function createReleaseWitnessApp(input: {
     }
   });
   await registerReleaseWitnessRoutes(app, {
-    cleanupWitness: new RunnerCleanupWitnessService(
-      new RoutineRunnerCleanupWitnessAdapter(input.witnessPrisma),
-    ),
-    witnessTokenSha256: input.witnessTokenSha256,
+    observeCleanup,
+    triggerTokenSha256: input.triggerTokenSha256,
   });
   return app;
 }

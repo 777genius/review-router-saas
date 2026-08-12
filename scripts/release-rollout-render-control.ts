@@ -43,41 +43,79 @@ const runnerControl = () => {
 const mode = process.argv[2];
 const contextValue = (name: string, fallback: string): string =>
   process.env[name] ?? required(fallback);
-const resolveWorkflowJobId = async (name: string): Promise<string> => {
-  const response = await fetch(
-    `https://api.github.com/repos/${required("GITHUB_REPOSITORY")}/actions/runs/${required("GITHUB_RUN_ID")}/attempts/${required("GITHUB_RUN_ATTEMPT")}/jobs?filter=latest&per_page=100`,
-    {
-      headers: {
-        Authorization: `Bearer ${required("GITHUB_CONTROL_READ_TOKEN")}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
+type WorkflowJob = {
+  id?: number;
+  name?: string;
+  status?: string;
+  run_id?: number;
+  run_attempt?: number;
+  head_sha?: string;
+};
+const positiveInteger = (name: string, fallback: number): number => {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isSafeInteger(value) || value <= 0)
+    throw new Error(`release_rollout_control_invalid:${name}`);
+  return value;
+};
+export const resolveWorkflowJobId = async (
+  name: string,
+  options: {
+    runId: string;
+    runAttempt: string;
+    expectedSha: string;
+    attempts: number;
+    intervalMs: number;
+    request?: typeof fetch;
+    sleep?: (milliseconds: number) => Promise<void>;
+  },
+): Promise<string> => {
+  const request = options.request ?? fetch;
+  const sleep =
+    options.sleep ??
+    ((milliseconds: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
+    const response = await request(
+      `https://api.github.com/repos/${required("GITHUB_REPOSITORY")}/actions/runs/${options.runId}/attempts/${options.runAttempt}/jobs?filter=all&per_page=100`,
+      {
+        headers: {
+          Authorization: `Bearer ${required("GITHUB_CONTROL_READ_TOKEN")}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
       },
-    },
-  );
-  if (!response.ok)
-    throw new Error(`release_rollout_job_lookup_failed:${response.status}`);
-  const value = (await response.json()) as {
-    jobs?: {
-      id?: number;
-      name?: string;
-      status?: string;
-      run_id?: number;
-      run_attempt?: number;
-      head_sha?: string;
-    }[];
-  };
-  const matches =
-    value.jobs?.filter(
+    );
+    if (!response.ok)
+      throw new Error(`release_rollout_job_lookup_failed:${response.status}`);
+    const value = (await response.json()) as {
+      total_count?: number;
+      jobs?: WorkflowJob[];
+    };
+    if (
+      !Array.isArray(value.jobs) ||
+      !Number.isSafeInteger(value.total_count) ||
+      value.total_count! > value.jobs.length
+    )
+      throw new Error("release_rollout_target_job_list_ambiguous");
+    const named = value.jobs.filter((job) => job.name === name);
+    const matches = named.filter(
       (job) =>
-        job.name === name &&
-        job.status === "queued" &&
-        job.run_id === Number(required("GITHUB_RUN_ID")) &&
-        job.run_attempt === Number(required("GITHUB_RUN_ATTEMPT")) &&
-        job.head_sha === required("REVIEW_ROUTER_EXPECTED_SHA"),
-    ) ?? [];
-  if (matches.length !== 1 || !Number.isSafeInteger(matches[0]?.id))
-    throw new Error("release_rollout_target_job_identity_unavailable");
-  return String(matches[0]!.id);
+        job.run_id === Number(options.runId) &&
+        job.run_attempt === Number(options.runAttempt) &&
+        job.head_sha === options.expectedSha,
+    );
+    if (named.length !== matches.length || matches.length > 1)
+      throw new Error("release_rollout_target_job_identity_ambiguous");
+    if (matches.length === 1) {
+      const match = matches[0]!;
+      if (match.status === "queued" && Number.isSafeInteger(match.id))
+        return String(match.id);
+      if (match.status === "in_progress" || match.status === "completed")
+        throw new Error("release_rollout_target_job_identity_stale");
+    }
+    if (attempt < options.attempts) await sleep(options.intervalMs);
+  }
+  throw new Error("release_rollout_target_job_identity_unavailable");
 };
 
 if (mode === "freeze") {
@@ -103,9 +141,10 @@ if (mode === "freeze") {
     "REVIEW_ROUTER_TARGET_RUN_ATTEMPT",
     "GITHUB_RUN_ATTEMPT",
   );
-  const targetJobId =
-    process.env.REVIEW_ROUTER_TARGET_WORKFLOW_JOB_ID ??
-    (await resolveWorkflowJobId(workflowJobName));
+  const expectedSha = contextValue(
+    "REVIEW_ROUTER_TARGET_SHA",
+    "REVIEW_ROUTER_EXPECTED_SHA",
+  );
   const runResponse = await fetch(
     `https://api.github.com/repos/${required("GITHUB_REPOSITORY")}/actions/runs/${targetRunId}/attempts/${targetRunAttempt}`,
     {
@@ -127,10 +166,6 @@ if (mode === "freeze") {
     path?: string;
     run_attempt?: number;
   };
-  const expectedSha = contextValue(
-    "REVIEW_ROUTER_TARGET_SHA",
-    "REVIEW_ROUTER_EXPECTED_SHA",
-  );
   if (
     targetRun.event !== "workflow_dispatch" ||
     targetRun.head_sha !== expectedSha ||
@@ -140,6 +175,16 @@ if (mode === "freeze") {
     !targetRun.actor?.login
   )
     throw new Error("release_rollout_target_run_identity_mismatch");
+  const targetJobId = await resolveWorkflowJobId(workflowJobName, {
+    runId: targetRunId,
+    runAttempt: targetRunAttempt,
+    expectedSha,
+    attempts: positiveInteger("REVIEW_ROUTER_TARGET_JOB_POLL_ATTEMPTS", 20),
+    intervalMs: positiveInteger(
+      "REVIEW_ROUTER_TARGET_JOB_POLL_INTERVAL_MS",
+      3000,
+    ),
+  });
   const result = (await runnerUseCases.provision({
     rolloutId: required("REVIEW_ROUTER_ROLLOUT_ID"),
     lifecycle: purpose === "role-bootstrap" ? "role" : "cutover",
@@ -221,4 +266,5 @@ if (mode === "freeze") {
   JSON.parse(
     readFileSync(required("REVIEW_ROUTER_CLEANUP_RECEIPT_FILE"), "utf8"),
   );
-} else throw new Error("release_rollout_control_mode_invalid");
+} else if (mode !== undefined)
+  throw new Error("release_rollout_control_mode_invalid");

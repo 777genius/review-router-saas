@@ -16,7 +16,10 @@ const witnessPrisma = createPrismaClient({
 });
 const app = await createReleaseWitnessApp({
   witnessPrisma,
-  witnessTokenSha256: required("REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256"),
+  triggerTokenSha256: required(
+    "REVIEW_ROUTER_RELEASE_WITNESS_TRIGGER_TOKEN_SHA256",
+  ),
+  renderReadToken: required("REVIEW_ROUTER_RELEASE_WITNESS_RENDER_READ_TOKEN"),
 });
 app.addHook("onClose", async () => witnessPrisma.$disconnect());
 await app.listen({

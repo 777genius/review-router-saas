@@ -100,7 +100,7 @@ const witness = () => ({
   }),
 });
 const providerWitness = () => ({
-  persist: vi.fn().mockResolvedValue(undefined),
+  observe: vi.fn().mockResolvedValue(undefined),
 });
 
 describe("Render private runner contract", () => {
@@ -331,13 +331,7 @@ describe("Render private runner contract", () => {
         })
       ).facts,
     ).toMatchObject({ runner: { credentialProcessGone: true } });
-    expect(independentWitness.persist).toHaveBeenCalledWith(
-      "job-123",
-      expect.objectContaining({
-        providerLogId: "log-cleanup-1",
-        remainingPaths: [],
-      }),
-    );
+    expect(independentWitness.observe).toHaveBeenCalledWith("job-123");
     const badWitness = witness();
     badWitness.observe.mockResolvedValue({
       listenerStopped: true,

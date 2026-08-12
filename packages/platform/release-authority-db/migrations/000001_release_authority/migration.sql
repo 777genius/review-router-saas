@@ -587,6 +587,23 @@ BEGIN
 END
 $registration$;
 
+CREATE FUNCTION release_authority.release_runner_cleanup_observation_seed(
+  p_job_id text
+) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER STABLE
+SET search_path = pg_catalog
+AS $seed$
+  SELECT jsonb_build_object(
+    'jobId', job_id,
+    'serviceId', service_id,
+    'cleanupCanary', cleanup_canary,
+    'observedAt', to_char(observed_at AT TIME ZONE 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+  )
+  FROM release_authority.runner_job
+  WHERE job_id = p_job_id
+$seed$;
+
 CREATE FUNCTION release_authority.release_runner_persist_cleanup_witness(
   p_job_id text,
   p_witness jsonb
@@ -598,9 +615,11 @@ DECLARE current_row release_authority.runner_job%ROWTYPE;
 BEGIN
   SELECT * INTO current_row FROM release_authority.runner_job
     WHERE job_id = p_job_id FOR UPDATE;
-  IF NOT FOUND OR current_row.cleanup_provider_witness IS NOT NULL THEN RETURN false; END IF;
+  IF NOT FOUND THEN RETURN false; END IF;
+  IF current_row.cleanup_provider_witness IS NOT NULL THEN
+    RETURN current_row.cleanup_provider_witness = p_witness;
+  END IF;
   IF p_witness->>'jobId' <> p_job_id OR p_witness->>'canary' <> current_row.cleanup_canary OR
-     current_row.terminal_at IS NULL OR
      p_witness->>'providerStatus' <> 'succeeded' OR
      p_witness->>'containerTerminated' <> 'true' OR
      jsonb_typeof(p_witness->'removedPaths') <> 'array' OR
@@ -917,6 +936,7 @@ REVOKE ALL ON FUNCTION release_authority.authorize_activation(text,text,text,int
 REVOKE ALL ON FUNCTION release_authority.observe_state(text,text,text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_provider_authority_decide(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_persist_registration(text,text,text,bigint,bigint,text[],text,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_runner_cleanup_observation_seed(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_persist_cleanup_witness(text,jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_rollout_mark_activation_uncertain(text,text,text,integer,text,text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_rollout_activation_state(text,text,text) FROM PUBLIC;
@@ -966,6 +986,7 @@ BEGIN
   END IF;
   IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'reviewrouter_release_witness') THEN
     GRANT USAGE ON SCHEMA release_authority TO reviewrouter_release_witness;
+    GRANT EXECUTE ON FUNCTION release_authority.release_runner_cleanup_observation_seed(text) TO reviewrouter_release_witness;
     GRANT EXECUTE ON FUNCTION release_authority.release_runner_persist_cleanup_witness(text,jsonb) TO reviewrouter_release_witness;
   END IF;
 END

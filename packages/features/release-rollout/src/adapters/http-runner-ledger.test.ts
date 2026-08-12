@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { AuthenticatedRunnerLedgerAdapter } from "./http-runner-ledger";
+import {
+  AuthenticatedProviderWitnessAdapter,
+  AuthenticatedRunnerLedgerAdapter,
+} from "./http-runner-ledger";
 
 const request = {
   rolloutId: "rollout-1",
@@ -117,4 +120,25 @@ describe("authenticated runner ledger reconciliation", () => {
       });
     },
   );
+});
+
+describe("authenticated cleanup observation trigger", () => {
+  it("submits only job identity and an empty trigger body", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const adapter = new AuthenticatedProviderWitnessAdapter(
+      "https://witness.example.test",
+      "trigger-token",
+      fetchImpl,
+    );
+
+    await adapter.observe("job-1");
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://witness.example.test/v1/runner-jobs/job-1/cleanup-observation",
+      expect.objectContaining({ method: "POST", body: "{}" }),
+    );
+    expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).not.toContain("canary");
+  });
 });

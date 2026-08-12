@@ -78,10 +78,7 @@ export interface RunnerCleanupWitnessPort {
   }>;
 }
 export interface RunnerProviderWitnessPort {
-  persist(
-    jobId: string,
-    witness: Readonly<Record<string, unknown>>,
-  ): Promise<void>;
+  observe(jobId: string): Promise<void>;
 }
 
 export interface RenderRunnerRequest {
@@ -388,64 +385,16 @@ export class RenderPrivateRunnerAdapter {
     if (!job || !terminal.has(job.status))
       throw new Error("render_runner_cleanup_terminal_timeout");
     const expectedCanary = input.cleanupCanary;
-    {
-      if (!job.createdAt || !job.finishedAt)
-        throw new Error("render_runner_cleanup_log_window_missing");
-      const service = await api.getService(input.baseServiceId);
-      const logs = await api.listLogs({
-        ownerId: service.ownerId,
-        resourceId: input.baseServiceId,
-        startTime: job.createdAt,
-        endTime: job.finishedAt,
-      });
-      const receipts = logs.flatMap((log) => {
-        try {
-          const parsed = JSON.parse(log.message) as {
-            canary?: unknown;
-            cleanup?: {
-              removedPaths?: unknown;
-              remainingPaths?: unknown;
-            };
-          };
-          return parsed.canary === expectedCanary && parsed.cleanup
-            ? [{ log, parsed }]
-            : [];
-        } catch {
-          return [];
-        }
-      });
-      if (receipts.length !== 1)
-        throw new Error("render_runner_cleanup_provider_log_ambiguous");
-      const receipt = receipts[0]!;
-      if (
-        !Array.isArray(receipt.parsed.cleanup!.removedPaths) ||
-        !Array.isArray(receipt.parsed.cleanup!.remainingPaths) ||
-        receipt.parsed.cleanup!.remainingPaths.length !== 0
-      )
-        throw new Error("render_runner_cleanup_provider_log_invalid");
-      await this.providerWitness.persist(input.jobId, {
-        jobId: input.jobId,
-        canary: expectedCanary,
-        providerStatus: job.status,
-        containerTerminated: true,
-        logSha256: `sha256:${createHash("sha256")
-          .update(receipt.log.message)
-          .digest("hex")}`,
-        removedPaths: receipt.parsed.cleanup!.removedPaths,
-        remainingPaths: [],
-        providerLogId: receipt.log.id,
-        providerObservedAt: receipt.log.timestamp,
-      });
-    }
-    const local = await this.cleanupWitness.observe(
+    await this.providerWitness.observe(input.jobId);
+    const independent = await this.cleanupWitness.observe(
       input.jobId,
       expectedCanary,
     );
     if (
-      local.canary !== expectedCanary ||
-      local.listenerStopped !== true ||
-      local.workspaceRemoved !== true ||
-      local.credentialProcessGone !== true
+      independent.canary !== expectedCanary ||
+      independent.listenerStopped !== true ||
+      independent.workspaceRemoved !== true ||
+      independent.credentialProcessGone !== true
     )
       throw new Error("render_runner_cleanup_canary_invalid");
     const observation: StepObservation = {
@@ -461,7 +410,7 @@ export class RenderPrivateRunnerAdapter {
           status: job.status,
           finishedAt: job.finishedAt,
         },
-        runner: local,
+        runner: independent,
       },
       provider: { renderJobId: job.id },
     };

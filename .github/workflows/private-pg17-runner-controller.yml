@@ -1,36 +1,47 @@
 name: Private PG17 runner controller
 
 on:
-  workflow_job:
-    types: [queued, completed]
+  workflow_run:
+    workflows: [Private-network PostgreSQL 17 release rollout]
+    types: [requested, completed]
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: private-pg17-runner-${{ github.event.workflow_job.run_id }}-${{ github.event.workflow_job.name }}
+  group: private-pg17-runner-${{ github.event.workflow_run.id }}-${{ github.event.action }}
   cancel-in-progress: false
 
 jobs:
   provision:
     if: >-
-      github.event.action == 'queued' &&
-      github.event.workflow_job.workflow_name == 'Private-network PostgreSQL 17 release rollout' &&
-      (github.event.workflow_job.name == 'copy-and-role-bootstrap-private' || github.event.workflow_job.name == 'pg17-cutover-private')
+      github.event.action == 'requested' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job_name: copy-and-role-bootstrap-private
+            purpose: role-bootstrap
+          - job_name: pg17-cutover-private
+            purpose: cutover
     environment: production-runner-control
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          ref: ${{ github.event.workflow_job.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - id: context
         env:
           GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
-          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_job.run_id }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_run.id }}
+          REVIEW_ROUTER_TARGET_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          REVIEW_ROUTER_TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
           REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
         run: node --import tsx scripts/resolve-private-pg17-run-context.ts
       - name: Validate target workflow job and provision exact JIT runner
@@ -44,11 +55,12 @@ jobs:
           REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
           REVIEW_ROUTER_EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
           REVIEW_ROUTER_TARGET_SHA: ${{ steps.context.outputs.expected_sha }}
-          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_job.run_id }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_run.id }}
           REVIEW_ROUTER_TARGET_RUN_ATTEMPT: ${{ steps.context.outputs.run_attempt }}
-          REVIEW_ROUTER_TARGET_WORKFLOW_JOB_ID: ${{ github.event.workflow_job.id }}
-          REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: ${{ github.event.workflow_job.name }}
-          REVIEW_ROUTER_RUNNER_PURPOSE: ${{ github.event.workflow_job.name == 'copy-and-role-bootstrap-private' && 'role-bootstrap' || 'cutover' }}
+          REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: ${{ matrix.job_name }}
+          REVIEW_ROUTER_RUNNER_PURPOSE: ${{ matrix.purpose }}
+          REVIEW_ROUTER_TARGET_JOB_POLL_ATTEMPTS: 600
+          REVIEW_ROUTER_TARGET_JOB_POLL_INTERVAL_MS: 30000
           REVIEW_ROUTER_RELEASE_CONTROL_ORG: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_ORG }}
           REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY }}
           REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
@@ -75,8 +87,8 @@ jobs:
   cleanup:
     if: >-
       always() && github.event.action == 'completed' &&
-      github.event.workflow_job.workflow_name == 'Private-network PostgreSQL 17 release rollout' &&
-      (github.event.workflow_job.name == 'copy-and-role-bootstrap-private' || github.event.workflow_job.name == 'pg17-cutover-private')
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'main'
     environment: production-runner-control
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -84,12 +96,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          ref: ${{ github.event.workflow_job.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - id: context
         env:
           GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
-          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_job.run_id }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_run.id }}
+          REVIEW_ROUTER_TARGET_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          REVIEW_ROUTER_TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
           REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
         run: node --import tsx scripts/resolve-private-pg17-run-context.ts
       - name: Poll terminal state, prove cleanup canary, reconcile orphan ledger

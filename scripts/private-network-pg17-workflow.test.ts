@@ -45,12 +45,23 @@ describe("private-network PG17 workflow security contract", () => {
     }
   });
 
-  it("uses a workflow_job controller so exact queued job identity exists before JIT generation", () => {
-    expect(controller).toContain("workflow_job:");
-    expect(controller).toContain("types: [queued, completed]");
+  it("uses workflow_run and bounded exact-job polling before JIT generation", () => {
+    expect(controller).toContain("workflow_run:");
     expect(controller).toContain(
-      "REVIEW_ROUTER_TARGET_WORKFLOW_JOB_ID: ${{ github.event.workflow_job.id }}",
+      "workflows: [Private-network PostgreSQL 17 release rollout]",
     );
+    expect(controller).toContain("types: [requested, completed]");
+    expect(controller).not.toContain("workflow_job:");
+    expect(controller).not.toContain("github.event.workflow_job");
+    expect(controller).toContain(
+      "REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_run.id }}",
+    );
+    expect(controller).toContain("REVIEW_ROUTER_TARGET_JOB_POLL_ATTEMPTS: 600");
+    expect(controller).toContain("job_name: copy-and-role-bootstrap-private");
+    expect(controller).toContain("job_name: pg17-cutover-private");
+    expect(
+      readFileSync("scripts/resolve-private-pg17-run-context.ts", "utf8"),
+    ).toContain('repositoryIdentity.default_branch !== "main"');
     expect(controller).toContain("REVIEW_ROUTER_RUNNER_GROUP_ID");
     expect(controller).toContain("cleanup-runners");
     expect(workflow).not.toContain("outputs.label");

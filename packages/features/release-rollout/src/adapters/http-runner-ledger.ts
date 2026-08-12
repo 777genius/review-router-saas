@@ -86,7 +86,7 @@ export class AuthenticatedRunnerLedgerAdapter
   }): Promise<void> {
     await this.request(
       `/v1/runner-jobs/intents/${encodeURIComponent(input.intentId)}/outcome`,
-      { method: "PUT", body: JSON.stringify(input) },
+      { method: "POST", body: JSON.stringify(input) },
     );
   }
   async listOpenJobs(
@@ -396,7 +396,7 @@ export class AuthenticatedRunnerLedgerAdapter
   }
 }
 
-/** Separate witness credential used only by the provider-side log observer. */
+/** Triggers the separately credentialed provider-side observer by job identity. */
 export class AuthenticatedProviderWitnessAdapter {
   constructor(
     private readonly origin: string,
@@ -407,19 +407,16 @@ export class AuthenticatedProviderWitnessAdapter {
       throw new Error("runner_witness_configuration_invalid");
   }
 
-  async persist(
-    jobId: string,
-    witness: Readonly<Record<string, unknown>>,
-  ): Promise<void> {
+  async observe(jobId: string): Promise<void> {
     const response = await this.fetchImpl(
-      `${this.origin.replace(/\/$/u, "")}/v1/runner-jobs/${encodeURIComponent(jobId)}/provider-witness`,
+      `${this.origin.replace(/\/$/u, "")}/v1/runner-jobs/${encodeURIComponent(jobId)}/cleanup-observation`,
       {
-        method: "PUT",
+        method: "POST",
         headers: {
           Authorization: `Bearer ${this.token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(witness),
+        body: "{}",
       },
     );
     if (!response.ok)
