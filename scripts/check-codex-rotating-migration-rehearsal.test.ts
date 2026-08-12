@@ -253,6 +253,14 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN",
     );
     expect(provisioning).toContain(
+      "CREATE ROLE reviewrouter_release_migration LOGIN",
+    );
+    expect(
+      provisioning.indexOf("CREATE ROLE reviewrouter_release_migration LOGIN"),
+    ).toBeLessThan(
+      provisioning.indexOf('"external_activation_authority_provisioning"'),
+    );
+    expect(provisioning).toContain(
       "CREATE ROLE reviewrouter_activation_permit_installer LOGIN",
     );
     expect(provisioning).toContain('CREATE TABLE public."_prisma_migrations"');
