@@ -1721,10 +1721,12 @@ function prepareCanonicalReleaseRoles(url) {
   ];
   const externalGuardRole = "reviewrouter_activation_receipt_guard";
   const externalInstallerRole = "reviewrouter_activation_permit_installer";
+  const externalReceiptReaderRole = "reviewrouter_activation_receipt_reader";
   const allRoles = [
     ...loginRoles.map(([role]) => role),
     externalGuardRole,
     externalInstallerRole,
+    externalReceiptReaderRole,
   ];
   const passwords = new Map(
     loginRoles.map(([role]) => [role, `${randomUUID()}${randomUUID()}`]),
@@ -1769,6 +1771,8 @@ function prepareCanonicalReleaseRoles(url) {
     COMMENT ON ROLE reviewrouter_activation_receipt_guard IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_activation_permit_installer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(`${randomUUID()}${randomUUID()}`)};
     COMMENT ON ROLE reviewrouter_activation_permit_installer IS ${quoteLiteral(rehearsalRoleMarker)};
+    CREATE ROLE reviewrouter_activation_receipt_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(`${randomUUID()}${randomUUID()}`)};
+    COMMENT ON ROLE reviewrouter_activation_receipt_reader IS ${quoteLiteral(rehearsalRoleMarker)};
     ALTER SCHEMA public OWNER TO reviewrouter_role_bootstrap;
     ALTER DATABASE ${quoteIdentifier(databaseName)} OWNER TO reviewrouter_role_bootstrap;
     DO $generation$
@@ -2125,6 +2129,7 @@ function cleanupRuntimeRoles(url) {
     "reviewrouter_release_migration",
     "reviewrouter_activation_receipt_guard",
     "reviewrouter_activation_permit_installer",
+    "reviewrouter_activation_receipt_reader",
     "reviewrouter_role_bootstrap",
   ];
   for (const role of roles) {

@@ -86,6 +86,8 @@ jobs:
         env:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
         run: node scripts/install-private-dependencies.mjs --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm db:generate
       - name: Run full disposable cutover rehearsal with pinned images
         env:
           REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL: "1"
