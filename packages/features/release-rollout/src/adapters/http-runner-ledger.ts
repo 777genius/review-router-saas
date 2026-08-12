@@ -361,14 +361,20 @@ export class AuthenticatedRunnerLedgerAdapter
       `/v1/rollouts/${encodeURIComponent(rolloutId)}/reconcile`,
       { method: "POST", body: "{}" },
     )) as Record<string, unknown>;
+    const state =
+      value.state === "activated"
+        ? "activated_forward_only"
+        : value.state === "forward_repair_required"
+          ? "activation_uncertain_forward_only"
+          : value.state;
     if (
       ![
         "pre_activation_compensated",
         "activated_forward_only",
         "activation_uncertain_forward_only",
-      ].includes(String(value.state)) ||
+      ].includes(String(state)) ||
       value.openRunnerJobs !== 0 ||
-      (value.state === "pre_activation_compensated"
+      (state === "pre_activation_compensated"
         ? value.sourceEligible !== true ||
           value.sourceAclRestored !== true ||
           value.sourceServicesResumed !== true
@@ -377,7 +383,7 @@ export class AuthenticatedRunnerLedgerAdapter
           value.sourceServicesResumed !== false)
     )
       throw new Error("runner_ledger_rollout_reconciliation_invalid");
-    return value as {
+    return { ...value, state } as {
       state:
         | "pre_activation_compensated"
         | "activated_forward_only"

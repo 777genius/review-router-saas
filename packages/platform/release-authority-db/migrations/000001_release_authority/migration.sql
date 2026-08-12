@@ -196,14 +196,33 @@ LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog
 AS $append$
 DECLARE current_row release_authority.rollout%ROWTYPE;
+DECLARE existing_receipt release_authority.receipt%ROWTYPE;
+DECLARE expected_step text;
+DECLARE completed_steps integer;
 BEGIN
   SELECT * INTO current_row FROM release_authority.rollout
     WHERE rollout_id = p_rollout_id FOR UPDATE;
-  IF NOT FOUND OR current_row.last_receipt_sha256 <> p_expected_receipt_sha256 OR
-     current_row.expected_commit_sha <> p_expected_commit_sha OR
+  IF NOT FOUND OR current_row.expected_commit_sha <> p_expected_commit_sha OR
      current_row.run_id <> p_run_id OR current_row.run_attempt <> p_run_attempt OR
      current_row.source_system_identifier <> p_source_system_identifier OR
-     current_row.target_system_identifier <> p_target_system_identifier OR
+     current_row.target_system_identifier <> p_target_system_identifier THEN
+    RETURN false;
+  END IF;
+  SELECT * INTO existing_receipt FROM release_authority.receipt
+    WHERE rollout_id = p_rollout_id AND step = p_step;
+  IF FOUND THEN
+    IF existing_receipt.receipt_sha256 = p_next_receipt_sha256 AND
+       existing_receipt.previous_receipt_sha256 = p_expected_receipt_sha256 AND
+       existing_receipt.activation_boundary = p_next_activation_boundary AND
+       existing_receipt.provider_binding IS NOT DISTINCT FROM p_provider_binding AND
+       p_expected_activation_boundary = 'before' AND
+       p_next_activation_boundary = 'before' AND
+       p_authoritative_system_identifier = current_row.source_system_identifier THEN
+      RETURN true;
+    END IF;
+    RAISE EXCEPTION 'release rollout receipt replay conflict';
+  END IF;
+  IF current_row.last_receipt_sha256 <> p_expected_receipt_sha256 OR
      current_row.activation_boundary <> p_expected_activation_boundary THEN
     RETURN false;
   END IF;
@@ -215,10 +234,36 @@ BEGIN
   IF (p_step = 'begin_compensation' AND current_row.state <> 'pre_activation') OR
      (p_step = 'effect_compensation' AND current_row.state <> 'compensating') OR
      (p_step = 'complete_compensation' AND current_row.state <> 'compensating') OR
+     (p_step = 'effect_compensation' AND NOT EXISTS (
+       SELECT 1 FROM release_authority.receipt
+       WHERE rollout_id = p_rollout_id AND step = 'begin_compensation'
+         AND receipt_sha256 = current_row.last_receipt_sha256)) OR
+     (p_step = 'complete_compensation' AND NOT EXISTS (
+       SELECT 1 FROM release_authority.receipt
+       WHERE rollout_id = p_rollout_id AND step = 'effect_compensation'
+         AND receipt_sha256 = current_row.last_receipt_sha256)) OR
      (p_step IN ('begin_compensation','effect_compensation','complete_compensation') AND
        (p_expected_activation_boundary <> 'before' OR p_next_activation_boundary <> 'before' OR
         p_authoritative_system_identifier <> current_row.source_system_identifier)) THEN
     RAISE EXCEPTION 'release rollout compensation transition invalid';
+  END IF;
+  IF p_step NOT IN ('begin_compensation','effect_compensation','complete_compensation') THEN
+    SELECT count(*)::integer INTO completed_steps
+    FROM release_authority.receipt WHERE rollout_id = p_rollout_id;
+    expected_step := (ARRAY[
+      'claim_rollout', 'verify_protected_environment', 'freeze_provider_services',
+      'provision_role_runner', 'capture_source_backup', 'quiesce_source',
+      'copy_database_generation', 'bootstrap_target_roles',
+      'verify_data_equivalence', 'cleanup_role_runner',
+      'provision_cutover_runner', 'run_release_migration', 'stage_target_services'
+    ])[completed_steps + 1];
+    IF expected_step IS NULL OR p_step <> expected_step OR
+       current_row.state <> 'pre_activation' OR
+       p_expected_activation_boundary <> 'before' OR
+       p_next_activation_boundary <> 'before' OR
+       p_authoritative_system_identifier <> current_row.source_system_identifier THEN
+      RAISE EXCEPTION 'release rollout pre-activation step out of order';
+    END IF;
   END IF;
   INSERT INTO release_authority.receipt (
     receipt_sha256, rollout_id, step, provider_binding,
@@ -342,6 +387,56 @@ BEGIN
   IF current_row.last_receipt_sha256 <> p_expected_receipt_sha256 THEN
     RAISE EXCEPTION 'release authority activation receipt conflict';
   END IF;
+  IF current_row.activation_boundary <> 'before' OR
+     current_row.authoritative_system_identifier <> current_row.source_system_identifier OR
+     current_row.source_permanently_ineligible OR
+     EXISTS (
+       WITH required(step, ordinal) AS (VALUES
+         ('claim_rollout', 1), ('verify_protected_environment', 2),
+         ('freeze_provider_services', 3), ('provision_role_runner', 4),
+         ('capture_source_backup', 5), ('quiesce_source', 6),
+         ('copy_database_generation', 7), ('bootstrap_target_roles', 8),
+         ('verify_data_equivalence', 9), ('cleanup_role_runner', 10),
+         ('provision_cutover_runner', 11), ('run_release_migration', 12),
+         ('stage_target_services', 13)
+       )
+       SELECT 1 FROM required
+       LEFT JOIN release_authority.receipt receipt
+         ON receipt.rollout_id = current_row.rollout_id AND receipt.step = required.step
+       LEFT JOIN release_authority.receipt previous
+         ON previous.rollout_id = current_row.rollout_id
+        AND previous.step = (SELECT step FROM required prior WHERE prior.ordinal = required.ordinal - 1)
+       WHERE receipt.receipt_sha256 IS NULL OR
+         receipt.previous_receipt_sha256 <> CASE WHEN required.ordinal = 1
+           THEN 'sha256:' || repeat('0', 64) ELSE previous.receipt_sha256 END
+     ) OR
+     NOT EXISTS (
+       SELECT 1 FROM release_authority.receipt
+       WHERE rollout_id = current_row.rollout_id AND step = 'stage_target_services'
+         AND receipt_sha256 = current_row.last_receipt_sha256
+         AND provider_binding->'renderDeployIds' = p_target_deploy_ids
+     ) THEN
+    RAISE EXCEPTION 'release authority activation sequence incomplete';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+    FROM release_authority.runner_intent intent
+    JOIN release_authority.runner_job job
+      ON job.provisioning_intent_id = intent.intent_id
+     AND job.rollout_id = intent.rollout_id
+     AND job.lifecycle = intent.lifecycle
+    WHERE intent.rollout_id = current_row.rollout_id
+      AND intent.lifecycle = 'cutover'
+      AND intent.workflow_job_id = p_job_id
+      AND intent.registration_runner_id IS NOT NULL
+      AND intent.registration_runner_group_id IS NOT NULL
+      AND job.terminal_at IS NULL
+      AND job.runner_identity IS NOT NULL
+      AND job.provision_observation IS NOT NULL
+      AND job.runner_identity->>'workflowJobId' = p_job_id
+  ) THEN
+    RAISE EXCEPTION 'release authority activation cutover runner binding denied';
+  END IF;
   authorization_result := jsonb_build_object(
     'rolloutId', current_row.rollout_id,
     'expectedCommitSha', current_row.expected_commit_sha,
@@ -417,16 +512,6 @@ BEGIN
   END IF;
   SELECT * INTO existing FROM release_authority.provider_authority_decision
     WHERE rollout_id = current_row.rollout_id AND operation = p_request->>'operation';
-  IF FOUND THEN
-    IF existing.source_system_identifier <> p_request->>'sourceSystemIdentifier' OR
-       existing.target_system_identifier <> p_request->>'targetSystemIdentifier' OR
-       existing.expected_receipt_sha256 <> p_request->>'expectedReceiptSha256' OR
-       existing.activation_boundary <> p_request->>'activationBoundary' THEN
-      RAISE EXCEPTION 'provider authority replay conflict';
-    END IF;
-    RETURN p_request || jsonb_build_object('decision','allow',
-      'decisionId',existing.decision_id,'decidedAt',existing.decided_at);
-  END IF;
   IF current_row.last_receipt_sha256 <> p_request->>'expectedReceiptSha256' THEN
     RAISE EXCEPTION 'provider authority receipt denied';
   END IF;
@@ -442,6 +527,16 @@ BEGIN
      p_request->>'activationBoundary' <> required_boundary OR
      (p_request->>'operation' = 'resume_source' AND current_row.authoritative_system_identifier <> current_row.source_system_identifier) THEN
     RAISE EXCEPTION 'provider authority state denied';
+  END IF;
+  IF existing.decision_id IS NOT NULL THEN
+    IF existing.source_system_identifier <> p_request->>'sourceSystemIdentifier' OR
+       existing.target_system_identifier <> p_request->>'targetSystemIdentifier' OR
+       existing.expected_receipt_sha256 <> p_request->>'expectedReceiptSha256' OR
+       existing.activation_boundary <> p_request->>'activationBoundary' THEN
+      RAISE EXCEPTION 'provider authority replay conflict';
+    END IF;
+    RETURN p_request || jsonb_build_object('decision','allow',
+      'decisionId',existing.decision_id,'decidedAt',existing.decided_at);
   END IF;
   INSERT INTO release_authority.provider_authority_decision
     (rollout_id, operation, source_system_identifier, target_system_identifier,

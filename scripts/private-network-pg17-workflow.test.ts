@@ -54,6 +54,17 @@ describe("private-network PG17 workflow security contract", () => {
     expect(controller).toContain("REVIEW_ROUTER_RUNNER_GROUP_ID");
     expect(controller).toContain("cleanup-runners");
     expect(workflow).not.toContain("outputs.label");
+    expect(controller).toContain(
+      "REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}",
+    );
+    expect(controller).not.toContain(
+      "REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}",
+    );
+  });
+
+  it("is dispatch-only because runtime identity requires workflow_dispatch", () => {
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).not.toContain("workflow_call:");
   });
 
   it("fails closed on control-repository, protected environment, retry, and unique rollout preconditions", () => {
@@ -84,6 +95,12 @@ describe("private-network PG17 workflow security contract", () => {
     expect(workflow).toContain("finalize-private-pg17-rollout.ts");
     expect(workflow).toContain("if: ${{ always() }}");
     expect(workflow).toContain("always-reconcile-runners-and-compensation");
+    const reconcile = jobs(workflow).find((block) =>
+      block.startsWith("  always-reconcile:"),
+    )!;
+    expect(reconcile).toContain("REVIEW_ROUTER_RUNNER_WITNESS_TOKEN:");
+    expect(reconcile).toContain("REVIEW_ROUTER_RUNNER_WITNESS_URL:");
+    expect(reconcile).not.toContain("REVIEW_ROUTER_SOURCE_DATABASE_URL:");
   });
 
   it("keeps installer and external authority credentials out of every workflow job", () => {
@@ -108,6 +125,15 @@ describe("private-network PG17 workflow security contract", () => {
     );
     expect(workflow).not.toContain("secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN");
     expect(workflow).not.toContain("secrets.REVIEW_ROUTER_SOURCE_DATABASE_URL");
+    for (const jobName of ["role-bootstrap-private", "pg17-cutover-private"]) {
+      const job = jobs(workflow).find((block) =>
+        block.startsWith(`  ${jobName}:`),
+      )!;
+      expect(job).toContain("REVIEW_ROUTER_SOURCE_DATABASE_URL:");
+      expect(job).toContain("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON:");
+      expect(job).toContain("RENDER_SERVICE_SUSPENSION_API_KEY:");
+      expect(job).toContain("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS:");
+    }
   });
 
   it("uses only SHA-pinned actions and preserves the opt-in legacy workflow contracts", () => {

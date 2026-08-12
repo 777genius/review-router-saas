@@ -83,3 +83,38 @@ describe("authenticated runner ledger activation authorization", () => {
     );
   });
 });
+
+describe("authenticated runner ledger reconciliation", () => {
+  it.each([
+    ["activated", "activated_forward_only"],
+    ["forward_repair_required", "activation_uncertain_forward_only"],
+  ] as const)(
+    "maps the %s control response to %s",
+    async (wireState, state) => {
+      const fetchImpl = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            state: wireState,
+            sourceEligible: false,
+            sourceAclRestored: false,
+            sourceServicesResumed: false,
+            openRunnerJobs: 0,
+          }),
+          { status: 200 },
+        ),
+      );
+      const adapter = new AuthenticatedRunnerLedgerAdapter(
+        "https://control.example.test",
+        "control-token",
+        fetchImpl,
+      );
+
+      await expect(
+        adapter.reconcileRollout("rollout-1"),
+      ).resolves.toMatchObject({
+        state,
+        openRunnerJobs: 0,
+      });
+    },
+  );
+});

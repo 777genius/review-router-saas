@@ -7,6 +7,12 @@ import {
   RunnerCleanupWitnessService,
 } from "./release-rollout-ledger.js";
 
+type WitnessDatabaseReadiness = Readonly<{
+  roleName: string;
+  postgresMajor: number;
+  witnessRoutine: boolean;
+}>;
+
 export async function createReleaseWitnessApp(input: {
   readonly witnessPrisma: PrismaClient;
   readonly witnessTokenSha256: string;
@@ -16,7 +22,20 @@ export async function createReleaseWitnessApp(input: {
   const app = Fastify({ logger: false });
   app.get("/health", async (_request, reply) => {
     try {
-      await input.witnessPrisma.$queryRaw(Prisma.sql`SELECT 1`);
+      const rows = await input.witnessPrisma.$queryRaw<
+        WitnessDatabaseReadiness[]
+      >(Prisma.sql`
+        SELECT current_user AS "roleName",
+          current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
+          to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)') IS NOT NULL AS "witnessRoutine"
+      `);
+      if (
+        rows.length !== 1 ||
+        rows[0]?.roleName !== "reviewrouter_release_witness" ||
+        rows[0].postgresMajor !== 17 ||
+        !rows[0].witnessRoutine
+      )
+        throw new Error("release_witness_database_identity_invalid");
       return { status: "ok", service: "release-witness" };
     } catch {
       return reply.code(503).send({

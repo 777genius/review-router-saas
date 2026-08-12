@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { codexRotatingProductionWriterBaseObservationSql } from "./capture-codex-rotating-production-writer.mjs";
 import { codexRotatingTriggers } from "./codex-rotating-production-writer-schema.mjs";
 import {
+  activationAuthorityProvisioningSql,
   executeCanonicalReleaseMigration,
   roleProvisioningSql,
   runtimeGrantStatements,
@@ -280,7 +281,7 @@ function applyBaselineThrough59(url) {
   psql(url, [
     "-c",
     String.raw`
-      CREATE TABLE "_prisma_migrations" (
+      CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
         "id" VARCHAR(36) PRIMARY KEY NOT NULL,
         "checksum" VARCHAR(64) NOT NULL,
         "finished_at" TIMESTAMPTZ,
@@ -1719,7 +1720,12 @@ function prepareCanonicalReleaseRoles(url) {
     ["reviewrouter_release_migration", "rr-rehearsal-release"],
   ];
   const externalGuardRole = "reviewrouter_activation_receipt_guard";
-  const allRoles = [...loginRoles.map(([role]) => role), externalGuardRole];
+  const externalInstallerRole = "reviewrouter_activation_permit_installer";
+  const allRoles = [
+    ...loginRoles.map(([role]) => role),
+    externalGuardRole,
+    externalInstallerRole,
+  ];
   const passwords = new Map(
     loginRoles.map(([role]) => [role, `${randomUUID()}${randomUUID()}`]),
   );
@@ -1746,6 +1752,8 @@ function prepareCanonicalReleaseRoles(url) {
     COMMENT ON ROLE reviewrouter_role_bootstrap IS ${quoteLiteral(rehearsalRoleMarker)};
     CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
     COMMENT ON ROLE reviewrouter_activation_receipt_guard IS ${quoteLiteral(rehearsalRoleMarker)};
+    CREATE ROLE reviewrouter_activation_permit_installer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(`${randomUUID()}${randomUUID()}`)};
+    COMMENT ON ROLE reviewrouter_activation_permit_installer IS ${quoteLiteral(rehearsalRoleMarker)};
     ALTER SCHEMA public OWNER TO reviewrouter_role_bootstrap;
     ALTER DATABASE ${quoteIdentifier(databaseName)} OWNER TO reviewrouter_role_bootstrap;
     DO $generation$
@@ -1775,6 +1783,26 @@ function prepareCanonicalReleaseRoles(url) {
   );
   bootstrap.password = bootstrapPassword;
   psql(bootstrap, ["-c", "CREATE EXTENSION IF NOT EXISTS pgcrypto"]);
+  psql(bootstrap, [
+    "-c",
+    String.raw`
+      CREATE TABLE public."_prisma_migrations" (
+        "id" VARCHAR(36) PRIMARY KEY NOT NULL,
+        "checksum" VARCHAR(64) NOT NULL,
+        "finished_at" TIMESTAMPTZ,
+        "migration_name" VARCHAR(255) NOT NULL,
+        "logs" TEXT,
+        "rolled_back_at" TIMESTAMPTZ,
+        "started_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+        "applied_steps_count" INTEGER NOT NULL DEFAULT 0
+      )`,
+  ]);
+  runRehearsalReleaseSubprocess(
+    "external_activation_authority_provisioning",
+    "psql",
+    [url.toString(), "--no-psqlrc", "--quiet"],
+    { env: process.env, input: activationAuthorityProvisioningSql() },
+  );
   psql(url, [
     "-c",
     `DO $extension_owners$
@@ -2081,6 +2109,7 @@ function cleanupRuntimeRoles(url) {
     "reviewrouter_codex_effect_authority",
     "reviewrouter_release_migration",
     "reviewrouter_activation_receipt_guard",
+    "reviewrouter_activation_permit_installer",
     "reviewrouter_role_bootstrap",
   ];
   for (const role of roles) {

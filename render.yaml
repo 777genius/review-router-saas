@@ -26,10 +26,6 @@ services:
         sync: false
       - key: REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256
         sync: false
-      - key: RENDER_SERVICE_SUSPENSION_API_KEY
-        sync: false
-      - key: REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL
-        sync: false
       - key: REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_DATABASE_URL
         sync: false
 

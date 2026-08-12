@@ -21,10 +21,50 @@ first=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r1', repeat('a',40), '1', 1, '100', '200')")
 duplicate=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r1', repeat('a',40), '1', 1, '100', '200')")
+now=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "DO \$\$
+   DECLARE steps text[] := ARRAY[
+     'claim_rollout','verify_protected_environment','freeze_provider_services',
+     'provision_role_runner','capture_source_backup','quiesce_source',
+     'copy_database_generation','bootstrap_target_roles','verify_data_equivalence',
+     'cleanup_role_runner','provision_cutover_runner','run_release_migration',
+     'stage_target_services'];
+   DECLARE previous_sha text := 'sha256:'||repeat('0',64);
+   DECLARE next_sha text;
+   BEGIN
+     FOR index IN 1..cardinality(steps) LOOP
+       next_sha := 'sha256:'||lpad(index::text,64,'0');
+       IF NOT release_authority.release_rollout_append_receipt(
+         'r1',repeat('a',40),'1',1,'100','200',steps[index],previous_sha,next_sha,
+         '100','before','before',CASE WHEN steps[index] = 'stage_target_services'
+           THEN '{\"renderDeployIds\":[\"dep\"]}'::jsonb ELSE NULL END) THEN
+         RAISE EXCEPTION 'legal receipt sequence rejected at %', steps[index];
+       END IF;
+       previous_sha := next_sha;
+     END LOOP;
+   END \$\$;
+   INSERT INTO release_authority.runner_intent(
+     intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,
+     registration_runner_id,registration_runner_group_id,registration_labels,
+     registration_unique_label,registration_work_folder)
+   VALUES ('rri-'||repeat('1',64),'r1','svc','cutover','9','rr-cutover','$now',
+     91,92,ARRAY['self-hosted','rr-cutover'],'rr-cutover','_work/rr-cutover');
+   INSERT INTO release_authority.runner_job(
+     job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,
+     lifecycle,runner_identity,provision_observation)
+   VALUES ('job-cutover','r1','rri-'||repeat('1',64),'svc','$now','canary','cutover',
+     '{\"workflowJobId\":\"9\"}','{\"step\":\"provision_cutover_runner\"}');" >/dev/null
+stage_receipt="sha256:$(printf '%064d' 13)"
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '10', '$stage_receipt', '[\"dep\"]', 17, 'sha256:'||repeat('7',64))" >/dev/null 2>&1; then
+  echo "activation with an unbound cutover workflow job unexpectedly succeeded" >&2
+  exit 1
+fi
 authorization=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', 'sha256:'||repeat('0',64), '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', '$stage_receipt', '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
 replay=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', 'sha256:'||repeat('0',64), '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', '$stage_receipt', '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
 state=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT state||':'||activation_epoch||':'||source_permanently_ineligible FROM release_authority.rollout WHERE rollout_id='r1'")
 
@@ -32,6 +72,17 @@ test "$first" = claimed
 test "$duplicate" = duplicate
 test "$authorization" = "$replay"
 test "$state" = activation_authorized:1:true
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-order', repeat('d',40), '4', 1, '103', '203')" >/dev/null
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r-order',repeat('d',40),'4',1,'103','203','stage_target_services',
+    'sha256:'||repeat('0',64),'sha256:'||repeat('6',64),'103','before','before',
+    '{\"renderDeployIds\":[\"dep\"]}')" >/dev/null 2>&1; then
+  echo "out-of-order pre-activation receipt unexpectedly succeeded" >&2
+  exit 1
+fi
 
 finalized=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_finalize_activation(
@@ -54,7 +105,7 @@ finalize_replay=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
     '{\"deploy\":\"dep\"}', 'sha256:'||repeat('1',64), activation_receipt)
    FROM release_authority.rollout WHERE rollout_id='r1'")
 authorization_after_finalize=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', 'sha256:'||repeat('0',64), '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', '$stage_receipt', '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
 test "$finalized" = t
 test "$finalize_replay" = t
 test "$authorization_after_finalize" = "$authorization"
@@ -71,13 +122,13 @@ conflicting_finalize=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -
 test "$conflicting_finalize" = f
 
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '10', 'sha256:'||repeat('0',64), '[\"dep\"]', 17, 'sha256:'||repeat('7',64))" >/dev/null 2>&1; then
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '10', '$stage_receipt', '[\"dep\"]', 17, 'sha256:'||repeat('7',64))" >/dev/null 2>&1; then
   echo "conflicting authorization replay unexpectedly succeeded" >&2
   exit 1
 fi
 
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', 'sha256:'||repeat('0',64), '[\"dep\"]', 17, 'sha256:'||repeat('8',64))" >/dev/null 2>&1; then
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', '$stage_receipt', '[\"dep\"]', 17, 'sha256:'||repeat('8',64))" >/dev/null 2>&1; then
   echo "conflicting migration checksum replay unexpectedly succeeded" >&2
   exit 1
 fi
@@ -90,9 +141,33 @@ decision=$(docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U
 decision_replay=$(docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
   "SELECT release_authority.release_provider_authority_decide('$deploy_request')")
 test "$decision" = "$decision_replay"
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r2',repeat('b',40),'2',1,'101','201','claim_rollout',
+    'sha256:'||repeat('0',64),'sha256:'||repeat('5',64),'101','before','before',NULL)" >/dev/null
+if docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
+  "SELECT release_authority.release_provider_authority_decide('$deploy_request')" >/dev/null 2>&1; then
+  echo "stale provider decision replay unexpectedly succeeded after receipt change" >&2
+  exit 1
+fi
 if docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
   "SELECT release_authority.release_provider_authority_decide(jsonb_set('$deploy_request','{expectedReceiptSha256}','\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"'))" >/dev/null 2>&1; then
   echo "conflicting provider decision replay unexpectedly succeeded" >&2
+  exit 1
+fi
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-state', repeat('e',40), '5', 1, '104', '204')" >/dev/null
+state_request='{"rolloutId":"r-state","operation":"deploy_target","sourceSystemIdentifier":"104","targetSystemIdentifier":"204","expectedReceiptSha256":"sha256:'$(printf '0%.0s' $(seq 1 64))'","activationBoundary":"before"}'
+docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
+  "SELECT release_authority.release_provider_authority_decide('$state_request')" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "UPDATE release_authority.rollout SET state='activated', activation_boundary='activated',
+     authoritative_system_identifier=target_system_identifier, source_permanently_ineligible=true
+   WHERE rollout_id='r-state'" >/dev/null
+if docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
+  "SELECT release_authority.release_provider_authority_decide('$state_request')" >/dev/null 2>&1; then
+  echo "stale provider decision replay unexpectedly succeeded after state change" >&2
   exit 1
 fi
 
@@ -104,7 +179,6 @@ resume_source_request='{"rolloutId":"r3","operation":"resume_source","sourceSyst
 docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
   "SELECT release_authority.release_provider_authority_decide('$resume_source_request')" >/dev/null
 
-now=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
   "INSERT INTO release_authority.runner_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at)
    VALUES ('rri-'||repeat('3',64),'r3','svc','role','30','rr-test','$now');

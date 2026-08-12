@@ -22,22 +22,24 @@ const output = (values: Record<string, string>) => {
       mode: 0o600,
     });
 };
-const ledger = new AuthenticatedRunnerLedgerAdapter(
-  required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
-  required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
-);
-const providerWitness = new AuthenticatedProviderWitnessAdapter(
-  required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
-  required("REVIEW_ROUTER_RUNNER_WITNESS_TOKEN"),
-);
-const runners = new RenderPrivateRunnerAdapter(
-  ledger,
-  ledger,
-  providerWitness,
-  fetch,
-  () => new Date(),
-);
-const runnerUseCases = new PrivateRunnerControlUseCases(runners);
+const runnerControl = () => {
+  const ledger = new AuthenticatedRunnerLedgerAdapter(
+    required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
+    required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
+  );
+  const providerWitness = new AuthenticatedProviderWitnessAdapter(
+    required("REVIEW_ROUTER_RUNNER_WITNESS_URL"),
+    required("REVIEW_ROUTER_RUNNER_WITNESS_TOKEN"),
+  );
+  const runners = new RenderPrivateRunnerAdapter(
+    ledger,
+    ledger,
+    providerWitness,
+    fetch,
+    () => new Date(),
+  );
+  return { ledger, useCases: new PrivateRunnerControlUseCases(runners) };
+};
 const mode = process.argv[2];
 const contextValue = (name: string, fallback: string): string =>
   process.env[name] ?? required(fallback);
@@ -90,6 +92,7 @@ if (mode === "freeze") {
     observation: Buffer.from(JSON.stringify(observation)).toString("base64url"),
   });
 } else if (mode === "provision") {
+  const { useCases: runnerUseCases } = runnerControl();
   const purpose = required("REVIEW_ROUTER_RUNNER_PURPOSE");
   const workflowJobName = required("REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME");
   const targetRunId = contextValue(
@@ -178,6 +181,7 @@ if (mode === "freeze") {
     ),
   });
 } else if (mode === "cleanup") {
+  const { useCases: runnerUseCases } = runnerControl();
   const observation = await runnerUseCases.cleanup({
     apiKey: required("RENDER_RUNNER_CONTROL_API_KEY"),
     baseServiceId: required("REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID"),
@@ -198,6 +202,7 @@ if (mode === "freeze") {
       mode: 0o600,
     });
 } else if (mode === "reconcile" || mode === "cleanup-runners") {
+  const { ledger, useCases: runnerUseCases } = runnerControl();
   const path = required("REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE");
   const observations = await runnerUseCases.reconcile(
     required("REVIEW_ROUTER_ROLLOUT_ID"),

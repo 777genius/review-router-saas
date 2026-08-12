@@ -40,6 +40,7 @@ jobs:
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
           REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
           REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
           REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
           REVIEW_ROUTER_EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
           REVIEW_ROUTER_TARGET_SHA: ${{ steps.context.outputs.expected_sha }}
@@ -66,6 +67,7 @@ jobs:
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
           REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
           REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
           REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
           REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: provision-reconciliation.json
         run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
@@ -96,6 +98,7 @@ jobs:
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
           REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
           REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
           REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
           REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: runner-cleanup-reconciliation.json
         run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners

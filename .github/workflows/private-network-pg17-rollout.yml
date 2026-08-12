@@ -12,15 +12,6 @@ on:
         description: Exact protected main commit
         required: true
         type: string
-  workflow_call:
-    inputs:
-      rollout_id:
-        required: true
-        type: string
-      expected_sha:
-        required: true
-        type: string
-
 permissions:
   actions: read
   contents: read
@@ -135,6 +126,8 @@ jobs:
           REVIEW_ROUTER_FREEZE_OBSERVATION: ${{ needs.freeze-source-writers.outputs.observation }}
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
           RENDER_PROVENANCE_READ_API_KEY: ${{ secrets.RENDER_PROVENANCE_READ_API_KEY }}
+          RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
+          REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
           REVIEW_ROUTER_SOURCE_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL }}
           REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON }}
           REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL }}
@@ -193,6 +186,10 @@ jobs:
           REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: pg17-cutover-private
           REVIEW_ROUTER_COPY_BOOTSTRAP_EVIDENCE_FILE: copy-bootstrap/copy-bootstrap-evidence.json
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
+          REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
+          REVIEW_ROUTER_SOURCE_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL }}
+          REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON }}
           RENDER_TARGET_SWITCH_API_KEY: ${{ secrets.RENDER_TARGET_SWITCH_API_KEY }}
           REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON: ${{ secrets.REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON }}
           REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
@@ -296,5 +293,7 @@ jobs:
           GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
           RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
           REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: orphan-reconciliation.json
         run: node --import tsx scripts/release-rollout-render-control.ts reconcile

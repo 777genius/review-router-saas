@@ -10,6 +10,36 @@ import { createReleaseWitnessApp } from "./release-witness-composition";
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 
+const authorityReadiness = (
+  roleName: "reviewrouter_release_control" | "reviewrouter_provider_authority",
+) => [
+  {
+    roleName,
+    systemIdentifier: "authority-system",
+    postgresMajor: 17,
+    controlRoutine: true,
+    providerRoutine: true,
+    installerRoutine: false,
+  },
+];
+const installerReadiness = [
+  {
+    roleName: "reviewrouter_activation_permit_installer",
+    systemIdentifier: "target-system",
+    postgresMajor: 17,
+    controlRoutine: false,
+    providerRoutine: false,
+    installerRoutine: true,
+  },
+];
+const witnessReadiness = [
+  {
+    roleName: "reviewrouter_release_witness",
+    postgresMajor: 17,
+    witnessRoutine: true,
+  },
+];
+
 describe("release authority process composition", () => {
   it("builds focused use cases from distinct control and provider connections", () => {
     const dependencies = composeReleaseControlDependencies(
@@ -161,11 +191,24 @@ describe("release authority process composition", () => {
   });
 
   it("does not expose witness writes from the control process", async () => {
-    const ready = vi.fn().mockResolvedValue([{ ready: 1 }]);
     const app = await createReleaseControlApp({
-      controlPrisma: { $queryRaw: ready } as never,
-      providerAuthorityPrisma: { $queryRaw: ready } as never,
-      permitInstallerPrisma: { $queryRaw: ready } as never,
+      controlPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_release_control"),
+          ),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_provider_authority"),
+          ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+      } as never,
       credentials: {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
@@ -322,7 +365,7 @@ describe("release authority process composition", () => {
   it("does not expose control routes from the witness process", async () => {
     const app = await createReleaseWitnessApp({
       witnessPrisma: {
-        $queryRaw: vi.fn().mockResolvedValue([{ ready: 1 }]),
+        $queryRaw: vi.fn().mockResolvedValue(witnessReadiness),
       } as never,
       witnessTokenSha256: digest("witness"),
     });
@@ -347,10 +390,14 @@ describe("release authority process composition", () => {
           .mockRejectedValue(new Error("secret database detail")),
       } as never,
       providerAuthorityPrisma: {
-        $queryRaw: vi.fn().mockResolvedValue([{ ready: 1 }]),
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_provider_authority"),
+          ),
       } as never,
       permitInstallerPrisma: {
-        $queryRaw: vi.fn().mockResolvedValue([{ ready: 1 }]),
+        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
       } as never,
       credentials: {
         controlTokenSha256: digest("control"),
