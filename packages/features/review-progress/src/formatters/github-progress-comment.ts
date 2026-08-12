@@ -67,7 +67,7 @@ function phaseLabel(phase: ProgressPhase, terminal: ProgressTerminal): string {
 }
 
 function percentage(completed: number, total: number): number {
-  return total === 0 ? 100 : Math.floor((completed / total) * 100);
+  return total === 0 ? 0 : Math.floor((completed / total) * 100);
 }
 
 function progressBar(percent: number): string {

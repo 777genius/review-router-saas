@@ -354,13 +354,15 @@ export class ReviewProgressGitHubGateway {
     const headers = normalizeHeaders(
       record(value?.headers) ?? record(response?.headers),
     );
+    const responseData = record(response?.data);
     const isRateLimit =
       status === 429 ||
       (status === 403 &&
         (headers["x-ratelimit-remaining"] === "0" ||
-          headers["retry-after"] !== undefined));
+          headers["retry-after"] !== undefined ||
+          isSecondaryRateLimitResponse(responseData)));
     if (isRateLimit) {
-      const retryNotBefore = retryBoundary(headers, this.now());
+      const retryNotBefore = retryBoundary(headers, this.now(), 60_000);
       const retryAt = jitterAfter(retryNotBefore, this.random);
       return new ReviewProgressGitHubError(
         "rate_limited",
@@ -509,9 +511,27 @@ function normalizeHeaders(
   );
 }
 
+function isSecondaryRateLimitResponse(
+  data: Record<string, unknown> | null,
+): boolean {
+  if (!data) return false;
+  const message =
+    typeof data.message === "string" ? data.message.toLowerCase() : "";
+  const documentationUrl =
+    typeof data.documentation_url === "string"
+      ? data.documentation_url.toLowerCase()
+      : "";
+  return (
+    message.includes("secondary rate limit") ||
+    message.includes("abuse detection mechanism") ||
+    documentationUrl.includes("#about-secondary-rate-limits")
+  );
+}
+
 function retryBoundary(
   headers: Readonly<Record<string, string>>,
   now: Date,
+  fallbackDelayMs = 1_000,
 ): Date {
   const retryAfter = headers["retry-after"];
   if (retryAfter) {
@@ -526,7 +546,7 @@ function retryBoundary(
   if (Number.isFinite(resetSeconds) && resetSeconds >= 0) {
     return new Date(Math.max(now.getTime(), resetSeconds * 1_000));
   }
-  return new Date(now.getTime() + 1_000);
+  return new Date(now.getTime() + fallbackDelayMs);
 }
 
 function jitterAfter(boundary: Date, random: () => number): Date {

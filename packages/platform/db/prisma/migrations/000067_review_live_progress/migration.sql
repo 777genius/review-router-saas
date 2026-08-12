@@ -9,7 +9,10 @@ ALTER TABLE "ReviewExecutionV2"
     ("assignmentManifestVersion" IS NULL AND "assignmentManifestHash" IS NULL AND "assignmentManifestJson" IS NULL)
     OR
     ("assignmentManifestVersion" IS NOT NULL AND "assignmentManifestHash" IS NOT NULL AND "assignmentManifestJson" IS NOT NULL)
-  );
+  ) NOT VALID;
+
+ALTER TABLE "ReviewExecutionV2"
+  VALIDATE CONSTRAINT "ReviewExecutionV2_assignment_manifest_all_or_none";
 
 CREATE TYPE "ReviewProgressPhaseV1" AS ENUM (
   'preparing',
@@ -63,7 +66,13 @@ CREATE TABLE "ReviewExecutionProgressV1" (
   CONSTRAINT "ReviewExecutionProgressV1_coverage_all_or_none" CHECK (
     ("eligibleFileCount" IS NULL AND "coveredFileCount" IS NULL AND "uncoveredFileCount" IS NULL AND "excludedFileCount" IS NULL)
     OR
-    ("eligibleFileCount" >= 0 AND "coveredFileCount" >= 0 AND "uncoveredFileCount" >= 0 AND "excludedFileCount" >= 0 AND "coveredFileCount" <= "eligibleFileCount")
+    (
+      "eligibleFileCount" IS NOT NULL AND "coveredFileCount" IS NOT NULL AND
+      "uncoveredFileCount" IS NOT NULL AND "excludedFileCount" IS NOT NULL AND
+      "eligibleFileCount" >= 0 AND "coveredFileCount" >= 0 AND
+      "uncoveredFileCount" >= 0 AND "excludedFileCount" >= 0 AND
+      "coveredFileCount" <= "eligibleFileCount"
+    )
   )
 );
 
@@ -110,7 +119,6 @@ CREATE TABLE "ReviewProgressPublicationV1" (
 );
 
 CREATE UNIQUE INDEX "ReviewProgressPublicationV1_claimId_key" ON "ReviewProgressPublicationV1"("claimId");
-CREATE INDEX "ReviewProgressPublicationV1_due_idx" ON "ReviewProgressPublicationV1"("nextPublishAt", "desiredVersion", "publishedVersion");
 CREATE INDEX "ReviewProgressPublicationV1_claim_due_idx" ON "ReviewProgressPublicationV1"("claimUntil", "nextPublishAt");
 CREATE INDEX "ReviewProgressPublicationV1_active_execution_idx" ON "ReviewProgressPublicationV1"("activeExecutionId");
 CREATE INDEX "ReviewProgressPublicationV1_due_partial_idx"

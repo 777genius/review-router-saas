@@ -44,6 +44,7 @@ import {
   decideExecutionPreparation,
   decideExecutionPreparationReplay,
   ExecutionPreparationReplayDecisionStatus,
+  ExecutionLifecycleDecisionStatus,
   decideReviewRequestedAdmission,
   decideReviewRequestedRegistration,
   ReviewRequestedRegistrationDecisionStatus,
@@ -215,6 +216,23 @@ describe("review execution domain", () => {
     expect(
       decideWorkSlotTerminalization({
         ...input,
+        execution: {
+          ...applied.execution,
+          state: ReviewExecutionState.Failed,
+        },
+        stream: { ...stream, activeExecutionId: null },
+      }).status,
+    ).toBe(WorkSlotTerminalizationDecisionStatus.Restored);
+    expect(
+      decideWorkSlotTerminalization({
+        ...input,
+        execution: applied.execution,
+        generation: execution.generation + 1n,
+      }).status,
+    ).toBe(WorkSlotTerminalizationDecisionStatus.NotEligible);
+    expect(
+      decideWorkSlotTerminalization({
+        ...input,
         reasonCode: ReviewWorkSlotTerminalReason.DeadlineReached,
       }).status,
     ).toBe(WorkSlotTerminalizationDecisionStatus.Conflict);
@@ -248,6 +266,32 @@ describe("review execution domain", () => {
       ReviewWorkSlotState.Cancelled,
     );
     expect(decision.stream.activeExecutionId).toBeNull();
+    const activeLease = {
+      ...leaseCommand(),
+      ...scope,
+      authorizationId: execution.authorizationId,
+      producerReleaseId: execution.producerReleaseId,
+      mutationEpoch: execution.mutationEpoch,
+      reviewRevisionHash: revision.reviewRevisionHash,
+      state: ReviewInvocationLeaseState.Active,
+      fencingToken: 1n,
+      attemptOrdinal: 1,
+      lastRenewRequestIdHash: null,
+      lastRenewRequestHash: null,
+      executionGeneration: execution.generation,
+      acquiredAt: baseTime,
+      renewedAt: baseTime,
+    };
+    const restored = decideExpiredRunningExecutionFailure({
+      stream: decision.stream,
+      execution: decision.execution,
+      activeLeases: [activeLease],
+      now: plus(4),
+    });
+    expect(restored.status).toBe(ExecutionLifecycleDecisionStatus.Restored);
+    expect(restored.revokedLeases[0]?.state).toBe(
+      ReviewInvocationLeaseState.Revoked,
+    );
   });
 
   it("bounded recovery scans and fails expired running executions", async () => {
@@ -277,6 +321,7 @@ describe("review execution domain", () => {
       scanned: 1,
       recovered: 1,
       conflicts: 0,
+      failures: 0,
     });
     expect(
       (await executions.findExecution("execution-1"))?.execution.state,
@@ -285,7 +330,47 @@ describe("review execution domain", () => {
       scanned: 0,
       recovered: 0,
       conflicts: 0,
+      failures: 0,
     });
+  });
+
+  it("continues expired recovery after one candidate command fails", async () => {
+    const candidates = ["execution-a", "execution-b"].map((executionId) => ({
+      stream: {
+        ...createEmptyReviewExecutionStream(scope, baseTime),
+        version: 2n,
+      },
+      execution: {
+        ...decideExecutionPreparation({
+          stream: createEmptyReviewExecutionStream(scope, baseTime),
+          priorPrepared: null,
+          ...prepareCommand({ executionId }),
+        }).execution,
+        executionId,
+        state: ReviewExecutionState.Running,
+      },
+      observationRefs: [],
+      activeLeases: [],
+      artifact: null,
+    }));
+    const failExpiredRunningExecution = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("database_unavailable"))
+      .mockResolvedValueOnce({
+        status: ReviewExecutionLifecycleTransitionStatus.Applied,
+      });
+    const recovery = new RecoverExpiredReviewExecutions(
+      { listExpiredRunning: vi.fn(async () => candidates) } as never,
+      { failExpiredRunningExecution } as never,
+      { now: () => plus(3) },
+    );
+    expect(await recovery.execute({ limit: 2 })).toEqual({
+      scanned: 2,
+      recovered: 1,
+      conflicts: 0,
+      failures: 1,
+    });
+    expect(failExpiredRunningExecution).toHaveBeenCalledTimes(2);
   });
 
   it("uses bigint fencing tokens beyond Number.MAX_SAFE_INTEGER without reuse", () => {
@@ -1053,7 +1138,10 @@ describe("start and admission saga", () => {
         assignmentManifestCanonicalJson: manifestCanonicalJson,
         assignmentManifestHash: hash("c"),
       }),
-    ).rejects.toThrow("review_assignment_manifest_hash_mismatch");
+    ).resolves.toEqual({
+      status: StartReviewExecutionStatus.AssignmentManifestRejected,
+      rejectionReason: "review_assignment_manifest_hash_mismatch",
+    });
     await expect(
       useCase.execute({
         ...base,
@@ -1063,7 +1151,10 @@ describe("start and admission saga", () => {
         assignmentManifestCanonicalJson: manifestCanonicalJson,
         assignmentManifestHash,
       }),
-    ).rejects.toThrow("review_assignment_manifest_plan_hash_mismatch");
+    ).resolves.toEqual({
+      status: StartReviewExecutionStatus.AssignmentManifestRejected,
+      rejectionReason: "review_assignment_manifest_plan_hash_mismatch",
+    });
   });
 
   it("fails closed when authorization expires during the revision precheck", async () => {

@@ -35,10 +35,6 @@ import {
   ReviewWorkSlotState,
   ReviewWorkSlotTerminalReason as DomainWorkSlotTerminalReason,
   StartReviewExecutionStatus,
-  canonicalReviewAssignmentManifestHashPreimage,
-  canonicalReviewExecutionPlanHashPreimage,
-  reviewAssignmentManifestMaxBytes,
-  validateReviewAssignmentManifest,
   type ReviewExecution,
   type ReviewExecutionLimits,
   type ReviewExecutionObservationRef,
@@ -352,15 +348,6 @@ async function startExecution(
   );
   await executionLimits(authorization, d);
   const workSlots = parseWorkSlots(request.workSlotsCanonicalJson);
-  const assignmentManifest = await validateAssignmentManifest(
-    request.assignmentManifestCanonicalJson,
-    request.assignmentManifestHash,
-    request.planHash,
-    request.compatibilityKey,
-    request.reviewRevisionHash,
-    workSlots,
-    d.digest,
-  );
   const now = d.now();
   const outcome = await d.executions.startReviewExecution.execute({
     scope: toExecutionScope(authorization),
@@ -368,8 +355,8 @@ async function startExecution(
     authorizationId: authorization.authorizationId,
     compatibilityKey: request.compatibilityKey,
     planHash: request.planHash,
-    assignmentManifestCanonicalJson: assignmentManifest?.canonicalJson ?? null,
-    assignmentManifestHash: assignmentManifest?.hash ?? null,
+    assignmentManifestCanonicalJson: request.assignmentManifestCanonicalJson,
+    assignmentManifestHash: request.assignmentManifestHash,
     workSlots,
     sourceRunId: request.sourceRunId,
     sourceRunAttempt: request.sourceRunAttempt,
@@ -377,6 +364,15 @@ async function startExecution(
     executionDeadlineAt: add(now, d.timing.executionDurationMs),
     retainUntil: add(now, d.timing.retentionDurationMs),
   });
+  if (
+    outcome.status === StartReviewExecutionStatus.AssignmentManifestRejected
+  ) {
+    throw failure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      outcome.rejectionReason ?? "assignment_manifest_invalid",
+    );
+  }
   return {
     statusCode:
       outcome.status === StartReviewExecutionStatus.Admitted
@@ -387,77 +383,6 @@ async function startExecution(
       ...(outcome.snapshot ? executionResult(outcome.snapshot) : {}),
     },
   };
-}
-
-async function validateAssignmentManifest(
-  canonicalManifest: string | null,
-  manifestHash: string | null,
-  planHash: string,
-  compatibilityKey: string,
-  reviewRevisionHash: string,
-  workSlots: readonly ReviewWorkSlotPlan[],
-  digest: Pick<ReviewActionV2DigestPort, "digestUtf8">,
-): Promise<Readonly<{ canonicalJson: string; hash: string }> | null> {
-  if (canonicalManifest === null && manifestHash === null) return null;
-  if (canonicalManifest === null || manifestHash === null) {
-    throw failure(
-      422,
-      ReviewActionV2ProtocolErrorCode.InvariantViolation,
-      "assignment_manifest_fields_incomplete",
-    );
-  }
-  if (
-    new TextEncoder().encode(canonicalManifest).byteLength >
-    reviewAssignmentManifestMaxBytes
-  ) {
-    throw failure(
-      422,
-      ReviewActionV2ProtocolErrorCode.InvariantViolation,
-      "assignment_manifest_too_large",
-    );
-  }
-  let manifest: ReturnType<typeof validateReviewAssignmentManifest>;
-  try {
-    manifest = validateReviewAssignmentManifest(
-      parseCanonicalJson(canonicalManifest, "assignment_manifest_invalid"),
-      workSlots.map((slot) => slot.workSlotId),
-    );
-  } catch {
-    throw failure(
-      422,
-      ReviewActionV2ProtocolErrorCode.InvariantViolation,
-      "assignment_manifest_invalid",
-    );
-  }
-  if (canonicalJson(manifest) !== canonicalManifest) {
-    throw failure(
-      422,
-      ReviewActionV2ProtocolErrorCode.InvariantViolation,
-      "assignment_manifest_not_canonical",
-    );
-  }
-  const expectedManifestHash = await digest.digestUtf8(
-    canonicalReviewAssignmentManifestHashPreimage(canonicalManifest),
-  );
-  requireEqual(
-    manifestHash,
-    expectedManifestHash,
-    "assignment_manifest_hash_mismatch",
-  );
-  const expectedPlanHash = await digest.digestUtf8(
-    canonicalReviewExecutionPlanHashPreimage({
-      assignmentManifestHash: manifestHash,
-      compatibilityKey,
-      reviewRevisionHash,
-      workSlots,
-    }),
-  );
-  requireEqual(
-    planHash,
-    expectedPlanHash,
-    "assignment_manifest_plan_hash_mismatch",
-  );
-  return { canonicalJson: canonicalManifest, hash: manifestHash };
 }
 
 async function supersedeExecution(
@@ -529,14 +454,8 @@ async function terminalizeWorkSlot(
     generation: decimal(request.generation),
     reviewRevisionHash: request.reviewRevisionHash,
     workSlotId: request.workSlotId,
-    terminalState:
-      request.terminalState === ReviewWorkSlotTerminalState.Exhausted
-        ? ReviewWorkSlotState.Exhausted
-        : ReviewWorkSlotState.Cancelled,
-    reasonCode:
-      request.reasonCode === ReviewWorkSlotTerminalReason.AttemptBudgetExhausted
-        ? DomainWorkSlotTerminalReason.AttemptBudgetExhausted
-        : DomainWorkSlotTerminalReason.DeadlineReached,
+    terminalState: executionTerminalState(request.terminalState),
+    reasonCode: executionTerminalReason(request.reasonCode),
     now: d.now(),
   });
   return {
@@ -550,6 +469,28 @@ async function terminalizeWorkSlot(
       workSlotId: request.workSlotId,
     },
   };
+}
+
+function executionTerminalState(
+  state: ReviewWorkSlotTerminalState,
+): ReviewWorkSlotState.Exhausted | ReviewWorkSlotState.Cancelled {
+  switch (state) {
+    case ReviewWorkSlotTerminalState.Exhausted:
+      return ReviewWorkSlotState.Exhausted;
+    case ReviewWorkSlotTerminalState.Cancelled:
+      return ReviewWorkSlotState.Cancelled;
+  }
+}
+
+function executionTerminalReason(
+  reason: ReviewWorkSlotTerminalReason,
+): DomainWorkSlotTerminalReason {
+  switch (reason) {
+    case ReviewWorkSlotTerminalReason.AttemptBudgetExhausted:
+      return DomainWorkSlotTerminalReason.AttemptBudgetExhausted;
+    case ReviewWorkSlotTerminalReason.DeadlineReached:
+      return DomainWorkSlotTerminalReason.DeadlineReached;
+  }
 }
 
 async function acquireLease(
@@ -2180,6 +2121,8 @@ function mapStart(
       return ReviewExecutionStartResultStatus.IdempotencyConflict;
     case StartReviewExecutionStatus.ConcurrencyConflict:
       return ReviewExecutionStartResultStatus.ConcurrencyConflict;
+    case StartReviewExecutionStatus.AssignmentManifestRejected:
+      throw new Error("assignment_manifest_rejection_not_mapped");
   }
 }
 function mapLookup(

@@ -27,13 +27,20 @@ export class RecoverExpiredReviewExecutions {
     });
     let recovered = 0;
     let conflicts = 0;
+    let failures = 0;
     for (const candidate of candidates) {
-      const result = await this.commands.failExpiredRunningExecution({
-        scope: candidate.execution,
-        executionId: candidate.execution.executionId,
-        expectedStreamVersion: candidate.stream.version,
-        now,
-      });
+      let result;
+      try {
+        result = await this.commands.failExpiredRunningExecution({
+          scope: candidate.execution,
+          executionId: candidate.execution.executionId,
+          expectedStreamVersion: candidate.stream.version,
+          now,
+        });
+      } catch {
+        failures += 1;
+        continue;
+      }
       if (
         result.status === ReviewExecutionLifecycleTransitionStatus.Applied ||
         result.status === ReviewExecutionLifecycleTransitionStatus.Restored
@@ -43,6 +50,6 @@ export class RecoverExpiredReviewExecutions {
         conflicts += 1;
       }
     }
-    return { scanned: candidates.length, recovered, conflicts };
+    return { scanned: candidates.length, recovered, conflicts, failures };
   }
 }

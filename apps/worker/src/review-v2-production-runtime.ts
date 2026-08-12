@@ -653,11 +653,17 @@ function createHostedReviewProgressRuntime(input: {
   });
   let botLogin: Promise<string> | null = null;
   const resolveBotLogin = () => {
-    botLogin ??= app.octokit.request("GET /app").then((response) => {
-      const slug = response.data?.slug;
-      if (!slug) throw new Error("review_progress_github_app_slug_missing");
-      return `${slug}[bot]`;
-    });
+    botLogin ??= app.octokit
+      .request("GET /app")
+      .then((response) => {
+        const slug = response.data?.slug;
+        if (!slug) throw new Error("review_progress_github_app_slug_missing");
+        return `${slug}[bot]`;
+      })
+      .catch((error: unknown) => {
+        botLogin = null;
+        throw error;
+      });
     return botLogin;
   };
   const publisher = new ReviewProgressPublisher(
@@ -709,6 +715,11 @@ function createHostedReviewProgressRuntime(input: {
         input.env.REVIEW_ROUTER_PROGRESS_MAX_COMMENT_PAGES,
         5,
         "review_progress_max_comment_pages_invalid",
+      ),
+      maxFailures: positiveInteger(
+        input.env.REVIEW_ROUTER_PROGRESS_MAX_FAILURES,
+        10,
+        "review_progress_max_failures_invalid",
       ),
     },
   );
@@ -1597,11 +1608,11 @@ class ReviewV2PublicationMaintenance implements ReviewV2PublicationMaintenanceRu
       if (
         result.status === ReviewV2PublicationExecutionStatus.Completed ||
         result.status === ReviewV2PublicationExecutionStatus.AlreadyCompleted ||
-        result.status === ReviewV2PublicationExecutionStatus.TerminalUnknown ||
         result.status === ReviewV2PublicationExecutionStatus.Terminalized
       ) {
         settledExecutionIds.add(item.executionId);
         const outcome = progressOutcome(result);
+        if (!outcome) continue;
         const previous = progressSettlements.get(item.executionId);
         progressSettlements.set(
           item.executionId,
@@ -1631,9 +1642,11 @@ class ReviewV2PublicationMaintenance implements ReviewV2PublicationMaintenanceRu
   }
 }
 
-function progressOutcome(
+export function progressOutcome(
   result: Awaited<ReturnType<ExecuteReviewV2PublicationOperation["execute"]>>,
-): ReviewProgressSettlement["outcome"] {
+): ReviewProgressSettlement["outcome"] | null {
+  if (result.status === ReviewV2PublicationExecutionStatus.TerminalUnknown)
+    return null;
   if (
     result.status === ReviewV2PublicationExecutionStatus.Completed ||
     result.status === ReviewV2PublicationExecutionStatus.AlreadyCompleted

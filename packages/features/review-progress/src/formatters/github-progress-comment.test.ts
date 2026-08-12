@@ -106,4 +106,18 @@ describe("formatGithubProgressComment", () => {
     );
     expect(comment).toContain("Review units: 0 of 1 complete (0%)");
   });
+
+  it("renders zero progress for an empty required-unit denominator", () => {
+    const comment = formatGithubProgressComment(
+      computeProgressSnapshot({
+        generation: 1,
+        phase: "reviewing",
+        terminal: "none",
+        updatedAt: "2026-08-12T17:00:00Z",
+        slots: [{ slotId: "optional", required: false, state: "running" }],
+      }),
+    );
+    expect(comment).toContain("Review units: 0 of 0 complete (0%)");
+    expect(comment).toContain("[□□□□□□□□□□] 0%");
+  });
 });

@@ -269,6 +269,43 @@ describe("ReviewProgressGitHubGateway", () => {
     });
   });
 
+  it("classifies a body-only secondary rate limit as retryable for at least one minute", async () => {
+    const request: ReviewProgressGitHubRequester = vi.fn(async () => {
+      throw {
+        status: 403,
+        response: {
+          headers: {},
+          data: {
+            message:
+              "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+            documentation_url:
+              "https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits",
+          },
+        },
+      };
+    });
+    const now = new Date("2026-08-12T12:00:00.000Z");
+    const caught = await gateway(request, {
+      now: () => now,
+      random: () => 0,
+    })
+      .upsert(input())
+      .catch((value: unknown) => value);
+
+    expect(caught).toBeInstanceOf(ReviewProgressGitHubError);
+    expect(caught).toMatchObject({
+      kind: "rate_limited",
+      metadata: {
+        status: 403,
+        retryable: true,
+        retryNotBefore: new Date("2026-08-12T12:01:00.000Z"),
+      },
+    });
+    expect(
+      (caught as ReviewProgressGitHubError).metadata.retryAt!.getTime(),
+    ).toBeGreaterThanOrEqual(now.getTime() + 60_000);
+  });
+
   it.each([
     {
       name: "Retry-After",

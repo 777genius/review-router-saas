@@ -54,6 +54,7 @@ describe("PrismaReviewProgressPublicationStore fencing", () => {
       retryAt: new Date(now.getTime() + 1_000),
       installationCooldownUntil: new Date(now.getTime() + 60_000),
       now,
+      maxFailures: 10,
     });
 
     const query = rawQueries[0] as { strings: readonly string[] };
@@ -86,6 +87,35 @@ describe("PrismaReviewProgressPublicationStore fencing", () => {
       'progress."terminalOutcome" IS NOT NULL',
     );
     expect(query.strings.join(" ")).toContain("THEN 0 ELSE 1 END");
+  });
+
+  it("suppresses when the desired version reaches its retry bound", async () => {
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const prisma = {
+      $transaction: async (operation: (transaction: unknown) => unknown) =>
+        operation({
+          reviewProgressPublicationV1: { updateMany },
+          $executeRaw: vi.fn(),
+        }),
+    };
+    const store = new PrismaReviewProgressPublicationStore(prisma as never);
+    await expect(
+      store.retry({
+        publication: { ...claimed(), failureCount: 2 },
+        safeCode: "review_progress_publish_failed",
+        retryAt: new Date(now.getTime() + 1_000),
+        now,
+        maxFailures: 3,
+      }),
+    ).resolves.toBe("suppressed");
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          publishedVersion: 73n,
+          lastErrorCode: "review_progress_retry_limit_reached",
+        }),
+      }),
+    );
   });
 
   it("limits hosted claims to the explicit repository cohort", async () => {
@@ -198,6 +228,7 @@ function claimed() {
     publishedVersion: 72n,
     commentId: 9n,
     publishedBodyHash: null,
+    failureCount: 0,
     snapshot: {},
     terminal: false,
     repository: { owner: "acme", name: "rocket", githubInstallationId: 17n },

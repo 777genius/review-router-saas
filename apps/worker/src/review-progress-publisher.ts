@@ -56,6 +56,7 @@ export class ReviewProgressPublisher {
       minimumMutationIntervalMs: number;
       retryDelayMs: number;
       maxCommentPages: number;
+      maxFailures: number;
     }>,
   ) {
     assertPositive(options.limit, "review_progress_publish_limit_invalid");
@@ -69,6 +70,7 @@ export class ReviewProgressPublisher {
       options.maxCommentPages,
       "review_progress_comment_pages_invalid",
     );
+    assertPositive(options.maxFailures, "review_progress_max_failures_invalid");
   }
 
   async runMaintenance(): Promise<ReviewProgressPublisherResult> {
@@ -129,6 +131,8 @@ export class ReviewProgressPublisher {
         safeCode: "review_progress_installation_budget_wait",
         retryAt: reservation.retryAt,
         now,
+        maxFailures: this.options.maxFailures,
+        countFailure: false,
       });
       result.deferred += 1;
       return;
@@ -162,6 +166,8 @@ export class ReviewProgressPublisher {
               Math.max(1_000, this.options.minimumMutationIntervalMs),
           ),
           now: this.clock.now(),
+          maxFailures: this.options.maxFailures,
+          countFailure: false,
         });
         result.deferred += 1;
         return;
@@ -191,7 +197,7 @@ export class ReviewProgressPublisher {
       const retryAt =
         githubError?.metadata.retryAt ??
         new Date(this.clock.now().getTime() + this.options.retryDelayMs);
-      await this.store.retry({
+      const retryOutcome = await this.store.retry({
         publication,
         safeCode: githubError
           ? `review_progress_${githubError.kind}`
@@ -201,8 +207,10 @@ export class ReviewProgressPublisher {
           ? { installationCooldownUntil: retryAt }
           : {}),
         now: this.clock.now(),
+        maxFailures: this.options.maxFailures,
       });
-      result.failed += 1;
+      if (retryOutcome === "suppressed") result.suppressed += 1;
+      else result.failed += 1;
     }
   }
 }

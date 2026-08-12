@@ -72,6 +72,87 @@ describe("computeProgressSnapshot", () => {
     });
   });
 
+  it("tracks a 108-file, 72-unit review without counting six incomplete first attempts", () => {
+    const slots = Array.from({ length: 72 }, (_, index) =>
+      slot(
+        `unit-${index}`,
+        index < 6 ? "running" : "accepted",
+        true,
+        index < 6 ? 2 : 1,
+      ),
+    );
+    const paths = Array.from({ length: 108 }, (_, index) => ({
+      pathId: `path-${index}`,
+      disposition: "reviewable" as const,
+      requiredCoveringSlotIds: [`unit-${index % 72}`],
+    }));
+    const retrying = computeProgressSnapshot(
+      input(slots, { assignmentManifest: { paths } }),
+    );
+
+    expect(retrying.counts).toMatchObject({
+      requiredTotal: 72,
+      requiredCompleted: 66,
+      retrying: 6,
+      recovered: 0,
+    });
+    expect(retrying.fileCoverage).toEqual({
+      valid: true,
+      total: 108,
+      covered: 96,
+      uncovered: 0,
+      excluded: 0,
+    });
+
+    const completed = computeProgressSnapshot(
+      input(
+        slots.map((entry, index) =>
+          index < 6 ? { ...entry, state: "accepted" as const } : entry,
+        ),
+        { assignmentManifest: { paths } },
+      ),
+    );
+    expect(completed.counts).toMatchObject({
+      requiredTotal: 72,
+      requiredCompleted: 72,
+      retrying: 0,
+      recovered: 6,
+    });
+    expect(completed.fileCoverage).toMatchObject({ covered: 108, total: 108 });
+  });
+
+  it("rejects duplicate slots and invalid accepted-attempt aliases", () => {
+    expect(() =>
+      computeProgressSnapshot(
+        input([slot("same", "pending"), slot("same", "running")]),
+      ),
+    ).toThrow("progress_slot_id_duplicate");
+    expect(() =>
+      computeProgressSnapshot(
+        input([
+          {
+            slotId: "not-accepted",
+            required: true,
+            state: "running",
+            acceptedAttemptOrdinal: 2,
+          },
+        ]),
+      ),
+    ).toThrow("progress_attempt_invalid");
+    expect(
+      computeProgressSnapshot(
+        input([
+          {
+            slotId: "recovered-alias",
+            required: true,
+            state: "accepted",
+            acceptedAttemptOrdinal: 2,
+          },
+        ]),
+      ).counts.recovered,
+    ).toBe(1);
+  });
+
   it("maps exhausted required work to complete_with_gaps when partial terminal completion is allowed", () => {
     const result = computeProgressSnapshot(
       input([slot("accepted", "accepted"), slot("gap", "exhausted")], {
@@ -211,6 +292,24 @@ describe("computeProgressSnapshot", () => {
     );
     expect(result.fileCoverage).toEqual({ valid: false });
   });
+
+  it("hides file coverage when uncoveredCount exceeds eligible paths", () => {
+    const result = computeProgressSnapshot(
+      input([slot("a", "accepted")], {
+        assignmentManifest: {
+          paths: [
+            {
+              pathId: "eligible",
+              disposition: "reviewable",
+              requiredCoveringSlotIds: ["a"],
+            },
+          ],
+          uncoveredCount: 2,
+        },
+      }),
+    );
+    expect(result.fileCoverage).toEqual({ valid: false });
+  });
 });
 
 describe("assertProgressTransition", () => {
@@ -254,5 +353,33 @@ describe("assertProgressTransition", () => {
       input([slot("a", "pending")], { generation: 2, phase: "preparing" }),
     );
     expect(() => assertProgressTransition(terminal, restarted)).not.toThrow();
+  });
+
+  it("rejects schema changes and loss of valid coverage within a generation", () => {
+    const previous = computeProgressSnapshot(
+      input([slot("a", "running")], {
+        assignmentManifest: {
+          paths: [
+            {
+              pathId: "eligible",
+              disposition: "reviewable",
+              requiredCoveringSlotIds: ["a"],
+            },
+          ],
+        },
+      }),
+    );
+    expect(() =>
+      assertProgressTransition(previous, {
+        ...previous,
+        schemaVersion: 2 as never,
+      }),
+    ).toThrow("progress_schema_version_changed");
+    expect(() =>
+      assertProgressTransition(previous, {
+        ...previous,
+        fileCoverage: { valid: false },
+      }),
+    ).toThrow("progress_file_coverage_became_invalid");
   });
 });

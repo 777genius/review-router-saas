@@ -152,6 +152,9 @@ export function assertProgressTransition(
   previous: ProgressSnapshot,
   next: ProgressSnapshot,
 ): void {
+  if (previous.schemaVersion !== next.schemaVersion) {
+    throw new Error("progress_schema_version_changed");
+  }
   if (next.generation < previous.generation) {
     throw new Error("progress_generation_regressed");
   }
@@ -190,6 +193,9 @@ export function assertProgressTransition(
   }
   if (phaseRank(next.phase) < phaseRank(previous.phase)) {
     throw new Error("progress_phase_regressed");
+  }
+  if (previous.fileCoverage.valid && !next.fileCoverage.valid) {
+    throw new Error("progress_file_coverage_became_invalid");
   }
   if (previous.fileCoverage.valid && next.fileCoverage.valid) {
     if (next.fileCoverage.total !== previous.fileCoverage.total) {

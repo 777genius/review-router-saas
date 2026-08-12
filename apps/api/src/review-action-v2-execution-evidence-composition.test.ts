@@ -37,6 +37,7 @@ import {
   ReviewObservationAttachmentStatus,
   ReviewTaskKind,
   ReviewWorkSlotState,
+  ReviewWorkSlotTerminalReason as DomainWorkSlotTerminalReason,
   StartReviewExecutionStatus,
   canonicalReviewAssignmentManifestHashPreimage,
   canonicalReviewExecutionPlanHashPreimage,
@@ -124,6 +125,14 @@ describe("Review Action v2 execution/evidence composition", () => {
 
   it("validates and binds a canonical assignment manifest before starting", async () => {
     const d = executionDependencies();
+    d.executions.startReviewExecution.execute = vi.fn(async (input) =>
+      input.assignmentManifestHash === hash("f")
+        ? {
+            status: StartReviewExecutionStatus.AssignmentManifestRejected,
+            rejectionReason: "review_assignment_manifest_hash_mismatch",
+          }
+        : { status: StartReviewExecutionStatus.Admitted, snapshot },
+    );
     const handlers = createReviewActionV2ExecutionHandlers(d);
     const sourceSlot = snapshot.execution.workSlots[0]!;
     const workSlots = [
@@ -185,7 +194,7 @@ describe("Review Action v2 execution/evidence composition", () => {
           planHash,
         }),
       ),
-    ).rejects.toMatchObject({ statusCode: 403 });
+    ).rejects.toMatchObject({ statusCode: 422 });
   });
 
   it("terminalizes only the active generation and forwards the safe reason pair", async () => {
@@ -226,6 +235,39 @@ describe("Review Action v2 execution/evidence composition", () => {
         reviewRevisionHash: authorization.reviewRevisionHash,
         workSlotId: "slot-1",
         terminalState: ReviewWorkSlotState.Exhausted,
+      }),
+    );
+    terminalizeWorkSlot.mockResolvedValueOnce({
+      status: ReviewExecutionLifecycleTransitionStatus.ConcurrencyConflict,
+      snapshot,
+    });
+    const stale = await withBodyHash(
+      ReviewActionV2OperationId.ReviewExecutionWorkSlotTerminalize,
+      { ...request, requestId: "terminalize-stale", generation: "999" },
+    );
+    await expect(
+      handlers.terminalizeWorkSlot.execute(stale),
+    ).resolves.toMatchObject({
+      result: { status: ReviewExecutionMutationResultStatus.Conflict },
+    });
+    terminalizeWorkSlot.mockResolvedValueOnce({
+      status: ReviewExecutionLifecycleTransitionStatus.Applied,
+      snapshot,
+    });
+    const cancelled = await withBodyHash(
+      ReviewActionV2OperationId.ReviewExecutionWorkSlotTerminalize,
+      {
+        ...request,
+        requestId: "terminalize-cancelled",
+        terminalState: ReviewWorkSlotTerminalState.Cancelled,
+        reasonCode: ReviewWorkSlotTerminalReason.DeadlineReached,
+      },
+    );
+    await handlers.terminalizeWorkSlot.execute(cancelled);
+    expect(terminalizeWorkSlot).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        terminalState: ReviewWorkSlotState.Cancelled,
+        reasonCode: DomainWorkSlotTerminalReason.DeadlineReached,
       }),
     );
   });

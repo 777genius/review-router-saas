@@ -45,6 +45,7 @@ export type ReviewV2MaintenanceResult = {
   readonly expiredExecutionsScanned: number;
   readonly expiredExecutionsRecovered: number;
   readonly expiredExecutionConflicts: number;
+  readonly expiredExecutionFailures: number;
 };
 
 export type ReviewV2IntentMaintenanceRuntime = {
@@ -61,6 +62,7 @@ export type ReviewV2ExecutionRecoveryRuntime = {
     readonly scanned: number;
     readonly recovered: number;
     readonly conflicts: number;
+    readonly failures: number;
   }>;
 };
 
@@ -70,7 +72,7 @@ export type ReviewV2PublicationMaintenanceRuntime = {
     readonly manualRequired: number;
     readonly terminalUnknown: number;
     readonly settledExecutionIds: readonly string[];
-    readonly progressSettlements?: readonly ReviewProgressSettlement[];
+    readonly progressSettlements: readonly ReviewProgressSettlement[];
   }>;
 };
 
@@ -147,6 +149,7 @@ export function createReviewV2WorkerFeature(input: {
         expiredExecutionsScanned: 0,
         expiredExecutionsRecovered: 0,
         expiredExecutionConflicts: 0,
+        expiredExecutionFailures: 0,
       }),
     };
   }
@@ -267,19 +270,30 @@ export async function runReviewV2Maintenance(input: {
       result.status !== AdvanceReviewCompletionProcessStatus.Missing &&
       result.status !== AdvanceReviewCompletionProcessStatus.StaleClaim,
   ).length;
-  const progressPromoted = input.progress
-    ? await input.progress.promoteSettledExecutions({
-        settlements:
-          publication?.progressSettlements ??
-          (publication?.settledExecutionIds ?? []).map((executionId) => ({
-            executionId,
-            outcome: "succeeded" as const,
-          })),
-      })
-    : 0;
+  let progressPromoted = 0;
+  let progressPromotionFailed = false;
+  if (input.progress && publication) {
+    try {
+      progressPromoted = await input.progress.promoteSettledExecutions({
+        settlements: publication.progressSettlements,
+      });
+    } catch {
+      progressPromotionFailed = true;
+    }
+  }
   // The final review publication always runs first. Progress is deliberately
   // last so it can never delay or overtake the user-visible review result.
-  const progress = await input.progress?.runMaintenance();
+  let progress:
+    | Awaited<ReturnType<ReviewV2ProgressMaintenanceRuntime["runMaintenance"]>>
+    | undefined;
+  let progressPublicationFailed = false;
+  if (input.progress) {
+    try {
+      progress = await input.progress.runMaintenance();
+    } catch {
+      progressPublicationFailed = true;
+    }
+  }
   return {
     intentsScanned: intents?.scanned ?? 0,
     intentsDispatched: intents?.dispatched ?? 0,
@@ -295,10 +309,14 @@ export async function runReviewV2Maintenance(input: {
     progressPublished: progress?.published ?? 0,
     progressDeferred: progress?.deferred ?? 0,
     progressSuppressed: progress?.suppressed ?? 0,
-    progressFailed: progress?.failed ?? 0,
+    progressFailed:
+      (progress?.failed ?? 0) +
+      Number(progressPromotionFailed) +
+      Number(progressPublicationFailed),
     expiredExecutionsScanned: executionRecovery?.scanned ?? 0,
     expiredExecutionsRecovered: executionRecovery?.recovered ?? 0,
     expiredExecutionConflicts: executionRecovery?.conflicts ?? 0,
+    expiredExecutionFailures: executionRecovery?.failures ?? 0,
   };
 }
 

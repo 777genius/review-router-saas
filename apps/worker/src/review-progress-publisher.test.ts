@@ -129,6 +129,24 @@ describe("ReviewProgressPublisher", () => {
       }),
     );
   });
+
+  it("suppresses a poison publication at the retry bound", async () => {
+    const publication = { ...claimed(), failureCount: 2 };
+    const store = fakeStore(publication);
+    store.retry.mockResolvedValue("suppressed");
+    const publisher = createPublisher(store, async () => {
+      throw new Error("invalid_installation");
+    });
+
+    await expect(publisher.runMaintenance()).resolves.toMatchObject({
+      claimed: 1,
+      suppressed: 1,
+      failed: 0,
+    });
+    expect(store.retry).toHaveBeenCalledWith(
+      expect.objectContaining({ maxFailures: 3 }),
+    );
+  });
 });
 
 function createPublisher(
@@ -146,6 +164,7 @@ function createPublisher(
       minimumMutationIntervalMs: 1_000,
       retryDelayMs: 5_000,
       maxCommentPages: 2,
+      maxFailures: 3,
     },
   );
 }
@@ -164,7 +183,7 @@ function fakeStore(publication: ClaimedReviewProgress) {
       > => ({ allowed: true as const }),
     ),
     complete: vi.fn(async () => true),
-    retry: vi.fn(async () => undefined),
+    retry: vi.fn(async (): Promise<"retried" | "suppressed"> => "retried"),
     suppress: vi.fn(async () => true),
   };
 }
@@ -187,6 +206,7 @@ function claimed(
     publishedVersion: 1n,
     commentId: null,
     publishedBodyHash: null,
+    failureCount: 0,
     snapshot,
     terminal: false,
     repository: { owner: "acme", name: "rocket", githubInstallationId: 9n },

@@ -35,7 +35,9 @@ summary without permission escalation.
 
 ## Rollback
 
-Set `REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES=0`. This immediately stops
-new GitHub mutations while preserving durable snapshots and the final-review
-flow. Keep projection capture enabled for diagnosis. If the projection itself
-is unhealthy, disable capture separately; the additive schema can remain.
+Set `REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES=0`, then restart or redeploy
+the worker. The flag is read when the worker runtime is constructed, so do not
+assume GitHub mutations have stopped until that restart completes. Durable
+snapshots and the final-review flow remain available. Keep projection capture
+enabled for diagnosis. If the projection itself is unhealthy, disable capture
+separately; the additive schema can remain.

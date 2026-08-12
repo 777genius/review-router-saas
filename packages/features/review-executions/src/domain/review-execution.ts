@@ -373,7 +373,7 @@ export function canonicalReviewExecutionPlanHashPreimage(input: {
   return `rr.review-work-plan.v2\0${canonicalEnvelope}`;
 }
 
-function canonicalObjectJson(value: unknown): string {
+export function canonicalObjectJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(canonicalObjectJson).join(",")}]`;
   }

@@ -16,6 +16,7 @@ export type ClaimedReviewProgress = Readonly<{
   publishedVersion: bigint;
   commentId: bigint | null;
   publishedBodyHash: string | null;
+  failureCount: number;
   snapshot: unknown;
   terminal: boolean;
   repository: Readonly<{
@@ -110,7 +111,13 @@ export class PrismaReviewProgressPublicationStore {
           progress.planHash !== publication.activePlanHash ||
           progress.desiredVersion !== publication.desiredVersion
         ) {
-          throw new Error("review_progress_projection_identity_corrupted");
+          await deferUnavailablePublication(
+            transaction,
+            candidate,
+            input.now,
+            "review_progress_projection_identity_corrupted",
+          );
+          return null;
         }
         const repository = await transaction.repositoryConnection.findUnique({
           where: { id: publication.repositoryConnectionId },
@@ -131,7 +138,13 @@ export class PrismaReviewProgressPublicationStore {
           repository.archived !== false ||
           repository.provider !== "github"
         ) {
-          throw new Error("review_progress_github_repository_unavailable");
+          await deferUnavailablePublication(
+            transaction,
+            candidate,
+            input.now,
+            "review_progress_github_repository_unavailable",
+          );
+          return null;
         }
         const claimId = randomUUID();
         const claimUntil = new Date(
@@ -154,6 +167,7 @@ export class PrismaReviewProgressPublicationStore {
           publishedVersion: publication.publishedVersion,
           commentId: publication.commentId,
           publishedBodyHash: publication.publishedBodyHash,
+          failureCount: publication.failureCount,
           snapshot: progress.snapshotJson,
           terminal: progress.terminalOutcome !== null,
           repository: {
@@ -279,8 +293,15 @@ export class PrismaReviewProgressPublicationStore {
     readonly retryAt: Date;
     readonly installationCooldownUntil?: Date | undefined;
     readonly now: Date;
-  }): Promise<void> {
+    readonly maxFailures: number;
+    readonly countFailure?: boolean | undefined;
+  }): Promise<"retried" | "suppressed"> {
+    assertDuration(input.maxFailures);
+    let outcome: "retried" | "suppressed" = "retried";
     await this.prisma.$transaction(async (transaction) => {
+      const reachesLimit =
+        input.countFailure !== false &&
+        input.publication.failureCount + 1 >= input.maxFailures;
       await transaction.reviewProgressPublicationV1.updateMany({
         where: {
           ...input.publication.scope,
@@ -293,15 +314,23 @@ export class PrismaReviewProgressPublicationStore {
           claimOwnerIdHash: input.publication.claim.ownerIdHash,
         },
         data: {
+          ...(reachesLimit
+            ? { publishedVersion: input.publication.desiredVersion }
+            : {}),
           claimId: null,
           claimOwnerIdHash: null,
           claimUntil: null,
-          failureCount: { increment: 1 },
-          lastErrorCode: safeCode(input.safeCode),
+          ...(input.countFailure === false
+            ? {}
+            : { failureCount: { increment: 1 } }),
+          lastErrorCode: reachesLimit
+            ? "review_progress_retry_limit_reached"
+            : safeCode(input.safeCode),
           nextPublishAt: input.retryAt,
           updatedAt: input.now,
         },
       });
+      if (reachesLimit) outcome = "suppressed";
       if (input.installationCooldownUntil) {
         await transaction.$executeRaw(Prisma.sql`
           INSERT INTO "ReviewProgressInstallationBudgetV1"
@@ -325,6 +354,7 @@ export class PrismaReviewProgressPublicationStore {
         `);
       }
     });
+    return outcome;
   }
 
   async suppress(input: {
@@ -453,6 +483,31 @@ export class PrismaReviewProgressPublicationStore {
   }
 }
 
+async function deferUnavailablePublication(
+  transaction: Prisma.TransactionClient,
+  scope: {
+    workspaceId: string;
+    repositoryConnectionId: string;
+    scmRepositoryIdentityId: string;
+    pullRequestNumber: number;
+  },
+  now: Date,
+  code: string,
+): Promise<void> {
+  await transaction.reviewProgressPublicationV1.update({
+    where: {
+      workspaceId_repositoryConnectionId_scmRepositoryIdentityId_pullRequestNumber:
+        scope,
+    },
+    data: {
+      failureCount: { increment: 1 },
+      lastErrorCode: code,
+      nextPublishAt: new Date(now.getTime() + 60_000),
+      updatedAt: now,
+    },
+  });
+}
+
 type TerminalOutcome =
   | "complete"
   | "complete_with_gaps"
@@ -485,18 +540,27 @@ function terminalSnapshot(
     throw new Error("review_progress_snapshot_invalid");
   }
   const counts = value.counts;
+  const requiredCompleted = counts.requiredCompleted;
+  const requiredTotal = counts.requiredTotal;
+  const requiredExhausted = counts.requiredExhausted;
+  const requiredCancelled = counts.requiredCancelled;
+  if (
+    typeof requiredCompleted !== "number" ||
+    typeof requiredTotal !== "number" ||
+    typeof requiredExhausted !== "number" ||
+    typeof requiredCancelled !== "number"
+  )
+    throw new Error("review_progress_snapshot_invalid");
   if (
     terminal === "complete" &&
-    (counts.requiredCompleted !== counts.requiredTotal ||
-      counts.requiredExhausted !== 0 ||
-      counts.requiredCancelled !== 0)
+    (requiredCompleted !== requiredTotal ||
+      requiredExhausted !== 0 ||
+      requiredCancelled !== 0)
   )
     throw new Error("review_progress_complete_outcome_inconsistent");
   if (
     terminal === "complete_with_gaps" &&
-    typeof counts.requiredExhausted === "number" &&
-    typeof counts.requiredCancelled === "number" &&
-    counts.requiredExhausted + counts.requiredCancelled < 1
+    requiredExhausted + requiredCancelled < 1
   )
     throw new Error("review_progress_partial_outcome_inconsistent");
   return {

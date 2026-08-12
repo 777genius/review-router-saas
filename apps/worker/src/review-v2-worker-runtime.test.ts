@@ -66,6 +66,7 @@ describe("review v2 worker runtime", () => {
       expiredExecutionsScanned: 0,
       expiredExecutionsRecovered: 0,
       expiredExecutionConflicts: 0,
+      expiredExecutionFailures: 0,
     });
     expect(composed).toBe(false);
 
@@ -135,6 +136,7 @@ describe("review v2 worker runtime", () => {
               manualRequired: 1,
               terminalUnknown: 1,
               settledExecutionIds: ["execution-1", "execution-1"],
+              progressSettlements: [],
             };
           },
         },
@@ -158,6 +160,7 @@ describe("review v2 worker runtime", () => {
       expiredExecutionsScanned: 0,
       expiredExecutionsRecovered: 0,
       expiredExecutionConflicts: 0,
+      expiredExecutionFailures: 0,
     });
     expect(fixture.publications.requestCalls).toBe(1);
   });
@@ -209,6 +212,42 @@ describe("review v2 worker runtime", () => {
       "terminal:execution-1:failed",
       "progress-publication",
     ]);
+  });
+
+  it("isolates progress promotion and publication failures", async () => {
+    const fixture = await createFixture();
+    await expect(
+      runReviewV2Maintenance({
+        runtime: fixture.runtime,
+        ownerIdHash,
+        dueLimit: 10,
+        publication: {
+          async runMaintenance() {
+            return {
+              processed: 1,
+              manualRequired: 0,
+              terminalUnknown: 0,
+              settledExecutionIds: ["execution-1"],
+              progressSettlements: [
+                { executionId: "execution-1", outcome: "succeeded" },
+              ],
+            };
+          },
+        },
+        progress: {
+          async promoteSettledExecutions() {
+            throw new Error("projection_corrupt");
+          },
+          async runMaintenance() {
+            throw new Error("github_unavailable");
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      publicationProcessed: 1,
+      progressPromoted: 0,
+      progressFailed: 2,
+    });
   });
 
   it("quarantines malformed finalized events and retries temporarily missing facts", async () => {

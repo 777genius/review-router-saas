@@ -1316,7 +1316,19 @@ export function decideWorkSlotTerminalization(input: {
   }
   if (
     input.execution.generation !== input.generation ||
-    input.execution.revision.reviewRevisionHash !== input.reviewRevisionHash ||
+    input.execution.revision.reviewRevisionHash !== input.reviewRevisionHash
+  ) {
+    return {
+      status: WorkSlotTerminalizationDecisionStatus.NotEligible,
+    } as const;
+  }
+  if (slot.state === input.terminalState) {
+    return {
+      status: WorkSlotTerminalizationDecisionStatus.Restored,
+      execution: input.execution,
+    } as const;
+  }
+  if (
     input.stream.activeExecutionId !== input.execution.executionId ||
     input.execution.state !== ReviewExecutionState.Running ||
     input.stream.currentRevision === null ||
@@ -1327,12 +1339,6 @@ export function decideWorkSlotTerminalization(input: {
   ) {
     return {
       status: WorkSlotTerminalizationDecisionStatus.NotEligible,
-    } as const;
-  }
-  if (slot.state === input.terminalState) {
-    return {
-      status: WorkSlotTerminalizationDecisionStatus.Restored,
-      execution: input.execution,
     } as const;
   }
   if (
@@ -1361,7 +1367,15 @@ export function decideExpiredRunningExecutionFailure(input: {
 }): ExecutionLifecycleDecision {
   assertDate(input.now, "execution_expiry_now");
   if (input.execution.state === ReviewExecutionState.Failed) {
-    return unchangedLifecycle(ExecutionLifecycleDecisionStatus.Restored, input);
+    return {
+      status: ExecutionLifecycleDecisionStatus.Restored,
+      stream: input.stream,
+      execution: input.execution,
+      revokedLeases: revokeActiveLeases(
+        input.activeLeases,
+        input.execution.executionId,
+      ),
+    };
   }
   if (
     input.execution.state !== ReviewExecutionState.Running ||
