@@ -29,9 +29,11 @@ run/attempt, SHA, actor, workflow path/ref, event, organization, and repository
 before it creates a JIT runner.
 
 The GitHub App installation must be limited to the single control repository.
-Its token request is exactly `administration:write`, `actions:read`, and
-`metadata:read`. The runner group ID is configuration, never a default. Store
-the App private key as a root-owned `0600` secret file under `/run/secrets`; the
+Its token request is scoped to that exact repository and exactly
+`organization_self_hosted_runners:write`, `actions:read`, and `metadata:read`;
+repository-level `administration` is not requested for this organization JIT
+runner flow. The runner group ID is configuration, never a default. Store the
+App private key as a root-owned `0600` secret file under `/run/secrets`; the
 environment variable form is rejected. The credential process unlinks the
 file, mints the installation token and JIT configuration, deletes credential
 environment entries, then uses `execve` to replace its address space with the

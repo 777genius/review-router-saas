@@ -117,4 +117,14 @@ describe("private-network PG17 workflow security contract", () => {
       launcher.indexOf("process.stdout.write"),
     );
   });
+
+  it("mints the control-repository token with only the org runner permissions required by JIT bootstrap", () => {
+    expect(bootstrap).toContain(
+      'repositories: [String(context.repository).split("/")[1]]',
+    );
+    expect(bootstrap).toContain('organization_self_hosted_runners: "write"');
+    expect(bootstrap).toContain('actions: "read"');
+    expect(bootstrap).toContain('metadata: "read"');
+    expect(bootstrap).not.toMatch(/\badministration\s*:/u);
+  });
 });

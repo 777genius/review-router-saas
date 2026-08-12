@@ -46,7 +46,11 @@ const response = await app.octokit.request(
       required("REVIEW_ROUTER_RUNNER_GITHUB_APP_INSTALLATION_ID"),
     ),
     repositories: [String(context.repository).split("/")[1]],
-    permissions: { administration: "write", actions: "read", metadata: "read" },
+    permissions: {
+      organization_self_hosted_runners: "write",
+      actions: "read",
+      metadata: "read",
+    },
   },
 );
 const jitConfig = await requestJitConfiguration(context, response.data.token);
