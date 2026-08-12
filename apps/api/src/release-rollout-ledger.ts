@@ -224,7 +224,7 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
       fencedAt: Date;
     },
   ): Promise<TargetSwitchFence | null> {
-    await this.prisma.releaseRolloutLedger.updateMany({
+    const changed = await this.prisma.releaseRolloutLedger.updateMany({
       where: {
         rolloutId: input.rolloutId,
         expectedCommitSha: input.expectedCommitSha,
@@ -242,6 +242,7 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
         targetSwitchFencedAt: input.fencedAt,
       },
     });
+    if (changed.count !== 1) return null;
     const value = await this.prisma.releaseRolloutLedger.findFirst({
       where: {
         rolloutId: input.rolloutId,
@@ -252,7 +253,7 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
         targetSystemIdentifier: input.targetSystemIdentifier,
         lastReceiptSha256: input.previousReceiptSha256,
         activationBoundary: "before",
-        targetSwitchNonce: { not: null },
+        targetSwitchNonce: input.nonce,
       },
     });
     if (!value?.targetSwitchNonce || !value.targetSwitchFencedAt) return null;

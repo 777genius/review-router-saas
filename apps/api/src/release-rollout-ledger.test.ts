@@ -22,6 +22,7 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
   private receipt = `sha256:${"0".repeat(64)}`;
   private state: "before" | "uncertain" | "activated" = "before";
   private fenceValue: ActivationFence | undefined;
+  private targetSwitchFenced = false;
   private readonly intents = new Map<string, Record<string, unknown>>();
   providerWitness: Record<string, unknown> | undefined;
 
@@ -49,6 +50,8 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
   async fenceTargetSwitch(
     input: Parameters<ReleaseRolloutLedgerRepository["fenceTargetSwitch"]>[0],
   ) {
+    if (this.targetSwitchFenced) return null;
+    this.targetSwitchFenced = true;
     return {
       schemaVersion: 1 as const,
       ...binding,
@@ -183,6 +186,19 @@ describe("release rollout ledger internal API", () => {
     );
     expect(results.filter(Boolean)).toHaveLength(1);
     expect(await service.state(binding)).toBe("uncertain");
+  });
+
+  it("allows exactly one target-switch lease under adversarial concurrency", async () => {
+    const service = new ReleaseRolloutLedgerService(new ConcurrentRepository());
+    const results = await Promise.all(
+      Array.from({ length: 64 }, () =>
+        service.fenceTargetSwitch({
+          ...binding,
+          previousReceiptSha256: `sha256:${"0".repeat(64)}`,
+        }),
+      ),
+    );
+    expect(results.filter(Boolean)).toHaveLength(1);
   });
 
   it("returns existing only for the exact provisioning idempotency identity", async () => {
