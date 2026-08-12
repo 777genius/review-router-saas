@@ -53,6 +53,18 @@ const cutoverCleanupWitness = await ledger.observe(
   body.runners[1].renderJobId,
   body.runners[1].cleanupCanary,
 );
+const cutoverCleanupObservation: StepObservation = {
+  step: RolloutStep.CleanupCutoverRunner,
+  observedAt: cutoverCleanupWitness.observedAt,
+  facts: {
+    providerStatus: cutoverCleanupWitness.providerStatus,
+    listenerStopped: cutoverCleanupWitness.listenerStopped,
+    workspaceRemoved: cutoverCleanupWitness.workspaceRemoved,
+    credentialProcessGone: cutoverCleanupWitness.credentialProcessGone,
+    canary: cutoverCleanupWitness.canary,
+  },
+  provider: { renderJobId: body.runners[1].renderJobId },
+};
 let rollout = body.rollout;
 const preflightReceipt = rollout.receipts.find(
   (receipt) => receipt.step === RolloutStep.VerifyProtectedEnvironment,
