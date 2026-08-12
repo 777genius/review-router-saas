@@ -280,6 +280,8 @@ describe("canonical exclusive release migration caller", () => {
       "DROP SCHEMA IF EXISTS reviewrouter_bootstrap",
     );
     expect(provisioning).toContain("SECURITY DEFINER");
+    expect(provisioning).toContain("pg_catalog.sha256(convert_to(");
+    expect(provisioning).not.toContain("public.digest(");
     expect(provisioning).toContain(
       "reviewrouter_bootstrap.consume_migration_evidence",
     );
@@ -288,6 +290,7 @@ describe("canonical exclusive release migration caller", () => {
       "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
     );
     expect(grants).not.toContain("GRANT reviewrouter_release_migration");
+    expect(grants).not.toContain("GRANT EXECUTE ON FUNCTION public.digest");
     expect(grants).toContain("runtime CONNECT state mismatch for %");
     expect(grants).toContain("PUBLIC retained database CONNECT");
     expect(grants).toContain(

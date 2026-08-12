@@ -974,7 +974,7 @@ BEGIN
      OR EXISTS (SELECT 1 FROM pg_namespace WHERE nspname=ANY(ARRAY[${applicationSchemaLiterals}]) AND has_schema_privilege('public',oid,'CREATE')) THEN
     RAISE EXCEPTION 'canonical runtime role/ownership/PUBLIC matrix invalid';
   END IF;
-  SELECT 'sha256:' || encode(public.digest(convert_to(jsonb_build_object(
+  SELECT 'sha256:' || encode(pg_catalog.sha256(convert_to(jsonb_build_object(
     'roles', (SELECT jsonb_agg(jsonb_build_object('role',rolname,'inherit',rolinherit,'connect',has_database_privilege(rolname,current_database(),'CONNECT'),'bypassRls',rolbypassrls) ORDER BY rolname) FROM pg_roles WHERE rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])),
     'effectiveMemberships', (SELECT coalesce(jsonb_agg(jsonb_build_object('member',runtime.rolname,'role',parent.rolname,'effectiveMember',pg_has_role(runtime.oid,parent.oid,'MEMBER'),'effectiveUsage',pg_has_role(runtime.oid,parent.oid,'USAGE')) ORDER BY runtime.rolname,parent.rolname),'[]'::jsonb) FROM pg_roles runtime CROSS JOIN pg_roles parent WHERE runtime.rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority']) AND (pg_has_role(runtime.oid,parent.oid,'MEMBER') OR pg_has_role(runtime.oid,parent.oid,'USAGE'))),
     'membershipEdges', (SELECT coalesce(jsonb_agg(jsonb_build_object('member',member.rolname,'role',parent.rolname,'admin',membership.admin_option,'inherit',membership.inherit_option,'set',membership.set_option) ORDER BY member.rolname,parent.rolname),'[]'::jsonb) FROM pg_auth_members membership JOIN pg_roles member ON member.oid=membership.member JOIN pg_roles parent ON parent.oid=membership.roleid),
@@ -984,14 +984,14 @@ BEGIN
     'routines', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'name',procedure.proname,'identityArguments',pg_get_function_identity_arguments(procedure.oid),'kind',procedure.prokind,'owner',pg_get_userbyid(procedure.proowner),'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(coalesce(procedure.proacl,acldefault('f',procedure.proowner))) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY namespace.nspname,procedure.proname,pg_get_function_identity_arguments(procedure.oid)),'[]'::jsonb) FROM pg_proc procedure JOIN pg_namespace namespace ON namespace.oid=procedure.pronamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}])),
     'policies', (SELECT coalesce(jsonb_agg(jsonb_build_object('schema',namespace.nspname,'table',relation.relname,'name',policy.polname,'command',policy.polcmd,'permissive',policy.polpermissive,'roles',(SELECT jsonb_agg(coalesce(role.rolname,'PUBLIC') ORDER BY coalesce(role.rolname,'PUBLIC')) FROM unnest(policy.polroles) role_id LEFT JOIN pg_roles role ON role.oid=role_id),'using',pg_get_expr(policy.polqual,policy.polrelid),'check',pg_get_expr(policy.polwithcheck,policy.polrelid)) ORDER BY namespace.nspname,relation.relname,policy.polname),'[]'::jsonb) FROM pg_policy policy JOIN pg_class relation ON relation.oid=policy.polrelid JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace WHERE namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}])),
     'defaultPrivileges', (SELECT coalesce(jsonb_agg(jsonb_build_object('owner',pg_get_userbyid(defaults.defaclrole),'schema',coalesce(namespace.nspname,'*'),'type',defaults.defaclobjtype,'acl',(SELECT coalesce(jsonb_agg(jsonb_build_object('grantee',coalesce(grantee.rolname,'PUBLIC'),'privilege',expanded.privilege_type,'grantable',expanded.is_grantable) ORDER BY coalesce(grantee.rolname,'PUBLIC'),expanded.privilege_type),'[]'::jsonb) FROM aclexplode(defaults.defaclacl) expanded LEFT JOIN pg_roles grantee ON grantee.oid=expanded.grantee)) ORDER BY pg_get_userbyid(defaults.defaclrole),coalesce(namespace.nspname,'*'),defaults.defaclobjtype),'[]'::jsonb) FROM pg_default_acl defaults LEFT JOIN pg_namespace namespace ON namespace.oid=defaults.defaclnamespace WHERE defaults.defaclnamespace=0 OR namespace.nspname=ANY(ARRAY[${applicationSchemaLiterals}]))
-  )::text,'UTF8'),'sha256'),'hex') INTO catalog_facts_sha256;
+  )::text,'UTF8')),'hex') INTO catalog_facts_sha256;
   SELECT * INTO observed
   FROM reviewrouter_bootstrap.release_generation_activation_receipt
   WHERE rollout_id = requested_rollout_id;
   IF FOUND THEN
     RAISE EXCEPTION 'duplicate activation receipt rejected';
   ELSE
-    first_write_receipt_sha256 := 'sha256:' || encode(public.digest(convert_to(requested_rollout_id || ':' || requested_expected_commit_sha || ':' || requested_run_id || ':' || requested_job_id || ':' || requested_run_attempt::text || ':' || requested_source_system_identifier || ':' || requested_target_system_identifier || ':' || requested_previous_receipt_sha256 || ':' || requested_fence_nonce || ':' || requested_fence_version::text || ':' || requested_claim_version::text || ':' || requested_target_deploy_ids::text || ':' || requested_canonical_privileges_sha256 || ':' || catalog_facts_sha256,'UTF8'),'sha256'),'hex');
+    first_write_receipt_sha256 := 'sha256:' || encode(pg_catalog.sha256(convert_to(requested_rollout_id || ':' || requested_expected_commit_sha || ':' || requested_run_id || ':' || requested_job_id || ':' || requested_run_attempt::text || ':' || requested_source_system_identifier || ':' || requested_target_system_identifier || ':' || requested_previous_receipt_sha256 || ':' || requested_fence_nonce || ':' || requested_fence_version::text || ':' || requested_claim_version::text || ':' || requested_target_deploy_ids::text || ':' || requested_canonical_privileges_sha256 || ':' || catalog_facts_sha256,'UTF8')),'hex');
     INSERT INTO reviewrouter_bootstrap.release_generation_activation_receipt (
       rollout_id, expected_commit_sha, run_id, job_id, run_attempt,
       source_system_identifier, target_system_identifier,
@@ -1408,7 +1408,6 @@ REVOKE CREATE ON SCHEMA public FROM reviewrouter_codex_effect_authority;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_codex_effect_authority;
 GRANT EXECUTE ON FUNCTION public."codex_oauth_sign_database_authority"(text) TO reviewrouter_codex_effect_authority;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.digest(bytea, text) TO reviewrouter_role_bootstrap;
 `;
 }
 
