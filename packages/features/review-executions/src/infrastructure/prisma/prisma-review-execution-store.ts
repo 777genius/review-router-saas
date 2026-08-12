@@ -104,9 +104,12 @@ import {
   databaseRelativeDate,
   isTransactionConflictError,
 } from "./prisma-review-execution-utils";
-import { captureReviewProgress } from "./prisma-review-progress-projection";
-
 type Transaction = Prisma.TransactionClient;
+
+export type ReviewExecutionProgressCapturePort = (
+  transaction: Transaction,
+  execution: ReviewExecution,
+) => Promise<void>;
 
 export class PrismaReviewExecutionStore
   implements
@@ -140,8 +143,7 @@ export class PrismaReviewExecutionStore
   constructor(
     private readonly prisma: PrismaClient,
     private readonly options: Readonly<{
-      progressCaptureEnabled?: boolean;
-      progressFileCoverageEnabled?: boolean;
+      progressCapture?: ReviewExecutionProgressCapturePort;
     }> = {},
   ) {}
 
@@ -149,10 +151,7 @@ export class PrismaReviewExecutionStore
     transaction: Transaction,
     execution: ReviewExecution,
   ): Promise<void> {
-    if (this.options.progressCaptureEnabled !== true) return;
-    await captureReviewProgress(transaction, execution, {
-      fileCoverageEnabled: this.options.progressFileCoverageEnabled === true,
-    });
+    await this.options.progressCapture?.(transaction, execution);
   }
 
   async findStream(
@@ -676,8 +675,7 @@ export class PrismaReviewExecutionStore
                   expiry.lease,
                   incumbentExecution,
                   expiry.execution,
-                  this.options.progressCaptureEnabled === true,
-                  this.options.progressFileCoverageEnabled === true,
+                  this.options.progressCapture,
                 );
                 snapshot = await loadSnapshot(transaction, command.executionId);
                 if (snapshot === null) {
@@ -1223,8 +1221,7 @@ export class PrismaReviewExecutionStore
             decision.lease,
             execution,
             decision.execution,
-            this.options.progressCaptureEnabled === true,
-            this.options.progressFileCoverageEnabled === true,
+            this.options.progressCapture,
           );
           if (decision.status === LeaseTransitionDecisionStatus.Expired) {
             return { status: ReviewInvocationLeaseTransitionStatus.Expired };
@@ -1741,8 +1738,7 @@ async function persistLeaseTransition(
   nextLease: ReviewInvocationLease,
   currentExecution: ReviewExecution | null,
   nextExecution: ReviewExecution | null,
-  captureProgressEnabled: boolean,
-  fileCoverageEnabled: boolean,
+  progressCapture: ReviewExecutionProgressCapturePort | undefined,
 ): Promise<void> {
   const updated = await transaction.reviewInvocationLeaseV2.updateMany({
     where: {
@@ -1767,11 +1763,7 @@ async function persistLeaseTransition(
     nextExecution.version !== currentExecution.version
   ) {
     await persistExecutionUpdate(transaction, currentExecution, nextExecution);
-    if (captureProgressEnabled) {
-      await captureReviewProgress(transaction, nextExecution, {
-        fileCoverageEnabled,
-      });
-    }
+    await progressCapture?.(transaction, nextExecution);
   }
 }
 

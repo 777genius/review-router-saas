@@ -91,6 +91,7 @@ import {
   PrismaReviewRequestedIntentStore,
   createReviewExecutionsUseCases,
 } from "@reviewrouter/features-review-executions/composition";
+import { createPrismaReviewProgressCapture } from "@reviewrouter/features-review-progress/composition";
 import {
   GitHubReviewPublicationLifecycleAdapter,
   HmacReviewCommandLedgerVerifier,
@@ -504,12 +505,17 @@ export function composeReviewActionV2ProductionRoutes(input: {
       ),
   } as const;
 
-  const executionStore = new PrismaReviewExecutionStore(input.prisma, {
-    progressCaptureEnabled:
-      input.env.REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE === "1",
-    progressFileCoverageEnabled:
-      input.env.REVIEW_ROUTER_PROGRESS_FILE_COVERAGE === "1",
-  });
+  const executionStore = new PrismaReviewExecutionStore(
+    input.prisma,
+    input.env.REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE === "1"
+      ? {
+          progressCapture: createPrismaReviewProgressCapture({
+            fileCoverageEnabled:
+              input.env.REVIEW_ROUTER_PROGRESS_FILE_COVERAGE === "1",
+          }),
+        }
+      : {},
+  );
   const currentRevision = new ProductionCurrentReviewRevisionAdapter({
     prisma: input.prisma,
     identities: repositories.repositoryIdentities,

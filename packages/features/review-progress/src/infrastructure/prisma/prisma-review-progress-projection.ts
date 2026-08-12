@@ -8,13 +8,13 @@ import {
   type ProgressTerminal,
   type ReviewAssignmentManifest as ProgressAssignmentManifest,
   type ReviewSlotProgressInput,
-} from "@reviewrouter/features-review-progress";
+} from "../../domain/review-progress";
 import {
   canonicalObjectJson,
   validateReviewAssignmentManifest,
   type ReviewAssignmentManifest,
   type ReviewExecution,
-} from "../../domain/review-execution";
+} from "@reviewrouter/features-review-executions";
 
 type Transaction = Prisma.TransactionClient;
 

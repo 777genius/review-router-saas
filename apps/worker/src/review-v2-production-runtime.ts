@@ -32,6 +32,7 @@ import {
   PrismaReviewExecutionStore,
   PrismaReviewRequestedIntentStore,
 } from "@reviewrouter/features-review-executions/composition";
+import { createPrismaReviewProgressCapture } from "@reviewrouter/features-review-progress/composition";
 import {
   ReviewCompletionSchedulerMode,
   PrismaReviewCompletionProcessRepository,
@@ -197,12 +198,17 @@ export function createProductionReviewV2WorkerRuntime(input: {
   readonly githubPrivateKey: string;
 }): ProductionReviewV2WorkerRuntime {
   const capabilityKeyRing = readCapabilityKeyRing(input.env);
-  const executions = new PrismaReviewExecutionStore(input.prisma, {
-    progressCaptureEnabled:
-      input.env.REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE === "1",
-    progressFileCoverageEnabled:
-      input.env.REVIEW_ROUTER_PROGRESS_FILE_COVERAGE === "1",
-  });
+  const executions = new PrismaReviewExecutionStore(
+    input.prisma,
+    input.env.REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE === "1"
+      ? {
+          progressCapture: createPrismaReviewProgressCapture({
+            fileCoverageEnabled:
+              input.env.REVIEW_ROUTER_PROGRESS_FILE_COVERAGE === "1",
+          }),
+        }
+      : {},
+  );
   const executionRecovery = new RecoverExpiredReviewExecutions(
     executions,
     executions,

@@ -32,8 +32,7 @@
     "test": "vitest run --root ../../.. packages/features/review-executions/src/tests"
   },
   "dependencies": {
-    "@prisma/client": "7.8.0",
-    "@reviewrouter/features-review-progress": "workspace:*"
+    "@prisma/client": "7.8.0"
   },
   "devDependencies": {
     "@reviewrouter/platform-db": "workspace:*"

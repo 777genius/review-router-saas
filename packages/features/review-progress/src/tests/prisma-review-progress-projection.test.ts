@@ -6,7 +6,7 @@ import {
   ReviewTaskKind,
   ReviewWorkSlotState,
   type ReviewExecution,
-} from "../domain/review-execution";
+} from "@reviewrouter/features-review-executions";
 import { captureReviewProgress } from "../infrastructure/prisma/prisma-review-progress-projection";
 
 describe("Prisma review progress projection", () => {
