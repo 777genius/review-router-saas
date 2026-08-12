@@ -167,7 +167,7 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap",
     );
-    expect(provisioning).toContain(
+    expect(provisioning).not.toContain(
       "DROP SCHEMA IF EXISTS reviewrouter_bootstrap",
     );
     expect(provisioning).toContain("SECURITY DEFINER");

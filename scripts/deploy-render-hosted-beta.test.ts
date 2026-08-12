@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -205,30 +211,17 @@ describe("Render hosted deploy hardening", () => {
     expect(guidance).toContain("operations/02-runbooks.md");
   });
 
-  it("composes legacy entry points through the immutable private-network rollout", () => {
-    const migration = readFileSync(
+  it("removes legacy entry points and retains one immutable private-network rollout", () => {
+    for (const path of [
       ".github/workflows/codex-rotating-release-migration.yml",
-      "utf8",
-    );
-    const rollout = readFileSync(
       ".github/workflows/codex-rotating-rollout-evidence.yml",
-      "utf8",
-    );
-    const bootstrap = readFileSync(
       ".github/workflows/codex-rotating-role-bootstrap.yml",
-      "utf8",
-    );
+    ])
+      expect(existsSync(path)).toBe(false);
     const privateRollout = readFileSync(
       ".github/workflows/private-network-pg17-rollout.yml",
       "utf8",
     );
-    for (const alias of [migration, bootstrap, rollout]) {
-      expect(alias).toContain(
-        "uses: ./.github/workflows/private-network-pg17-rollout.yml",
-      );
-      expect(alias).not.toContain("DATABASE_URL");
-      expect(alias).not.toContain("runs-on: ubuntu");
-    }
     expect(privateRollout).toContain("group: private-network-pg17-production");
     expect(privateRollout).toContain(
       "scripts/run-private-pg17-copy-bootstrap.ts",
@@ -237,7 +230,7 @@ describe("Render hosted deploy hardening", () => {
     expect(privateRollout).toContain("environment: production-role-bootstrap");
     expect(privateRollout).toContain("runs-on:");
     expect(privateRollout).toContain("self-hosted");
-    expect(`${migration}\n${bootstrap}\n${rollout}`).not.toMatch(
+    expect(privateRollout).not.toMatch(
       /actions\/(?:checkout|upload-artifact)@v\d/u,
     );
   });

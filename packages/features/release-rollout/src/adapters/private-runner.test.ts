@@ -296,7 +296,11 @@ function jitFetch(
       runner: { name: jit.runnerName, status: "offline", busy: false },
     },
   ];
-  return vi.fn(async () => json(responses.shift()));
+  return vi.fn(async (input: string, init?: RequestInit) => {
+    void input;
+    void init;
+    return json(responses.shift());
+  });
 }
 
 describe("organization-scoped JIT isolation", () => {
