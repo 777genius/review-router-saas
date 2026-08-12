@@ -11,11 +11,27 @@ const migration = readFileSync(
   ),
   "utf8",
 );
+const validationMigration = readFileSync(
+  fileURLToPath(
+    new URL(
+      "../../../../platform/db/prisma/migrations/000068_validate_review_assignment_manifest/migration.sql",
+      import.meta.url,
+    ),
+  ),
+  "utf8",
+);
 
 describe("review live progress migration", () => {
-  it("adds the existing-table manifest check as not valid before validation", () => {
+  it("adds the existing-table manifest check as not valid", () => {
     expect(migration).toMatch(
-      /ADD CONSTRAINT "ReviewExecutionV2_assignment_manifest_all_or_none"[\s\S]*?NOT VALID;[\s\S]*?VALIDATE CONSTRAINT "ReviewExecutionV2_assignment_manifest_all_or_none";/u,
+      /ADD CONSTRAINT "ReviewExecutionV2_assignment_manifest_all_or_none"[\s\S]*?NOT VALID;/u,
+    );
+    expect(migration).not.toContain("VALIDATE CONSTRAINT");
+  });
+
+  it("validates the existing-table manifest check in a later migration", () => {
+    expect(validationMigration.trim()).toBe(
+      'ALTER TABLE "ReviewExecutionV2"\n  VALIDATE CONSTRAINT "ReviewExecutionV2_assignment_manifest_all_or_none";',
     );
   });
 
