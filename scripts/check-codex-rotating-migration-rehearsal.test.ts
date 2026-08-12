@@ -261,6 +261,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       provisioning.indexOf('"external_activation_authority_provisioning"'),
     );
     expect(provisioning).toContain(
+      "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+    );
+    expect(provisioning).toContain(
       "CREATE ROLE reviewrouter_activation_permit_installer LOGIN",
     );
     expect(provisioning).toContain('CREATE TABLE public."_prisma_migrations"');
