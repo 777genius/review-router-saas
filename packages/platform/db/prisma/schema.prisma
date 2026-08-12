@@ -2894,3 +2894,85 @@ enum ReviewExecutionCheckpointState {
   active
   finalized
 }
+
+model ReleaseRolloutLedger {
+  rolloutId                      String   @id @map("rollout_id")
+  expectedCommitSha              String   @map("expected_commit_sha")
+  runId                          String   @map("run_id")
+  runAttempt                     Int      @map("run_attempt")
+  sourceSystemIdentifier         String   @map("source_system_identifier")
+  targetSystemIdentifier         String   @map("target_system_identifier")
+  authoritativeSystemIdentifier  String   @map("authoritative_system_identifier")
+  activationBoundary             String   @map("activation_boundary")
+  sourcePermanentlyIneligible    Boolean  @default(false) @map("source_permanently_ineligible")
+  lastReceiptSha256               String   @map("last_receipt_sha256")
+  claimVersion                    Int      @default(1) @map("claim_version")
+  activationFenceNonce           String?  @map("activation_fence_nonce")
+  activationFenceVersion         Int      @default(0) @map("activation_fence_version")
+  activationJobId                String?  @map("activation_job_id")
+  activationTargetDeployIds       Json?    @map("activation_target_deploy_ids")
+  activationFencedAt             DateTime? @map("activation_fenced_at") @db.Timestamptz(3)
+  activationReceipt              Json?    @map("activation_receipt")
+  claimedAt                      DateTime @default(now()) @map("claimed_at") @db.Timestamptz(3)
+  updatedAt                      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  receipts ReleaseRolloutReceipt[]
+  intents  ReleaseRunnerProvisioningIntent[]
+  jobs     ReleaseRunnerJob[]
+
+  @@map("release_rollout_ledger")
+}
+
+model ReleaseRolloutReceipt {
+  receiptSha256          String   @id @map("receipt_sha256")
+  rolloutId              String   @map("rollout_id")
+  step                   String
+  providerBinding        Json?    @map("provider_binding")
+  previousReceiptSha256  String   @map("previous_receipt_sha256")
+  activationBoundary     String   @map("activation_boundary")
+  recordedAt             DateTime @default(now()) @map("recorded_at") @db.Timestamptz(3)
+  rollout                ReleaseRolloutLedger @relation(fields: [rolloutId], references: [rolloutId], onDelete: Restrict)
+
+  @@unique([rolloutId, step])
+  @@map("release_rollout_receipt_ledger")
+}
+
+model ReleaseRunnerProvisioningIntent {
+  intentId                  String   @id @map("intent_id")
+  rolloutId                 String   @map("rollout_id")
+  serviceId                 String   @map("service_id")
+  lifecycle                 String
+  workflowJobId             String   @map("workflow_job_id")
+  runnerName                String   @map("runner_name")
+  createdAt                 DateTime @map("created_at") @db.Timestamptz(3)
+  providerJobId             String?  @map("provider_job_id")
+  outcome                   String?
+  reconciliationObservation Json?    @map("reconciliation_observation")
+  reconciledAt              DateTime? @map("reconciled_at") @db.Timestamptz(3)
+  registration              Json?
+  rollout                   ReleaseRolloutLedger @relation(fields: [rolloutId], references: [rolloutId], onDelete: Restrict)
+  jobs                      ReleaseRunnerJob[]
+
+  @@unique([rolloutId, lifecycle])
+  @@map("release_runner_provisioning_intent")
+}
+
+model ReleaseRunnerJob {
+  jobId                  String   @id @map("job_id")
+  rolloutId              String   @map("rollout_id")
+  provisioningIntentId   String   @map("provisioning_intent_id")
+  serviceId              String   @map("service_id")
+  observedAt             DateTime @map("observed_at") @db.Timestamptz(3)
+  cleanupCanary          String   @map("cleanup_canary")
+  lifecycle              String
+  terminalAt             DateTime? @map("terminal_at") @db.Timestamptz(3)
+  cleanupObservation     Json?    @map("cleanup_observation")
+  cleanupProviderWitness Json?    @map("cleanup_provider_witness")
+  runnerIdentity         Json?    @map("runner_identity")
+  provisionObservation   Json?    @map("provision_observation")
+  rollout                ReleaseRolloutLedger @relation(fields: [rolloutId], references: [rolloutId], onDelete: Restrict)
+  intent                 ReleaseRunnerProvisioningIntent @relation(fields: [provisioningIntentId], references: [intentId], onDelete: Restrict)
+
+  @@unique([rolloutId, lifecycle])
+  @@map("release_runner_job_ledger")
+}

@@ -156,6 +156,9 @@ importers:
       '@octokit/request':
         specifier: ^10.0.9
         version: 10.0.9
+      '@prisma/client':
+        specifier: ^7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
       '@reviewrouter/features-action-control-plane':
         specifier: workspace:*
         version: link:../../packages/features/action-control-plane
@@ -192,6 +195,9 @@ importers:
       '@reviewrouter/features-rate-limits':
         specifier: workspace:*
         version: link:../../packages/features/rate-limits
+      '@reviewrouter/features-release-rollout':
+        specifier: workspace:*
+        version: link:../../packages/features/release-rollout
       '@reviewrouter/features-review-config':
         specifier: workspace:*
         version: link:../../packages/features/review-config

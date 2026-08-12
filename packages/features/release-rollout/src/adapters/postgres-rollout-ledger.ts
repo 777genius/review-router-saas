@@ -101,10 +101,11 @@ export class PostgreSqlRolloutLedgerAdapter
     sourceSystemIdentifier: string;
     targetSystemIdentifier: string;
     previousReceiptSha256: string;
+    targetDeployIds: readonly string[];
   }): Promise<ActivationFence | null> {
     const nonce = randomBytes(16).toString("hex");
     const value = this.sql(
-      `UPDATE reviewrouter_bootstrap.release_rollout_ledger SET authoritative_system_identifier=target_system_identifier, activation_boundary='uncertain', source_permanently_ineligible=true, activation_fence_nonce=${literal(nonce)}, activation_fence_version=activation_fence_version+1, activation_job_id=${literal(input.jobId)}, activation_fenced_at=clock_timestamp() WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} AND last_receipt_sha256=${literal(input.previousReceiptSha256)} AND activation_boundary='before' AND activation_fence_nonce IS NULL RETURNING json_build_object('schemaVersion',1,'rolloutId',rollout_id,'expectedCommitSha',expected_commit_sha,'runId',run_id,'jobId',activation_job_id,'runAttempt',run_attempt,'sourceSystemIdentifier',source_system_identifier,'targetSystemIdentifier',target_system_identifier,'previousReceiptSha256',last_receipt_sha256,'nonce',activation_fence_nonce,'version',activation_fence_version,'fencedAt',to_char(activation_fenced_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))::text`,
+      `UPDATE reviewrouter_bootstrap.release_rollout_ledger SET authoritative_system_identifier=target_system_identifier, activation_boundary='uncertain', source_permanently_ineligible=true, activation_fence_nonce=${literal(nonce)}, activation_fence_version=activation_fence_version+1, activation_job_id=${literal(input.jobId)}, activation_target_deploy_ids=${literal(JSON.stringify(input.targetDeployIds))}::jsonb, activation_fenced_at=clock_timestamp() WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} AND last_receipt_sha256=${literal(input.previousReceiptSha256)} AND activation_boundary='before' AND activation_fence_nonce IS NULL RETURNING json_build_object('schemaVersion',1,'rolloutId',rollout_id,'expectedCommitSha',expected_commit_sha,'runId',run_id,'jobId',activation_job_id,'runAttempt',run_attempt,'sourceSystemIdentifier',source_system_identifier,'targetSystemIdentifier',target_system_identifier,'previousReceiptSha256',last_receipt_sha256,'nonce',activation_fence_nonce,'version',activation_fence_version,'claimVersion',claim_version,'targetDeployIds',activation_target_deploy_ids,'fencedAt',to_char(activation_fenced_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))::text`,
     );
     return value ? (JSON.parse(value) as ActivationFence) : null;
   }
@@ -130,6 +131,22 @@ export class PostgreSqlRolloutLedgerAdapter
     if (!["before", "uncertain", "activated"].includes(result))
       throw new Error("activation_state_binding_mismatch");
     return result as "before" | "uncertain" | "activated";
+  }
+  async verifyFinalAuthority(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    expectedReceiptSha256: string;
+    activationReceipt: ActivationReceipt;
+  }): Promise<boolean> {
+    return (
+      this.sql(
+        `SELECT rollout_id FROM reviewrouter_bootstrap.release_rollout_ledger WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} AND activation_boundary='activated' AND source_permanently_ineligible=true AND authoritative_system_identifier=target_system_identifier AND last_receipt_sha256=${literal(input.expectedReceiptSha256)} AND activation_receipt=${literal(JSON.stringify(input.activationReceipt))}::jsonb`,
+      ) === input.rolloutId
+    );
   }
   async persistCreatedJob(value: PersistedRunnerJob): Promise<void> {
     const result = this.sql(

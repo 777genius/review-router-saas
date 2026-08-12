@@ -185,6 +185,9 @@ export class ReleaseRolloutUseCases {
   async activateTargetGeneration(r: ReleaseRollout, jobId: string) {
     const previousReceiptSha256 =
       r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
+    const targetDeployIds = r.receipts.at(-1)?.provider?.renderDeployIds;
+    if (!targetDeployIds?.length)
+      throw new Error("activation_target_deploy_binding_missing");
     let fenced = false;
     try {
       const fence = await this.ports.ledger.fenceActivation({
@@ -196,6 +199,7 @@ export class ReleaseRolloutUseCases {
         sourceSystemIdentifier: r.source.systemIdentifier,
         targetSystemIdentifier: r.target.systemIdentifier,
         previousReceiptSha256,
+        targetDeployIds,
       });
       if (!fence) throw new Error("activation_fence_cas_failed");
       fenced = true;
@@ -268,6 +272,20 @@ export class ReleaseRolloutUseCases {
     );
   }
   async verifyTrustedRollout(r: ReleaseRollout) {
+    if (
+      !r.activationReceipt ||
+      !(await this.ports.ledger.verifyFinalAuthority({
+        rolloutId: r.rolloutId,
+        expectedCommitSha: r.expectedCommitSha,
+        runId: r.execution.runId,
+        runAttempt: r.execution.runAttempt,
+        sourceSystemIdentifier: r.source.systemIdentifier,
+        targetSystemIdentifier: r.target.systemIdentifier,
+        expectedReceiptSha256: r.receipts.at(-1)!.receiptSha256,
+        activationReceipt: r.activationReceipt,
+      }))
+    )
+      throw new Error("trusted_rollout_authoritative_ledger_mismatch");
     return await this.accept(
       r,
       await this.ports.evidence.assembleAndVerify(r),
@@ -306,5 +324,31 @@ export class ReleaseRolloutUseCases {
     await this.ports.database.compensateSource(r.source);
     await this.ports.provider.compensateAndObserve();
     return completeCompensation(compensating);
+  }
+}
+
+/** Application boundary for hosted controller commands that do not own the aggregate artifact. */
+export class PrivateRunnerControlUseCases<Provision, Cleanup> {
+  constructor(
+    private readonly runner: {
+      provision(input: Provision): Promise<unknown>;
+      cleanup(input: Cleanup): Promise<StepObservation>;
+      reconcileOrphans(
+        rolloutId: string,
+        apiKey: string,
+      ): Promise<readonly StepObservation[]>;
+    },
+  ) {}
+
+  async provision(input: Provision) {
+    return await this.runner.provision(input);
+  }
+
+  async cleanup(input: Cleanup) {
+    return await this.runner.cleanup(input);
+  }
+
+  async reconcile(rolloutId: string, apiKey: string) {
+    return await this.runner.reconcileOrphans(rolloutId, apiKey);
   }
 }

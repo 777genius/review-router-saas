@@ -313,6 +313,8 @@ const observe = (step: (typeof steps)[number], index: number) => {
           transactionId: "42",
           fenceNonce: "a".repeat(32),
           fenceVersion: 1,
+          claimVersion: 1,
+          targetDeployIds: ["dep-target"],
         },
       };
     case RolloutStep.ResumeTargetServices:

@@ -250,6 +250,8 @@ export interface ActivationReceipt extends StepReceipt {
   readonly firstWriteBoundary: true;
   readonly fenceNonce: string;
   readonly fenceVersion: number;
+  readonly claimVersion: number;
+  readonly targetDeployIds: readonly string[];
 }
 
 export interface ActivationFence {
@@ -264,6 +266,8 @@ export interface ActivationFence {
   readonly previousReceiptSha256: string;
   readonly nonce: string;
   readonly version: number;
+  readonly claimVersion: number;
+  readonly targetDeployIds: readonly string[];
   readonly fencedAt: string;
 }
 
@@ -837,7 +841,11 @@ export function transitionFromObservation(
       !/^[0-9]+$/u.test(String(facts.transactionId)) ||
       !/^[a-f0-9]{32}$/u.test(String(facts.fenceNonce)) ||
       !Number.isSafeInteger(facts.fenceVersion) ||
-      Number(facts.fenceVersion) < 1
+      Number(facts.fenceVersion) < 1 ||
+      !Number.isSafeInteger(facts.claimVersion) ||
+      Number(facts.claimVersion) < 1 ||
+      !Array.isArray(facts.targetDeployIds) ||
+      facts.targetDeployIds.length < 1
     )
       throw new Error("activation_observation_invalid");
     const activationBase = {
@@ -850,6 +858,10 @@ export function transitionFromObservation(
       firstWriteBoundary: true as const,
       fenceNonce: String(facts.fenceNonce),
       fenceVersion: Number(facts.fenceVersion),
+      claimVersion: Number(facts.claimVersion),
+      targetDeployIds: Object.freeze(
+        (facts.targetDeployIds as unknown[]).map(String),
+      ),
     };
     receipt = {
       ...activationBase,
@@ -1009,6 +1021,7 @@ export interface AuthoritativeGenerationLedger {
     sourceSystemIdentifier: string;
     targetSystemIdentifier: string;
     previousReceiptSha256: string;
+    targetDeployIds: readonly string[];
   }): Promise<ActivationFence | null>;
   finalizeActivation(input: {
     fence: ActivationFence;
@@ -1021,4 +1034,14 @@ export interface AuthoritativeGenerationLedger {
     sourceSystemIdentifier: string;
     targetSystemIdentifier: string;
   }): Promise<"before" | "uncertain" | "activated">;
+  verifyFinalAuthority(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    expectedReceiptSha256: string;
+    activationReceipt: ActivationReceipt;
+  }): Promise<boolean>;
 }

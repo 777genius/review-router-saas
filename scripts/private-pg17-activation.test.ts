@@ -34,6 +34,8 @@ const activationFence = {
   previousReceiptSha256: `sha256:${"b".repeat(64)}`,
   fenceNonce: "c".repeat(32),
   fenceVersion: 1,
+  claimVersion: 1,
+  targetDeployIds: ["dep-target"],
 };
 
 describe("transactional PG17 activation", () => {

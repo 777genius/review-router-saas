@@ -234,6 +234,7 @@ export class AuthenticatedRunnerLedgerAdapter
     sourceSystemIdentifier: string;
     targetSystemIdentifier: string;
     previousReceiptSha256: string;
+    targetDeployIds: readonly string[];
   }): Promise<ActivationFence | null> {
     const value = (await this.request(
       `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/activation-fence`,
@@ -251,6 +252,9 @@ export class AuthenticatedRunnerLedgerAdapter
       fence.sourceSystemIdentifier !== input.sourceSystemIdentifier ||
       fence.targetSystemIdentifier !== input.targetSystemIdentifier ||
       fence.previousReceiptSha256 !== input.previousReceiptSha256 ||
+      fence.claimVersion < 1 ||
+      JSON.stringify(fence.targetDeployIds) !==
+        JSON.stringify(input.targetDeployIds) ||
       !/^[a-f0-9]{32}$/u.test(fence.nonce) ||
       !Number.isSafeInteger(fence.version) ||
       fence.version < 1
@@ -283,6 +287,24 @@ export class AuthenticatedRunnerLedgerAdapter
     if (!["before", "uncertain", "activated"].includes(String(value.state)))
       throw new Error("runner_ledger_activation_state_invalid");
     return value.state as "before" | "uncertain" | "activated";
+  }
+  async verifyFinalAuthority(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    expectedReceiptSha256: string;
+    activationReceipt: ActivationReceipt;
+  }): Promise<boolean> {
+    const value = (await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/verify-final-authority`,
+      { method: "POST", body: JSON.stringify(input) },
+    )) as Record<string, unknown>;
+    if (typeof value.verified !== "boolean")
+      throw new Error("runner_ledger_final_authority_response_invalid");
+    return value.verified;
   }
   async reconcileRollout(rolloutId: string): Promise<{
     state:

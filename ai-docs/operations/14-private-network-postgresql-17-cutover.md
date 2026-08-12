@@ -14,11 +14,13 @@ The workflow may exist only in the organization-owned repository named by
 one positive `REVIEW_ROUTER_RUNNER_GROUP_ID` and its matching group name. The
 group must:
 
-- have `visibility=selected`, exactly the control repository, and no public
-  repositories;
+- have `visibility=selected`, exactly the private control repository, and no
+  public repositories;
 - have workflow restriction enabled with exactly
   `<org>/<control-repo>/.github/workflows/private-network-pg17-rollout.yml@refs/heads/main`;
-- be dedicated to this rollout; unique labels are not an isolation boundary.
+- be dedicated to this rollout. Each queued job requires the exact group and a
+  rollout/run-bound unique label; the JIT response and post-registration
+  re-read retain the returned positive runner ID, group ID, and exact labels.
 
 The protected `main` workflow is dispatch-only and rejects run attempts other
 than one. `production-release-preflight` must require at least one reviewer,
@@ -37,31 +39,34 @@ App private key as a root-owned `0600` secret file under `/run/secrets`; the
 environment variable form is rejected. The credential process unlinks the
 file, mints the installation token and JIT configuration, deletes credential
 environment entries, then uses `execve` to replace its address space with the
-unprivileged launcher. The launcher runs only `Runner.Listener run --jitconfig`,
-removes workspace/bootstrap paths, and emits its nonsecret cleanup canary only
-after the listener has stopped. The workflow process inherits neither App key
-nor installation token.
+unprivileged launcher. The launcher runs only `Runner.Listener run --jitconfig`
+in a unique work root. Its no-job timer is cancelled at assignment; the
+workflow timeout remains the job runtime ceiling. Cleanup terminates the
+listener process group, removes and enumerates the complete work root, and
+emits its nonsecret receipt only after absence is proven.
 
 The base image is digest pinned. The Actions runner version and SHA-256 are
 mandatory Docker build arguments and are checked before extraction. The
 dedicated Render runner service must have auto-deploy off and no active deploy.
-Its latest live deploy must match the configured immutable git commit or image
-SHA. Render one-off creation sends only `startCommand` and optional compute
+Its latest live deploy must match the configured attested image SHA. The image
+uses the repository pnpm lockfile/frozen install and a dated Debian snapshot.
+Render one-off creation sends only `startCommand` and optional compute
 `planId`; a deploy ID is never a plan ID.
 
 ## External authenticated ledger contract
 
 `REVIEW_ROUTER_RUNNER_LEDGER_URL` is mandatory. Its bearer credentials are
 scoped by protected environment and visible only to the exact step using them.
-The service must implement the endpoints consumed by
-`AuthenticatedRunnerLedgerAdapter` and transact the PostgreSQL tables created
-by `roleProvisioningSql`:
+The service implements the endpoints consumed by
+`AuthenticatedRunnerLedgerAdapter` over SaaS migration
+`000067_release_rollout_ledger`:
 
 - atomically claim a never-used rollout ID bound to commit, run, attempt, and
   both system identifiers;
 - CAS every hash-chained observation receipt;
-- persist a Render job ID immediately after job creation, before response or
-  provenance validation, then attach the validated runner identity;
+- persist a provisioning intent/idempotency identity before Render creation,
+  bind the returned provider job afterward, and retain a discoverable
+  reconciliation record if that binding write fails;
 - store launcher cleanup observation and provider terminal state, list open
   jobs, and make cleanup/reconciliation idempotent;
 - permanently set `source_permanently_ineligible` on activation or activation
@@ -71,14 +76,15 @@ by `roleProvisioningSql`:
   activated/uncertain state. It must never report PG16 eligible at or after the
   boundary.
 
-The ledger deployment must expose the adapter's exact authenticated `/v1`
-contract: `POST /rollouts/claim`, `POST /rollouts/{id}/cas`,
-`PUT /rollouts/{id}/activation-uncertain`, and
-`POST /rollouts/{id}/reconcile`, plus the `/runner-jobs` create, open-list,
-identity, terminal, cleanup-observation, cleanup-witness, and current-lifecycle
-routes. Activation-uncertain accepts the full commit/run/attempt/source/target
-binding and returns only `{ "marked": true }` after durably setting the
-forward-only boundary. Each successful CAS must atomically update
+The API registers the exact authenticated `/v1` contract only after the main
+database is migrated and two distinct SHA-256 credential hashes are set:
+`REVIEW_ROUTER_RUNNER_LEDGER_TOKEN_SHA256` for controller/runner calls and
+`REVIEW_ROUTER_RUNNER_WITNESS_TOKEN_SHA256` for independent provider-witness
+ingestion. Routes cover rollout claim/CAS, activation fence/finalize/state,
+uncertainty and reconciliation, plus runner intent/job/current, registration,
+identity, terminal, cleanup observation and cleanup witness. The fence
+atomically changes authority to target/uncertain before its nonce/version can
+enter target SQL. Each successful CAS must atomically update
 `release_rollout_ledger` and append the step/provider/hash-chain binding to
 `release_rollout_receipt_ledger`; an update without that append is a failure.
 
@@ -88,11 +94,13 @@ state.
 
 ## Split Render permissions and API facts
 
-Use three independent credentials:
+Use four independent credentials:
 
 - `RENDER_RUNNER_CONTROL_API_KEY`: one-off runner creation and terminal polling;
 - `RENDER_PROVENANCE_READ_API_KEY`: read-only service/deploy/recovery/env facts;
 - `RENDER_SERVICE_SUSPENSION_API_KEY`: source/target suspend and resume only.
+- `RENDER_TARGET_SWITCH_API_KEY`: complete target environment replacement and
+  immutable deploy creation/polling only.
 
 Adapters accept additive documented fields while requiring their security
 subset. Service/deploy/job/env list cursor wrappers, suspend/resume HTTP 202,
@@ -123,15 +131,17 @@ The source sequence is mandatory:
 2. revoke `CONNECT` from PUBLIC and runtime roles and commit it;
 3. terminate existing sessions;
 4. observe at least three bounded zero-session samples;
-5. run explicit reconnect probes as all four runtime roles and require every
-   probe to fail.
+5. prove every exact runtime credential connects to the expected source system
+   before revocation, then require the exact database CONNECT
+   permission-denied class from that same credential/system.
 
 `writersSuspended` is never synthesized. A definite failure before activation
 enters compensation: source ACL/environment is restored and source writers are
 resumed and re-observed. An accepted or uncertain activation permanently bans
 PG16 promotion and allows only PG17 forward repair/PITR.
 
-Equivalence streams each table through a hash with an 8 MiB process ceiling and
+Equivalence is restricted to `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, streams
+each table/materialized view through a hash with an 8 MiB process ceiling, and
 also binds sequence `last_value`/`is_called`/owner/dependency, columns/defaults,
 constraints/indexes/triggers, policies and RLS, functions/views/schemas,
 ACL/default privileges/ownership, and migration history. Activation rejects an
@@ -146,8 +156,9 @@ There are two independent runner leases: copy/role bootstrap and cutover. The
 second cannot queue until the first provider job and launcher cleanup witness
 are terminal. After activation, the second runner is also cleanup-proven. Only
 then may the hosted finalizer use the service-suspension credential to resume
-the exact target services, observe their live deploys, execute the bound live
-write/read canary, and assemble/verify trusted evidence. The evidence binds the
+the exact target services, observe their live deploys, execute the unique
+authenticated no-store POST write/read canary, and assemble/verify trusted
+evidence. The evidence binds the
 protected-environment receipt, rollout/SHA/run/job/attempt/deploy identities,
 both generations, external backup witness, receipt chain, activation boundary,
 both runner lifecycles, resumed deploys, and live canary.

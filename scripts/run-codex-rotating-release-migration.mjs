@@ -608,6 +608,8 @@ CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_generation_activation_
   previous_receipt_sha256 text NOT NULL CHECK (previous_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   fence_nonce text NOT NULL CHECK (fence_nonce ~ '^[a-f0-9]{32}$'),
   fence_version integer NOT NULL CHECK (fence_version > 0),
+  claim_version integer NOT NULL CHECK (claim_version > 0),
+  target_deploy_ids jsonb NOT NULL CHECK (jsonb_typeof(target_deploy_ids)='array' AND jsonb_array_length(target_deploy_ids)>0),
   canonical_privileges_sha256 text NOT NULL CHECK (canonical_privileges_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   catalog_facts_sha256 text NOT NULL CHECK (catalog_facts_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   first_write_receipt_sha256 text NOT NULL CHECK (first_write_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
@@ -628,6 +630,9 @@ ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt
   ADD COLUMN IF NOT EXISTS previous_receipt_sha256 text NOT NULL CHECK (previous_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   ADD COLUMN IF NOT EXISTS fence_nonce text NOT NULL CHECK (fence_nonce ~ '^[a-f0-9]{32}$'),
   ADD COLUMN IF NOT EXISTS fence_version integer NOT NULL CHECK (fence_version > 0);
+ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt
+  ADD COLUMN IF NOT EXISTS claim_version integer NOT NULL CHECK (claim_version > 0),
+  ADD COLUMN IF NOT EXISTS target_deploy_ids jsonb NOT NULL CHECK (jsonb_typeof(target_deploy_ids)='array' AND jsonb_array_length(target_deploy_ids)>0);
 ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON TABLE reviewrouter_bootstrap.release_generation_activation_receipt FROM PUBLIC;
 CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.reject_activation_receipt_mutation()
@@ -657,6 +662,8 @@ CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_rollout_ledger (
   activation_fence_nonce text CHECK (activation_fence_nonce ~ '^[a-f0-9]{32}$'),
   activation_fence_version integer NOT NULL DEFAULT 0 CHECK (activation_fence_version >= 0),
   activation_job_id text CHECK (activation_job_id ~ '^[1-9][0-9]*$'),
+  claim_version integer NOT NULL DEFAULT 1 CHECK (claim_version > 0),
+  activation_target_deploy_ids jsonb,
   activation_fenced_at timestamptz,
   activation_receipt jsonb,
   claimed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -669,6 +676,8 @@ ALTER TABLE reviewrouter_bootstrap.release_rollout_ledger
   ADD COLUMN IF NOT EXISTS activation_fence_nonce text CHECK (activation_fence_nonce ~ '^[a-f0-9]{32}$'),
   ADD COLUMN IF NOT EXISTS activation_fence_version integer NOT NULL DEFAULT 0 CHECK (activation_fence_version >= 0),
   ADD COLUMN IF NOT EXISTS activation_job_id text CHECK (activation_job_id ~ '^[1-9][0-9]*$'),
+  ADD COLUMN IF NOT EXISTS claim_version integer NOT NULL DEFAULT 1 CHECK (claim_version > 0),
+  ADD COLUMN IF NOT EXISTS activation_target_deploy_ids jsonb,
   ADD COLUMN IF NOT EXISTS activation_fenced_at timestamptz,
   ADD COLUMN IF NOT EXISTS activation_receipt jsonb;
 REVOKE ALL ON TABLE reviewrouter_bootstrap.release_rollout_ledger FROM PUBLIC;
@@ -729,6 +738,7 @@ ALTER TABLE reviewrouter_bootstrap.release_runner_job_ledger
 ALTER TABLE reviewrouter_bootstrap.release_runner_job_ledger OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON TABLE reviewrouter_bootstrap.release_runner_job_ledger FROM PUBLIC;
 DROP FUNCTION IF EXISTS reviewrouter_bootstrap.activate_generation(text,text,text,text);
+DROP FUNCTION IF EXISTS reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,text);
 CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.activate_generation(
   requested_rollout_id text,
   requested_expected_commit_sha text,
@@ -740,6 +750,8 @@ CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.activate_generation(
   requested_previous_receipt_sha256 text,
   requested_fence_nonce text,
   requested_fence_version integer,
+  requested_claim_version integer,
+  requested_target_deploy_ids jsonb,
   requested_canonical_privileges_sha256 text
 ) RETURNS jsonb
 LANGUAGE plpgsql
@@ -763,6 +775,10 @@ BEGIN
      OR requested_previous_receipt_sha256 !~ '^sha256:[a-f0-9]{64}$'
      OR requested_fence_nonce !~ '^[a-f0-9]{32}$'
      OR requested_fence_version < 1
+     OR requested_claim_version < 1
+     OR jsonb_typeof(requested_target_deploy_ids) <> 'array'
+     OR jsonb_array_length(requested_target_deploy_ids) < 1
+     OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(requested_target_deploy_ids) value WHERE value !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$')
      OR requested_canonical_privileges_sha256 !~ '^sha256:[a-f0-9]{64}$' THEN
     RAISE EXCEPTION 'generation activation receipt invalid';
   END IF;
@@ -799,11 +815,12 @@ BEGIN
   IF FOUND THEN
     RAISE EXCEPTION 'duplicate activation receipt rejected';
   ELSE
-    first_write_receipt_sha256 := 'sha256:' || encode(public.digest(convert_to(requested_rollout_id || ':' || requested_expected_commit_sha || ':' || requested_run_id || ':' || requested_job_id || ':' || requested_run_attempt::text || ':' || requested_source_system_identifier || ':' || requested_target_system_identifier || ':' || requested_previous_receipt_sha256 || ':' || requested_fence_nonce || ':' || requested_fence_version::text || ':' || requested_canonical_privileges_sha256 || ':' || catalog_facts_sha256,'UTF8'),'sha256'),'hex');
+    first_write_receipt_sha256 := 'sha256:' || encode(public.digest(convert_to(requested_rollout_id || ':' || requested_expected_commit_sha || ':' || requested_run_id || ':' || requested_job_id || ':' || requested_run_attempt::text || ':' || requested_source_system_identifier || ':' || requested_target_system_identifier || ':' || requested_previous_receipt_sha256 || ':' || requested_fence_nonce || ':' || requested_fence_version::text || ':' || requested_claim_version::text || ':' || requested_target_deploy_ids::text || ':' || requested_canonical_privileges_sha256 || ':' || catalog_facts_sha256,'UTF8'),'sha256'),'hex');
     INSERT INTO reviewrouter_bootstrap.release_generation_activation_receipt (
       rollout_id, expected_commit_sha, run_id, job_id, run_attempt,
       source_system_identifier, target_system_identifier,
       previous_receipt_sha256, fence_nonce, fence_version,
+      claim_version, target_deploy_ids,
       canonical_privileges_sha256, catalog_facts_sha256,
       first_write_receipt_sha256, transaction_id
     ) VALUES (
@@ -811,6 +828,7 @@ BEGIN
       requested_job_id, requested_run_attempt, requested_source_system_identifier,
       requested_target_system_identifier,
       requested_previous_receipt_sha256, requested_fence_nonce, requested_fence_version,
+      requested_claim_version, requested_target_deploy_ids,
       requested_canonical_privileges_sha256, catalog_facts_sha256,
       first_write_receipt_sha256, txid_current()
     ) RETURNING * INTO observed;
@@ -826,6 +844,8 @@ BEGIN
     'previousReceiptSha256', observed.previous_receipt_sha256,
     'fenceNonce', observed.fence_nonce,
     'fenceVersion', observed.fence_version,
+    'claimVersion', observed.claim_version,
+    'targetDeployIds', observed.target_deploy_ids,
     'canonicalPrivilegesSha256', observed.canonical_privileges_sha256,
     'catalogFactsSha256', observed.catalog_facts_sha256,
     'firstWriteReceiptSha256', observed.first_write_receipt_sha256,
@@ -835,9 +855,9 @@ BEGIN
   );
 END
 $activation$;
-ALTER FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,text) OWNER TO reviewrouter_role_bootstrap;
-REVOKE ALL ON FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,text) TO reviewrouter_release_migration;
+ALTER FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,integer,jsonb,text) OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,integer,jsonb,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.activate_generation(text,text,text,text,integer,text,text,text,text,integer,integer,jsonb,text) TO reviewrouter_release_migration;
 CREATE OR REPLACE FUNCTION reviewrouter_bootstrap.consume_migration_evidence(
   artifact_digest text,
   artifact_id text,
@@ -1237,7 +1257,11 @@ export function canonicalActivationSql(configuration, activation) {
     !/^sha256:[a-f0-9]{64}$/u.test(activation.previousReceiptSha256) ||
     !/^[a-f0-9]{32}$/u.test(activation.fenceNonce) ||
     !Number.isSafeInteger(activation.fenceVersion) ||
-    activation.fenceVersion < 1
+    activation.fenceVersion < 1 ||
+    !Number.isSafeInteger(activation.claimVersion) ||
+    activation.claimVersion < 1 ||
+    !Array.isArray(activation.targetDeployIds) ||
+    activation.targetDeployIds.length < 1
   )
     throw new Error("release_migration_activation_identity_invalid");
   return {
@@ -1256,6 +1280,8 @@ SELECT reviewrouter_bootstrap.activate_generation(
   ${literal(activation.previousReceiptSha256)},
   ${literal(activation.fenceNonce)},
   ${activation.fenceVersion},
+  ${activation.claimVersion},
+  ${literal(JSON.stringify(activation.targetDeployIds))}::jsonb,
   ${literal(grantDigest)}
 );
 COMMIT;

@@ -58,7 +58,7 @@ const stagedRollout = {
       runAttempt: 1,
       sourceSystemIdentifier: rollout.source.systemIdentifier,
       targetSystemIdentifier: rollout.target.systemIdentifier,
-      provider: undefined,
+      provider: { renderDeployIds: ["dep-target"] },
       observationSha256: `sha256:${"1".repeat(64)}`,
       previousReceiptSha256: `sha256:${"0".repeat(64)}`,
       receiptSha256: `sha256:${"2".repeat(64)}`,
@@ -80,6 +80,8 @@ const activationObservation: StepObservation = {
     transactionId: "42",
     fenceNonce: "a".repeat(32),
     fenceVersion: 1,
+    claimVersion: 1,
+    targetDeployIds: ["dep-target"],
   },
 };
 const basePorts = () => ({
@@ -109,10 +111,13 @@ const basePorts = () => ({
       previousReceiptSha256: stagedRollout.receipts[0].receiptSha256,
       nonce: "a".repeat(32),
       version: 1,
+      claimVersion: 1,
+      targetDeployIds: ["dep-target"],
       fencedAt: "2026-08-12T00:00:00.000Z",
     }),
     finalizeActivation: vi.fn().mockResolvedValue(true),
     observeActivationState: vi.fn().mockResolvedValue("before"),
+    verifyFinalAuthority: vi.fn().mockResolvedValue(true),
   },
 });
 

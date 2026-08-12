@@ -86,6 +86,8 @@ export function executePrivateGenerationActivation(
     previousReceiptSha256: fence.previousReceiptSha256,
     fenceNonce: fence.nonce,
     fenceVersion: fence.version,
+    claimVersion: fence.claimVersion,
+    targetDeployIds: fence.targetDeployIds,
   });
   const output = runPsql(
     "transactional_activation",
@@ -109,6 +111,9 @@ export function executePrivateGenerationActivation(
     observed?.previousReceiptSha256 !== fence.previousReceiptSha256 ||
     observed?.fenceNonce !== fence.nonce ||
     observed?.fenceVersion !== fence.version ||
+    observed?.claimVersion !== fence.claimVersion ||
+    JSON.stringify(observed?.targetDeployIds) !==
+      JSON.stringify(fence.targetDeployIds) ||
     observed?.canonicalPrivilegesSha256 !==
       activation.canonicalPrivilegesSha256 ||
     !/^sha256:[a-f0-9]{64}$/u.test(observed?.catalogFactsSha256 ?? "") ||
@@ -131,6 +136,8 @@ export function executePrivateGenerationActivation(
       firstWriteBoundary: true,
       fenceNonce: fence.nonce,
       fenceVersion: fence.version,
+      claimVersion: fence.claimVersion,
+      targetDeployIds: fence.targetDeployIds,
       observationSha256: `sha256:${createHash("sha256").update(JSON.stringify(observed)).digest("hex")}`,
     },
   };
