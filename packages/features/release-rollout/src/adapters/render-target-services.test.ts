@@ -13,6 +13,19 @@ const expected = {
   databaseName: "reviewrouter",
   databaseRole: "reviewrouter_api",
 };
+const fence = {
+  schemaVersion: 1 as const,
+  rolloutId: "rollout-target-switch",
+  expectedCommitSha: expected.provenance.commitSha,
+  runId: "123",
+  runAttempt: 1,
+  sourceSystemIdentifier: "100",
+  targetSystemIdentifier: "200",
+  previousReceiptSha256: `sha256:${"0".repeat(64)}`,
+  nonce: "a".repeat(32),
+  version: 1,
+  fencedAt: "2026-08-12T00:00:00.000Z",
+};
 const service = {
   id: expected.serviceId,
   ownerId: "tea-owner",
@@ -68,6 +81,7 @@ describe("Render target switch and live canary", () => {
       targetDatabaseUrls: { [expected.serviceId]: targetUrl },
       releaseCommitSha: expected.provenance.commitSha,
       services: [expected],
+      fence,
     });
     expect(observation.facts).toEqual([
       expect.objectContaining({
@@ -104,6 +118,7 @@ describe("Render target switch and live canary", () => {
         },
         releaseCommitSha: expected.provenance.commitSha,
         services: [expected],
+        fence,
       }),
     ).rejects.toThrow("render_target_database_binding_mismatch");
   });

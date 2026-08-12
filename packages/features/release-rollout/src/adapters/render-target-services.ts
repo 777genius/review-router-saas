@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { RolloutStep, type StepObservation } from "../domain/release-rollout";
+import {
+  RolloutStep,
+  type StepObservation,
+  type TargetSwitchFence,
+} from "../domain/release-rollout";
 import { RenderApiAdapter, type RenderFetch } from "./render-api";
 
 export type TargetServiceExpectation = {
@@ -34,12 +38,17 @@ export class RenderTargetServicesAdapter {
     targetDatabaseUrls: Readonly<Record<string, string>>;
     releaseCommitSha: string;
     services: readonly TargetServiceExpectation[];
+    fence: TargetSwitchFence;
   }): Promise<StepObservation> {
     if (
       !input.apiKey ||
       !/\.internal$/u.test(input.targetInternalHostname) ||
       !/^[0-9]+$/u.test(input.targetSystemIdentifier) ||
       !/^[a-f0-9]{40}$/u.test(input.releaseCommitSha) ||
+      input.fence.expectedCommitSha !== input.releaseCommitSha ||
+      input.fence.targetSystemIdentifier !== input.targetSystemIdentifier ||
+      !/^[a-f0-9]{32}$/u.test(input.fence.nonce) ||
+      input.fence.version < 1 ||
       !input.services.length
     )
       throw new Error("render_target_stage_context_invalid");
@@ -138,6 +147,8 @@ export class RenderTargetServicesAdapter {
         databaseRole: expected.databaseRole,
         databaseSystemIdentifier: input.targetSystemIdentifier,
         suspended: true,
+        targetSwitchFenceNonce: input.fence.nonce,
+        targetSwitchFenceVersion: input.fence.version,
       });
     }
     return {

@@ -5,6 +5,7 @@ import type {
   ReleaseRollout,
   RunnerIdentity,
   StepObservation,
+  TargetSwitchFence,
 } from "../domain/release-rollout";
 
 export interface ProviderControlPort {
@@ -53,7 +54,7 @@ export interface DatabaseRolloutPort {
 }
 
 export interface TargetServicesPort {
-  stageTarget(): Promise<StepObservation>;
+  stageTarget(fence: TargetSwitchFence): Promise<StepObservation>;
   resumeDeployAndObserve(): Promise<StepObservation>;
   verifyLiveCanary(): Promise<StepObservation>;
 }

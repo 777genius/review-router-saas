@@ -210,6 +210,12 @@ export interface RunnerIdentity {
   readonly workFolder: string;
   readonly planId?: string;
   readonly provenance: RunnerProvenance;
+  readonly imageAttestation?: {
+    readonly subjectDigest: string;
+    readonly sourceCommitSha: string;
+    readonly statementSha256: string;
+    readonly builderId: string;
+  };
 }
 
 export interface StepObservation<T = unknown> {
@@ -268,6 +274,20 @@ export interface ActivationFence {
   readonly version: number;
   readonly claimVersion: number;
   readonly targetDeployIds: readonly string[];
+  readonly fencedAt: string;
+}
+
+export interface TargetSwitchFence {
+  readonly schemaVersion: 1;
+  readonly rolloutId: string;
+  readonly expectedCommitSha: string;
+  readonly runId: string;
+  readonly runAttempt: number;
+  readonly sourceSystemIdentifier: string;
+  readonly targetSystemIdentifier: string;
+  readonly previousReceiptSha256: string;
+  readonly nonce: string;
+  readonly version: number;
   readonly fencedAt: string;
 }
 
@@ -976,7 +996,13 @@ export function assertRunnerIdentity(
   if (
     identity.provenance.kind === "git"
       ? identity.provenance.commitSha !== rollout.expectedCommitSha
-      : !digestPattern.test(identity.provenance.imageSha)
+      : !digestPattern.test(identity.provenance.imageSha) ||
+        identity.imageAttestation?.subjectDigest !==
+          identity.provenance.imageSha ||
+        identity.imageAttestation.sourceCommitSha !==
+          rollout.expectedCommitSha ||
+        !digestPattern.test(identity.imageAttestation.statementSha256) ||
+        !identifierPattern.test(identity.imageAttestation.builderId)
   )
     throw new Error("runner_provenance_invalid");
 }
@@ -1012,6 +1038,15 @@ export interface AuthoritativeGenerationLedger {
     sourceSystemIdentifier: string;
     targetSystemIdentifier: string;
   }): Promise<void>;
+  fenceTargetSwitch(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    previousReceiptSha256: string;
+  }): Promise<TargetSwitchFence | null>;
   fenceActivation(input: {
     rolloutId: string;
     expectedCommitSha: string;

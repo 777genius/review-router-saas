@@ -2,6 +2,8 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import {
   AuthenticatedRunnerLedgerAdapter,
+  AuthenticatedProviderWitnessAdapter,
+  PrivateRunnerControlUseCases,
   RenderPrivateRunnerAdapter,
   RenderProviderFreezeAdapter,
   type RunnerIdentity,
@@ -24,7 +26,18 @@ const ledger = new AuthenticatedRunnerLedgerAdapter(
   required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
   required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
 );
-const runners = new RenderPrivateRunnerAdapter(ledger, ledger);
+const providerWitness = new AuthenticatedProviderWitnessAdapter(
+  required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
+  required("REVIEW_ROUTER_RUNNER_WITNESS_TOKEN"),
+);
+const runners = new RenderPrivateRunnerAdapter(
+  ledger,
+  ledger,
+  fetch,
+  () => new Date(),
+  providerWitness,
+);
+const runnerUseCases = new PrivateRunnerControlUseCases(runners);
 const mode = process.argv[2];
 const contextValue = (name: string, fallback: string): string =>
   process.env[name] ?? required(fallback);
@@ -124,7 +137,7 @@ if (mode === "freeze") {
     !targetRun.actor?.login
   )
     throw new Error("release_rollout_target_run_identity_mismatch");
-  const result = await runners.provision({
+  const result = (await runnerUseCases.provision({
     rolloutId: required("REVIEW_ROUTER_ROLLOUT_ID"),
     lifecycle: purpose === "role-bootstrap" ? "role" : "cutover",
     apiKey: required("RENDER_RUNNER_CONTROL_API_KEY"),
@@ -147,10 +160,13 @@ if (mode === "freeze") {
     expectedProvenance: JSON.parse(
       required("REVIEW_ROUTER_RUNNER_PROVENANCE_JSON"),
     ) as RunnerIdentity["provenance"],
+    imageAttestation: JSON.parse(
+      required("REVIEW_ROUTER_RUNNER_IMAGE_ATTESTATION_JSON"),
+    ) as NonNullable<RunnerIdentity["imageAttestation"]>,
     ...(process.env.REVIEW_ROUTER_RUNNER_COMPUTE_PLAN_ID
       ? { planId: process.env.REVIEW_ROUTER_RUNNER_COMPUTE_PLAN_ID }
       : {}),
-  });
+  })) as Awaited<ReturnType<RenderPrivateRunnerAdapter["provision"]>>;
   output({
     job_id: result.jobId,
     cleanup_canary: result.identity.cleanupCanary,
@@ -162,7 +178,7 @@ if (mode === "freeze") {
     ),
   });
 } else if (mode === "cleanup") {
-  const observation = await runners.cleanup({
+  const observation = await runnerUseCases.cleanup({
     apiKey: required("RENDER_RUNNER_CONTROL_API_KEY"),
     baseServiceId: required("REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID"),
     jobId: required("REVIEW_ROUTER_RUNNER_JOB_ID"),
@@ -183,7 +199,7 @@ if (mode === "freeze") {
     });
 } else if (mode === "reconcile" || mode === "cleanup-runners") {
   const path = required("REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE");
-  const observations = await runners.reconcileOrphans(
+  const observations = await runnerUseCases.reconcile(
     required("REVIEW_ROUTER_ROLLOUT_ID"),
     required("RENDER_RUNNER_CONTROL_API_KEY"),
   );

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import {
   requestJitConfiguration,
   runOneJobRunner,
@@ -40,6 +42,12 @@ const request: RenderRunnerRequest = {
     kind: "image",
     deployId: "dep-pinned",
     imageSha: `sha256:${"b".repeat(64)}`,
+  },
+  imageAttestation: {
+    subjectDigest: `sha256:${"b".repeat(64)}`,
+    sourceCommitSha: "a".repeat(40),
+    statementSha256: `sha256:${"c".repeat(64)}`,
+    builderId: "reviewrouter-private-runner-build-v1",
   },
   planId: "starter-plus",
   apiKey: "redacted",
@@ -522,6 +530,58 @@ describe("process and runner secret boundary", () => {
       ["run", "--jitconfig", "encoded"],
       expect.anything(),
     );
+  });
+
+  it("cancels only the no-job timer when assignment begins", async () => {
+    vi.useFakeTimers();
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: ReturnType<typeof vi.fn>;
+      pid?: number;
+    };
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    const running = runOneJobRunner({
+      runnerPath: "/runner/bin/Runner.Listener",
+      jitConfig: "encoded",
+      timeoutMs: 1000,
+      spawnImpl: vi.fn(() => child) as never,
+      environment: { PATH: "/bin" },
+    });
+    await vi.advanceTimersByTimeAsync(900);
+    child.stdout.write("2026-08-12: Running job: private-cutover\n");
+    await vi.advanceTimersByTimeAsync(10_000);
+    child.emit("exit", 0);
+    await expect(running).resolves.toBeUndefined();
+    expect(child.kill).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("terminates an unassigned listener after the bounded acquisition timeout", async () => {
+    vi.useFakeTimers();
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: ReturnType<typeof vi.fn>;
+      pid?: number;
+    };
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    const running = runOneJobRunner({
+      runnerPath: "/runner/bin/Runner.Listener",
+      jitConfig: "encoded",
+      timeoutMs: 1000,
+      spawnImpl: vi.fn(() => child) as never,
+      environment: { PATH: "/bin" },
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    child.emit("exit", null);
+    await expect(running).rejects.toThrow("github_jit_no_job_timeout");
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    vi.useRealTimers();
   });
 });
 

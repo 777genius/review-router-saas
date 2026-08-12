@@ -23,6 +23,7 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
   private state: "before" | "uncertain" | "activated" = "before";
   private fenceValue: ActivationFence | undefined;
   private readonly intents = new Map<string, Record<string, unknown>>();
+  providerWitness: Record<string, unknown> | undefined;
 
   async claim(input: typeof binding) {
     if (!this.claimed) {
@@ -44,6 +45,18 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
   async markActivationUncertain() {
     this.state = "uncertain";
     return true;
+  }
+  async fenceTargetSwitch(
+    input: Parameters<ReleaseRolloutLedgerRepository["fenceTargetSwitch"]>[0],
+  ) {
+    return {
+      schemaVersion: 1 as const,
+      ...binding,
+      previousReceiptSha256: input.previousReceiptSha256,
+      nonce: input.nonce,
+      version: 1,
+      fencedAt: input.fencedAt.toISOString(),
+    };
   }
   async fenceActivation(
     input: Parameters<ReleaseRolloutLedgerRepository["fenceActivation"]>[0],
@@ -103,7 +116,12 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
   async cleanupObservation(): Promise<never> {
     throw new Error("unused");
   }
-  async persistProviderWitness() {}
+  async persistProviderWitness(
+    _jobId: string,
+    witness: Record<string, unknown>,
+  ) {
+    this.providerWitness = witness;
+  }
   async cleanupWitness(): Promise<never> {
     throw new Error("unused");
   }
@@ -183,5 +201,47 @@ describe("release rollout ledger internal API", () => {
     await expect(
       service.persistIntent({ ...intent, serviceId: "srv-attacker" }),
     ).rejects.toThrow("intent_conflict");
+  });
+
+  it("isolates provider cleanup evidence behind the distinct witness credential", async () => {
+    const repository = new ConcurrentRepository();
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      service: new ReleaseRolloutLedgerService(repository),
+      tokenSha256,
+      witnessTokenSha256: createHash("sha256").update("witness").digest("hex"),
+    });
+    const payload = {
+      jobId: "job-1",
+      canary: "rr-cleanup:rollout:runner",
+      containerTerminated: true,
+      logSha256: `sha256:${"a".repeat(64)}`,
+      removedPaths: ["/runner/_work/rr-runner"],
+      remainingPaths: [],
+      providerLogId: "log-1",
+      providerObservedAt: "2026-08-12T00:00:00.000Z",
+    };
+    expect(
+      (
+        await app.inject({
+          method: "PUT",
+          url: "/v1/runner-jobs/job-1/provider-witness",
+          headers: { authorization: `Bearer ${token}` },
+          payload,
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await app.inject({
+          method: "PUT",
+          url: "/v1/runner-jobs/job-1/provider-witness",
+          headers: { authorization: "Bearer witness" },
+          payload,
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(repository.providerWitness).toEqual(payload);
+    await app.close();
   });
 });

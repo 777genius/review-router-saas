@@ -5,6 +5,7 @@ import type {
   AuthoritativeGenerationLedger,
   RolloutStep,
   StepObservation,
+  TargetSwitchFence,
 } from "../domain/release-rollout";
 import type { RunnerIdentity } from "../domain/release-rollout";
 import type {
@@ -91,6 +92,21 @@ export class PostgreSqlRolloutLedgerAdapter
     );
     if (result !== input.rolloutId)
       throw new Error("activation_uncertain_ledger_binding_mismatch");
+  }
+  async fenceTargetSwitch(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    previousReceiptSha256: string;
+  }): Promise<TargetSwitchFence | null> {
+    const nonce = randomBytes(16).toString("hex");
+    const value = this.sql(
+      `UPDATE reviewrouter_bootstrap.release_rollout_ledger SET target_switch_nonce=${literal(nonce)}, target_switch_version=target_switch_version+1, target_switch_fenced_at=clock_timestamp() WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} AND last_receipt_sha256=${literal(input.previousReceiptSha256)} AND activation_boundary='before' AND target_switch_nonce IS NULL RETURNING json_build_object('schemaVersion',1,'rolloutId',rollout_id,'expectedCommitSha',expected_commit_sha,'runId',run_id,'runAttempt',run_attempt,'sourceSystemIdentifier',source_system_identifier,'targetSystemIdentifier',target_system_identifier,'previousReceiptSha256',last_receipt_sha256,'nonce',target_switch_nonce,'version',target_switch_version,'fencedAt',to_char(target_switch_fenced_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))::text`,
+    );
+    return value ? (JSON.parse(value) as TargetSwitchFence) : null;
   }
   async fenceActivation(input: {
     rolloutId: string;

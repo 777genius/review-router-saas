@@ -63,7 +63,10 @@ const useCases = new ReleaseRolloutUseCases({
       observation: cutoverProvision,
     }),
     cleanup: async () => roleCleanup,
-    reconcileOrphans: async () => [],
+    reconcileOrphans: async () => {
+      await ledger.reconcileRollout(rollout.rolloutId);
+      return [];
+    },
   },
   database: {
     captureBackup: unavailable,
@@ -83,7 +86,7 @@ const useCases = new ReleaseRolloutUseCases({
     compensateSource: unavailable,
   },
   services: {
-    stageTarget: async () => {
+    stageTarget: async (fence) => {
       staged = await targetAdapter.stage({
         apiKey: required("RENDER_TARGET_SWITCH_API_KEY"),
         targetInternalHostname: rollout.target.internalHostname,
@@ -95,6 +98,7 @@ const useCases = new ReleaseRolloutUseCases({
         services: JSON.parse(
           required("REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON"),
         ) as TargetServiceExpectation[],
+        fence,
       });
       return staged;
     },
@@ -114,6 +118,7 @@ try {
     cutoverRunner.workflowJobId,
   );
 } catch (error) {
+  rollout = await useCases.recoverFromFailure(rollout, "activation_uncertain");
   throw new Error(
     `private_pg17_activation_uncertain:${error instanceof Error ? error.message : "unknown"}`,
     { cause: error },

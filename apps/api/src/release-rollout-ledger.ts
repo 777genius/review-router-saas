@@ -5,6 +5,7 @@ import type {
   ActivationReceipt,
   RunnerIdentity,
   StepObservation,
+  TargetSwitchFence,
 } from "@reviewrouter/features-release-rollout";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import { Prisma } from "@prisma/client";
@@ -49,6 +50,13 @@ export interface ReleaseRolloutLedgerRepository {
     },
   ): Promise<boolean>;
   markActivationUncertain(input: RolloutBinding): Promise<boolean>;
+  fenceTargetSwitch(
+    input: RolloutBinding & {
+      previousReceiptSha256: string;
+      nonce: string;
+      fencedAt: Date;
+    },
+  ): Promise<TargetSwitchFence | null>;
   fenceActivation(
     input: RolloutBinding & {
       jobId: string;
@@ -207,6 +215,60 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
       },
     });
     return result.count === 1;
+  }
+
+  async fenceTargetSwitch(
+    input: RolloutBinding & {
+      previousReceiptSha256: string;
+      nonce: string;
+      fencedAt: Date;
+    },
+  ): Promise<TargetSwitchFence | null> {
+    await this.prisma.releaseRolloutLedger.updateMany({
+      where: {
+        rolloutId: input.rolloutId,
+        expectedCommitSha: input.expectedCommitSha,
+        runId: input.runId,
+        runAttempt: input.runAttempt,
+        sourceSystemIdentifier: input.sourceSystemIdentifier,
+        targetSystemIdentifier: input.targetSystemIdentifier,
+        lastReceiptSha256: input.previousReceiptSha256,
+        activationBoundary: "before",
+        targetSwitchNonce: null,
+      },
+      data: {
+        targetSwitchNonce: input.nonce,
+        targetSwitchVersion: { increment: 1 },
+        targetSwitchFencedAt: input.fencedAt,
+      },
+    });
+    const value = await this.prisma.releaseRolloutLedger.findFirst({
+      where: {
+        rolloutId: input.rolloutId,
+        expectedCommitSha: input.expectedCommitSha,
+        runId: input.runId,
+        runAttempt: input.runAttempt,
+        sourceSystemIdentifier: input.sourceSystemIdentifier,
+        targetSystemIdentifier: input.targetSystemIdentifier,
+        lastReceiptSha256: input.previousReceiptSha256,
+        activationBoundary: "before",
+        targetSwitchNonce: { not: null },
+      },
+    });
+    if (!value?.targetSwitchNonce || !value.targetSwitchFencedAt) return null;
+    return Object.freeze({
+      schemaVersion: 1,
+      rolloutId: value.rolloutId,
+      expectedCommitSha: value.expectedCommitSha,
+      runId: value.runId,
+      runAttempt: value.runAttempt,
+      sourceSystemIdentifier: value.sourceSystemIdentifier,
+      targetSystemIdentifier: value.targetSystemIdentifier,
+      previousReceiptSha256: value.lastReceiptSha256,
+      nonce: value.targetSwitchNonce,
+      version: value.targetSwitchVersion,
+      fencedAt: value.targetSwitchFencedAt.toISOString(),
+    });
   }
 
   async fenceActivation(
@@ -512,6 +574,24 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
     jobId: string,
     witness: Record<string, unknown>,
   ): Promise<void> {
+    if (
+      witness.jobId !== jobId ||
+      witness.containerTerminated !== true ||
+      !/^sha256:[a-f0-9]{64}$/u.test(String(witness.logSha256)) ||
+      typeof witness.providerLogId !== "string" ||
+      !witness.providerLogId ||
+      typeof witness.providerObservedAt !== "string" ||
+      !Number.isFinite(Date.parse(witness.providerObservedAt)) ||
+      !Array.isArray(witness.removedPaths) ||
+      witness.removedPaths.length === 0 ||
+      witness.removedPaths.some(
+        (path) =>
+          typeof path !== "string" || !path.startsWith("/runner/_work/"),
+      ) ||
+      !Array.isArray(witness.remainingPaths) ||
+      witness.remainingPaths.length !== 0
+    )
+      throw new Error("release_runner_provider_witness_invalid");
     const changed = await this.prisma.releaseRunnerJob.updateMany({
       where: { jobId, cleanupProviderWitness: { equals: Prisma.DbNull } },
       data: { cleanupProviderWitness: json(witness) },
@@ -524,21 +604,11 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
     const value = await this.prisma.releaseRunnerJob.findUniqueOrThrow({
       where: { jobId },
     });
-    const cleanup = value.cleanupObservation as Record<string, unknown> | null;
     const provider = value.cleanupProviderWitness as Record<
       string,
       unknown
     > | null;
-    const runner =
-      cleanup?.facts && typeof cleanup.facts === "object"
-        ? ((cleanup.facts as Record<string, unknown>).runner as Record<
-            string,
-            unknown
-          >)
-        : undefined;
     if (
-      !value.terminalAt ||
-      !runner ||
       !provider ||
       provider.jobId !== jobId ||
       provider.canary !== value.cleanupCanary ||
@@ -546,11 +616,7 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
       !/^sha256:[a-f0-9]{64}$/u.test(String(provider.logSha256)) ||
       !Array.isArray(provider.removedPaths) ||
       !Array.isArray(provider.remainingPaths) ||
-      provider.remainingPaths.length !== 0 ||
-      runner.canary !== value.cleanupCanary ||
-      runner.listenerStopped !== true ||
-      runner.workspaceRemoved !== true ||
-      runner.credentialProcessGone !== true
+      provider.remainingPaths.length !== 0
     )
       throw new Error("release_runner_independent_cleanup_witness_unproven");
     return {
@@ -558,7 +624,7 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
       workspaceRemoved: true,
       credentialProcessGone: true,
       canary: value.cleanupCanary,
-      observedAt: value.terminalAt.toISOString(),
+      observedAt: String(provider.providerObservedAt),
       providerLogSha256: provider.logSha256,
       removedPaths: provider.removedPaths,
       remainingPaths: [],
@@ -669,6 +735,14 @@ export class ReleaseRolloutLedgerService {
   ) => this.repository.compareAndSet(input);
   markUncertain = (input: RolloutBinding) =>
     this.repository.markActivationUncertain(input);
+  fenceTargetSwitch = (
+    input: RolloutBinding & { previousReceiptSha256: string },
+  ) =>
+    this.repository.fenceTargetSwitch({
+      ...input,
+      nonce: randomBytes(16).toString("hex"),
+      fencedAt: new Date(),
+    });
   fence = (
     input: RolloutBinding & {
       jobId: string;
@@ -779,6 +853,17 @@ export async function registerReleaseRolloutLedgerRoutes(
         rolloutId: request.params.rolloutId,
       } as RolloutBinding),
     }),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/rollouts/:rolloutId/target-switch-fence",
+    { preHandler: control },
+    async (request) => {
+      const fence = await dependencies.service.fenceTargetSwitch({
+        ...record(request.body),
+        rolloutId: request.params.rolloutId,
+      } as never);
+      return fence ? { changed: true, fence } : { changed: false };
+    },
   );
   app.post<{ Params: { rolloutId: string } }>(
     "/v1/rollouts/:rolloutId/activation-fence",

@@ -1,5 +1,6 @@
 import { RolloutStep, type StepObservation } from "../domain/release-rollout";
 import { RenderApiAdapter, type RenderFetch } from "./render-api";
+import { createHash } from "node:crypto";
 
 const active = new Set([
   "created",
@@ -24,6 +25,39 @@ export class RenderProviderFreezeAdapter {
     )
       throw new Error("render_freeze_context_invalid");
     const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
+    const declared = [...input.sourceWriterServiceIds].sort();
+    const ownerServices = (await api.listAllServices()).filter(
+      (service) => service.ownerId === input.ownerId,
+    );
+    const credentialBearing: Array<{
+      serviceId: string;
+      serviceType: string;
+      credentialKeys: readonly string[];
+    }> = [];
+    for (const service of ownerServices) {
+      const credentialKeys = (await api.listAllEnv(service.id))
+        .map(({ key }) => key)
+        .filter((key) =>
+          /(?:DATABASE(?:_URL|_HOST|_PASSWORD|_NAME)?|DIRECT_URL|PGHOST|PGPASSWORD|PGDATABASE)/u.test(
+            key,
+          ),
+        )
+        .sort();
+      if (credentialKeys.length)
+        credentialBearing.push({
+          serviceId: service.id,
+          serviceType: service.type,
+          credentialKeys: Object.freeze(credentialKeys),
+        });
+    }
+    const discovered = credentialBearing
+      .map(({ serviceId }) => serviceId)
+      .sort();
+    if (JSON.stringify(discovered) !== JSON.stringify(declared))
+      throw new Error("render_freeze_writer_inventory_mismatch");
+    const inventorySha256 = `sha256:${createHash("sha256")
+      .update(JSON.stringify(credentialBearing))
+      .digest("hex")}`;
     const observations = [];
     for (const serviceId of input.sourceWriterServiceIds) {
       const before = await api.getService(serviceId);
@@ -59,7 +93,12 @@ export class RenderProviderFreezeAdapter {
     return Object.freeze({
       step: RolloutStep.FreezeProviderServices,
       observedAt: new Date().toISOString(),
-      facts: { services: Object.freeze(observations), complete: true },
+      facts: {
+        services: Object.freeze(observations),
+        writerInventory: Object.freeze(credentialBearing),
+        writerInventorySha256: inventorySha256,
+        complete: true,
+      },
       provider: {
         renderServiceIds: Object.freeze(
           observations.map((item) => item.serviceId),

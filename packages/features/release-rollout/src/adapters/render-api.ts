@@ -34,6 +34,11 @@ export interface RenderJob {
   readonly updatedAt?: string;
   readonly finishedAt?: string;
 }
+export interface RenderLog {
+  readonly id: string;
+  readonly message: string;
+  readonly timestamp: string;
+}
 
 const origin = "https://api.render.com/v1";
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -127,6 +132,17 @@ export class RenderApiAdapter {
       items,
       nextCursor: typeof next === "string" && next ? next : null,
     };
+  }
+
+  async listAllServices(): Promise<readonly RenderService[]> {
+    const all: RenderService[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listServices(cursor);
+      all.push(...page.items);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return Object.freeze(all);
   }
 
   async listDeploys(
@@ -303,6 +319,43 @@ export class RenderApiAdapter {
     };
   }
 
+  async listLogs(input: {
+    ownerId: string;
+    resourceId: string;
+    startTime: string;
+    endTime: string;
+  }): Promise<readonly RenderLog[]> {
+    const url = new URL(`${origin}/logs`);
+    url.searchParams.set("ownerId", input.ownerId);
+    url.searchParams.set("resource", input.resourceId);
+    url.searchParams.set("startTime", input.startTime);
+    url.searchParams.set("endTime", input.endTime);
+    url.searchParams.set("direction", "backward");
+    url.searchParams.set("limit", "100");
+    const value = requireSubset(
+      await body(
+        await this.fetchImpl(url.toString(), { headers: headers(this.token) }),
+        "logs",
+      ),
+      ["logs"],
+      "render_logs_response_invalid",
+    );
+    if (!Array.isArray(value.logs))
+      throw new Error("render_logs_response_invalid");
+    return Object.freeze(
+      value.logs.map((entry) => {
+        const log = requireSubset(
+          entry,
+          ["id", "message", "timestamp"],
+          "render_log_response_invalid",
+        );
+        if (![log.id, log.message, log.timestamp].every(string))
+          throw new Error("render_log_response_invalid");
+        return log as unknown as RenderLog;
+      }),
+    );
+  }
+
   async suspend(serviceId: string): Promise<void> {
     const response = await this.fetchImpl(
       `${origin}/services/${encodeURIComponent(serviceId)}/suspend`,
@@ -356,6 +409,19 @@ export class RenderApiAdapter {
       items,
       nextCursor: typeof next === "string" && next ? next : null,
     };
+  }
+
+  async listAllEnv(
+    serviceId: string,
+  ): Promise<readonly { key: string; value: string }[]> {
+    const all: Array<{ key: string; value: string }> = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.getEnv(serviceId, cursor);
+      all.push(...page.items);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return Object.freeze(all);
   }
 
   async replaceEnvPreservingAll(

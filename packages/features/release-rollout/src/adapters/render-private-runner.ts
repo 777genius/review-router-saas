@@ -77,6 +77,12 @@ export interface RunnerCleanupWitnessPort {
     observedAt: string;
   }>;
 }
+export interface RunnerProviderWitnessPort {
+  persist(
+    jobId: string,
+    witness: Readonly<Record<string, unknown>>,
+  ): Promise<void>;
+}
 
 export interface RenderRunnerRequest {
   readonly rolloutId: string;
@@ -98,6 +104,7 @@ export interface RenderRunnerRequest {
   readonly runnerGroupName: string;
   readonly baseServiceId: string;
   readonly expectedProvenance: RunnerProvenance;
+  readonly imageAttestation: NonNullable<RunnerIdentity["imageAttestation"]>;
   readonly planId?: string;
   readonly apiKey: string;
 }
@@ -136,7 +143,12 @@ function validate(input: RenderRunnerRequest): void {
     throw new Error("render_runner_personal_repository_forbidden");
   if (
     input.expectedProvenance.kind !== "image" ||
-    !/^sha256:[a-f0-9]{64}$/u.test(input.expectedProvenance.imageSha)
+    !/^sha256:[a-f0-9]{64}$/u.test(input.expectedProvenance.imageSha) ||
+    input.imageAttestation.subjectDigest !==
+      input.expectedProvenance.imageSha ||
+    input.imageAttestation.sourceCommitSha !== input.commitSha ||
+    !/^sha256:[a-f0-9]{64}$/u.test(input.imageAttestation.statementSha256) ||
+    !safe.test(input.imageAttestation.builderId)
   )
     throw new Error("render_runner_provenance_invalid");
 }
@@ -159,6 +171,7 @@ export class RenderPrivateRunnerAdapter {
     private readonly cleanupWitness: RunnerCleanupWitnessPort,
     private readonly fetchImpl: RenderFetch = fetch,
     private readonly now: () => Date = () => new Date(),
+    private readonly providerWitness?: RunnerProviderWitnessPort,
   ) {}
 
   private client(token: string): RenderApiAdapter {
@@ -314,6 +327,7 @@ export class RenderPrivateRunnerAdapter {
       workFolder: `_work/${input.runnerName}`,
       ...(input.planId ? { planId: input.planId } : {}),
       provenance: observedProvenance,
+      imageAttestation: Object.freeze({ ...input.imageAttestation }),
     });
     const provisionObservation: StepObservation = {
       step:
@@ -374,6 +388,54 @@ export class RenderPrivateRunnerAdapter {
     if (!job || !terminal.has(job.status))
       throw new Error("render_runner_cleanup_terminal_timeout");
     const expectedCanary = input.cleanupCanary;
+    if (this.providerWitness) {
+      if (!job.createdAt || !job.finishedAt)
+        throw new Error("render_runner_cleanup_log_window_missing");
+      const service = await api.getService(input.baseServiceId);
+      const logs = await api.listLogs({
+        ownerId: service.ownerId,
+        resourceId: input.baseServiceId,
+        startTime: job.createdAt,
+        endTime: job.finishedAt,
+      });
+      const receipts = logs.flatMap((log) => {
+        try {
+          const parsed = JSON.parse(log.message) as {
+            canary?: unknown;
+            cleanup?: {
+              removedPaths?: unknown;
+              remainingPaths?: unknown;
+            };
+          };
+          return parsed.canary === expectedCanary && parsed.cleanup
+            ? [{ log, parsed }]
+            : [];
+        } catch {
+          return [];
+        }
+      });
+      if (receipts.length !== 1)
+        throw new Error("render_runner_cleanup_provider_log_ambiguous");
+      const receipt = receipts[0]!;
+      if (
+        !Array.isArray(receipt.parsed.cleanup!.removedPaths) ||
+        !Array.isArray(receipt.parsed.cleanup!.remainingPaths) ||
+        receipt.parsed.cleanup!.remainingPaths.length !== 0
+      )
+        throw new Error("render_runner_cleanup_provider_log_invalid");
+      await this.providerWitness.persist(input.jobId, {
+        jobId: input.jobId,
+        canary: expectedCanary,
+        containerTerminated: true,
+        logSha256: `sha256:${createHash("sha256")
+          .update(receipt.log.message)
+          .digest("hex")}`,
+        removedPaths: receipt.parsed.cleanup!.removedPaths,
+        remainingPaths: [],
+        providerLogId: receipt.log.id,
+        providerObservedAt: receipt.log.timestamp,
+      });
+    }
     const local = await this.cleanupWitness.observe(
       input.jobId,
       expectedCanary,

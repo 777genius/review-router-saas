@@ -10,6 +10,7 @@ import type {
   ActivationReceipt,
   AuthoritativeGenerationLedger,
   StepObservation,
+  TargetSwitchFence,
 } from "../domain/release-rollout";
 import type { RunnerIdentity } from "../domain/release-rollout";
 
@@ -225,6 +226,38 @@ export class AuthenticatedRunnerLedgerAdapter
     if (value.marked !== true)
       throw new Error("runner_ledger_activation_uncertain_mark_invalid");
   }
+  async fenceTargetSwitch(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    previousReceiptSha256: string;
+  }): Promise<TargetSwitchFence | null> {
+    const value = (await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/target-switch-fence`,
+      { method: "POST", body: JSON.stringify(input) },
+    )) as { changed?: unknown; fence?: TargetSwitchFence };
+    if (value.changed === false) return null;
+    const fence = value.fence;
+    if (
+      value.changed !== true ||
+      !fence ||
+      fence.rolloutId !== input.rolloutId ||
+      fence.expectedCommitSha !== input.expectedCommitSha ||
+      fence.runId !== input.runId ||
+      fence.runAttempt !== input.runAttempt ||
+      fence.sourceSystemIdentifier !== input.sourceSystemIdentifier ||
+      fence.targetSystemIdentifier !== input.targetSystemIdentifier ||
+      fence.previousReceiptSha256 !== input.previousReceiptSha256 ||
+      !/^[a-f0-9]{32}$/u.test(fence.nonce) ||
+      !Number.isSafeInteger(fence.version) ||
+      fence.version < 1
+    )
+      throw new Error("runner_ledger_target_switch_fence_invalid");
+    return fence;
+  }
   async fenceActivation(input: {
     rolloutId: string;
     expectedCommitSha: string;
@@ -346,5 +379,36 @@ export class AuthenticatedRunnerLedgerAdapter
       sourceServicesResumed: boolean;
       openRunnerJobs: 0;
     };
+  }
+}
+
+/** Separate witness credential used only by the provider-side log observer. */
+export class AuthenticatedProviderWitnessAdapter {
+  constructor(
+    private readonly origin: string,
+    private readonly token: string,
+    private readonly fetchImpl: RenderFetch = fetch,
+  ) {
+    if (!origin.startsWith("https://") || !token)
+      throw new Error("runner_witness_configuration_invalid");
+  }
+
+  async persist(
+    jobId: string,
+    witness: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    const response = await this.fetchImpl(
+      `${this.origin.replace(/\/$/u, "")}/v1/runner-jobs/${encodeURIComponent(jobId)}/provider-witness`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(witness),
+      },
+    );
+    if (!response.ok)
+      throw new Error(`runner_witness_request_failed:${response.status}`);
   }
 }

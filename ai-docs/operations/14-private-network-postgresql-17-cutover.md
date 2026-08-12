@@ -92,6 +92,16 @@ Missing, unavailable, stale, duplicate, or contradictory ledger responses stop
 the rollout. Do not bypass this dependency with artifacts, labels, or in-memory
 state.
 
+The hosted runner controller receives the plaintext witness credential as
+`REVIEW_ROUTER_RUNNER_WITNESS_TOKEN`; the runner container never receives it.
+The controller reads the terminal job's bounded Render log window, accepts one
+exact cleanup JSON record, hashes that provider record, and submits its erased
+and remaining path enumeration through the witness-only route. Configure
+`REVIEW_ROUTER_RUNNER_IMAGE_ATTESTATION_JSON` with the final image subject
+digest, reviewed source commit, attestation statement SHA-256, and builder ID.
+The subject and source must exactly match the immutable Render image and
+rollout commit before a job can be created.
+
 ## Split Render permissions and API facts
 
 Use four independent credentials:

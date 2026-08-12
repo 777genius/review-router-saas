@@ -176,9 +176,20 @@ export class ReleaseRolloutUseCases {
     );
   }
   async stageTargetServices(r: ReleaseRollout) {
+    const previousReceiptSha256 = r.receipts.at(-1)!.receiptSha256;
+    const fence = await this.ports.ledger.fenceTargetSwitch({
+      rolloutId: r.rolloutId,
+      expectedCommitSha: r.expectedCommitSha,
+      runId: r.execution.runId,
+      runAttempt: r.execution.runAttempt,
+      sourceSystemIdentifier: r.source.systemIdentifier,
+      targetSystemIdentifier: r.target.systemIdentifier,
+      previousReceiptSha256,
+    });
+    if (!fence) throw new Error("target_switch_fence_cas_failed");
     return await this.accept(
       r,
-      await this.ports.services.stageTarget(),
+      await this.ports.services.stageTarget(fence),
       RolloutStep.StageTargetServices,
     );
   }

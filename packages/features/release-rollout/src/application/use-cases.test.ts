@@ -99,6 +99,13 @@ const basePorts = () => ({
     claim: vi.fn().mockResolvedValue("claimed"),
     compareAndSet: vi.fn().mockResolvedValue(true),
     markActivationUncertain: vi.fn().mockResolvedValue(undefined),
+    fenceTargetSwitch: vi.fn().mockImplementation(async (input) => ({
+      schemaVersion: 1,
+      ...input,
+      nonce: "b".repeat(32),
+      version: 1,
+      fencedAt: "2026-08-12T00:00:00.000Z",
+    })),
     fenceActivation: vi.fn().mockResolvedValue({
       schemaVersion: 1,
       rolloutId: rollout.rolloutId,
