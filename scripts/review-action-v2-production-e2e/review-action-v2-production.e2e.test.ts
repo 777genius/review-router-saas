@@ -270,6 +270,8 @@ describeWithDatabase.sequential(
         attachSlotCount: 0,
         pathSlotIndex: (pathIndex) =>
           pathIndex < 84 ? Math.floor(pathIndex / 2) : pathIndex - 42,
+        workSlotId: (executionId, slotIndex) =>
+          `${executionId}-slot-${String(slotIndex).padStart(3, "0")}`,
       });
 
       await fixture.setProgressFixture({

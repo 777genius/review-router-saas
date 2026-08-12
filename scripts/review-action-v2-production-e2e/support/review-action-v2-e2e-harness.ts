@@ -354,6 +354,7 @@ export class ReviewActionV2E2EHarness {
       readonly slotCount?: number;
       readonly eligibleFileCount?: number;
       readonly pathSlotIndex?: (pathIndex: number, slotCount: number) => number;
+      readonly workSlotId?: (executionId: string, slotIndex: number) => string;
       readonly attachSlotCount?: number;
       readonly attemptBudget?: number;
       readonly authorization?: ReviewActionV2E2EAuthorization;
@@ -361,7 +362,8 @@ export class ReviewActionV2E2EHarness {
   ): Promise<ReviewActionV2E2EFlow> {
     const authorized = input.authorization ?? (await this.authorize());
     const executionId = `${this.prefix}-execution-${randomUUID()}`;
-    const workSlotId = progressSlotId(executionId, 0);
+    const workSlotId =
+      input.workSlotId?.(executionId, 0) ?? progressSlotId(executionId, 0);
     const ownerIdHash = sha256(`${executionId}-owner`);
     const slotCount = input.slotCount ?? 1;
     const attachSlotCount = input.attachSlotCount ?? 1;
@@ -373,7 +375,9 @@ export class ReviewActionV2E2EHarness {
       retryPolicyVersion: "retry-v1",
       shardKey: `shard-${index}`,
       taskKind: ExecutionTaskKind.FindingDiscovery,
-      workSlotId: progressSlotId(executionId, index),
+      workSlotId:
+        input.workSlotId?.(executionId, index) ??
+        progressSlotId(executionId, index),
     }));
     const compatibilityKey = sha256(`${executionId}-compatibility`);
     const eligiblePaths = Array.from(
@@ -1754,7 +1758,7 @@ function providerManifest(input: {
 }
 
 function progressSlotId(executionId: string, index: number): string {
-  return `${executionId}-slot-${String(index).padStart(3, "0")}`;
+  return `${executionId}-slot-${index}`;
 }
 
 function progressLeaseFixture(input: {
