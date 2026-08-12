@@ -49,6 +49,7 @@ import {
   ReviewRequestedRegistrationDecisionStatus,
   prepareWorkSlots,
   canonicalReviewAssignmentManifestHashPreimage,
+  canonicalReviewAssignmentManifestJson,
   canonicalReviewExecutionPlanHashPreimage,
   validateReviewAssignmentManifest,
   validatePublicationPermit,
@@ -149,6 +150,17 @@ describe("review execution domain", () => {
         ["slot-1"],
       ),
     ).toThrowError("review_assignment_manifest_path_invalid");
+    expect(() =>
+      validateReviewAssignmentManifest(
+        { ...manifest, uncoveredPaths: ["src/a.ts"] },
+        ["slot-1"],
+      ),
+    ).toThrowError("review_assignment_manifest_uncovered_assigned_overlap");
+    expect(() =>
+      validateReviewAssignmentManifest({ ...manifest, uncoveredPaths: [] }, [
+        "slot-1",
+      ]),
+    ).toThrowError("review_assignment_manifest_eligible_unaccounted");
   });
 
   it("domain-separates manifest and manifest-bound plan hashes", () => {
@@ -988,6 +1000,70 @@ describe("start and admission saga", () => {
       authorizationId: "authorization-1",
       executionId: "execution-1",
     });
+  });
+
+  it("admits only a canonical manifest bound to both manifest and plan hashes", async () => {
+    const store = new InMemoryReviewExecutionStore();
+    const useCase = startUseCase(store, {
+      authorizationRevision: revision,
+      revisions: [revision, revision],
+    });
+    const base = startInput("execution-manifest");
+    const manifestCanonicalJson = canonicalReviewAssignmentManifestJson({
+      manifestVersion: 1,
+      assignments: [{ workSlotId: "slot-1", paths: ["src/a.ts"] }],
+      eligiblePaths: ["src/a.ts"],
+      uncoveredPaths: [],
+      excludedPaths: [],
+    });
+    const assignmentManifestHash = createHash("sha256")
+      .update(
+        canonicalReviewAssignmentManifestHashPreimage(manifestCanonicalJson),
+        "utf8",
+      )
+      .digest("hex");
+    const compatibilityKey = hash("b");
+    const planHash = createHash("sha256")
+      .update(
+        canonicalReviewExecutionPlanHashPreimage({
+          assignmentManifestHash,
+          compatibilityKey,
+          reviewRevisionHash: revision.reviewRevisionHash,
+          workSlots: base.workSlots,
+        }),
+        "utf8",
+      )
+      .digest("hex");
+
+    await expect(
+      useCase.execute({
+        ...base,
+        compatibilityKey,
+        planHash,
+        assignmentManifestCanonicalJson: manifestCanonicalJson,
+        assignmentManifestHash,
+      }),
+    ).resolves.toMatchObject({ status: StartReviewExecutionStatus.Admitted });
+    await expect(
+      useCase.execute({
+        ...base,
+        executionId: "execution-tampered",
+        compatibilityKey,
+        planHash,
+        assignmentManifestCanonicalJson: manifestCanonicalJson,
+        assignmentManifestHash: hash("c"),
+      }),
+    ).rejects.toThrow("review_assignment_manifest_hash_mismatch");
+    await expect(
+      useCase.execute({
+        ...base,
+        executionId: "execution-plan-tampered",
+        compatibilityKey,
+        planHash: hash("d"),
+        assignmentManifestCanonicalJson: manifestCanonicalJson,
+        assignmentManifestHash,
+      }),
+    ).rejects.toThrow("review_assignment_manifest_plan_hash_mismatch");
   });
 
   it("fails closed when authorization expires during the revision precheck", async () => {

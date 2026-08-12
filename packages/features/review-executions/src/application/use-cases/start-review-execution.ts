@@ -1,10 +1,15 @@
 import {
+  canonicalReviewAssignmentManifestHashPreimage,
+  canonicalReviewAssignmentManifestJson,
+  canonicalReviewExecutionPlanHashPreimage,
   canonicalReviewExecutionPlanPreimage,
   canonicalReviewExecutionStartPreimage,
+  reviewAssignmentManifestMaxBytes,
   ReviewExecutionState,
   reviewExecutionIsTerminal,
   reviewRevisionsEqual,
   scopeKey,
+  validateReviewAssignmentManifest,
   type ReviewExecutionSnapshot,
   type ReviewExecutionScope,
   type ReviewWorkSlotPlan,
@@ -114,6 +119,8 @@ export class StartReviewExecution {
     if (!reviewRevisionsEqual(precheck.revision, authorization.revision)) {
       return { status: StartReviewExecutionStatus.StaleRevision };
     }
+
+    await this.validateAssignmentManifestBinding(input, authorization);
 
     const requestedIntentResolution = await this.resolveRequestedIntent(
       input,
@@ -348,6 +355,54 @@ export class StartReviewExecution {
       }
     }
     return { status: StartReviewExecutionStatus.ConcurrencyConflict };
+  }
+
+  private async validateAssignmentManifestBinding(
+    input: StartReviewExecutionInput,
+    authorization: ReviewExecutionAuthorizationFacts,
+  ): Promise<void> {
+    const canonicalJson = input.assignmentManifestCanonicalJson ?? null;
+    const manifestHash = input.assignmentManifestHash ?? null;
+    if (canonicalJson === null && manifestHash === null) return;
+    if (canonicalJson === null || manifestHash === null) {
+      throw new Error("review_assignment_manifest_fields_incomplete");
+    }
+    if (
+      Buffer.byteLength(canonicalJson, "utf8") >
+      reviewAssignmentManifestMaxBytes
+    ) {
+      throw new Error("review_assignment_manifest_bytes_out_of_bounds");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(canonicalJson);
+    } catch {
+      throw new Error("review_assignment_manifest_json_invalid");
+    }
+    const manifest = validateReviewAssignmentManifest(
+      parsed,
+      input.workSlots.map((slot) => slot.workSlotId),
+    );
+    if (canonicalReviewAssignmentManifestJson(manifest) !== canonicalJson) {
+      throw new Error("review_assignment_manifest_json_not_canonical");
+    }
+    const expectedManifestHash = await this.digest.digestUtf8(
+      canonicalReviewAssignmentManifestHashPreimage(canonicalJson),
+    );
+    if (expectedManifestHash !== manifestHash) {
+      throw new Error("review_assignment_manifest_hash_mismatch");
+    }
+    const expectedPlanHash = await this.digest.digestUtf8(
+      canonicalReviewExecutionPlanHashPreimage({
+        assignmentManifestHash: manifestHash,
+        compatibilityKey: input.compatibilityKey,
+        reviewRevisionHash: authorization.revision.reviewRevisionHash,
+        workSlots: input.workSlots,
+      }),
+    );
+    if (expectedPlanHash !== input.planHash) {
+      throw new Error("review_assignment_manifest_plan_hash_mismatch");
+    }
   }
 
   private async resolveInitialAuthorization(

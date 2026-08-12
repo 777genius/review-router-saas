@@ -440,7 +440,10 @@ export function validateReviewAssignmentManifest(
   const uncoveredPaths = assignmentPaths(root.uncoveredPaths);
   const excludedPaths = assignmentPaths(root.excludedPaths);
   const eligible = new Set(eligiblePaths);
-  for (const path of assignments.flatMap((assignment) => assignment.paths)) {
+  const assignedPaths = new Set(
+    assignments.flatMap((assignment) => assignment.paths),
+  );
+  for (const path of assignedPaths) {
     if (!eligible.has(path)) {
       throw new Error("review_assignment_manifest_assignment_not_eligible");
     }
@@ -448,6 +451,15 @@ export function validateReviewAssignmentManifest(
   for (const path of uncoveredPaths) {
     if (!eligible.has(path)) {
       throw new Error("review_assignment_manifest_uncovered_not_eligible");
+    }
+    if (assignedPaths.has(path)) {
+      throw new Error("review_assignment_manifest_uncovered_assigned_overlap");
+    }
+  }
+  const uncovered = new Set(uncoveredPaths);
+  for (const path of eligiblePaths) {
+    if (!assignedPaths.has(path) && !uncovered.has(path)) {
+      throw new Error("review_assignment_manifest_eligible_unaccounted");
     }
   }
   for (const path of excludedPaths) {
@@ -473,6 +485,12 @@ export function validateReviewAssignmentManifest(
     uncoveredPaths,
     excludedPaths,
   };
+}
+
+export function canonicalReviewAssignmentManifestJson(
+  manifest: ReviewAssignmentManifest,
+): string {
+  return canonicalObjectJson(manifest);
 }
 
 function assignmentPaths(value: unknown): readonly string[] {
