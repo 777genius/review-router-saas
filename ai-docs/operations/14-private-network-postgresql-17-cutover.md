@@ -1,151 +1,162 @@
 # Private-network PostgreSQL 17 cutover
 
-This runbook covers only the database-generation cutover. Git flow, release
-tags, exact-commit verification, and general deploy sequencing remain governed
-by [07-environments-and-release-management.md](./07-environments-and-release-management.md).
-Do not use this runbook to bypass those gates.
+This is a fail-closed implementation contract, not production approval. The
+independent audit of `616426a` remains PR and production **NO-GO** until this
+branch is reviewed, the external controls below exist, a disposable rehearsal
+passes, and a separate change-management decision authorizes a real cutover.
+Git flow and release sequencing remain governed by
+[07-environments-and-release-management.md](./07-environments-and-release-management.md).
 
-The production path is
-`.github/workflows/private-network-pg17-rollout.yml`. The three older rotating
-bootstrap, migration, and evidence workflows are aliases to that protected
-workflow; they no longer contain GitHub-hosted database jobs.
+## Required organization control plane
 
-## Non-negotiable topology
+The workflow may exist only in the organization-owned repository named by
+`REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY`. Personal repositories fail. Configure
+one positive `REVIEW_ROUTER_RUNNER_GROUP_ID` and its matching group name. The
+group must:
 
-- Source and target are separate private Render database resources. Source is
-  PostgreSQL 16.13 and target is PostgreSQL 17. Their Render resource IDs,
-  PostgreSQL system identifiers, and recovery-witness hashes must all differ as
-  specified by the workflow inputs and protected variables.
-- A GitHub-hosted job may inspect/freeze Render and provision or verify cleanup
-  of a one-off runner. It receives no database URL and runs no PostgreSQL tool.
-- Every database operation runs on a newly generated repository-level JIT
-  runner inside Render's private network. The label binds repository, run ID,
-  run attempt, exact commit, and purpose. A runner accepts one job only.
-- `reviewrouter-runner-base` contains the narrowly scoped GitHub App bootstrap
-  credential but no database credential. The bootstrap exchanges it for JIT
-  configuration, deletes all App/token environment entries, and only then
-  starts `Runner.Listener`. Its image, base deploy, and runner tarball digest
-  are immutable inputs.
-- The `production-role-bootstrap` environment is the only job that exposes the
-  role-bootstrap URL. The subsequent `production` cutover job cannot reference
-  that credential.
+- have `visibility=selected`, exactly the control repository, and no public
+  repositories;
+- have workflow restriction enabled with exactly
+  `<org>/<control-repo>/.github/workflows/private-network-pg17-rollout.yml@refs/heads/main`;
+- be dedicated to this rollout; unique labels are not an isolation boundary.
 
-## Protected configuration
+The protected `main` workflow is dispatch-only and rejects run attempts other
+than one. `production-release-preflight` must require at least one reviewer,
+prevent self-review, and allow protected branches only. Preflight reads and
+hashes the observed GitHub policy; a variable claiming the policy is not proof.
+The `workflow_job` controller observes the numeric queued job ID, exact name,
+run/attempt, SHA, actor, workflow path/ref, event, organization, and repository
+before it creates a JIT runner.
 
-`production-runner-control` contains the Render API credential and these
-non-secret variables:
+The GitHub App installation must be limited to the single control repository.
+Its token request is exactly `administration:write`, `actions:read`, and
+`metadata:read`. The runner group ID is configuration, never a default. Store
+the App private key as a root-owned `0600` secret file under `/run/secrets`; the
+environment variable form is rejected. The credential process unlinks the
+file, mints the installation token and JIT configuration, deletes credential
+environment entries, then uses `execve` to replace its address space with the
+unprivileged launcher. The launcher runs only `Runner.Listener run --jitconfig`,
+removes workspace/bootstrap paths, and emits its nonsecret cleanup canary only
+after the listener has stopped. The workflow process inherits neither App key
+nor installation token.
 
-```text
-RENDER_OWNER_ID
-REVIEW_ROUTER_RENDER_FROZEN_SERVICE_IDS
-REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID
-REVIEW_ROUTER_RUNNER_BASE_DEPLOY_ID
-REVIEW_ROUTER_RUNNER_BASE_IMAGE_DIGEST
-REVIEW_ROUTER_RELEASE_ACTORS
-```
+The base image is digest pinned. The Actions runner version and SHA-256 are
+mandatory Docker build arguments and are checked before extraction. The
+dedicated Render runner service must have auto-deploy off and no active deploy.
+Its latest live deploy must match the configured immutable git commit or image
+SHA. Render one-off creation sends only `startCommand` and optional compute
+`planId`; a deploy ID is never a plan ID.
 
-The dedicated runner-base service contains only the GitHub bootstrap secrets
-and non-secret policy values:
+## External authenticated ledger contract
 
-```text
-REVIEW_ROUTER_RUNNER_GITHUB_APP_ID
-REVIEW_ROUTER_RUNNER_GITHUB_APP_INSTALLATION_ID
-REVIEW_ROUTER_RUNNER_GITHUB_APP_PRIVATE_KEY
-REVIEW_ROUTER_RUNNER_EXPECTED_REPOSITORY
-REVIEW_ROUTER_RUNNER_EXPECTED_ACTOR
-REVIEW_ROUTER_RUNNER_NO_JOB_TIMEOUT_MS
-```
+`REVIEW_ROUTER_RUNNER_LEDGER_URL` is mandatory. Its bearer credentials are
+scoped by protected environment and visible only to the exact step using them.
+The service must implement the endpoints consumed by
+`AuthenticatedRunnerLedgerAdapter` and transact the PostgreSQL tables created
+by `roleProvisioningSql`:
 
-It must not inherit an environment group containing `DATABASE_URL`, a
-`REVIEW_ROUTER_*_DATABASE_URL`, `PGPASSWORD`, Render API credentials, or runtime
-application secrets.
+- atomically claim a never-used rollout ID bound to commit, run, attempt, and
+  both system identifiers;
+- CAS every hash-chained observation receipt;
+- persist a Render job ID immediately after job creation, before response or
+  provenance validation, then attach the validated runner identity;
+- store launcher cleanup observation and provider terminal state, list open
+  jobs, and make cleanup/reconciliation idempotent;
+- permanently set `source_permanently_ineligible` on activation or activation
+  uncertainty; every promotion path must consult that ledger;
+- on reconciliation, return either proven pre-activation compensation (source
+  ACL/environment restored and source services resumed) or a PG17-only
+  activated/uncertain state. It must never report PG16 eligible at or after the
+  boundary.
 
-The `production` environment supplies explicit source/target identities,
-backup/PITR identity, exact staged-service deploy/image expectations, the
-source copy URL, target copy URL, and canonical target runtime/migration URLs.
-The source and target URLs must use private hostnames. No public database
-allowlist is permitted.
+Missing, unavailable, stale, duplicate, or contradictory ledger responses stop
+the rollout. Do not bypass this dependency with artifacts, labels, or in-memory
+state.
 
-## Sequence and evidence
+## Split Render permissions and API facts
 
-Dispatch from `refs/heads/main` with a never-before-used rollout ID and the
-exact checked commit. A protected-environment reviewer verifies the actor and
-commit before approval.
+Use three independent credentials:
 
-1. `freeze-provider-services` runs before any database is selected. It proves
-   every writer has `autoDeployTrigger: off`, nested
-   `envSpecificDetails.preDeployCommand: ""`, and no active deploy.
-2. A unique copy/bootstrap runner verifies source PG16 and target PG17 identities,
-   captures the protected backup/PITR identity, creates a custom-format
-   `pg_dump --no-owner --no-privileges`, and records its SHA-256.
-3. Writer services stay suspended. Runtime `CONNECT` is revoked on source,
-   existing non-cutover sessions are terminated, and the observed count must be
-   zero. Until activation, PG16 remains the sole authoritative generation.
-4. The digest-checked dump is restored as the bootstrap role into an empty PG17 database without
-   ownership or ACL metadata. Table sets, row counts, per-table canonical row
-   hashes, sequences, constraints, indexes, and `_prisma_migrations` history
-   must match before migration.
-5. The same private job executes the existing canonical role bootstrap after
-   equivalence. It transfers restored public objects to the release role and
-   proves the exact five-edge grantor topology. Its JIT runner is terminal and
-   cleanup-proven before the cutover runner is provisioned.
-6. The unique cutover runner executes the existing canonical migration,
-   generation observation, receipt logic,
-   role topology check, and exact runtime-grant generator run with
-   `REVIEW_ROUTER_RELEASE_ACL_GATE_MODE=closed`. Grant convergence and the
-   subsequent `CONNECT`/DML/sequence revocation share one transaction, so target
-   writes were never externally open.
-7. Target services must match the exact target database resource, release
-   commit, deploy ID, and image digest and remain suspended with an empty
-   pre-deploy command.
-8. Activation runs the canonical grants and inserts the immutable
-   `ReleaseGenerationActivationReceipt` in one transaction. That commit is the
-   first-write boundary. A conflicting receipt replay is fatal.
-9. The private job uploads the generation/equivalence/activation body. Render
-   cleanup jobs upload terminal workspace/credential-cleanup receipts. Assemble
-   them offline with `pnpm release-rollout:evidence:assemble`, then verify with
-   `pnpm release-rollout:evidence:verify <file>`. Do not accept either half by
-   itself as trusted rollout evidence.
+- `RENDER_RUNNER_CONTROL_API_KEY`: one-off runner creation and terminal polling;
+- `RENDER_PROVENANCE_READ_API_KEY`: read-only service/deploy/recovery/env facts;
+- `RENDER_SERVICE_SUSPENSION_API_KEY`: source/target suspend and resume only.
 
-The aggregate binds both runner names/JIT labels, runner-base service/deploy/image,
-source and target Render IDs, both PostgreSQL identities, backup and PITR IDs,
-quiescence, dump digest, every equivalence result, pre-activation ACL state,
-the exact activation transaction, and cleanup. Unknown fields, field splices,
-generation mismatch, digest mismatch, or missing cleanup fail verification.
+Adapters accept additive documented fields while requiring their security
+subset. Service/deploy/job/env list cursor wrappers, suspend/resume HTTP 202,
+and full environment replacement follow Render OpenAPI. Full replacement first
+reads every page, preserves every key, writes the complete set, re-reads every
+page, and compares complete key/value digests without logging values.
 
-## Rollback boundary
+There is no backups-by-ID call. Render contributes only
+`GET /postgres/{id}/recovery`. A separately authenticated export witness binds
+the Render resource ID, internal hostname, database, PostgreSQL system ID,
+LSN/time, recovery window, witness hash, and dump hash. The locally created dump
+must equal that witness. Git-backed deploys bind `commit.id` and have no image;
+image-backed deploys bind `image.sha` and have no commit. Ambiguous or mutable
+provenance fails.
 
-Before the activation transaction commits, rollback means discard PG17,
-restore source canonical `CONNECT`/runtime privileges in one reviewed
-transaction, and resume the frozen PG16 writers. Never declare PG17
-authoritative before that restoration is verified.
+## Database and secret boundary
 
-After the first accepted PG17 write, PG16 is permanently ineligible for
-promotion. Recovery is PG17 forward repair, PG17 PITR, or an application
-rollback proven compatible with the PG17 schema. Pointing services back at
-PG16 would discard accepted writes and is forbidden by the rollout state
-machine and evidence verifier.
+All database tools run on the exact private runner step, after checkout and
+dependency installation. Database URLs and passwords are never placed in argv,
+artifacts, logs, workspace metadata, image metadata, or broad inherited
+environments. PostgreSQL URLs are decomposed to nonsecret host/port/user/db
+arguments. Each command gets a fresh non-workspace `0600` passfile and a small
+allowlisted environment; errors expose only a step/command code.
 
-## Disposable rehearsal
+The source sequence is mandatory:
 
-Resolve immutable multi-architecture image digests and run only against the
-local disposable Docker network:
+1. suspend every source writer and re-observe every service suspended;
+2. revoke `CONNECT` from PUBLIC and runtime roles and commit it;
+3. terminate existing sessions;
+4. observe at least three bounded zero-session samples;
+5. run explicit reconnect probes as all four runtime roles and require every
+   probe to fail.
 
-```bash
-REVIEW_ROUTER_PRIVATE_PG17_REHEARSAL=1 \
-REVIEW_ROUTER_REHEARSAL_PG16_IMAGE='postgres:16.13-bookworm@sha256:<digest>' \
-REVIEW_ROUTER_REHEARSAL_PG17_IMAGE='postgres:17-bookworm@sha256:<digest>' \
-pnpm release-rollout:rehearsal
-```
+`writersSuspended` is never synthesized. A definite failure before activation
+enters compensation: source ACL/environment is restored and source writers are
+resumed and re-observed. An accepted or uncertain activation permanently bans
+PG16 promotion and allows only PG17 forward repair/PITR.
 
-The command creates uniquely named local containers, proves version/copy/data
-equivalence/ACL activation, and removes the exact containers and network before
-returning evidence. It has no provider, GitHub, or production database path.
+Equivalence streams each table through a hash with an 8 MiB process ceiling and
+also binds sequence `last_value`/`is_called`/owner/dependency, columns/defaults,
+constraints/indexes/triggers, policies and RLS, functions/views/schemas,
+ACL/default privileges/ownership, and migration history. Activation rejects an
+unclassified application schema, privileged/bypass-RLS runtime roles, runtime
+ownership, or unsafe PUBLIC privileges. Canonical grants, catalog-fact hash,
+and immutable first-write receipt share one transaction. Duplicate activation,
+including an identical replay, is rejected.
 
-## Provider API uncertainty
+## Workflow completion
 
-Render one-off job, nested service, staged-service, and cleanup response shapes
-are strict adapter contracts. Extra/missing fields, mutable image facts, reused
-JIT state, or absent cleanup proof fail closed. If Render's documented response
-changes, update the adapter contract and adversarial tests first; do not loosen
-validation during a production attempt or retry repeatedly.
+There are two independent runner leases: copy/role bootstrap and cutover. The
+second cannot queue until the first provider job and launcher cleanup witness
+are terminal. After activation, the second runner is also cleanup-proven. Only
+then may the hosted finalizer use the service-suspension credential to resume
+the exact target services, observe their live deploys, execute the bound live
+write/read canary, and assemble/verify trusted evidence. The evidence binds the
+protected-environment receipt, rollout/SHA/run/job/attempt/deploy identities,
+both generations, external backup witness, receipt chain, activation boundary,
+both runner lifecycles, resumed deploys, and live canary.
+
+The always-running reconciliation job cleans every persisted orphan and asks
+the authoritative ledger to choose compensation or PG17-only forward repair.
+An unknown activation result is never treated as pre-activation.
+
+## Disposable rehearsal and current blockers
+
+Rehearsal may use only pinned disposable PostgreSQL 16.13 and 17 images. It must
+exercise the production domain/application use cases, canonical SQL generators,
+role bootstrap, migration, activation, and evidence verifier while substituting
+only provider and connection ports. It must prove reconnect denial, definite
+pre-activation compensation, post/uncertain-activation PG16 ban, effective role
+and ACL/RLS matrix, argv/environment/proc redaction canaries, two runner cleanup
+lifecycles, and no remaining Docker resources.
+
+External prerequisites are intentionally blockers, not defaults: dedicated
+control repository, exact restricted runner group, protected environments,
+three Render credentials, root-owned App key secret file, immutable runner
+service provenance, authenticated backup/export witness, and the durable ledger
+API backed by the installed PostgreSQL schema. Until each is independently
+observed, this implementation is not dispatchable and production remains
+NO-GO.

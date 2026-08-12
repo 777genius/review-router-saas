@@ -452,8 +452,12 @@ GitHub-hosted runner -> public HTTPS API -> OIDC exchange -> config fetch -> hea
 In-place database upgrades and GitHub-hosted database jobs are unsupported.
 The release uses a separate private PG17 generation plus a dedicated Render
 runner-base service whose artifact contains no database credentials. Exact
-runner-base service/deploy/image facts are protected workflow variables, not a
-mutable `latest` tag.
+runner-base provenance is its latest live git commit or image SHA, observed
+before and after one-off job creation with auto-deploy off and no active deploy.
+The App private key is a root-owned secret file, never a Render environment
+variable. Runner control, read-only provenance, and service suspension use
+three different credentials. A mandatory authenticated ledger persists job
+identity immediately and enforces authoritative-generation CAS.
 
 The complete operator sequence, environment separation, evidence archive, and
 irreversible first-write boundary are in
