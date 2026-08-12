@@ -24,9 +24,13 @@ import {
   ReviewExecutionProviderKind,
   ReviewInvocationLeasePurpose,
   ReviewTaskKind as ExecutionTaskKind,
+  ReviewWorkSlotState,
+  ReviewWorkSlotTerminalReason as ExecutionWorkSlotTerminalReason,
   canonicalReviewAssignmentManifestHashPreimage,
   canonicalReviewExecutionPlanHashPreimage,
 } from "../../../packages/features/review-executions/src/index.js";
+import { PrismaReviewExecutionStore } from "../../../packages/features/review-executions/src/composition/index.js";
+import { createPrismaReviewProgressCapture } from "../../../packages/features/review-progress/src/composition/index.js";
 import { ClaimReviewPublicationStatus } from "../../../packages/features/review-publishing/src/v2/index.js";
 import { PrismaReviewPublicationRepository } from "../../../packages/features/review-publishing/src/v2/composition/index.js";
 import {
@@ -83,6 +87,7 @@ import {
 } from "../../../apps/api/src/review-action-v2-production-composition.js";
 import { reviewActionV2ProjectionPolicyVersion } from "../../../apps/api/src/review-action-v2-projection-policy.js";
 import { createProductionReviewV2WorkerRuntime } from "../../../apps/worker/src/review-v2-production-runtime.js";
+import { PrismaReviewProgressPublicationStore } from "../../../apps/worker/src/review-progress-store.js";
 import {
   createReviewV2WorkerFeature,
   reviewExecutionFinalizedEventType,
@@ -347,6 +352,8 @@ export class ReviewActionV2E2EHarness {
   async createCommittedFlow(
     input: {
       readonly slotCount?: number;
+      readonly eligibleFileCount?: number;
+      readonly pathSlotIndex?: (pathIndex: number, slotCount: number) => number;
       readonly attachSlotCount?: number;
       readonly attemptBudget?: number;
       readonly authorization?: ReviewActionV2E2EAuthorization;
@@ -354,7 +361,7 @@ export class ReviewActionV2E2EHarness {
   ): Promise<ReviewActionV2E2EFlow> {
     const authorized = input.authorization ?? (await this.authorize());
     const executionId = `${this.prefix}-execution-${randomUUID()}`;
-    const workSlotId = `${executionId}-slot-0`;
+    const workSlotId = progressSlotId(executionId, 0);
     const ownerIdHash = sha256(`${executionId}-owner`);
     const slotCount = input.slotCount ?? 1;
     const attachSlotCount = input.attachSlotCount ?? 1;
@@ -366,15 +373,20 @@ export class ReviewActionV2E2EHarness {
       retryPolicyVersion: "retry-v1",
       shardKey: `shard-${index}`,
       taskKind: ExecutionTaskKind.FindingDiscovery,
-      workSlotId: `${executionId}-slot-${index}`,
+      workSlotId: progressSlotId(executionId, index),
     }));
     const compatibilityKey = sha256(`${executionId}-compatibility`);
-    const eligiblePaths = workSlots.map(
-      (_, index) => `src/review-unit-${index}.ts`,
+    const eligiblePaths = Array.from(
+      { length: input.eligibleFileCount ?? slotCount },
+      (_, index) => `src/review-file-${String(index).padStart(3, "0")}.ts`,
     );
     const assignmentManifestCanonicalJson = canonicalJson({
       assignments: workSlots.map((slot, index) => ({
-        paths: [eligiblePaths[index]],
+        paths: eligiblePaths.filter(
+          (_, pathIndex) =>
+            (input.pathSlotIndex?.(pathIndex, slotCount) ??
+              pathIndex % slotCount) === index,
+        ),
         workSlotId: slot.workSlotId,
       })),
       eligiblePaths,
@@ -880,6 +892,243 @@ export class ReviewActionV2E2EHarness {
     throw new Error("review_v2_e2e_worker_did_not_settle");
   }
 
+  async captureProgress(executionId: string): Promise<void> {
+    const snapshot = await new PrismaReviewExecutionStore(
+      this.prisma,
+    ).findExecution(executionId);
+    if (!snapshot) throw new Error("review_v2_e2e_execution_missing");
+    const capture = createPrismaReviewProgressCapture({
+      fileCoverageEnabled: true,
+    });
+    await this.prisma.$transaction((transaction) =>
+      capture(transaction, snapshot.execution),
+    );
+  }
+
+  async publishProgress(): Promise<unknown> {
+    const runtime = createProductionReviewV2WorkerRuntime({
+      prisma: this.prisma,
+      clock: new SystemClock(),
+      env: {
+        ...this.env,
+        REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE: "1",
+        REVIEW_ROUTER_PROGRESS_FILE_COVERAGE: "1",
+        REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES: "1",
+        REVIEW_ROUTER_PROGRESS_REPOSITORIES: `${owner}/${repo}`,
+        REVIEW_ROUTER_PROGRESS_MIN_MUTATION_INTERVAL_MS: "1",
+      },
+      githubAppId: requiredString(this.env.GITHUB_APP_ID),
+      githubPrivateKey: requiredString(this.env.GITHUB_APP_PRIVATE_KEY),
+    });
+    return runtime.progress?.runMaintenance();
+  }
+
+  async readProgressPublication(): Promise<unknown> {
+    return this.prisma.reviewProgressPublicationV1.findUnique({
+      where: {
+        workspaceId_repositoryConnectionId_scmRepositoryIdentityId_pullRequestNumber:
+          {
+            workspaceId: this.workspaceId,
+            repositoryConnectionId: this.repositoryConnectionId,
+            scmRepositoryIdentityId: this.scmRepositoryIdentityId,
+            pullRequestNumber,
+          },
+      },
+      select: {
+        desiredVersion: true,
+        publishedVersion: true,
+        failureCount: true,
+        lastErrorCode: true,
+      },
+    });
+  }
+
+  async setProgressFixture(input: {
+    readonly executionId: string;
+    readonly completed: number;
+    readonly retrying?: number;
+    readonly recovered?: number;
+    readonly exhausted?: number;
+    readonly retriedSlotIndexes?: readonly number[];
+  }): Promise<void> {
+    const execution = await this.prisma.reviewExecutionV2.findUniqueOrThrow({
+      where: { executionId: input.executionId },
+      select: { generation: true, version: true },
+    });
+    const slots = await this.prisma.reviewExecutionWorkSlotV2.findMany({
+      where: { executionId: input.executionId },
+      orderBy: { planOrdinal: "asc" },
+    });
+    const retrying = input.retrying ?? 0;
+    const recovered = input.recovered ?? 0;
+    const exhausted = input.exhausted ?? 0;
+    const retriedSlotIndexes = new Set(
+      input.retriedSlotIndexes ?? [
+        ...Array.from({ length: recovered }, (_, index) =>
+          Math.max(0, input.completed - recovered + index),
+        ),
+        ...Array.from(
+          { length: retrying },
+          (_, index) => input.completed + index,
+        ),
+      ],
+    );
+    const exhaustedSlotIndexes = new Set(
+      slots
+        .map((_, index) => index)
+        .filter(
+          (index) => index >= input.completed && !retriedSlotIndexes.has(index),
+        )
+        .slice(0, exhausted),
+    );
+    if (
+      input.completed < recovered ||
+      retriedSlotIndexes.size < recovered ||
+      input.completed + retrying + exhausted > slots.length
+    ) {
+      throw new Error("review_v2_e2e_progress_fixture_invalid");
+    }
+    const now = new Date();
+    await this.prisma.$transaction(async (transaction) => {
+      await transaction.reviewInvocationLeaseV2.deleteMany({
+        where: { executionId: input.executionId },
+      });
+      for (const [index, slot] of slots.entries()) {
+        const retried = retriedSlotIndexes.has(index);
+        const state =
+          index < input.completed
+            ? "satisfied"
+            : retried
+              ? "leased"
+              : exhaustedSlotIndexes.has(index)
+                ? "exhausted"
+                : "pending";
+        await transaction.reviewExecutionWorkSlotV2.update({
+          where: {
+            executionId_workSlotId: {
+              executionId: input.executionId,
+              workSlotId: slot.workSlotId,
+            },
+          },
+          data: {
+            state,
+            nextAttemptOrdinal: state === "pending" ? 1 : 3,
+            activeLeaseId: null,
+            acceptedObservationRefId:
+              state === "satisfied" ? `${slot.workSlotId}-accepted` : null,
+          },
+        });
+        if ((state === "satisfied" && retried) || state === "leased") {
+          await transaction.reviewInvocationLeaseV2.create({
+            data: progressLeaseFixture({
+              executionId: input.executionId,
+              executionGeneration: execution.generation,
+              index,
+              slot,
+              workspaceId: this.workspaceId,
+              repositoryConnectionId: this.repositoryConnectionId,
+              scmRepositoryIdentityId: this.scmRepositoryIdentityId,
+              now,
+              active: false,
+            }),
+          });
+        }
+      }
+      await transaction.reviewExecutionV2.update({
+        where: { executionId: input.executionId },
+        data: { version: execution.version + 1n, updatedAt: now },
+      });
+    });
+    await this.captureProgress(input.executionId);
+  }
+
+  async terminalizeProgressSlot(
+    executionId: string,
+    workSlotIndex: number,
+  ): Promise<void> {
+    const snapshot = await new PrismaReviewExecutionStore(
+      this.prisma,
+    ).findExecution(executionId);
+    const slot = snapshot?.execution.workSlots[workSlotIndex];
+    if (!snapshot || !slot) throw new Error("review_v2_e2e_slot_missing");
+    const store = new PrismaReviewExecutionStore(this.prisma, {
+      progressCapture: createPrismaReviewProgressCapture({
+        fileCoverageEnabled: true,
+      }),
+    });
+    const result = await store.terminalizeWorkSlot({
+      scope: {
+        workspaceId: this.workspaceId,
+        repositoryConnectionId: this.repositoryConnectionId,
+        scmRepositoryIdentityId: this.scmRepositoryIdentityId,
+        pullRequestNumber,
+      },
+      executionId,
+      generation: snapshot.execution.generation,
+      reviewRevisionHash: snapshot.execution.revision.reviewRevisionHash,
+      workSlotId: slot.workSlotId,
+      terminalState: ReviewWorkSlotState.Exhausted,
+      reasonCode: ExecutionWorkSlotTerminalReason.AttemptBudgetExhausted,
+      now: new Date(),
+    });
+    if (result.status !== "applied") {
+      throw new Error(`review_v2_e2e_terminalize_failed:${result.status}`);
+    }
+  }
+
+  async setExecutionProgressState(
+    executionId: string,
+    state: "completed" | "partial" | "failed",
+  ): Promise<void> {
+    const execution = await this.prisma.reviewExecutionV2.findUniqueOrThrow({
+      where: { executionId },
+      select: { version: true },
+    });
+    await this.prisma.reviewExecutionV2.update({
+      where: { executionId },
+      data: {
+        state,
+        version: execution.version + 1n,
+        updatedAt: new Date(),
+      },
+    });
+    await this.captureProgress(executionId);
+  }
+
+  async makeProgressDue(): Promise<void> {
+    const now = new Date(Date.now() - 1_000);
+    await this.prisma.reviewProgressPublicationV1.updateMany({
+      where: {
+        workspaceId: this.workspaceId,
+        repositoryConnectionId: this.repositoryConnectionId,
+        scmRepositoryIdentityId: this.scmRepositoryIdentityId,
+        pullRequestNumber,
+      },
+      data: {
+        nextPublishAt: now,
+        claimId: null,
+        claimOwnerIdHash: null,
+        claimUntil: null,
+      },
+    });
+    await this.prisma.reviewProgressInstallationBudgetV1.updateMany({
+      where: { githubInstallationId: BigInt(githubInstallationId) },
+      data: { nextMutationAt: now, cooldownUntil: null, updatedAt: now },
+    });
+  }
+
+  async promoteProgress(
+    executionId: string,
+    outcome: "succeeded" | "failed" | "superseded",
+  ): Promise<number> {
+    return new PrismaReviewProgressPublicationStore(
+      this.prisma,
+    ).promoteSettledExecutions({
+      settlements: [{ executionId, outcome }],
+      now: new Date(),
+    });
+  }
+
   async deadLetterAndRecoverFinalizedEvent(): Promise<void> {
     const permanentFailure: OutboxHandler = {
       type: reviewExecutionFinalizedEventType,
@@ -1193,7 +1442,7 @@ async function seedProductionControlPlane(
 ): Promise<void> {
   const now = new Date();
   const limits: ReviewProtocolLimits = {
-    maxWorkSlots: 20,
+    maxWorkSlots: 200,
     maxAttemptsPerSlot: ids.protocolMaxAttemptsPerSlot ?? 4,
     maxObservationBytes: 1_000_000,
     maxObservationFindings: 1_000,
@@ -1501,6 +1750,66 @@ function providerManifest(input: {
     executionProfile: ProviderExecutionProfile.PromptOnlyEnvelopeV1,
     baseTreeHash: sha256(`${input.executionId}-base-tree`),
     environmentContractHash: sha256(`${input.executionId}-environment`),
+  };
+}
+
+function progressSlotId(executionId: string, index: number): string {
+  return `${executionId}-slot-${String(index).padStart(3, "0")}`;
+}
+
+function progressLeaseFixture(input: {
+  readonly executionId: string;
+  readonly executionGeneration: bigint;
+  readonly index: number;
+  readonly slot: Readonly<{
+    workSlotId: string;
+    providerVoteIdentityHash: string;
+  }>;
+  readonly workspaceId: string;
+  readonly repositoryConnectionId: string;
+  readonly scmRepositoryIdentityId: string;
+  readonly now: Date;
+  readonly active: boolean;
+}) {
+  const suffix = `${input.executionId}-${input.index}`;
+  return {
+    leaseId: `${suffix}-progress-lease`,
+    workspaceId: input.workspaceId,
+    repositoryConnectionId: input.repositoryConnectionId,
+    scmRepositoryIdentityId: input.scmRepositoryIdentityId,
+    pullRequestNumber,
+    executionId: input.executionId,
+    executionGeneration: input.executionGeneration,
+    providerInvocationKey: sha256(`${suffix}-provider-invocation`),
+    preparedManifestCanonicalJson: canonicalJson({
+      fixture: suffix,
+      manifestVersion: 1,
+    }),
+    preparedManifestKey: sha256(`${suffix}-manifest`),
+    providerVoteIdentityHash: input.slot.providerVoteIdentityHash,
+    workSlotId: input.slot.workSlotId,
+    purpose: "provider_execution" as const,
+    authorizationId: `${suffix}-authorization`,
+    producerReleaseId: `${suffix}-release`,
+    reviewRevisionHash: sha256(`${suffix}-revision`),
+    mutationEpoch: 1n,
+    leaseSafetyDecisionHash: sha256(`${suffix}-safety`),
+    attemptId: `${suffix}-attempt`,
+    sourceObservationId: null,
+    attemptOrdinal: 2,
+    acquireRequestIdHash: sha256(`${suffix}-acquire-request-id`),
+    acquireRequestHash: sha256(`${suffix}-acquire-request`),
+    lastRenewRequestIdHash: null,
+    lastRenewRequestHash: null,
+    ownerIdHash: sha256(`${suffix}-owner`),
+    leaseCapabilityId: `${suffix}-capability`,
+    capabilitySigningKeyId: capabilityKeyId,
+    state: input.active ? ("active" as const) : ("released" as const),
+    acquiredAt: input.now,
+    renewedAt: input.now,
+    expiresAt: new Date(input.now.getTime() + 60_000),
+    resultReportUntil: new Date(input.now.getTime() + 120_000),
+    retainUntil: new Date(input.now.getTime() + 86_400_000),
   };
 }
 
