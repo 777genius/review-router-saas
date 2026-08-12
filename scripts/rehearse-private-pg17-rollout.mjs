@@ -121,6 +121,7 @@ export async function executeDisposableRehearsal(
   let controlPrisma;
   let providerAuthorityPrisma;
   let permitInstallerPrisma;
+  let targetReceiptReaderPrisma;
   const createdContainers = [];
   const docker = (...args) => execute(args);
   const sql = (container, statement) =>
@@ -398,6 +399,7 @@ export async function executeDisposableRehearsal(
        CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release';
        CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN;
        CREATE ROLE reviewrouter_activation_permit_installer LOGIN PASSWORD 'disposable-installer';
+       CREATE ROLE reviewrouter_activation_receipt_reader LOGIN PASSWORD 'disposable-receipt-reader';
        ALTER DATABASE reviewrouter OWNER TO reviewrouter_role_bootstrap;
        GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
        GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
@@ -497,13 +499,14 @@ export async function executeDisposableRehearsal(
     );
     sql(
       target,
-      "GRANT USAGE ON SCHEMA reviewrouter_activation TO reviewrouter_role_bootstrap; GRANT SELECT ON reviewrouter_activation.activation_receipt TO reviewrouter_role_bootstrap",
+      "GRANT USAGE ON SCHEMA reviewrouter_activation TO reviewrouter_role_bootstrap",
     );
     const controlToken = randomBytes(32).toString("hex");
     const providerAuthorityToken = randomBytes(32).toString("hex");
     const authorityUrl = `postgresql://reviewrouter_release_control:disposable-control@127.0.0.1:${authorityPort}/reviewrouter?sslmode=disable`;
     const providerAuthorityUrl = `postgresql://reviewrouter_provider_authority:disposable-provider@127.0.0.1:${authorityPort}/reviewrouter?sslmode=disable`;
     const installerUrl = `postgresql://reviewrouter_activation_permit_installer:disposable-installer@127.0.0.1:${targetPort}/reviewrouter?sslmode=disable`;
+    const receiptReaderUrl = `postgresql://reviewrouter_activation_receipt_reader:disposable-receipt-reader@127.0.0.1:${targetPort}/reviewrouter?sslmode=disable`;
     controlPrisma = createPrismaClient({
       databaseUrl: authorityUrl,
       poolMax: 2,
@@ -516,10 +519,15 @@ export async function executeDisposableRehearsal(
       databaseUrl: installerUrl,
       poolMax: 1,
     });
+    targetReceiptReaderPrisma = createPrismaClient({
+      databaseUrl: receiptReaderUrl,
+      poolMax: 1,
+    });
     releaseControl = await createReleaseControlApp({
       controlPrisma,
       providerAuthorityPrisma,
       permitInstallerPrisma,
+      targetReceiptReaderPrisma,
       credentials: {
         controlTokenSha256: createHash("sha256")
           .update(controlToken)
@@ -616,6 +624,7 @@ export async function executeDisposableRehearsal(
       controlPrisma?.$disconnect(),
       providerAuthorityPrisma?.$disconnect(),
       permitInstallerPrisma?.$disconnect(),
+      targetReceiptReaderPrisma?.$disconnect(),
     ]);
     let cleanupError;
     for (const name of createdContainers.reverse()) {

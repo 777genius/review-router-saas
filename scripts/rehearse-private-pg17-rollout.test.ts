@@ -42,6 +42,8 @@ describe("disposable dual-version rehearsal", () => {
       "000001_release_authority/migration.sql",
       "activationAuthorityProvisioningSql",
       "reviewrouter_activation_permit_installer",
+      "reviewrouter_activation_receipt_reader",
+      "targetReceiptReaderPrisma",
       "reviewrouter_provider_authority",
       "providerAuthorityPrisma",
       "Promise.allSettled",
@@ -65,6 +67,9 @@ describe("disposable dual-version rehearsal", () => {
       "[redacted-database-url]",
     ])
       expect(source).toContain(required);
+    expect(source).not.toContain(
+      "GRANT SELECT ON reviewrouter_activation.activation_receipt TO reviewrouter_role_bootstrap",
+    );
     expect(source).not.toContain("writersSuspended: true");
     expect(source).not.toContain(
       'command === "pnpm" && step === "deploy_migrations"',
