@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  activationAuthorityProvisioningSql,
   assertCanonicalRoleTopology,
   canonicalRoleTopologyObservationSql,
   canonicalDatabaseGenerationObservationSql,
@@ -32,6 +34,48 @@ function environment() {
     REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
   };
 }
+
+describe("application database release-authority isolation", () => {
+  it("keeps migration 000067 as an immutable no-op marker", () => {
+    const migration = readFileSync(
+      new URL(
+        "../packages/platform/db/prisma/migrations/000067_release_rollout_ledger/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(migration).toContain("immutable history marker");
+    expect(migration).not.toMatch(
+      /\b(?:CREATE|ALTER|DROP|GRANT|REVOKE)\s+(?:ROLE|TABLE|FUNCTION|PROCEDURE)\b/iu,
+    );
+    expect(migration).not.toContain("release_rollout_ledger");
+  });
+
+  it("provisions only target-local activation capability", () => {
+    const sql = activationAuthorityProvisioningSql();
+    expect(sql).toContain("reviewrouter_activation.activation_permit");
+    expect(sql).toContain("reviewrouter_activation.activation_receipt");
+    expect(sql).toContain("reviewrouter_activation_permit_installer");
+    expect(sql).toContain("external activation guard is not pre-provisioned");
+    expect(sql).toContain(
+      "REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM reviewrouter_activation_permit_installer",
+    );
+    expect(sql).toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit",
+    );
+    expect(sql).toContain(
+      "GRANT CONNECT ON DATABASE %I TO reviewrouter_activation_permit_installer;",
+    );
+    expect(sql).toContain("REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC;");
+    expect(sql).toContain("current_database())\n\\gexec\nSELECT format(");
+    expect(sql).toContain("\n\\gexec\nDO $installer_database_acl$");
+    expect(sql).not.toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.activate_generation(text,text) TO reviewrouter_activation_permit_installer",
+    );
+    expect(sql).not.toMatch(/reviewrouter_release_(?:control|witness)/u);
+    expect(sql).not.toMatch(/public\."release_(?:rollout|runner)_/u);
+  });
+});
 
 describe("canonical exclusive release migration caller", () => {
   it("rejects role-attribute drift and non-canonical bootstrap topology", () => {
@@ -73,13 +117,7 @@ describe("canonical exclusive release migration caller", () => {
         createRole: false,
         replication: false,
         bypassRls: false,
-        bootstrapCanSet: true,
-        bootstrapMembershipAdminOption: true,
-        bootstrapMembershipInheritOption: false,
-        bootstrapMembershipSetOption: true,
-        bootstrapMembershipCount: 2,
-        bootstrapGrantorCount: 2,
-        unexpectedMembershipCount: 0,
+        membershipCount: 0,
       },
       ownership: {
         databaseOwner: "reviewrouter_role_bootstrap",
@@ -132,7 +170,7 @@ describe("canonical exclusive release migration caller", () => {
     expect(() =>
       assertCanonicalRoleTopology({
         ...observation,
-        guard: { ...observation.guard, bootstrapGrantorCount: 3 },
+        guard: { ...observation.guard, membershipCount: 1 },
       }),
     ).toThrow("release_migration_role_observation_failed");
     expect(() =>
@@ -160,13 +198,8 @@ describe("canonical exclusive release migration caller", () => {
     const createdRoleIdentities = [
       ...provisioning.matchAll(/CREATE ROLE ([a-z_]+) ([^;]+);/gu),
     ].map(([, username, attributes]) => ({ attributes, username }));
-    expect(createdRoleIdentities).toEqual([
-      {
-        username: "reviewrouter_activation_receipt_guard",
-        attributes:
-          "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
-      },
-      ...[
+    expect(createdRoleIdentities).toEqual(
+      [
         "reviewrouter_api",
         "reviewrouter_web",
         "reviewrouter_worker",
@@ -187,7 +220,7 @@ describe("canonical exclusive release migration caller", () => {
                   : "release") +
           "'",
       })),
-    ]);
+    );
     expect(provisioning).not.toMatch(
       /ALTER ROLE [^;]+\b(?:SUPERUSER|NOSUPERUSER|CREATEDB|NOCREATEDB|REPLICATION|NOREPLICATION|BYPASSRLS|NOBYPASSRLS)\b/gu,
     );
@@ -197,34 +230,39 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).not.toContain(
       "aclexplode(coalesce(attribute.attacl,'{}'::aclitem[]))",
     );
-    expect(provisioning).toContain("aclexplode(attribute.attacl)");
-    expect(provisioning).toContain("ELSIF observed.rolcanlogin");
+    expect(provisioning).toContain("OR observed.rolcanlogin");
     expect(provisioning).toContain("OR observed.rolsuper");
     expect(provisioning).toContain("OR observed.rolcreatedb");
     expect(provisioning).toContain("OR observed.rolcreaterole");
     expect(provisioning).toContain("OR observed.rolreplication");
     expect(provisioning).toContain("OR observed.rolbypassrls");
     expect(provisioning).toContain(
-      "refusing unexpectedly privileged activation receipt guard role",
+      "external activation receipt guard is not pre-provisioned canonically",
+    );
+    for (const removedAuthorityArtifact of [
+      "reviewrouter_release_control",
+      "reviewrouter_release_witness",
+      "release_rollout_ledger",
+      "release_rollout_receipt_ledger",
+      "release_runner_provisioning_intent",
+      "release_runner_job_ledger",
+      "release_rollout_claim",
+      "release_runner_persist_cleanup_witness",
+    ]) {
+      expect(provisioning).not.toContain(removedAuthorityArtifact);
+      expect(grants).not.toContain(removedAuthorityArtifact);
+      expect(observationSql).not.toContain(removedAuthorityArtifact);
+    }
+    expect(provisioning).not.toContain(
+      "GRANT reviewrouter_activation_receipt_guard TO",
     );
     expect(provisioning).toContain(
-      "GRANT reviewrouter_activation_receipt_guard TO reviewrouter_role_bootstrap\n  WITH INHERIT FALSE, SET TRUE",
-    );
-    expect(provisioning).toContain(
-      "activation receipt guard ownership authority is non-canonical",
+      "activation receipt guard must have no membership edges",
     );
     expect(provisioning).toContain(
       "AND granted.rolname <> 'reviewrouter_activation_receipt_guard'",
     );
-    expect(observationSql).toContain(
-      "'bootstrapMembershipAdminOption', (SELECT bool_or(membership.admin_option)",
-    );
-    expect(observationSql).toContain(
-      "'bootstrapMembershipInheritOption', (SELECT bool_or(membership.inherit_option)",
-    );
-    expect(observationSql).toContain(
-      "'bootstrapMembershipSetOption', (SELECT bool_or(membership.set_option)",
-    );
+    expect(observationSql).toContain("'membershipCount', (SELECT count(*)");
     expect(observationSql).toContain(
       "AND granted.rolname <> 'reviewrouter_activation_receipt_guard'",
     );
@@ -280,7 +318,9 @@ describe("canonical exclusive release migration caller", () => {
       "DROP SCHEMA IF EXISTS reviewrouter_bootstrap",
     );
     expect(provisioning).toContain("SECURITY DEFINER");
-    expect(provisioning).toContain("pg_catalog.sha256(convert_to(");
+    expect(activationAuthorityProvisioningSql()).toContain(
+      "pg_catalog.sha256(convert_to(",
+    );
     expect(provisioning).not.toContain("public.digest(");
     expect(provisioning).toContain(
       "reviewrouter_bootstrap.consume_migration_evidence",
@@ -488,13 +528,7 @@ describe("canonical exclusive release migration caller", () => {
             createRole: false,
             replication: false,
             bypassRls: false,
-            bootstrapCanSet: true,
-            bootstrapMembershipAdminOption: true,
-            bootstrapMembershipInheritOption: false,
-            bootstrapMembershipSetOption: true,
-            bootstrapMembershipCount: 2,
-            bootstrapGrantorCount: 2,
-            unexpectedMembershipCount: 0,
+            membershipCount: 0,
           },
           ownership: {
             databaseOwner: "reviewrouter_role_bootstrap",

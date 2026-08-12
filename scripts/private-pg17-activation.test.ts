@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  activationAuthorityProvisioningSql,
   canonicalActivationSql,
   roleProvisioningSql,
-  runtimeAclGateStatements,
-  runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
 
 const configuration = {
@@ -23,121 +22,151 @@ const configuration = {
   ],
   releasePassword: "release-pass",
 };
-const activationFence = {
-  rolloutId: "rollout-activation-1",
-  expectedCommitSha: "a".repeat(40),
-  runId: "12",
-  jobId: "34",
-  runAttempt: 1,
-  sourceSystemIdentifier: "100",
-  targetSystemIdentifier: "200",
-  previousReceiptSha256: `sha256:${"b".repeat(64)}`,
-  fenceNonce: "c".repeat(32),
-  fenceVersion: 1,
-  claimVersion: 1,
-  targetDeployIds: ["dep-target"],
-};
 
-describe("transactional PG17 activation", () => {
-  it("keeps every runtime role closed in the migration transaction", () => {
-    const sql = runtimeGrantSql(configuration, { gateClosed: true });
-    expect(sql).toContain("BEGIN;");
-    for (const role of configuration.roles) {
-      expect(sql).toContain(
-        `REVOKE CONNECT ON DATABASE :"DBNAME" FROM ${role.username}`,
-      );
-      expect(sql).toContain(
-        `REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM ${role.username}`,
-      );
-    }
-    expect(sql.lastIndexOf("COMMIT;")).toBeGreaterThan(
-      sql.indexOf(runtimeAclGateStatements(configuration)),
+describe("target-local PG17 activation permit", () => {
+  it("gives the dedicated installer only the permit installation capability", () => {
+    const sql = activationAuthorityProvisioningSql();
+    expect(sql).toContain("reviewrouter_activation.install_activation_permit");
+    expect(sql).toContain(
+      "session_user <> 'reviewrouter_activation_permit_installer'",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM reviewrouter_activation_permit_installer",
+    );
+    expect(sql).toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit",
+    );
+    expect(sql).toContain(
+      "'GRANT CONNECT ON DATABASE %I TO reviewrouter_activation_permit_installer;'",
+    );
+    expect(sql).toContain(
+      "'reviewrouter_activation_permit_installer', current_database(), 'CONNECT'",
+    );
+    expect(sql).toContain(
+      "'reviewrouter_activation_permit_installer', current_database(), 'TEMP'",
+    );
+    expect(sql).toContain("acl.privilege_type = 'CONNECT'");
+    expect(sql).toContain("acl.is_grantable");
+    expect(sql).not.toContain(
+      "GRANT CONNECT ON DATABASE %I TO reviewrouter_activation_permit_installer WITH GRANT OPTION",
+    );
+    expect(sql).not.toContain("GRANT reviewrouter_activation_receipt_guard TO");
+    expect(sql).not.toContain(
+      "CREATE ROLE reviewrouter_activation_receipt_guard",
     );
   });
 
-  it("makes canonical grants and immutable receipt one commit boundary", () => {
-    const activation = canonicalActivationSql(configuration, activationFence);
-    expect(activation.canonicalPrivilegesSha256).toMatch(
-      /^sha256:[a-f0-9]{64}$/u,
+  it("makes exact install replay idempotent and rejects a conflicting tuple", () => {
+    const sql = activationAuthorityProvisioningSql();
+    expect(sql).toContain("ON CONFLICT (rollout_id) DO NOTHING");
+    expect(sql).toContain("WHERE rollout_id = requested_rollout_id FOR UPDATE");
+    expect(sql).toContain("RETURN false;");
+    expect(sql).toContain("activation permit conflicts with installed tuple");
+    expect(sql).toContain("UNIQUE (permit_epoch, permit_nonce)");
+  });
+
+  it("gives the guard read-only migration history and no other public table access", () => {
+    const sql = activationAuthorityProvisioningSql();
+    expect(sql).toContain(
+      "IF to_regclass('public._prisma_migrations') IS NULL",
+    );
+    expect(sql).toContain(
+      'GRANT SELECT ON TABLE public."_prisma_migrations" TO reviewrouter_activation_receipt_guard',
+    );
+    expect(sql).toContain(
+      "'reviewrouter_activation_receipt_guard', 'public._prisma_migrations', 'SELECT'",
+    );
+    expect(sql).toContain(
+      "ARRAY['INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']",
+    );
+    expect(sql).toContain(
+      "ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']",
+    );
+    expect(sql).toContain("relation.relname <> '_prisma_migrations'");
+    expect(sql).toContain(
+      "'reviewrouter_activation_permit_installer', relation.oid",
+    );
+    expect(sql).not.toMatch(
+      /GRANT\s+(?:INSERT|UPDATE|DELETE|ALL).*_prisma_migrations.*reviewrouter_activation_receipt_guard/iu,
+    );
+  });
+
+  it("locks, validates, grants, consumes and receipts in one transaction", () => {
+    const authority = activationAuthorityProvisioningSql();
+    const activation = canonicalActivationSql(configuration, {
+      rolloutId: "rollout-activation-1",
+    });
+    expect(authority).toContain(
+      "FROM reviewrouter_activation.activation_permit\n  WHERE rollout_id = requested_rollout_id FOR UPDATE",
+    );
+    expect(authority).toContain("FROM pg_catalog.pg_control_system()");
+    expect(authority).toContain("current_setting('server_version_num')");
+    expect(authority).toContain("FROM public._prisma_migrations");
+    expect(authority).toContain(
+      "evidence->>'commit' = permit.expected_commit_sha",
+    );
+    expect(authority).toContain(
+      "UPDATE reviewrouter_activation.activation_permit\n    SET consumed_at = transaction_timestamp()",
+    );
+    expect(
+      authority.indexOf(
+        "INSERT INTO reviewrouter_activation.activation_receipt",
+      ),
+    ).toBeLessThan(
+      authority.indexOf("SET consumed_at = transaction_timestamp()"),
     );
     expect(activation.sql).toContain("BEGIN;");
+    expect(activation.sql).toContain("GRANT CONNECT");
     expect(activation.sql).toContain(
-      "reviewrouter_bootstrap.activate_generation(",
+      "reviewrouter_activation.activate_generation(",
     );
     expect(activation.sql.trim().endsWith("COMMIT;")).toBe(true);
-    expect(activation.sql.indexOf("GRANT CONNECT")).toBeLessThan(
-      activation.sql.indexOf("activate_generation("),
-    );
-    expect(activation.sql).toContain(activationFence.fenceNonce);
-    expect(activation.sql).toContain(activationFence.previousReceiptSha256);
   });
 
-  it("keeps the receipt behind an inaccessible append-only guard role", () => {
+  it("returns the immutable receipt on crash replay and fails closed on torn consume", () => {
+    const sql = activationAuthorityProvisioningSql();
+    expect(sql).toContain(
+      "SELECT * INTO receipt FROM reviewrouter_activation.activation_receipt",
+    );
+    expect(sql).toContain("activation receipt conflicts with permit replay");
+    expect(sql).toContain("consumed activation permit has no receipt");
+    expect(sql).toContain("activation permit consumption raced");
+  });
+
+  it("keeps rollout bootstrap outside guard authority and global ledgers", () => {
     const sql = roleProvisioningSql(configuration);
     expect(sql).toContain(
-      "reviewrouter_bootstrap.release_generation_activation_receipt",
-    );
-    expect(sql).toContain("SECURITY DEFINER");
-    expect(sql).toContain(
-      "GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.activate_generation",
+      "external activation authority boundary is not installed canonically",
     );
     expect(sql).toContain(
-      "role bootstrap forbidden after generation activation",
+      "activation receipt guard must have no membership edges",
     );
-    expect(sql).toContain("activation receipt is append-only");
-    expect(sql).toContain(
-      "ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_activation_receipt_guard",
-    );
-    const insertIndex = sql.indexOf(
-      "INSERT INTO reviewrouter_bootstrap.release_generation_activation_receipt",
-    );
-    const guardOwnershipIndex = sql.indexOf(
-      "ALTER TABLE reviewrouter_bootstrap.release_generation_activation_receipt OWNER TO reviewrouter_activation_receipt_guard",
-    );
-    const grantDatabaseIndex = sql.indexOf(
-      "GRANT CREATE ON DATABASE %I TO reviewrouter_activation_receipt_guard",
-    );
-    const grantSchemaIndex = sql.indexOf(
-      "GRANT USAGE, CREATE ON SCHEMA reviewrouter_bootstrap TO reviewrouter_activation_receipt_guard",
-    );
-    const revokeSchemaIndex = sql.indexOf(
-      "REVOKE USAGE, CREATE ON SCHEMA reviewrouter_bootstrap FROM reviewrouter_activation_receipt_guard",
-    );
-    const schemaOwnershipIndex = sql.indexOf(
-      "ALTER SCHEMA reviewrouter_bootstrap OWNER TO reviewrouter_activation_receipt_guard",
-    );
-    const revokeDatabaseIndex = sql.indexOf(
-      "REVOKE CREATE ON DATABASE %I FROM reviewrouter_activation_receipt_guard",
-    );
-    const revokeGuardIndex = sql.indexOf(
-      "REVOKE reviewrouter_activation_receipt_guard FROM reviewrouter_role_bootstrap",
-    );
-    expect(insertIndex).toBeGreaterThan(-1);
-    expect(grantDatabaseIndex).toBeGreaterThan(insertIndex);
-    expect(grantSchemaIndex).toBeGreaterThan(grantDatabaseIndex);
-    expect(guardOwnershipIndex).toBeGreaterThan(insertIndex);
-    expect(revokeSchemaIndex).toBeGreaterThan(guardOwnershipIndex);
-    expect(schemaOwnershipIndex).toBeGreaterThan(revokeSchemaIndex);
-    expect(revokeDatabaseIndex).toBeGreaterThan(schemaOwnershipIndex);
-    expect(revokeGuardIndex).toBeGreaterThan(revokeDatabaseIndex);
-    expect(revokeGuardIndex).toBeGreaterThan(guardOwnershipIndex);
-    expect(sql.indexOf("COMMIT;")).toBeGreaterThan(revokeGuardIndex);
-    expect(sql).toContain("'effectiveMemberships'");
-    expect(sql).toContain("'membershipEdges'");
-    expect(sql).toContain("'columns'");
-    expect(sql).toContain("'routines'");
-    expect(sql).toContain("'policies'");
     expect(sql).not.toContain(
-      "GRANT SELECT ON TABLE reviewrouter_bootstrap.release_generation_activation_receipt",
+      "CREATE ROLE reviewrouter_activation_receipt_guard",
+    );
+    expect(sql).not.toContain("GRANT reviewrouter_activation_receipt_guard TO");
+    expect(sql).not.toContain(
+      "CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_rollout_ledger",
+    );
+    expect(sql).not.toContain(
+      "CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_runner_job_ledger",
     );
   });
 
-  it("rejects wrong or same generations", () => {
-    expect(() =>
-      canonicalActivationSql(configuration, {
-        ...activationFence,
-        targetSystemIdentifier: "100",
-      }),
-    ).toThrow("release_migration_activation_identity_invalid");
+  it("rejects authority material from the cutover request surface", () => {
+    const activation = canonicalActivationSql(configuration, {
+      rolloutId: "rollout-activation-1",
+      permitNonce: "caller-controlled",
+      permitEpoch: 999,
+    });
+    expect(activation.sql).not.toContain("caller-controlled");
+    expect(activation.sql).not.toContain("999");
+    expect(
+      activation.sql
+        .match(
+          /reviewrouter_activation\.activate_generation\([\s\S]*?\);/u,
+        )?.[0]
+        .match(/,/gu),
+    ).toHaveLength(1);
   });
 });

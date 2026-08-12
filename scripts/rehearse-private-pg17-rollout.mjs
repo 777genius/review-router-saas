@@ -4,7 +4,6 @@ import {
   cpSync,
   mkdtempSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -19,15 +18,19 @@ import {
   completeCompensation,
   createReleaseRollout,
   ReleaseRolloutUseCases,
-  RedactedProcessCommandAdapter,
+  AuthenticatedRunnerLedgerAdapter,
+  HttpProviderAuthorityDecisionAdapter,
   RolloutStep,
   sha256Canonical,
   transitionFailure,
 } from "../packages/features/release-rollout/src/index.ts";
+import { createPrismaClient } from "../packages/platform/db/src/index.ts";
+import { createReleaseControlApp } from "../apps/api/src/release-control-composition.ts";
 import {
   canonicalActivationSql,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
+  activationAuthorityProvisioningSql,
   roleProvisioningSql,
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
@@ -102,6 +105,7 @@ export async function executeDisposableRehearsal(
   const suffix = randomBytes(6).toString("hex");
   const source = `rr-pg16-${suffix}`;
   const target = `rr-pg17-${suffix}`;
+  const authority = `rr-authority-pg17-${suffix}`;
   const network = `rr-pg-cutover-${suffix}`;
   const directory = mkdtempSync(join(tmpdir(), "reviewrouter-pg17-rehearsal-"));
   const dumpPath = join(directory, "source.dump");
@@ -113,6 +117,10 @@ export async function executeDisposableRehearsal(
     { mode: 0o600, flag: "wx" },
   );
   let networkCreated = false;
+  let releaseControl;
+  let controlPrisma;
+  let providerAuthorityPrisma;
+  let permitInstallerPrisma;
   const createdContainers = [];
   const docker = (...args) => execute(args);
   const sql = (container, statement) =>
@@ -135,6 +143,7 @@ export async function executeDisposableRehearsal(
     for (const [name, image] of [
       [source, images.sourceImage],
       [target, images.targetImage],
+      [authority, images.targetImage],
     ]) {
       docker(
         "run",
@@ -153,7 +162,7 @@ export async function executeDisposableRehearsal(
       );
       createdContainers.push(name);
     }
-    for (const name of [source, target]) {
+    for (const name of [source, target, authority]) {
       let ready = false;
       for (let attempt = 0; attempt < 30; attempt += 1) {
         try {
@@ -176,7 +185,8 @@ export async function executeDisposableRehearsal(
     }
     if (
       !sql(source, "SHOW server_version_num").startsWith("160") ||
-      !sql(target, "SHOW server_version_num").startsWith("170")
+      !sql(target, "SHOW server_version_num").startsWith("170") ||
+      !sql(authority, "SHOW server_version_num").startsWith("170")
     )
       throw new Error("private_pg17_rehearsal_server_version_mismatch");
     const publishedPort = (container) => {
@@ -190,6 +200,32 @@ export async function executeDisposableRehearsal(
     };
     const sourcePort = publishedPort(source);
     const targetPort = publishedPort(target);
+    const authorityPort = publishedPort(authority);
+    sql(
+      authority,
+      "CREATE EXTENSION IF NOT EXISTS pgcrypto; CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'disposable-control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'disposable-provider'",
+    );
+    execute(
+      [
+        "exec",
+        "--interactive",
+        authority,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "reviewrouter",
+      ],
+      {
+        input: readFileSync(
+          join(
+            process.cwd(),
+            "packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql",
+          ),
+          "utf8",
+        ),
+      },
+    );
     const preReleasePrisma = join(directory, "pre-release-prisma");
     cpSync(
       join(process.cwd(), "packages/platform/db/prisma"),
@@ -206,6 +242,7 @@ export async function executeDisposableRehearsal(
       "000064_codex_oauth_versioned_secret_namespaces",
       "000065_codex_oauth_authority_acl_hardening",
       "000066_codex_oauth_rotating_cascade_authority",
+      "000067_release_rollout_ledger",
     ])
       rmSync(join(preReleasePrisma, "migrations", migration), {
         recursive: true,
@@ -245,8 +282,17 @@ export async function executeDisposableRehearsal(
         maxBuffer: 16 * 1024 * 1024,
       },
     );
-    if (sourceMigration.status !== 0)
-      throw new Error("private_pg17_rehearsal_source_migration_failed");
+    if (sourceMigration.status !== 0) {
+      const diagnostic = String(sourceMigration.stderr ?? "")
+        .replace(/PASSWORD\s+'[^']*'/giu, "PASSWORD '[redacted]'")
+        .replace(/postgres(?:ql)?:\/\/[^\s]+/giu, "[redacted-database-url]")
+        .replaceAll(password, "[redacted]")
+        .slice(0, 2_000)
+        .trim();
+      throw new Error(
+        `private_pg17_rehearsal_source_migration_failed:exit=${sourceMigration.status ?? "signal"}${diagnostic ? `:${diagnostic}` : ""}`,
+      );
+    }
     sql(
       source,
       `COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE reviewrouter TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three'); CREATE SCHEMA app_private; CREATE TABLE app_private.rehearsal_private(id integer PRIMARY KEY, value text); INSERT INTO app_private.rehearsal_private VALUES (1,'private'); CREATE SEQUENCE app_private.called_sequence; SELECT nextval('app_private.called_sequence'); CREATE SEQUENCE app_private.uncalled_sequence;`,
@@ -350,6 +396,8 @@ export async function executeDisposableRehearsal(
        CREATE ROLE reviewrouter_worker LOGIN PASSWORD 'disposable-worker';
        CREATE ROLE reviewrouter_codex_effect_authority LOGIN PASSWORD 'disposable-effect';
        CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'disposable-release';
+       CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN;
+       CREATE ROLE reviewrouter_activation_permit_installer LOGIN PASSWORD 'disposable-installer';
        ALTER DATABASE reviewrouter OWNER TO reviewrouter_role_bootstrap;
        GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
        GRANT reviewrouter_web TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
@@ -382,7 +430,14 @@ export async function executeDisposableRehearsal(
            EXECUTE CASE WHEN item.typtype='d' THEN format('ALTER DOMAIN public.%I OWNER TO reviewrouter_role_bootstrap',item.typname) ELSE format('ALTER TYPE public.%I OWNER TO reviewrouter_role_bootstrap',item.typname) END;
          END LOOP;
        END $extension_owners$;
-       COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"c".repeat(64)}"}';`,
+       DO $generation$ DECLARE binding jsonb; BEGIN
+         binding := jsonb_build_object(
+           'version', 1,
+           'systemIdentifier', (SELECT system_identifier::text FROM pg_control_system()),
+           'recoveryWitnessSha256', '${"c".repeat(64)}'
+         );
+         EXECUTE format('COMMENT ON DATABASE %I IS %L', current_database(), binding::text);
+       END $generation$;`,
     );
     const url = (username, password) =>
       `postgresql://${username}:${password}@target.internal:${targetPort}/reviewrouter?sslmode=disable`;
@@ -433,14 +488,71 @@ export async function executeDisposableRehearsal(
         "--interactive",
         target,
         "psql",
-        "--username",
-        "reviewrouter_role_bootstrap",
-        "--dbname",
+        "-U",
+        "postgres",
+        "-d",
         "reviewrouter",
-        "--no-psqlrc",
-        "--quiet",
       ],
-      { input: roleProvisioningSql(configuration) },
+      { input: activationAuthorityProvisioningSql() },
+    );
+    sql(
+      target,
+      "GRANT USAGE ON SCHEMA reviewrouter_activation TO reviewrouter_role_bootstrap; GRANT SELECT ON reviewrouter_activation.activation_receipt TO reviewrouter_role_bootstrap",
+    );
+    const controlToken = randomBytes(32).toString("hex");
+    const providerAuthorityToken = randomBytes(32).toString("hex");
+    const authorityUrl = `postgresql://reviewrouter_release_control:disposable-control@127.0.0.1:${authorityPort}/reviewrouter?sslmode=disable`;
+    const providerAuthorityUrl = `postgresql://reviewrouter_provider_authority:disposable-provider@127.0.0.1:${authorityPort}/reviewrouter?sslmode=disable`;
+    const installerUrl = `postgresql://reviewrouter_activation_permit_installer:disposable-installer@127.0.0.1:${targetPort}/reviewrouter?sslmode=disable`;
+    controlPrisma = createPrismaClient({
+      databaseUrl: authorityUrl,
+      poolMax: 2,
+    });
+    providerAuthorityPrisma = createPrismaClient({
+      databaseUrl: providerAuthorityUrl,
+      poolMax: 1,
+    });
+    permitInstallerPrisma = createPrismaClient({
+      databaseUrl: installerUrl,
+      poolMax: 1,
+    });
+    releaseControl = await createReleaseControlApp({
+      controlPrisma,
+      providerAuthorityPrisma,
+      permitInstallerPrisma,
+      credentials: {
+        controlTokenSha256: createHash("sha256")
+          .update(controlToken)
+          .digest("hex"),
+        providerAuthorityTokenSha256: createHash("sha256")
+          .update(providerAuthorityToken)
+          .digest("hex"),
+      },
+    });
+    await releaseControl.ready();
+    const controlFetch = async (input, init) => {
+      const requestUrl = new URL(String(input));
+      const response = await releaseControl.inject({
+        method: init?.method ?? "GET",
+        url: `${requestUrl.pathname}${requestUrl.search}`,
+        headers: init?.headers,
+        payload: init?.body,
+      });
+      return new globalThis.Response(response.body, {
+        status: response.statusCode,
+        headers: response.headers,
+      });
+    };
+    const authorityOrigin = "https://disposable-release-authority.invalid";
+    const ledger = new AuthenticatedRunnerLedgerAdapter(
+      authorityOrigin,
+      controlToken,
+      controlFetch,
+    );
+    const providerAuthority = new HttpProviderAuthorityDecisionAdapter(
+      authorityOrigin,
+      providerAuthorityToken,
+      controlFetch,
     );
     const productionPath = await verifyProductionPathRehearsal({
       dumpSha256: sha256(dump),
@@ -456,11 +568,25 @@ export async function executeDisposableRehearsal(
       canonicalEnv,
       targetPort,
       rehearsalDirectory: directory,
+      ledger,
+      providerAuthority,
+      controlFetch,
+      authorityOrigin,
+      controlToken,
+      providerAuthorityToken,
+      authorityContainer: authority,
+      targetContainer: target,
+      sql,
+      closeBootstrapGuardRead: () =>
+        sql(
+          target,
+          "REVOKE SELECT ON reviewrouter_activation.activation_receipt FROM reviewrouter_role_bootstrap; REVOKE USAGE ON SCHEMA reviewrouter_activation FROM reviewrouter_role_bootstrap",
+        ),
     });
     if (
       sql(
         target,
-        "SELECT count(*) FROM reviewrouter_bootstrap.release_generation_activation_receipt WHERE rollout_id='disposable-rehearsal'",
+        "SELECT count(*) FROM reviewrouter_activation.activation_receipt WHERE rollout_id='disposable-rehearsal'",
       ) !== "1" ||
       sql(
         target,
@@ -468,8 +594,8 @@ export async function executeDisposableRehearsal(
       ) !== "t"
     )
       throw new Error("private_pg17_rehearsal_activation_failed");
-    if (!productionPath.duplicateActivationRejected)
-      throw new Error("private_pg17_rehearsal_duplicate_activation_accepted");
+    if (!productionPath.activationReplayStable)
+      throw new Error("private_pg17_rehearsal_activation_replay_unstable");
     return Object.freeze({
       schemaVersion: 1,
       disposable: true,
@@ -479,14 +605,36 @@ export async function executeDisposableRehearsal(
       equivalenceSha256: sha256(sourceSnapshot),
       aclGateBeforeActivation: "closed",
       activationReceipt: "disposable-rehearsal",
-      duplicateActivationRejected: true,
+      activationReplayStable: true,
+      authorityDatabaseMajor: 17,
+      authorityDatabaseSeparate: true,
       productionPath,
     });
   } finally {
-    for (const name of createdContainers.reverse())
-      docker("rm", "--force", name);
+    if (releaseControl) await releaseControl.close();
+    await Promise.allSettled([
+      controlPrisma?.$disconnect(),
+      providerAuthorityPrisma?.$disconnect(),
+      permitInstallerPrisma?.$disconnect(),
+    ]);
+    let cleanupError;
+    for (const name of createdContainers.reverse()) {
+      try {
+        docker("rm", "--force", name);
+      } catch (error) {
+        if (
+          !/No such container|removal of container .* is already in progress/u.test(
+            String(error),
+          )
+        )
+          cleanupError ??= error;
+      }
+    }
     if (networkCreated) docker("network", "rm", network);
     rmSync(directory, { force: true, recursive: true });
+    // The disposable rehearsal must fail when resource cleanup is incomplete.
+    // eslint-disable-next-line no-unsafe-finally
+    if (cleanupError) throw cleanupError;
   }
 }
 
@@ -513,7 +661,28 @@ async function verifyProductionPathRehearsal(facts) {
     const urlIndex = args.findIndex(
       (arg) => arg.startsWith("postgres://") || arg.startsWith("postgresql://"),
     );
-    if (urlIndex < 0) throw new Error("rehearsal_psql_url_missing");
+    if (urlIndex < 0) {
+      const hostIndex = args.indexOf("--host");
+      if (hostIndex < 0 || args[hostIndex + 1] !== "target.internal")
+        throw new Error("rehearsal_psql_target_invalid");
+      const result = spawnSync("psql", [...args], {
+        encoding: "utf8",
+        env: {
+          ...options.env,
+          PATH: process.env.PATH,
+          LANG: "C.UTF-8",
+          PGHOSTADDR: "127.0.0.1",
+          PGSSLMODE: "disable",
+        },
+        input: options.input,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      if (result.status !== 0)
+        throw new Error(
+          `private_pg17_rehearsal_canonical_failed:${step}:${String(result.stderr).slice(0, 2_000)}`,
+        );
+      return result.stdout;
+    }
     const url = new URL(args[urlIndex]);
     const passDirectory = mkdtempSync(join(tmpdir(), "rr-rehearsal-pass-"));
     const passfile = join(passDirectory, "pgpass");
@@ -569,17 +738,11 @@ async function verifyProductionPathRehearsal(facts) {
           }
         : {}),
     });
-  const processCommands = new RedactedProcessCommandAdapter();
   const activationCommands = {
     execute(command, args, options) {
-      try {
-        return processCommands.execute(command, args, {
-          ...options,
-          env: { ...options?.env, PGHOSTADDR: "127.0.0.1" },
-        });
-      } catch (error) {
-        throw new Error("activation_process_failed", { cause: error });
-      }
+      return {
+        stdout: canonicalProcessRun("activation", command, args, options),
+      };
     },
   };
   const execution = {
@@ -612,7 +775,7 @@ async function verifyProductionPathRehearsal(facts) {
       databaseName: "reviewrouter",
       systemIdentifier: facts.targetSystemIdentifier,
       majorVersion: 17,
-      recoveryWitnessSha256: "b".repeat(64),
+      recoveryWitnessSha256: "c".repeat(64),
     },
   });
   const runner = (lifecycle, job) => ({
@@ -657,7 +820,9 @@ async function verifyProductionPathRehearsal(facts) {
   const generated = {
     roleBootstrapSha256: `sha256:${sha256Canonical(roleProvisioningSql(sqlConfiguration))}`,
     migrationSha256: `sha256:${sha256Canonical(runtimeGrantSql(sqlConfiguration, { gateClosed: true }))}`,
-    activation: undefined,
+    activation: canonicalActivationSql(sqlConfiguration, {
+      rolloutId: "disposable-rehearsal",
+    }),
   };
   const catalogSha256 = {
     sequences: digest,
@@ -670,114 +835,10 @@ async function verifyProductionPathRehearsal(facts) {
   };
   let provision = roleRunner;
   let cleanupStep = RolloutStep.CleanupRoleRunner;
-  const ledgerPath = join(
-    facts.rehearsalDirectory,
-    "durable-rollout-ledger.json",
-  );
-  const persistLedger = (value) => {
-    const temporary = `${ledgerPath}.next`;
-    let previous = {};
-    try {
-      previous = JSON.parse(readFileSync(ledgerPath, "utf8"));
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    writeFileSync(temporary, `${JSON.stringify({ ...previous, ...value })}\n`, {
-      mode: 0o600,
-    });
-    renameSync(temporary, ledgerPath);
-  };
-  const ledger = {
-    last: `sha256:${"0".repeat(64)}`,
-    state: "before",
-    async claim() {
-      persistLedger({ last: this.last, state: this.state, claimed: true });
-      return "claimed";
-    },
-    async compareAndSet(input) {
-      if (input.expectedReceiptSha256 !== this.last) return false;
-      this.last = input.nextReceiptSha256;
-      persistLedger({ last: this.last, state: this.state, step: input.step });
-      return true;
-    },
-    async markActivationUncertain() {
-      this.uncertain = true;
-      this.state = "uncertain";
-      persistLedger({ last: this.last, state: this.state });
-    },
-    async fenceTargetSwitch(input) {
-      if (this.state !== "before" || input.previousReceiptSha256 !== this.last)
-        return null;
-      this.targetSwitchFence = {
-        schemaVersion: 1,
-        ...input,
-        nonce: "b".repeat(32),
-        version: 1,
-        fencedAt: "2026-08-12T00:00:12.500Z",
-      };
-      persistLedger({
-        last: this.last,
-        state: this.state,
-        targetSwitchFence: this.targetSwitchFence,
-      });
-      return this.targetSwitchFence;
-    },
-    async fenceActivation(input) {
-      if (this.state !== "before" || input.previousReceiptSha256 !== this.last)
-        return null;
-      this.state = "uncertain";
-      this.fence = {
-        schemaVersion: 1,
-        ...input,
-        nonce: "a".repeat(32),
-        version: 1,
-        claimVersion: 1,
-        fencedAt: "2026-08-12T00:00:13.500Z",
-      };
-      persistLedger({ last: this.last, state: this.state, fence: this.fence });
-      generated.activation = canonicalActivationSql(sqlConfiguration, {
-        rolloutId: input.rolloutId,
-        expectedCommitSha: input.expectedCommitSha,
-        runId: input.runId,
-        jobId: input.jobId,
-        runAttempt: input.runAttempt,
-        sourceSystemIdentifier: input.sourceSystemIdentifier,
-        targetSystemIdentifier: input.targetSystemIdentifier,
-        previousReceiptSha256: input.previousReceiptSha256,
-        fenceNonce: this.fence.nonce,
-        fenceVersion: this.fence.version,
-        claimVersion: this.fence.claimVersion,
-        targetDeployIds: this.fence.targetDeployIds,
-      });
-      return this.fence;
-    },
-    async finalizeActivation(input) {
-      if (this.state !== "uncertain" || input.fence !== this.fence)
-        return false;
-      this.state = "activated";
-      this.last = input.nextReceiptSha256;
-      this.activationReceipt = input.activationReceipt;
-      persistLedger({
-        last: this.last,
-        state: this.state,
-        fence: this.fence,
-        activationReceipt: this.activationReceipt,
-      });
-      return true;
-    },
-    async observeActivationState() {
-      return this.state;
-    },
-    async verifyFinalAuthority(input) {
-      return (
-        this.state === "activated" &&
-        input.expectedReceiptSha256 === this.last &&
-        input.activationReceipt?.fenceNonce === this.fence?.nonce
-      );
-    },
-  };
+  const ledger = facts.ledger;
   let evidence;
   const useCases = new ReleaseRolloutUseCases({
+    authority: facts.providerAuthority,
     preflight: {
       observeProtectedEnvironment: async () =>
         observed(RolloutStep.VerifyProtectedEnvironment, {
@@ -926,23 +987,84 @@ async function verifyProductionPathRehearsal(facts) {
           RolloutStep.BootstrapTargetRoles,
           executeCanonicalRoleBootstrap(facts.canonicalEnv, canonicalRun),
         ),
-      runReleaseMigration: async () =>
-        observed(
-          RolloutStep.RunReleaseMigration,
-          executeCanonicalReleaseMigration(
-            {
-              ...facts.canonicalEnv,
-              REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+      runReleaseMigration: async () => {
+        const migration = executeCanonicalReleaseMigration(
+          {
+            ...facts.canonicalEnv,
+            REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+          },
+          canonicalRun,
+        );
+        const migrationChecksum = facts.sql(
+          facts.targetContainer,
+          "SELECT 'sha256:' || encode(pg_catalog.sha256(convert_to(coalesce(string_agg(migration_name || ':' || checksum, ',' ORDER BY migration_name), ''), 'UTF8')), 'hex') FROM public._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL",
+        );
+        if (!/^sha256:[a-f0-9]{64}$/u.test(migrationChecksum))
+          throw new Error("private_pg17_rehearsal_migration_checksum_unproven");
+        canonicalRun(
+          "claim_trusted_migration_evidence",
+          "psql",
+          [
+            facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+            "--no-psqlrc",
+            "--quiet",
+          ],
+          {
+            env: {
+              DATABASE_URL:
+                facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
             },
-            canonicalRun,
-          ),
-        ),
-      activate: async (_source, _target, fence) =>
-        executePrivateGenerationActivation(
-          facts.canonicalEnv,
+            input: String.raw`\set ON_ERROR_STOP on
+BEGIN;
+SELECT reviewrouter_bootstrap.consume_migration_evidence(
+  'sha256:${"e".repeat(64)}',
+  '303',
+  'disposable-rehearsal',
+  '1',
+  1,
+  '11',
+  '.github/workflows/codex-rotating-release-migration.yml',
+  '${facts.canonicalEnv.REVIEW_ROUTER_RELEASE_COMMIT_SHA}',
+  '${facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST}',
+  '${facts.targetSystemIdentifier}',
+  '${facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256}'
+);
+COMMIT;
+`,
+          },
+        );
+        const evidenceClaimed = facts.sql(
+          facts.targetContainer,
+          `SELECT EXISTS (
+             SELECT 1
+             FROM pg_database database,
+                  LATERAL jsonb_array_elements(
+                    coalesce(
+                      shobj_description(database.oid, 'pg_database')::jsonb
+                        ->'consumedMigrationEvidence',
+                      '[]'::jsonb
+                    )
+                  ) evidence
+             WHERE database.datname = current_database()
+               AND evidence->>'commit' = '${facts.canonicalEnv.REVIEW_ROUTER_RELEASE_COMMIT_SHA}'
+               AND evidence->>'systemIdentifier' = '${facts.targetSystemIdentifier}'
+           )`,
+        );
+        if (evidenceClaimed !== "t")
+          throw new Error(
+            "private_pg17_rehearsal_migration_evidence_claim_unproven",
+          );
+        return observed(RolloutStep.RunReleaseMigration, {
+          ...migration,
+          migrationChecksum,
+        });
+      },
+      activate: async (rolloutId) => {
+        return executePrivateGenerationActivation(
+          { ...facts.canonicalEnv, REVIEW_ROUTER_ROLLOUT_ID: rolloutId },
           activationCommands,
-          fence,
-        ),
+        );
+      },
       compensateSource: async () =>
         observed(RolloutStep.CompleteCompensation, { aclRestored: true }),
     },
@@ -1105,6 +1227,7 @@ async function verifyProductionPathRehearsal(facts) {
   rollout = await useCases.quiesceSource(rollout);
   rollout = await useCases.copyDatabaseGeneration(rollout);
   rollout = await useCases.bootstrapTargetRoles(rollout);
+  facts.closeBootstrapGuardRead();
   rollout = await useCases.verifyDataEquivalence(rollout);
   rollout = await useCases.cleanupRoleRunner(rollout, roleRunner);
   provision = cutoverRunner;
@@ -1120,24 +1243,24 @@ async function verifyProductionPathRehearsal(facts) {
   rollout = await useCases.resumeTargetServices(rollout);
   rollout = await useCases.verifyLiveCanary(rollout);
   rollout = await useCases.verifyTrustedRollout(rollout);
-  const durableLedger = JSON.parse(readFileSync(ledgerPath, "utf8"));
-  if (
-    durableLedger.state !== "activated" ||
-    durableLedger.last !== rollout.receipts.at(-1).receiptSha256 ||
-    durableLedger.activationReceipt?.fenceNonce !== ledger.fence.nonce ||
-    durableLedger.targetSwitchFence?.nonce !== ledger.targetSwitchFence.nonce
-  )
+  const authorityState = await ledger.observeActivationState({
+    rolloutId: rollout.rolloutId,
+    sourceSystemIdentifier: rollout.source.systemIdentifier,
+    targetSystemIdentifier: rollout.target.systemIdentifier,
+  });
+  if (authorityState !== "activated")
     throw new Error("private_pg17_rehearsal_durable_ledger_unproven");
-  let duplicateActivationRejected = false;
-  try {
-    executePrivateGenerationActivation(
-      facts.canonicalEnv,
-      activationCommands,
-      ledger.fence,
-    );
-  } catch {
-    duplicateActivationRejected = true;
-  }
+  const replayedActivation = executePrivateGenerationActivation(
+    facts.canonicalEnv,
+    activationCommands,
+  );
+  const activationReplayStable =
+    replayedActivation.facts.firstWriteReceiptSha256 ===
+      rollout.activationReceipt?.firstWriteReceiptSha256 &&
+    facts.sql(
+      facts.targetContainer,
+      "SELECT count(*) = 1 AND bool_and(permit.consumed_at IS NOT NULL) FROM reviewrouter_activation.activation_receipt receipt JOIN reviewrouter_activation.activation_permit permit USING (rollout_id) WHERE receipt.rollout_id='disposable-rehearsal'",
+    ) === "t";
   const uncertain = transitionFailure(rollout, "activation_uncertain");
   let sourceBanProven = false;
   try {
@@ -1147,6 +1270,7 @@ async function verifyProductionPathRehearsal(facts) {
   }
   if (!sourceBanProven)
     throw new Error("private_pg17_rehearsal_source_ban_unproven");
+  const adversarial = await verifyAuthorityAdversarialChecks(facts, rollout);
   const compensated = completeCompensation(
     beginCompensation(
       transitionFailure(
@@ -1172,9 +1296,102 @@ async function verifyProductionPathRehearsal(facts) {
     receiptCount: rollout.receipts.length,
     sourceBanProven,
     compensationProven: compensated.phase === "recovery_compensated",
-    duplicateActivationRejected,
+    activationReplayStable,
+    adversarial,
     evidenceSha256: evidence.evidenceSha256,
   };
+}
+
+async function verifyAuthorityAdversarialChecks(facts, rollout) {
+  const request = async (path, body, token = facts.controlToken) =>
+    facts.controlFetch(`${facts.authorityOrigin}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  const binding = {
+    rolloutId: rollout.rolloutId,
+    expectedCommitSha: rollout.expectedCommitSha,
+    runId: rollout.execution.runId,
+    runAttempt: rollout.execution.runAttempt,
+    sourceSystemIdentifier: rollout.source.systemIdentifier,
+    targetSystemIdentifier: rollout.target.systemIdentifier,
+  };
+  const replay = await request("/v1/rollouts/claim", binding);
+  if (replay.status !== 200 || (await replay.json()).result !== "duplicate")
+    throw new Error("private_pg17_rehearsal_authority_replay_unproven");
+  const conflict = await request("/v1/rollouts/claim", {
+    ...binding,
+    expectedCommitSha: "f".repeat(40),
+  });
+  if (conflict.status < 400)
+    throw new Error("private_pg17_rehearsal_authority_conflict_unproven");
+  const unauthorized = await request(
+    "/v1/rollouts/claim",
+    binding,
+    "wrong-token",
+  );
+  if (unauthorized.status !== 401)
+    throw new Error("private_pg17_rehearsal_authority_auth_unproven");
+  const deployAfterActivation = await request(
+    "/v1/provider-authority/decisions",
+    {
+      rolloutId: rollout.rolloutId,
+      operation: "deploy_target",
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+      expectedReceiptSha256: rollout.receipts.at(-1).receiptSha256,
+      activationBoundary: "before",
+    },
+    facts.providerAuthorityToken,
+  );
+  if (deployAfterActivation.status !== 409)
+    throw new Error("private_pg17_rehearsal_provider_conflict_unproven");
+  const outageAuthority = new HttpProviderAuthorityDecisionAdapter(
+    facts.authorityOrigin,
+    facts.providerAuthorityToken,
+    async () => {
+      throw new Error("disposable_authority_outage");
+    },
+  );
+  let outageRejected = false;
+  try {
+    await outageAuthority.decide({
+      rolloutId: rollout.rolloutId,
+      operation: "resume_target",
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+      expectedReceiptSha256: rollout.receipts.at(-1).receiptSha256,
+      activationBoundary: "activated",
+    });
+  } catch {
+    outageRejected = true;
+  }
+  if (!outageRejected)
+    throw new Error("private_pg17_rehearsal_authority_outage_unproven");
+  const authorityHasTargetState = facts.sql(
+    facts.authorityContainer,
+    "SELECT to_regclass('reviewrouter_activation.activation_permit') IS NOT NULL",
+  );
+  const targetHasAuthorityState = facts.sql(
+    facts.targetContainer,
+    "SELECT to_regclass('release_authority.rollout') IS NOT NULL",
+  );
+  if (authorityHasTargetState !== "f" || targetHasAuthorityState !== "f")
+    throw new Error(
+      "private_pg17_rehearsal_authority_database_isolation_unproven",
+    );
+  return Object.freeze({
+    replayRejected: true,
+    conflictRejected: true,
+    unauthorizedRejected: true,
+    providerConflictRejected: true,
+    outageRejected: true,
+    credentialStoresIsolated: true,
+  });
 }
 
 if (

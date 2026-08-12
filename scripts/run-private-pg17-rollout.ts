@@ -2,8 +2,12 @@
 import { readFileSync } from "node:fs";
 import {
   AuthenticatedRunnerLedgerAdapter,
+  HttpProviderAuthorityDecisionAdapter,
+  PostgreSqlGenerationAdapter,
+  RedactedProcessCommandAdapter,
   ReleaseRolloutUseCases,
   RenderTargetServicesAdapter,
+  RenderProviderFreezeAdapter,
   RolloutPhase,
   type ReleaseRollout,
   type RunnerIdentity,
@@ -37,6 +41,10 @@ const ledger = new AuthenticatedRunnerLedgerAdapter(
   required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
   required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
 );
+const authority = new HttpProviderAuthorityDecisionAdapter(
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+);
 const currentRunner = await ledger.currentRunner(rollout.rolloutId, "cutover");
 const cutoverRunner = currentRunner.identity;
 const cutoverProvision = currentRunner.observation;
@@ -44,6 +52,10 @@ const roleCleanup = await ledger.cleanupObservation(
   copy.roleBootstrapRunner.renderJobId,
 );
 const targetAdapter = new RenderTargetServicesAdapter();
+const sourceProvider = new RenderProviderFreezeAdapter();
+const generation = new PostgreSqlGenerationAdapter(
+  new RedactedProcessCommandAdapter(),
+);
 const canonical = new PrivatePg17CanonicalAdapter();
 const unavailable = async (): Promise<never> => {
   throw new Error("private_pg17_port_not_available_in_cutover_phase");
@@ -52,10 +64,20 @@ let migration: unknown;
 let activation: StepObservation;
 let staged: StepObservation;
 const useCases = new ReleaseRolloutUseCases({
+  authority,
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: unavailable,
-    compensateAndObserve: unavailable,
+    compensateAndObserve: async ({ decision, databaseWitness }) =>
+      await sourceProvider.compensateAndObserve({
+        apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
+        sourceWriterServiceIds: JSON.parse(
+          required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
+        ) as string[],
+        sourceSystemIdentifier: rollout.source.systemIdentifier,
+        decision,
+        databaseWitness,
+      }),
   },
   runner: {
     provision: async () => ({
@@ -79,14 +101,21 @@ const useCases = new ReleaseRolloutUseCases({
       migration = observation.facts;
       return observation;
     },
-    activate: async (_source, _target, fence) => {
-      activation = canonical.activateTarget(process.env, fence);
+    activate: async (rolloutId) => {
+      activation = canonical.activateTarget(process.env, rolloutId);
       return activation;
     },
-    compensateSource: unavailable,
+    compensateSource: async () =>
+      generation.compensateSource({
+        adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+        source: rollout.source,
+        reconnectUrls: JSON.parse(
+          required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
+        ) as Record<string, string>,
+      }),
   },
   services: {
-    stageTarget: async (fence) => {
+    stageTarget: async (fence, decision) => {
       staged = await targetAdapter.stage({
         apiKey: required("RENDER_TARGET_SWITCH_API_KEY"),
         targetInternalHostname: rollout.target.internalHostname,
@@ -99,6 +128,7 @@ const useCases = new ReleaseRolloutUseCases({
           required("REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON"),
         ) as TargetServiceExpectation[],
         fence,
+        decision,
       });
       return staged;
     },
@@ -108,10 +138,28 @@ const useCases = new ReleaseRolloutUseCases({
   evidence: { assembleAndVerify: unavailable },
   ledger,
 });
-rollout = await useCases.cleanupRoleRunner(rollout, copy.roleBootstrapRunner);
-({ rollout } = await useCases.provisionCutoverRunner(rollout));
-rollout = await useCases.runReleaseMigration(rollout);
-rollout = await useCases.stageTargetServices(rollout);
+try {
+  rollout = await useCases.cleanupRoleRunner(rollout, copy.roleBootstrapRunner);
+  ({ rollout } = await useCases.provisionCutoverRunner(rollout));
+  rollout = await useCases.runReleaseMigration(rollout);
+  rollout = await useCases.stageTargetServices(rollout);
+} catch (error) {
+  try {
+    rollout = await useCases.recoverFromFailure(
+      rollout,
+      "definite_pre_activation",
+    );
+  } catch (compensationError) {
+    throw new AggregateError(
+      [error, compensationError],
+      "private_pg17_cutover_failed_and_compensation_incomplete",
+      { cause: compensationError },
+    );
+  }
+  throw new Error("private_pg17_cutover_failed_source_compensated", {
+    cause: error,
+  });
+}
 try {
   rollout = await useCases.activateTargetGeneration(
     rollout,

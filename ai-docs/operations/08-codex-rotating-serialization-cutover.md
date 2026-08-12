@@ -76,22 +76,23 @@ is checked against both that policy and the files on every test run.
 | `000064_codex_oauth_versioned_secret_namespaces` | `4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666` |
 | `000065_codex_oauth_authority_acl_hardening`     | `ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c` |
 | `000066_codex_oauth_rotating_cascade_authority`  | `3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8` |
-| `000067_release_rollout_ledger`                  | `a66a344ba6fa2cfea9184d548b1b5965b1bbea528cf34f1600ac70108577552e` |
+| `000067_release_rollout_ledger`                  | `82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05` |
 
-## 000067 forward-publication policy
+## 000067 no-op marker policy
 
 `000066_codex_oauth_rotating_cascade_authority` is immutable at checksum
 `3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8`.
-`000067_release_rollout_ledger` is the unpublished forward
-migration for this release. Its exact checked-in SHA-256 is
-`a66a344ba6fa2cfea9184d548b1b5965b1bbea528cf34f1600ac70108577552e`.
+`000067_release_rollout_ledger` is the unpublished immutable no-op marker for
+this release. Its exact checked-in SHA-256 is
+`82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05`.
 Before its first publication, migration preflight hashes those exact bytes and
 rejects every existing `_prisma_migrations` row named 000067, including failed,
 rolled-back, duplicate, or apparently successful rows. Do not resolve or bless
 an early row; stop and investigate its provenance.
 
-The one immutable release-migration caller may then apply those pinned bytes as
-the final member of the drained combined release. Post-release verification
+The one immutable application release-migration caller may then register those
+pinned no-op bytes as the final member of the drained combined release.
+Post-release verification
 requires exactly one current successful 000067 row with that checksum and one
 applied step. After the first production publication is accepted, the next
 release must deliberately reclassify this digest from `forwardUnpublished` to
@@ -102,7 +103,14 @@ release rather than guessing that publication occurred. Any later schema
 change uses a new forward migration; never edit 000064, 000065, 000066, or 000067
 after publication.
 
-The migration also owns the database authority for provider-effect evidence.
+The marker creates no ledger, authority tables, functions, or roles in either
+the source or target application database. Release rollout state and the
+`reviewrouter_release_control` and `reviewrouter_release_witness` capabilities
+belong exclusively to the dedicated external PostgreSQL 17 Release Authority
+under `packages/platform/release-authority-db`; they are not copied during the
+PG16 to PG17 application database cutover.
+
+Migration 000065 owns the application database authority for provider-effect evidence.
 Hosted runtime roles have no access to
 `CodexOAuthDatabaseAuthorityKey` or `CodexOAuthDatabaseAuthorityReceipt`,
 cannot delete rotating evidence, and cannot sign an authority challenge. The

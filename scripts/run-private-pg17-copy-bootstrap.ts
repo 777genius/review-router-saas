@@ -3,10 +3,12 @@ import { chmodSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   AuthenticatedRunnerLedgerAdapter,
+  HttpProviderAuthorityDecisionAdapter,
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
   ReleaseRolloutUseCases,
   RenderBackupIdentityAdapter,
+  RenderProviderFreezeAdapter,
   type DatabaseGenerationIdentity,
   type ReleaseRollout,
   type RunnerIdentity,
@@ -78,6 +80,11 @@ const ledger = new AuthenticatedRunnerLedgerAdapter(
   required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
   required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
 );
+const authority = new HttpProviderAuthorityDecisionAdapter(
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+);
+const provider = new RenderProviderFreezeAdapter();
 const currentRunner = await ledger.currentRunner(rollout.rolloutId, "role");
 const canonical = new PrivatePg17CanonicalAdapter();
 const runner: RunnerIdentity = currentRunner.identity;
@@ -86,10 +93,20 @@ chmodSync(dumpDirectory, 0o700);
 const dumpPath = join(dumpDirectory, "source.dump");
 const runnerObservation: StepObservation = currentRunner.observation;
 const useCases = new ReleaseRolloutUseCases({
+  authority,
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: async () => freezeObservation,
-    compensateAndObserve: unavailable,
+    compensateAndObserve: async ({ decision, databaseWitness }) =>
+      await provider.compensateAndObserve({
+        apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
+        sourceWriterServiceIds: JSON.parse(
+          required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
+        ) as string[],
+        sourceSystemIdentifier: source.systemIdentifier,
+        decision,
+        databaseWitness,
+      }),
   },
   runner: {
     provision: async () => ({
@@ -154,7 +171,14 @@ const useCases = new ReleaseRolloutUseCases({
     },
     runReleaseMigration: unavailable,
     activate: unavailable,
-    compensateSource: unavailable,
+    compensateSource: async () =>
+      database.compensateSource({
+        adminUrl: sourceUrl,
+        source,
+        reconnectUrls: JSON.parse(
+          required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
+        ) as Record<string, string>,
+      }),
   },
   services: {
     stageTarget: unavailable,
@@ -164,13 +188,31 @@ const useCases = new ReleaseRolloutUseCases({
   evidence: { assembleAndVerify: unavailable },
   ledger,
 });
-rollout = await useCases.freezeProviderServices(rollout);
-({ rollout } = await useCases.provisionPrivateRunner(rollout));
-rollout = await useCases.captureSourceBackup(rollout);
-rollout = await useCases.quiesceSource(rollout);
-rollout = await useCases.copyDatabaseGeneration(rollout);
-rollout = await useCases.bootstrapTargetRoles(rollout);
-rollout = await useCases.verifyDataEquivalence(rollout);
+try {
+  rollout = await useCases.freezeProviderServices(rollout);
+  ({ rollout } = await useCases.provisionPrivateRunner(rollout));
+  rollout = await useCases.captureSourceBackup(rollout);
+  rollout = await useCases.quiesceSource(rollout);
+  rollout = await useCases.copyDatabaseGeneration(rollout);
+  rollout = await useCases.bootstrapTargetRoles(rollout);
+  rollout = await useCases.verifyDataEquivalence(rollout);
+} catch (error) {
+  try {
+    rollout = await useCases.recoverFromFailure(
+      rollout,
+      "definite_pre_activation",
+    );
+  } catch (compensationError) {
+    throw new AggregateError(
+      [error, compensationError],
+      "private_pg17_copy_failed_and_compensation_incomplete",
+      { cause: compensationError },
+    );
+  }
+  throw new Error("private_pg17_copy_failed_source_compensated", {
+    cause: error,
+  });
+}
 process.stdout.write(
   `${JSON.stringify({ rollout, roleBootstrapRunner: runner, backup: backupResult!.backup, quiescence: quiescence!.evidence, equivalence: equivalence!.evidence, roleBootstrap: roleBootstrap!.facts })}\n`,
 );

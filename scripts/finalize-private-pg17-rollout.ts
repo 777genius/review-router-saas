@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   assembleTrustedRolloutEvidence,
   AuthenticatedRunnerLedgerAdapter,
+  HttpProviderAuthorityDecisionAdapter,
   ReleaseRolloutUseCases,
   RenderTargetServicesAdapter,
   RolloutStep,
@@ -39,6 +40,10 @@ const render = new RenderTargetServicesAdapter();
 const ledger = new AuthenticatedRunnerLedgerAdapter(
   required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
   required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
+);
+const authority = new HttpProviderAuthorityDecisionAdapter(
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
 );
 const roleCleanupWitness = await ledger.observe(
   body.runners[0].renderJobId,
@@ -80,6 +85,7 @@ const cleanupEvidence = (
   };
 };
 const useCases = new ReleaseRolloutUseCases({
+  authority,
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: unavailable,
@@ -102,10 +108,15 @@ const useCases = new ReleaseRolloutUseCases({
   },
   services: {
     stageTarget: unavailable,
-    resumeDeployAndObserve: async () => {
+    resumeDeployAndObserve: async (decision) => {
       resumed = await render.resumeDeployAndObserve({
         apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
         services: expectations,
+        rolloutId: rollout.rolloutId,
+        sourceSystemIdentifier: rollout.source.systemIdentifier,
+        targetSystemIdentifier: rollout.target.systemIdentifier,
+        expectedReceiptSha256: rollout.receipts.at(-1)!.receiptSha256,
+        decision,
       });
       return resumed;
     },

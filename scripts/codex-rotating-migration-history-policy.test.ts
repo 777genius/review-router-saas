@@ -59,7 +59,7 @@ describe("Codex rotating immutable migration history policy", () => {
     );
   });
 
-  it("pins the exact checked-in digest for the unpublished forward 000067 migration", () => {
+  it("pins the exact checked-in digest for the unpublished 000067 no-op marker", () => {
     const checkedInDigest = createHash("sha256")
       .update(
         readFileSync(
@@ -75,10 +75,28 @@ describe("Codex rotating immutable migration history policy", () => {
       checkedInCodexRotatingMigrationChecksums[
         forwardUnpublishedCodexRotatingMigration.name
       ],
-    ).toBe("a66a344ba6fa2cfea9184d548b1b5965b1bbea528cf34f1600ac70108577552e");
+    ).toBe("82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05");
     expect(checkedInDigest).toBe(
       forwardUnpublishedCodexRotatingMigration.checksum,
     );
+  });
+
+  it("keeps 000067 free of application database and authority DDL", () => {
+    const source = readFileSync(
+      resolve(
+        "packages/platform/db/prisma/migrations",
+        forwardUnpublishedCodexRotatingMigration.name,
+        "migration.sql",
+      ),
+      "utf8",
+    );
+    expect(source).toContain("immutable history marker");
+    expect(source).toContain("packages/platform/release-authority-db");
+    expect(source).not.toMatch(
+      /\b(?:CREATE|ALTER|DROP|GRANT|REVOKE|INSERT|UPDATE|DELETE)\b/iu,
+    );
+    expect(source).not.toContain("release_rollout_ledger");
+    expect(source).not.toMatch(/reviewrouter_release_(?:control|witness)/u);
   });
 
   it("loads the exact 000067 source digest and queries its prepublication history", () => {
@@ -157,7 +175,7 @@ describe("Codex rotating immutable migration history policy", () => {
     }
 
     const forwardDigest =
-      /000067 forward-publication policy[\s\S]+?exact checked-in SHA-256 is\s+`([a-f0-9]{64})`/u.exec(
+      /000067 no-op marker policy[\s\S]+?exact checked-in SHA-256 is\s+`([a-f0-9]{64})`/u.exec(
         runbook,
       )?.[1];
     expect(forwardDigest).toBe(

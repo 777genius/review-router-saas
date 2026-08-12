@@ -35,21 +35,34 @@ describe("disposable dual-version rehearsal", () => {
     );
     for (const required of [
       "ReleaseRolloutUseCases",
+      "AuthenticatedRunnerLedgerAdapter",
+      "HttpProviderAuthorityDecisionAdapter",
+      "createReleaseControlApp",
+      "rr-authority-pg17-",
+      "000001_release_authority/migration.sql",
+      "activationAuthorityProvisioningSql",
+      "reviewrouter_activation_permit_installer",
+      "reviewrouter_provider_authority",
+      "providerAuthorityPrisma",
+      "Promise.allSettled",
+      "private_pg17_rehearsal_authority_replay_unproven",
+      "private_pg17_rehearsal_authority_conflict_unproven",
+      "private_pg17_rehearsal_authority_outage_unproven",
+      "private_pg17_rehearsal_authority_database_isolation_unproven",
       "executeCanonicalRoleBootstrap",
       "executeCanonicalReleaseMigration",
       "executePrivateGenerationActivation",
       "roleProvisioningSql",
       "runtimeGrantSql",
       "canonicalActivationSql",
-      "claimVersion: this.fence.claimVersion",
-      "targetDeployIds: this.fence.targetDeployIds",
       "assembleTrustedRolloutEvidence",
       "reconnectDenied",
       "beginCompensation",
       "assertPromotionAllowed",
-      "durable-rollout-ledger.json",
       "REVIEW_ROUTER_DATABASE_URL_FILE",
-      "readFileSync(ledgerPath",
+      '"000067_release_rollout_ledger"',
+      "private_pg17_rehearsal_source_migration_failed:exit=",
+      "[redacted-database-url]",
     ])
       expect(source).toContain(required);
     expect(source).not.toContain("writersSuspended: true");
@@ -59,5 +72,9 @@ describe("disposable dual-version rehearsal", () => {
     expect(source).not.toContain("rehearsal_001");
     expect(source).not.toMatch(/"run",\s*"--env",\s*"POSTGRES_PASSWORD/u);
     expect(source).not.toContain("env: { ...process.env, DATABASE_URL:");
+    expect(source).not.toContain("persistLedger");
+    expect(source).not.toContain("RENDER_API_KEY");
+    expect(source).not.toContain("GITHUB_TOKEN");
+    expect(source).toContain(".slice(0, 2_000)");
   });
 });

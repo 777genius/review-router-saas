@@ -86,6 +86,30 @@ describe("private-network PG17 workflow security contract", () => {
     expect(workflow).toContain("always-reconcile-runners-and-compensation");
   });
 
+  it("keeps installer and external authority credentials out of every workflow job", () => {
+    const cutover = jobs(workflow).find((block) =>
+      block.startsWith("  pg17-cutover-private:"),
+    )!;
+    expect(workflow).not.toContain("EXTERNAL_ACTIVATION_AUTHORITY");
+    expect(workflow).not.toContain("ACTIVATION_PERMIT_INSTALLER");
+    expect(workflow).not.toContain("ACTIVATION_RECEIPT_GUARD");
+    expect(cutover).toContain(
+      "REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}",
+    );
+    expect(cutover).not.toContain(
+      "REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}",
+    );
+  });
+
+  it("uses dedicated release-control and compensation credentials", () => {
+    expect(workflow).toContain("secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN");
+    expect(workflow).toContain(
+      "secrets.REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL",
+    );
+    expect(workflow).not.toContain("secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN");
+    expect(workflow).not.toContain("secrets.REVIEW_ROUTER_SOURCE_DATABASE_URL");
+  });
+
   it("uses only SHA-pinned actions and preserves the opt-in legacy workflow contracts", () => {
     expect(`${workflow}\n${controller}`).not.toMatch(
       /uses: [^\n]+@(main|master|v\d+)/u,

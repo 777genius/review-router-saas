@@ -4,6 +4,56 @@
 
 services:
   - type: web
+    name: reviewrouter-release-control
+    runtime: node
+    plan: starter
+    region: frankfurt
+    branch: main
+    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
+    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 HOST=0.0.0.0 pnpm release-control:start
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: 24
+      - key: PORT
+        value: 10000
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_DATABASE_URL
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_DATABASE_URL
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_CONTROL_TOKEN_SHA256
+        sync: false
+      - key: REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256
+        sync: false
+      - key: RENDER_SERVICE_SUSPENSION_API_KEY
+        sync: false
+      - key: REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL
+        sync: false
+      - key: REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_DATABASE_URL
+        sync: false
+
+  - type: web
+    name: reviewrouter-release-witness
+    runtime: node
+    plan: starter
+    region: frankfurt
+    branch: main
+    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
+    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 HOST=0.0.0.0 pnpm release-witness:start
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: 24
+      - key: PORT
+        value: 10000
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_DATABASE_URL
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256
+        sync: false
+
+  - type: web
     name: reviewrouter-web
     runtime: node
     plan: starter

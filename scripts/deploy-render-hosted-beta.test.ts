@@ -250,7 +250,7 @@ describe("Render hosted deploy hardening", () => {
     expect(blueprint).toContain("user: reviewrouter_role_bootstrap");
     expect(blueprint).not.toContain("preDeployCommand:");
     expect(blueprint).not.toContain("property: connectionString");
-    expect(blueprint.match(/autoDeployTrigger: off/g)).toHaveLength(3);
+    expect(blueprint.match(/autoDeployTrigger: off/g)).toHaveLength(5);
     expect(blueprint).not.toContain("autoDeployTrigger: commit");
     for (const key of [
       "REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY",

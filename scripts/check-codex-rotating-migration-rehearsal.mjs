@@ -31,7 +31,6 @@ const migration63 = join(migrationsDirectory, migration63Name, "migration.sql");
 const migration64 = join(migrationsDirectory, migration64Name, "migration.sql");
 const migration65 = join(migrationsDirectory, migration65Name, "migration.sql");
 const migration66 = join(migrationsDirectory, migration66Name, "migration.sql");
-const migration67 = join(migrationsDirectory, migration67Name, "migration.sql");
 const rotatingMigrationNames = readdirSync(migrationsDirectory)
   .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
   .sort();
@@ -120,6 +119,7 @@ try {
   proveExactProductionCatalogContract(rehearsalUrl);
   proveMigrateDeployNoOp(rehearsalUrl);
   proveLateMigrationRollbackAndReplayMatrix();
+  proveReleaseAuthorityMarkerIsolation(rehearsalUrl);
   const observation = collectObservation(rehearsalUrl);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
@@ -201,23 +201,6 @@ function proveLateMigrationRollbackAndReplayMatrix() {
       leaked:
         "SELECT count(*) FROM pg_proc WHERE proname='codex_oauth_provider_identity_repair_challenge'",
     },
-    {
-      name: migration67Name,
-      source: migration67,
-      prior: [
-        [migration60Name, migration60],
-        [migration61Name, migration61],
-        [migration62Name, migration62],
-        [migration63Name, migration63],
-        [migration64Name, migration64],
-        [migration65Name, migration65],
-        [migration66Name, migration66],
-      ],
-      decoy: 'CREATE TABLE "release_rollout_receipt_ledger" (id text)',
-      cleanup: 'DROP TABLE "release_rollout_receipt_ledger"',
-      leaked:
-        "SELECT count(*) FROM information_schema.tables WHERE table_name='release_rollout_ledger'",
-    },
   ];
   for (const [index, testCase] of cases.entries()) {
     const name = `${databaseName}_atomic_${index}`;
@@ -247,6 +230,38 @@ function proveLateMigrationRollbackAndReplayMatrix() {
         false,
       );
     }
+  }
+}
+
+function proveReleaseAuthorityMarkerIsolation(url) {
+  proveMigrationRunnerHistory(url, migration67Name, true);
+  const forbiddenObjects = psql(url, [
+    "-Atc",
+    String.raw`
+      SELECT count(*)
+      FROM pg_class relation
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname IN ('public', 'release_authority')
+        AND (
+          relation.relname LIKE 'release_rollout_%'
+          OR relation.relname LIKE 'release_runner_%'
+        )`,
+  ]).stdout.trim();
+  assert(
+    forbiddenObjects === "0",
+    "000067 no-op marker created release authority objects in the application database",
+  );
+  for (const role of [
+    "reviewrouter_release_control",
+    "reviewrouter_release_witness",
+  ]) {
+    assert(
+      psql(url, [
+        "-Atc",
+        `SELECT count(*) FROM pg_roles WHERE rolname=${quoteLiteral(role)}`,
+      ]).stdout.trim() === "0",
+      `000067 no-op marker created external authority role ${role} in the application database`,
+    );
   }
 }
 

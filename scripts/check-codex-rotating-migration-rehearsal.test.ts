@@ -47,7 +47,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toMatch(/\bobj_description\(oid, 'pg_database'\)/u);
   });
 
-  it("keeps 000063 through 000067 in the late-failure rollback/replay matrix", () => {
+  it("keeps stateful 000063 through 000066 in the late-failure rollback/replay matrix", () => {
     const matrix =
       /function proveLateMigrationRollbackAndReplayMatrix\(\) \{([\s\S]+?)\n\}/u.exec(
         source,
@@ -57,11 +57,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(matrix).toContain("name: migration64Name");
     expect(matrix).toContain("name: migration65Name");
     expect(matrix).toContain("name: migration66Name");
-    expect(matrix).toContain("name: migration67Name");
-    expect(matrix).toContain(
-      `'CREATE TABLE "release_rollout_receipt_ledger" (id text)'`,
-    );
-    expect(matrix).toContain(`table_name='release_rollout_ledger'`);
+    expect(matrix).not.toContain("name: migration67Name");
+    expect(matrix).not.toContain("release_rollout_receipt_ledger");
     expect(matrix).toContain('psql(url, ["-c", testCase.decoy])');
     expect(matrix).toContain("`${testCase.name} injected failure missing`");
     expect(matrix).toContain(
@@ -84,7 +81,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toContain("function registerDirectMigrationSuccess");
   });
 
-  it("requires the release rollout ledger migration to be transactional", () => {
+  it("requires 000067 to remain an immutable application-database no-op marker", () => {
     const migration = readFileSync(
       resolve(
         import.meta.dirname,
@@ -92,7 +89,15 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       ),
       "utf8",
     );
-    expect(migration).toMatch(/^BEGIN;[\s\S]+COMMIT;\s*$/u);
+    expect(migration).toContain("immutable history marker");
+    expect(migration).toContain("packages/platform/release-authority-db");
+    expect(migration).not.toMatch(
+      /\b(?:CREATE|ALTER|DROP|GRANT|REVOKE|INSERT|UPDATE|DELETE)\b/iu,
+    );
+    expect(source).toContain("function proveReleaseAuthorityMarkerIsolation");
+    expect(source).toContain('forbiddenObjects === "0"');
+    expect(source).toContain('"reviewrouter_release_control"');
+    expect(source).toContain('"reviewrouter_release_witness"');
   });
 
   it("uses the production exact catalog observation and verifier", () => {

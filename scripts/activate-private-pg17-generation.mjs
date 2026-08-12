@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
   canonicalActivationSql,
-  canonicalDatabaseGenerationObservationSql,
   resolveReleaseMigrationConfiguration,
 } from "./run-codex-rotating-release-migration.mjs";
 import {
@@ -18,82 +17,41 @@ const required = (env, name) => {
   return value;
 };
 
+const forbiddenCutoverAuthorityEnvironment = Object.freeze([
+  "REVIEW_ROUTER_ACTIVATION_FENCE_JSON",
+  "REVIEW_ROUTER_ACTIVATION_PERMIT_JSON",
+  "REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_DATABASE_URL",
+  "REVIEW_ROUTER_ACTIVATION_RECEIPT_GUARD_DATABASE_URL",
+]);
+
 export function executePrivateGenerationActivation(
   env = process.env,
   commands = new RedactedProcessCommandAdapter(),
-  fence,
 ) {
+  for (const name of forbiddenCutoverAuthorityEnvironment) {
+    if (env[name] !== undefined)
+      throw new Error(
+        `release_activation_authority_environment_forbidden:${name}`,
+      );
+  }
   const configuration = resolveReleaseMigrationConfiguration(env);
-  const sourceSystemIdentifier = required(
-    env,
-    "REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER",
-  );
-  const targetSystemIdentifier = required(
-    env,
-    "REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER",
-  );
   const rolloutId = required(env, "REVIEW_ROUTER_ROLLOUT_ID");
-  if (
-    !fence ||
-    fence.rolloutId !== rolloutId ||
-    fence.expectedCommitSha !==
-      required(env, "REVIEW_ROUTER_RELEASE_COMMIT_SHA") ||
-    fence.runId !== required(env, "GITHUB_RUN_ID") ||
-    fence.jobId !== required(env, "REVIEW_ROUTER_CUTOVER_WORKFLOW_JOB_ID") ||
-    fence.runAttempt !== Number(required(env, "GITHUB_RUN_ATTEMPT")) ||
-    fence.sourceSystemIdentifier !== sourceSystemIdentifier ||
-    fence.targetSystemIdentifier !== targetSystemIdentifier
-  )
-    throw new Error("release_activation_fence_binding_invalid");
-  const runPsql = (step, args, options = {}) => {
-    const connection = decomposePostgresConnection(configuration.releaseUrl);
-    try {
-      return commands.execute("psql", [...connection.args, ...args], {
-        env: connection.env,
-        input: options.input,
-      }).stdout;
-    } catch (error) {
-      throw new Error(`release_activation_step_failed:${step}`, {
-        cause: error,
-      });
-    } finally {
-      connection.cleanup();
-    }
-  };
-  const generation = JSON.parse(
-    runPsql("activation_target_generation", [
-      "--no-psqlrc",
-      "--tuples-only",
-      "--no-align",
-      "--command",
-      canonicalDatabaseGenerationObservationSql(),
-    ]).trim(),
-  );
-  if (
-    generation.systemIdentifier !== targetSystemIdentifier ||
-    generation.recoveryWitnessSha256 !==
-      required(env, "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256")
-  )
-    throw new Error("release_activation_target_generation_mismatch");
-  const activation = canonicalActivationSql(configuration, {
-    rolloutId,
-    expectedCommitSha: fence.expectedCommitSha,
-    runId: fence.runId,
-    jobId: fence.jobId,
-    runAttempt: fence.runAttempt,
-    sourceSystemIdentifier,
-    targetSystemIdentifier,
-    previousReceiptSha256: fence.previousReceiptSha256,
-    fenceNonce: fence.nonce,
-    fenceVersion: fence.version,
-    claimVersion: fence.claimVersion,
-    targetDeployIds: fence.targetDeployIds,
-  });
-  const output = runPsql(
-    "transactional_activation",
-    ["--no-psqlrc", "--tuples-only", "--no-align"],
-    { input: activation.sql },
-  );
+  const activation = canonicalActivationSql(configuration, { rolloutId });
+  const connection = decomposePostgresConnection(configuration.releaseUrl);
+  let output;
+  try {
+    output = commands.execute(
+      "psql",
+      [...connection.args, "--no-psqlrc", "--tuples-only", "--no-align"],
+      { env: connection.env, input: activation.sql },
+    ).stdout;
+  } catch (error) {
+    throw new Error("release_activation_step_failed:transactional_activation", {
+      cause: error,
+    });
+  } finally {
+    connection.cleanup();
+  }
   const observed = JSON.parse(
     output
       .split("\n")
@@ -102,20 +60,19 @@ export function executePrivateGenerationActivation(
   );
   if (
     observed?.rolloutId !== rolloutId ||
-    observed?.sourceSystemIdentifier !== sourceSystemIdentifier ||
-    observed?.targetSystemIdentifier !== targetSystemIdentifier ||
-    observed?.expectedCommitSha !== fence.expectedCommitSha ||
-    observed?.runId !== fence.runId ||
-    observed?.jobId !== fence.jobId ||
-    observed?.runAttempt !== fence.runAttempt ||
-    observed?.previousReceiptSha256 !== fence.previousReceiptSha256 ||
-    observed?.fenceNonce !== fence.nonce ||
-    observed?.fenceVersion !== fence.version ||
-    observed?.claimVersion !== fence.claimVersion ||
-    JSON.stringify(observed?.targetDeployIds) !==
-      JSON.stringify(fence.targetDeployIds) ||
     observed?.canonicalPrivilegesSha256 !==
       activation.canonicalPrivilegesSha256 ||
+    !/^[0-9]+$/u.test(observed?.sourceSystemIdentifier ?? "") ||
+    !/^[0-9]+$/u.test(observed?.targetSystemIdentifier ?? "") ||
+    observed?.sourceSystemIdentifier === observed?.targetSystemIdentifier ||
+    !/^[a-f0-9]{40}$/u.test(observed?.expectedCommitSha ?? "") ||
+    observed?.postgresMajor !== 17 ||
+    !/^sha256:[a-f0-9]{64}$/u.test(observed?.migrationChecksum ?? "") ||
+    !Array.isArray(observed?.targetDeployIds) ||
+    observed.targetDeployIds.length < 1 ||
+    !Number.isSafeInteger(observed?.permitEpoch) ||
+    observed.permitEpoch < 1 ||
+    !/^[a-f0-9]{32}$/u.test(observed?.permitNonce ?? "") ||
     !/^sha256:[a-f0-9]{64}$/u.test(observed?.catalogFactsSha256 ?? "") ||
     !/^sha256:[a-f0-9]{64}$/u.test(observed?.firstWriteReceiptSha256 ?? "") ||
     observed?.firstWriteBoundary !== true ||
@@ -126,18 +83,7 @@ export function executePrivateGenerationActivation(
     step: "activate_target_generation",
     observedAt: observed.activatedAt,
     facts: {
-      rolloutId,
-      sourceSystemIdentifier,
-      targetSystemIdentifier,
-      canonicalPrivilegesSha256: activation.canonicalPrivilegesSha256,
-      catalogFactsSha256: observed.catalogFactsSha256,
-      firstWriteReceiptSha256: observed.firstWriteReceiptSha256,
-      transactionId: observed.transactionId,
-      firstWriteBoundary: true,
-      fenceNonce: fence.nonce,
-      fenceVersion: fence.version,
-      claimVersion: fence.claimVersion,
-      targetDeployIds: fence.targetDeployIds,
+      ...observed,
       observationSha256: `sha256:${createHash("sha256").update(JSON.stringify(observed)).digest("hex")}`,
     },
   };
@@ -149,7 +95,7 @@ if (
 ) {
   try {
     process.stdout.write(
-      `${JSON.stringify(executePrivateGenerationActivation(process.env, undefined, JSON.parse(required(process.env, "REVIEW_ROUTER_ACTIVATION_FENCE_JSON"))))}\n`,
+      `${JSON.stringify(executePrivateGenerationActivation())}\n`,
     );
   } catch (error) {
     process.stderr.write(

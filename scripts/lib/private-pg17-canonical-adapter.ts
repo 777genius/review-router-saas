@@ -1,6 +1,7 @@
 import {
   RolloutStep,
-  type ActivationFence,
+  RedactedProcessCommandAdapter,
+  decomposePostgresConnection,
   type StepObservation,
 } from "../../packages/features/release-rollout/src/index";
 import { executePrivateGenerationActivation } from "../activate-private-pg17-generation.mjs";
@@ -28,21 +29,43 @@ export class PrivatePg17CanonicalAdapter {
     );
     if ((facts as { aclGateState?: string }).aclGateState !== "closed")
       throw new Error("private_pg17_rollout_acl_gate_not_closed");
+    const connection = decomposePostgresConnection(
+      String(env.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL),
+    );
+    let migrationChecksum: string;
+    try {
+      migrationChecksum = new RedactedProcessCommandAdapter()
+        .execute(
+          "psql",
+          [
+            ...connection.args,
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--command",
+            "SELECT 'sha256:' || encode(pg_catalog.sha256(convert_to(coalesce(string_agg(migration_name || ':' || checksum, ',' ORDER BY migration_name), ''), 'UTF8')), 'hex') FROM public._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL",
+          ],
+          { env: connection.env },
+        )
+        .stdout.trim();
+    } finally {
+      connection.cleanup();
+    }
+    if (!/^sha256:[a-f0-9]{64}$/u.test(migrationChecksum))
+      throw new Error("private_pg17_rollout_migration_checksum_unproven");
     return {
       step: RolloutStep.RunReleaseMigration,
       observedAt: new Date().toISOString(),
-      facts,
+      facts: { ...(facts as Record<string, unknown>), migrationChecksum },
     };
   }
 
-  activateTarget(
-    env: NodeJS.ProcessEnv,
-    fence: ActivationFence,
-  ): StepObservation {
-    return executePrivateGenerationActivation(
-      env,
-      undefined,
-      fence,
-    ) as StepObservation;
+  activateTarget(env: NodeJS.ProcessEnv, rolloutId: string): StepObservation {
+    const activationEnv = { ...env };
+    delete activationEnv.REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_DATABASE_URL;
+    return executePrivateGenerationActivation({
+      ...activationEnv,
+      REVIEW_ROUTER_ROLLOUT_ID: rolloutId,
+    }) as StepObservation;
   }
 }

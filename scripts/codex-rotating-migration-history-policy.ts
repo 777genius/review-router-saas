@@ -25,7 +25,7 @@ export const immutableCodexRotatingMigrationChecksums = Object.freeze({
 
 export const forwardUnpublishedCodexRotatingMigration = Object.freeze({
   name: "000067_release_rollout_ledger",
-  checksum: "a66a344ba6fa2cfea9184d548b1b5965b1bbea528cf34f1600ac70108577552e",
+  checksum: "82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05",
 });
 
 export const checkedInCodexRotatingMigrationChecksums = Object.freeze({
@@ -46,9 +46,10 @@ const editedBeforeRolloutMigration =
  * other historical migrations may be absent or have exactly one successful
  * row bearing the immutable checked-in checksum. The non-atomic 000063 digest
  * existed only on an unpublished local side branch and is never accepted as
- * released history. Forward migration 000067 is pinned above but remains
- * unpublished, so this pre-release policy rejects every preexisting 000067
- * history row; the post-release verifier separately requires one exact success.
+ * released history. Forward migration 000067 is an immutable no-op marker: it
+ * is pinned above but remains unpublished, so this pre-release policy rejects
+ * every preexisting 000067 history row. Release Authority state lives only in
+ * its dedicated external PostgreSQL database.
  */
 export function assertCodexRotatingMigrationHistoryIsPristine(
   rows: readonly CodexRotatingMigrationHistoryRow[],
