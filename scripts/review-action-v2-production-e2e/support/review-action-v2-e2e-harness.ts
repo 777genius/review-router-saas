@@ -24,6 +24,8 @@ import {
   ReviewExecutionProviderKind,
   ReviewInvocationLeasePurpose,
   ReviewTaskKind as ExecutionTaskKind,
+  canonicalReviewAssignmentManifestHashPreimage,
+  canonicalReviewExecutionPlanHashPreimage,
 } from "../../../packages/features/review-executions/src/index.js";
 import { ClaimReviewPublicationStatus } from "../../../packages/features/review-publishing/src/v2/index.js";
 import { PrismaReviewPublicationRepository } from "../../../packages/features/review-publishing/src/v2/composition/index.js";
@@ -354,7 +356,6 @@ export class ReviewActionV2E2EHarness {
     const executionId = `${this.prefix}-execution-${randomUUID()}`;
     const workSlotId = `${executionId}-slot-0`;
     const ownerIdHash = sha256(`${executionId}-owner`);
-    const planHash = sha256(`${executionId}-plan`);
     const slotCount = input.slotCount ?? 1;
     const attachSlotCount = input.attachSlotCount ?? 1;
     const workSlots = Array.from({ length: slotCount }, (_, index) => ({
@@ -367,6 +368,33 @@ export class ReviewActionV2E2EHarness {
       taskKind: ExecutionTaskKind.FindingDiscovery,
       workSlotId: `${executionId}-slot-${index}`,
     }));
+    const compatibilityKey = sha256(`${executionId}-compatibility`);
+    const eligiblePaths = workSlots.map(
+      (_, index) => `src/review-unit-${index}.ts`,
+    );
+    const assignmentManifestCanonicalJson = canonicalJson({
+      assignments: workSlots.map((slot, index) => ({
+        paths: [eligiblePaths[index]],
+        workSlotId: slot.workSlotId,
+      })),
+      eligiblePaths,
+      excludedPaths: [],
+      manifestVersion: 1,
+      uncoveredPaths: [],
+    });
+    const assignmentManifestHash = sha256(
+      canonicalReviewAssignmentManifestHashPreimage(
+        assignmentManifestCanonicalJson,
+      ),
+    );
+    const planHash = sha256(
+      canonicalReviewExecutionPlanHashPreimage({
+        assignmentManifestHash,
+        compatibilityKey,
+        reviewRevisionHash: authorized.reviewRevisionHash,
+        workSlots,
+      }),
+    );
     const startRequest = await withBodyHash(
       ReviewActionV2OperationId.ReviewExecutionStart,
       {
@@ -377,8 +405,10 @@ export class ReviewActionV2E2EHarness {
         authorizationId: authorized.authorizationId,
         executionId,
         reviewRevisionHash: authorized.reviewRevisionHash,
-        compatibilityKey: sha256(`${executionId}-compatibility`),
+        compatibilityKey,
         planHash,
+        assignmentManifestCanonicalJson,
+        assignmentManifestHash,
         workSlotsCanonicalJson: canonicalJson(workSlots),
         sourceRunId,
         sourceRunAttempt: "1",
