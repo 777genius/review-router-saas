@@ -169,9 +169,9 @@ export class RenderPrivateRunnerAdapter {
   constructor(
     private readonly ledger: RunnerJobLedger,
     private readonly cleanupWitness: RunnerCleanupWitnessPort,
+    private readonly providerWitness: RunnerProviderWitnessPort,
     private readonly fetchImpl: RenderFetch = fetch,
     private readonly now: () => Date = () => new Date(),
-    private readonly providerWitness?: RunnerProviderWitnessPort,
   ) {}
 
   private client(token: string): RenderApiAdapter {
@@ -388,7 +388,7 @@ export class RenderPrivateRunnerAdapter {
     if (!job || !terminal.has(job.status))
       throw new Error("render_runner_cleanup_terminal_timeout");
     const expectedCanary = input.cleanupCanary;
-    if (this.providerWitness) {
+    {
       if (!job.createdAt || !job.finishedAt)
         throw new Error("render_runner_cleanup_log_window_missing");
       const service = await api.getService(input.baseServiceId);
@@ -426,6 +426,7 @@ export class RenderPrivateRunnerAdapter {
       await this.providerWitness.persist(input.jobId, {
         jobId: input.jobId,
         canary: expectedCanary,
+        providerStatus: job.status,
         containerTerminated: true,
         logSha256: `sha256:${createHash("sha256")
           .update(receipt.log.message)

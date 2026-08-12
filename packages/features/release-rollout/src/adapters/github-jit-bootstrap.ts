@@ -101,7 +101,7 @@ export async function cleanupRunnerWorkspace(
   paths: readonly string[],
 ): Promise<{
   readonly removedPaths: readonly string[];
-  readonly remaining: readonly string[];
+  readonly remainingPaths: readonly string[];
 }> {
   const removed: string[] = [];
   for (const path of paths) {
@@ -138,7 +138,7 @@ export async function cleanupRunnerWorkspace(
     throw new Error("github_jit_cleanup_enumeration_failed");
   return Object.freeze({
     removedPaths: Object.freeze(removed),
-    remaining: Object.freeze(remaining),
+    remainingPaths: Object.freeze(remaining),
   });
 }
 

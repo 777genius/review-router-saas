@@ -49,8 +49,31 @@ type PersistRunnerRegistrationInput = Readonly<{
   workflowJobId: string;
   registration: PersistedRunnerRegistration;
 }>;
+type ProviderJobStatus = "succeeded" | "failed" | "canceled";
+type PersistedProviderCleanupWitness = Readonly<{
+  jobId: string;
+  canary: string;
+  providerStatus: ProviderJobStatus;
+  containerTerminated: true;
+  logSha256: string;
+  removedPaths: readonly string[];
+  remainingPaths: readonly [];
+  providerLogId: string;
+  providerObservedAt: string;
+}>;
+type IndependentCleanupWitness = Readonly<{
+  providerStatus: ProviderJobStatus;
+  listenerStopped: true;
+  workspaceRemoved: true;
+  credentialProcessGone: true;
+  canary: string;
+  observedAt: string;
+  providerLogSha256: string;
+  removedPaths: readonly string[];
+  remainingPaths: readonly [];
+}>;
 
-export interface ReleaseRolloutLedgerRepository {
+export interface ReleaseAuthorityLedgerPort {
   claim(input: RolloutBinding): Promise<"claimed" | "duplicate">;
   compareAndSet(
     input: RolloutBinding & {
@@ -97,6 +120,9 @@ export interface ReleaseRolloutLedgerRepository {
       activationReceipt: ActivationReceipt;
     },
   ): Promise<boolean>;
+}
+
+export interface RunnerOperationsLedgerPort {
   persistIntent(input: ProvisioningIntent): Promise<"created" | "existing">;
   listIntents(rolloutId: string): Promise<readonly ProvisioningIntent[]>;
   recordIntentOutcome(input: {
@@ -123,17 +149,25 @@ export interface ReleaseRolloutLedgerRepository {
   cleanupObservation(jobId: string): Promise<StepObservation>;
   persistProviderWitness(
     jobId: string,
-    witness: Record<string, unknown>,
+    witness: PersistedProviderCleanupWitness,
   ): Promise<void>;
-  cleanupWitness(jobId: string): Promise<Record<string, unknown>>;
+  cleanupWitness(jobId: string): Promise<IndependentCleanupWitness>;
   persistRegistration(input: PersistRunnerRegistrationInput): Promise<void>;
+}
+
+export interface ReleaseRolloutReconciliationPort {
   reconcile(rolloutId: string): Promise<Record<string, unknown>>;
 }
 
 const json = (value: unknown): Prisma.InputJsonValue =>
   JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 
-export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedgerRepository {
+export class PrismaReleaseRolloutLedgerRepository
+  implements
+    ReleaseAuthorityLedgerPort,
+    RunnerOperationsLedgerPort,
+    ReleaseRolloutReconciliationPort
+{
   constructor(private readonly prisma: PrismaClient) {}
 
   async claim(input: RolloutBinding): Promise<"claimed" | "duplicate"> {
@@ -597,10 +631,11 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
 
   async persistProviderWitness(
     jobId: string,
-    witness: Record<string, unknown>,
+    witness: PersistedProviderCleanupWitness,
   ): Promise<void> {
     if (
       witness.jobId !== jobId ||
+      !["succeeded", "failed", "canceled"].includes(witness.providerStatus) ||
       witness.containerTerminated !== true ||
       !/^sha256:[a-f0-9]{64}$/u.test(String(witness.logSha256)) ||
       typeof witness.providerLogId !== "string" ||
@@ -625,7 +660,7 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
       throw new Error("release_runner_provider_witness_cas_failed");
   }
 
-  async cleanupWitness(jobId: string): Promise<Record<string, unknown>> {
+  async cleanupWitness(jobId: string): Promise<IndependentCleanupWitness> {
     const value = await this.prisma.releaseRunnerJob.findUniqueOrThrow({
       where: { jobId },
     });
@@ -637,6 +672,9 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
       !provider ||
       provider.jobId !== jobId ||
       provider.canary !== value.cleanupCanary ||
+      !["succeeded", "failed", "canceled"].includes(
+        String(provider.providerStatus),
+      ) ||
       provider.containerTerminated !== true ||
       !/^sha256:[a-f0-9]{64}$/u.test(String(provider.logSha256)) ||
       !Array.isArray(provider.removedPaths) ||
@@ -645,12 +683,13 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
     )
       throw new Error("release_runner_independent_cleanup_witness_unproven");
     return {
+      providerStatus: provider.providerStatus as ProviderJobStatus,
       listenerStopped: true,
       workspaceRemoved: true,
       credentialProcessGone: true,
       canary: value.cleanupCanary,
       observedAt: String(provider.providerObservedAt),
-      providerLogSha256: provider.logSha256,
+      providerLogSha256: String(provider.logSha256),
       removedPaths: provider.removedPaths,
       remainingPaths: [],
     };
@@ -668,15 +707,31 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
             workflowJobId: input.workflowJobId,
           },
         });
+      const existingRegistration =
+        intent.registrationRunnerId === null
+          ? undefined
+          : {
+              runnerId: Number(intent.registrationRunnerId),
+              runnerGroupId: Number(intent.registrationRunnerGroupId),
+              labels: intent.registrationLabels,
+              uniqueLabel: intent.registrationUniqueLabel,
+              workFolder: intent.registrationWorkFolder,
+            };
       if (
-        intent.registration &&
-        JSON.stringify(intent.registration) !==
+        existingRegistration &&
+        JSON.stringify(existingRegistration) !==
           JSON.stringify(input.registration)
       )
         throw new Error("release_runner_registration_conflict");
       await transaction.releaseRunnerProvisioningIntent.update({
         where: { intentId: intent.intentId },
-        data: { registration: json(input.registration) },
+        data: {
+          registrationRunnerId: BigInt(input.registration.runnerId),
+          registrationRunnerGroupId: BigInt(input.registration.runnerGroupId),
+          registrationLabels: [...input.registration.labels],
+          registrationUniqueLabel: input.registration.uniqueLabel,
+          registrationWorkFolder: input.registration.workFolder,
+        },
       });
       const job = await transaction.releaseRunnerJob.findFirstOrThrow({
         where: {
@@ -749,12 +804,11 @@ export class PrismaReleaseRolloutLedgerRepository implements ReleaseRolloutLedge
   }
 }
 
-export class ReleaseRolloutLedgerService {
-  constructor(private readonly repository: ReleaseRolloutLedgerRepository) {}
+export class ReleaseAuthorityService {
+  constructor(private readonly repository: ReleaseAuthorityLedgerPort) {}
   claim = (input: RolloutBinding) => this.repository.claim(input);
-  cas = (
-    input: Parameters<ReleaseRolloutLedgerRepository["compareAndSet"]>[0],
-  ) => this.repository.compareAndSet(input);
+  cas = (input: Parameters<ReleaseAuthorityLedgerPort["compareAndSet"]>[0]) =>
+    this.repository.compareAndSet(input);
   markUncertain = (input: RolloutBinding) =>
     this.repository.markActivationUncertain(input);
   fenceTargetSwitch = (
@@ -778,21 +832,23 @@ export class ReleaseRolloutLedgerService {
       fencedAt: new Date(),
     });
   finalize = (
-    input: Parameters<ReleaseRolloutLedgerRepository["finalizeActivation"]>[0],
+    input: Parameters<ReleaseAuthorityLedgerPort["finalizeActivation"]>[0],
   ) => this.repository.finalizeActivation(input);
   state = (
-    input: Parameters<ReleaseRolloutLedgerRepository["activationState"]>[0],
+    input: Parameters<ReleaseAuthorityLedgerPort["activationState"]>[0],
   ) => this.repository.activationState(input);
   verifyFinalAuthority = (
-    input: Parameters<
-      ReleaseRolloutLedgerRepository["verifyFinalAuthority"]
-    >[0],
+    input: Parameters<ReleaseAuthorityLedgerPort["verifyFinalAuthority"]>[0],
   ) => this.repository.verifyFinalAuthority(input);
+}
+
+export class RunnerOperationsService {
+  constructor(private readonly repository: RunnerOperationsLedgerPort) {}
   persistIntent = (input: ProvisioningIntent) =>
     this.repository.persistIntent(input);
   listIntents = (rolloutId: string) => this.repository.listIntents(rolloutId);
   recordIntentOutcome = (
-    input: Parameters<ReleaseRolloutLedgerRepository["recordIntentOutcome"]>[0],
+    input: Parameters<RunnerOperationsLedgerPort["recordIntentOutcome"]>[0],
   ) => this.repository.recordIntentOutcome(input);
   persistJob = (input: PersistedJob) => this.repository.persistJob(input);
   listOpenJobs = (rolloutId: string) => this.repository.listOpenJobs(rolloutId);
@@ -807,18 +863,26 @@ export class ReleaseRolloutLedgerService {
     this.repository.markTerminal(jobId, observation);
   cleanupObservation = (jobId: string) =>
     this.repository.cleanupObservation(jobId);
-  persistProviderWitness = (jobId: string, witness: Record<string, unknown>) =>
-    this.repository.persistProviderWitness(jobId, witness);
+  persistProviderWitness = (
+    jobId: string,
+    witness: PersistedProviderCleanupWitness,
+  ) => this.repository.persistProviderWitness(jobId, witness);
   cleanupWitness = (jobId: string) => this.repository.cleanupWitness(jobId);
   persistRegistration = (
-    input: Parameters<ReleaseRolloutLedgerRepository["persistRegistration"]>[0],
+    input: Parameters<RunnerOperationsLedgerPort["persistRegistration"]>[0],
   ) => this.repository.persistRegistration(input);
+}
+
+export class ReleaseRolloutReconciliationService {
+  constructor(private readonly repository: ReleaseRolloutReconciliationPort) {}
   reconcile = (rolloutId: string) => this.repository.reconcile(rolloutId);
 }
 
 export type ReleaseRolloutLedgerRouteDependencies = {
-  service: ReleaseRolloutLedgerService;
-  tokenSha256: string;
+  authority: ReleaseAuthorityService;
+  runnerOperations: RunnerOperationsService;
+  reconciliation: ReleaseRolloutReconciliationService;
+  controlTokenSha256: string;
   witnessTokenSha256: string;
 };
 
@@ -918,17 +982,57 @@ const registrationRequest = (
     },
   };
 };
+const providerWitnessRequest = (
+  value: unknown,
+): PersistedProviderCleanupWitness => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "jobId",
+      "canary",
+      "providerStatus",
+      "containerTerminated",
+      "logSha256",
+      "removedPaths",
+      "remainingPaths",
+      "providerLogId",
+      "providerObservedAt",
+    ]) ||
+    !nonemptyString(body.jobId) ||
+    !nonemptyString(body.canary) ||
+    !["succeeded", "failed", "canceled"].includes(
+      String(body.providerStatus),
+    ) ||
+    body.containerTerminated !== true ||
+    !/^sha256:[a-f0-9]{64}$/u.test(String(body.logSha256)) ||
+    !Array.isArray(body.removedPaths) ||
+    body.removedPaths.length === 0 ||
+    body.removedPaths.some(
+      (path) => typeof path !== "string" || !path.startsWith("/runner/_work/"),
+    ) ||
+    !Array.isArray(body.remainingPaths) ||
+    body.remainingPaths.length !== 0 ||
+    !nonemptyString(body.providerLogId) ||
+    typeof body.providerObservedAt !== "string" ||
+    !Number.isFinite(Date.parse(body.providerObservedAt))
+  )
+    throw Object.assign(
+      new Error("release_runner_provider_witness_request_invalid"),
+      { statusCode: 400 },
+    );
+  return body as PersistedProviderCleanupWitness;
+};
 
 export async function registerReleaseRolloutLedgerRoutes(
   app: FastifyInstance,
   dependencies: ReleaseRolloutLedgerRouteDependencies,
 ): Promise<void> {
   const control = async (request: FastifyRequest) =>
-    authorize(request, dependencies.tokenSha256);
+    authorize(request, dependencies.controlTokenSha256);
   const witness = async (request: FastifyRequest) =>
     authorize(request, dependencies.witnessTokenSha256);
   app.post("/v1/rollouts/claim", { preHandler: control }, async (request) => ({
-    result: await dependencies.service.claim(
+    result: await dependencies.authority.claim(
       record(request.body) as RolloutBinding,
     ),
   }));
@@ -936,7 +1040,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/rollouts/:rolloutId/cas",
     { preHandler: control },
     async (request) => ({
-      changed: await dependencies.service.cas({
+      changed: await dependencies.authority.cas({
         ...record(request.body),
         rolloutId: request.params.rolloutId,
       } as never),
@@ -946,7 +1050,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/rollouts/:rolloutId/activation-uncertain",
     { preHandler: control },
     async (request) => ({
-      marked: await dependencies.service.markUncertain({
+      marked: await dependencies.authority.markUncertain({
         ...record(request.body),
         rolloutId: request.params.rolloutId,
       } as RolloutBinding),
@@ -956,7 +1060,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/rollouts/:rolloutId/target-switch-fence",
     { preHandler: control },
     async (request) => {
-      const fence = await dependencies.service.fenceTargetSwitch({
+      const fence = await dependencies.authority.fenceTargetSwitch({
         ...record(request.body),
         rolloutId: request.params.rolloutId,
       } as never);
@@ -967,7 +1071,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/rollouts/:rolloutId/activation-fence",
     { preHandler: control },
     async (request) => {
-      const fence = await dependencies.service.fence({
+      const fence = await dependencies.authority.fence({
         ...record(request.body),
         rolloutId: request.params.rolloutId,
       } as never);
@@ -978,7 +1082,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/rollouts/:rolloutId/activation-finalize",
     { preHandler: control },
     async (request) => ({
-      changed: await dependencies.service.finalize(
+      changed: await dependencies.authority.finalize(
         record(request.body) as never,
       ),
     }),
@@ -993,7 +1097,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/rollouts/:rolloutId/activation-state",
     { preHandler: control },
     async (request) => ({
-      state: await dependencies.service.state({
+      state: await dependencies.authority.state({
         rolloutId: request.params.rolloutId,
         sourceSystemIdentifier: request.query.source_system_identifier,
         targetSystemIdentifier: request.query.target_system_identifier,
@@ -1004,7 +1108,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/rollouts/:rolloutId/verify-final-authority",
     { preHandler: control },
     async (request) => ({
-      verified: await dependencies.service.verifyFinalAuthority({
+      verified: await dependencies.authority.verifyFinalAuthority({
         ...record(request.body),
         rolloutId: request.params.rolloutId,
       } as never),
@@ -1014,7 +1118,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/runner-jobs/intents",
     { preHandler: control },
     async (request) => ({
-      result: await dependencies.service.persistIntent(
+      result: await dependencies.runnerOperations.persistIntent(
         record(request.body) as ProvisioningIntent,
       ),
     }),
@@ -1023,13 +1127,13 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/runner-jobs/intents",
     { preHandler: control },
     async (request) =>
-      dependencies.service.listIntents(request.query.rollout_id),
+      dependencies.runnerOperations.listIntents(request.query.rollout_id),
   );
   app.put<{ Params: { intentId: string } }>(
     "/v1/runner-jobs/intents/:intentId/outcome",
     { preHandler: control },
     async (request, reply) => {
-      await dependencies.service.recordIntentOutcome({
+      await dependencies.runnerOperations.recordIntentOutcome({
         ...record(request.body),
         intentId: request.params.intentId,
       } as never);
@@ -1040,7 +1144,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/runner-jobs",
     { preHandler: control },
     async (request, reply) => {
-      await dependencies.service.persistJob(
+      await dependencies.runnerOperations.persistJob(
         record(request.body) as PersistedJob,
       );
       return reply.code(204).send();
@@ -1054,16 +1158,16 @@ export async function registerReleaseRolloutLedgerRoutes(
     };
   }>("/v1/runner-jobs", { preHandler: control }, async (request) =>
     request.query.lifecycle
-      ? dependencies.service.currentRunner(
+      ? dependencies.runnerOperations.currentRunner(
           request.query.rollout_id,
           request.query.lifecycle,
         )
-      : dependencies.service.listOpenJobs(request.query.rollout_id),
+      : dependencies.runnerOperations.listOpenJobs(request.query.rollout_id),
   );
   app.get<{
     Querystring: { rollout_id: string; lifecycle: "role" | "cutover" };
   }>("/v1/runner-jobs/current", { preHandler: control }, async (request) =>
-    dependencies.service.currentRunner(
+    dependencies.runnerOperations.currentRunner(
       request.query.rollout_id,
       request.query.lifecycle,
     ),
@@ -1073,7 +1177,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     { preHandler: control },
     async (request, reply) => {
       const body = record(request.body);
-      await dependencies.service.persistIdentity(
+      await dependencies.runnerOperations.persistIdentity(
         request.params.jobId,
         body.identity as RunnerIdentity,
         body.observation as StepObservation,
@@ -1085,7 +1189,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/runner-jobs/:jobId/terminal",
     { preHandler: control },
     async (request, reply) => {
-      await dependencies.service.markTerminal(
+      await dependencies.runnerOperations.markTerminal(
         request.params.jobId,
         record(request.body).observation as StepObservation,
       );
@@ -1096,21 +1200,21 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/runner-jobs/:jobId/cleanup-observation",
     { preHandler: control },
     async (request) =>
-      dependencies.service.cleanupObservation(request.params.jobId),
+      dependencies.runnerOperations.cleanupObservation(request.params.jobId),
   );
   app.get<{ Params: { jobId: string } }>(
     "/v1/runner-jobs/:jobId/cleanup-witness",
     { preHandler: control },
     async (request) =>
-      dependencies.service.cleanupWitness(request.params.jobId),
+      dependencies.runnerOperations.cleanupWitness(request.params.jobId),
   );
   app.put<{ Params: { jobId: string } }>(
     "/v1/runner-jobs/:jobId/provider-witness",
     { preHandler: witness },
     async (request, reply) => {
-      await dependencies.service.persistProviderWitness(
+      await dependencies.runnerOperations.persistProviderWitness(
         request.params.jobId,
-        record(request.body),
+        providerWitnessRequest(request.body),
       );
       return reply.code(204).send();
     },
@@ -1119,7 +1223,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/runner-jobs/registration",
     { preHandler: control },
     async (request, reply) => {
-      await dependencies.service.persistRegistration(
+      await dependencies.runnerOperations.persistRegistration(
         registrationRequest(request.body),
       );
       return reply.code(204).send();
@@ -1128,6 +1232,7 @@ export async function registerReleaseRolloutLedgerRoutes(
   app.post<{ Params: { rolloutId: string } }>(
     "/v1/rollouts/:rolloutId/reconcile",
     { preHandler: control },
-    async (request) => dependencies.service.reconcile(request.params.rolloutId),
+    async (request) =>
+      dependencies.reconciliation.reconcile(request.params.rolloutId),
   );
 }

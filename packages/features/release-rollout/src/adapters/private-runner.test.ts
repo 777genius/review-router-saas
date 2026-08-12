@@ -99,6 +99,9 @@ const witness = () => ({
     observedAt: "2026-08-12T00:10:00.000Z",
   }),
 });
+const providerWitness = () => ({
+  persist: vi.fn().mockResolvedValue(undefined),
+});
 
 describe("Render private runner contract", () => {
   it("accepts additive documented fields, compute planId, and an attested image digest", async () => {
@@ -119,6 +122,7 @@ describe("Render private runner contract", () => {
     const result = await new RenderPrivateRunnerAdapter(
       ledger(),
       witness(),
+      providerWitness(),
       fetchImpl,
     ).provision(request);
     expect(result.identity.provenance).toEqual(request.expectedProvenance);
@@ -147,9 +151,12 @@ describe("Render private runner contract", () => {
         ),
       );
     await expect(
-      new RenderPrivateRunnerAdapter(jobLedger, witness(), fetchImpl).provision(
-        request,
-      ),
+      new RenderPrivateRunnerAdapter(
+        jobLedger,
+        witness(),
+        providerWitness(),
+        fetchImpl,
+      ).provision(request),
     ).rejects.toThrow("render_runner_create_response_mismatch");
     expect(jobLedger.persistCreatedJob).toHaveBeenCalledWith(
       expect.objectContaining({ jobId: "job-123" }),
@@ -166,9 +173,12 @@ describe("Render private runner contract", () => {
       .mockResolvedValueOnce(json(service))
       .mockResolvedValueOnce(json(deploys));
     await expect(
-      new RenderPrivateRunnerAdapter(jobLedger, witness(), fetchImpl).provision(
-        request,
-      ),
+      new RenderPrivateRunnerAdapter(
+        jobLedger,
+        witness(),
+        providerWitness(),
+        fetchImpl,
+      ).provision(request),
     ).rejects.toThrow("ledger_unavailable");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
@@ -196,11 +206,32 @@ describe("Render private runner contract", () => {
           status: "succeeded",
           finishedAt: "2026-08-12T00:02:00.000Z",
         }),
+      )
+      .mockResolvedValueOnce(json(service))
+      .mockResolvedValueOnce(
+        json({
+          logs: [
+            {
+              id: "log-persistence-cleanup",
+              message: JSON.stringify({
+                canary: "rr-cleanup:rollout-1:rr-123-private",
+                cleanup: {
+                  removedPaths: ["/runner/_work/rr-123-private"],
+                  remainingPaths: [],
+                },
+              }),
+              timestamp: "2026-08-12T00:02:01.000Z",
+            },
+          ],
+        }),
       );
     await expect(
-      new RenderPrivateRunnerAdapter(jobLedger, witness(), fetchImpl).provision(
-        request,
-      ),
+      new RenderPrivateRunnerAdapter(
+        jobLedger,
+        witness(),
+        providerWitness(),
+        fetchImpl,
+      ).provision(request),
     ).rejects.toThrow("render_runner_job_persistence_failed");
     expect(jobLedger.recordProvisioningOutcome).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -246,26 +277,50 @@ describe("Render private runner contract", () => {
       .mockResolvedValueOnce(json(observedService))
       .mockResolvedValueOnce(json(observedDeploys));
     await expect(
-      new RenderPrivateRunnerAdapter(ledger(), witness(), fetchImpl).provision(
-        request,
-      ),
+      new RenderPrivateRunnerAdapter(
+        ledger(),
+        witness(),
+        providerWitness(),
+        fetchImpl,
+      ).provision(request),
     ).rejects.toThrow();
   });
 
   it("requires both documented terminal provider state and launcher cleanup canary", async () => {
-    const fetchImpl = vi.fn().mockImplementation(async () =>
-      json({
+    const cleanupReceipt = JSON.stringify({
+      canary: "rr-cleanup:rollout-1:rr-123-private",
+      cleanup: {
+        removedPaths: ["/runner/_work/rr-123-private"],
+        remainingPaths: [],
+      },
+    });
+    const fetchImpl = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/logs?"))
+        return json({
+          logs: [
+            {
+              id: "log-cleanup-1",
+              message: cleanupReceipt,
+              timestamp: "2026-08-12T00:09:01.000Z",
+            },
+          ],
+        });
+      if (url.endsWith(`/services/${request.baseServiceId}`))
+        return json(service);
+      return json({
         ...created,
         startCommand: "node /runner/bootstrap.mjs --context encoded",
         status: "succeeded",
         finishedAt: "2026-08-12T00:09:00.000Z",
-      }),
-    );
+      });
+    });
+    const independentWitness = providerWitness();
     expect(
       (
         await new RenderPrivateRunnerAdapter(
           ledger(),
           witness(),
+          independentWitness,
           fetchImpl,
         ).cleanup({
           apiKey: request.apiKey,
@@ -276,6 +331,13 @@ describe("Render private runner contract", () => {
         })
       ).facts,
     ).toMatchObject({ runner: { credentialProcessGone: true } });
+    expect(independentWitness.persist).toHaveBeenCalledWith(
+      "job-123",
+      expect.objectContaining({
+        providerLogId: "log-cleanup-1",
+        remainingPaths: [],
+      }),
+    );
     const badWitness = witness();
     badWitness.observe.mockResolvedValue({
       listenerStopped: true,
@@ -285,7 +347,12 @@ describe("Render private runner contract", () => {
       observedAt: "2026-08-12T00:10:00.000Z",
     });
     await expect(
-      new RenderPrivateRunnerAdapter(ledger(), badWitness, fetchImpl).cleanup({
+      new RenderPrivateRunnerAdapter(
+        ledger(),
+        badWitness,
+        providerWitness(),
+        fetchImpl,
+      ).cleanup({
         apiKey: request.apiKey,
         baseServiceId: request.baseServiceId,
         jobId: "job-123",

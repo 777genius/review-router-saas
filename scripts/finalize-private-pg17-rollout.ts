@@ -40,12 +40,14 @@ const ledger = new AuthenticatedRunnerLedgerAdapter(
   required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
   required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
 );
-const roleCleanupObservation = (await ledger.cleanupObservation(
+const roleCleanupWitness = await ledger.observe(
   body.runners[0].renderJobId,
-)) as StepObservation<Record<string, unknown>>;
-const cutoverCleanupObservation = (await ledger.cleanupObservation(
+  body.runners[0].cleanupCanary,
+);
+const cutoverCleanupWitness = await ledger.observe(
   body.runners[1].renderJobId,
-)) as StepObservation<Record<string, unknown>>;
+  body.runners[1].cleanupCanary,
+);
 let rollout = body.rollout;
 const preflightReceipt = rollout.receipts.find(
   (receipt) => receipt.step === RolloutStep.VerifyProtectedEnvironment,
@@ -64,29 +66,17 @@ const unavailable = async (): Promise<never> => {
   throw new Error("private_pg17_port_not_available_in_finalize_phase");
 };
 const cleanupEvidence = (
-  observation: StepObservation<Record<string, unknown>>,
+  witness: Awaited<ReturnType<AuthenticatedRunnerLedgerAdapter["observe"]>>,
   runner: RunnerIdentity,
 ): CleanupEvidence => {
-  const facts = observation.facts as {
-    provider?: { status?: string };
-    runner?: {
-      listenerStopped?: boolean;
-      workspaceRemoved?: boolean;
-      credentialProcessGone?: boolean;
-      canary?: string;
-      observedAt?: string;
-    };
-  };
-  if (!facts.provider || !facts.runner)
-    throw new Error("private_pg17_cleanup_observation_invalid");
   return {
     renderJobId: runner.renderJobId,
-    providerStatus: facts.provider.status as CleanupEvidence["providerStatus"],
-    listenerStopped: facts.runner.listenerStopped as true,
-    workspaceRemoved: facts.runner.workspaceRemoved as true,
-    credentialProcessGone: facts.runner.credentialProcessGone as true,
-    cleanupCanary: String(facts.runner.canary),
-    observedAt: String(facts.runner.observedAt),
+    providerStatus: witness.providerStatus,
+    listenerStopped: witness.listenerStopped,
+    workspaceRemoved: witness.workspaceRemoved,
+    credentialProcessGone: witness.credentialProcessGone,
+    cleanupCanary: witness.canary,
+    observedAt: witness.observedAt,
   };
 };
 const useCases = new ReleaseRolloutUseCases({
@@ -148,8 +138,8 @@ const useCases = new ReleaseRolloutUseCases({
         resumedTargetDeployIds: resumed.facts.map((item) => item.deployId),
         liveCanarySha256: `sha256:${sha256Canonical(canary.facts)}`,
         cleanups: [
-          cleanupEvidence(roleCleanupObservation, body.runners[0]),
-          cleanupEvidence(cutoverCleanupObservation, body.runners[1]),
+          cleanupEvidence(roleCleanupWitness, body.runners[0]),
+          cleanupEvidence(cutoverCleanupWitness, body.runners[1]),
         ],
         assembledAt: new Date().toISOString(),
       });

@@ -5,8 +5,12 @@ import type { ActivationFence } from "@reviewrouter/features-release-rollout";
 import {
   PrismaReleaseRolloutLedgerRepository,
   registerReleaseRolloutLedgerRoutes,
-  ReleaseRolloutLedgerService,
-  type ReleaseRolloutLedgerRepository,
+  ReleaseAuthorityService,
+  ReleaseRolloutReconciliationService,
+  RunnerOperationsService,
+  type ReleaseAuthorityLedgerPort,
+  type ReleaseRolloutReconciliationPort,
+  type RunnerOperationsLedgerPort,
 } from "./release-rollout-ledger";
 
 const binding = {
@@ -18,7 +22,11 @@ const binding = {
   targetSystemIdentifier: "200",
 };
 
-class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
+type CombinedLedgerPort = ReleaseAuthorityLedgerPort &
+  RunnerOperationsLedgerPort &
+  ReleaseRolloutReconciliationPort;
+
+class ConcurrentRepository implements CombinedLedgerPort {
   private claimed: typeof binding | undefined;
   private receipt = `sha256:${"0".repeat(64)}`;
   private state: "before" | "uncertain" | "activated" = "before";
@@ -27,7 +35,7 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
   private readonly intents = new Map<string, Record<string, unknown>>();
   providerWitness: Record<string, unknown> | undefined;
   registration:
-    | Parameters<ReleaseRolloutLedgerRepository["persistRegistration"]>[0]
+    | Parameters<RunnerOperationsLedgerPort["persistRegistration"]>[0]
     | undefined;
 
   async claim(input: typeof binding) {
@@ -40,7 +48,7 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
     return "duplicate" as const;
   }
   async compareAndSet(
-    input: Parameters<ReleaseRolloutLedgerRepository["compareAndSet"]>[0],
+    input: Parameters<ReleaseAuthorityLedgerPort["compareAndSet"]>[0],
   ) {
     if (this.state !== "before" || input.expectedReceiptSha256 !== this.receipt)
       return false;
@@ -52,7 +60,7 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
     return true;
   }
   async fenceTargetSwitch(
-    input: Parameters<ReleaseRolloutLedgerRepository["fenceTargetSwitch"]>[0],
+    input: Parameters<ReleaseAuthorityLedgerPort["fenceTargetSwitch"]>[0],
   ) {
     if (this.targetSwitchFenced) return null;
     this.targetSwitchFenced = true;
@@ -66,7 +74,7 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
     };
   }
   async fenceActivation(
-    input: Parameters<ReleaseRolloutLedgerRepository["fenceActivation"]>[0],
+    input: Parameters<ReleaseAuthorityLedgerPort["fenceActivation"]>[0],
   ) {
     if (this.state !== "before" || input.previousReceiptSha256 !== this.receipt)
       return null;
@@ -96,7 +104,7 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
     return this.state === "activated";
   }
   async persistIntent(
-    input: Parameters<ReleaseRolloutLedgerRepository["persistIntent"]>[0],
+    input: Parameters<RunnerOperationsLedgerPort["persistIntent"]>[0],
   ) {
     const existing = this.intents.get(input.id);
     if (!existing) {
@@ -125,7 +133,9 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
   }
   async persistProviderWitness(
     _jobId: string,
-    witness: Record<string, unknown>,
+    witness: Parameters<
+      RunnerOperationsLedgerPort["persistProviderWitness"]
+    >[1],
   ) {
     this.providerWitness = witness;
   }
@@ -133,7 +143,7 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
     throw new Error("unused");
   }
   async persistRegistration(
-    input: Parameters<ReleaseRolloutLedgerRepository["persistRegistration"]>[0],
+    input: Parameters<RunnerOperationsLedgerPort["persistRegistration"]>[0],
   ) {
     this.registration = input;
   }
@@ -144,8 +154,50 @@ class ConcurrentRepository implements ReleaseRolloutLedgerRepository {
 
 const token = "ledger-control-secret";
 const tokenSha256 = createHash("sha256").update(token).digest("hex");
+const services = (repository: CombinedLedgerPort) => ({
+  authority: new ReleaseAuthorityService(repository),
+  runnerOperations: new RunnerOperationsService(repository),
+  reconciliation: new ReleaseRolloutReconciliationService(repository),
+  controlTokenSha256: tokenSha256,
+  witnessTokenSha256: createHash("sha256").update("witness").digest("hex"),
+});
 
 describe("release rollout ledger internal API", () => {
+  it("builds final cleanup evidence only from the independent provider witness", async () => {
+    const repository = new PrismaReleaseRolloutLedgerRepository({
+      releaseRunnerJob: {
+        findUniqueOrThrow: () => ({
+          cleanupCanary: "rr-cleanup:rollout:runner",
+          cleanupObservation: {
+            facts: { forgedByCaller: true },
+          },
+          cleanupProviderWitness: {
+            jobId: "job-1",
+            canary: "rr-cleanup:rollout:runner",
+            providerStatus: "failed",
+            containerTerminated: true,
+            logSha256: `sha256:${"a".repeat(64)}`,
+            removedPaths: ["/runner/_work/rr-rollout-role"],
+            remainingPaths: [],
+            providerObservedAt: "2026-08-12T00:00:00.000Z",
+          },
+        }),
+      },
+    } as never);
+
+    expect(await repository.cleanupWitness("job-1")).toEqual({
+      providerStatus: "failed",
+      listenerStopped: true,
+      workspaceRemoved: true,
+      credentialProcessGone: true,
+      canary: "rr-cleanup:rollout:runner",
+      observedAt: "2026-08-12T00:00:00.000Z",
+      providerLogSha256: `sha256:${"a".repeat(64)}`,
+      removedPaths: ["/runner/_work/rr-rollout-role"],
+      remainingPaths: [],
+    });
+  });
+
   it("appends receipts against the durable boundary on both sides of activation", async () => {
     const boundaries: unknown[] = [];
     const receiptBoundaries: unknown[] = [];
@@ -195,9 +247,7 @@ describe("release rollout ledger internal API", () => {
   it("authenticates internal callers and keeps claim idempotent", async () => {
     const app = Fastify();
     await registerReleaseRolloutLedgerRoutes(app, {
-      service: new ReleaseRolloutLedgerService(new ConcurrentRepository()),
-      tokenSha256,
-      witnessTokenSha256: createHash("sha256").update("witness").digest("hex"),
+      ...services(new ConcurrentRepository()),
     });
     expect(
       (
@@ -226,7 +276,7 @@ describe("release rollout ledger internal API", () => {
   });
 
   it("allows exactly one activation fence under adversarial concurrency", async () => {
-    const service = new ReleaseRolloutLedgerService(new ConcurrentRepository());
+    const service = new ReleaseAuthorityService(new ConcurrentRepository());
     await service.claim(binding);
     const results = await Promise.all(
       Array.from({ length: 64 }, (_, index) =>
@@ -243,7 +293,7 @@ describe("release rollout ledger internal API", () => {
   });
 
   it("allows exactly one target-switch lease under adversarial concurrency", async () => {
-    const service = new ReleaseRolloutLedgerService(new ConcurrentRepository());
+    const service = new ReleaseAuthorityService(new ConcurrentRepository());
     const results = await Promise.all(
       Array.from({ length: 64 }, () =>
         service.fenceTargetSwitch({
@@ -256,7 +306,7 @@ describe("release rollout ledger internal API", () => {
   });
 
   it("returns existing only for the exact provisioning idempotency identity", async () => {
-    const service = new ReleaseRolloutLedgerService(new ConcurrentRepository());
+    const service = new RunnerOperationsService(new ConcurrentRepository());
     const intent = {
       id: `rri-${"b".repeat(64)}`,
       rolloutId: binding.rolloutId,
@@ -277,13 +327,12 @@ describe("release rollout ledger internal API", () => {
     const repository = new ConcurrentRepository();
     const app = Fastify();
     await registerReleaseRolloutLedgerRoutes(app, {
-      service: new ReleaseRolloutLedgerService(repository),
-      tokenSha256,
-      witnessTokenSha256: createHash("sha256").update("witness").digest("hex"),
+      ...services(repository),
     });
     const payload = {
       jobId: "job-1",
       canary: "rr-cleanup:rollout:runner",
+      providerStatus: "succeeded",
       containerTerminated: true,
       logSha256: `sha256:${"a".repeat(64)}`,
       removedPaths: ["/runner/_work/rr-runner"],
@@ -312,6 +361,19 @@ describe("release rollout ledger internal API", () => {
       ).statusCode,
     ).toBe(204);
     expect(repository.providerWitness).toEqual(payload);
+
+    const missingStatus = { ...payload } as Record<string, unknown>;
+    delete missingStatus.providerStatus;
+    expect(
+      (
+        await app.inject({
+          method: "PUT",
+          url: "/v1/runner-jobs/job-2/provider-witness",
+          headers: { authorization: "Bearer witness" },
+          payload: missingStatus,
+        })
+      ).statusCode,
+    ).toBe(400);
     await app.close();
   });
 
@@ -319,9 +381,7 @@ describe("release rollout ledger internal API", () => {
     const repository = new ConcurrentRepository();
     const app = Fastify();
     await registerReleaseRolloutLedgerRoutes(app, {
-      service: new ReleaseRolloutLedgerService(repository),
-      tokenSha256,
-      witnessTokenSha256: createHash("sha256").update("witness").digest("hex"),
+      ...services(repository),
     });
     const registration = {
       runnerId: 123,

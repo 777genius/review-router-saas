@@ -148,6 +148,7 @@ export class AuthenticatedRunnerLedgerAdapter
     jobId: string,
     expectedCanary: string,
   ): Promise<{
+    providerStatus: "succeeded" | "failed" | "canceled";
     listenerStopped: true;
     workspaceRemoved: true;
     credentialProcessGone: true;
@@ -158,6 +159,9 @@ export class AuthenticatedRunnerLedgerAdapter
       `/v1/runner-jobs/${encodeURIComponent(jobId)}/cleanup-witness`,
     )) as Record<string, unknown>;
     if (
+      !["succeeded", "failed", "canceled"].includes(
+        String(value.providerStatus),
+      ) ||
       value.listenerStopped !== true ||
       value.workspaceRemoved !== true ||
       value.credentialProcessGone !== true ||
@@ -166,6 +170,7 @@ export class AuthenticatedRunnerLedgerAdapter
     )
       throw new Error("runner_ledger_cleanup_witness_invalid");
     return value as {
+      providerStatus: "succeeded" | "failed" | "canceled";
       listenerStopped: true;
       workspaceRemoved: true;
       credentialProcessGone: true;

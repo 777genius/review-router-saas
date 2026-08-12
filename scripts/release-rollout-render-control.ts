@@ -33,9 +33,9 @@ const providerWitness = new AuthenticatedProviderWitnessAdapter(
 const runners = new RenderPrivateRunnerAdapter(
   ledger,
   ledger,
+  providerWitness,
   fetch,
   () => new Date(),
-  providerWitness,
 );
 const runnerUseCases = new PrivateRunnerControlUseCases(runners);
 const mode = process.argv[2];
