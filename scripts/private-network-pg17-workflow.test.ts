@@ -86,7 +86,7 @@ describe("private-network PG17 workflow security contract", () => {
     expect(workflow).toContain("always-reconcile-runners-and-compensation");
   });
 
-  it("uses only SHA-pinned actions and removes retired bypass workflows", () => {
+  it("uses only SHA-pinned actions and keeps legacy names as aliases to the fenced rollout", () => {
     expect(`${workflow}\n${controller}`).not.toMatch(
       /uses: [^\n]+@(main|master|v\d+)/u,
     );
@@ -94,8 +94,15 @@ describe("private-network PG17 workflow security contract", () => {
       ".github/workflows/codex-rotating-role-bootstrap.yml",
       ".github/workflows/codex-rotating-release-migration.yml",
       ".github/workflows/codex-rotating-rollout-evidence.yml",
-    ])
-      expect(existsSync(path)).toBe(false);
+    ]) {
+      expect(existsSync(path)).toBe(true);
+      const alias = readFileSync(path, "utf8");
+      expect(alias).toContain(
+        "uses: ./.github/workflows/private-network-pg17-rollout.yml",
+      );
+      expect(alias).toContain("secrets: inherit");
+      expect(alias).not.toContain("runs-on:");
+    }
   });
 
   it("pins base image and runner download, and never supplies the App private key by env", () => {

@@ -176,6 +176,39 @@ export class RenderApiAdapter {
     };
   }
 
+  async listAllDeploys(serviceId: string): Promise<readonly RenderDeploy[]> {
+    const all: RenderDeploy[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listDeploys(serviceId, cursor);
+      all.push(...page.items);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return Object.freeze(all);
+  }
+
+  async createDeploy(serviceId: string): Promise<RenderDeploy> {
+    const value = requireSubset(
+      await body(
+        await this.fetchImpl(
+          `${origin}/services/${encodeURIComponent(serviceId)}/deploys`,
+          {
+            method: "POST",
+            headers: headers(this.token, true),
+            body: JSON.stringify({ clearCache: "do_not_clear" }),
+          },
+        ),
+        "deploy_create",
+        201,
+      ),
+      ["id", "status"],
+      "render_deploy_response_invalid",
+    );
+    if (!string(value.id) || !string(value.status))
+      throw new Error("render_deploy_response_invalid");
+    return value as unknown as RenderDeploy;
+  }
+
   async createJob(
     serviceId: string,
     input: { startCommand: string; planId?: string },

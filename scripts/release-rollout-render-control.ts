@@ -142,6 +142,7 @@ if (mode === "freeze") {
     commitSha: expectedSha,
     runnerName: `rr-${targetRunId}-${purpose}`,
     runnerGroupId: Number(required("REVIEW_ROUTER_RUNNER_GROUP_ID")),
+    runnerGroupName: required("REVIEW_ROUTER_RUNNER_GROUP_NAME"),
     baseServiceId: required("REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID"),
     expectedProvenance: JSON.parse(
       required("REVIEW_ROUTER_RUNNER_PROVENANCE_JSON"),

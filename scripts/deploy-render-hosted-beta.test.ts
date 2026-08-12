@@ -211,13 +211,17 @@ describe("Render hosted deploy hardening", () => {
     expect(guidance).toContain("operations/02-runbooks.md");
   });
 
-  it("removes legacy entry points and retains one immutable private-network rollout", () => {
+  it("retains compatible legacy aliases to one immutable private-network rollout", () => {
     for (const path of [
       ".github/workflows/codex-rotating-release-migration.yml",
       ".github/workflows/codex-rotating-rollout-evidence.yml",
       ".github/workflows/codex-rotating-role-bootstrap.yml",
-    ])
-      expect(existsSync(path)).toBe(false);
+    ]) {
+      expect(existsSync(path)).toBe(true);
+      expect(readFileSync(path, "utf8")).toContain(
+        "uses: ./.github/workflows/private-network-pg17-rollout.yml",
+      );
+    }
     const privateRollout = readFileSync(
       ".github/workflows/private-network-pg17-rollout.yml",
       "utf8",
@@ -229,7 +233,11 @@ describe("Render hosted deploy hardening", () => {
     expect(privateRollout).toContain("scripts/run-private-pg17-rollout.ts");
     expect(privateRollout).toContain("environment: production-role-bootstrap");
     expect(privateRollout).toContain("runs-on:");
-    expect(privateRollout).toContain("self-hosted");
+    expect(privateRollout).toContain(
+      "group: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}",
+    );
+    expect(privateRollout).toContain("rr-{0}-role-bootstrap");
+    expect(privateRollout).toContain("rr-{0}-cutover");
     expect(privateRollout).not.toMatch(
       /actions\/(?:checkout|upload-artifact)@v\d/u,
     );

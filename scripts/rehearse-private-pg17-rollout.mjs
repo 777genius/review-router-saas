@@ -613,6 +613,9 @@ async function verifyProductionPathRehearsal(facts) {
     renderJobId: job,
     baseServiceId: "srv-disposable",
     runnerGroupId: 1,
+    runnerGroupName: "private-pg17",
+    uniqueRunnerLabel: `rr-${lifecycle}`,
+    workFolder: `_work/rr-${lifecycle}`,
     provenance: { kind: "image", deployId: "dep-disposable", imageSha: digest },
   });
   const roleRunner = runner("role", "job-role");
@@ -705,10 +708,14 @@ async function verifyProductionPathRehearsal(facts) {
           actor: execution.actor,
           runId: execution.runId,
           runAttempt: 1,
-          environment: "disposable-rehearsal",
-          requiredReviewerCount: 1,
-          preventSelfReview: true,
-          protectedBranchesOnly: true,
+          environments: [
+            {
+              name: "disposable-rehearsal",
+              requiredReviewerCount: 1,
+              preventSelfReview: true,
+              protectedBranchesOnly: true,
+            },
+          ],
           runnerGroupId: 1,
           observationSha256: digest,
         }),
@@ -788,7 +795,7 @@ async function verifyProductionPathRehearsal(facts) {
             recoveryWindowEndsAt: "2026-08-13T00:00:00.000Z",
             dumpSha256: facts.dumpSha256,
             externalWitnessSha256: digest,
-            recoveryStatus: "available",
+            recoveryStatus: "AVAILABLE",
           },
         }),
       quiesce: async () =>
@@ -928,7 +935,7 @@ async function verifyProductionPathRehearsal(facts) {
             recoveryWindowEndsAt: "2026-08-13T00:00:00.000Z",
             dumpSha256: facts.dumpSha256,
             externalWitnessSha256: digest,
-            recoveryStatus: "available",
+            recoveryStatus: "AVAILABLE",
           },
           quiescence: {
             writerServices: [
@@ -1011,8 +1018,8 @@ async function verifyProductionPathRehearsal(facts) {
   rollout = await useCases.captureSourceBackup(rollout);
   rollout = await useCases.quiesceSource(rollout);
   rollout = await useCases.copyDatabaseGeneration(rollout);
-  rollout = await useCases.verifyDataEquivalence(rollout);
   rollout = await useCases.bootstrapTargetRoles(rollout);
+  rollout = await useCases.verifyDataEquivalence(rollout);
   rollout = await useCases.cleanupRoleRunner(rollout, roleRunner);
   provision = cutoverRunner;
   ({ rollout } = await useCases.provisionCutoverRunner(rollout));

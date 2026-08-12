@@ -58,11 +58,15 @@ export class RenderBackupIdentityAdapter {
     if (
       typeof value !== "object" ||
       typeof value.recoveryStatus !== "string" ||
-      !["available", "ready"].includes(value.recoveryStatus) ||
+      !["AVAILABLE", "BACKUP_NOT_READY", "NOT_AVAILABLE"].includes(
+        value.recoveryStatus,
+      ) ||
       (value.startsAt !== undefined &&
         (typeof value.startsAt !== "string" || !timestamp(value.startsAt)))
     )
       throw new Error("render_recovery_response_invalid");
+    if (value.recoveryStatus !== "AVAILABLE")
+      throw new Error("render_recovery_not_available");
     if (
       value.startsAt &&
       new Date(witness.capturedAt) < new Date(value.startsAt)
@@ -80,7 +84,7 @@ export class RenderBackupIdentityAdapter {
       recoveryWindowEndsAt: witness.recoveryWindowEndsAt,
       dumpSha256: witness.dumpSha256,
       externalWitnessSha256: witness.witnessSha256,
-      recoveryStatus: value.recoveryStatus as "available" | "ready",
+      recoveryStatus: "AVAILABLE",
     });
   }
 }

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { lstat, readdir, rm } from "node:fs/promises";
 
 export const credentialNames = Object.freeze([
   "REVIEW_ROUTER_RUNNER_GITHUB_APP_PRIVATE_KEY",
@@ -51,21 +51,47 @@ export async function runOneJobRunner(options: {
     {
       ...(options.workingDirectory ? { cwd: options.workingDirectory } : {}),
       env: workflowEnvironment(options.environment ?? process.env),
-      stdio: "inherit",
+      detached: true,
+      stdio: ["inherit", "pipe", "pipe"],
     },
   );
   const exitCode = await new Promise<number>((resolve, reject) => {
+    let assigned = false;
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const stop = (signal: NodeJS.Signals) => {
+      try {
+        if (child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch {
+        child.kill(signal);
+      }
+    };
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error("github_jit_no_job_timeout"));
+      timedOut = true;
+      stop("SIGTERM");
+      killTimer = setTimeout(() => stop("SIGKILL"), 5_000);
     }, options.timeoutMs);
+    const observe = (target: NodeJS.WriteStream, chunk: unknown) => {
+      const value = String(chunk);
+      target.write(value);
+      if (!assigned && /(?:^|\n).*Running job:/u.test(value)) {
+        assigned = true;
+        clearTimeout(timer);
+      }
+    };
+    child.stdout?.on("data", (chunk) => observe(process.stdout, chunk));
+    child.stderr?.on("data", (chunk) => observe(process.stderr, chunk));
     child.once("error", () => {
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       reject(new Error("github_jit_runner_spawn_failed"));
     });
     child.once("exit", (code) => {
       clearTimeout(timer);
-      resolve(code ?? 1);
+      if (killTimer) clearTimeout(killTimer);
+      if (timedOut) reject(new Error("github_jit_no_job_timeout"));
+      else resolve(code ?? 1);
     });
   });
   if (exitCode !== 0) throw new Error(`github_jit_runner_failed:${exitCode}`);
@@ -73,16 +99,45 @@ export async function runOneJobRunner(options: {
 
 export async function cleanupRunnerWorkspace(
   paths: readonly string[],
-): Promise<void> {
+): Promise<{
+  readonly removedPaths: readonly string[];
+  readonly remaining: readonly string[];
+}> {
+  const removed: string[] = [];
   for (const path of paths) {
-    if (!path.startsWith("/runner/_work/") && !path.startsWith("/runner/tmp/"))
+    if (
+      !/^\/runner\/_work\/rr-[A-Za-z0-9_-]+$/u.test(path) &&
+      !/^\/runner\/tmp\/rr-[A-Za-z0-9_-]+$/u.test(path)
+    )
       throw new Error("github_jit_cleanup_path_unsafe");
     try {
       await rm(path, { force: true, recursive: true });
+      try {
+        await lstat(path);
+        throw new Error("github_jit_cleanup_path_remains");
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "github_jit_cleanup_path_remains"
+        )
+          throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+          throw new Error("github_jit_cleanup_verification_failed");
+      }
+      removed.push(path);
     } catch {
       throw new Error("github_jit_cleanup_remove_failed");
     }
   }
+  const remaining = (await readdir("/runner/_work"))
+    .filter((name) => paths.includes(`/runner/_work/${name}`))
+    .map((name) => `/runner/_work/${name}`);
+  if (remaining.length)
+    throw new Error("github_jit_cleanup_enumeration_failed");
+  return Object.freeze({
+    removedPaths: Object.freeze(removed),
+    remaining: Object.freeze(remaining),
+  });
 }
 
 export interface JitApiContext {
@@ -98,7 +153,19 @@ export interface JitApiContext {
   readonly workflowJobId: string;
   readonly workflowJobName: string;
   readonly runnerGroupId: number;
+  readonly runnerGroupName: string;
   readonly runnerName: string;
+  readonly uniqueRunnerLabel: string;
+  readonly workFolder: string;
+}
+
+export interface JitRegistration {
+  readonly encodedJitConfig: string;
+  readonly runnerId: number;
+  readonly runnerGroupId: number;
+  readonly labels: readonly string[];
+  readonly uniqueLabel: string;
+  readonly workFolder: string;
 }
 
 type Fetch = typeof fetch;
@@ -130,7 +197,7 @@ export async function requestJitConfiguration(
   context: JitApiContext,
   token: string,
   fetchImpl: Fetch = fetch,
-): Promise<string> {
+): Promise<JitRegistration> {
   if (
     !/^[A-Za-z0-9_.-]+$/u.test(context.organization) ||
     context.repository.split("/")[0] !== context.organization ||
@@ -146,7 +213,10 @@ export async function requestJitConfiguration(
     !/^[1-9][0-9]*$/u.test(context.workflowJobId) ||
     !Number.isSafeInteger(context.runnerGroupId) ||
     context.runnerGroupId < 1 ||
+    !/^[A-Za-z0-9_.-]+$/u.test(context.runnerGroupName) ||
     !/^rr-[A-Za-z0-9_-]+$/u.test(context.runnerName) ||
+    context.uniqueRunnerLabel !== context.runnerName ||
+    context.workFolder !== `_work/${context.runnerName}` ||
     !token
   )
     throw new Error("github_jit_context_invalid");
@@ -167,6 +237,7 @@ export async function requestJitConfiguration(
   );
   if (
     repository.full_name !== context.repository ||
+    repository.private !== true ||
     !repository.owner ||
     typeof repository.owner !== "object" ||
     (repository.owner as Record<string, unknown>).type !== "Organization" ||
@@ -183,6 +254,7 @@ export async function requestJitConfiguration(
   const selectedWorkflow = `${context.repository}/${context.workflowPath}@${context.workflowRef}`;
   if (
     group.id !== context.runnerGroupId ||
+    group.name !== context.runnerGroupName ||
     group.visibility !== "selected" ||
     group.allows_public_repositories !== false ||
     group.restricted_to_workflows !== true ||
@@ -248,7 +320,12 @@ export async function requestJitConfiguration(
     job.head_sha !== context.commitSha ||
     job.status !== "queued" ||
     job.runner_id !== null ||
-    job.runner_name !== null
+    job.runner_name !== null ||
+    job.runner_group_id !== context.runnerGroupId ||
+    job.runner_group_name !== context.runnerGroupName ||
+    !Array.isArray(job.labels) ||
+    JSON.stringify(job.labels) !==
+      JSON.stringify(["self-hosted", context.uniqueRunnerLabel])
   )
     throw new Error("github_jit_target_job_identity_mismatch");
   const generated = await json(
@@ -260,22 +337,82 @@ export async function requestJitConfiguration(
         body: JSON.stringify({
           name: context.runnerName,
           runner_group_id: context.runnerGroupId,
-          labels: [],
-          work_folder: "_work",
+          labels: [context.uniqueRunnerLabel],
+          work_folder: context.workFolder,
         }),
       },
     ),
     "generation",
   );
+  const returnedRunner = generated.runner as
+    | Record<string, unknown>
+    | undefined;
+  const returnedLabels = Array.isArray(returnedRunner?.labels)
+    ? returnedRunner.labels.map((label) =>
+        typeof label === "string"
+          ? label
+          : label && typeof label === "object"
+            ? String((label as Record<string, unknown>).name ?? "")
+            : "",
+      )
+    : [];
   if (
     typeof generated.encoded_jit_config !== "string" ||
     generated.encoded_jit_config.length < 16 ||
-    !generated.runner ||
-    typeof generated.runner !== "object" ||
-    (generated.runner as Record<string, unknown>).name !== context.runnerName ||
-    (generated.runner as Record<string, unknown>).status !== "offline" ||
-    (generated.runner as Record<string, unknown>).busy !== false
+    !returnedRunner ||
+    returnedRunner.name !== context.runnerName ||
+    returnedRunner.status !== "offline" ||
+    returnedRunner.busy !== false ||
+    !Number.isSafeInteger(returnedRunner.id) ||
+    Number(returnedRunner.id) < 1 ||
+    returnedRunner.runner_group_id !== context.runnerGroupId ||
+    returnedLabels.length < 1 ||
+    !returnedLabels.includes(context.uniqueRunnerLabel) ||
+    new Set(returnedLabels).size !== returnedLabels.length
   )
     throw new Error("github_jit_response_invalid");
-  return generated.encoded_jit_config;
+  const runnerId = Number(returnedRunner.id);
+  const [runnerAfterRegistration, groupAfterRegistration] = await Promise.all([
+    json(
+      await fetchImpl(
+        `https://api.github.com/orgs/${context.organization}/actions/runners/${runnerId}`,
+        { headers },
+      ),
+      "runner_reread",
+    ),
+    json(
+      await fetchImpl(
+        `https://api.github.com/orgs/${context.organization}/actions/runner-groups/${context.runnerGroupId}`,
+        { headers },
+      ),
+      "runner_group_reread",
+    ),
+  ]);
+  const rereadLabels = Array.isArray(runnerAfterRegistration.labels)
+    ? runnerAfterRegistration.labels.map((label) =>
+        typeof label === "string"
+          ? label
+          : label && typeof label === "object"
+            ? String((label as Record<string, unknown>).name ?? "")
+            : "",
+      )
+    : [];
+  if (
+    runnerAfterRegistration.id !== runnerId ||
+    runnerAfterRegistration.name !== context.runnerName ||
+    runnerAfterRegistration.status !== "offline" ||
+    runnerAfterRegistration.busy !== false ||
+    JSON.stringify(rereadLabels) !== JSON.stringify(returnedLabels) ||
+    groupAfterRegistration.id !== context.runnerGroupId ||
+    groupAfterRegistration.name !== context.runnerGroupName
+  )
+    throw new Error("github_jit_registration_reread_mismatch");
+  return Object.freeze({
+    encodedJitConfig: generated.encoded_jit_config,
+    runnerId,
+    runnerGroupId: context.runnerGroupId,
+    labels: Object.freeze(returnedLabels),
+    uniqueLabel: context.uniqueRunnerLabel,
+    workFolder: context.workFolder,
+  });
 }

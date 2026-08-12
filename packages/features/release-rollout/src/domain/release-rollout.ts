@@ -91,16 +91,16 @@ const orderedTransitions: ReadonlyArray<
   ],
   [
     RolloutPhase.GenerationCopied,
-    RolloutStep.VerifyDataEquivalence,
-    RolloutPhase.DataEquivalent,
-  ],
-  [
-    RolloutPhase.DataEquivalent,
     RolloutStep.BootstrapTargetRoles,
     RolloutPhase.TargetRolesBootstrapped,
   ],
   [
     RolloutPhase.TargetRolesBootstrapped,
+    RolloutStep.VerifyDataEquivalence,
+    RolloutPhase.DataEquivalent,
+  ],
+  [
+    RolloutPhase.DataEquivalent,
     RolloutStep.CleanupRoleRunner,
     RolloutPhase.RoleRunnerCleaned,
   ],
@@ -203,6 +203,11 @@ export interface RunnerIdentity {
   readonly renderJobId: string;
   readonly baseServiceId: string;
   readonly runnerGroupId: number;
+  readonly runnerGroupName: string;
+  readonly githubRunnerId?: number;
+  readonly githubRunnerLabels?: readonly string[];
+  readonly uniqueRunnerLabel: string;
+  readonly workFolder: string;
   readonly planId?: string;
   readonly provenance: RunnerProvenance;
 }
@@ -445,11 +450,21 @@ function assertStepFacts(
         facts.actor !== rollout.execution.actor ||
         facts.runId !== rollout.execution.runId ||
         facts.runAttempt !== 1 ||
-        typeof facts.environment !== "string" ||
-        !Number.isSafeInteger(facts.requiredReviewerCount) ||
-        Number(facts.requiredReviewerCount) < 1 ||
-        facts.preventSelfReview !== true ||
-        facts.protectedBranchesOnly !== true ||
+        !Array.isArray(facts.environments) ||
+        facts.environments.length < 1 ||
+        facts.environments.some((item) => {
+          const environment = record(
+            item,
+            "protected_environment_observation_invalid",
+          );
+          return (
+            typeof environment.name !== "string" ||
+            !Number.isSafeInteger(environment.requiredReviewerCount) ||
+            Number(environment.requiredReviewerCount) < 1 ||
+            environment.preventSelfReview !== true ||
+            environment.protectedBranchesOnly !== true
+          );
+        }) ||
         !Number.isSafeInteger(facts.runnerGroupId) ||
         Number(facts.runnerGroupId) < 1
       )
@@ -525,7 +540,7 @@ function assertStepFacts(
         facts.dumpSha256 !== backup.dumpSha256 ||
         !validTimestamp(backup.capturedAt) ||
         typeof backup.lsn !== "string" ||
-        !["available", "ready"].includes(String(backup.recoveryStatus))
+        backup.recoveryStatus !== "AVAILABLE"
       )
         throw new Error("source_backup_observation_invalid");
       assertDigest(facts.dumpSha256, "source_backup_observation_invalid");
@@ -929,6 +944,17 @@ export function assertRunnerIdentity(
     !/^[1-9][0-9]*$/u.test(identity.workflowJobId) ||
     !Number.isSafeInteger(identity.runnerGroupId) ||
     identity.runnerGroupId < 1 ||
+    !identifierPattern.test(identity.runnerGroupName) ||
+    !/^rr-[A-Za-z0-9_-]+$/u.test(identity.uniqueRunnerLabel) ||
+    identity.uniqueRunnerLabel !== identity.runnerName ||
+    identity.workFolder !== `_work/${identity.runnerName}` ||
+    (identity.githubRunnerId !== undefined &&
+      (!Number.isSafeInteger(identity.githubRunnerId) ||
+        identity.githubRunnerId < 1)) ||
+    (identity.githubRunnerLabels !== undefined &&
+      (!identity.githubRunnerLabels.includes(identity.uniqueRunnerLabel) ||
+        new Set(identity.githubRunnerLabels).size !==
+          identity.githubRunnerLabels.length)) ||
     !identifierPattern.test(identity.renderJobId) ||
     !identifierPattern.test(identity.baseServiceId) ||
     identity.cleanupCanary !==

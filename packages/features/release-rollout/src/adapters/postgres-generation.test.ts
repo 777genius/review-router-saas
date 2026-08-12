@@ -33,8 +33,14 @@ describe("source quiescence", () => {
   it("requires observed writer suspension, committed effective ACL denial, bounded zeros, and failed reconnect probes", () => {
     const execute = vi.fn((_command, args: readonly string[]) => {
       const sql = args.at(-1) ?? "";
-      if (sql === "SELECT 1")
-        throw new Error("release_rollout_process_failed:psql");
+      if (sql.includes("SELECT system_identifier::text"))
+        return { stdout: "100\n" };
+      if (sql.includes("json_build_object('role',current_user")) {
+        const role = args[args.indexOf("--username") + 1];
+        return {
+          stdout: `${JSON.stringify({ role, systemIdentifier: "100" })}\n`,
+        };
+      }
       if (sql.includes("json_build_object('effectiveConnectDenied'"))
         return {
           stdout:
@@ -44,7 +50,13 @@ describe("source quiescence", () => {
         return { stdout: "0\n" };
       return { stdout: "" };
     });
-    const commands: CommandExecutor = { execute, hashStdout: vi.fn() };
+    const commands: CommandExecutor = {
+      execute,
+      hashStdout: vi.fn(),
+      executeExpectingFailure: vi
+        .fn()
+        .mockReturnValue({ reason: "database_connect_permission_denied" }),
+    };
     const adapter = new PostgreSqlGenerationAdapter(commands);
     const urls = Object.fromEntries(
       [
@@ -84,6 +96,7 @@ describe("source quiescence", () => {
     const adapter = new PostgreSqlGenerationAdapter({
       execute: vi.fn(),
       hashStdout: vi.fn(),
+      executeExpectingFailure: vi.fn(),
     });
     expect(() =>
       adapter.quiesceSource({
@@ -106,10 +119,15 @@ describe("generation equivalence", () => {
     const hashStdout = vi
       .fn()
       .mockResolvedValue({ rows: 3, sha256: `sha256:${"a".repeat(64)}` });
-    const adapter = new PostgreSqlGenerationAdapter({ execute, hashStdout });
+    const adapter = new PostgreSqlGenerationAdapter({
+      execute,
+      hashStdout,
+      executeExpectingFailure: vi.fn(),
+    });
     const result = await adapter.verifyEquivalence(
       "postgresql://a:s@source.internal/db",
       "postgresql://a:s@target.internal/db",
+      ["public"],
     );
     expect(result.evidence.streamingHash).toBe(true);
     expect(Object.keys(result.evidence.catalogSha256)).toHaveLength(7);

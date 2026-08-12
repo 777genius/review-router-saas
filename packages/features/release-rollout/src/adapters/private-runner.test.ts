@@ -34,11 +34,12 @@ const request: RenderRunnerRequest = {
   commitSha: "a".repeat(40),
   runnerName: "rr-123-private",
   runnerGroupId: 17,
+  runnerGroupName: "private-pg17",
   baseServiceId: "srv-runner-base",
   expectedProvenance: {
-    kind: "git",
+    kind: "image",
     deployId: "dep-pinned",
-    commitSha: "a".repeat(40),
+    imageSha: `sha256:${"b".repeat(64)}`,
   },
   planId: "starter-plus",
   apiKey: "redacted",
@@ -57,7 +58,7 @@ const deploys = [
     deploy: {
       id: "dep-pinned",
       status: "live",
-      commit: { id: request.commitSha },
+      image: { sha: `sha256:${"b".repeat(64)}` },
       createdAt: "2026-08-12T00:00:00.000Z",
     },
     cursor: null,
@@ -73,6 +74,9 @@ const created = {
   additive: true,
 };
 const ledger = () => ({
+  persistProvisioningIntent: vi.fn().mockResolvedValue("created"),
+  listProvisioningIntents: vi.fn().mockResolvedValue([]),
+  recordProvisioningOutcome: vi.fn().mockResolvedValue(undefined),
   persistCreatedJob: vi.fn().mockResolvedValue(undefined),
   listOpenJobs: vi.fn().mockResolvedValue([]),
   markTerminal: vi.fn().mockResolvedValue(undefined),
@@ -89,7 +93,7 @@ const witness = () => ({
 });
 
 describe("Render private runner contract", () => {
-  it("accepts additive documented fields, compute planId, and race-free git provenance", async () => {
+  it("accepts additive documented fields, compute planId, and an attested image digest", async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(json(service))
@@ -112,7 +116,7 @@ describe("Render private runner contract", () => {
     expect(result.identity.provenance).toEqual(request.expectedProvenance);
     expect(JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body))).toEqual({
       startCommand: expect.stringMatching(
-        /^node \/runner\/bootstrap\.mjs --context [A-Za-z0-9_-]+$/u,
+        /^node \/runner\/bootstrap\.mjs --intent rri-[a-f0-9]{64} --context [A-Za-z0-9_-]+$/u,
       ),
       planId: "starter-plus",
     });
@@ -144,6 +148,61 @@ describe("Render private runner contract", () => {
     );
   });
 
+  it("persists provisioning intent before create and never creates when intent durability fails", async () => {
+    const jobLedger = ledger();
+    jobLedger.persistProvisioningIntent.mockRejectedValue(
+      new Error("ledger_unavailable"),
+    );
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(json(service))
+      .mockResolvedValueOnce(json(deploys));
+    await expect(
+      new RenderPrivateRunnerAdapter(jobLedger, witness(), fetchImpl).provision(
+        request,
+      ),
+    ).rejects.toThrow("ledger_unavailable");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("directly proves cleanup and records reconciliation when created-job persistence fails", async () => {
+    const jobLedger = ledger();
+    jobLedger.persistCreatedJob.mockRejectedValue(new Error("write_lost"));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(json(service))
+      .mockResolvedValueOnce(json(deploys))
+      .mockImplementationOnce(async (_url, init) =>
+        json(
+          {
+            ...created,
+            startCommand: JSON.parse(String(init?.body)).startCommand,
+          },
+          201,
+        ),
+      )
+      .mockResolvedValueOnce(
+        json({
+          ...created,
+          startCommand: "bound",
+          status: "succeeded",
+          finishedAt: "2026-08-12T00:02:00.000Z",
+        }),
+      );
+    await expect(
+      new RenderPrivateRunnerAdapter(jobLedger, witness(), fetchImpl).provision(
+        request,
+      ),
+    ).rejects.toThrow("render_runner_job_persistence_failed");
+    expect(jobLedger.recordProvisioningOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: created.id,
+        outcome: "persistence_failed_cleaned",
+        observation: expect.any(Object),
+      }),
+    );
+  });
+
   it.each([
     ["auto deploy", { ...service, autoDeploy: "yes" }, deploys],
     [
@@ -154,7 +213,7 @@ describe("Render private runner contract", () => {
           deploy: {
             id: "dep-race",
             status: "build_in_progress",
-            commit: { id: request.commitSha },
+            image: { sha: `sha256:${"b".repeat(64)}` },
           },
         },
       ],
@@ -242,7 +301,10 @@ const jit: JitApiContext = {
   workflowJobId: "456",
   workflowJobName: "private-job",
   runnerGroupId: 17,
+  runnerGroupName: "private-pg17",
   runnerName: "rr-123-private",
+  uniqueRunnerLabel: "rr-123-private",
+  workFolder: "_work/rr-123-private",
 };
 function jitFetch(
   overrides: Partial<{
@@ -256,10 +318,12 @@ function jitFetch(
     { login: jit.organization, type: "Organization" },
     overrides.repo ?? {
       full_name: jit.repository,
+      private: true,
       owner: { login: jit.organization, type: "Organization" },
     },
     overrides.group ?? {
       id: 17,
+      name: jit.runnerGroupName,
       visibility: "selected",
       allows_public_repositories: false,
       restricted_to_workflows: true,
@@ -288,13 +352,31 @@ function jitFetch(
           status: "queued",
           runner_id: null,
           runner_name: null,
+          runner_group_id: 17,
+          runner_group_name: jit.runnerGroupName,
+          labels: ["self-hosted", jit.uniqueRunnerLabel],
         },
       ],
     },
     {
       encoded_jit_config: "encoded-configuration",
-      runner: { name: jit.runnerName, status: "offline", busy: false },
+      runner: {
+        id: 99,
+        name: jit.runnerName,
+        status: "offline",
+        busy: false,
+        runner_group_id: 17,
+        labels: [{ name: jit.uniqueRunnerLabel }],
+      },
     },
+    {
+      id: 99,
+      name: jit.runnerName,
+      status: "offline",
+      busy: false,
+      labels: [{ name: jit.uniqueRunnerLabel }],
+    },
+    { id: 17, name: jit.runnerGroupName },
   ];
   return vi.fn(async (input: string, init?: RequestInit) => {
     void input;
@@ -312,15 +394,23 @@ describe("organization-scoped JIT isolation", () => {
         "installation-token",
         fetchImpl as typeof fetch,
       ),
-    ).resolves.toBe("encoded-configuration");
-    expect(String(fetchImpl.mock.calls.at(-1)?.[0])).toContain(
+    ).resolves.toMatchObject({
+      encodedJitConfig: "encoded-configuration",
+      runnerId: 99,
+      runnerGroupId: 17,
+      labels: [jit.uniqueRunnerLabel],
+    });
+    const generationCall = fetchImpl.mock.calls.find(([url]) =>
+      String(url).includes("generate-jitconfig"),
+    );
+    expect(String(generationCall?.[0])).toContain(
       `/orgs/${jit.organization}/actions/runners/generate-jitconfig`,
     );
-    expect(JSON.parse(String(fetchImpl.mock.calls.at(-1)?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(generationCall?.[1]?.body))).toEqual({
       name: jit.runnerName,
       runner_group_id: 17,
-      labels: [],
-      work_folder: "_work",
+      labels: [jit.uniqueRunnerLabel],
+      work_folder: jit.workFolder,
     });
   });
   it.each([
@@ -329,6 +419,7 @@ describe("organization-scoped JIT isolation", () => {
       {
         repo: {
           full_name: jit.repository,
+          private: true,
           owner: { login: jit.organization, type: "User" },
         },
       },
@@ -338,6 +429,7 @@ describe("organization-scoped JIT isolation", () => {
       {
         group: {
           id: 17,
+          name: jit.runnerGroupName,
           visibility: "selected",
           allows_public_repositories: false,
           restricted_to_workflows: true,
@@ -448,7 +540,7 @@ describe("Render recovery plus external backup witness", () => {
     };
     const fetchImpl = vi.fn().mockResolvedValue(
       json({
-        recoveryStatus: "available",
+        recoveryStatus: "AVAILABLE",
         startsAt: "2026-08-11T00:00:00.000Z",
         additive: true,
       }),

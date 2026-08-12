@@ -33,6 +33,10 @@ try {
     environment: process.env,
   });
 } finally {
-  await cleanupRunnerWorkspace(["/runner/_work/job", "/runner/tmp/bootstrap"]);
-  process.stdout.write(`${required("REVIEW_ROUTER_RUNNER_CLEANUP_CANARY")}\n`);
+  const cleanup = await cleanupRunnerWorkspace([
+    required("REVIEW_ROUTER_RUNNER_WORK_ROOT"),
+  ]);
+  process.stdout.write(
+    `${JSON.stringify({ canary: required("REVIEW_ROUTER_RUNNER_CLEANUP_CANARY"), cleanup })}\n`,
+  );
 }

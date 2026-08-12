@@ -46,7 +46,10 @@ for (const [migrationName, immutableChecksum] of Object.entries(
   }
 }
 
-const databaseUrl = process.env.DATABASE_URL;
+const credentialPath = process.env.REVIEW_ROUTER_DATABASE_URL_FILE;
+const databaseUrl = credentialPath
+  ? (await readFile(credentialPath, "utf8")).trim()
+  : process.env.DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("codex_rotating_migration_preflight_database_url_required");
 }

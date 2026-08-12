@@ -12,6 +12,14 @@ on:
         description: Exact protected main commit
         required: true
         type: string
+  workflow_call:
+    inputs:
+      rollout_id:
+        required: true
+        type: string
+      expected_sha:
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -58,7 +66,7 @@ jobs:
       - name: Observe protected environment and exact release identity
         env:
           GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
-          REVIEW_ROUTER_PROTECTED_ENVIRONMENT_NAME: production-release-preflight
+          REVIEW_ROUTER_PRIVILEGED_ENVIRONMENTS_JSON: '["production-release-preflight","production-runner-control","production-role-bootstrap","production-runner-ledger-read","production","production-target-finalize"]'
           REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: protected-environment-preflight.json
         run: node --import tsx scripts/observe-private-pg17-protected-environment.ts
       - name: Durably claim rollout and receipt observed preflight policy
@@ -105,7 +113,7 @@ jobs:
     environment: production-role-bootstrap
     runs-on:
       group: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}
-      labels: [self-hosted]
+      labels: ${{ format('rr-{0}-role-bootstrap', github.run_id) }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -133,6 +141,7 @@ jobs:
           REVIEW_ROUTER_WORKER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WORKER_DATABASE_URL }}
           REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
           REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON }}
+          REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON: ${{ vars.REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON }}
           REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
           REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST }}
         run: node --import tsx scripts/run-private-pg17-copy-bootstrap.ts > copy-bootstrap-evidence.json
@@ -165,7 +174,7 @@ jobs:
     environment: production
     runs-on:
       group: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}
-      labels: [self-hosted]
+      labels: ${{ format('rr-{0}-cutover', github.run_id) }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -180,7 +189,8 @@ jobs:
           REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: pg17-cutover-private
           REVIEW_ROUTER_COPY_BOOTSTRAP_EVIDENCE_FILE: copy-bootstrap/copy-bootstrap-evidence.json
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
-          RENDER_PROVENANCE_READ_API_KEY: ${{ secrets.RENDER_PROVENANCE_READ_API_KEY }}
+          RENDER_TARGET_SWITCH_API_KEY: ${{ secrets.RENDER_TARGET_SWITCH_API_KEY }}
+          REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON: ${{ secrets.REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON }}
           REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
           REVIEW_ROUTER_API_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_API_DATABASE_URL }}
           REVIEW_ROUTER_WEB_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WEB_DATABASE_URL }}
@@ -246,6 +256,7 @@ jobs:
           REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: artifacts/preflight/protected-environment-preflight.json
           REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON: ${{ vars.REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON }}
           REVIEW_ROUTER_LIVE_CANARY_URL: ${{ vars.REVIEW_ROUTER_LIVE_CANARY_URL }}
+          REVIEW_ROUTER_LIVE_CANARY_TOKEN: ${{ secrets.REVIEW_ROUTER_LIVE_CANARY_TOKEN }}
         run: node --import tsx scripts/finalize-private-pg17-rollout.ts > finalized-rollout.json
       - env:
           REVIEW_ROUTER_FINALIZED_ROLLOUT_FILE: finalized-rollout.json

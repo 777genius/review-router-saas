@@ -1,0 +1,17 @@
+name: Codex rotating trusted release migration (private rollout alias)
+on:
+  workflow_dispatch:
+    inputs:
+      rollout_id:
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: read
+jobs:
+  private-rollout:
+    uses: ./.github/workflows/private-network-pg17-rollout.yml
+    with:
+      rollout_id: ${{ inputs.rollout_id }}
+      expected_sha: ${{ github.sha }}
+    secrets: inherit

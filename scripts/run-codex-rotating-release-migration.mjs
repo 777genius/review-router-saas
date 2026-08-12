@@ -67,7 +67,7 @@ function quoted(value) {
 }
 
 function databaseIdentity(value) {
-  const url = new URL(value);
+  const url = parseDatabaseUrl(value);
   if (
     !/\.internal$/u.test(url.hostname) &&
     !/^dpg-[a-z0-9-]+$/u.test(url.hostname)
@@ -75,6 +75,14 @@ function databaseIdentity(value) {
     throw new Error("release_migration_private_database_host_required");
   const port = url.port || "5432";
   return `${url.hostname.toLowerCase()}:${port}${url.pathname}`;
+}
+
+function parseDatabaseUrl(value) {
+  try {
+    return value instanceof URL ? value : new URL(value);
+  } catch {
+    throw new Error("release_migration_database_url_invalid");
+  }
 }
 
 const canonicalRoleNames = Object.freeze([
@@ -306,7 +314,7 @@ function observeDatabaseGeneration(run, url, env) {
 }
 
 export function resolveReleaseMigrationConfiguration(env) {
-  const releaseUrl = new URL(
+  const releaseUrl = parseDatabaseUrl(
     required(env, "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL"),
   );
   if (
@@ -318,7 +326,7 @@ export function resolveReleaseMigrationConfiguration(env) {
   if (!releasePassword)
     throw new Error("release_migration_release_password_missing");
   const roles = runtimeRoles.map(([role, username, environmentName]) => {
-    const url = new URL(required(env, environmentName));
+    const url = parseDatabaseUrl(required(env, environmentName));
     if (
       decodeURIComponent(url.username) !== username ||
       databaseIdentity(url) !== identity
@@ -348,7 +356,7 @@ export function resolveReleaseMigrationConfiguration(env) {
 
 export function resolveRoleBootstrapConfiguration(env) {
   const configuration = resolveReleaseMigrationConfiguration(env);
-  const bootstrapUrl = new URL(
+  const bootstrapUrl = parseDatabaseUrl(
     required(env, "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL"),
   );
   if (
@@ -682,6 +690,22 @@ CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_rollout_receipt_ledger
 );
 ALTER TABLE reviewrouter_bootstrap.release_rollout_receipt_ledger OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON TABLE reviewrouter_bootstrap.release_rollout_receipt_ledger FROM PUBLIC;
+CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_runner_provisioning_intent (
+  intent_id text PRIMARY KEY CHECK (intent_id ~ '^rri-[a-f0-9]{64}$'),
+  rollout_id text NOT NULL REFERENCES reviewrouter_bootstrap.release_rollout_ledger(rollout_id),
+  service_id text NOT NULL,
+  lifecycle text NOT NULL CHECK (lifecycle IN ('role','cutover')),
+  workflow_job_id text NOT NULL CHECK (workflow_job_id ~ '^[1-9][0-9]*$'),
+  runner_name text NOT NULL,
+  created_at timestamptz NOT NULL,
+  provider_job_id text,
+  outcome text CHECK (outcome IN ('bound','persistence_failed_cleaned','persistence_failed_unknown')),
+  reconciliation_observation jsonb,
+  reconciled_at timestamptz,
+  UNIQUE (rollout_id,lifecycle)
+);
+ALTER TABLE reviewrouter_bootstrap.release_runner_provisioning_intent OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON TABLE reviewrouter_bootstrap.release_runner_provisioning_intent FROM PUBLIC;
 CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_runner_job_ledger (
   job_id text PRIMARY KEY,
   rollout_id text NOT NULL REFERENCES reviewrouter_bootstrap.release_rollout_ledger(rollout_id),
@@ -689,6 +713,7 @@ CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_runner_job_ledger (
   observed_at timestamptz NOT NULL,
   cleanup_canary text NOT NULL,
   lifecycle text NOT NULL CHECK (lifecycle IN ('role','cutover')),
+  provisioning_intent_id text NOT NULL REFERENCES reviewrouter_bootstrap.release_runner_provisioning_intent(intent_id),
   terminal_at timestamptz,
   cleanup_observation jsonb,
   runner_identity jsonb,
@@ -699,6 +724,8 @@ ALTER TABLE reviewrouter_bootstrap.release_runner_job_ledger
   ADD COLUMN IF NOT EXISTS cleanup_observation jsonb,
   ADD COLUMN IF NOT EXISTS runner_identity jsonb,
   ADD COLUMN IF NOT EXISTS provision_observation jsonb;
+ALTER TABLE reviewrouter_bootstrap.release_runner_job_ledger
+  ADD COLUMN IF NOT EXISTS provisioning_intent_id text REFERENCES reviewrouter_bootstrap.release_runner_provisioning_intent(intent_id);
 ALTER TABLE reviewrouter_bootstrap.release_runner_job_ledger OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON TABLE reviewrouter_bootstrap.release_runner_job_ledger FROM PUBLIC;
 DROP FUNCTION IF EXISTS reviewrouter_bootstrap.activate_generation(text,text,text,text);

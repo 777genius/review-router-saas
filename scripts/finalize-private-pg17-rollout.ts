@@ -124,6 +124,8 @@ const useCases = new ReleaseRolloutUseCases({
         url: required("REVIEW_ROUTER_LIVE_CANARY_URL"),
         expectedCommitSha: rollout.expectedCommitSha,
         expectedSystemIdentifier: rollout.target.systemIdentifier,
+        rolloutId: rollout.rolloutId,
+        bearerToken: required("REVIEW_ROUTER_LIVE_CANARY_TOKEN"),
       });
       return canary;
     },

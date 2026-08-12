@@ -170,6 +170,9 @@ describe("release rollout application boundary", () => {
         renderJobId: "job-44",
         baseServiceId: "srv-base",
         runnerGroupId: 9,
+        runnerGroupName: "private-pg17",
+        uniqueRunnerLabel: "rr-runner",
+        workFolder: "_work/rr-runner",
         provenance: {
           kind: "git",
           deployId: "dep-1",

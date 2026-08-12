@@ -30,43 +30,62 @@ const get = async (path: string): Promise<Record<string, unknown>> => {
 };
 const repo = await get(`/repos/${repository}`);
 if (
+  repo.private !== true ||
   !repo.owner ||
   typeof repo.owner !== "object" ||
   (repo.owner as Record<string, unknown>).type !== "Organization" ||
   (repo.owner as Record<string, unknown>).login !== organization
 )
   throw new Error("private_pg17_preflight_personal_repository_forbidden");
-const environmentName = required("REVIEW_ROUTER_PROTECTED_ENVIRONMENT_NAME");
-const environment = await get(
-  `/repos/${repository}/environments/${encodeURIComponent(environmentName)}`,
-);
-const rules = environment.protection_rules;
-if (!Array.isArray(rules))
-  throw new Error("private_pg17_preflight_environment_policy_missing");
-const reviewerRule = rules.find(
-  (rule) =>
-    !!rule &&
-    typeof rule === "object" &&
-    (rule as Record<string, unknown>).type === "required_reviewers",
-) as Record<string, unknown> | undefined;
-const branchRule = rules.find(
-  (rule) =>
-    !!rule &&
-    typeof rule === "object" &&
-    (rule as Record<string, unknown>).type === "branch_policy",
-) as Record<string, unknown> | undefined;
+const environmentNames = JSON.parse(
+  required("REVIEW_ROUTER_PRIVILEGED_ENVIRONMENTS_JSON"),
+) as unknown;
 if (
-  !reviewerRule ||
-  !Array.isArray(reviewerRule.reviewers) ||
-  reviewerRule.reviewers.length < 1 ||
-  reviewerRule.prevent_self_review !== true ||
-  !branchRule ||
-  environment.deployment_branch_policy === null ||
-  typeof environment.deployment_branch_policy !== "object" ||
-  (environment.deployment_branch_policy as Record<string, unknown>)
-    .protected_branches !== true
+  !Array.isArray(environmentNames) ||
+  environmentNames.length < 1 ||
+  environmentNames.some((name) => typeof name !== "string" || !name) ||
+  new Set(environmentNames).size !== environmentNames.length
 )
-  throw new Error("private_pg17_preflight_environment_policy_unsafe");
+  throw new Error("private_pg17_preflight_environment_inventory_invalid");
+const environments = [];
+for (const environmentName of environmentNames as string[]) {
+  const environment = await get(
+    `/repos/${repository}/environments/${encodeURIComponent(environmentName)}`,
+  );
+  const rules = environment.protection_rules;
+  if (!Array.isArray(rules))
+    throw new Error("private_pg17_preflight_environment_policy_missing");
+  const reviewerRule = rules.find(
+    (rule) =>
+      !!rule &&
+      typeof rule === "object" &&
+      (rule as Record<string, unknown>).type === "required_reviewers",
+  ) as Record<string, unknown> | undefined;
+  const branchRule = rules.find(
+    (rule) =>
+      !!rule &&
+      typeof rule === "object" &&
+      (rule as Record<string, unknown>).type === "branch_policy",
+  );
+  if (
+    !reviewerRule ||
+    !Array.isArray(reviewerRule.reviewers) ||
+    reviewerRule.reviewers.length < 1 ||
+    reviewerRule.prevent_self_review !== true ||
+    !branchRule ||
+    !environment.deployment_branch_policy ||
+    typeof environment.deployment_branch_policy !== "object" ||
+    (environment.deployment_branch_policy as Record<string, unknown>)
+      .protected_branches !== true
+  )
+    throw new Error("private_pg17_preflight_environment_policy_unsafe");
+  environments.push({
+    name: environmentName,
+    requiredReviewerCount: reviewerRule.reviewers.length,
+    preventSelfReview: true,
+    protectedBranchesOnly: true,
+  });
+}
 const facts = {
   organization,
   repository,
@@ -77,10 +96,7 @@ const facts = {
   actor: required("GITHUB_ACTOR"),
   runId: required("GITHUB_RUN_ID"),
   runAttempt: 1,
-  environment: environmentName,
-  requiredReviewerCount: reviewerRule.reviewers.length,
-  preventSelfReview: true,
-  protectedBranchesOnly: true,
+  environments,
   runnerGroupId: Number(required("REVIEW_ROUTER_RUNNER_GROUP_ID")),
   observedAt: new Date().toISOString(),
 };

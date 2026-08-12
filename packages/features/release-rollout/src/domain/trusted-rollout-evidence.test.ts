@@ -54,8 +54,8 @@ const steps = [
   RolloutStep.CaptureSourceBackup,
   RolloutStep.QuiesceSource,
   RolloutStep.CopyDatabaseGeneration,
-  RolloutStep.VerifyDataEquivalence,
   RolloutStep.BootstrapTargetRoles,
+  RolloutStep.VerifyDataEquivalence,
   RolloutStep.CleanupRoleRunner,
   RolloutStep.ProvisionCutoverRunner,
   RolloutStep.RunReleaseMigration,
@@ -85,6 +85,9 @@ const runner = (job: string, name: string): RunnerIdentity => ({
   renderJobId: job,
   baseServiceId: "srv-base",
   runnerGroupId: 17,
+  runnerGroupName: "private-pg17",
+  uniqueRunnerLabel: `rr-${name}`,
+  workFolder: `_work/rr-${name}`,
   provenance: {
     kind: "git",
     deployId: "dep-pinned",
@@ -171,7 +174,7 @@ const create = () =>
       recoveryWindowEndsAt: "2026-08-13T00:00:00.000Z",
       dumpSha256: digest,
       externalWitnessSha256: digest,
-      recoveryStatus: "available",
+      recoveryStatus: "AVAILABLE",
     },
     quiescence: {
       writerServices: [

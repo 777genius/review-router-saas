@@ -2,7 +2,9 @@
 import { App } from "@octokit/app";
 import {
   chmodSync,
+  chownSync,
   lstatSync,
+  mkdirSync,
   readFileSync,
   unlinkSync,
   writeFileSync,
@@ -19,14 +21,18 @@ const required = (name) => {
   return value;
 };
 if (
-  process.argv.length !== 4 ||
-  process.argv[2] !== "--context" ||
-  !/^[A-Za-z0-9_-]+$/u.test(process.argv[3] ?? "")
+  process.argv.length !== 6 ||
+  process.argv[2] !== "--intent" ||
+  !/^rri-[a-f0-9]{64}$/u.test(process.argv[3] ?? "") ||
+  process.argv[4] !== "--context" ||
+  !/^[A-Za-z0-9_-]+$/u.test(process.argv[5] ?? "")
 )
   throw new Error("private_runner_arguments_invalid");
 const context = JSON.parse(
-  Buffer.from(process.argv[3], "base64url").toString("utf8"),
+  Buffer.from(process.argv[5], "base64url").toString("utf8"),
 );
+if (context.provisioningIntentId !== process.argv[3])
+  throw new Error("private_runner_intent_binding_invalid");
 const keyPath = required("REVIEW_ROUTER_RUNNER_GITHUB_APP_PRIVATE_KEY_FILE");
 if (!keyPath.startsWith("/run/secrets/"))
   throw new Error("private_runner_private_key_path_invalid");
@@ -53,9 +59,39 @@ const response = await app.octokit.request(
     },
   },
 );
-const jitConfig = await requestJitConfiguration(context, response.data.token);
+const registration = await requestJitConfiguration(
+  context,
+  response.data.token,
+);
+const ledgerResponse = await fetch(
+  `${required("REVIEW_ROUTER_RUNNER_LEDGER_URL").replace(/\/$/u, "")}/v1/runner-jobs/registration`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN")}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      rolloutId: context.rolloutId,
+      lifecycle: context.lifecycle,
+      workflowJobId: context.workflowJobId,
+      registration,
+    }),
+  },
+);
+if (!ledgerResponse.ok)
+  throw new Error(
+    `private_runner_registration_persist_failed:${ledgerResponse.status}`,
+  );
+const workRoot = `/runner/${registration.workFolder}`;
+mkdirSync(workRoot, { recursive: false, mode: 0o700 });
+const workStat = lstatSync(workRoot);
+if (!workStat.isDirectory() || workStat.isSymbolicLink() || workStat.uid !== 0)
+  throw new Error("private_runner_work_root_invalid");
+chownSync(workRoot, 10001, 10001);
 const jitPath = "/run/reviewrouter/jit-config";
-writeFileSync(jitPath, jitConfig, {
+writeFileSync(jitPath, registration.encodedJitConfig, {
   encoding: "utf8",
   mode: 0o600,
   flag: "wx",
@@ -76,6 +112,7 @@ const environment = {
   REVIEW_ROUTER_RUNNER_JIT_CONFIG_FILE: jitPath,
   REVIEW_ROUTER_RUNNER_CLEANUP_CANARY: String(context.cleanupCanary),
   REVIEW_ROUTER_RUNNER_NO_JOB_TIMEOUT_MS: String(context.timeoutMs ?? 900000),
+  REVIEW_ROUTER_RUNNER_WORK_ROOT: workRoot,
 };
 if (typeof process.execve !== "function")
   throw new Error("private_runner_execve_unavailable");

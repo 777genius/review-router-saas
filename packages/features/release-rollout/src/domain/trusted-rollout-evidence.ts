@@ -20,7 +20,7 @@ export interface BackupIdentity {
   readonly recoveryWindowEndsAt: string;
   readonly dumpSha256: string;
   readonly externalWitnessSha256: string;
-  readonly recoveryStatus: "available" | "ready";
+  readonly recoveryStatus: "AVAILABLE";
 }
 export interface QuiescenceEvidence {
   readonly writerServices: readonly {
@@ -188,8 +188,8 @@ export function assertTrustedRolloutEvidence(
     RolloutStep.CaptureSourceBackup,
     RolloutStep.QuiesceSource,
     RolloutStep.CopyDatabaseGeneration,
-    RolloutStep.VerifyDataEquivalence,
     RolloutStep.BootstrapTargetRoles,
+    RolloutStep.VerifyDataEquivalence,
     RolloutStep.CleanupRoleRunner,
     RolloutStep.ProvisionCutoverRunner,
     RolloutStep.RunReleaseMigration,

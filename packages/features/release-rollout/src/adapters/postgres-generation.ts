@@ -43,7 +43,12 @@ function escaped(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll(":", "\\:");
 }
 export function decomposePostgresConnection(value: string): Connection {
-  const url = new URL(value);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("postgres_generation_connection_invalid");
+  }
   const host = url.hostname;
   const database = decodeURIComponent(url.pathname.slice(1));
   const user = decodeURIComponent(url.username);
@@ -209,6 +214,23 @@ export class PostgreSqlGenerationAdapter {
       [...runtimeRoles].sort().join(",")
     )
       throw new Error("postgres_generation_reconnect_probe_set_incomplete");
+    const sourceSystemIdentifier = this.psql(
+      input.adminUrl,
+      "SELECT system_identifier::text FROM pg_control_system()",
+    );
+    for (const role of runtimeRoles) {
+      const preRevocation = JSON.parse(
+        this.psql(
+          input.reconnectUrls[role]!,
+          "SELECT json_build_object('role',current_user,'systemIdentifier',system_identifier::text) FROM pg_control_system()",
+        ),
+      );
+      if (
+        preRevocation.role !== role ||
+        preRevocation.systemIdentifier !== sourceSystemIdentifier
+      )
+        throw new Error("postgres_generation_pre_revocation_probe_mismatch");
+    }
     const roleSql = runtimeRoles
       .map((role) => `REVOKE CONNECT ON DATABASE :"DBNAME" FROM ${role};`)
       .join("\n");
@@ -244,10 +266,27 @@ export class PostgreSqlGenerationAdapter {
       throw new Error("postgres_generation_sessions_not_stable");
     const reconnectDenied: string[] = [];
     for (const role of runtimeRoles) {
+      const connection = decomposePostgresConnection(
+        input.reconnectUrls[role]!,
+      );
       try {
-        this.psql(input.reconnectUrls[role]!, "SELECT 1");
-      } catch {
+        const denial = this.commands.executeExpectingFailure(
+          "psql",
+          [
+            ...connection.args,
+            "--no-psqlrc",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--command",
+            "SELECT 1",
+          ],
+          { env: connection.env },
+        );
+        if (denial.reason !== "database_connect_permission_denied")
+          throw new Error("postgres_generation_reconnect_denial_wrong_reason");
         reconnectDenied.push(role);
+      } finally {
+        connection.cleanup();
       }
     }
     if (reconnectDenied.length !== runtimeRoles.length)
@@ -303,14 +342,26 @@ export class PostgreSqlGenerationAdapter {
     });
   }
 
-  private async snapshot(url: string): Promise<{
+  private async snapshot(
+    url: string,
+    applicationSchemas: readonly string[],
+  ): Promise<{
     tables: Map<string, { rows: number; sha256: string }>;
     metadata: Record<string, string>;
   }> {
+    if (
+      !applicationSchemas.length ||
+      new Set(applicationSchemas).size !== applicationSchemas.length ||
+      applicationSchemas.some((schema) => !identifier.test(schema))
+    )
+      throw new Error("postgres_generation_application_schemas_invalid");
+    const schemaList = applicationSchemas
+      .map((schema) => `'${schema}'`)
+      .join(",");
     const tableNames = JSON.parse(
       this.psql(
         url,
-        "SELECT coalesce(json_agg(n.nspname||'.'||c.relname ORDER BY n.nspname,c.relname),'[]'::json) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_toast'",
+        `SELECT coalesce(json_agg(n.nspname||'.'||c.relname ORDER BY n.nspname,c.relname),'[]'::json) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','m') AND n.nspname IN (${schemaList})`,
       ),
     ) as string[];
     if (
@@ -347,7 +398,7 @@ export class PostgreSqlGenerationAdapter {
     const sequenceNames = JSON.parse(
       this.psql(
         url,
-        "SELECT coalesce(json_agg(schemaname||'.'||sequencename ORDER BY schemaname,sequencename),'[]'::json) FROM pg_sequences WHERE schemaname NOT IN ('pg_catalog','information_schema')",
+        `SELECT coalesce(json_agg(schemaname||'.'||sequencename ORDER BY schemaname,sequencename),'[]'::json) FROM pg_sequences WHERE schemaname IN (${schemaList})`,
       ),
     ) as string[];
     if (
@@ -361,29 +412,31 @@ export class PostgreSqlGenerationAdapter {
       return JSON.parse(
         this.psql(
           url,
-          `SELECT json_build_object('schema','${schema}','name','${name}','lastValue',value.last_value,'isCalled',value.is_called,'dataType',definition.data_type,'startValue',definition.start_value,'minValue',definition.min_value,'maxValue',definition.max_value,'incrementBy',definition.increment_by,'cycle',definition.cycle,'cacheSize',definition.cache_size,'owner',pg_get_userbyid(sequence.relowner),'ownedBy',(SELECT dependent.refobjid::regclass::text||'.'||attribute.attname FROM pg_depend dependent JOIN pg_attribute attribute ON attribute.attrelid=dependent.refobjid AND attribute.attnum=dependent.refobjsubid WHERE dependent.objid=sequence.oid AND dependent.deptype IN ('a','i') LIMIT 1)) FROM "${schema}"."${name}" value, pg_class sequence JOIN pg_namespace namespace ON namespace.oid=sequence.relnamespace JOIN pg_sequences definition ON definition.schemaname=namespace.nspname AND definition.sequencename=sequence.relname WHERE namespace.nspname='${schema}' AND sequence.relname='${name}'`,
+          `SELECT json_build_object('schema','${schema}','name','${name}','lastValue',value.last_value,'isCalled',value.is_called,'dataType',definition.data_type,'startValue',definition.start_value,'minValue',definition.min_value,'maxValue',definition.max_value,'incrementBy',definition.increment_by,'cycle',definition.cycle,'cacheSize',definition.cache_size,'owner',pg_get_userbyid(sequence.relowner),'ownedBy',(SELECT owned_namespace.nspname||'.'||owned_table.relname||'.'||attribute.attname FROM pg_depend dependent JOIN pg_class owned_table ON owned_table.oid=dependent.refobjid JOIN pg_namespace owned_namespace ON owned_namespace.oid=owned_table.relnamespace JOIN pg_attribute attribute ON attribute.attrelid=dependent.refobjid AND attribute.attnum=dependent.refobjsubid WHERE dependent.objid=sequence.oid AND dependent.deptype IN ('a','i') LIMIT 1)) FROM "${schema}"."${name}" value, pg_class sequence JOIN pg_namespace namespace ON namespace.oid=sequence.relnamespace JOIN pg_sequences definition ON definition.schemaname=namespace.nspname AND definition.sequencename=sequence.relname WHERE namespace.nspname='${schema}' AND sequence.relname='${name}'`,
         ),
       );
     });
     const metadata = {
       sequences: digest(JSON.stringify(sequenceFacts)),
       columnsDefaults: catalog(
-        "SELECT json_agg(x ORDER BY x->>'schema',x->>'table',x->>'column') FROM (SELECT json_build_object('schema',n.nspname,'table',c.relname,'column',a.attname,'type',format_type(a.atttypid,a.atttypmod),'notNull',a.attnotnull,'identity',a.attidentity,'generated',a.attgenerated,'default',pg_get_expr(d.adbin,d.adrelid)) x FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE a.attnum>0 AND NOT a.attisdropped AND n.nspname NOT IN ('pg_catalog','information_schema')) q",
+        `SELECT json_agg(x ORDER BY x->>'schema',x->>'table',x->>'column') FROM (SELECT json_build_object('schema',n.nspname,'table',c.relname,'column',a.attname,'type',format_type(a.atttypid,a.atttypmod),'notNull',a.attnotnull,'identity',a.attidentity,'generated',a.attgenerated,'default',pg_get_expr(d.adbin,d.adrelid)) x FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE a.attnum>0 AND NOT a.attisdropped AND n.nspname IN (${schemaList})) q`,
       ),
       constraintsIndexesTriggers: catalog(
-        "SELECT json_agg(x ORDER BY x::text) FROM (SELECT json_build_object('kind','constraint','oid',c.oid::regclass::text,'name',c.conname,'definition',pg_get_constraintdef(c.oid)) x FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_toast' UNION ALL SELECT json_build_object('kind','index','oid',indexname,'name',tablename,'definition',indexdef) FROM pg_indexes WHERE schemaname NOT IN ('pg_catalog','information_schema') AND schemaname !~ '^pg_toast' UNION ALL SELECT json_build_object('kind','trigger','oid',tgrelid::regclass::text,'name',tgname,'definition',pg_get_triggerdef(t.oid)) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_toast') q",
+        `SELECT json_agg(x ORDER BY x::text) FROM (SELECT json_build_object('kind','constraint','schema',n.nspname,'table',relation.relname,'name',c.conname,'definition',pg_get_constraintdef(c.oid)) x FROM pg_constraint c JOIN pg_class relation ON relation.oid=c.conrelid JOIN pg_namespace n ON n.oid=relation.relnamespace WHERE n.nspname IN (${schemaList}) UNION ALL SELECT json_build_object('kind','index','schema',schemaname,'table',tablename,'name',indexname,'definition',indexdef) FROM pg_indexes WHERE schemaname IN (${schemaList}) UNION ALL SELECT json_build_object('kind','trigger','schema',n.nspname,'table',c.relname,'name',tgname,'definition',pg_get_triggerdef(t.oid)) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE NOT t.tgisinternal AND n.nspname IN (${schemaList})) q`,
       ),
       policiesRls: catalog(
-        "SELECT json_agg(x ORDER BY x::text) FROM (SELECT json_build_object('schema',n.nspname,'table',c.relname,'rls',c.relrowsecurity,'force',c.relforcerowsecurity,'policy',p.polname,'command',p.polcmd,'roles',p.polroles,'qual',pg_get_expr(p.polqual,p.polrelid),'check',pg_get_expr(p.polwithcheck,p.polrelid)) x FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_policy p ON p.polrelid=c.oid WHERE c.relkind IN ('r','p')) q",
+        `SELECT json_agg(x ORDER BY x::text) FROM (SELECT json_build_object('schema',n.nspname,'table',c.relname,'rls',c.relrowsecurity,'force',c.relforcerowsecurity,'policy',p.polname,'command',p.polcmd,'roles',(SELECT json_agg(coalesce(role.rolname,'PUBLIC') ORDER BY coalesce(role.rolname,'PUBLIC')) FROM unnest(p.polroles) role_id LEFT JOIN pg_roles role ON role.oid=role_id),'qual',pg_get_expr(p.polqual,p.polrelid),'check',pg_get_expr(p.polwithcheck,p.polrelid)) x FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_policy p ON p.polrelid=c.oid WHERE c.relkind IN ('r','p') AND n.nspname IN (${schemaList})) q`,
       ),
       functionsViewsSchemas: catalog(
-        "SELECT json_agg(x ORDER BY x::text) FROM (SELECT json_build_object('kind','function','identity',p.oid::regprocedure::text,'definition',pg_get_functiondef(p.oid)) x FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_toast' AND p.prokind IN ('f','p','w') UNION ALL SELECT json_build_object('kind','view','identity',schemaname||'.'||viewname,'definition',definition) FROM pg_views WHERE schemaname NOT IN ('pg_catalog','information_schema') UNION ALL SELECT json_build_object('kind','schema','identity',nspname,'definition','') FROM pg_namespace WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname !~ '^pg_toast') q",
+        `SELECT json_agg(x ORDER BY x::text) FROM (SELECT json_build_object('kind','function','schema',n.nspname,'name',p.proname,'arguments',pg_get_function_identity_arguments(p.oid),'definition',pg_get_functiondef(p.oid)) x FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname IN (${schemaList}) AND p.prokind IN ('f','p','w') UNION ALL SELECT json_build_object('kind','view','schema',schemaname,'name',viewname,'definition',definition) FROM pg_views WHERE schemaname IN (${schemaList}) UNION ALL SELECT json_build_object('kind','schema','name',nspname,'definition','') FROM pg_namespace WHERE nspname IN (${schemaList})) q`,
       ),
       aclOwnershipDefaults: catalog(
-        "SELECT json_agg(x ORDER BY x::text) FROM (SELECT json_build_object('kind','object','identity',c.oid::regclass::text,'owner',pg_get_userbyid(c.relowner),'acl',c.relacl) x FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') UNION ALL SELECT json_build_object('kind','default','identity',d.oid::text,'owner',pg_get_userbyid(d.defaclrole),'acl',d.defaclacl) FROM pg_default_acl d) q",
+        `SELECT json_agg(x ORDER BY x::text) FROM (SELECT json_build_object('kind','object','schema',n.nspname,'name',c.relname,'type',c.relkind,'owner',pg_get_userbyid(c.relowner),'acl',c.relacl) x FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN (${schemaList}) UNION ALL SELECT json_build_object('kind','default','schema',coalesce(n.nspname,'*'),'type',d.defaclobjtype,'owner',pg_get_userbyid(d.defaclrole),'acl',d.defaclacl) FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace WHERE d.defaclnamespace=0 OR n.nspname IN (${schemaList})) q`,
       ),
       migrationHistory: catalog(
-        'SELECT coalesce(json_agg(row_to_json(m) ORDER BY "migration_name"),\'[]\'::json) FROM public."_prisma_migrations" m',
+        applicationSchemas.includes("public")
+          ? 'SELECT coalesce(json_agg(row_to_json(m) ORDER BY "migration_name"),\'[]\'::json) FROM public."_prisma_migrations" m'
+          : "SELECT '[]'::json",
       ),
     };
     return { tables, metadata };
@@ -392,10 +445,11 @@ export class PostgreSqlGenerationAdapter {
   async verifyEquivalence(
     sourceUrl: string,
     targetUrl: string,
+    applicationSchemas: readonly string[],
   ): Promise<{ evidence: EquivalenceEvidence; observation: StepObservation }> {
     const [source, target] = await Promise.all([
-      this.snapshot(sourceUrl),
-      this.snapshot(targetUrl),
+      this.snapshot(sourceUrl, applicationSchemas),
+      this.snapshot(targetUrl, applicationSchemas),
     ]);
     if (
       !source.tables.size ||

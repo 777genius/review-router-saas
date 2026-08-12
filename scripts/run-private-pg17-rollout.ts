@@ -85,8 +85,12 @@ const useCases = new ReleaseRolloutUseCases({
   services: {
     stageTarget: async () => {
       staged = await targetAdapter.stage({
-        apiKey: required("RENDER_PROVENANCE_READ_API_KEY"),
+        apiKey: required("RENDER_TARGET_SWITCH_API_KEY"),
         targetInternalHostname: rollout.target.internalHostname,
+        targetSystemIdentifier: rollout.target.systemIdentifier,
+        targetDatabaseUrls: JSON.parse(
+          required("REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON"),
+        ) as Record<string, string>,
         releaseCommitSha: rollout.expectedCommitSha,
         services: JSON.parse(
           required("REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON"),

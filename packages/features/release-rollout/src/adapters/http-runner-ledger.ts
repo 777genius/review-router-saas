@@ -1,5 +1,6 @@
 import type {
   PersistedRunnerJob,
+  RunnerProvisioningIntent,
   RunnerCleanupWitnessPort,
   RunnerJobLedger,
 } from "./render-private-runner";
@@ -51,6 +52,41 @@ export class AuthenticatedRunnerLedgerAdapter
       method: "POST",
       body: JSON.stringify(value),
     });
+  }
+  async persistProvisioningIntent(
+    value: RunnerProvisioningIntent,
+  ): Promise<"created" | "existing"> {
+    const result = (await this.request("/v1/runner-jobs/intents", {
+      method: "POST",
+      body: JSON.stringify(value),
+    })) as Record<string, unknown>;
+    if (result.result !== "created" && result.result !== "existing")
+      throw new Error("runner_ledger_provisioning_intent_invalid");
+    return result.result;
+  }
+  async listProvisioningIntents(
+    rolloutId: string,
+  ): Promise<readonly RunnerProvisioningIntent[]> {
+    const value = await this.request(
+      `/v1/runner-jobs/intents?rollout_id=${encodeURIComponent(rolloutId)}`,
+    );
+    if (!Array.isArray(value))
+      throw new Error("runner_ledger_provisioning_intents_invalid");
+    return value as RunnerProvisioningIntent[];
+  }
+  async recordProvisioningOutcome(input: {
+    intentId: string;
+    jobId: string;
+    outcome:
+      | "bound"
+      | "persistence_failed_cleaned"
+      | "persistence_failed_unknown";
+    observation?: StepObservation;
+  }): Promise<void> {
+    await this.request(
+      `/v1/runner-jobs/intents/${encodeURIComponent(input.intentId)}/outcome`,
+      { method: "PUT", body: JSON.stringify(input) },
+    );
   }
   async listOpenJobs(
     rolloutId: string,

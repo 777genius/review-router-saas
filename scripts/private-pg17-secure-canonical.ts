@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   decomposePostgresConnection,
   RedactedProcessCommandAdapter,
@@ -53,19 +56,27 @@ export function createSecureCanonicalRun(
       const databaseUrl = options.env?.DATABASE_URL;
       if (!databaseUrl)
         throw new Error("private_pg17_exact_database_environment_missing");
-      const result = spawnSync(command, [...args], {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        input: options.input,
-        env: {
-          PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-          LANG: "C.UTF-8",
-          DATABASE_URL: databaseUrl,
-        },
-        maxBuffer: 8 * 1024 * 1024,
-      });
-      if (result.status !== 0) throw new Error("private_pg17_child_failed");
-      return result.stdout;
+      const directory = mkdtempSync(join(tmpdir(), "rr-db-credential-"));
+      chmodSync(directory, 0o700);
+      const credentialPath = join(directory, "database-url");
+      writeFileSync(credentialPath, databaseUrl, { mode: 0o600, flag: "wx" });
+      try {
+        const result = spawnSync(command, [...args], {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          input: options.input,
+          env: {
+            PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+            LANG: "C.UTF-8",
+            REVIEW_ROUTER_DATABASE_URL_FILE: credentialPath,
+          },
+          maxBuffer: 8 * 1024 * 1024,
+        });
+        if (result.status !== 0) throw new Error("private_pg17_child_failed");
+        return result.stdout;
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
     } catch (error) {
       onFailure(step, error instanceof Error ? error.message : "unknown");
       throw new Error(`private_pg17_secure_step_failed:${step}`, {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   AuthenticatedRunnerLedgerAdapter,
   PostgreSqlGenerationAdapter,
@@ -19,6 +20,8 @@ const required = (name: string): string => {
   if (!value) throw new Error(`private_pg17_copy_required:${name}`);
   return value;
 };
+const decode = <T>(name: string): T =>
+  JSON.parse(Buffer.from(required(name), "base64url").toString("utf8")) as T;
 const source: DatabaseGenerationIdentity = {
   renderResourceId: required("REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID"),
   internalHostname: required("REVIEW_ROUTER_SOURCE_INTERNAL_HOSTNAME"),
@@ -78,6 +81,8 @@ const ledger = new AuthenticatedRunnerLedgerAdapter(
 const currentRunner = await ledger.currentRunner(rollout.rolloutId, "role");
 const canonical = new PrivatePg17CanonicalAdapter();
 const runner: RunnerIdentity = currentRunner.identity;
+const dumpDirectory = mkdtempSync(join(required("RUNNER_TEMP"), "rr-dump-"));
+chmodSync(dumpDirectory, 0o700);
 const runnerObservation: StepObservation = currentRunner.observation;
 const useCases = new ReleaseRolloutUseCases({
   preflight: { observeProtectedEnvironment: unavailable },
@@ -106,7 +111,7 @@ const useCases = new ReleaseRolloutUseCases({
       });
       backupResult = database.captureBackup({
         sourceUrl,
-        dumpPath: `/runner/_work/job/${rollout.rolloutId}.dump`,
+        dumpPath: join(dumpDirectory, "source.dump"),
         backup,
       });
       if (backupResult.dumpSha256 !== backup.dumpSha256)
@@ -133,7 +138,13 @@ const useCases = new ReleaseRolloutUseCases({
         dumpSha256: backupResult.dumpSha256,
       }),
     verifyEquivalence: async () => {
-      equivalence = await database.verifyEquivalence(sourceUrl, targetUrl);
+      equivalence = await database.verifyEquivalence(
+        sourceUrl,
+        targetUrl,
+        JSON.parse(
+          required("REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON"),
+        ) as string[],
+      );
       return equivalence.observation;
     },
     bootstrapTargetRoles: async () => {
@@ -157,8 +168,8 @@ rollout = await useCases.freezeProviderServices(rollout);
 rollout = await useCases.captureSourceBackup(rollout);
 rollout = await useCases.quiesceSource(rollout);
 rollout = await useCases.copyDatabaseGeneration(rollout);
-rollout = await useCases.verifyDataEquivalence(rollout);
 rollout = await useCases.bootstrapTargetRoles(rollout);
+rollout = await useCases.verifyDataEquivalence(rollout);
 process.stdout.write(
   `${JSON.stringify({ rollout, roleBootstrapRunner: runner, backup: backupResult!.backup, quiescence: quiescence!.evidence, equivalence: equivalence!.evidence, roleBootstrap: roleBootstrap!.facts })}\n`,
 );

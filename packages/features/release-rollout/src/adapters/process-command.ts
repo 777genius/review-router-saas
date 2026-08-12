@@ -26,6 +26,11 @@ export interface CommandExecutor {
     args: readonly string[],
     options?: Omit<CommandOptions, "maxBuffer">,
   ): Promise<{ rows: number; sha256: string }>;
+  executeExpectingFailure(
+    command: PgCommand,
+    args: readonly string[],
+    options?: CommandOptions,
+  ): { reason: "database_connect_permission_denied" };
 }
 
 const allowedEnvironment = new Set([
@@ -120,5 +125,32 @@ export class RedactedProcessCommandAdapter implements CommandExecutor {
       });
       if (options.input !== undefined) child.stdin!.end(options.input);
     });
+  }
+
+  executeExpectingFailure(
+    command: PgCommand,
+    args: readonly string[],
+    options: CommandOptions = {},
+  ): { reason: "database_connect_permission_denied" } {
+    const env = options.env ?? {};
+    assertSafeProcessBoundary(command, args, env);
+    const result = spawnSync(command, [...args], {
+      encoding: "utf8",
+      env,
+      input: options.input,
+      maxBuffer: 256 * 1024,
+    });
+    const diagnostic = String(result.stderr ?? "");
+    if (
+      result.status === 0 ||
+      !/(?:permission denied for database|permission denied to connect to database)/iu.test(
+        diagnostic,
+      ) ||
+      /(?:could not translate host name|name or service not known|password authentication failed|no pg_hba.conf entry|connection timed out|connection refused)/iu.test(
+        diagnostic,
+      )
+    )
+      throw new Error("release_rollout_expected_connect_denial_unproven");
+    return { reason: "database_connect_permission_denied" };
   }
 }
