@@ -151,12 +151,6 @@ import {
 } from "./review-investigation-operator-routes.js";
 import { appRouter } from "./trpc.js";
 import { ProductionHostedReviewPreleaseGate } from "./hosted-review-prelease-gate.js";
-import {
-  PrismaReleaseRolloutLedgerRepository,
-  registerReleaseRolloutLedgerRoutes,
-  ReleaseRolloutLedgerService,
-  type ReleaseRolloutLedgerRouteDependencies,
-} from "./release-rollout-ledger.js";
 
 export type CreateApiAppOptions = {
   readonly githubWebhookSecret?: string;
@@ -183,7 +177,6 @@ export type CreateApiAppOptions = {
   readonly memoryServiceEnabled?: boolean;
   readonly healthDependencies?: readonly HealthDependencyPort[];
   readonly prisma?: PrismaClient;
-  readonly releaseRolloutLedgerDependencies?: ReleaseRolloutLedgerRouteDependencies;
 };
 
 export async function createApiApp(
@@ -220,8 +213,7 @@ export async function createApiApp(
     reviewRunControlV2Enabled ||
     operatorCredentialSha256 ||
     investigationPromotionCredentialSha256 ||
-    investigationEvaluationImportCredentialSha256 ||
-    reviewActionV2Env.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN_SHA256
+    investigationEvaluationImportCredentialSha256
       ? createPrismaClient()
       : undefined);
   const codexEffectAuthorityDatabaseUrl =
@@ -267,33 +259,6 @@ export async function createApiApp(
     options.healthDependencies ??
       (prisma ? [new PrismaHealthDependency(prisma)] : []),
   );
-
-  const releaseRolloutLedgerDependencies =
-    options.releaseRolloutLedgerDependencies ??
-    (prisma &&
-    /^[a-f0-9]{64}$/u.test(
-      reviewActionV2Env.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN_SHA256 ?? "",
-    ) &&
-    /^[a-f0-9]{64}$/u.test(
-      reviewActionV2Env.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN_SHA256 ?? "",
-    ) &&
-    reviewActionV2Env.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN_SHA256 !==
-      reviewActionV2Env.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN_SHA256
-      ? {
-          service: new ReleaseRolloutLedgerService(
-            new PrismaReleaseRolloutLedgerRepository(prisma),
-          ),
-          tokenSha256:
-            reviewActionV2Env.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN_SHA256!,
-          witnessTokenSha256:
-            reviewActionV2Env.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN_SHA256!,
-        }
-      : undefined);
-  if (releaseRolloutLedgerDependencies)
-    await registerReleaseRolloutLedgerRoutes(
-      app,
-      releaseRolloutLedgerDependencies,
-    );
 
   const operatorReviewConfigDependencies =
     options.operatorReviewConfigDependencies ??

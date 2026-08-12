@@ -85,6 +85,8 @@
     "spike:distributed-lock:e2e": "tsx spikes/github-oidc/src/distributed-lock-e2e.ts",
     "spike:github-memory:e2e": "node scripts/run-github-memory-smoke.mjs",
     "api:start": "node --conditions=production apps/api/dist/server.js",
+    "release-control:start": "pnpm --filter @reviewrouter/api release-control:start",
+    "release-witness:start": "pnpm --filter @reviewrouter/api release-witness:start",
     "worker:start": "node --conditions=production apps/worker/dist/worker.js",
     "runtime:smoke": "node scripts/run-with-env.mjs node scripts/check-production-runtime.mjs",
     "action:build": "node scripts/build-codex-rotating-action.mjs",

@@ -6,7 +6,7 @@ import type {
 } from "./render-private-runner";
 import type { RenderFetch } from "./render-api";
 import type {
-  ActivationFence,
+  ActivationAuthorization,
   ActivationReceipt,
   AuthoritativeGenerationLedger,
   StepObservation,
@@ -206,7 +206,8 @@ export class AuthenticatedRunnerLedgerAdapter
     expectedReceiptSha256: string;
     nextReceiptSha256: string;
     authoritativeSystemIdentifier: string;
-    activationBoundary: "before" | "activated" | "uncertain";
+    expectedActivationBoundary: "before" | "activated" | "uncertain";
+    nextActivationBoundary: "before" | "activated" | "uncertain";
   }): Promise<boolean> {
     const value = (await this.request(
       `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/cas`,
@@ -263,7 +264,7 @@ export class AuthenticatedRunnerLedgerAdapter
       throw new Error("runner_ledger_target_switch_fence_invalid");
     return fence;
   }
-  async fenceActivation(input: {
+  async authorizeActivation(input: {
     rolloutId: string;
     expectedCommitSha: string;
     runId: string;
@@ -273,41 +274,43 @@ export class AuthenticatedRunnerLedgerAdapter
     targetSystemIdentifier: string;
     previousReceiptSha256: string;
     targetDeployIds: readonly string[];
-  }): Promise<ActivationFence | null> {
+    postgresMajor: 17;
+    migrationChecksum: string;
+  }): Promise<ActivationAuthorization> {
     const value = (await this.request(
-      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/activation-fence`,
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/activation-authorization`,
       { method: "POST", body: JSON.stringify(input) },
     )) as Record<string, unknown>;
-    if (value.changed === false) return null;
-    const fence = value.fence as ActivationFence | undefined;
+    const authorization = value.authorization as
+      | ActivationAuthorization
+      | undefined;
     if (
-      value.changed !== true ||
-      fence?.rolloutId !== input.rolloutId ||
-      fence.expectedCommitSha !== input.expectedCommitSha ||
-      fence.runId !== input.runId ||
-      fence.jobId !== input.jobId ||
-      fence.runAttempt !== input.runAttempt ||
-      fence.sourceSystemIdentifier !== input.sourceSystemIdentifier ||
-      fence.targetSystemIdentifier !== input.targetSystemIdentifier ||
-      fence.previousReceiptSha256 !== input.previousReceiptSha256 ||
-      fence.claimVersion < 1 ||
-      JSON.stringify(fence.targetDeployIds) !==
+      !authorization ||
+      authorization.rolloutId !== input.rolloutId ||
+      authorization.expectedCommitSha !== input.expectedCommitSha ||
+      authorization.postgresMajor !== input.postgresMajor ||
+      authorization.migrationChecksum !== input.migrationChecksum ||
+      authorization.sourceSystemIdentifier !== input.sourceSystemIdentifier ||
+      authorization.targetSystemIdentifier !== input.targetSystemIdentifier ||
+      authorization.previousReceiptSha256 !== input.previousReceiptSha256 ||
+      JSON.stringify(authorization.targetDeployIds) !==
         JSON.stringify(input.targetDeployIds) ||
-      !/^[a-f0-9]{32}$/u.test(fence.nonce) ||
-      !Number.isSafeInteger(fence.version) ||
-      fence.version < 1
+      !/^[a-f0-9]{32}$/u.test(authorization.nonce) ||
+      !Number.isSafeInteger(authorization.epoch) ||
+      authorization.epoch < 1 ||
+      Number.isNaN(Date.parse(authorization.authorizedAt))
     )
-      throw new Error("runner_ledger_activation_fence_invalid");
-    return fence;
+      throw new Error("runner_ledger_activation_authorization_invalid");
+    return authorization;
   }
   async finalizeActivation(input: {
-    fence: ActivationFence;
+    authorization: ActivationAuthorization;
     provider: StepObservation["provider"];
     nextReceiptSha256: string;
     activationReceipt: ActivationReceipt;
   }): Promise<boolean> {
     const value = (await this.request(
-      `/v1/rollouts/${encodeURIComponent(input.fence.rolloutId)}/activation-finalize`,
+      `/v1/rollouts/${encodeURIComponent(input.authorization.rolloutId)}/activation-finalize`,
       { method: "POST", body: JSON.stringify(input) },
     )) as Record<string, unknown>;
     if (typeof value.changed !== "boolean")

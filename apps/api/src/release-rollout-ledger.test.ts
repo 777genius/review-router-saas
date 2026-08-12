@@ -1,16 +1,20 @@
 import { createHash } from "node:crypto";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
-import type { ActivationFence } from "@reviewrouter/features-release-rollout";
+import type {
+  ActivationAuthorization,
+  ProviderAuthorityRequest,
+} from "@reviewrouter/features-release-rollout";
 import {
-  PrismaReleaseRolloutLedgerRepository,
   registerReleaseRolloutLedgerRoutes,
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
+  RunnerCleanupWitnessService,
   RunnerOperationsService,
   type ReleaseAuthorityLedgerPort,
   type ReleaseRolloutReconciliationPort,
   type RunnerOperationsLedgerPort,
+  type RunnerCleanupWitnessPort,
 } from "./release-rollout-ledger";
 
 const binding = {
@@ -24,13 +28,17 @@ const binding = {
 
 type CombinedLedgerPort = ReleaseAuthorityLedgerPort &
   RunnerOperationsLedgerPort &
+  RunnerCleanupWitnessPort &
   ReleaseRolloutReconciliationPort;
 
-class ConcurrentRepository implements CombinedLedgerPort {
+class ConcurrentRepository
+  implements CombinedLedgerPort, RunnerCleanupWitnessPort
+{
   private claimed: typeof binding | undefined;
   private receipt = `sha256:${"0".repeat(64)}`;
   private state: "before" | "uncertain" | "activated" = "before";
-  private fenceValue: ActivationFence | undefined;
+  private authorization: ActivationAuthorization | undefined;
+  private activationJobId: string | undefined;
   private targetSwitchFenced = false;
   private readonly intents = new Map<string, Record<string, unknown>>();
   providerWitness: Record<string, unknown> | undefined;
@@ -68,29 +76,51 @@ class ConcurrentRepository implements CombinedLedgerPort {
       schemaVersion: 1 as const,
       ...binding,
       previousReceiptSha256: input.previousReceiptSha256,
-      nonce: input.nonce,
+      nonce: "a".repeat(32),
       version: 1,
-      fencedAt: input.fencedAt.toISOString(),
+      fencedAt: "2026-08-12T00:00:00.000Z",
     };
   }
-  async fenceActivation(
-    input: Parameters<ReleaseAuthorityLedgerPort["fenceActivation"]>[0],
+  async authorizeActivation(
+    input: Parameters<ReleaseAuthorityLedgerPort["authorizeActivation"]>[0],
   ) {
+    if (this.authorization) {
+      if (
+        this.activationJobId !== input.jobId ||
+        this.authorization.previousReceiptSha256 !==
+          input.previousReceiptSha256 ||
+        this.authorization.expectedCommitSha !== input.expectedCommitSha ||
+        this.authorization.postgresMajor !== input.postgresMajor ||
+        this.authorization.migrationChecksum !== input.migrationChecksum ||
+        JSON.stringify(this.authorization.targetDeployIds) !==
+          JSON.stringify(input.targetDeployIds)
+      )
+        throw new Error("activation_replay_conflict");
+      return this.authorization;
+    }
     if (this.state !== "before" || input.previousReceiptSha256 !== this.receipt)
-      return null;
+      throw new Error("activation_state_conflict");
     this.state = "uncertain";
-    this.fenceValue = {
-      schemaVersion: 1,
-      ...binding,
-      jobId: input.jobId,
+    this.activationJobId = input.jobId;
+    this.authorization = {
+      rolloutId: input.rolloutId,
+      expectedCommitSha: input.expectedCommitSha,
+      postgresMajor: input.postgresMajor,
+      migrationChecksum: input.migrationChecksum,
+      epoch: 1,
+      nonce: "c".repeat(32),
+      sourceSystemIdentifier: input.sourceSystemIdentifier,
+      targetSystemIdentifier: input.targetSystemIdentifier,
       previousReceiptSha256: input.previousReceiptSha256,
-      nonce: input.nonce,
-      version: 1,
-      claimVersion: 1,
       targetDeployIds: input.targetDeployIds,
-      fencedAt: input.fencedAt.toISOString(),
+      authorizedAt: "2026-08-12T00:00:00.000Z",
     };
-    return this.fenceValue;
+    return this.authorization;
+  }
+  async authorityState() {
+    return this.state === "activated"
+      ? ("activated" as const)
+      : ("activation_authorized" as const);
   }
   async finalizeActivation() {
     if (this.state !== "uncertain") return false;
@@ -102,6 +132,14 @@ class ConcurrentRepository implements CombinedLedgerPort {
   }
   async verifyFinalAuthority() {
     return this.state === "activated";
+  }
+  async decideProviderOperation(input: ProviderAuthorityRequest) {
+    return {
+      ...input,
+      decision: "allow" as const,
+      decisionId: "00000000-0000-4000-8000-000000000001",
+      decidedAt: "2026-08-12T00:00:00.000Z",
+    };
   }
   async persistIntent(
     input: Parameters<RunnerOperationsLedgerPort["persistIntent"]>[0],
@@ -133,9 +171,7 @@ class ConcurrentRepository implements CombinedLedgerPort {
   }
   async persistProviderWitness(
     _jobId: string,
-    witness: Parameters<
-      RunnerOperationsLedgerPort["persistProviderWitness"]
-    >[1],
+    witness: Parameters<RunnerCleanupWitnessPort["persistProviderWitness"]>[1],
   ) {
     this.providerWitness = witness;
   }
@@ -157,93 +193,13 @@ const tokenSha256 = createHash("sha256").update(token).digest("hex");
 const services = (repository: CombinedLedgerPort) => ({
   authority: new ReleaseAuthorityService(repository),
   runnerOperations: new RunnerOperationsService(repository),
+  cleanupWitness: new RunnerCleanupWitnessService(repository),
   reconciliation: new ReleaseRolloutReconciliationService(repository),
   controlTokenSha256: tokenSha256,
   witnessTokenSha256: createHash("sha256").update("witness").digest("hex"),
 });
 
 describe("release rollout ledger internal API", () => {
-  it("builds final cleanup evidence only from the independent provider witness", async () => {
-    const repository = new PrismaReleaseRolloutLedgerRepository({
-      releaseRunnerJob: {
-        findUniqueOrThrow: () => ({
-          cleanupCanary: "rr-cleanup:rollout:runner",
-          cleanupObservation: {
-            facts: { forgedByCaller: true },
-          },
-          cleanupProviderWitness: {
-            jobId: "job-1",
-            canary: "rr-cleanup:rollout:runner",
-            providerStatus: "failed",
-            containerTerminated: true,
-            logSha256: `sha256:${"a".repeat(64)}`,
-            removedPaths: ["/runner/_work/rr-rollout-role"],
-            remainingPaths: [],
-            providerObservedAt: "2026-08-12T00:00:00.000Z",
-          },
-        }),
-      },
-    } as never);
-
-    expect(await repository.cleanupWitness("job-1")).toEqual({
-      providerStatus: "failed",
-      listenerStopped: true,
-      workspaceRemoved: true,
-      credentialProcessGone: true,
-      canary: "rr-cleanup:rollout:runner",
-      observedAt: "2026-08-12T00:00:00.000Z",
-      providerLogSha256: `sha256:${"a".repeat(64)}`,
-      removedPaths: ["/runner/_work/rr-rollout-role"],
-      remainingPaths: [],
-    });
-  });
-
-  it("appends receipts against the durable boundary on both sides of activation", async () => {
-    const boundaries: unknown[] = [];
-    const receiptBoundaries: unknown[] = [];
-    const transaction = {
-      releaseRolloutLedger: {
-        updateMany: (input: { where: Record<string, unknown> }) => {
-          boundaries.push(input.where.activationBoundary);
-          return { count: 1 };
-        },
-      },
-      releaseRolloutReceipt: {
-        create: (input: { data: Record<string, unknown> }) => {
-          receiptBoundaries.push(input.data.activationBoundary);
-          return input.data;
-        },
-      },
-    };
-    const repository = new PrismaReleaseRolloutLedgerRepository({
-      $transaction: (operation: (client: typeof transaction) => unknown) =>
-        operation(transaction),
-    } as never);
-
-    expect(
-      await repository.compareAndSet({
-        ...binding,
-        step: "freeze_provider_services",
-        expectedReceiptSha256: `sha256:${"0".repeat(64)}`,
-        nextReceiptSha256: `sha256:${"1".repeat(64)}`,
-        authoritativeSystemIdentifier: binding.sourceSystemIdentifier,
-        activationBoundary: "before",
-      }),
-    ).toBe(true);
-    expect(
-      await repository.compareAndSet({
-        ...binding,
-        step: "resume_target_services",
-        expectedReceiptSha256: `sha256:${"1".repeat(64)}`,
-        nextReceiptSha256: `sha256:${"2".repeat(64)}`,
-        authoritativeSystemIdentifier: binding.targetSystemIdentifier,
-        activationBoundary: "activated",
-      }),
-    ).toBe(true);
-    expect(boundaries).toEqual(["before", "activated"]);
-    expect(receiptBoundaries).toEqual(["before", "activated"]);
-  });
-
   it("authenticates internal callers and keeps claim idempotent", async () => {
     const app = Fastify();
     await registerReleaseRolloutLedgerRoutes(app, {
@@ -275,20 +231,36 @@ describe("release rollout ledger internal API", () => {
     await app.close();
   });
 
-  it("allows exactly one activation fence under adversarial concurrency", async () => {
+  it("replays one exact activation permit and denies conflicting concurrency", async () => {
     const service = new ReleaseAuthorityService(new ConcurrentRepository());
     await service.claim(binding);
-    const results = await Promise.all(
+    const results = await Promise.allSettled(
       Array.from({ length: 64 }, (_, index) =>
-        service.fence({
+        service.authorizeActivation({
           ...binding,
-          jobId: String(1000 + index),
+          jobId: index === 0 ? "1000" : String(1000 + index),
           previousReceiptSha256: `sha256:${"0".repeat(64)}`,
           targetDeployIds: ["dep-target"],
+          postgresMajor: 17,
+          migrationChecksum: `sha256:${"7".repeat(64)}`,
         }),
       ),
     );
-    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(63);
+    const exactReplay = await service.authorizeActivation({
+      ...binding,
+      jobId: "1000",
+      previousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      targetDeployIds: ["dep-target"],
+      postgresMajor: 17,
+      migrationChecksum: `sha256:${"7".repeat(64)}`,
+    });
+    expect(exactReplay.epoch).toBe(1);
     expect(await service.state(binding)).toBe("uncertain");
   });
 

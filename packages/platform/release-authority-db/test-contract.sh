@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../../.." && pwd)
+name="rr-release-authority-pg17-$$"
+docker run -d --rm --name "$name" -e POSTGRES_PASSWORD=test postgres:17-alpine >/dev/null
+trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+
+for _ in $(seq 1 60); do
+  if docker exec "$name" pg_isready -U postgres >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'provider'; CREATE ROLE reviewrouter_release_witness LOGIN PASSWORD 'witness';"
+docker cp "$root/packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql" \
+  "$name:/tmp/migration.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration.sql >/dev/null
+
+first=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r1', repeat('a',40), '1', 1, '100', '200')")
+duplicate=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r1', repeat('a',40), '1', 1, '100', '200')")
+authorization=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', 'sha256:'||repeat('0',64), '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
+replay=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', 'sha256:'||repeat('0',64), '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
+state=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT state||':'||activation_epoch||':'||source_permanently_ineligible FROM release_authority.rollout WHERE rollout_id='r1'")
+
+test "$first" = claimed
+test "$duplicate" = duplicate
+test "$authorization" = "$replay"
+test "$state" = activation_authorized:1:true
+
+finalized=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_finalize_activation(
+    jsonb_build_object('rolloutId','r1','expectedCommitSha',expected_commit_sha,
+      'postgresMajor',activation_postgres_major,'migrationChecksum',activation_migration_checksum,
+      'epoch',activation_epoch,'nonce',activation_permit_nonce,
+      'sourceSystemIdentifier','100','targetSystemIdentifier','200',
+      'previousReceiptSha256',activation_previous_receipt_sha256,'targetDeployIds',activation_target_deploy_ids),
+    '{\"deploy\":\"dep\"}', 'sha256:'||repeat('1',64),
+    jsonb_build_object('permitEpoch',activation_epoch,'permitNonce',activation_permit_nonce,
+      'previousReceiptSha256',activation_previous_receipt_sha256,'targetDeployIds',activation_target_deploy_ids))
+   FROM release_authority.rollout WHERE rollout_id='r1'")
+finalize_replay=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_finalize_activation(
+    jsonb_build_object('rolloutId','r1','expectedCommitSha',expected_commit_sha,
+      'postgresMajor',activation_postgres_major,'migrationChecksum',activation_migration_checksum,
+      'epoch',activation_epoch,'nonce',activation_permit_nonce,
+      'sourceSystemIdentifier','100','targetSystemIdentifier','200',
+      'previousReceiptSha256',activation_previous_receipt_sha256,'targetDeployIds',activation_target_deploy_ids),
+    '{\"deploy\":\"dep\"}', 'sha256:'||repeat('1',64), activation_receipt)
+   FROM release_authority.rollout WHERE rollout_id='r1'")
+authorization_after_finalize=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', 'sha256:'||repeat('0',64), '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
+test "$finalized" = t
+test "$finalize_replay" = t
+test "$authorization_after_finalize" = "$authorization"
+
+conflicting_finalize=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_finalize_activation(
+    jsonb_build_object('rolloutId','r1','expectedCommitSha',expected_commit_sha,
+      'postgresMajor',activation_postgres_major,'migrationChecksum',activation_migration_checksum,
+      'epoch',activation_epoch,'nonce',repeat('f',32),
+      'sourceSystemIdentifier','100','targetSystemIdentifier','200',
+      'previousReceiptSha256',activation_previous_receipt_sha256,'targetDeployIds',activation_target_deploy_ids),
+    '{\"deploy\":\"dep\"}', 'sha256:'||repeat('1',64), activation_receipt)
+   FROM release_authority.rollout WHERE rollout_id='r1'")
+test "$conflicting_finalize" = f
+
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '10', 'sha256:'||repeat('0',64), '[\"dep\"]', 17, 'sha256:'||repeat('7',64))" >/dev/null 2>&1; then
+  echo "conflicting authorization replay unexpectedly succeeded" >&2
+  exit 1
+fi
+
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', 'sha256:'||repeat('0',64), '[\"dep\"]', 17, 'sha256:'||repeat('8',64))" >/dev/null 2>&1; then
+  echo "conflicting migration checksum replay unexpectedly succeeded" >&2
+  exit 1
+fi
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r2', repeat('b',40), '2', 1, '101', '201')" >/dev/null
+deploy_request='{"rolloutId":"r2","operation":"deploy_target","sourceSystemIdentifier":"101","targetSystemIdentifier":"201","expectedReceiptSha256":"sha256:'$(printf '0%.0s' $(seq 1 64))'","activationBoundary":"before"}'
+decision=$(docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
+  "SELECT release_authority.release_provider_authority_decide('$deploy_request')")
+decision_replay=$(docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
+  "SELECT release_authority.release_provider_authority_decide('$deploy_request')")
+test "$decision" = "$decision_replay"
+if docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
+  "SELECT release_authority.release_provider_authority_decide(jsonb_set('$deploy_request','{expectedReceiptSha256}','\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"'))" >/dev/null 2>&1; then
+  echo "conflicting provider decision replay unexpectedly succeeded" >&2
+  exit 1
+fi
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r3', repeat('c',40), '3', 1, '102', '202');
+   SELECT release_authority.release_rollout_append_receipt('r3',repeat('c',40),'3',1,'102','202',
+    'begin_compensation','sha256:'||repeat('0',64),'sha256:'||repeat('2',64),'102','before','before',NULL)" >/dev/null
+resume_source_request='{"rolloutId":"r3","operation":"resume_source","sourceSystemIdentifier":"102","targetSystemIdentifier":"202","expectedReceiptSha256":"sha256:'$(printf '2%.0s' $(seq 1 64))'","activationBoundary":"before"}'
+docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
+  "SELECT release_authority.release_provider_authority_decide('$resume_source_request')" >/dev/null
+
+now=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "INSERT INTO release_authority.runner_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at)
+   VALUES ('rri-'||repeat('3',64),'r3','svc','role','30','rr-test','$now');
+   INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,lifecycle,terminal_at)
+   VALUES ('job-clean','r3','rri-'||repeat('3',64),'svc','$now','canary','role','$now');" >/dev/null
+if docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"failed\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/../secret\"],\"remainingPaths\":[],\"providerLogId\":\"log-1\",\"providerObservedAt\":\"$now\"}')" >/dev/null 2>&1; then
+  echo "unsafe cleanup witness unexpectedly succeeded" >&2
+  exit 1
+fi
+cleanup_saved=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"succeeded\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/repo\"],\"remainingPaths\":[],\"providerLogId\":\"log-1\",\"providerObservedAt\":\"$now\"}')")
+test "$cleanup_saved" = t
+
+control_acl=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.observe_state('r1','100','200')")
+test "$control_acl" = activated
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT count(*) FROM release_authority.rollout" >/dev/null 2>&1; then
+  echo "control role unexpectedly has direct table access" >&2
+  exit 1
+fi
+for role_and_password in "reviewrouter_release_control:control" "reviewrouter_provider_authority:provider" "reviewrouter_release_witness:witness"; do
+  role=${role_and_password%%:*}
+  password=${role_and_password#*:}
+  if docker exec -e PGPASSWORD="$password" "$name" psql -v ON_ERROR_STOP=1 -U "$role" -d postgres -Atc \
+    "SELECT count(*) FROM release_authority.provider_authority_decision" >/dev/null 2>&1; then
+    echo "$role unexpectedly has direct decision table access" >&2
+    exit 1
+  fi
+done
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_provider_authority_decide('$deploy_request')" >/dev/null 2>&1; then
+  echo "control credential unexpectedly has provider authority execution" >&2
+  exit 1
+fi
+if docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
+  "SELECT release_authority.observe_state('r1','100','200')" >/dev/null 2>&1; then
+  echo "provider credential unexpectedly has control execution" >&2
+  exit 1
+fi
+
+echo "release authority PG17 contract passed"

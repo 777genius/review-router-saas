@@ -1,6 +1,5 @@
 import type {
   AuthoritativeGenerationLedger,
-  ActivationFence,
   DatabaseGenerationIdentity,
   ReleaseRollout,
   RunnerIdentity,
@@ -10,7 +9,46 @@ import type {
 
 export interface ProviderControlPort {
   freezeAndObserve(): Promise<StepObservation>;
-  compensateAndObserve(): Promise<StepObservation>;
+  compensateAndObserve(input: {
+    decision: ProviderAuthorityDecision;
+    databaseWitness: DatabaseAclWitness;
+  }): Promise<ProviderStateWitness>;
+}
+
+export const ProviderAuthorityOperation = Object.freeze({
+  DeployTarget: "deploy_target",
+  ResumeTarget: "resume_target",
+  ResumeSource: "resume_source",
+} as const);
+export type ProviderAuthorityOperation =
+  (typeof ProviderAuthorityOperation)[keyof typeof ProviderAuthorityOperation];
+export interface ProviderAuthorityRequest {
+  readonly rolloutId: string;
+  readonly operation: ProviderAuthorityOperation;
+  readonly sourceSystemIdentifier: string;
+  readonly targetSystemIdentifier: string;
+  readonly expectedReceiptSha256: string;
+  readonly activationBoundary: "before" | "activated";
+}
+export interface ProviderAuthorityDecision extends ProviderAuthorityRequest {
+  readonly decision: "allow";
+  readonly decisionId: string;
+  readonly decidedAt: string;
+}
+export interface ProviderAuthorityDecisionPort {
+  decide(input: ProviderAuthorityRequest): Promise<ProviderAuthorityDecision>;
+}
+export interface DatabaseAclWitness {
+  readonly systemIdentifier: string;
+  readonly aclSha256: string;
+  readonly observedAt: string;
+  readonly sourceWritesRestored: true;
+}
+export interface ProviderStateWitness {
+  readonly serviceIds: readonly string[];
+  readonly deployIds: readonly string[];
+  readonly observedAt: string;
+  readonly resumed: true;
 }
 
 export interface ReleasePreflightPort {
@@ -43,19 +81,20 @@ export interface DatabaseRolloutPort {
   runReleaseMigration(
     target: DatabaseGenerationIdentity,
   ): Promise<StepObservation>;
-  activate(
-    source: DatabaseGenerationIdentity,
-    target: DatabaseGenerationIdentity,
-    fence: ActivationFence,
-  ): Promise<StepObservation>;
+  activate(rolloutId: string): Promise<StepObservation>;
   compensateSource(
     source: DatabaseGenerationIdentity,
-  ): Promise<StepObservation>;
+  ): Promise<DatabaseAclWitness>;
 }
 
 export interface TargetServicesPort {
-  stageTarget(fence: TargetSwitchFence): Promise<StepObservation>;
-  resumeDeployAndObserve(): Promise<StepObservation>;
+  stageTarget(
+    fence: TargetSwitchFence,
+    decision: ProviderAuthorityDecision,
+  ): Promise<StepObservation>;
+  resumeDeployAndObserve(
+    decision: ProviderAuthorityDecision,
+  ): Promise<StepObservation>;
   verifyLiveCanary(): Promise<StepObservation>;
 }
 

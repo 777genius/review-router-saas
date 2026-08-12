@@ -6,6 +6,7 @@ import {
   type StepObservation,
 } from "../domain/release-rollout";
 import { ReleaseRolloutUseCases } from "./use-cases";
+import { ProviderAuthorityOperation } from "./ports";
 
 const rollout = createReleaseRollout({
   rolloutId: "rollout-app-test",
@@ -49,8 +50,24 @@ const stagedRollout = {
   phase: RolloutPhase.TargetStaged,
   receipts: [
     {
+      step: RolloutStep.RunReleaseMigration,
+      receiptId: `${rollout.rolloutId}:run_release_migration:1`,
+      observedAt: "2026-08-12T00:00:00.000Z",
+      rolloutId: rollout.rolloutId,
+      expectedCommitSha: rollout.expectedCommitSha,
+      runId: rollout.execution.runId,
+      runAttempt: 1,
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      targetSystemIdentifier: rollout.target.systemIdentifier,
+      provider: undefined,
+      observationSha256: `sha256:${"0".repeat(64)}`,
+      previousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      receiptSha256: `sha256:${"1".repeat(64)}`,
+      migrationChecksum: `sha256:${"7".repeat(64)}`,
+    },
+    {
       step: RolloutStep.StageTargetServices,
-      receiptId: `${rollout.rolloutId}:stage_target_services:1`,
+      receiptId: `${rollout.rolloutId}:stage_target_services:2`,
       observedAt: "2026-08-12T00:00:00.000Z",
       rolloutId: rollout.rolloutId,
       expectedCommitSha: rollout.expectedCommitSha,
@@ -60,7 +77,7 @@ const stagedRollout = {
       targetSystemIdentifier: rollout.target.systemIdentifier,
       provider: { renderDeployIds: ["dep-target"] },
       observationSha256: `sha256:${"1".repeat(64)}`,
-      previousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      previousReceiptSha256: `sha256:${"1".repeat(64)}`,
       receiptSha256: `sha256:${"2".repeat(64)}`,
     },
   ],
@@ -78,13 +95,22 @@ const activationObservation: StepObservation = {
     firstWriteReceiptSha256: `sha256:${"5".repeat(64)}`,
     observationSha256: `sha256:${"6".repeat(64)}`,
     transactionId: "42",
-    fenceNonce: "a".repeat(32),
-    fenceVersion: 1,
-    claimVersion: 1,
+    postgresMajor: 17,
+    migrationChecksum: `sha256:${"7".repeat(64)}`,
+    permitEpoch: 1,
+    permitNonce: "a".repeat(32),
     targetDeployIds: ["dep-target"],
   },
 };
 const basePorts = () => ({
+  authority: {
+    decide: vi.fn().mockImplementation(async (input) => ({
+      ...input,
+      decision: "allow",
+      decisionId: "decision-1",
+      decidedAt: "2026-08-12T00:00:00.000Z",
+    })),
+  },
   preflight: { observeProtectedEnvironment: vi.fn() },
   provider: { freezeAndObserve: vi.fn(), compensateAndObserve: vi.fn() },
   runner: {
@@ -106,21 +132,18 @@ const basePorts = () => ({
       version: 1,
       fencedAt: "2026-08-12T00:00:00.000Z",
     })),
-    fenceActivation: vi.fn().mockResolvedValue({
-      schemaVersion: 1,
+    authorizeActivation: vi.fn().mockResolvedValue({
       rolloutId: rollout.rolloutId,
       expectedCommitSha: rollout.expectedCommitSha,
-      runId: rollout.execution.runId,
-      jobId: "44",
-      runAttempt: 1,
+      postgresMajor: 17,
+      migrationChecksum: "sha256:" + "7".repeat(64),
+      epoch: 1,
+      nonce: "a".repeat(32),
       sourceSystemIdentifier: rollout.source.systemIdentifier,
       targetSystemIdentifier: rollout.target.systemIdentifier,
-      previousReceiptSha256: stagedRollout.receipts[0].receiptSha256,
-      nonce: "a".repeat(32),
-      version: 1,
-      claimVersion: 1,
+      previousReceiptSha256: `sha256:${"2".repeat(64)}`,
       targetDeployIds: ["dep-target"],
-      fencedAt: "2026-08-12T00:00:00.000Z",
+      authorizedAt: "2026-08-12T00:00:00.000Z",
     }),
     finalizeActivation: vi.fn().mockResolvedValue(true),
     observeActivationState: vi.fn().mockResolvedValue("before"),
@@ -220,9 +243,18 @@ describe("release rollout application boundary", () => {
     });
   });
 
-  it("does not enter the activation transaction when the durable fence CAS fails", async () => {
+  it("does not install or activate when authorization identity mismatches", async () => {
     const ports = basePorts();
-    ports.ledger.fenceActivation.mockResolvedValue(null);
+    ports.ledger.authorizeActivation.mockResolvedValue({
+      rolloutId: "wrong-rollout",
+      epoch: 1,
+      nonce: "a".repeat(32),
+      sourceSystemIdentifier: "1",
+      targetSystemIdentifier: "2",
+      previousReceiptSha256: `sha256:${"2".repeat(64)}`,
+      targetDeployIds: ["dep-target"],
+      authorizedAt: "2026-08-12T00:00:00.000Z",
+    });
     const activate = vi.fn();
     ports.database = { activate } as never;
     await expect(
@@ -230,7 +262,26 @@ describe("release rollout application boundary", () => {
         stagedRollout,
         "44",
       ),
-    ).rejects.toThrow("activation_fence_cas_failed");
+    ).rejects.toThrow("activation_authorization_identity_mismatch");
+    expect(activate).not.toHaveBeenCalled();
+    expect(ports.ledger.markActivationUncertain).not.toHaveBeenCalled();
+  });
+
+  it("does not activate before Release Control confirms permit installation", async () => {
+    const ports = basePorts();
+    const activate = vi.fn();
+    ports.database = { activate } as never;
+    ports.ledger.authorizeActivation.mockRejectedValue(
+      new Error("runner_ledger_request_failed:504"),
+    );
+
+    await expect(
+      new ReleaseRolloutUseCases(ports).activateTargetGeneration(
+        stagedRollout,
+        "44",
+      ),
+    ).rejects.toThrow("runner_ledger_request_failed:504");
+
     expect(activate).not.toHaveBeenCalled();
     expect(ports.ledger.markActivationUncertain).not.toHaveBeenCalled();
   });
@@ -266,7 +317,7 @@ describe("release rollout application boundary", () => {
     expect(ports.ledger.markActivationUncertain).toHaveBeenCalledOnce();
   });
 
-  it("finalizes activated authority only with the receipt bound to the same fence", async () => {
+  it("finalizes activated authority with the target permit receipt", async () => {
     const ports = basePorts();
     ports.database = {
       activate: vi.fn().mockResolvedValue(activationObservation),
@@ -276,10 +327,62 @@ describe("release rollout application boundary", () => {
     ).activateTargetGeneration(stagedRollout, "44");
     expect(activated.phase).toBe(RolloutPhase.TargetActivated);
     expect(activated.activationReceipt).toMatchObject({
-      fenceNonce: "a".repeat(32),
-      fenceVersion: 1,
+      permitNonce: "a".repeat(32),
+      permitEpoch: 1,
     });
     expect(ports.ledger.finalizeActivation).toHaveBeenCalledOnce();
     expect(ports.ledger.markActivationUncertain).not.toHaveBeenCalled();
+  });
+
+  it("denies provider resume before any effect when authority is absent or mismatched", async () => {
+    const ports = basePorts();
+    const resume = vi.fn();
+    ports.services = { resumeDeployAndObserve: resume } as never;
+    ports.authority.decide.mockRejectedValue(new Error("outage"));
+    await expect(
+      new ReleaseRolloutUseCases(ports).resumeTargetServices({
+        ...stagedRollout,
+        phase: RolloutPhase.CutoverRunnerCleaned,
+        activated: true,
+        sourcePermanentlyIneligible: true,
+        activationReceipt: {} as never,
+      }),
+    ).rejects.toThrow("provider_authority_unavailable_or_denied");
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it("passes an activated receipt-bound decision to target resume", async () => {
+    const ports = basePorts();
+    const resumedRollout = {
+      ...stagedRollout,
+      phase: RolloutPhase.CutoverRunnerCleaned,
+      activated: true,
+      sourcePermanentlyIneligible: true,
+      activationReceipt: {} as never,
+    };
+    ports.services = {
+      resumeDeployAndObserve: vi.fn().mockResolvedValue({
+        step: RolloutStep.ResumeTargetServices,
+        observedAt: "2026-08-12T00:00:02.000Z",
+        facts: [
+          { serviceId: "srv-target", deployId: "dep-target", resumed: true },
+        ],
+        provider: {
+          renderServiceIds: ["srv-target"],
+          renderDeployIds: ["dep-target"],
+        },
+      }),
+    } as never;
+    await new ReleaseRolloutUseCases(ports).resumeTargetServices(
+      resumedRollout,
+    );
+    expect(ports.authority.decide).toHaveBeenCalledWith({
+      rolloutId: rollout.rolloutId,
+      operation: ProviderAuthorityOperation.ResumeTarget,
+      sourceSystemIdentifier: "1",
+      targetSystemIdentifier: "2",
+      expectedReceiptSha256: stagedRollout.receipts.at(-1)!.receiptSha256,
+      activationBoundary: "activated",
+    });
   });
 });

@@ -1,12 +1,4 @@
-import { randomBytes } from "node:crypto";
-import type {
-  ActivationFence,
-  ActivationReceipt,
-  AuthoritativeGenerationLedger,
-  RolloutStep,
-  StepObservation,
-  TargetSwitchFence,
-} from "../domain/release-rollout";
+import type { StepObservation } from "../domain/release-rollout";
 import type { RunnerIdentity } from "../domain/release-rollout";
 import type {
   PersistedRunnerJob,
@@ -17,9 +9,7 @@ import { decomposePostgresConnection } from "./postgres-generation";
 import type { CommandExecutor } from "./process-command";
 
 const literal = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-export class PostgreSqlRolloutLedgerAdapter
-  implements AuthoritativeGenerationLedger, RunnerJobLedger
-{
+export class PostgreSqlRolloutLedgerAdapter implements RunnerJobLedger {
   constructor(
     private readonly databaseUrl: string,
     private readonly commands: CommandExecutor,
@@ -46,123 +36,6 @@ export class PostgreSqlRolloutLedgerAdapter
     } finally {
       connection.cleanup();
     }
-  }
-  async claim(input: {
-    rolloutId: string;
-    expectedCommitSha: string;
-    runId: string;
-    runAttempt: number;
-    sourceSystemIdentifier: string;
-    targetSystemIdentifier: string;
-  }): Promise<"claimed" | "duplicate"> {
-    const result = this.sql(
-      `INSERT INTO reviewrouter_bootstrap.release_rollout_ledger(rollout_id,expected_commit_sha,run_id,run_attempt,source_system_identifier,target_system_identifier,authoritative_system_identifier,activation_boundary,last_receipt_sha256) VALUES (${literal(input.rolloutId)},${literal(input.expectedCommitSha)},${literal(input.runId)},${input.runAttempt},${literal(input.sourceSystemIdentifier)},${literal(input.targetSystemIdentifier)},${literal(input.sourceSystemIdentifier)},'before','sha256:${"0".repeat(64)}') ON CONFLICT (rollout_id) DO NOTHING RETURNING rollout_id`,
-    );
-    return result === input.rolloutId ? "claimed" : "duplicate";
-  }
-  async compareAndSet(input: {
-    rolloutId: string;
-    expectedCommitSha: string;
-    runId: string;
-    runAttempt: number;
-    sourceSystemIdentifier: string;
-    targetSystemIdentifier: string;
-    step: RolloutStep;
-    provider: StepObservation["provider"];
-    expectedReceiptSha256: string;
-    nextReceiptSha256: string;
-    authoritativeSystemIdentifier: string;
-    activationBoundary: "before" | "activated" | "uncertain";
-  }): Promise<boolean> {
-    const result = this.sql(
-      `WITH changed AS (UPDATE reviewrouter_bootstrap.release_rollout_ledger SET last_receipt_sha256=${literal(input.nextReceiptSha256)}, authoritative_system_identifier=${literal(input.authoritativeSystemIdentifier)}, activation_boundary=${literal(input.activationBoundary)}, source_permanently_ineligible=(source_permanently_ineligible OR ${input.activationBoundary === "before" ? "false" : "true"}) WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} AND last_receipt_sha256=${literal(input.expectedReceiptSha256)} ${input.step === "stage_target_services" ? `AND target_switch_nonce=${literal(String(input.provider?.targetSwitchFenceNonce))} AND target_switch_version=${Number(input.provider?.targetSwitchFenceVersion)}` : ""} AND NOT (source_permanently_ineligible AND ${literal(input.authoritativeSystemIdentifier)}=source_system_identifier) RETURNING rollout_id) INSERT INTO reviewrouter_bootstrap.release_rollout_receipt_ledger(rollout_id,expected_commit_sha,run_id,run_attempt,source_system_identifier,target_system_identifier,step,provider_binding,previous_receipt_sha256,receipt_sha256,activation_boundary) SELECT rollout_id,${literal(input.expectedCommitSha)},${literal(input.runId)},${input.runAttempt},${literal(input.sourceSystemIdentifier)},${literal(input.targetSystemIdentifier)},${literal(input.step)},${literal(JSON.stringify(input.provider ?? null))}::jsonb,${literal(input.expectedReceiptSha256)},${literal(input.nextReceiptSha256)},${literal(input.activationBoundary)} FROM changed RETURNING rollout_id`,
-    );
-    return result === input.rolloutId;
-  }
-  async markActivationUncertain(input: {
-    rolloutId: string;
-    expectedCommitSha: string;
-    runId: string;
-    runAttempt: number;
-    sourceSystemIdentifier: string;
-    targetSystemIdentifier: string;
-  }): Promise<void> {
-    const result = this.sql(
-      `UPDATE reviewrouter_bootstrap.release_rollout_ledger SET authoritative_system_identifier=target_system_identifier, activation_boundary='uncertain', source_permanently_ineligible=true WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} RETURNING rollout_id`,
-    );
-    if (result !== input.rolloutId)
-      throw new Error("activation_uncertain_ledger_binding_mismatch");
-  }
-  async fenceTargetSwitch(input: {
-    rolloutId: string;
-    expectedCommitSha: string;
-    runId: string;
-    runAttempt: number;
-    sourceSystemIdentifier: string;
-    targetSystemIdentifier: string;
-    previousReceiptSha256: string;
-  }): Promise<TargetSwitchFence | null> {
-    const nonce = randomBytes(16).toString("hex");
-    const value = this.sql(
-      `UPDATE reviewrouter_bootstrap.release_rollout_ledger SET target_switch_nonce=${literal(nonce)}, target_switch_version=target_switch_version+1, target_switch_fenced_at=clock_timestamp() WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} AND last_receipt_sha256=${literal(input.previousReceiptSha256)} AND activation_boundary='before' AND target_switch_nonce IS NULL RETURNING json_build_object('schemaVersion',1,'rolloutId',rollout_id,'expectedCommitSha',expected_commit_sha,'runId',run_id,'runAttempt',run_attempt,'sourceSystemIdentifier',source_system_identifier,'targetSystemIdentifier',target_system_identifier,'previousReceiptSha256',last_receipt_sha256,'nonce',target_switch_nonce,'version',target_switch_version,'fencedAt',to_char(target_switch_fenced_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))::text`,
-    );
-    return value ? (JSON.parse(value) as TargetSwitchFence) : null;
-  }
-  async fenceActivation(input: {
-    rolloutId: string;
-    expectedCommitSha: string;
-    runId: string;
-    jobId: string;
-    runAttempt: number;
-    sourceSystemIdentifier: string;
-    targetSystemIdentifier: string;
-    previousReceiptSha256: string;
-    targetDeployIds: readonly string[];
-  }): Promise<ActivationFence | null> {
-    const nonce = randomBytes(16).toString("hex");
-    const value = this.sql(
-      `UPDATE reviewrouter_bootstrap.release_rollout_ledger SET authoritative_system_identifier=target_system_identifier, activation_boundary='uncertain', source_permanently_ineligible=true, activation_fence_nonce=${literal(nonce)}, activation_fence_version=activation_fence_version+1, activation_job_id=${literal(input.jobId)}, activation_target_deploy_ids=${literal(JSON.stringify(input.targetDeployIds))}::jsonb, activation_fenced_at=clock_timestamp() WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} AND last_receipt_sha256=${literal(input.previousReceiptSha256)} AND activation_boundary='before' AND activation_fence_nonce IS NULL RETURNING json_build_object('schemaVersion',1,'rolloutId',rollout_id,'expectedCommitSha',expected_commit_sha,'runId',run_id,'jobId',activation_job_id,'runAttempt',run_attempt,'sourceSystemIdentifier',source_system_identifier,'targetSystemIdentifier',target_system_identifier,'previousReceiptSha256',last_receipt_sha256,'nonce',activation_fence_nonce,'version',activation_fence_version,'claimVersion',claim_version,'targetDeployIds',activation_target_deploy_ids,'fencedAt',to_char(activation_fenced_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))::text`,
-    );
-    return value ? (JSON.parse(value) as ActivationFence) : null;
-  }
-  async finalizeActivation(input: {
-    fence: ActivationFence;
-    provider: StepObservation["provider"];
-    nextReceiptSha256: string;
-    activationReceipt: ActivationReceipt;
-  }): Promise<boolean> {
-    const result = this.sql(
-      `WITH changed AS (UPDATE reviewrouter_bootstrap.release_rollout_ledger SET activation_boundary='activated', last_receipt_sha256=${literal(input.nextReceiptSha256)}, activation_receipt=${literal(JSON.stringify(input.activationReceipt))}::jsonb WHERE rollout_id=${literal(input.fence.rolloutId)} AND expected_commit_sha=${literal(input.fence.expectedCommitSha)} AND run_id=${literal(input.fence.runId)} AND run_attempt=${input.fence.runAttempt} AND source_system_identifier=${literal(input.fence.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.fence.targetSystemIdentifier)} AND activation_boundary='uncertain' AND source_permanently_ineligible=true AND last_receipt_sha256=${literal(input.fence.previousReceiptSha256)} AND activation_fence_nonce=${literal(input.fence.nonce)} AND activation_fence_version=${input.fence.version} AND activation_job_id=${literal(input.fence.jobId)} RETURNING rollout_id) INSERT INTO reviewrouter_bootstrap.release_rollout_receipt_ledger(rollout_id,expected_commit_sha,run_id,run_attempt,source_system_identifier,target_system_identifier,step,provider_binding,previous_receipt_sha256,receipt_sha256,activation_boundary) SELECT rollout_id,${literal(input.fence.expectedCommitSha)},${literal(input.fence.runId)},${input.fence.runAttempt},${literal(input.fence.sourceSystemIdentifier)},${literal(input.fence.targetSystemIdentifier)},'activate_target_generation',${literal(JSON.stringify(input.provider ?? null))}::jsonb,${literal(input.fence.previousReceiptSha256)},${literal(input.nextReceiptSha256)},'activated' FROM changed RETURNING rollout_id`,
-    );
-    return result === input.fence.rolloutId;
-  }
-  async observeActivationState(input: {
-    rolloutId: string;
-    sourceSystemIdentifier: string;
-    targetSystemIdentifier: string;
-  }): Promise<"before" | "uncertain" | "activated"> {
-    const result = this.sql(
-      `SELECT activation_boundary FROM reviewrouter_bootstrap.release_rollout_ledger WHERE rollout_id=${literal(input.rolloutId)} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)}`,
-    );
-    if (!["before", "uncertain", "activated"].includes(result))
-      throw new Error("activation_state_binding_mismatch");
-    return result as "before" | "uncertain" | "activated";
-  }
-  async verifyFinalAuthority(input: {
-    rolloutId: string;
-    expectedCommitSha: string;
-    runId: string;
-    runAttempt: number;
-    sourceSystemIdentifier: string;
-    targetSystemIdentifier: string;
-    expectedReceiptSha256: string;
-    activationReceipt: ActivationReceipt;
-  }): Promise<boolean> {
-    return (
-      this.sql(
-        `SELECT rollout_id FROM reviewrouter_bootstrap.release_rollout_ledger WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} AND activation_boundary='activated' AND source_permanently_ineligible=true AND authoritative_system_identifier=target_system_identifier AND last_receipt_sha256=${literal(input.expectedReceiptSha256)} AND activation_receipt=${literal(JSON.stringify(input.activationReceipt))}::jsonb`,
-      ) === input.rolloutId
-    );
   }
   async persistCreatedJob(value: PersistedRunnerJob): Promise<void> {
     const result = this.sql(

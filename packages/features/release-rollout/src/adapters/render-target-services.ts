@@ -5,6 +5,10 @@ import {
   type TargetSwitchFence,
 } from "../domain/release-rollout";
 import { RenderApiAdapter, type RenderFetch } from "./render-api";
+import {
+  ProviderAuthorityOperation,
+  type ProviderAuthorityDecision,
+} from "../application/ports";
 
 export type TargetServiceExpectation = {
   readonly serviceId: string;
@@ -39,6 +43,7 @@ export class RenderTargetServicesAdapter {
     releaseCommitSha: string;
     services: readonly TargetServiceExpectation[];
     fence: TargetSwitchFence;
+    decision: ProviderAuthorityDecision;
   }): Promise<StepObservation> {
     if (
       !input.apiKey ||
@@ -49,7 +54,17 @@ export class RenderTargetServicesAdapter {
       input.fence.targetSystemIdentifier !== input.targetSystemIdentifier ||
       !/^[a-f0-9]{32}$/u.test(input.fence.nonce) ||
       input.fence.version < 1 ||
-      !input.services.length
+      !input.services.length ||
+      input.decision.decision !== "allow" ||
+      input.decision.operation !== ProviderAuthorityOperation.DeployTarget ||
+      input.decision.rolloutId !== input.fence.rolloutId ||
+      input.decision.sourceSystemIdentifier !==
+        input.fence.sourceSystemIdentifier ||
+      input.decision.targetSystemIdentifier !==
+        input.fence.targetSystemIdentifier ||
+      input.decision.expectedReceiptSha256 !==
+        input.fence.previousReceiptSha256 ||
+      input.decision.activationBoundary !== "before"
     )
       throw new Error("render_target_stage_context_invalid");
     const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
@@ -167,7 +182,23 @@ export class RenderTargetServicesAdapter {
   async resumeDeployAndObserve(input: {
     apiKey: string;
     services: readonly TargetServiceExpectation[];
+    rolloutId: string;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    expectedReceiptSha256: string;
+    decision: ProviderAuthorityDecision;
   }): Promise<StepObservation> {
+    if (
+      !input.services.length ||
+      input.decision.decision !== "allow" ||
+      input.decision.operation !== ProviderAuthorityOperation.ResumeTarget ||
+      input.decision.rolloutId !== input.rolloutId ||
+      input.decision.sourceSystemIdentifier !== input.sourceSystemIdentifier ||
+      input.decision.targetSystemIdentifier !== input.targetSystemIdentifier ||
+      input.decision.expectedReceiptSha256 !== input.expectedReceiptSha256 ||
+      input.decision.activationBoundary !== "activated"
+    )
+      throw new Error("render_target_resume_authority_invalid");
     const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
     const facts = [];
     for (const expected of input.services) {
@@ -200,6 +231,7 @@ export class RenderTargetServicesAdapter {
         serviceId: expected.serviceId,
         deployId: latest.id,
         resumed: true,
+        authorityDecisionId: input.decision.decisionId,
       });
     }
     return {

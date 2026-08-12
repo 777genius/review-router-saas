@@ -244,6 +244,7 @@ const observe = (step: (typeof steps)[number], index: number) => {
           status: "succeeded",
           commit: "d".repeat(40),
           imageDigest: digest,
+          migrationChecksum: digest,
           roles: [1, 2, 3, 4],
         },
       };
@@ -278,6 +279,7 @@ const observe = (step: (typeof steps)[number], index: number) => {
           aclGateState: "closed",
           commit: "d".repeat(40),
           imageDigest: digest,
+          migrationChecksum: digest,
           roles: [1, 2, 3, 4],
         },
       };
@@ -311,9 +313,10 @@ const observe = (step: (typeof steps)[number], index: number) => {
           firstWriteReceiptSha256: digest,
           observationSha256: digest,
           transactionId: "42",
-          fenceNonce: "a".repeat(32),
-          fenceVersion: 1,
-          claimVersion: 1,
+          postgresMajor: 17,
+          migrationChecksum: digest,
+          permitEpoch: 1,
+          permitNonce: "a".repeat(32),
           targetDeployIds: ["dep-target"],
         },
       };

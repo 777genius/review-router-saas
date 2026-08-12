@@ -19,6 +19,7 @@ import type {
   QuiescenceEvidence,
 } from "../domain/trusted-rollout-evidence";
 import type { CommandExecutor } from "./process-command";
+import type { DatabaseAclWitness } from "../application/ports";
 
 const runtimeRoles = Object.freeze([
   "reviewrouter_api",
@@ -153,6 +154,80 @@ export class PostgreSqlGenerationAdapter {
     )
       throw new Error("postgres_generation_identity_mismatch");
     return expected;
+  }
+
+  compensateSource(input: {
+    adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    reconnectUrls: Readonly<Record<string, string>>;
+  }): DatabaseAclWitness {
+    this.observeIdentity(input.adminUrl, input.source);
+    if (runtimeRoles.some((role) => !input.reconnectUrls[role]))
+      throw new Error(
+        "postgres_generation_compensation_reconnect_urls_missing",
+      );
+    this.psql(
+      input.adminUrl,
+      `BEGIN; REVOKE CONNECT ON DATABASE :"DBNAME" FROM PUBLIC; ${runtimeRoles
+        .map((role) => `GRANT CONNECT ON DATABASE :"DBNAME" TO ${role};`)
+        .join(" ")} COMMIT;`,
+    );
+    const acl = JSON.parse(
+      this.psql(
+        input.adminUrl,
+        `SELECT json_build_object('allRuntimeRolesCanConnect', NOT EXISTS (SELECT 1 FROM unnest(ARRAY[${runtimeRoles
+          .map((role) => `'${role}'`)
+          .join(
+            ",",
+          )}]) role WHERE NOT has_database_privilege(role,current_database(),'CONNECT')), 'publicConnectDenied', NOT has_database_privilege('public',current_database(),'CONNECT'), 'systemIdentifier', (SELECT system_identifier::text FROM pg_control_system()))`,
+      ),
+    );
+    if (
+      acl.allRuntimeRolesCanConnect !== true ||
+      acl.publicConnectDenied !== true ||
+      acl.systemIdentifier !== input.source.systemIdentifier
+    )
+      throw new Error("postgres_generation_compensation_acl_unproven");
+    for (const role of runtimeRoles) {
+      const connection = decomposePostgresConnection(
+        input.reconnectUrls[role]!,
+      );
+      try {
+        const observed = JSON.parse(
+          this.commands
+            .execute(
+              "psql",
+              [
+                ...connection.args,
+                "--no-psqlrc",
+                "--set",
+                "ON_ERROR_STOP=1",
+                "--tuples-only",
+                "--no-align",
+                "--command",
+                "SELECT json_build_object('role',current_user,'systemIdentifier',system_identifier::text) FROM pg_control_system()",
+              ],
+              { env: connection.env },
+            )
+            .stdout.trim(),
+        );
+        if (
+          observed.role !== role ||
+          observed.systemIdentifier !== input.source.systemIdentifier
+        )
+          throw new Error(
+            "postgres_generation_compensation_reconnect_mismatch",
+          );
+      } finally {
+        connection.cleanup();
+      }
+    }
+    return Object.freeze({
+      systemIdentifier: input.source.systemIdentifier,
+      aclSha256: digest(JSON.stringify(acl)),
+      observedAt: new Date().toISOString(),
+      sourceWritesRestored: true as const,
+    });
   }
 
   captureBackup(input: {

@@ -108,6 +108,68 @@ describe("source quiescence", () => {
   });
 });
 
+describe("source compensation", () => {
+  it("restores only fixed runtime CONNECT ACLs and independently reconnects all roles", () => {
+    const execute = vi.fn((_command, args: readonly string[]) => {
+      const sql = args.at(-1) ?? "";
+      if (sql.includes("recoveryWitnessSha256"))
+        return {
+          stdout: `${JSON.stringify({ systemIdentifier: "100", majorVersion: 16, internalHostname: "source.internal", databaseName: "reviewrouter", recoveryWitnessSha256: "witness" })}\n`,
+        };
+      if (sql.includes("allRuntimeRolesCanConnect"))
+        return {
+          stdout: `${JSON.stringify({ allRuntimeRolesCanConnect: true, publicConnectDenied: true, systemIdentifier: "100" })}\n`,
+        };
+      if (sql.includes("json_build_object('role',current_user")) {
+        const role = args[args.indexOf("--username") + 1];
+        return {
+          stdout: `${JSON.stringify({ role, systemIdentifier: "100" })}\n`,
+        };
+      }
+      return { stdout: "" };
+    });
+    const adapter = new PostgreSqlGenerationAdapter({
+      execute,
+      hashStdout: vi.fn(),
+      executeExpectingFailure: vi.fn(),
+    });
+    const roles = [
+      "reviewrouter_api",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+      "reviewrouter_codex_effect_authority",
+    ];
+    const witness = adapter.compensateSource({
+      adminUrl: "postgresql://admin:secret@source.internal/reviewrouter",
+      source: {
+        renderResourceId: "dpg-source",
+        internalHostname: "source.internal",
+        databaseName: "reviewrouter",
+        systemIdentifier: "100",
+        majorVersion: 16,
+        recoveryWitnessSha256: "witness",
+      },
+      reconnectUrls: Object.fromEntries(
+        roles.map((role) => [
+          role,
+          `postgresql://${role}:secret@source.internal/reviewrouter`,
+        ]),
+      ),
+    });
+    expect(witness).toMatchObject({
+      systemIdentifier: "100",
+      sourceWritesRestored: true,
+    });
+    const grant = execute.mock.calls.find((call) =>
+      String(call[1].at(-1)).includes("GRANT CONNECT"),
+    );
+    expect(String(grant?.[1].at(-1))).toContain("REVOKE CONNECT ON DATABASE");
+    expect(String(grant?.[1].at(-1))).not.toContain(
+      'GRANT CONNECT ON DATABASE :"DBNAME" TO PUBLIC',
+    );
+  });
+});
+
 describe("generation equivalence", () => {
   it("streams table rows and binds the complete catalog matrix", async () => {
     const execute = vi.fn((_command, args: readonly string[]) => {

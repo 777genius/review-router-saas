@@ -1,6 +1,12 @@
 import { RolloutStep, type StepObservation } from "../domain/release-rollout";
 import { RenderApiAdapter, type RenderFetch } from "./render-api";
 import { createHash } from "node:crypto";
+import {
+  ProviderAuthorityOperation,
+  type DatabaseAclWitness,
+  type ProviderAuthorityDecision,
+  type ProviderStateWitness,
+} from "../application/ports";
 
 const active = new Set([
   "created",
@@ -10,7 +16,12 @@ const active = new Set([
   "pre_deploy_in_progress",
 ]);
 export class RenderProviderFreezeAdapter {
-  constructor(private readonly fetchImpl: RenderFetch = fetch) {}
+  constructor(
+    private readonly fetchImpl: RenderFetch = fetch,
+    private readonly sleep: (milliseconds: number) => Promise<void> = (
+      milliseconds,
+    ) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  ) {}
   async freezeAndObserve(input: {
     apiKey: string;
     ownerId: string;
@@ -107,6 +118,59 @@ export class RenderProviderFreezeAdapter {
           observations.map((item) => item.latestSuccessfulDeployId),
         ),
       },
+    });
+  }
+
+  async compensateAndObserve(input: {
+    apiKey: string;
+    sourceWriterServiceIds: readonly string[];
+    sourceSystemIdentifier: string;
+    decision: ProviderAuthorityDecision;
+    databaseWitness: DatabaseAclWitness;
+  }): Promise<ProviderStateWitness> {
+    if (
+      !input.apiKey ||
+      !input.sourceWriterServiceIds.length ||
+      input.decision.decision !== "allow" ||
+      input.decision.operation !== ProviderAuthorityOperation.ResumeSource ||
+      input.decision.sourceSystemIdentifier !== input.sourceSystemIdentifier ||
+      input.decision.activationBoundary !== "before" ||
+      input.databaseWitness.systemIdentifier !== input.sourceSystemIdentifier ||
+      input.databaseWitness.sourceWritesRestored !== true ||
+      !/^sha256:[a-f0-9]{64}$/u.test(input.databaseWitness.aclSha256)
+    )
+      throw new Error("render_source_compensation_authority_invalid");
+    const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
+    const deployIds: string[] = [];
+    for (const serviceId of input.sourceWriterServiceIds) {
+      const before = await api.getService(serviceId);
+      if (before.suspended !== "suspended" || before.autoDeploy !== "no")
+        throw new Error("render_source_compensation_precondition_invalid");
+      const deploys = await api.listAllDeploys(serviceId);
+      if (deploys.some((deploy) => active.has(deploy.status)))
+        throw new Error("render_source_compensation_deploy_state_unsafe");
+      const latest = deploys.find((deploy) => deploy.status === "live");
+      if (!latest)
+        throw new Error("render_source_compensation_live_deploy_missing");
+      await api.resume(serviceId);
+      let after = await api.getService(serviceId);
+      for (
+        let poll = 0;
+        after.suspended !== "not_suspended" && poll < 29;
+        poll += 1
+      ) {
+        await this.sleep(2_000);
+        after = await api.getService(serviceId);
+      }
+      if (after.suspended !== "not_suspended" || after.autoDeploy !== "no")
+        throw new Error("render_source_compensation_resume_unproven");
+      deployIds.push(latest.id);
+    }
+    return Object.freeze({
+      serviceIds: Object.freeze([...input.sourceWriterServiceIds]),
+      deployIds: Object.freeze(deployIds),
+      observedAt: new Date().toISOString(),
+      resumed: true as const,
     });
   }
 }

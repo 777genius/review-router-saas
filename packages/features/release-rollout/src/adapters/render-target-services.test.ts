@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { RenderTargetServicesAdapter } from "./render-target-services";
+import { ProviderAuthorityOperation } from "../application/ports";
 
 const json = (value: unknown, status = 200, headers?: Record<string, string>) =>
   new Response(JSON.stringify(value), {
@@ -25,6 +26,17 @@ const fence = {
   nonce: "a".repeat(32),
   version: 1,
   fencedAt: "2026-08-12T00:00:00.000Z",
+};
+const stageDecision = {
+  rolloutId: fence.rolloutId,
+  operation: ProviderAuthorityOperation.DeployTarget,
+  sourceSystemIdentifier: fence.sourceSystemIdentifier,
+  targetSystemIdentifier: fence.targetSystemIdentifier,
+  expectedReceiptSha256: fence.previousReceiptSha256,
+  activationBoundary: "before" as const,
+  decision: "allow" as const,
+  decisionId: "decision-stage",
+  decidedAt: "2026-08-12T00:00:00.000Z",
 };
 const service = {
   id: expected.serviceId,
@@ -82,6 +94,7 @@ describe("Render target switch and live canary", () => {
       releaseCommitSha: expected.provenance.commitSha,
       services: [expected],
       fence,
+      decision: stageDecision,
     });
     expect(observation.facts).toEqual([
       expect.objectContaining({
@@ -119,8 +132,26 @@ describe("Render target switch and live canary", () => {
         releaseCommitSha: expected.provenance.commitSha,
         services: [expected],
         fence,
+        decision: stageDecision,
       }),
     ).rejects.toThrow("render_target_database_binding_mismatch");
+  });
+
+  it("does not call Render when deploy authority is missing or mismatched", async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      new RenderTargetServicesAdapter(fetchImpl).stage({
+        apiKey: "redacted",
+        targetInternalHostname: "target.internal",
+        targetSystemIdentifier: "200",
+        targetDatabaseUrls: {},
+        releaseCommitSha: expected.provenance.commitSha,
+        services: [expected],
+        fence,
+        decision: { ...stageDecision, targetSystemIdentifier: "attacker" },
+      }),
+    ).rejects.toThrow("render_target_stage_context_invalid");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("uses an authenticated unique no-store POST and binds the write/read response", async () => {

@@ -1,16 +1,17 @@
 import {
   assertRunnerIdentity,
-  beginCompensation,
-  completeCompensation,
   RolloutStep,
   transitionFailure,
   transitionFromObservation,
   type ReleaseRollout,
+  type ReleaseMigrationReceipt,
   type RunnerIdentity,
   type StepObservation,
 } from "../domain/release-rollout";
 import type {
   DatabaseRolloutPort,
+  ProviderAuthorityDecisionPort,
+  ProviderAuthorityRequest,
   PrivateRunnerPort,
   ProviderControlPort,
   ReleasePreflightPort,
@@ -18,11 +19,13 @@ import type {
   TargetServicesPort,
   TrustedEvidencePort,
 } from "./ports";
+import { ProviderAuthorityOperation } from "./ports";
 
 export class ReleaseRolloutUseCases {
   constructor(
     private readonly ports: {
       provider: ProviderControlPort;
+      authority?: ProviderAuthorityDecisionPort;
       preflight: ReleasePreflightPort;
       runner: PrivateRunnerPort;
       database: DatabaseRolloutPort;
@@ -31,6 +34,42 @@ export class ReleaseRolloutUseCases {
       ledger: RolloutLedgerPort;
     },
   ) {}
+
+  private async authorize(
+    r: ReleaseRollout,
+    operation: ProviderAuthorityRequest["operation"],
+    activationBoundary: ProviderAuthorityRequest["activationBoundary"],
+  ) {
+    const request = {
+      rolloutId: r.rolloutId,
+      operation,
+      sourceSystemIdentifier: r.source.systemIdentifier,
+      targetSystemIdentifier: r.target.systemIdentifier,
+      expectedReceiptSha256:
+        r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`,
+      activationBoundary,
+    } as const;
+    let decision;
+    try {
+      if (!this.ports.authority)
+        throw new Error("provider_authority_not_configured");
+      decision = await this.ports.authority.decide(request);
+    } catch (error) {
+      throw new Error("provider_authority_unavailable_or_denied", {
+        cause: error,
+      });
+    }
+    if (
+      decision.decision !== "allow" ||
+      !decision.decisionId ||
+      Number.isNaN(Date.parse(decision.decidedAt)) ||
+      Object.entries(request).some(
+        ([key, value]) => decision[key as keyof typeof decision] !== value,
+      )
+    )
+      throw new Error("provider_authority_decision_invalid");
+    return decision;
+  }
 
   private async accept(
     r: ReleaseRollout,
@@ -43,6 +82,11 @@ export class ReleaseRolloutUseCases {
       throw new Error("adapter_observation_step_mismatch");
     const next = transitionFromObservation(r, observation);
     const activated = next.sourcePermanentlyIneligible;
+    const expectedActivationBoundary = r.activated
+      ? "activated"
+      : r.activationUncertain || r.sourcePermanentlyIneligible
+        ? "uncertain"
+        : "before";
     const changed = await this.ports.ledger.compareAndSet({
       rolloutId: r.rolloutId,
       expectedCommitSha: r.expectedCommitSha,
@@ -58,7 +102,8 @@ export class ReleaseRolloutUseCases {
       authoritativeSystemIdentifier: activated
         ? r.target.systemIdentifier
         : r.source.systemIdentifier,
-      activationBoundary: activated ? "activated" : "before",
+      expectedActivationBoundary,
+      nextActivationBoundary: activated ? "activated" : "before",
     });
     if (!changed)
       throw new Error(
@@ -187,9 +232,14 @@ export class ReleaseRolloutUseCases {
       previousReceiptSha256,
     });
     if (!fence) throw new Error("target_switch_fence_cas_failed");
+    const decision = await this.authorize(
+      r,
+      ProviderAuthorityOperation.DeployTarget,
+      "before",
+    );
     return await this.accept(
       r,
-      await this.ports.services.stageTarget(fence),
+      await this.ports.services.stageTarget(fence, decision),
       RolloutStep.StageTargetServices,
     );
   }
@@ -199,9 +249,23 @@ export class ReleaseRolloutUseCases {
     const targetDeployIds = r.receipts.at(-1)?.provider?.renderDeployIds;
     if (!targetDeployIds?.length)
       throw new Error("activation_target_deploy_binding_missing");
-    let fenced = false;
+    const migrationChecksum = (
+      r.receipts.find(
+        (receipt) => receipt.step === RolloutStep.RunReleaseMigration,
+      ) as ReleaseMigrationReceipt | undefined
+    )?.migrationChecksum;
+    if (
+      typeof migrationChecksum !== "string" ||
+      migrationChecksum.length !== 71 ||
+      !migrationChecksum.startsWith("sha256:") ||
+      [...migrationChecksum.slice(7)].some(
+        (character) => !"0123456789abcdef".includes(character),
+      )
+    )
+      throw new Error("activation_migration_checksum_missing");
+    let authorized = false;
     try {
-      const fence = await this.ports.ledger.fenceActivation({
+      const authorization = await this.ports.ledger.authorizeActivation({
         rolloutId: r.rolloutId,
         expectedCommitSha: r.expectedCommitSha,
         runId: r.execution.runId,
@@ -211,25 +275,27 @@ export class ReleaseRolloutUseCases {
         targetSystemIdentifier: r.target.systemIdentifier,
         previousReceiptSha256,
         targetDeployIds,
+        postgresMajor: 17,
+        migrationChecksum,
       });
-      if (!fence) throw new Error("activation_fence_cas_failed");
-      fenced = true;
-      const observation = await this.ports.database.activate(
-        r.source,
-        r.target,
-        fence,
-      );
-      if (
-        observation.step !== RolloutStep.ActivateTargetGeneration ||
-        (observation.facts as Record<string, unknown>).fenceNonce !==
-          fence.nonce ||
-        (observation.facts as Record<string, unknown>).fenceVersion !==
-          fence.version
-      )
-        throw new Error("activation_receipt_fence_mismatch");
+      this.assertActivationAuthorization(r, authorization, {
+        jobId,
+        previousReceiptSha256,
+        targetDeployIds,
+        migrationChecksum,
+      });
+      authorized = true;
+      const observation = await this.ports.database.activate(r.rolloutId);
+      if (observation.step !== RolloutStep.ActivateTargetGeneration)
+        throw new Error("activation_receipt_step_mismatch");
       const next = transitionFromObservation(r, observation);
+      this.assertPermitBoundActivationReceipt(
+        r,
+        authorization,
+        next.activationReceipt!,
+      );
       const changed = await this.ports.ledger.finalizeActivation({
-        fence,
+        authorization,
         provider: observation.provider,
         nextReceiptSha256: next.receipts.at(-1)!.receiptSha256,
         activationReceipt: next.activationReceipt!,
@@ -238,7 +304,7 @@ export class ReleaseRolloutUseCases {
         throw new Error("authoritative_generation_activation_finalize_failed");
       return next;
     } catch (error) {
-      if (!fenced) throw error;
+      if (!authorized) throw error;
       try {
         await this.ports.ledger.markActivationUncertain({
           rolloutId: r.rolloutId,
@@ -261,6 +327,56 @@ export class ReleaseRolloutUseCases {
       );
     }
   }
+
+  private assertActivationAuthorization(
+    r: ReleaseRollout,
+    authorization: import("../domain/release-rollout").ActivationAuthorization,
+    expected: {
+      jobId: string;
+      previousReceiptSha256: string;
+      targetDeployIds: readonly string[];
+      migrationChecksum: string;
+    },
+  ): void {
+    if (
+      authorization.rolloutId !== r.rolloutId ||
+      authorization.expectedCommitSha !== r.expectedCommitSha ||
+      authorization.postgresMajor !== 17 ||
+      authorization.migrationChecksum !== expected.migrationChecksum ||
+      authorization.sourceSystemIdentifier !== r.source.systemIdentifier ||
+      authorization.targetSystemIdentifier !== r.target.systemIdentifier ||
+      authorization.previousReceiptSha256 !== expected.previousReceiptSha256 ||
+      !Number.isSafeInteger(authorization.epoch) ||
+      authorization.epoch < 1 ||
+      !/^[a-f0-9]{32}$/u.test(authorization.nonce) ||
+      JSON.stringify(authorization.targetDeployIds) !==
+        JSON.stringify(expected.targetDeployIds) ||
+      Number.isNaN(Date.parse(authorization.authorizedAt))
+    )
+      throw new Error("activation_authorization_identity_mismatch");
+  }
+
+  private assertPermitBoundActivationReceipt(
+    r: ReleaseRollout,
+    authorization: import("../domain/release-rollout").ActivationAuthorization,
+    receipt: import("../domain/release-rollout").ActivationReceipt,
+  ): void {
+    if (
+      receipt.rolloutId !== authorization.rolloutId ||
+      receipt.expectedCommitSha !== r.expectedCommitSha ||
+      authorization.expectedCommitSha !== r.expectedCommitSha ||
+      receipt.postgresMajor !== authorization.postgresMajor ||
+      receipt.migrationChecksum !== authorization.migrationChecksum ||
+      receipt.sourceSystemIdentifier !== authorization.sourceSystemIdentifier ||
+      receipt.targetSystemIdentifier !== authorization.targetSystemIdentifier ||
+      receipt.previousReceiptSha256 !== authorization.previousReceiptSha256 ||
+      receipt.permitEpoch !== authorization.epoch ||
+      receipt.permitNonce !== authorization.nonce ||
+      JSON.stringify(receipt.targetDeployIds) !==
+        JSON.stringify(authorization.targetDeployIds)
+    )
+      throw new Error("activation_receipt_authorization_mismatch");
+  }
   async cleanupCutoverRunner(r: ReleaseRollout, identity: RunnerIdentity) {
     return await this.accept(
       r,
@@ -269,9 +385,14 @@ export class ReleaseRolloutUseCases {
     );
   }
   async resumeTargetServices(r: ReleaseRollout) {
+    const decision = await this.authorize(
+      r,
+      ProviderAuthorityOperation.ResumeTarget,
+      "activated",
+    );
     return await this.accept(
       r,
-      await this.ports.services.resumeDeployAndObserve(),
+      await this.ports.services.resumeDeployAndObserve(decision),
       RolloutStep.ResumeTargetServices,
     );
   }
@@ -331,10 +452,52 @@ export class ReleaseRolloutUseCases {
       });
       return failed;
     }
-    const compensating = beginCompensation(failed);
-    await this.ports.database.compensateSource(r.source);
-    await this.ports.provider.compensateAndObserve();
-    return completeCompensation(compensating);
+    let compensating = await this.accept(
+      failed,
+      {
+        step: RolloutStep.BeginCompensation,
+        observedAt: new Date().toISOString(),
+        facts: {
+          activationBoundary: "before",
+          sourceSystemIdentifier: r.source.systemIdentifier,
+        },
+      },
+      RolloutStep.BeginCompensation,
+    );
+    const decision = await this.authorize(
+      compensating,
+      ProviderAuthorityOperation.ResumeSource,
+      "before",
+    );
+    const databaseWitness = await this.ports.database.compensateSource(
+      r.source,
+    );
+    const providerWitness = await this.ports.provider.compensateAndObserve({
+      decision,
+      databaseWitness,
+    });
+    compensating = await this.accept(
+      compensating,
+      {
+        step: RolloutStep.EffectCompensation,
+        observedAt: new Date().toISOString(),
+        facts: { databaseWitness, providerWitness },
+        provider: {
+          renderServiceIds: providerWitness.serviceIds,
+          renderDeployIds: providerWitness.deployIds,
+        },
+      },
+      RolloutStep.EffectCompensation,
+    );
+    return await this.accept(
+      compensating,
+      {
+        step: RolloutStep.CompleteCompensation,
+        observedAt: new Date().toISOString(),
+        facts: { activationBoundary: "before", independentWitnesses: true },
+      },
+      RolloutStep.CompleteCompensation,
+    );
   }
 }
 

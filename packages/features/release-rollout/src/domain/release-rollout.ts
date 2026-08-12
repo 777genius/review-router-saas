@@ -48,6 +48,7 @@ export const RolloutStep = Object.freeze({
   VerifyLiveCanary: "verify_live_canary",
   VerifyTrustedRollout: "verify_trusted_rollout",
   BeginCompensation: "begin_compensation",
+  EffectCompensation: "effect_compensation",
   CompleteCompensation: "complete_compensation",
   MarkActivationUncertain: "mark_activation_uncertain",
   RequireForwardRepair: "require_forward_repair",
@@ -143,6 +144,21 @@ const orderedTransitions: ReadonlyArray<
     RolloutPhase.LiveCanaryVerified,
     RolloutStep.VerifyTrustedRollout,
     RolloutPhase.RolloutVerified,
+  ],
+  [
+    RolloutPhase.PreActivationFailed,
+    RolloutStep.BeginCompensation,
+    RolloutPhase.RecoveryCompensating,
+  ],
+  [
+    RolloutPhase.RecoveryCompensating,
+    RolloutStep.EffectCompensation,
+    RolloutPhase.RecoveryCompensating,
+  ],
+  [
+    RolloutPhase.RecoveryCompensating,
+    RolloutStep.CompleteCompensation,
+    RolloutPhase.RecoveryCompensated,
   ],
 ];
 
@@ -256,27 +272,30 @@ export interface ActivationReceipt extends StepReceipt {
   readonly transactionId: string;
   readonly firstWriteReceiptSha256: string;
   readonly firstWriteBoundary: true;
-  readonly fenceNonce: string;
-  readonly fenceVersion: number;
-  readonly claimVersion: number;
+  readonly postgresMajor: 17;
+  readonly migrationChecksum: string;
+  readonly permitEpoch: number;
+  readonly permitNonce: string;
   readonly targetDeployIds: readonly string[];
 }
 
-export interface ActivationFence {
-  readonly schemaVersion: 1;
+export interface ReleaseMigrationReceipt extends StepReceipt {
+  readonly step: typeof RolloutStep.RunReleaseMigration;
+  readonly migrationChecksum: string;
+}
+
+export interface ActivationAuthorization {
   readonly rolloutId: string;
   readonly expectedCommitSha: string;
-  readonly runId: string;
-  readonly jobId: string;
-  readonly runAttempt: number;
+  readonly postgresMajor: 17;
+  readonly migrationChecksum: string;
+  readonly epoch: number;
+  readonly nonce: string;
   readonly sourceSystemIdentifier: string;
   readonly targetSystemIdentifier: string;
   readonly previousReceiptSha256: string;
-  readonly nonce: string;
-  readonly version: number;
-  readonly claimVersion: number;
   readonly targetDeployIds: readonly string[];
-  readonly fencedAt: string;
+  readonly authorizedAt: string;
 }
 
 export interface TargetSwitchFence {
@@ -690,6 +709,7 @@ function assertStepFacts(
         facts.preflightStatus !== "passed" ||
         facts.aclGateState !== "closed" ||
         facts.commit !== rollout.expectedCommitSha ||
+        !digestPattern.test(String(facts.migrationChecksum)) ||
         !Array.isArray(facts.roles) ||
         facts.roles.length < 4
       )
@@ -799,6 +819,43 @@ function assertStepFacts(
         "trusted_evidence_observation_invalid",
       );
       break;
+    case RolloutStep.BeginCompensation:
+      if (
+        facts.activationBoundary !== "before" ||
+        facts.sourceSystemIdentifier !== rollout.source.systemIdentifier
+      )
+        throw new Error("compensation_begin_observation_invalid");
+      break;
+    case RolloutStep.EffectCompensation: {
+      const database = record(
+        facts.databaseWitness,
+        "compensation_effect_observation_invalid",
+      );
+      const provider = record(
+        facts.providerWitness,
+        "compensation_effect_observation_invalid",
+      );
+      if (
+        database.systemIdentifier !== rollout.source.systemIdentifier ||
+        database.sourceWritesRestored !== true ||
+        provider.resumed !== true ||
+        !Array.isArray(provider.serviceIds) ||
+        provider.serviceIds.length === 0
+      )
+        throw new Error("compensation_effect_observation_invalid");
+      assertDigest(
+        database.aclSha256,
+        "compensation_effect_observation_invalid",
+      );
+      break;
+    }
+    case RolloutStep.CompleteCompensation:
+      if (
+        facts.independentWitnesses !== true ||
+        facts.activationBoundary !== "before"
+      )
+        throw new Error("compensation_complete_observation_invalid");
+      break;
     default:
       throw new Error("rollout_observation_step_not_authorized");
   }
@@ -853,7 +910,19 @@ export function transitionFromObservation(
     previousReceiptSha256,
   };
   let receipt: StepReceipt;
-  if (observation.step === RolloutStep.ActivateTargetGeneration) {
+  if (observation.step === RolloutStep.RunReleaseMigration) {
+    const migrationBase = {
+      ...base,
+      step: RolloutStep.RunReleaseMigration,
+      migrationChecksum: String(
+        (observation.facts as Record<string, unknown>).migrationChecksum,
+      ),
+    };
+    receipt = {
+      ...migrationBase,
+      receiptSha256: `sha256:${sha256Canonical(migrationBase)}`,
+    } as ReleaseMigrationReceipt;
+  } else if (observation.step === RolloutStep.ActivateTargetGeneration) {
     const facts = observation.facts as Record<string, unknown>;
     if (
       facts.firstWriteBoundary !== true ||
@@ -861,11 +930,11 @@ export function transitionFromObservation(
       !digestPattern.test(String(facts.catalogFactsSha256)) ||
       !digestPattern.test(String(facts.firstWriteReceiptSha256)) ||
       !/^[0-9]+$/u.test(String(facts.transactionId)) ||
-      !/^[a-f0-9]{32}$/u.test(String(facts.fenceNonce)) ||
-      !Number.isSafeInteger(facts.fenceVersion) ||
-      Number(facts.fenceVersion) < 1 ||
-      !Number.isSafeInteger(facts.claimVersion) ||
-      Number(facts.claimVersion) < 1 ||
+      facts.postgresMajor !== 17 ||
+      !digestPattern.test(String(facts.migrationChecksum)) ||
+      !Number.isSafeInteger(facts.permitEpoch) ||
+      Number(facts.permitEpoch) < 1 ||
+      !/^[a-f0-9]{32}$/u.test(String(facts.permitNonce)) ||
       !Array.isArray(facts.targetDeployIds) ||
       facts.targetDeployIds.length < 1
     )
@@ -878,9 +947,10 @@ export function transitionFromObservation(
       transactionId: String(facts.transactionId),
       firstWriteReceiptSha256: String(facts.firstWriteReceiptSha256),
       firstWriteBoundary: true as const,
-      fenceNonce: String(facts.fenceNonce),
-      fenceVersion: Number(facts.fenceVersion),
-      claimVersion: Number(facts.claimVersion),
+      postgresMajor: 17 as const,
+      migrationChecksum: String(facts.migrationChecksum),
+      permitEpoch: Number(facts.permitEpoch),
+      permitNonce: String(facts.permitNonce),
       targetDeployIds: Object.freeze(
         (facts.targetDeployIds as unknown[]).map(String),
       ),
@@ -1030,7 +1100,8 @@ export interface AuthoritativeGenerationLedger {
     expectedReceiptSha256: string;
     nextReceiptSha256: string;
     authoritativeSystemIdentifier: string;
-    activationBoundary: "before" | "activated" | "uncertain";
+    expectedActivationBoundary: "before" | "activated" | "uncertain";
+    nextActivationBoundary: "before" | "activated" | "uncertain";
   }): Promise<boolean>;
   markActivationUncertain(input: {
     rolloutId: string;
@@ -1049,7 +1120,7 @@ export interface AuthoritativeGenerationLedger {
     targetSystemIdentifier: string;
     previousReceiptSha256: string;
   }): Promise<TargetSwitchFence | null>;
-  fenceActivation(input: {
+  authorizeActivation(input: {
     rolloutId: string;
     expectedCommitSha: string;
     runId: string;
@@ -1059,9 +1130,11 @@ export interface AuthoritativeGenerationLedger {
     targetSystemIdentifier: string;
     previousReceiptSha256: string;
     targetDeployIds: readonly string[];
-  }): Promise<ActivationFence | null>;
+    postgresMajor: 17;
+    migrationChecksum: string;
+  }): Promise<ActivationAuthorization>;
   finalizeActivation(input: {
-    fence: ActivationFence;
+    authorization: ActivationAuthorization;
     provider: StepObservation["provider"];
     nextReceiptSha256: string;
     activationReceipt: ActivationReceipt;
