@@ -69,6 +69,17 @@ by `roleProvisioningSql`:
   activated/uncertain state. It must never report PG16 eligible at or after the
   boundary.
 
+The ledger deployment must expose the adapter's exact authenticated `/v1`
+contract: `POST /rollouts/claim`, `POST /rollouts/{id}/cas`,
+`PUT /rollouts/{id}/activation-uncertain`, and
+`POST /rollouts/{id}/reconcile`, plus the `/runner-jobs` create, open-list,
+identity, terminal, cleanup-observation, cleanup-witness, and current-lifecycle
+routes. Activation-uncertain accepts the full commit/run/attempt/source/target
+binding and returns only `{ "marked": true }` after durably setting the
+forward-only boundary. Each successful CAS must atomically update
+`release_rollout_ledger` and append the step/provider/hash-chain binding to
+`release_rollout_receipt_ledger`; an update without that append is a failure.
+
 Missing, unavailable, stale, duplicate, or contradictory ledger responses stop
 the rollout. Do not bypass this dependency with artifacts, labels, or in-memory
 state.
@@ -138,6 +149,12 @@ write/read canary, and assemble/verify trusted evidence. The evidence binds the
 protected-environment receipt, rollout/SHA/run/job/attempt/deploy identities,
 both generations, external backup witness, receipt chain, activation boundary,
 both runner lifecycles, resumed deploys, and live canary.
+
+Before provider freeze, the hosted preflight composition root durably claims
+the rollout, recomputes the observed protected-environment artifact digest,
+and records both claim and protected-policy receipts through application use
+cases. Later private-runner scripts resume that artifact-backed aggregate; they
+cannot recreate or claim a parallel rollout history.
 
 The always-running reconciliation job cleans every persisted orphan and asks
 the authoritative ledger to choose compensation or PG17-only forward repair.
