@@ -256,6 +256,9 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain(
       "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_activation_receipt_reader",
     );
+    expect(sql).toContain(
+      "REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
+    );
     expect(sql).not.toMatch(
       /GRANT\s+SELECT\s+ON[^;]+TO reviewrouter_activation_receipt_reader/iu,
     );

@@ -158,6 +158,7 @@ REVOKE ALL ON SCHEMA public FROM ${activationReceiptReaderRoleName};
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ${activationReceiptReaderRoleName};
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM ${activationReceiptReaderRoleName};
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM ${activationReceiptReaderRoleName};
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 DO $installer_database_acl$
 BEGIN
   IF NOT has_database_privilege(
