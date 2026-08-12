@@ -25,14 +25,6 @@ const preflightSource = readFileSync(
   resolve("scripts/preflight-codex-rotating-migration-history.ts"),
   "utf8",
 );
-const forwardMigrationSource = readFileSync(
-  resolve(
-    "packages/platform/db/prisma/migrations",
-    forwardUnpublishedCodexRotatingMigration.name,
-    "migration.sql",
-  ),
-  "utf8",
-);
 const migration66Source = readFileSync(
   resolve(
     "packages/platform/db/prisma/migrations",
