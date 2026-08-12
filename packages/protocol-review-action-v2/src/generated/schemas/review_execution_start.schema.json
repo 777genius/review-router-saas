@@ -18,6 +18,8 @@
         "reviewRevisionHash",
         "compatibilityKey",
         "planHash",
+        "assignmentManifestCanonicalJson",
+        "assignmentManifestHash",
         "workSlotsCanonicalJson",
         "sourceRunId",
         "sourceRunAttempt"
@@ -76,6 +78,28 @@
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
         },
+        "assignmentManifestCanonicalJson": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 2
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assignmentManifestHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "workSlotsCanonicalJson": {
           "type": "string",
           "minLength": 2
@@ -92,7 +116,43 @@
           "maxLength": 256,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
         }
-      }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "assignmentManifestCanonicalJson",
+                "assignmentManifestHash"
+              ],
+              "properties": {
+                "assignmentManifestCanonicalJson": {
+                  "type": "string",
+                  "minLength": 2
+                },
+                "assignmentManifestHash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            {
+              "required": [
+                "assignmentManifestCanonicalJson",
+                "assignmentManifestHash"
+              ],
+              "properties": {
+                "assignmentManifestCanonicalJson": {
+                  "type": "null"
+                },
+                "assignmentManifestHash": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "oneOf": [

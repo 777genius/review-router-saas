@@ -32,6 +32,8 @@ import {
   ReviewObservationAttachmentKind,
   ReviewObservationAttachmentStatus,
   ReviewTaskKind,
+  ReviewWorkSlotState,
+  ReviewWorkSlotTerminalReason as DomainWorkSlotTerminalReason,
   StartReviewExecutionStatus,
   type ReviewExecution,
   type ReviewExecutionLimits,
@@ -67,6 +69,8 @@ import {
   ReviewExecutionRestoreResultStatus,
   ReviewExecutionStartResultStatus,
   ReviewInvocationLeaseResultStatus,
+  ReviewWorkSlotTerminalReason,
+  ReviewWorkSlotTerminalState,
   type ReviewActionV2RequestMap,
   type ReviewEvidenceCommitRequest,
   type ReviewEvidenceLookupRequest,
@@ -76,6 +80,7 @@ import {
   type ReviewExecutionRestoreRequest,
   type ReviewExecutionStartRequest,
   type ReviewExecutionSupersedeRequest,
+  type ReviewExecutionWorkSlotTerminalizeRequest,
   type ReviewInvocationLeaseAcquireRequest,
   type ReviewInvocationLeaseReleaseRequest,
   type ReviewInvocationLeaseRenewRequest,
@@ -220,6 +225,10 @@ export function createReviewActionV2ExecutionHandlers(
     supersede: enabled((request: ReviewExecutionSupersedeRequest) =>
       supersedeExecution(request, d),
     ),
+    terminalizeWorkSlot: enabled(
+      (request: ReviewExecutionWorkSlotTerminalizeRequest) =>
+        terminalizeWorkSlot(request, d),
+    ),
     attachObservation: enabled(
       (request: ReviewExecutionObservationAttachRequest) =>
         attachObservation(request, d),
@@ -346,6 +355,8 @@ async function startExecution(
     authorizationId: authorization.authorizationId,
     compatibilityKey: request.compatibilityKey,
     planHash: request.planHash,
+    assignmentManifestCanonicalJson: request.assignmentManifestCanonicalJson,
+    assignmentManifestHash: request.assignmentManifestHash,
     workSlots,
     sourceRunId: request.sourceRunId,
     sourceRunAttempt: request.sourceRunAttempt,
@@ -353,6 +364,15 @@ async function startExecution(
     executionDeadlineAt: add(now, d.timing.executionDurationMs),
     retainUntil: add(now, d.timing.retentionDurationMs),
   });
+  if (
+    outcome.status === StartReviewExecutionStatus.AssignmentManifestRejected
+  ) {
+    throw failure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      outcome.rejectionReason ?? "assignment_manifest_invalid",
+    );
+  }
   return {
     statusCode:
       outcome.status === StartReviewExecutionStatus.Admitted
@@ -403,6 +423,74 @@ async function supersedeExecution(
       result.snapshot ?? snapshot,
     ),
   };
+}
+
+async function terminalizeWorkSlot(
+  request: ReviewExecutionWorkSlotTerminalizeRequest,
+  d: ReviewActionV2ExecutionHandlerDependencies,
+) {
+  await assertBodyHash(
+    ReviewActionV2OperationId.ReviewExecutionWorkSlotTerminalize,
+    request,
+    d.digest,
+  );
+  const authorization = await requireAuthorization(
+    request.authorizationToken,
+    d,
+  );
+  requireEqual(
+    request.reviewRevisionHash,
+    authorization.reviewRevisionHash,
+    "revision_scope_mismatch",
+  );
+  const snapshot = await requireExecution(
+    request.executionId,
+    authorization,
+    d.executionQueries,
+  );
+  const result = await d.executions.executionLifecycle.terminalizeWorkSlot({
+    scope: toExecutionScope(authorization),
+    executionId: request.executionId,
+    generation: decimal(request.generation),
+    reviewRevisionHash: request.reviewRevisionHash,
+    workSlotId: request.workSlotId,
+    terminalState: executionTerminalState(request.terminalState),
+    reasonCode: executionTerminalReason(request.reasonCode),
+    now: d.now(),
+  });
+  return {
+    statusCode: 200 as const,
+    result: {
+      ...mutationResult(
+        result.status,
+        request.executionId,
+        result.snapshot ?? snapshot,
+      ),
+      workSlotId: request.workSlotId,
+    },
+  };
+}
+
+function executionTerminalState(
+  state: ReviewWorkSlotTerminalState,
+): ReviewWorkSlotState.Exhausted | ReviewWorkSlotState.Cancelled {
+  switch (state) {
+    case ReviewWorkSlotTerminalState.Exhausted:
+      return ReviewWorkSlotState.Exhausted;
+    case ReviewWorkSlotTerminalState.Cancelled:
+      return ReviewWorkSlotState.Cancelled;
+  }
+}
+
+function executionTerminalReason(
+  reason: ReviewWorkSlotTerminalReason,
+): DomainWorkSlotTerminalReason {
+  switch (reason) {
+    case ReviewWorkSlotTerminalReason.AttemptBudgetExhausted:
+      return DomainWorkSlotTerminalReason.AttemptBudgetExhausted;
+    case ReviewWorkSlotTerminalReason.DeadlineReached:
+      return DomainWorkSlotTerminalReason.DeadlineReached;
+  }
 }
 
 async function acquireLease(
@@ -2033,6 +2121,8 @@ function mapStart(
       return ReviewExecutionStartResultStatus.IdempotencyConflict;
     case StartReviewExecutionStatus.ConcurrencyConflict:
       return ReviewExecutionStartResultStatus.ConcurrencyConflict;
+    case StartReviewExecutionStatus.AssignmentManifestRejected:
+      throw new Error("assignment_manifest_rejection_not_mapped");
   }
 }
 function mapLookup(

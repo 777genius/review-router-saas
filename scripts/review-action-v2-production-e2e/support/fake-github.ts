@@ -9,7 +9,7 @@ export type FakeGitHubRevision = Readonly<{
 
 type StoredComment = {
   readonly id: number;
-  readonly body: string;
+  body: string;
   readonly user: { readonly login: string };
 };
 
@@ -62,6 +62,16 @@ export class FakeGitHubTransport {
         user: { login: "someone-else" },
       });
     }
+  }
+
+  seedProgressDuplicate(body: string): number {
+    const id = this.nextExternalId++;
+    this.comments.push({
+      id,
+      body,
+      user: { login: `${this.options.appSlug}[bot]` },
+    });
+    return id;
   }
 
   countCalls(method: string, pathnameIncludes: string): number {
@@ -131,7 +141,11 @@ export class FakeGitHubTransport {
     ) {
       return json(200, {
         number: this.options.pullRequestNumber,
-        base: { sha: this.revision.baseSha },
+        state: "open",
+        base: {
+          sha: this.revision.baseSha,
+          repo: { full_name: `${this.options.owner}/${this.options.repo}` },
+        },
         head: { sha: this.revision.headSha },
       });
     }
@@ -175,6 +189,26 @@ export class FakeGitHubTransport {
         throw new TypeError("fake_scm_response_lost_after_write");
       }
       return json(201, comment);
+    }
+    const commentMatch = new RegExp(
+      `^${repositoryPrefix}/issues/comments/(\\d+)$`,
+      "u",
+    ).exec(url.pathname);
+    if (commentMatch) {
+      const commentId = Number(commentMatch[1]);
+      const comment = this.comments.find(({ id }) => id === commentId);
+      if (!comment) return json(404, { message: "Not Found" });
+      if (method === "GET") return json(200, comment);
+      if (method === "PATCH") {
+        const body = await requestJson(request);
+        comment.body = requiredString(body.body);
+        return json(200, comment);
+      }
+      if (method === "DELETE") {
+        const index = this.comments.findIndex(({ id }) => id === commentId);
+        this.comments.splice(index, 1);
+        return new Response(null, { status: 204 });
+      }
     }
 
     const checkRunsPath = `${repositoryPrefix}/commits/${this.revision.headSha}/check-runs`;

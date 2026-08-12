@@ -8,6 +8,7 @@ import {
   ReviewObservationAttachmentKind,
   ReviewTaskKind,
   ReviewWorkSlotState,
+  ReviewWorkSlotTerminalReason,
   canonicalReviewExecutionPlanPreimage,
   canonicalReviewExecutionStartPreimage,
 } from "../domain/review-execution.js";
@@ -71,6 +72,17 @@ export const reviewExecutionsActionContractFragment = Object.freeze({
       ]),
     }),
     Object.freeze({
+      typeName: "ReviewWorkSlotTerminalState",
+      values: Object.freeze([
+        ReviewWorkSlotState.Exhausted,
+        ReviewWorkSlotState.Cancelled,
+      ]),
+    }),
+    Object.freeze({
+      typeName: "ReviewWorkSlotTerminalReason",
+      values: Object.freeze(Object.values(ReviewWorkSlotTerminalReason)),
+    }),
+    Object.freeze({
       typeName: "ReviewInvocationLeaseResultStatus",
       values: Object.freeze([
         "acquired",
@@ -124,12 +136,26 @@ export const reviewExecutionsActionContractFragment = Object.freeze({
         "plan_hash",
       ]),
       semanticRetryClass: "same_request",
+      allOrNoneRequestFieldGroups: Object.freeze([
+        Object.freeze([
+          "assignmentManifestCanonicalJson",
+          "assignmentManifestHash",
+        ]),
+      ]),
       requestFields: Object.freeze([
         Object.freeze({ name: "authorizationId", type: "identifier" }),
         Object.freeze({ name: "executionId", type: "identifier" }),
         Object.freeze({ name: "reviewRevisionHash", type: "hash" }),
         Object.freeze({ name: "compatibilityKey", type: "hash" }),
         Object.freeze({ name: "planHash", type: "hash" }),
+        Object.freeze({
+          name: "assignmentManifestCanonicalJson",
+          type: "nullable_canonical_json",
+        }),
+        Object.freeze({
+          name: "assignmentManifestHash",
+          type: "nullable_hash",
+        }),
         Object.freeze({
           name: "workSlotsCanonicalJson",
           type: "canonical_json",
@@ -169,6 +195,44 @@ export const reviewExecutionsActionContractFragment = Object.freeze({
       resultStatusEnum: "ReviewExecutionMutationResultStatus",
       resultFields: Object.freeze([
         Object.freeze({ name: "executionId", type: "nullable_identifier" }),
+        Object.freeze({ name: "streamVersion", type: "nullable_decimal" }),
+      ]),
+    }),
+    Object.freeze({
+      operationId: "review_execution_work_slot_terminalize",
+      requestTypeName: "ReviewExecutionWorkSlotTerminalizeRequest",
+      resultTypeName: "ReviewExecutionWorkSlotTerminalizeResult",
+      callerAuthority: "run_authorization",
+      mutability: "command",
+      naturalIdempotencyPreimage: Object.freeze([
+        "execution_id",
+        "generation",
+        "review_revision_hash",
+        "work_slot_id",
+        "terminal_state",
+        "reason_code",
+      ]),
+      semanticRetryClass: "same_request",
+      requestFields: Object.freeze([
+        Object.freeze({ name: "executionId", type: "identifier" }),
+        Object.freeze({ name: "generation", type: "decimal" }),
+        Object.freeze({ name: "reviewRevisionHash", type: "hash" }),
+        Object.freeze({ name: "workSlotId", type: "identifier" }),
+        Object.freeze({
+          name: "terminalState",
+          type: "enum",
+          enumTypeName: "ReviewWorkSlotTerminalState",
+        }),
+        Object.freeze({
+          name: "reasonCode",
+          type: "enum",
+          enumTypeName: "ReviewWorkSlotTerminalReason",
+        }),
+      ]),
+      resultStatusEnum: "ReviewExecutionMutationResultStatus",
+      resultFields: Object.freeze([
+        Object.freeze({ name: "executionId", type: "nullable_identifier" }),
+        Object.freeze({ name: "workSlotId", type: "nullable_identifier" }),
         Object.freeze({ name: "streamVersion", type: "nullable_decimal" }),
       ]),
     }),

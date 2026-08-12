@@ -224,6 +224,13 @@ export function executionToDomain(
     state: executionStateFromPrisma(record.state),
     compatibilityKey: record.compatibilityKey,
     planHash: record.planHash,
+    assignmentManifestVersion:
+      record.assignmentManifestVersion === 1 ? 1 : null,
+    assignmentManifestHash: record.assignmentManifestHash,
+    assignmentManifestCanonicalJson:
+      record.assignmentManifestJson === null
+        ? null
+        : canonicalJson(record.assignmentManifestJson),
     protocolLimitsProfileId: record.protocolLimitsProfileId,
     sourceRunId: record.sourceRunId,
     sourceRunAttempt: record.sourceRunAttempt,
