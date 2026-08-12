@@ -11,6 +11,10 @@ export interface ProviderControlPort {
   compensateAndObserve(): Promise<StepObservation>;
 }
 
+export interface ReleasePreflightPort {
+  observeProtectedEnvironment(): Promise<StepObservation>;
+}
+
 export interface PrivateRunnerPort {
   provision(): Promise<{
     identity: RunnerIdentity;

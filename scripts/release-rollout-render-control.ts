@@ -67,7 +67,7 @@ const resolveWorkflowJobId = async (name: string): Promise<string> => {
 
 if (mode === "freeze") {
   const observation = await new RenderProviderFreezeAdapter().freezeAndObserve({
-    apiKey: required("RENDER_RUNNER_CONTROL_API_KEY"),
+    apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
     ownerId: required("RENDER_OWNER_ID"),
     sourceWriterServiceIds: required(
       "REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS",
@@ -132,8 +132,8 @@ if (mode === "freeze") {
     organization: required("REVIEW_ROUTER_RELEASE_CONTROL_ORG"),
     repository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
     workflowPath: required("REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH"),
-    workflowRef: required("GITHUB_REF") as "refs/heads/main",
-    event: required("GITHUB_EVENT_NAME") as "workflow_dispatch",
+    workflowRef: "refs/heads/main",
+    event: targetRun.event as "workflow_dispatch",
     actor: targetRun.actor.login,
     runId: targetRunId,
     runAttempt: Number(targetRunAttempt),

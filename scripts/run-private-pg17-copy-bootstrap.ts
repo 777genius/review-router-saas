@@ -1,12 +1,13 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import {
-  createReleaseRollout,
   AuthenticatedRunnerLedgerAdapter,
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
   ReleaseRolloutUseCases,
   RenderBackupIdentityAdapter,
   type DatabaseGenerationIdentity,
+  type ReleaseRollout,
   type RunnerIdentity,
   type StepObservation,
   type WriterSuspensionObservation,
@@ -38,23 +39,19 @@ const target: DatabaseGenerationIdentity = {
     "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256",
   ),
 };
-let rollout = createReleaseRollout({
-  rolloutId: required("REVIEW_ROUTER_ROLLOUT_ID"),
-  expectedCommitSha: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
-  execution: {
-    organization: required("REVIEW_ROUTER_RELEASE_CONTROL_ORG"),
-    controlRepository: required("GITHUB_REPOSITORY"),
-    workflowPath: required("REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH"),
-    workflowRef: required("GITHUB_REF") as "refs/heads/main",
-    event: required("GITHUB_EVENT_NAME") as "workflow_dispatch",
-    actor: required("GITHUB_ACTOR"),
-    runId: required("GITHUB_RUN_ID"),
-    runAttempt: Number(required("GITHUB_RUN_ATTEMPT")),
-    expectedJobName: required("REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME"),
-  },
-  source,
-  target,
-});
+let rollout = (
+  JSON.parse(
+    readFileSync(required("REVIEW_ROUTER_INITIAL_ROLLOUT_FILE"), "utf8"),
+  ) as { rollout: ReleaseRollout }
+).rollout;
+if (
+  rollout.phase !== "preflight_verified" ||
+  rollout.rolloutId !== required("REVIEW_ROUTER_ROLLOUT_ID") ||
+  rollout.expectedCommitSha !== required("REVIEW_ROUTER_RELEASE_COMMIT_SHA") ||
+  JSON.stringify(rollout.source) !== JSON.stringify(source) ||
+  JSON.stringify(rollout.target) !== JSON.stringify(target)
+)
+  throw new Error("private_pg17_initial_rollout_mismatch");
 const commands = new RedactedProcessCommandAdapter();
 const database = new PostgreSqlGenerationAdapter(commands);
 const sourceUrl = required("REVIEW_ROUTER_SOURCE_DATABASE_URL");
@@ -83,6 +80,7 @@ const canonical = new PrivatePg17CanonicalAdapter();
 const runner: RunnerIdentity = currentRunner.identity;
 const runnerObservation: StepObservation = currentRunner.observation;
 const useCases = new ReleaseRolloutUseCases({
+  preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: async () => freezeObservation,
     compensateAndObserve: unavailable,
@@ -154,7 +152,6 @@ const useCases = new ReleaseRolloutUseCases({
   evidence: { assembleAndVerify: unavailable },
   ledger,
 });
-rollout = await useCases.claimRollout(rollout);
 rollout = await useCases.freezeProviderServices(rollout);
 ({ rollout } = await useCases.provisionPrivateRunner(rollout));
 rollout = await useCases.captureSourceBackup(rollout);

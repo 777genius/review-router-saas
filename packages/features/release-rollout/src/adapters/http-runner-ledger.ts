@@ -152,6 +152,13 @@ export class AuthenticatedRunnerLedgerAdapter
   }
   async compareAndSet(input: {
     rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    step: import("../domain/release-rollout").RolloutStep;
+    provider: StepObservation["provider"];
     expectedReceiptSha256: string;
     nextReceiptSha256: string;
     authoritativeSystemIdentifier: string;
@@ -164,6 +171,21 @@ export class AuthenticatedRunnerLedgerAdapter
     if (typeof value.changed !== "boolean")
       throw new Error("runner_ledger_rollout_cas_invalid");
     return value.changed;
+  }
+  async markActivationUncertain(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+  }): Promise<void> {
+    const value = (await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/activation-uncertain`,
+      { method: "PUT", body: JSON.stringify(input) },
+    )) as Record<string, unknown>;
+    if (value.marked !== true)
+      throw new Error("runner_ledger_activation_uncertain_mark_invalid");
   }
   async reconcileRollout(rolloutId: string): Promise<{
     state:

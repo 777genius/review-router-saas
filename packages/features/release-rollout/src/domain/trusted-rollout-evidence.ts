@@ -4,6 +4,7 @@ import {
   type ActivationReceipt,
   type DatabaseGenerationIdentity,
   type ReleaseExecutionIdentity,
+  RolloutStep,
   type RunnerIdentity,
   type StepReceipt,
 } from "./release-rollout";
@@ -179,6 +180,32 @@ export function assertTrustedRolloutEvidence(
   )
     throw new Error("trusted_rollout_evidence_invariant_failed");
   const zero = `sha256:${"0".repeat(64)}`;
+  const requiredSteps = [
+    RolloutStep.ClaimRollout,
+    RolloutStep.VerifyProtectedEnvironment,
+    RolloutStep.FreezeProviderServices,
+    RolloutStep.ProvisionRoleRunner,
+    RolloutStep.CaptureSourceBackup,
+    RolloutStep.QuiesceSource,
+    RolloutStep.CopyDatabaseGeneration,
+    RolloutStep.VerifyDataEquivalence,
+    RolloutStep.BootstrapTargetRoles,
+    RolloutStep.CleanupRoleRunner,
+    RolloutStep.ProvisionCutoverRunner,
+    RolloutStep.RunReleaseMigration,
+    RolloutStep.StageTargetServices,
+    RolloutStep.ActivateTargetGeneration,
+    RolloutStep.CleanupCutoverRunner,
+    RolloutStep.ResumeTargetServices,
+    RolloutStep.VerifyLiveCanary,
+  ];
+  if (
+    value.receipts.length !== requiredSteps.length ||
+    value.receipts.some(
+      (receipt, index) => receipt.step !== requiredSteps[index],
+    )
+  )
+    throw new Error("trusted_rollout_evidence_required_receipts_missing");
   for (let index = 0; index < value.receipts.length; index += 1) {
     const receipt = value.receipts[index]!;
     const previous = value.receipts[index - 1]?.receiptSha256 ?? zero;
@@ -202,6 +229,14 @@ export function assertTrustedRolloutEvidence(
       throw new Error("trusted_rollout_evidence_receipt_chain_invalid");
   }
   if (
+    value.receipts.find(
+      (receipt) => receipt.step === RolloutStep.VerifyProtectedEnvironment,
+    )?.observationSha256 !== value.protectedEnvironmentPreflightSha256 ||
+    canonicalJson(
+      value.receipts.find(
+        (receipt) => receipt.step === RolloutStep.ResumeTargetServices,
+      )?.provider?.renderDeployIds,
+    ) !== canonicalJson(value.resumedTargetDeployIds) ||
     !value.receipts.some(
       (receipt) => canonicalJson(receipt) === canonicalJson(value.activation),
     ) ||

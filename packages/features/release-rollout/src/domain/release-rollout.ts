@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 export const RolloutPhase = Object.freeze({
   Planned: "planned",
+  PreflightVerified: "preflight_verified",
   ProviderFrozen: "provider_frozen",
   RoleRunnerProvisioned: "role_runner_provisioned",
   SourceBackupCaptured: "source_backup_captured",
@@ -29,6 +30,7 @@ export type RolloutPhase = (typeof RolloutPhase)[keyof typeof RolloutPhase];
 
 export const RolloutStep = Object.freeze({
   ClaimRollout: "claim_rollout",
+  VerifyProtectedEnvironment: "verify_protected_environment",
   FreezeProviderServices: "freeze_provider_services",
   ProvisionRoleRunner: "provision_role_runner",
   CaptureSourceBackup: "capture_source_backup",
@@ -59,6 +61,11 @@ const orderedTransitions: ReadonlyArray<
   [RolloutPhase.Planned, RolloutStep.ClaimRollout, RolloutPhase.Planned],
   [
     RolloutPhase.Planned,
+    RolloutStep.VerifyProtectedEnvironment,
+    RolloutPhase.PreflightVerified,
+  ],
+  [
+    RolloutPhase.PreflightVerified,
     RolloutStep.FreezeProviderServices,
     RolloutPhase.ProviderFrozen,
   ],
@@ -163,7 +170,8 @@ export interface ReleaseExecutionIdentity {
   readonly actor: string;
   readonly runId: string;
   readonly runAttempt: number;
-  readonly expectedJobName: string;
+  readonly roleJobName: string;
+  readonly cutoverJobName: string;
 }
 
 export type RunnerProvenance =
@@ -206,6 +214,8 @@ export interface StepObservation<T = unknown> {
   readonly provider?: {
     readonly renderJobId?: string;
     readonly renderDeployId?: string;
+    readonly renderDeployIds?: readonly string[];
+    readonly renderServiceIds?: readonly string[];
     readonly githubWorkflowJobId?: string;
   };
 }
@@ -320,7 +330,10 @@ function assertExecution(value: ReleaseExecutionIdentity, sha: string): void {
   )
     throw new Error("release_run_retry_forbidden");
   assertIdentifier(value.actor, "release_actor");
-  assertIdentifier(value.expectedJobName, "release_job_name");
+  assertIdentifier(value.roleJobName, "release_role_job_name");
+  assertIdentifier(value.cutoverJobName, "release_cutover_job_name");
+  if (value.roleJobName === value.cutoverJobName)
+    throw new Error("release_runner_jobs_not_distinct");
   if (!shaPattern.test(sha)) throw new Error("release_commit_invalid");
 }
 
@@ -359,7 +372,384 @@ function receiptDigest(receipt: Omit<StepReceipt, "receiptSha256">): string {
   return `sha256:${sha256Canonical(receipt)}`;
 }
 
-function assertObservation(observation: StepObservation): void {
+const runtimeRoles = Object.freeze([
+  "reviewrouter_api",
+  "reviewrouter_web",
+  "reviewrouter_worker",
+  "reviewrouter_codex_effect_authority",
+]);
+
+function record(value: unknown, error: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(error);
+  return value as Record<string, unknown>;
+}
+
+function array(value: unknown, error: string): readonly unknown[] {
+  if (!Array.isArray(value)) throw new Error(error);
+  return value;
+}
+
+function validTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
+}
+
+function assertDigest(value: unknown, error: string): void {
+  if (!digestPattern.test(String(value))) throw new Error(error);
+}
+
+function assertStepFacts(
+  rollout: ReleaseRollout,
+  observation: StepObservation,
+): void {
+  const facts =
+    observation.step === RolloutStep.StageTargetServices ||
+    observation.step === RolloutStep.ResumeTargetServices
+      ? {}
+      : record(observation.facts, "rollout_observation_facts_invalid");
+  switch (observation.step) {
+    case RolloutStep.ClaimRollout:
+      if (facts.durableClaim !== true)
+        throw new Error("rollout_durable_claim_unproven");
+      break;
+    case RolloutStep.VerifyProtectedEnvironment:
+      if (
+        facts.organization !== rollout.execution.organization ||
+        facts.repository !== rollout.execution.controlRepository ||
+        facts.workflowPath !== rollout.execution.workflowPath ||
+        facts.workflowRef !== rollout.execution.workflowRef ||
+        facts.sha !== rollout.expectedCommitSha ||
+        facts.event !== rollout.execution.event ||
+        facts.actor !== rollout.execution.actor ||
+        facts.runId !== rollout.execution.runId ||
+        facts.runAttempt !== 1 ||
+        typeof facts.environment !== "string" ||
+        !Number.isSafeInteger(facts.requiredReviewerCount) ||
+        Number(facts.requiredReviewerCount) < 1 ||
+        facts.preventSelfReview !== true ||
+        facts.protectedBranchesOnly !== true ||
+        !Number.isSafeInteger(facts.runnerGroupId) ||
+        Number(facts.runnerGroupId) < 1
+      )
+        throw new Error("protected_environment_observation_invalid");
+      assertDigest(
+        facts.observationSha256,
+        "protected_environment_observation_invalid",
+      );
+      break;
+    case RolloutStep.FreezeProviderServices: {
+      const services = array(
+        facts.services,
+        "source_writer_suspension_observation_invalid",
+      );
+      if (
+        facts.complete !== true ||
+        services.length === 0 ||
+        services.some((item) => {
+          const service = record(
+            item,
+            "source_writer_suspension_observation_invalid",
+          );
+          return (
+            typeof service.serviceId !== "string" ||
+            service.suspended !== true ||
+            !validTimestamp(service.observedAt) ||
+            typeof service.latestSuccessfulDeployId !== "string"
+          );
+        }) ||
+        canonicalJson(observation.provider?.renderServiceIds) !==
+          canonicalJson(
+            services.map(
+              (item) =>
+                record(item, "source_writer_suspension_observation_invalid")
+                  .serviceId,
+            ),
+          ) ||
+        canonicalJson(observation.provider?.renderDeployIds) !==
+          canonicalJson(
+            services.map(
+              (item) =>
+                record(item, "source_writer_suspension_observation_invalid")
+                  .latestSuccessfulDeployId,
+            ),
+          )
+      )
+        throw new Error("source_writer_suspension_observation_invalid");
+      break;
+    }
+    case RolloutStep.ProvisionRoleRunner:
+    case RolloutStep.ProvisionCutoverRunner: {
+      const lifecycle =
+        observation.step === RolloutStep.ProvisionRoleRunner
+          ? "role"
+          : "cutover";
+      const identity = facts as unknown as RunnerIdentity;
+      assertRunnerIdentity(identity, rollout, lifecycle);
+      if (
+        observation.provider?.renderJobId !== identity.renderJobId ||
+        observation.provider?.renderDeployId !== identity.provenance.deployId ||
+        observation.provider?.githubWorkflowJobId !== identity.workflowJobId
+      )
+        throw new Error("runner_provider_binding_invalid");
+      break;
+    }
+    case RolloutStep.CaptureSourceBackup: {
+      const backup = record(facts.backup, "source_backup_observation_invalid");
+      if (
+        backup.renderResourceId !== rollout.source.renderResourceId ||
+        backup.internalHostname !== rollout.source.internalHostname ||
+        backup.databaseName !== rollout.source.databaseName ||
+        backup.systemIdentifier !== rollout.source.systemIdentifier ||
+        facts.dumpSha256 !== backup.dumpSha256 ||
+        !validTimestamp(backup.capturedAt) ||
+        typeof backup.lsn !== "string" ||
+        !["available", "ready"].includes(String(backup.recoveryStatus))
+      )
+        throw new Error("source_backup_observation_invalid");
+      assertDigest(facts.dumpSha256, "source_backup_observation_invalid");
+      assertDigest(
+        backup.externalWitnessSha256,
+        "source_backup_observation_invalid",
+      );
+      break;
+    }
+    case RolloutStep.QuiesceSource: {
+      const services = array(
+        facts.writerServices,
+        "source_quiescence_observation_invalid",
+      );
+      const series = array(
+        facts.stabilizationSeries,
+        "source_quiescence_observation_invalid",
+      );
+      const denied = array(
+        facts.reconnectDeniedRoles,
+        "source_quiescence_observation_invalid",
+      );
+      if (
+        facts.complete !== true ||
+        services.length === 0 ||
+        services.some(
+          (item) =>
+            record(item, "source_quiescence_observation_invalid").suspended !==
+            true,
+        ) ||
+        series.length < 3 ||
+        series.some((count) => count !== 0) ||
+        [...denied].sort().join(",") !== [...runtimeRoles].sort().join(",")
+      )
+        throw new Error("source_quiescence_observation_invalid");
+      assertDigest(facts.aclSha256, "source_quiescence_observation_invalid");
+      break;
+    }
+    case RolloutStep.CopyDatabaseGeneration:
+      if (
+        facts.ownershipRestored !== false ||
+        facts.privilegesRestored !== false
+      )
+        throw new Error("database_copy_observation_invalid");
+      assertDigest(facts.dumpSha256, "database_copy_observation_invalid");
+      break;
+    case RolloutStep.VerifyDataEquivalence: {
+      const tables = array(
+        facts.tables,
+        "database_equivalence_observation_invalid",
+      );
+      const catalogs = record(
+        facts.catalogSha256,
+        "database_equivalence_observation_invalid",
+      );
+      if (
+        facts.equivalent !== true ||
+        facts.streamingHash !== true ||
+        Number(facts.maxProcessBufferBytes) > 8 * 1024 * 1024 ||
+        tables.length === 0 ||
+        tables.some((item) => {
+          const table = record(
+            item,
+            "database_equivalence_observation_invalid",
+          );
+          return (
+            table.sourceRows !== table.targetRows ||
+            table.sourceSha256 !== table.targetSha256 ||
+            !digestPattern.test(String(table.sourceSha256))
+          );
+        }) ||
+        Object.keys(catalogs).length !== 7 ||
+        Object.values(catalogs).some(
+          (value) => !digestPattern.test(String(value)),
+        )
+      )
+        throw new Error("database_equivalence_observation_invalid");
+      break;
+    }
+    case RolloutStep.BootstrapTargetRoles:
+      if (
+        facts.version !== 2 ||
+        facts.status !== "succeeded" ||
+        facts.commit !== rollout.expectedCommitSha ||
+        !Array.isArray(facts.roles) ||
+        facts.roles.length < 4
+      )
+        throw new Error("target_role_bootstrap_observation_invalid");
+      assertDigest(
+        facts.imageDigest,
+        "target_role_bootstrap_observation_invalid",
+      );
+      break;
+    case RolloutStep.CleanupRoleRunner:
+    case RolloutStep.CleanupCutoverRunner: {
+      const provider = record(
+        facts.provider,
+        "runner_cleanup_observation_invalid",
+      );
+      const runner = record(facts.runner, "runner_cleanup_observation_invalid");
+      if (
+        !["succeeded", "failed", "canceled"].includes(
+          String(provider.status),
+        ) ||
+        provider.id !== observation.provider?.renderJobId ||
+        runner.listenerStopped !== true ||
+        runner.workspaceRemoved !== true ||
+        runner.credentialProcessGone !== true ||
+        typeof runner.canary !== "string" ||
+        !String(runner.canary).startsWith(`rr-cleanup:${rollout.rolloutId}:`) ||
+        !validTimestamp(runner.observedAt)
+      )
+        throw new Error("runner_cleanup_observation_invalid");
+      break;
+    }
+    case RolloutStep.RunReleaseMigration:
+      if (
+        facts.version !== 3 ||
+        facts.status !== "succeeded" ||
+        facts.migrationStatus !== "succeeded" ||
+        facts.preflightStatus !== "passed" ||
+        facts.aclGateState !== "closed" ||
+        facts.commit !== rollout.expectedCommitSha ||
+        !Array.isArray(facts.roles) ||
+        facts.roles.length < 4
+      )
+        throw new Error("release_migration_observation_invalid");
+      assertDigest(facts.imageDigest, "release_migration_observation_invalid");
+      break;
+    case RolloutStep.StageTargetServices: {
+      const services = array(
+        observation.facts,
+        "target_stage_observation_invalid",
+      );
+      if (
+        services.length === 0 ||
+        services.some((item) => {
+          const service = record(item, "target_stage_observation_invalid");
+          const provenance = record(
+            service.provenance,
+            "target_stage_observation_invalid",
+          );
+          return (
+            service.suspended !== true ||
+            typeof service.deployId !== "string" ||
+            !digestPattern.test(String(service.envSha256)) ||
+            (provenance.kind === "git"
+              ? provenance.commitSha !== rollout.expectedCommitSha
+              : provenance.kind !== "image" ||
+                !digestPattern.test(String(provenance.imageSha)))
+          );
+        }) ||
+        canonicalJson(observation.provider?.renderServiceIds) !==
+          canonicalJson(
+            services.map(
+              (item) =>
+                record(item, "target_stage_observation_invalid").serviceId,
+            ),
+          ) ||
+        canonicalJson(observation.provider?.renderDeployIds) !==
+          canonicalJson(
+            services.map(
+              (item) =>
+                record(item, "target_stage_observation_invalid").deployId,
+            ),
+          )
+      )
+        throw new Error("target_stage_observation_invalid");
+      break;
+    }
+    case RolloutStep.ActivateTargetGeneration:
+      if (
+        facts.rolloutId !== rollout.rolloutId ||
+        facts.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
+        facts.targetSystemIdentifier !== rollout.target.systemIdentifier ||
+        facts.firstWriteBoundary !== true ||
+        !/^[0-9]+$/u.test(String(facts.transactionId))
+      )
+        throw new Error("activation_observation_invalid");
+      for (const key of [
+        "canonicalPrivilegesSha256",
+        "catalogFactsSha256",
+        "firstWriteReceiptSha256",
+        "observationSha256",
+      ])
+        assertDigest(facts[key], "activation_observation_invalid");
+      break;
+    case RolloutStep.ResumeTargetServices: {
+      const services = array(
+        observation.facts,
+        "target_resume_observation_invalid",
+      );
+      if (
+        services.length === 0 ||
+        services.some((item) => {
+          const service = record(item, "target_resume_observation_invalid");
+          return (
+            service.resumed !== true || typeof service.deployId !== "string"
+          );
+        }) ||
+        canonicalJson(observation.provider?.renderServiceIds) !==
+          canonicalJson(
+            services.map(
+              (item) =>
+                record(item, "target_resume_observation_invalid").serviceId,
+            ),
+          ) ||
+        canonicalJson(observation.provider?.renderDeployIds) !==
+          canonicalJson(
+            services.map(
+              (item) =>
+                record(item, "target_resume_observation_invalid").deployId,
+            ),
+          )
+      )
+        throw new Error("target_resume_observation_invalid");
+      break;
+    }
+    case RolloutStep.VerifyLiveCanary:
+      if (
+        facts.commitSha !== rollout.expectedCommitSha ||
+        facts.databaseSystemIdentifier !== rollout.target.systemIdentifier ||
+        facts.writeReadRoundTrip !== true
+      )
+        throw new Error("live_canary_observation_invalid");
+      break;
+    case RolloutStep.VerifyTrustedRollout:
+      assertDigest(
+        facts.evidenceSha256,
+        "trusted_evidence_observation_invalid",
+      );
+      break;
+    default:
+      throw new Error("rollout_observation_step_not_authorized");
+  }
+}
+
+function assertObservation(
+  rollout: ReleaseRollout,
+  observation: StepObservation,
+): void {
   parseRolloutStep(observation.step);
   if (new Date(observation.observedAt).toISOString() !== observation.observedAt)
     throw new Error("rollout_observation_timestamp_invalid");
@@ -370,6 +760,7 @@ function assertObservation(observation: StepObservation): void {
     )
   )
     throw new Error("rollout_observation_contains_secret");
+  assertStepFacts(rollout, observation);
 }
 
 /** Domain policy entry point. Application use cases are the only production callers. */
@@ -377,7 +768,7 @@ export function transitionFromObservation(
   rollout: ReleaseRollout,
   observation: StepObservation,
 ): ReleaseRollout {
-  assertObservation(observation);
+  assertObservation(rollout, observation);
   const replay = rollout.receipts.find(
     (item) => item.step === observation.step,
   );
@@ -495,6 +886,7 @@ export const assertRollbackTargetAllowed = assertPromotionAllowed;
 export function assertRunnerIdentity(
   identity: RunnerIdentity,
   rollout: ReleaseRollout,
+  lifecycle: "role" | "cutover",
 ): void {
   const expected = rollout.execution;
   if (
@@ -506,7 +898,8 @@ export function assertRunnerIdentity(
     identity.actor !== expected.actor ||
     identity.runId !== expected.runId ||
     identity.runAttempt !== expected.runAttempt ||
-    identity.workflowJobName !== expected.expectedJobName ||
+    identity.workflowJobName !==
+      (lifecycle === "role" ? expected.roleJobName : expected.cutoverJobName) ||
     identity.commitSha !== rollout.expectedCommitSha
   )
     throw new Error("runner_identity_mismatch");
@@ -539,9 +932,24 @@ export interface AuthoritativeGenerationLedger {
   }): Promise<"claimed" | "duplicate">;
   compareAndSet(input: {
     rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    step: RolloutStep;
+    provider: StepObservation["provider"];
     expectedReceiptSha256: string;
     nextReceiptSha256: string;
     authoritativeSystemIdentifier: string;
     activationBoundary: "before" | "activated" | "uncertain";
   }): Promise<boolean>;
+  markActivationUncertain(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+  }): Promise<void>;
 }

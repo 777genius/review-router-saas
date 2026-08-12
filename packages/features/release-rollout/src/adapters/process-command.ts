@@ -36,6 +36,7 @@ const allowedEnvironment = new Set([
   "PGPASSFILE",
   "PGSSLMODE",
   "PGCONNECT_TIMEOUT",
+  "PGHOSTADDR",
 ]);
 const secretPattern =
   /postgres(?:ql)?:\/\/|BEGIN [A-Z ]*PRIVATE KEY|(?:password|token|private[_-]?key)=/iu;

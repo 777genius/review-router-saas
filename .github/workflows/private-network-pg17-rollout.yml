@@ -30,6 +30,18 @@ env:
   REVIEW_ROUTER_RUNNER_GROUP_ID: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_ID }}
   REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID }}
   REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+  REVIEW_ROUTER_ROLE_WORKFLOW_JOB_NAME: copy-and-role-bootstrap-private
+  REVIEW_ROUTER_CUTOVER_WORKFLOW_JOB_NAME: pg17-cutover-private
+  REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID }}
+  REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID }}
+  REVIEW_ROUTER_SOURCE_INTERNAL_HOSTNAME: ${{ vars.REVIEW_ROUTER_SOURCE_INTERNAL_HOSTNAME }}
+  REVIEW_ROUTER_TARGET_INTERNAL_HOSTNAME: ${{ vars.REVIEW_ROUTER_TARGET_INTERNAL_HOSTNAME }}
+  REVIEW_ROUTER_SOURCE_DATABASE_NAME: ${{ vars.REVIEW_ROUTER_SOURCE_DATABASE_NAME }}
+  REVIEW_ROUTER_TARGET_DATABASE_NAME: ${{ vars.REVIEW_ROUTER_TARGET_DATABASE_NAME }}
+  REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER }}
+  REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER }}
+  REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256 }}
+  REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256 }}
 
 jobs:
   protected-preflight:
@@ -49,10 +61,18 @@ jobs:
           REVIEW_ROUTER_PROTECTED_ENVIRONMENT_NAME: production-release-preflight
           REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: protected-environment-preflight.json
         run: node --import tsx scripts/observe-private-pg17-protected-environment.ts
+      - name: Durably claim rollout and receipt observed preflight policy
+        env:
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
+          REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: protected-environment-preflight.json
+          REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: initial-rollout.json
+        run: node --import tsx scripts/initialize-private-pg17-rollout.ts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1
-          path: protected-environment-preflight.json
+          path: |
+            protected-environment-preflight.json
+            initial-rollout.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -74,8 +94,7 @@ jobs:
       - id: freeze
         name: Suspend and re-observe every source writer
         env:
-          RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
-          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
+          RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
           RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
           REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
         run: node --import tsx scripts/release-rollout-render-control.ts freeze
@@ -94,9 +113,14 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.expected_sha }}
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1
+          path: preflight
       - name: Copy, prove quiescence/equivalence, and bootstrap roles
         env:
           REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: copy-and-role-bootstrap-private
+          REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: preflight/initial-rollout.json
           REVIEW_ROUTER_FREEZE_OBSERVATION: ${{ needs.freeze-source-writers.outputs.observation }}
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
           RENDER_PROVENANCE_READ_API_KEY: ${{ secrets.RENDER_PROVENANCE_READ_API_KEY }}
@@ -109,16 +133,6 @@ jobs:
           REVIEW_ROUTER_WORKER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WORKER_DATABASE_URL }}
           REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
           REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON }}
-          REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID }}
-          REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID }}
-          REVIEW_ROUTER_SOURCE_INTERNAL_HOSTNAME: ${{ vars.REVIEW_ROUTER_SOURCE_INTERNAL_HOSTNAME }}
-          REVIEW_ROUTER_TARGET_INTERNAL_HOSTNAME: ${{ vars.REVIEW_ROUTER_TARGET_INTERNAL_HOSTNAME }}
-          REVIEW_ROUTER_SOURCE_DATABASE_NAME: ${{ vars.REVIEW_ROUTER_SOURCE_DATABASE_NAME }}
-          REVIEW_ROUTER_TARGET_DATABASE_NAME: ${{ vars.REVIEW_ROUTER_TARGET_DATABASE_NAME }}
-          REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER }}
-          REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER }}
-          REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256 }}
-          REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256 }}
           REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
           REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST }}
         run: node --import tsx scripts/run-private-pg17-copy-bootstrap.ts > copy-bootstrap-evidence.json

@@ -1,5 +1,6 @@
 import type {
   AuthoritativeGenerationLedger,
+  RolloutStep,
   StepObservation,
 } from "../domain/release-rollout";
 import type { RunnerIdentity } from "../domain/release-rollout";
@@ -56,15 +57,36 @@ export class PostgreSqlRolloutLedgerAdapter
   }
   async compareAndSet(input: {
     rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    step: RolloutStep;
+    provider: StepObservation["provider"];
     expectedReceiptSha256: string;
     nextReceiptSha256: string;
     authoritativeSystemIdentifier: string;
     activationBoundary: "before" | "activated" | "uncertain";
   }): Promise<boolean> {
     const result = this.sql(
-      `UPDATE reviewrouter_bootstrap.release_rollout_ledger SET last_receipt_sha256=${literal(input.nextReceiptSha256)}, authoritative_system_identifier=${literal(input.authoritativeSystemIdentifier)}, activation_boundary=${literal(input.activationBoundary)}, source_permanently_ineligible=(source_permanently_ineligible OR ${input.activationBoundary === "before" ? "false" : "true"}) WHERE rollout_id=${literal(input.rolloutId)} AND last_receipt_sha256=${literal(input.expectedReceiptSha256)} AND NOT (source_permanently_ineligible AND ${literal(input.authoritativeSystemIdentifier)}=source_system_identifier) RETURNING rollout_id`,
+      `WITH changed AS (UPDATE reviewrouter_bootstrap.release_rollout_ledger SET last_receipt_sha256=${literal(input.nextReceiptSha256)}, authoritative_system_identifier=${literal(input.authoritativeSystemIdentifier)}, activation_boundary=${literal(input.activationBoundary)}, source_permanently_ineligible=(source_permanently_ineligible OR ${input.activationBoundary === "before" ? "false" : "true"}) WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} AND last_receipt_sha256=${literal(input.expectedReceiptSha256)} AND NOT (source_permanently_ineligible AND ${literal(input.authoritativeSystemIdentifier)}=source_system_identifier) RETURNING rollout_id) INSERT INTO reviewrouter_bootstrap.release_rollout_receipt_ledger(rollout_id,expected_commit_sha,run_id,run_attempt,source_system_identifier,target_system_identifier,step,provider_binding,previous_receipt_sha256,receipt_sha256,activation_boundary) SELECT rollout_id,${literal(input.expectedCommitSha)},${literal(input.runId)},${input.runAttempt},${literal(input.sourceSystemIdentifier)},${literal(input.targetSystemIdentifier)},${literal(input.step)},${literal(JSON.stringify(input.provider ?? null))}::jsonb,${literal(input.expectedReceiptSha256)},${literal(input.nextReceiptSha256)},${literal(input.activationBoundary)} FROM changed RETURNING rollout_id`,
     );
     return result === input.rolloutId;
+  }
+  async markActivationUncertain(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+  }): Promise<void> {
+    const result = this.sql(
+      `UPDATE reviewrouter_bootstrap.release_rollout_ledger SET authoritative_system_identifier=target_system_identifier, activation_boundary='uncertain', source_permanently_ineligible=true WHERE rollout_id=${literal(input.rolloutId)} AND expected_commit_sha=${literal(input.expectedCommitSha)} AND run_id=${literal(input.runId)} AND run_attempt=${input.runAttempt} AND source_system_identifier=${literal(input.sourceSystemIdentifier)} AND target_system_identifier=${literal(input.targetSystemIdentifier)} RETURNING rollout_id`,
+    );
+    if (result !== input.rolloutId)
+      throw new Error("activation_uncertain_ledger_binding_mismatch");
   }
   async persistCreatedJob(value: PersistedRunnerJob): Promise<void> {
     const result = this.sql(

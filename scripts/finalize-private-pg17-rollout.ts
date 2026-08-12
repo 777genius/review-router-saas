@@ -29,7 +29,7 @@ const body = read<{
   quiescence: TrustedRolloutEvidence["quiescence"];
   equivalence: TrustedRolloutEvidence["equivalence"];
 }>("REVIEW_ROUTER_PRIVATE_ROLLOUT_BODY_FILE");
-const preflight = read<{ observationSha256: string }>(
+const preflight = read<Record<string, unknown>>(
   "REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE",
 );
 const expectations = JSON.parse(
@@ -47,6 +47,14 @@ const cutoverCleanupObservation = (await ledger.cleanupObservation(
   body.runners[1].renderJobId,
 )) as StepObservation<Record<string, unknown>>;
 let rollout = body.rollout;
+const preflightReceipt = rollout.receipts.find(
+  (receipt) => receipt.step === RolloutStep.VerifyProtectedEnvironment,
+);
+if (
+  !preflightReceipt ||
+  preflightReceipt.observationSha256 !== `sha256:${sha256Canonical(preflight)}`
+)
+  throw new Error("private_pg17_preflight_receipt_binding_invalid");
 let resumed: StepObservation<
   readonly { serviceId: string; deployId: string; resumed: true }[]
 >;
@@ -82,6 +90,7 @@ const cleanupEvidence = (
   };
 };
 const useCases = new ReleaseRolloutUseCases({
+  preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: unavailable,
     compensateAndObserve: unavailable,
@@ -131,7 +140,7 @@ const useCases = new ReleaseRolloutUseCases({
         backup: body.backup,
         quiescence: body.quiescence,
         equivalence: body.equivalence,
-        protectedEnvironmentPreflightSha256: preflight.observationSha256,
+        protectedEnvironmentPreflightSha256: preflightReceipt.observationSha256,
         receipts: current.receipts,
         activation: current.activationReceipt!,
         resumedTargetDeployIds: resumed.facts.map((item) => item.deployId),

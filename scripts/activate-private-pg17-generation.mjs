@@ -39,8 +39,10 @@ export function executePrivateGenerationActivation(
         env: connection.env,
         input: options.input,
       }).stdout;
-    } catch {
-      throw new Error(`release_activation_step_failed:${step}`);
+    } catch (error) {
+      throw new Error(`release_activation_step_failed:${step}`, {
+        cause: error,
+      });
     } finally {
       connection.cleanup();
     }

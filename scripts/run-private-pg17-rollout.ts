@@ -52,6 +52,7 @@ let migration: unknown;
 let activation: StepObservation;
 let staged: StepObservation;
 const useCases = new ReleaseRolloutUseCases({
+  preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: unavailable,
     compensateAndObserve: unavailable,

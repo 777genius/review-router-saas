@@ -57,7 +57,7 @@ jobs:
           RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
         run: node --import tsx scripts/release-rollout-render-control.ts provision
       - name: Unconditionally reconcile created or orphaned runner jobs
-        if: ${{ always() }}
+        if: ${{ failure() }}
         env:
           RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}

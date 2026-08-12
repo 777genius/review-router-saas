@@ -97,6 +97,10 @@ export class RenderTargetServicesAdapter {
       step: RolloutStep.StageTargetServices,
       observedAt: new Date().toISOString(),
       facts: Object.freeze(facts),
+      provider: {
+        renderServiceIds: Object.freeze(facts.map((item) => item.serviceId)),
+        renderDeployIds: Object.freeze(facts.map((item) => item.deployId)),
+      },
     };
   }
 
@@ -132,6 +136,10 @@ export class RenderTargetServicesAdapter {
       step: RolloutStep.ResumeTargetServices,
       observedAt: new Date().toISOString(),
       facts,
+      provider: {
+        renderServiceIds: Object.freeze(facts.map((item) => item.serviceId)),
+        renderDeployIds: Object.freeze(facts.map((item) => item.deployId)),
+      },
     };
   }
 

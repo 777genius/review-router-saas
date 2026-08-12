@@ -465,6 +465,8 @@ WHERE EXISTS (
     AND acl.privilege_type = 'CREATE'
 )
 \\gexec
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())
+\\gexec
 SELECT format('GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration', current_database())
 \\gexec
 GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_migration;
@@ -503,9 +505,12 @@ BEGIN
 END
 $ownership$;
 DO $activation_boundary$
+DECLARE activation_count bigint;
 BEGIN
-  IF to_regclass('reviewrouter_bootstrap.release_generation_activation_receipt') IS NOT NULL
-     AND EXISTS (SELECT 1 FROM reviewrouter_bootstrap.release_generation_activation_receipt) THEN
+  IF to_regclass('reviewrouter_bootstrap.release_generation_activation_receipt') IS NOT NULL THEN
+    EXECUTE 'SELECT count(*) FROM reviewrouter_bootstrap.release_generation_activation_receipt' INTO activation_count;
+  END IF;
+  IF coalesce(activation_count, 0) > 0 THEN
     RAISE EXCEPTION 'role bootstrap forbidden after generation activation';
   END IF;
 END
@@ -523,6 +528,17 @@ BEGIN
     WHERE namespace.nspname = 'public'
       AND owner.rolname = 'reviewrouter_role_bootstrap'
       AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+      AND (
+        relation.relkind <> 'S'
+        OR NOT EXISTS (
+          SELECT 1
+          FROM pg_depend dependency
+          WHERE dependency.classid = 'pg_class'::regclass
+            AND dependency.objid = relation.oid
+            AND dependency.refclassid = 'pg_class'::regclass
+            AND dependency.deptype IN ('a', 'i')
+        )
+      )
   LOOP
     EXECUTE CASE owned_object.relkind
       WHEN 'S' THEN format('ALTER SEQUENCE %s OWNER TO reviewrouter_release_migration', owned_object.oid::regclass)
@@ -609,6 +625,24 @@ CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_rollout_ledger (
 );
 ALTER TABLE reviewrouter_bootstrap.release_rollout_ledger OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON TABLE reviewrouter_bootstrap.release_rollout_ledger FROM PUBLIC;
+CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_rollout_receipt_ledger (
+  receipt_sha256 text PRIMARY KEY CHECK (receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  rollout_id text NOT NULL REFERENCES reviewrouter_bootstrap.release_rollout_ledger(rollout_id),
+  expected_commit_sha text NOT NULL CHECK (expected_commit_sha ~ '^[a-f0-9]{40}$'),
+  run_id text NOT NULL CHECK (run_id ~ '^[1-9][0-9]*$'),
+  run_attempt integer NOT NULL CHECK (run_attempt = 1),
+  source_system_identifier text NOT NULL CHECK (source_system_identifier ~ '^[0-9]+$'),
+  target_system_identifier text NOT NULL CHECK (target_system_identifier ~ '^[0-9]+$'),
+  step text NOT NULL,
+  provider_binding jsonb,
+  previous_receipt_sha256 text NOT NULL CHECK (previous_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  activation_boundary text NOT NULL CHECK (activation_boundary IN ('before','activated')),
+  recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  UNIQUE (rollout_id, step),
+  CHECK (source_system_identifier <> target_system_identifier)
+);
+ALTER TABLE reviewrouter_bootstrap.release_rollout_receipt_ledger OWNER TO reviewrouter_role_bootstrap;
+REVOKE ALL ON TABLE reviewrouter_bootstrap.release_rollout_receipt_ledger FROM PUBLIC;
 CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_runner_job_ledger (
   job_id text PRIMARY KEY,
   rollout_id text NOT NULL REFERENCES reviewrouter_bootstrap.release_rollout_ledger(rollout_id),
@@ -672,7 +706,7 @@ BEGIN
      OR has_schema_privilege('public', 'public', 'CREATE') THEN
     RAISE EXCEPTION 'canonical runtime role/ownership/PUBLIC matrix invalid';
   END IF;
-  SELECT 'sha256:' || encode(digest(convert_to(jsonb_build_object(
+  SELECT 'sha256:' || encode(public.digest(convert_to(jsonb_build_object(
     'roles', (SELECT jsonb_agg(jsonb_build_object('role',rolname,'connect',has_database_privilege(rolname,current_database(),'CONNECT'),'bypassRls',rolbypassrls) ORDER BY rolname) FROM pg_roles WHERE rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web','reviewrouter_worker','reviewrouter_codex_effect_authority'])),
     'schemas', (SELECT jsonb_agg(jsonb_build_object('schema',nspname,'owner',pg_get_userbyid(nspowner),'acl',nspacl) ORDER BY nspname) FROM pg_namespace WHERE nspname IN ('public','reviewrouter_bootstrap')),
     'defaultPrivileges', (SELECT coalesce(jsonb_agg(jsonb_build_object('owner',pg_get_userbyid(defaclrole),'namespace',defaclnamespace,'type',defaclobjtype,'acl',defaclacl) ORDER BY defaclrole,defaclnamespace,defaclobjtype),'[]'::jsonb) FROM pg_default_acl),
@@ -684,7 +718,7 @@ BEGIN
   IF FOUND THEN
     RAISE EXCEPTION 'duplicate activation receipt rejected';
   ELSE
-    first_write_receipt_sha256 := 'sha256:' || encode(digest(convert_to(requested_rollout_id || ':' || requested_source_system_identifier || ':' || requested_target_system_identifier || ':' || requested_canonical_privileges_sha256 || ':' || catalog_facts_sha256,'UTF8'),'sha256'),'hex');
+    first_write_receipt_sha256 := 'sha256:' || encode(public.digest(convert_to(requested_rollout_id || ':' || requested_source_system_identifier || ':' || requested_target_system_identifier || ':' || requested_canonical_privileges_sha256 || ':' || catalog_facts_sha256,'UTF8'),'sha256'),'hex');
     INSERT INTO reviewrouter_bootstrap.release_generation_activation_receipt (
       rollout_id, source_system_identifier, target_system_identifier,
       canonical_privileges_sha256, catalog_facts_sha256,
@@ -984,6 +1018,7 @@ export function runtimeGrantStatements(
     .join(", ");
   return `
 REVOKE CREATE ON DATABASE ${databaseTarget} FROM PUBLIC;
+REVOKE CONNECT ON DATABASE ${databaseTarget} FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ${configuration.roles
   .filter(({ role }) => role !== "effect-authority")
@@ -1070,6 +1105,7 @@ REVOKE CREATE ON SCHEMA public FROM reviewrouter_codex_effect_authority;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_codex_effect_authority;
 GRANT EXECUTE ON FUNCTION public."codex_oauth_sign_database_authority"(text) TO reviewrouter_codex_effect_authority;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.digest(bytea, text) TO reviewrouter_role_bootstrap;
 `;
 }
 

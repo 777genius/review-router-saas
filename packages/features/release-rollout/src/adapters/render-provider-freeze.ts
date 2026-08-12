@@ -51,6 +51,14 @@ export class RenderProviderFreezeAdapter {
       step: RolloutStep.FreezeProviderServices,
       observedAt: new Date().toISOString(),
       facts: { services: Object.freeze(observations), complete: true },
+      provider: {
+        renderServiceIds: Object.freeze(
+          observations.map((item) => item.serviceId),
+        ),
+        renderDeployIds: Object.freeze(
+          observations.map((item) => item.latestSuccessfulDeployId),
+        ),
+      },
     });
   }
 }

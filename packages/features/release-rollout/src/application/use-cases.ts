@@ -13,6 +13,7 @@ import type {
   DatabaseRolloutPort,
   PrivateRunnerPort,
   ProviderControlPort,
+  ReleasePreflightPort,
   RolloutLedgerPort,
   TargetServicesPort,
   TrustedEvidencePort,
@@ -22,6 +23,7 @@ export class ReleaseRolloutUseCases {
   constructor(
     private readonly ports: {
       provider: ProviderControlPort;
+      preflight: ReleasePreflightPort;
       runner: PrivateRunnerPort;
       database: DatabaseRolloutPort;
       services: TargetServicesPort;
@@ -41,6 +43,13 @@ export class ReleaseRolloutUseCases {
     const activated = next.sourcePermanentlyIneligible;
     const changed = await this.ports.ledger.compareAndSet({
       rolloutId: r.rolloutId,
+      expectedCommitSha: r.expectedCommitSha,
+      runId: r.execution.runId,
+      runAttempt: r.execution.runAttempt,
+      sourceSystemIdentifier: r.source.systemIdentifier,
+      targetSystemIdentifier: r.target.systemIdentifier,
+      step: observation.step,
+      provider: observation.provider,
       expectedReceiptSha256:
         r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`,
       nextReceiptSha256: next.receipts.at(-1)!.receiptSha256,
@@ -56,6 +65,13 @@ export class ReleaseRolloutUseCases {
           : "rollout_receipt_ledger_cas_failed",
       );
     return next;
+  }
+  async verifyProtectedEnvironment(r: ReleaseRollout) {
+    return await this.accept(
+      r,
+      await this.ports.preflight.observeProtectedEnvironment(),
+      RolloutStep.VerifyProtectedEnvironment,
+    );
   }
 
   async claimRollout(r: ReleaseRollout): Promise<ReleaseRollout> {
@@ -92,7 +108,11 @@ export class ReleaseRolloutUseCases {
       | typeof RolloutStep.ProvisionCutoverRunner,
   ) {
     const result = await this.ports.runner.provision();
-    assertRunnerIdentity(result.identity, r);
+    assertRunnerIdentity(
+      result.identity,
+      r,
+      step === RolloutStep.ProvisionRoleRunner ? "role" : "cutover",
+    );
     return {
       rollout: await this.accept(r, result.observation, step),
       runner: result.identity,
@@ -161,11 +181,34 @@ export class ReleaseRolloutUseCases {
     );
   }
   async activateTargetGeneration(r: ReleaseRollout) {
-    return await this.accept(
-      r,
-      await this.ports.database.activate(r.source, r.target),
-      RolloutStep.ActivateTargetGeneration,
-    );
+    try {
+      return await this.accept(
+        r,
+        await this.ports.database.activate(r.source, r.target),
+        RolloutStep.ActivateTargetGeneration,
+      );
+    } catch (error) {
+      try {
+        await this.ports.ledger.markActivationUncertain({
+          rolloutId: r.rolloutId,
+          expectedCommitSha: r.expectedCommitSha,
+          runId: r.execution.runId,
+          runAttempt: r.execution.runAttempt,
+          sourceSystemIdentifier: r.source.systemIdentifier,
+          targetSystemIdentifier: r.target.systemIdentifier,
+        });
+      } catch (ledgerError) {
+        throw new AggregateError(
+          [error, ledgerError],
+          "activation_uncertain_and_ledger_mark_failed",
+          { cause: ledgerError },
+        );
+      }
+      throw new Error(
+        `activation_uncertain:${error instanceof Error ? error.message : "unknown"}`,
+        { cause: error },
+      );
+    }
   }
   async cleanupCutoverRunner(r: ReleaseRollout, identity: RunnerIdentity) {
     return await this.accept(
@@ -206,18 +249,14 @@ export class ReleaseRolloutUseCases {
       failure === "activation_uncertain" ||
       failed.sourcePermanentlyIneligible
     ) {
-      const current =
-        r.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
-      if (
-        !(await this.ports.ledger.compareAndSet({
-          rolloutId: r.rolloutId,
-          expectedReceiptSha256: current,
-          nextReceiptSha256: current,
-          authoritativeSystemIdentifier: r.target.systemIdentifier,
-          activationBoundary: "uncertain",
-        }))
-      )
-        throw new Error("activation_uncertain_ledger_cas_failed");
+      await this.ports.ledger.markActivationUncertain({
+        rolloutId: r.rolloutId,
+        expectedCommitSha: r.expectedCommitSha,
+        runId: r.execution.runId,
+        runAttempt: r.execution.runAttempt,
+        sourceSystemIdentifier: r.source.systemIdentifier,
+        targetSystemIdentifier: r.target.systemIdentifier,
+      });
       return failed;
     }
     const compensating = beginCompensation(failed);
