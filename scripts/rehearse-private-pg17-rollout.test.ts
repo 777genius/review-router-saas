@@ -45,6 +45,9 @@ describe("disposable dual-version rehearsal", () => {
       "reconnectDenied",
       "beginCompensation",
       "assertPromotionAllowed",
+      "durable-rollout-ledger.json",
+      "REVIEW_ROUTER_DATABASE_URL_FILE",
+      "readFileSync(ledgerPath",
     ])
       expect(source).toContain(required);
     expect(source).not.toContain("writersSuspended: true");
@@ -52,5 +55,7 @@ describe("disposable dual-version rehearsal", () => {
       'command === "pnpm" && step === "deploy_migrations"',
     );
     expect(source).not.toContain("rehearsal_001");
+    expect(source).not.toMatch(/"run",\s*"--env",\s*"POSTGRES_PASSWORD/u);
+    expect(source).not.toContain("env: { ...process.env, DATABASE_URL:");
   });
 });
