@@ -340,6 +340,13 @@ const observe = (step: (typeof steps)[number], index: number) => {
         facts: {
           commitSha: "d".repeat(40),
           databaseSystemIdentifier: "200",
+          recoveryWitnessSha256: "b".repeat(64),
+          runtimeWitnessProofs: ["api", "web", "worker"].map((runtimeRole) => ({
+            runtimeRole,
+            databaseRole: `reviewrouter_${runtimeRole}`,
+            recoveryWitnessSha256: "b".repeat(64),
+            provedAt: observedAt,
+          })),
           writeReadRoundTrip: true,
         },
       };

@@ -376,6 +376,9 @@ export class TransactionalServiceCutover {
       if (!sourceEnv)
         throw new Error("service_transition_source_environment_missing");
       await this.provider.suspend(contract.serviceId);
+      const beforeRestore = await this.provider.observe(contract.serviceId);
+      if (!beforeRestore.suspended)
+        throw new Error("service_transition_recovery_quiescence_unproven");
       await this.checkpoint(common, contract.serviceId, "restore_config_intent");
       await this.provider.configureSource(contract);
       await this.checkpoint(common, contract.serviceId, "source_config_restored");
@@ -390,10 +393,19 @@ export class TransactionalServiceCutover {
         observedEnvSha256: envHash,
       });
       await this.checkpoint(common, contract.serviceId, "restore_deploy_intent");
-      const deployId = await this.provider.deployCommit(
-        contract.serviceId,
-        contract.sourceCommitSha,
-      );
+      const persistedDeploy = [...checkpoints]
+        .reverse()
+        .find(
+          (item) =>
+            item.serviceId === contract.serviceId &&
+            item.step === "source_deployed",
+        )?.deployId;
+      const deployId =
+        persistedDeploy ??
+        (await this.provider.deployCommit(
+          contract.serviceId,
+          contract.sourceCommitSha,
+        ));
       await this.provider.waitForDeploy(contract.serviceId, deployId);
       await this.checkpoint(common, contract.serviceId, "source_deployed", {
         deployId,

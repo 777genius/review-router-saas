@@ -25,6 +25,10 @@ export class RenderTransactionalServicesAdapter
   implements TransactionalRenderProvider
 {
   private readonly api: RenderApiAdapter;
+  private readonly expectedDeploys = new Map<
+    string,
+    { kind: "image"; imageUrl: string } | { kind: "git"; commitSha: string }
+  >();
   constructor(
     apiKey: string,
     fetchImpl: RenderFetch = fetch,
@@ -165,18 +169,41 @@ export class RenderTransactionalServicesAdapter
   async deployImage(serviceId: string, imageUrl: string): Promise<string> {
     if (!imageUrl.includes("@sha256:"))
       throw new Error("service_transition_image_digest_invalid");
-    return (await this.api.createPinnedDeploy(serviceId)).id;
+    const deploy = await this.api.createPinnedDeploy(serviceId);
+    this.expectedDeploys.set(deploy.id, { kind: "image", imageUrl });
+    return deploy.id;
   }
 
   async deployCommit(serviceId: string, commitSha: string): Promise<string> {
-    return (await this.api.createPinnedDeploy(serviceId, commitSha)).id;
+    const deploy = await this.api.createPinnedDeploy(serviceId, commitSha);
+    this.expectedDeploys.set(deploy.id, { kind: "git", commitSha });
+    return deploy.id;
   }
 
   async waitForDeploy(serviceId: string, deployId: string): Promise<void> {
     for (let attempt = 0; attempt < 90; attempt += 1) {
-      const deploys = await this.api.listAllDeploys(serviceId);
-      const selected = deploys.find((item) => item.id === deployId);
-      if (selected?.status === "live") return;
+      const selected = await this.api.getDeploy(serviceId, deployId);
+      if (selected.status === "live") {
+        const expected = this.expectedDeploys.get(deployId);
+        if (!expected) throw new Error("service_transition_deploy_expectation_missing");
+        if (expected.kind === "git") {
+          if (selected.commit?.id !== expected.commitSha || selected.image)
+            throw new Error("service_transition_deploy_provenance_mismatch");
+        } else {
+          const expectedDigest = expected.imageUrl.slice(
+            expected.imageUrl.indexOf("sha256:") + 7,
+          );
+          const actualDigest = selected.image?.sha.replace(/^sha256:/u, "");
+          if (
+            actualDigest !== expectedDigest ||
+            selected.commit ||
+            (selected.image?.ref !== undefined &&
+              selected.image.ref !== expected.imageUrl)
+          )
+            throw new Error("service_transition_deploy_provenance_mismatch");
+        }
+        return;
+      }
       if (selected && !active.has(selected.status))
         throw new Error("service_transition_deploy_failed");
       await this.sleep(2_000);

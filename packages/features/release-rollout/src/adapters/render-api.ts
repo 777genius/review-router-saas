@@ -26,7 +26,7 @@ export interface RenderDeploy {
   readonly id: string;
   readonly status: string;
   readonly commit?: { readonly id: string };
-  readonly image?: { readonly sha: string };
+  readonly image?: { readonly sha: string; readonly ref?: string };
   readonly createdAt?: string;
   readonly updatedAt?: string;
   readonly finishedAt?: string;
@@ -208,6 +208,33 @@ export class RenderApiAdapter {
       cursor = page.nextCursor ?? undefined;
     } while (cursor);
     return Object.freeze(all);
+  }
+
+  async getDeploy(serviceId: string, deployId: string): Promise<RenderDeploy> {
+    const value = requireSubset(
+      await body(
+        await this.fetchImpl(
+          `${origin}/services/${encodeURIComponent(serviceId)}/deploys/${encodeURIComponent(deployId)}`,
+          { headers: headers(this.token) },
+        ),
+        "deploy",
+      ),
+      ["id", "status"],
+      "render_deploy_response_invalid",
+    );
+    if (
+      !string(value.id) ||
+      !string(value.status) ||
+      (value.commit !== undefined &&
+        (!record(value.commit) || !string(value.commit.id))) ||
+      (value.image !== undefined &&
+        (!record(value.image) ||
+          !string(value.image.sha) ||
+          (value.image.ref !== undefined && !string(value.image.ref)))) ||
+      (value.commit !== undefined && value.image !== undefined)
+    )
+      throw new Error("render_deploy_response_invalid");
+    return value as unknown as RenderDeploy;
   }
 
   async createDeploy(serviceId: string): Promise<RenderDeploy> {
