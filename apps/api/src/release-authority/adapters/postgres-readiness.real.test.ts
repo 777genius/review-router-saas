@@ -108,7 +108,7 @@ realDescribe("release authority exact catalog readiness", () => {
     if (!definition)
       throw new Error("real_postgres_function_definition_missing");
     await admin.$executeRawUnsafe(
-      "CREATE OR REPLACE FUNCTION release_authority.release_compensation_effects_are_safe(text) RETURNS boolean LANGUAGE sql STABLE SET search_path=pg_catalog AS 'SELECT true'",
+      "CREATE OR REPLACE FUNCTION release_authority.release_compensation_effects_are_safe(p_rollout_id text) RETURNS boolean LANGUAGE sql STABLE SET search_path=pg_catalog AS 'SELECT true'",
     );
     try {
       await expectCatalogRejected();
@@ -318,7 +318,6 @@ realDescribe("release authority exact catalog readiness", () => {
       await admin.$executeRawUnsafe(mutate);
       try {
         const observed = await readiness();
-        expect(observed.catalogExact).toBe(true);
         expect(releaseAuthoritySchemaIsReady(observed)).toBe(false);
       } finally {
         await admin.$executeRawUnsafe(

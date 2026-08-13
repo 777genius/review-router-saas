@@ -3,8 +3,9 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../../.." && pwd)
 name="rr-release-authority-pg17-$$"
+contract_tmp=$(mktemp -d)
 docker run -d --rm --name "$name" -p 127.0.0.1::5432 -e POSTGRES_PASSWORD=test postgres:17-alpine >/dev/null
-trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+trap 'docker rm -f "$name" >/dev/null 2>&1 || true; rm -rf "$contract_tmp"' EXIT
 
 for _ in $(seq 1 60); do
   # The official image briefly exposes an init-only Unix socket before it
@@ -1486,7 +1487,7 @@ first_claim=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_claim(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'ownerId','recovery-worker-1','leaseSeconds',5))")
+    'kind','restore_database_writes','ownerId','recovery_worker_1','leaseSeconds',5))")
 first_epoch=$(printf '%s' "$first_claim" | sed -n 's/.*"epoch": \([0-9]*\).*/\1/p')
 first_token=$(printf '%s' "$first_claim" | sed -n 's/.*"permitToken": "\([a-f0-9]*\)".*/\1/p')
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
@@ -1496,7 +1497,7 @@ second_claim=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_claim(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'ownerId','recovery-worker-2','leaseSeconds',30))")
+    'kind','restore_database_writes','ownerId','recovery_worker_2','leaseSeconds',30))")
 second_epoch=$(printf '%s' "$second_claim" | sed -n 's/.*"epoch": \([0-9]*\).*/\1/p')
 second_token=$(printf '%s' "$second_claim" | sed -n 's/.*"permitToken": "\([a-f0-9]*\)".*/\1/p')
 test "$second_epoch" -gt "$first_epoch"
@@ -1504,22 +1505,24 @@ if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_consume(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'ownerId','recovery-worker-1','epoch',$first_epoch,'permitToken','$first_token'))" >/dev/null 2>&1; then
+    'ownerId','recovery_worker_1','epoch',$first_epoch,'permitToken','$first_token'))" >/dev/null 2>&1; then
   echo "expired recovery permit unexpectedly replayed" >&2
   exit 1
 fi
+recovery_consume_a="$contract_tmp/recovery-consume-a.json"
+recovery_consume_b="$contract_tmp/recovery-consume-b.json"
 (docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_consume(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'kind','restore_database_writes','ownerId','recovery_worker_2',
     'epoch',$second_epoch,'permitToken','$second_token'))" >"$recovery_consume_a") &
 consume_pid_a=$!
 (docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_consume(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'kind','restore_database_writes','ownerId','recovery_worker_2',
     'epoch',$second_epoch,'permitToken','$second_token'))" >"$recovery_consume_b") &
 consume_pid_b=$!
 wait "$consume_pid_a" "$consume_pid_b"
@@ -1532,7 +1535,7 @@ validated_execution=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_validate_execution(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'kind','restore_database_writes','ownerId','recovery_worker_2',
     'epoch',$second_epoch,'permitToken','$second_token','executionReceipt','$execution_receipt'))")
 test "$(printf '%s' "$validated_execution" | grep -c '"executionAuthorization": {')" = 1
 # Validation is one-shot just like consumption; replay never authorizes I/O.
@@ -1540,14 +1543,14 @@ validation_replay=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_S
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_validate_execution(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'kind','restore_database_writes','ownerId','recovery_worker_2',
     'epoch',$second_epoch,'permitToken','$second_token','executionReceipt','$execution_receipt'))")
 test "$(printf '%s' "$validation_replay" | grep -c '"executionAuthorization": null')" = 1
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_complete(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'kind','restore_database_writes','ownerId','recovery_worker_2',
     'epoch',$second_epoch,'permitToken','$second_token','executionReceipt','$execution_receipt','observation',
     jsonb_build_object('sourceWritesRestored',true,'observedAt','$now',
       'environmentDelta',jsonb_build_object('PASSWORD','secret'))))" >/dev/null 2>&1; then
@@ -1571,7 +1574,7 @@ docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_complete(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'kind','restore_database_writes','ownerId','recovery_worker_2',
     'epoch',$second_epoch,'permitToken','$second_token','executionReceipt','$execution_receipt','observation',
     jsonb_build_object('sourceWritesRestored',true,'observedAt','$now')))" >/dev/null
 test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
