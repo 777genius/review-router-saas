@@ -29,7 +29,7 @@ UPDATE release_authority.runner_intent SET
     WHEN outcome = 'persistence_failed_cleaned' THEN 'cleaned'
     ELSE 'blocked'
   END,
-  effect_safe_for_compensation = outcome = 'persistence_failed_cleaned',
+  effect_safe_for_compensation = coalesce(outcome = 'persistence_failed_cleaned', false),
   effect_block_reason = CASE
     WHEN outcome IS NULL OR outcome = 'persistence_failed_unknown'
       THEN 'unresolved_legacy' ELSE NULL END,
@@ -209,8 +209,8 @@ BEGIN
     IF coalesce(p_input->>'jobId','') = ''
       OR jsonb_typeof(p_input->'observation') IS DISTINCT FROM 'object'
       OR p_input->'observation'->>'step' IS DISTINCT FROM
-        CASE current_row.lifecycle WHEN 'role' THEN 'cleanup_role_runner'
-          ELSE 'cleanup_cutover_runner' END
+        (CASE current_row.lifecycle WHEN 'role' THEN 'cleanup_role_runner'
+          ELSE 'cleanup_cutover_runner' END)
       OR p_input->'observation'->'provider'->>'renderJobId' IS DISTINCT FROM p_input->>'jobId'
       OR p_input->'observation'->'facts'->'provider'->>'id' IS DISTINCT FROM p_input->>'jobId'
       OR p_input->'observation'->'facts'->'provider'->>'serviceId' IS DISTINCT FROM current_row.service_id
