@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   assertMonotonic,
-  assertServerDispatch,
+  assertRerunAttempt,
   readCanaryConfig,
-  selectServerDispatch,
   triggerHostedProgressCanary,
   verifyHostedProgressCanary,
 } from "./run-hosted-live-progress-canary.mjs";
@@ -97,50 +96,24 @@ describe("hosted live-progress canary", () => {
     ).rejects.toThrow("hosted_progress_canary_fixture_profile_mismatch");
   });
 
-  it("binds the new server dispatch to head, time, request identity and producer", () => {
-    const result = assertServerDispatch(
-      dispatchRun(),
-      receipt(),
-      configFixture(),
-      999,
-    );
-    expect(result.requestId).toBe("rr_request_123");
+  it("binds the exact next attempt to source run, head, workflow and producer", () => {
     expect(() =>
-      assertServerDispatch(
-        { ...dispatchRun(), head_sha: "d".repeat(40) },
-        receipt(),
-        configFixture(),
-        999,
-      ),
-    ).toThrow("hosted_progress_canary_dispatch_contract_mismatch");
+      assertRerunAttempt(rerunAttempt(), receipt(), configFixture()),
+    ).not.toThrow();
     expect(() =>
-      assertServerDispatch(
-        { ...dispatchRun(), display_title: "ReviewRouter Codex OAuth" },
+      assertRerunAttempt(
+        { ...rerunAttempt(), head_sha: "d".repeat(40) },
         receipt(),
         configFixture(),
-        999,
       ),
-    ).toThrow("hosted_progress_canary_dispatch_contract_mismatch");
-  });
-
-  it("fails closed when more than one dispatch matches", () => {
+    ).toThrow("hosted_progress_canary_rerun_attempt_contract_mismatch");
     expect(() =>
-      selectServerDispatch(
-        [dispatchRun(), { ...dispatchRun(), id: 1000 }],
+      assertRerunAttempt(
+        { ...rerunAttempt(), run_attempt: 3 },
         receipt(),
         configFixture(),
       ),
-    ).toThrow("hosted_progress_canary_dispatch_ambiguous");
-  });
-
-  it("does not accept a dispatch created before the trigger receipt", () => {
-    expect(
-      selectServerDispatch(
-        [{ ...dispatchRun(), created_at: "2026-08-13T09:59:59Z" }],
-        receipt(),
-        configFixture(),
-      ),
-    ).toBeUndefined();
+    ).toThrow("hosted_progress_canary_rerun_attempt_contract_mismatch");
   });
 
   it("proves one bot/app comment ID, dynamic updates and exact terminal coverage", async () => {
@@ -151,18 +124,11 @@ describe("hosted live-progress canary", () => {
       [comment(41, progress("Complete", 72, 72, 108, 108, 3))],
     ];
     let index = 0;
-    github.getWorkflowRun
-      .mockReset()
-      .mockImplementation(async (_repo: string, id: number) =>
-        id === 123
-          ? { ...sourceRun(), run_attempt: 2 }
-          : {
-              ...dispatchRun(),
-              status: index >= 2 ? "completed" : "in_progress",
-              conclusion: index >= 2 ? "success" : null,
-            },
-      );
-    github.listWorkflowRuns.mockResolvedValue([dispatchRun()]);
+    github.getWorkflowRunAttempt.mockImplementation(async () => ({
+      ...rerunAttempt(),
+      status: index >= 2 ? "completed" : "in_progress",
+      conclusion: index >= 2 ? "success" : null,
+    }));
     github.listComments.mockImplementation(
       async () => comments[Math.min(index++, 2)],
     );
@@ -172,7 +138,6 @@ describe("hosted live-progress canary", () => {
       { github, now: tickingClock(), sleep: async () => undefined },
     );
     expect(result).toMatchObject({
-      requestId: "rr_request_123",
       commentId: 41,
       progressUpdates: 3,
       terminal: "Complete",
@@ -278,20 +243,18 @@ function fakeGitHub() {
       })),
     ),
     getWorkflowRun: vi.fn(async () => sourceRun()),
+    getWorkflowRunAttempt: vi.fn(async () => null),
     getFile: vi.fn(async () => ({ sha: workflowBlob })),
     rerunWorkflow: vi.fn(async () => undefined),
-    listWorkflowRuns: vi.fn(async () => []),
     listComments: vi.fn(async () => []),
   };
 }
 function readyVerifierGitHub() {
   const github = fakeGitHub();
-  github.getWorkflowRun.mockImplementation(async (_repo: string, id: number) =>
-    id === 123
-      ? { ...sourceRun(), run_attempt: 2 }
-      : { ...dispatchRun(), status: "in_progress" },
-  );
-  github.listWorkflowRuns.mockResolvedValue([dispatchRun()]);
+  github.getWorkflowRunAttempt.mockResolvedValue({
+    ...rerunAttempt(),
+    status: "in_progress",
+  });
   return github;
 }
 function sourceRun() {
@@ -306,14 +269,13 @@ function sourceRun() {
     run_attempt: 1,
   };
 }
-function dispatchRun() {
+function rerunAttempt() {
   return {
-    id: 999,
-    event: "workflow_dispatch",
+    id: 123,
+    run_attempt: 2,
+    event: "pull_request",
     head_sha: head,
     path: ".github/workflows/reviewrouter-codex.yml",
-    created_at: "2026-08-13T10:00:01Z",
-    display_title: "ReviewRouter review rr_request_123",
     referenced_workflows: [{ ref: producer }],
     status: "queued",
     conclusion: null,

@@ -116,46 +116,26 @@ export async function verifyHostedProgressCanary(
   await assertFixture(github, config, receipt.headSha);
   const deadline = now() + config.timeoutMs;
   const observations = [];
-  let dispatch;
-  let requestId;
+  let attempt;
   let commentId = receipt.baselineCommentId ?? undefined;
   let lastFingerprint;
 
   while (now() <= deadline) {
-    const source = await github.getWorkflowRun(
+    const source = await github.getWorkflowRunAttempt(
       config.repository,
       config.sourceRunId,
+      receipt.sourceRunAttempt + 1,
     );
     if (
-      source.run_attempt <= receipt.sourceRunAttempt ||
-      source.event !== "pull_request" ||
-      source.head_sha !== receipt.headSha
+      source === null ||
+      source.status === "queued" ||
+      source.status === "requested"
     ) {
       await sleep(config.pollIntervalMs);
       continue;
     }
-    const runs = await github.listWorkflowRuns(
-      config.repository,
-      config.sourceWorkflowPath,
-      "workflow_dispatch",
-      receipt.headSha,
-    );
-    dispatch ??= selectServerDispatch(runs, receipt, config);
-    if (!dispatch) {
-      await sleep(config.pollIntervalMs);
-      continue;
-    }
-    const current = await github.getWorkflowRun(config.repository, dispatch.id);
-    const identity = assertServerDispatch(
-      current,
-      receipt,
-      config,
-      dispatch.id,
-    );
-    requestId ??= identity.requestId;
-    if (identity.requestId !== requestId)
-      throw new Error("hosted_progress_canary_request_identity_changed");
-    dispatch = current;
+    assertRerunAttempt(source, receipt, config);
+    attempt = source;
 
     const comments = ownedMarkerComments(
       await github.listComments(config.repository, config.pullRequest),
@@ -179,16 +159,16 @@ export async function verifyHostedProgressCanary(
       lastFingerprint = fingerprint;
     }
     if (
-      current.status === "completed" &&
+      source.status === "completed" &&
       terminalPhases.has(observations.at(-1)?.phase)
     )
       break;
     await sleep(config.pollIntervalMs);
   }
 
-  if (!dispatch) throw new Error("hosted_progress_canary_dispatch_not_found");
-  if (dispatch.status !== "completed" || dispatch.conclusion !== "success")
-    throw new Error("hosted_progress_canary_dispatch_not_successful");
+  if (!attempt) throw new Error("hosted_progress_canary_rerun_not_found");
+  if (attempt.status !== "completed" || attempt.conclusion !== "success")
+    throw new Error("hosted_progress_canary_rerun_not_successful");
   if (
     observations.length < 2 ||
     !observations.some((item) => !terminalPhases.has(item.phase))
@@ -207,47 +187,26 @@ export async function verifyHostedProgressCanary(
   )
     throw new Error("hosted_progress_canary_final_coverage_incomplete");
   return {
-    requestId,
     sourceRunId: config.sourceRunId,
     sourceRunAttempt: receipt.sourceRunAttempt + 1,
-    dispatchRunId: dispatch.id,
     commentId,
     progressUpdates: observations.length,
     terminal: final.phase,
   };
 }
 
-export function selectServerDispatch(runs, receipt, config) {
-  const matches = runs.filter((run) => {
-    try {
-      assertServerDispatch(run, receipt, config, run.id);
-      return true;
-    } catch {
-      return false;
-    }
-  });
-  if (matches.length > 1)
-    throw new Error("hosted_progress_canary_dispatch_ambiguous");
-  return matches[0];
-}
-
-export function assertServerDispatch(run, receipt, config, expectedId) {
-  const requestId = run.display_title?.match(
-    /^ReviewRouter review (rr_[a-zA-Z0-9_-]+)$/u,
-  )?.[1];
+export function assertRerunAttempt(run, receipt, config) {
   if (
-    run.id !== expectedId ||
-    run.event !== "workflow_dispatch" ||
+    run.id !== config.sourceRunId ||
+    run.run_attempt !== receipt.sourceRunAttempt + 1 ||
+    run.event !== "pull_request" ||
     run.head_sha !== receipt.headSha ||
     run.path !== config.sourceWorkflowPath ||
-    Date.parse(run.created_at) < Date.parse(receipt.triggeredAt) ||
-    !requestId ||
     !run.referenced_workflows?.some(
       (workflow) => workflow.ref === config.producerSha,
     )
   )
-    throw new Error("hosted_progress_canary_dispatch_contract_mismatch");
-  return { requestId };
+    throw new Error("hosted_progress_canary_rerun_attempt_contract_mismatch");
 }
 
 export function parseProgressComment(comment, config) {
@@ -349,6 +308,22 @@ export function createInstallationGitHub({
     getPullFiles: (repo, number) =>
       paginate(request, `/repos/${repo}/pulls/${number}/files?per_page=100`, 2),
     getWorkflowRun: (repo, id) => request(`/repos/${repo}/actions/runs/${id}`),
+    getWorkflowRunAttempt: async (repo, id, attempt) => {
+      const response = await fetchImpl(
+        `https://api.github.com/repos/${repo}/actions/runs/${id}/attempts/${attempt}`,
+        {
+          headers: {
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      );
+      if (response.status === 404) return null;
+      if (!response.ok)
+        throw new Error(`hosted_progress_canary_github_${response.status}`);
+      return response.json();
+    },
     getFile: (repo, path, ref) =>
       request(`/repos/${repo}/contents/${path}?ref=${ref}`),
     rerunWorkflow: (repo, id) =>
@@ -359,10 +334,6 @@ export function createInstallationGitHub({
         `/repos/${repo}/issues/${number}/comments?per_page=100`,
         10,
       ),
-    listWorkflowRuns: (repo, workflow, event, headSha) =>
-      request(
-        `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=${event}&head_sha=${headSha}&per_page=100`,
-      ).then((body) => body.workflow_runs),
   };
 }
 
