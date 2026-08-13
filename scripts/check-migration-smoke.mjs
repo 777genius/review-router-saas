@@ -184,13 +184,37 @@ try {
        WHERE schemaname = 'public'
        AND indexname =
          'ReviewRequestedIntent_source_run_identity_key')
-       AS review_request_source_run_identity_guard;
+       AS review_request_source_run_identity_guard,
+      (SELECT count(*) FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name IN (
+         'ReviewExecutionProgressV1', 'ReviewProgressPublicationV1',
+         'ReviewProgressInstallationBudgetV1'
+       )) AS review_progress_tables,
+      (SELECT count(*) FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'ReviewExecutionV2'
+       AND column_name IN (
+         'assignmentManifestVersion', 'assignmentManifestHash',
+         'assignmentManifestJson'
+       )) AS review_assignment_manifest_columns,
+      (SELECT count(*) FROM pg_constraint
+       WHERE conname IN (
+         'ReviewExecutionV2_assignment_manifest_all_or_none',
+         'ReviewExecutionProgressV1_counts_non_negative',
+         'ReviewExecutionProgressV1_coverage_all_or_none',
+         'ReviewProgressPublicationV1_claim_all_or_none',
+         'ReviewProgressPublicationV1_version_order',
+         'ReviewProgressPublicationV1_non_negative'
+       ) AND convalidated) AS review_progress_guards,
+      (SELECT count(*) FROM pg_indexes
+       WHERE schemaname = 'public'
+       AND indexname = 'ReviewProgressPublicationV1_due_partial_idx')
+       AS review_progress_due_index;
   `;
   const result = psql(invariantSql, smokeUrl.toString(), "pipe", ["-At"]);
   const output = result.stdout.trim();
   if (
     output !==
-    "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43|4|2|1|5|6|3|2|1"
+    "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43|4|2|1|5|6|3|2|1|3|3|6|1"
   ) {
     console.error(output);
     fail("Migrated schema invariants failed");

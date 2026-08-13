@@ -23,6 +23,7 @@ import {
   ProductionReviewV2Freshness,
   productionReviewV2AdjudicationEvidence,
   productionReviewV2PublicationCapabilities,
+  progressOutcome,
   reviewV2CapabilityActiveKeyIdEnv,
   reviewV2CapabilityKeysEnv,
 } from "./review-v2-production-runtime";
@@ -40,11 +41,19 @@ import {
   type ReviewV2ContextReusePublicationGuardPort,
 } from "./review-v2-context-reuse-publication-guard";
 import {
+  ReviewV2PublicationExecutionStatus,
   ReviewV2PublicationFreshnessReadStatus,
   ReviewV2ScmProvider,
 } from "./review-v2-publication-ports";
 
 describe("review v2 production worker composition", () => {
+  it("does not turn TerminalUnknown publication into failed progress", () => {
+    expect(
+      progressOutcome({
+        status: ReviewV2PublicationExecutionStatus.TerminalUnknown,
+      } as never),
+    ).toBeNull();
+  });
   it("boots the enabled factory with Prisma, GitHub App, publication, and schedulers", () => {
     const env = {
       [reviewV2WorkerEnabledEnv]: "1",

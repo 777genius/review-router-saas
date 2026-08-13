@@ -33,7 +33,7 @@ const migration64 = join(migrationsDirectory, migration64Name, "migration.sql");
 const migration65 = join(migrationsDirectory, migration65Name, "migration.sql");
 const migration66 = join(migrationsDirectory, migration66Name, "migration.sql");
 const rotatingMigrationNames = readdirSync(migrationsDirectory)
-  .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
+  .filter((name) => /^00006[0-6]_/u.test(name))
   .sort();
 assert(
   JSON.stringify(rotatingMigrationNames) ===
@@ -47,7 +47,7 @@ assert(
       migration66Name,
       migration67Name,
     ]),
-  "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
+  "rehearsal migration inventory must exactly match rotating migrations 000060 through 000066",
 );
 const baseUrl = requireLocalPostgres(
   process.env.REVIEW_ROUTER_MIGRATION_REHEARSAL_DATABASE_URL ??

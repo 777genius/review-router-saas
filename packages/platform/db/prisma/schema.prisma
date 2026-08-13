@@ -1252,6 +1252,9 @@ model ReviewExecutionV2 {
   reviewRevisionHash          String
   compatibilityKey            String
   planHash                    String
+  assignmentManifestVersion   Int?
+  assignmentManifestHash      String?
+  assignmentManifestJson      Json?
   startIdentityHash           String
   canonicalStartHash          String
   state                       ReviewExecutionStateV2 @default(planned)
@@ -1275,6 +1278,75 @@ model ReviewExecutionV2 {
   @@unique([authorizationId, startIdentityHash])
   @@index([workspaceId, repositoryConnectionId, pullRequestNumber, state])
   @@index([retainUntil, executionId])
+}
+
+model ReviewExecutionProgressV1 {
+  executionId             String                        @id
+  workspaceId             String
+  repositoryConnectionId  String
+  scmRepositoryIdentityId String
+  pullRequestNumber       Int
+  generation              BigInt
+  headSha                 String
+  planHash                String
+  sourceExecutionVersion  BigInt
+  snapshotHash            String
+  phase                   ReviewProgressPhaseV1
+  requiredTotal           Int
+  requiredSatisfied       Int
+  requiredExhausted       Int
+  requiredCancelled       Int
+  retryingUnits           Int
+  recoveredUnits          Int
+  snapshotJson            Json
+  eligibleFileCount       Int?
+  coveredFileCount        Int?
+  uncoveredFileCount      Int?
+  excludedFileCount       Int?
+  desiredVersion          BigInt                        @default(1)
+  terminalOutcome         ReviewProgressTerminalOutcomeV1?
+  updatedAt               DateTime
+
+  @@unique([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, generation])
+  @@index([workspaceId, repositoryConnectionId, pullRequestNumber, generation])
+  @@index([sourceExecutionVersion, updatedAt])
+}
+
+model ReviewProgressPublicationV1 {
+  workspaceId             String
+  repositoryConnectionId  String
+  scmRepositoryIdentityId String
+  pullRequestNumber       Int
+  version                 BigInt                        @default(1)
+  activeExecutionId       String
+  activeGeneration        BigInt
+  activeHeadSha           String
+  activePlanHash          String
+  desiredVersion          BigInt                        @default(1)
+  publishedVersion        BigInt                        @default(0)
+  commentId               BigInt?
+  publishedBodyHash       String?
+  nextPublishAt           DateTime
+  lastPublishedAt         DateTime?
+  claimId                 String?                       @unique
+  claimOwnerIdHash        String?
+  claimUntil              DateTime?
+  failureCount            Int                           @default(0)
+  lastErrorCode           String?
+  createdAt               DateTime
+  updatedAt               DateTime
+
+  @@id([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber])
+  @@index([nextPublishAt, desiredVersion, publishedVersion])
+  @@index([claimUntil, nextPublishAt])
+  @@index([activeExecutionId])
+}
+
+model ReviewProgressInstallationBudgetV1 {
+  githubInstallationId BigInt   @id
+  nextMutationAt       DateTime
+  cooldownUntil        DateTime?
+  updatedAt            DateTime
 }
 
 model ReviewExecutionWorkSlotV2 {
@@ -2593,6 +2665,22 @@ enum ReviewExecutionStateV2 {
   completed
   partial
   failed
+}
+
+enum ReviewProgressPhaseV1 {
+  preparing
+  reviewing
+  assembling
+  publishing
+  terminal
+}
+
+enum ReviewProgressTerminalOutcomeV1 {
+  complete
+  complete_with_gaps
+  failed
+  cancelled
+  superseded
 }
 
 enum ReviewWorkSlotStateV2 {

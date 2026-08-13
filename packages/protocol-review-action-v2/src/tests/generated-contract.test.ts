@@ -169,9 +169,9 @@ describe("generated Review Action v2 negotiation contract", () => {
       ),
     ) as { readonly $defs: Readonly<Record<string, unknown>> };
 
-    expect(reviewActionV2Operations).toHaveLength(35);
-    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(35);
-    expect(Object.keys(schema.$defs)).toHaveLength(56);
+    expect(reviewActionV2Operations).toHaveLength(36);
+    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(36);
+    expect(Object.keys(schema.$defs)).toHaveLength(58);
     expect(Object.keys(extensionSchema.$defs)).toHaveLength(14);
     expect(sha256(canonicalJson(schema))).toBe(
       reviewActionV2PublishedSchemaDigest,
@@ -186,10 +186,10 @@ describe("generated Review Action v2 negotiation contract", () => {
       ),
     ).toBe(reviewInvestigationExtensionV1.schemaDigest);
     expect(reviewActionV2PublishedSchemaDigest).toBe(
-      "996f7192c860f290a1db8f8c6133ab1d6a36bf946d825077e10f0b7c36daba27",
+      "32bb25cd3490660dbaeecaa168f162ba97ff171e2dfab69e1bd435bc2e1cf3d3",
     );
     expect(reviewActionV2CanonicalizerDigest).toBe(
-      "865b2cd347d1e5bade8aa921c3384b0c7cd388d275f535919ffb403286d66271",
+      "95a43332ccff5c8ccf8f6f9cb67d901d5efd3e91522c047c48f83b65c70cb03a",
     );
 
     for (const operation of reviewActionV2Operations) {
@@ -650,6 +650,37 @@ describe("generated Review Action v2 negotiation contract", () => {
       contextDependencyAttestationHash: expect.any(Object),
     });
     expect(commitSchema?.allOf).toHaveLength(2);
+  });
+
+  it("binds the execution-start assignment manifest as an all-or-none pair", () => {
+    const fixture = reviewActionV2GoldenFixtures.review_execution_start.request;
+    expect(fixture).toMatchObject({
+      assignmentManifestCanonicalJson: null,
+      assignmentManifestHash: null,
+    });
+    const populated = {
+      ...fixture,
+      assignmentManifestCanonicalJson:
+        '{"assignments":[],"eligiblePaths":[],"excludedPaths":[],"manifestVersion":1,"uncoveredPaths":[]}',
+      assignmentManifestHash: "a".repeat(64),
+    };
+    expect(
+      parseReviewActionV2Request(
+        ReviewActionV2OperationId.ReviewExecutionStart,
+        populated,
+      ),
+    ).toMatchObject({ ok: true });
+    expect(
+      parseReviewActionV2Request(
+        ReviewActionV2OperationId.ReviewExecutionStart,
+        { ...populated, assignmentManifestHash: null },
+      ),
+    ).toMatchObject({
+      ok: false,
+      issues: [
+        "field_group_all_or_none:assignmentManifestCanonicalJson,assignmentManifestHash",
+      ],
+    });
   });
 
   it("keeps the generated manifest canonicalizer byte-identical to Review Evidence", async () => {

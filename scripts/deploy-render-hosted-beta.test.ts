@@ -646,6 +646,11 @@ describe("Render hosted deploy hardening", () => {
           REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "1",
           REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED: "1",
           REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED: "1",
+          REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE: "1",
+          REVIEW_ROUTER_PROGRESS_FILE_COVERAGE: "1",
+          REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES: "1",
+          REVIEW_ROUTER_PROGRESS_REPOSITORIES:
+            "777genius/review-router-saas-e2e",
         },
       }).map(({ key, value }) => [key, value]),
     );
@@ -659,6 +664,12 @@ describe("Render hosted deploy hardening", () => {
     ]) {
       expect(result[key], key).toBe("0");
     }
+    expect(result.REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE).toBe("1");
+    expect(result.REVIEW_ROUTER_PROGRESS_FILE_COVERAGE).toBe("1");
+    expect(result.REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES).toBe("1");
+    expect(result.REVIEW_ROUTER_PROGRESS_REPOSITORIES).toBe(
+      "777genius/review-router-saas-e2e",
+    );
     expect(
       serviceDetails({ type: "web_service", startCommand: "start" }),
     ).toHaveProperty("preDeployCommand", null);

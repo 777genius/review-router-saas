@@ -1,10 +1,15 @@
 import {
+  canonicalReviewAssignmentManifestHashPreimage,
+  canonicalReviewAssignmentManifestJson,
+  canonicalReviewExecutionPlanHashPreimage,
   canonicalReviewExecutionPlanPreimage,
   canonicalReviewExecutionStartPreimage,
+  reviewAssignmentManifestMaxBytes,
   ReviewExecutionState,
   reviewExecutionIsTerminal,
   reviewRevisionsEqual,
   scopeKey,
+  validateReviewAssignmentManifest,
   type ReviewExecutionSnapshot,
   type ReviewExecutionScope,
   type ReviewWorkSlotPlan,
@@ -39,6 +44,7 @@ export enum StartReviewExecutionStatus {
   ConcurrencyConflict = "concurrency_conflict",
   RequestIntentMissing = "request_intent_missing",
   RequestIntentConflict = "request_intent_conflict",
+  AssignmentManifestRejected = "assignment_manifest_rejected",
 }
 
 enum RequestedIntentResolutionStatus {
@@ -66,6 +72,8 @@ export type StartReviewExecutionInput = {
   readonly authorizationId: string;
   readonly compatibilityKey: string;
   readonly planHash: string;
+  readonly assignmentManifestCanonicalJson?: string | null;
+  readonly assignmentManifestHash?: string | null;
   readonly workSlots: readonly ReviewWorkSlotPlan[];
   readonly sourceRunId: string;
   readonly sourceRunAttempt: string;
@@ -77,6 +85,7 @@ export type StartReviewExecutionInput = {
 export type StartReviewExecutionResult = {
   readonly status: StartReviewExecutionStatus;
   readonly snapshot?: ReviewExecutionSnapshot | undefined;
+  readonly rejectionReason?: string | undefined;
 };
 
 export class StartReviewExecution {
@@ -113,6 +122,15 @@ export class StartReviewExecution {
       return { status: StartReviewExecutionStatus.StaleRevision };
     }
 
+    const assignmentManifestRejection =
+      await this.validateAssignmentManifestBinding(input, authorization);
+    if (assignmentManifestRejection !== null) {
+      return {
+        status: StartReviewExecutionStatus.AssignmentManifestRejected,
+        rejectionReason: assignmentManifestRejection,
+      };
+    }
+
     const requestedIntentResolution = await this.resolveRequestedIntent(
       input,
       authorization,
@@ -141,6 +159,9 @@ export class StartReviewExecution {
       revision: authorization.revision,
       planHash: input.planHash,
       canonicalPlan,
+      assignmentManifestCanonicalJson:
+        input.assignmentManifestCanonicalJson ?? null,
+      assignmentManifestHash: input.assignmentManifestHash ?? null,
     });
     const [startIdentityHash, canonicalStartHash] = await Promise.all([
       this.digest.digestUtf8(startPreimage),
@@ -172,6 +193,11 @@ export class StartReviewExecution {
         admissionSafetyDecisionHash: authorization.admissionSafetyDecisionHash,
         compatibilityKey: input.compatibilityKey,
         planHash: input.planHash,
+        assignmentManifestVersion:
+          input.assignmentManifestCanonicalJson == null ? null : 1,
+        assignmentManifestHash: input.assignmentManifestHash ?? null,
+        assignmentManifestCanonicalJson:
+          input.assignmentManifestCanonicalJson ?? null,
         workSlots: input.workSlots,
         limits: authorization.limits,
         sourceRunId: input.sourceRunId,
@@ -338,6 +364,62 @@ export class StartReviewExecution {
       }
     }
     return { status: StartReviewExecutionStatus.ConcurrencyConflict };
+  }
+
+  private async validateAssignmentManifestBinding(
+    input: StartReviewExecutionInput,
+    authorization: ReviewExecutionAuthorizationFacts,
+  ): Promise<string | null> {
+    const canonicalJson = input.assignmentManifestCanonicalJson ?? null;
+    const manifestHash = input.assignmentManifestHash ?? null;
+    if (canonicalJson === null && manifestHash === null) return null;
+    if (canonicalJson === null || manifestHash === null) {
+      return "review_assignment_manifest_fields_incomplete";
+    }
+    if (
+      Buffer.byteLength(canonicalJson, "utf8") >
+      reviewAssignmentManifestMaxBytes
+    ) {
+      return "review_assignment_manifest_bytes_out_of_bounds";
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(canonicalJson);
+    } catch {
+      return "review_assignment_manifest_json_invalid";
+    }
+    let manifest;
+    try {
+      manifest = validateReviewAssignmentManifest(
+        parsed,
+        input.workSlots.map((slot) => slot.workSlotId),
+      );
+    } catch (error) {
+      return error instanceof Error
+        ? error.message
+        : "review_assignment_manifest_invalid";
+    }
+    if (canonicalReviewAssignmentManifestJson(manifest) !== canonicalJson) {
+      return "review_assignment_manifest_json_not_canonical";
+    }
+    const expectedManifestHash = await this.digest.digestUtf8(
+      canonicalReviewAssignmentManifestHashPreimage(canonicalJson),
+    );
+    if (expectedManifestHash !== manifestHash) {
+      return "review_assignment_manifest_hash_mismatch";
+    }
+    const expectedPlanHash = await this.digest.digestUtf8(
+      canonicalReviewExecutionPlanHashPreimage({
+        assignmentManifestHash: manifestHash,
+        compatibilityKey: input.compatibilityKey,
+        reviewRevisionHash: authorization.revision.reviewRevisionHash,
+        workSlots: input.workSlots,
+      }),
+    );
+    if (expectedPlanHash !== input.planHash) {
+      return "review_assignment_manifest_plan_hash_mismatch";
+    }
+    return null;
   }
 
   private async resolveInitialAuthorization(

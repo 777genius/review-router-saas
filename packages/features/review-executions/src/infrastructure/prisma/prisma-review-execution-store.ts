@@ -21,6 +21,7 @@ import {
   type AttachReviewObservationCommand,
   type ConfirmReviewExecutionAdmissionCommand,
   type FailAbandonedPreparedExecutionCommand,
+  type FailExpiredRunningExecutionCommand,
   type FinalizeReviewExecutionCommand,
   type PrepareReviewExecutionCommand,
   type ReleaseReviewInvocationLeaseCommand,
@@ -32,6 +33,7 @@ import {
   type ReviewInvocationLeaseTransitionResult,
   type ReviewObservationAttachmentResult,
   type SupersedeReviewExecutionCommand,
+  type TerminalizeReviewWorkSlotCommand,
 } from "../../application/ports/review-execution-ports";
 import type { InvocationFlightQueryPort } from "../../application/ports/invocation-flight-ports";
 import {
@@ -59,12 +61,15 @@ import {
   LeaseTransitionDecisionStatus,
   ObservationAttachmentDecisionStatus,
   decideAbandonedPreparationFailure,
+  decideExpiredRunningExecutionFailure,
   decideExecutionAdmission,
   decideExecutionFinalization,
   decideExecutionFinalizationReplay,
   decideExecutionPreparation,
   decideExecutionPreparationReplay,
   decideExecutionSupersession,
+  decideWorkSlotTerminalization,
+  WorkSlotTerminalizationDecisionStatus,
   decideFreshObservationAttachment,
   decideLeaseAcquire,
   decideLeaseAcquireReplay,
@@ -99,8 +104,12 @@ import {
   databaseRelativeDate,
   isTransactionConflictError,
 } from "./prisma-review-execution-utils";
-
 type Transaction = Prisma.TransactionClient;
+
+export type ReviewExecutionProgressCapturePort = (
+  transaction: Transaction,
+  execution: ReviewExecution,
+) => Promise<void>;
 
 export class PrismaReviewExecutionStore
   implements
@@ -109,7 +118,41 @@ export class PrismaReviewExecutionStore
     ReviewExecutionPrunerPort,
     InvocationFlightQueryPort
 {
-  constructor(private readonly prisma: PrismaClient) {}
+  async listExpiredRunning(input: {
+    readonly now: Date;
+    readonly limit: number;
+  }) {
+    assertLimit(input.limit);
+    const records = await this.prisma.reviewExecutionV2.findMany({
+      where: {
+        state: "running",
+        executionDeadlineAt: { lte: input.now },
+      },
+      orderBy: [{ executionDeadlineAt: "asc" }, { executionId: "asc" }],
+      take: input.limit,
+    });
+    const snapshots = await Promise.all(
+      records.map((record) => this.findExecution(record.executionId)),
+    );
+    return snapshots.filter(
+      (snapshot): snapshot is ReviewExecutionSnapshot =>
+        snapshot !== null &&
+        snapshot.stream.activeExecutionId === snapshot.execution.executionId,
+    );
+  }
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly options: Readonly<{
+      progressCapture?: ReviewExecutionProgressCapturePort;
+    }> = {},
+  ) {}
+
+  private async captureProgress(
+    transaction: Transaction,
+    execution: ReviewExecution,
+  ): Promise<void> {
+    await this.options.progressCapture?.(transaction, execution);
+  }
 
   async findStream(
     scope: ReviewExecutionScope,
@@ -308,8 +351,13 @@ export class PrismaReviewExecutionStore
               priorPrepared,
               decision.supersededPrepared,
             );
+            await this.captureProgress(
+              transaction,
+              decision.supersededPrepared,
+            );
           }
           await createExecution(transaction, decision.execution);
+          await this.captureProgress(transaction, decision.execution);
           await persistStreamUpdate(transaction, stream, decision.stream);
           return {
             status: ReviewExecutionPrepareStatus.Prepared,
@@ -429,6 +477,7 @@ export class PrismaReviewExecutionStore
             execution,
             decision.execution,
           );
+          await this.captureProgress(transaction, decision.execution);
           if (decision.supersededPriorActive !== null) {
             if (priorActive === null) {
               throw new Error("review_execution_prior_active_missing");
@@ -436,6 +485,10 @@ export class PrismaReviewExecutionStore
             await persistExecutionUpdate(
               transaction,
               priorActive,
+              decision.supersededPriorActive,
+            );
+            await this.captureProgress(
+              transaction,
               decision.supersededPriorActive,
             );
           }
@@ -569,6 +622,9 @@ export class PrismaReviewExecutionStore
             command.executionId,
           );
           if (early !== null) {
+            if (early.snapshot) {
+              await this.captureProgress(transaction, early.snapshot.execution);
+            }
             return early;
           }
           if (decision.status !== LeaseAcquireDecisionStatus.Acquired) {
@@ -619,6 +675,7 @@ export class PrismaReviewExecutionStore
                   expiry.lease,
                   incumbentExecution,
                   expiry.execution,
+                  this.options.progressCapture,
                 );
                 snapshot = await loadSnapshot(transaction, command.executionId);
                 if (snapshot === null) {
@@ -636,7 +693,15 @@ export class PrismaReviewExecutionStore
                   snapshot,
                   command.executionId,
                 );
-                if (recomputedEarly !== null) return recomputedEarly;
+                if (recomputedEarly !== null) {
+                  if (recomputedEarly.snapshot) {
+                    await this.captureProgress(
+                      transaction,
+                      recomputedEarly.snapshot.execution,
+                    );
+                  }
+                  return recomputedEarly;
+                }
                 if (decision.status !== LeaseAcquireDecisionStatus.Acquired) {
                   throw new Error("review_lease_acquire_decision_unhandled");
                 }
@@ -655,6 +720,7 @@ export class PrismaReviewExecutionStore
           await transaction.reviewInvocationLeaseV2.create({
             data: leaseCreateData(decision.lease),
           });
+          await this.captureProgress(transaction, decision.execution);
           return {
             status: ReviewInvocationLeaseAcquireStatus.Acquired,
             lease: decision.lease,
@@ -872,6 +938,7 @@ export class PrismaReviewExecutionStore
             snapshot.execution,
             decision.execution,
           );
+          await this.captureProgress(transaction, decision.execution);
           await persistStreamUpdate(
             transaction,
             snapshot.stream,
@@ -928,6 +995,90 @@ export class PrismaReviewExecutionStore
     );
   }
 
+  async terminalizeWorkSlot(command: TerminalizeReviewWorkSlotCommand) {
+    try {
+      return await this.prisma.$transaction(
+        async (transaction) => {
+          await lockScope(transaction, command.scope);
+          await lockStream(transaction, command.scope);
+          await lockExecution(transaction, command.executionId);
+          await lockWorkSlot(
+            transaction,
+            command.executionId,
+            command.workSlotId,
+          );
+          const snapshot = await loadSnapshot(transaction, command.executionId);
+          if (snapshot === null) {
+            return { status: ReviewExecutionLifecycleTransitionStatus.Missing };
+          }
+          const decision = decideWorkSlotTerminalization({
+            stream: snapshot.stream,
+            execution: snapshot.execution,
+            ...command,
+            now: await databaseNow(transaction),
+          });
+          if (
+            decision.status === WorkSlotTerminalizationDecisionStatus.Restored
+          ) {
+            return {
+              status: ReviewExecutionLifecycleTransitionStatus.Restored,
+              snapshot,
+            };
+          }
+          if (
+            decision.status ===
+            WorkSlotTerminalizationDecisionStatus.NotEligible
+          ) {
+            return {
+              status: ReviewExecutionLifecycleTransitionStatus.NotEligible,
+            };
+          }
+          if (
+            decision.status === WorkSlotTerminalizationDecisionStatus.Conflict
+          ) {
+            return {
+              status:
+                ReviewExecutionLifecycleTransitionStatus.ConcurrencyConflict,
+            };
+          }
+          await persistExecutionUpdate(
+            transaction,
+            snapshot.execution,
+            decision.execution,
+          );
+          await this.captureProgress(transaction, decision.execution);
+          return {
+            status: ReviewExecutionLifecycleTransitionStatus.Applied,
+            snapshot: requiredSnapshot(
+              await loadSnapshot(transaction, command.executionId),
+            ),
+          };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (error) {
+      if (isSerializationError(error)) {
+        return {
+          status: ReviewExecutionLifecycleTransitionStatus.ConcurrencyConflict,
+        };
+      }
+      throw error;
+    }
+  }
+
+  async failExpiredRunningExecution(
+    command: FailExpiredRunningExecutionCommand,
+  ) {
+    return this.transitionExecutionLifecycle(command, (snapshot, now) =>
+      decideExpiredRunningExecutionFailure({
+        stream: snapshot.stream,
+        execution: snapshot.execution,
+        activeLeases: snapshot.activeLeases,
+        now,
+      }),
+    );
+  }
+
   async pruneRetainedHistory(input: { readonly limit: number }) {
     assertLimit(input.limit);
     return this.prisma.$transaction(
@@ -953,6 +1104,9 @@ export class PrismaReviewExecutionStore
           transaction,
           candidateIds,
         );
+        await transaction.reviewExecutionProgressV1.deleteMany({
+          where: { executionId: { in: removableExecutionIds } },
+        });
         const deletedObservationRefs = (
           await transaction.reviewExecutionObservationRefV2.deleteMany({
             where: { executionId: { in: removableExecutionIds } },
@@ -1067,6 +1221,7 @@ export class PrismaReviewExecutionStore
             decision.lease,
             execution,
             decision.execution,
+            this.options.progressCapture,
           );
           if (decision.status === LeaseTransitionDecisionStatus.Expired) {
             return { status: ReviewInvocationLeaseTransitionStatus.Expired };
@@ -1120,7 +1275,18 @@ export class PrismaReviewExecutionStore
             target,
             await databaseNow(transaction),
           );
-          return persistObservationDecision(transaction, target, decision);
+          const result = await persistObservationDecision(
+            transaction,
+            target,
+            decision,
+          );
+          if (
+            result.status === ReviewObservationAttachmentStatus.Attached &&
+            result.snapshot
+          ) {
+            await this.captureProgress(transaction, result.snapshot.execution);
+          }
+          return result;
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       );
@@ -1147,7 +1313,8 @@ export class PrismaReviewExecutionStore
   private async transitionExecutionLifecycle(
     command:
       | SupersedeReviewExecutionCommand
-      | FailAbandonedPreparedExecutionCommand,
+      | FailAbandonedPreparedExecutionCommand
+      | FailExpiredRunningExecutionCommand,
     decide: (
       snapshot: ReviewExecutionSnapshot,
       now: Date,
@@ -1191,6 +1358,7 @@ export class PrismaReviewExecutionStore
             snapshot.execution,
             decision.execution,
           );
+          await this.captureProgress(transaction, decision.execution);
           await persistStreamUpdate(
             transaction,
             snapshot.stream,
@@ -1570,6 +1738,7 @@ async function persistLeaseTransition(
   nextLease: ReviewInvocationLease,
   currentExecution: ReviewExecution | null,
   nextExecution: ReviewExecution | null,
+  progressCapture: ReviewExecutionProgressCapturePort | undefined,
 ): Promise<void> {
   const updated = await transaction.reviewInvocationLeaseV2.updateMany({
     where: {
@@ -1594,6 +1763,7 @@ async function persistLeaseTransition(
     nextExecution.version !== currentExecution.version
   ) {
     await persistExecutionUpdate(transaction, currentExecution, nextExecution);
+    await progressCapture?.(transaction, nextExecution);
   }
 }
 
@@ -1684,6 +1854,15 @@ function executionCreateData(execution: ReviewExecution) {
     reviewRevisionHash: execution.revision.reviewRevisionHash,
     compatibilityKey: execution.compatibilityKey,
     planHash: execution.planHash,
+    assignmentManifestVersion: execution.assignmentManifestVersion ?? null,
+    assignmentManifestHash: execution.assignmentManifestHash ?? null,
+    assignmentManifestJson:
+      execution.assignmentManifestCanonicalJson === null ||
+      execution.assignmentManifestCanonicalJson === undefined
+        ? Prisma.DbNull
+        : parseAssignmentManifestJson(
+            execution.assignmentManifestCanonicalJson,
+          ),
     startIdentityHash: execution.startIdentityHash,
     canonicalStartHash: execution.canonicalStartHash,
     state: executionStateToPrisma(execution.state),
@@ -1703,6 +1882,14 @@ function executionCreateData(execution: ReviewExecution) {
     executionDeadlineAt: execution.executionDeadlineAt,
     retainUntil: execution.retainUntil,
   };
+}
+
+function parseAssignmentManifestJson(value: string): Prisma.InputJsonObject {
+  const parsed: unknown = JSON.parse(value);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("review_assignment_manifest_not_object");
+  }
+  return parsed as Prisma.InputJsonObject;
 }
 
 function executionMutableData(execution: ReviewExecution) {
