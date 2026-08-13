@@ -170,8 +170,6 @@ envVarGroups:
         generateValue: true
       - key: REVIEW_ROUTER_ACTION_SESSION_SECRET
         generateValue: true
-      - key: SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64
-        sync: false
       - key: REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS
         value: "1"
       - key: REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING

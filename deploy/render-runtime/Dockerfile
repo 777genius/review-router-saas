@@ -25,7 +25,7 @@ RUN --mount=type=secret,id=subscription_runtime_deploy_key_b64 \
   if [ -s /run/secrets/subscription_runtime_deploy_key_b64 ]; then \
     base64 -d /run/secrets/subscription_runtime_deploy_key_b64 > "$key_file"; \
     chmod 0600 "$key_file"; \
-    printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5K9okWi0dh2l9GKJl' > "$known_hosts"; \
+    printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$known_hosts"; \
     GIT_SSH_COMMAND="ssh -i $key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts -o StrictHostKeyChecking=yes" \
       pnpm install --frozen-lockfile; \
     rm -f "$key_file" "$known_hosts"; \

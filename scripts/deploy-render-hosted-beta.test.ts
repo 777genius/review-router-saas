@@ -253,6 +253,9 @@ describe("Render hosted deploy hardening", () => {
     expect(blueprint).not.toContain("property: connectionString");
     expect(blueprint.match(/autoDeployTrigger: off/g)).toHaveLength(5);
     expect(blueprint).not.toContain("autoDeployTrigger: commit");
+    expect(blueprint).not.toMatch(
+      /- key: SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64(?:\s|$)/u,
+    );
     for (const key of [
       "REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY",
       "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL",
@@ -263,6 +266,17 @@ describe("Render hosted deploy hardening", () => {
         1,
       );
     }
+  });
+
+  it("pins GitHub's official Ed25519 host key in the OCI build", () => {
+    const dockerfile = readFileSync("deploy/render-runtime/Dockerfile", "utf8");
+    const officialGitHubEd25519HostKey =
+      "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+
+    expect(dockerfile).toContain(officialGitHubEd25519HostKey);
+    expect(dockerfile).not.toContain(
+      "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5K9okWi0dh2l9GKJl",
+    );
   });
 
   it("derives the exact hosted tuple only from a digest-pinned release descriptor", () => {
