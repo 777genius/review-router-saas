@@ -592,7 +592,7 @@ describe("transactional same-service cutover", () => {
       status: "applied",
       previousEnvironmentSha256: target[2]!.environmentSha256,
       environmentSha256: wrongHash,
-      environmentKeysSha256: source.services[2]!.sourceEnvKeysSha256,
+      environmentKeysSha256: source.services[2]!.sourceEnvironmentKeysSha256,
       replayed: false,
     });
 
