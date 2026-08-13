@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { createHash, createPrivateKey, sign } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 export const liveProgressMarker = "<!-- review-router-live-progress -->";
@@ -31,15 +30,10 @@ const terminalPhases = new Set([
 export function readCanaryConfig(env = process.env) {
   if (env.REVIEW_ROUTER_RUN_HOSTED_PROGRESS_CANARY !== "1")
     throw new Error("hosted_progress_canary_confirmation_required");
-  const release = readReleaseDescriptor(env);
   const config = {
     ...pinnedTarget,
     installationId: positive(env.REVIEW_ROUTER_HOSTED_CANARY_INSTALLATION_ID),
     sourceRunId: positive(env.REVIEW_ROUTER_HOSTED_CANARY_SOURCE_RUN_ID),
-    producerSha: release.producerSha,
-    producerWorkflowPath: release.producerWorkflowPath,
-    sourceWorkflowBlobSha: release.sourceWorkflowBlobSha,
-    releaseDescriptorSha256: release.descriptorSha256,
     expectedBotLogin: required(
       env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_BOT_LOGIN,
     ).toLowerCase(),
@@ -68,14 +62,14 @@ export async function triggerHostedProgressCanary(config, github, nowIso) {
     config.repository,
     config.sourceRunId,
   );
-  assertSourceRun(source, config, pullHeadSha);
   const workflow = await github.getFile(
     config.repository,
     config.sourceWorkflowPath,
     source.head_sha,
   );
-  if (workflow.sha !== config.sourceWorkflowBlobSha)
-    throw new Error("hosted_progress_canary_source_workflow_blob_mismatch");
+  const authority = deriveWorkflowAuthority(workflow);
+  const effectiveConfig = { ...config, ...authority };
+  assertSourceRun(source, effectiveConfig, pullHeadSha);
   const baseline = ownedMarkerComments(
     await github.listComments(config.repository, config.pullRequest),
     config,
@@ -92,9 +86,8 @@ export async function triggerHostedProgressCanary(config, github, nowIso) {
     headSha: source.head_sha,
     sourceRunId: source.id,
     sourceRunAttempt: source.run_attempt,
-    producerSha: config.producerSha,
-    releaseDescriptorSha256: config.releaseDescriptorSha256,
-    sourceWorkflowBlobSha: config.sourceWorkflowBlobSha,
+    producerSha: authority.producerSha,
+    sourceWorkflowBlobSha: authority.sourceWorkflowBlobSha,
     baselineCommentId: baseline[0]?.id ?? null,
     baselineCommentUpdatedAt: baseline[0]?.updated_at ?? null,
     triggeredAt,
@@ -109,6 +102,18 @@ export async function verifyHostedProgressCanary(
   assertPinned(config);
   assertReceipt(receipt, config);
   await assertFixture(github, config, receipt.headSha);
+  const sourceWorkflow = await github.getFile(
+    config.repository,
+    config.sourceWorkflowPath,
+    receipt.headSha,
+  );
+  const authority = deriveWorkflowAuthority(sourceWorkflow);
+  if (
+    authority.sourceWorkflowBlobSha !== receipt.sourceWorkflowBlobSha ||
+    authority.producerSha !== receipt.producerSha
+  )
+    throw new Error("hosted_progress_canary_source_workflow_blob_mismatch");
+  const effectiveConfig = { ...config, ...authority };
   const deadline = now() + config.timeoutMs;
   const observations = [];
   let attempt;
@@ -129,7 +134,7 @@ export async function verifyHostedProgressCanary(
       await sleep(config.pollIntervalMs);
       continue;
     }
-    assertRerunAttempt(source, receipt, config);
+    assertRerunAttempt(source, receipt, effectiveConfig);
     attempt = source;
 
     const comments = ownedMarkerComments(
@@ -446,9 +451,8 @@ function assertReceipt(receipt, config) {
     receipt.repositoryNodeId !== config.repositoryNodeId ||
     receipt.pullRequest !== config.pullRequest ||
     receipt.sourceRunId !== config.sourceRunId ||
-    receipt.producerSha !== config.producerSha ||
-    receipt.releaseDescriptorSha256 !== config.releaseDescriptorSha256 ||
-    receipt.sourceWorkflowBlobSha !== config.sourceWorkflowBlobSha ||
+    !/^[0-9a-f]{40}$/u.test(receipt.producerSha ?? "") ||
+    !/^[0-9a-f]{40}$/u.test(receipt.sourceWorkflowBlobSha ?? "") ||
     !(
       receipt.baselineCommentId === null ||
       Number.isSafeInteger(receipt.baselineCommentId)
@@ -497,48 +501,26 @@ function createAppJwt(appId, privateKey) {
   const input = `${header}.${payload}`;
   return `${input}.${sign("RSA-SHA256", Buffer.from(input), createPrivateKey(privateKey)).toString("base64url")}`;
 }
-function readReleaseDescriptor(env) {
-  const path = required(
-    env.REVIEW_ROUTER_HOSTED_CANARY_RELEASE_DESCRIPTOR_FILE,
-  );
-  const expectedDigest = required(
-    env.REVIEW_ROUTER_HOSTED_CANARY_RELEASE_DESCRIPTOR_SHA256,
-  );
-  if (!/^[0-9a-f]{64}$/u.test(expectedDigest))
-    throw new Error("hosted_progress_canary_release_descriptor_digest_invalid");
-  const bytes = readFileSync(path);
-  if (createHash("sha256").update(bytes).digest("hex") !== expectedDigest)
-    throw new Error(
-      "hosted_progress_canary_release_descriptor_digest_mismatch",
-    );
-  let value;
-  try {
-    value = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw new Error("hosted_progress_canary_release_descriptor_json_invalid");
-  }
-  const keys = Object.keys(value ?? {}).sort();
-  const expectedKeys = [
-    "actionRef",
-    "producerWorkflowPath",
-    "schemaVersion",
-    "sourceWorkflowBlobSha",
-  ].sort();
-  if (
-    keys.length !== expectedKeys.length ||
-    keys.some((key, index) => key !== expectedKeys[index]) ||
-    value.schemaVersion !== "reviewrouter.hosted-progress-canary-release.v1" ||
-    typeof value.actionRef !== "string" ||
-    !value.actionRef.startsWith("777genius/review-router@") ||
-    typeof value.producerWorkflowPath !== "string" ||
-    !value.producerWorkflowPath.startsWith("777genius/review-router/")
-  )
-    throw new Error("hosted_progress_canary_release_descriptor_invalid");
+export function deriveWorkflowAuthority(workflow) {
+  const sourceWorkflowBlobSha = sha(workflow?.sha);
+  if (workflow?.type !== "file" || workflow?.encoding !== "base64")
+    throw new Error("hosted_progress_canary_source_workflow_invalid");
+  const source = Buffer.from(
+    String(workflow.content ?? "").replace(/\s/gu, ""),
+    "base64",
+  ).toString("utf8");
+  const matches = [
+    ...source.matchAll(
+      /^\s*uses:\s*777genius\/review-router\/\.github\/workflows\/reviewrouter-t0-reusable\.yml@([0-9a-f]{40})\s*$/gmu,
+    ),
+  ];
+  if (matches.length !== 1)
+    throw new Error("hosted_progress_canary_producer_pin_invalid");
+  const producerSha = sha(matches[0]?.[1]);
   return {
-    producerSha: sha(value.actionRef.split("@").at(-1)),
-    producerWorkflowPath: value.producerWorkflowPath,
-    sourceWorkflowBlobSha: sha(value.sourceWorkflowBlobSha),
-    descriptorSha256: expectedDigest,
+    producerSha,
+    producerWorkflowPath: `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${producerSha}`,
+    sourceWorkflowBlobSha,
   };
 }
 function hasExactReferencedProducer(workflows, config) {

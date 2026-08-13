@@ -1,8 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   assertMonotonic,
   assertRerunAttempt,
@@ -101,7 +97,7 @@ describe("hosted live-progress canary", () => {
     ).rejects.toThrow("hosted_progress_canary_source_run_contract_mismatch");
   });
 
-  it("rejects a source workflow blob not matching the pinned contract", async () => {
+  it("rejects a source workflow response without immutable blob bytes", async () => {
     const github = fakeGitHub();
     github.getFile.mockResolvedValue({ sha: "d".repeat(40) });
     await expect(
@@ -110,26 +106,20 @@ describe("hosted live-progress canary", () => {
         github,
         () => "2026-08-13T10:00:00Z",
       ),
-    ).rejects.toThrow("hosted_progress_canary_source_workflow_blob_mismatch");
+    ).rejects.toThrow("hosted_progress_canary_source_workflow_invalid");
     expect(github.rerunWorkflow).not.toHaveBeenCalled();
   });
 
-  it("rejects a substituted release descriptor", () => {
-    const fixture = releaseDescriptorFixture();
-    try {
-      writeFileSync(
-        fixture.path,
-        JSON.stringify({
-          ...fixture.descriptor,
-          actionRef: `777genius/review-router@${"d".repeat(40)}`,
-        }),
-      );
-      expect(() => readCanaryConfig({ ...env(), ...fixture.env })).toThrow(
-        "hosted_progress_canary_release_descriptor_digest_mismatch",
-      );
-    } finally {
-      rmSync(fixture.directory, { recursive: true, force: true });
-    }
+  it("rejects a workflow without exactly one immutable canonical producer pin", async () => {
+    const github = fakeGitHub();
+    github.getFile.mockResolvedValue(workflowFile("uses: attacker/repo@main"));
+    await expect(
+      triggerHostedProgressCanary(
+        configFixture(),
+        github,
+        () => "2026-08-13T10:00:00Z",
+      ),
+    ).rejects.toThrow("hosted_progress_canary_producer_pin_invalid");
   });
 
   it("rejects fixture paths that no longer match the pinned large profile", async () => {
@@ -150,7 +140,7 @@ describe("hosted live-progress canary", () => {
 
   it("binds the exact next attempt to source run, head, workflow and producer", () => {
     expect(() =>
-      assertRerunAttempt(rerunAttempt(), receipt(), configFixture()),
+      assertRerunAttempt(rerunAttempt(), receipt(), effectiveConfig()),
     ).not.toThrow();
     expect(() =>
       assertRerunAttempt(
@@ -161,14 +151,14 @@ describe("hosted live-progress canary", () => {
           ],
         },
         receipt(),
-        configFixture(),
+        effectiveConfig(),
       ),
     ).not.toThrow();
     expect(() =>
       assertRerunAttempt(
         { ...rerunAttempt(), head_sha: "d".repeat(40) },
         receipt(),
-        configFixture(),
+        effectiveConfig(),
       ),
     ).toThrow("hosted_progress_canary_rerun_attempt_contract_mismatch");
     expect(() =>
@@ -330,12 +320,10 @@ describe("hosted live-progress canary", () => {
 });
 
 function env(overrides: Record<string, string> = {}) {
-  const release = releaseDescriptorFixture();
   return {
     REVIEW_ROUTER_RUN_HOSTED_PROGRESS_CANARY: "1",
     REVIEW_ROUTER_HOSTED_CANARY_INSTALLATION_ID: "10",
     REVIEW_ROUTER_HOSTED_CANARY_SOURCE_RUN_ID: "123",
-    ...release.env,
     REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_BOT_LOGIN: "review-router[bot]",
     REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_APP_SLUG: "review-router",
     REVIEW_ROUTER_HOSTED_CANARY_POLL_INTERVAL_MS: "1",
@@ -345,6 +333,14 @@ function env(overrides: Record<string, string> = {}) {
 }
 function configFixture() {
   return readCanaryConfig(env());
+}
+function effectiveConfig() {
+  return {
+    ...configFixture(),
+    producerSha: producer,
+    producerWorkflowPath: `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${producer}`,
+    sourceWorkflowBlobSha: workflowBlob,
+  };
 }
 function receipt() {
   return {
@@ -357,7 +353,6 @@ function receipt() {
     sourceRunAttempt: 1,
     producerSha: producer,
     sourceWorkflowBlobSha: workflowBlob,
-    releaseDescriptorSha256: configFixture().releaseDescriptorSha256,
     baselineCommentId: null,
     baselineCommentUpdatedAt: null,
     triggeredAt: "2026-08-13T10:00:00Z",
@@ -384,7 +379,7 @@ function fakeGitHub() {
     getPullFiles: vi.fn(async () => fixtureFiles()),
     getWorkflowRun: vi.fn(async () => sourceRun()),
     getWorkflowRunAttempt: vi.fn(async () => null),
-    getFile: vi.fn(async () => ({ sha: workflowBlob })),
+    getFile: vi.fn(async () => workflowFile()),
     rerunWorkflow: vi.fn(async () => undefined),
     listComments: vi.fn(async () => []),
   };
@@ -465,36 +460,20 @@ function tickingClock() {
 
 function referencedProducer(sha = producer) {
   return {
-    path: "777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@main",
+    path: `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${producer}`,
     sha,
     ref: "refs/heads/main",
   };
 }
 
-function releaseDescriptorFixture() {
-  const directory = mkdtempSync(join(tmpdir(), "rr-canary-release-"));
-  const path = join(directory, "release.json");
-  const descriptor = {
-    schemaVersion: "reviewrouter.hosted-progress-canary-release.v1",
-    actionRef: `777genius/review-router@${producer}`,
-    producerWorkflowPath:
-      "777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@main",
-    sourceWorkflowBlobSha: workflowBlob,
-  };
-  const bytes = `${JSON.stringify(descriptor)}\n`;
-  writeFileSync(path, bytes);
+function workflowFile(
+  source = `jobs:\n  review:\n    uses: 777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${producer}\n`,
+) {
   return {
-    directory,
-    path,
-    descriptor,
-    env: {
-      REVIEW_ROUTER_HOSTED_CANARY_RELEASE_DESCRIPTOR_FILE: path,
-      REVIEW_ROUTER_HOSTED_CANARY_RELEASE_DESCRIPTOR_SHA256: createHash(
-        "sha256",
-      )
-        .update(bytes)
-        .digest("hex"),
-    },
+    sha: workflowBlob,
+    type: "file",
+    encoding: "base64",
+    content: Buffer.from(source).toString("base64"),
   };
 }
 
