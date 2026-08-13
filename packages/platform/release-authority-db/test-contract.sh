@@ -29,7 +29,7 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
      start_command_sha256,outcome,reconciliation_observation)
    VALUES ('rri-'||repeat('8',64),'r-legacy-cleaned','svc-legacy-cleaned','role','890',
      'rr-legacy-cleaned',clock_timestamp(),'sha256:'||repeat('8',64),
-     'persistence_failed_cleaned','{"safeForCompensation":true}'::jsonb);" >/dev/null
+     'persistence_failed_cleaned',jsonb_build_object('safeForCompensation',true));" >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000002_external_effect_protocol/migration.sql" \
   "$name:/tmp/migration-000002.sql" >/dev/null
 
