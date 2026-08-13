@@ -572,9 +572,13 @@ describe("release authority process composition", () => {
   });
 
   it("maps durable provider policy conflicts to a redacted 409", async () => {
-    const providerQuery = vi
-      .fn()
-      .mockRejectedValue(new Error("provider authority replay conflict"));
+    const providerQuery = vi.fn().mockRejectedValue(
+      Object.assign(new Error("prisma query failed"), {
+        code: "P2010",
+        message:
+          "\nInvalid `prisma.$queryRaw()` invocation:\n\n\nRaw query failed. Code: `P0001`. Message: `provider authority state denied`",
+      }),
+    );
     const app = await createReleaseControlApp({
       controlPrisma: {} as never,
       providerAuthorityPrisma: { $queryRaw: providerQuery } as never,
@@ -600,7 +604,8 @@ describe("release authority process composition", () => {
     });
     expect(response.statusCode).toBe(409);
     expect(response.json().message).toBe("provider_authority_decision_denied");
-    expect(response.body).not.toContain("replay conflict");
+    expect(response.body).not.toContain("state denied");
+    expect(response.body).not.toContain("P0001");
     await app.close();
   });
 
