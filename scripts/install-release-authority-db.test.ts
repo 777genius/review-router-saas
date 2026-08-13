@@ -31,9 +31,7 @@ describe("release authority database installation", () => {
       "release runner duplicate effects unsafe for activation",
     );
     expect(migration).toContain("rolloutStateAtPersistence");
-    expect(migration).toContain(
-      "release_authority.release_runner_persist_job",
-    );
+    expect(migration).toContain("release_authority.release_runner_persist_job");
     expect(migration).toContain(
       "REVOKE ALL ON FUNCTION release_authority.release_runner_compensation_gate() FROM PUBLIC;",
     );

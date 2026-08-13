@@ -92,9 +92,9 @@ describe("disposable dual-version rehearsal", () => {
         /000002_transactional_service_transition\/migration\.sql/gu,
       ),
     ).toHaveLength(1);
-    expect(
-      installer.indexOf("000003_partial_source_freeze"),
-    ).toBeLessThan(installer.indexOf("000005_late_runner_effects"));
+    expect(installer.indexOf("000003_partial_source_freeze")).toBeLessThan(
+      installer.indexOf("000005_late_runner_effects"),
+    );
     expect(
       installer.match(/000005_late_runner_effects\/migration\.sql/gu),
     ).toHaveLength(1);

@@ -126,13 +126,9 @@ describe("release authority postgres JSONB bindings", () => {
     await adapter.persistJob(job);
     await adapter.markTerminal("job-late", observation as never);
 
-    expect(recorder.queries[0]?.text).toContain(
-      "release_runner_persist_job",
-    );
+    expect(recorder.queries[0]?.text).toContain("release_runner_persist_job");
     expectJsonbBinding(recorder.queries[0]!, job);
-    expect(recorder.queries[1]?.text).toContain(
-      "release_runner_mark_terminal",
-    );
+    expect(recorder.queries[1]?.text).toContain("release_runner_mark_terminal");
     expectJsonbBinding(recorder.queries[1]!, observation);
     expect(recorder.queries.map(({ text }) => text).join("\n")).not.toContain(
       "runner_job SET",
