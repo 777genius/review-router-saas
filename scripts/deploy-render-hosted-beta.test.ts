@@ -41,6 +41,49 @@ const installerTuple = Object.freeze({
   REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
   REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
 });
+const dormantReviewV2Env = Object.freeze({
+  REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED: "0",
+  REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: "0",
+});
+
+function activeReviewV2Env() {
+  const keyRing = JSON.stringify([
+    {
+      keyId: "review-v2-active",
+      secretBase64: Buffer.alloc(32, 7).toString("base64"),
+      verifyUntil: null,
+    },
+  ]);
+  return {
+    REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE: "client_triggered_t0",
+    REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED: "0",
+    REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED: "0",
+    REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY: "0",
+    REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID: "review-v2-active",
+    REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON: keyRing,
+    REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID: "review-v2-active",
+    REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON: keyRing,
+    REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON: "[]",
+    REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON: "[]",
+    REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64: Buffer.alloc(
+      32,
+      8,
+    ).toString("base64"),
+    REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID: "context-active",
+    REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON: JSON.stringify([
+      {
+        keyId: "context-active",
+        secretBase64: Buffer.alloc(32, 9).toString("base64"),
+        verifyUntil: null,
+      },
+    ]),
+    REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: "a".repeat(64),
+  };
+}
 const forbiddenRuntimeDeployDotenvName =
   "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL";
 const forbiddenRuntimeDeployDotenvMessage = `${forbiddenRuntimeDeployDotenvName} is forbidden in the runtime deploy environment file`;
@@ -704,6 +747,7 @@ describe("Render hosted deploy hardening", () => {
           REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES: "1",
           REVIEW_ROUTER_PROGRESS_REPOSITORIES:
             "777genius/review-router-saas-e2e",
+          ...activeReviewV2Env(),
         },
       }).map(({ key, value }) => [key, value]),
     );
@@ -728,6 +772,97 @@ describe("Render hosted deploy hardening", () => {
     ).toHaveProperty("preDeployCommand", null);
   });
 
+  it("preserves the explicit active review v2 tuple without copying unknown env", () => {
+    const v2 = activeReviewV2Env();
+    const common = {
+      GITHUB_APP_CLIENT_ID: "client",
+      GITHUB_APP_CLIENT_SECRET: "secret",
+      GITHUB_APP_ID: "1",
+      GITHUB_APP_SLUG: "reviewrouter",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      AUTH_SECRET: "a".repeat(32),
+      REVIEW_ROUTER_ACTION_SESSION_SECRET: "s".repeat(32),
+      REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: "t".repeat(32),
+      REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+      REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
+      ...installerTuple,
+      ...v2,
+      REVIEW_ROUTER_UNKNOWN_RUNTIME_VALUE: "must-not-cross-put",
+    };
+    const api = Object.fromEntries(
+      buildServiceEnv({
+        databaseUrl: "postgres://internal/db",
+        privateKey: "private-key-not-logged",
+        role: "api",
+        webUrl: "https://reviewrouter.example",
+        apiUrl: "https://api.reviewrouter.example",
+        env: common,
+      }).map(({ key, value }) => [key, value]),
+    );
+    const worker = Object.fromEntries(
+      buildServiceEnv({
+        databaseUrl: "postgres://internal/db",
+        privateKey: "private-key-not-logged",
+        role: "worker",
+        webUrl: "https://reviewrouter.example",
+        apiUrl: "https://api.reviewrouter.example",
+        env: common,
+      }).map(({ key, value }) => [key, value]),
+    );
+
+    for (const [key, value] of Object.entries(v2)) {
+      expect(api[key], key).toBe(value);
+      if (
+        !key.startsWith("REVIEW_ROUTER_REVIEW_V2_CONTEXT_") &&
+        key !== "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256"
+      ) {
+        expect(worker[key], key).toBe(value);
+      }
+    }
+    expect(api.REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION).toBe(
+      "review-projection-policy.v5-t0",
+    );
+    expect(worker.REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64).toBe(
+      undefined,
+    );
+    expect(worker.REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256).toBe(
+      undefined,
+    );
+    expect(api.REVIEW_ROUTER_UNKNOWN_RUNTIME_VALUE).toBe(undefined);
+  });
+
+  it("fails closed when an active review v2 tuple is incomplete", () => {
+    const v2 = activeReviewV2Env();
+    delete (v2 as Record<string, string>)[
+      "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON"
+    ];
+    expect(() =>
+      buildServiceEnv({
+        databaseUrl: "postgres://internal/db",
+        privateKey: "private-key-not-logged",
+        role: "api",
+        webUrl: "https://reviewrouter.example",
+        apiUrl: "https://api.reviewrouter.example",
+        env: {
+          GITHUB_APP_CLIENT_ID: "client",
+          GITHUB_APP_CLIENT_SECRET: "secret",
+          GITHUB_APP_ID: "1",
+          GITHUB_APP_SLUG: "reviewrouter",
+          GITHUB_WEBHOOK_SECRET: "secret",
+          AUTH_SECRET: "a".repeat(32),
+          REVIEW_ROUTER_ACTION_SESSION_SECRET: "s".repeat(32),
+          REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: "t".repeat(32),
+          REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+          REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
+          ...installerTuple,
+          ...v2,
+        },
+      }),
+    ).toThrow(
+      "Missing required value: REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON",
+    );
+  });
+
   it("converges every service on one explicit rotating SHA and recovery witness", () => {
     const witness = "shared-recovery-witness-".padEnd(43, "x");
     const env = {
@@ -748,6 +883,7 @@ describe("Render hosted deploy hardening", () => {
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
       REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: witness,
+      ...dormantReviewV2Env,
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
         "postgresql://reviewrouter_codex_effect_authority:authority@db.internal/review_router",
     };
@@ -950,6 +1086,7 @@ describe("Render hosted deploy hardening", () => {
         REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
         REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
         ...installerTuple,
+        ...dormantReviewV2Env,
       },
     });
     const client = {
@@ -1272,6 +1409,7 @@ describe("Render hosted deploy hardening", () => {
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: `https://raw.githubusercontent.com/777genius/review-router/${"a".repeat(40)}/scripts/seed-codex-rotating-auth.sh`,
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
+      ...dormantReviewV2Env,
     };
     vi.stubEnv("REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS", "");
     expect(() =>

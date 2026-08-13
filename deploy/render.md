@@ -121,6 +121,18 @@ The worker key ID is required only when its v2 flag is enabled and must match
 the active key configured for the API capability key ring. It is not secret key
 material.
 
+The runtime deploy helper replaces each service environment as one explicit
+allowlist. When v2 or hosted progress is enabled, the dedicated deploy env file
+must therefore also contain the complete T0 runtime tuple: direct
+initialization, `client_triggered_t0` provisioning mode, run-control/worker,
+fenced outbox, intent ingress/admission/dispatch flags, both authorization key
+rings, producer release attestations, provider vote lanes, the v2 operator
+credential hash, and the API-only context session/replay secrets. It preserves
+those values exactly, sets the projection policy from the checked-in canonical
+constant, and refuses an incomplete tuple. It never copies unknown Render or
+local environment variables, and it never copies the plaintext operator
+credential.
+
 `AUTH_SECRET`, `REVIEW_ROUTER_ACTION_SESSION_SECRET`,
 `REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY`, and
 `REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS` are mandatory stable values. Create

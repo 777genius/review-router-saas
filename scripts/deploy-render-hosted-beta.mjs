@@ -5,7 +5,10 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { reviewV2ContextEnvForRole } from "./review-v2-render-env.mjs";
+import {
+  reviewV2ContextEnvForRole,
+  reviewV2ProjectionPolicyVersion,
+} from "./review-v2-render-env.mjs";
 import { isLoopbackHostname } from "../packages/shared/src/validation/loopback-hostname.mjs";
 import { resolveCodexRotatingInstallerDescriptor } from "../packages/shared/src/validation/codex-rotating-installer-descriptor.mjs";
 import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
@@ -572,6 +575,111 @@ function readOptionalEnvVars(env, keys) {
   return values;
 }
 
+const reviewV2ActivationFlagNames = Object.freeze([
+  "REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED",
+  "REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED",
+  "REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED",
+  "REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED",
+  "REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED",
+  "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY",
+  "REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED",
+]);
+
+const reviewV2RequiredRuntimeEnvNames = Object.freeze([
+  "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID",
+  "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON",
+  "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID",
+  "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON",
+  "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON",
+  "REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON",
+]);
+
+const reviewV2ApiOnlyRuntimeEnvNames = Object.freeze([
+  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64",
+  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID",
+  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON",
+  "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256",
+]);
+
+function exactBinaryFlag(env, name) {
+  const value = requiredEnv(name, env);
+  if (value !== "0" && value !== "1") {
+    throw new Error(`${name} must be exactly 0 or 1`);
+  }
+  return value;
+}
+
+function reviewV2RuntimeEnvForRole(env, role) {
+  // These two flags already exist in the hosted production contract. Requiring
+  // them prevents a full Render PUT from silently turning an active rollout off.
+  const runControlEnabled = exactBinaryFlag(
+    env,
+    "REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED",
+  );
+  const workerEnabled = exactBinaryFlag(
+    env,
+    "REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED",
+  );
+  const progressEnabled = [
+    "REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE",
+    "REVIEW_ROUTER_PROGRESS_FILE_COVERAGE",
+    "REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES",
+  ].some((name) => env[name] === "1");
+  const active =
+    runControlEnabled === "1" || workerEnabled === "1" || progressEnabled;
+
+  if (!active) {
+    return {
+      REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED: runControlEnabled,
+      REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: workerEnabled,
+    };
+  }
+
+  const flags = Object.fromEntries(
+    reviewV2ActivationFlagNames.map((name) => [
+      name,
+      name === "REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED"
+        ? runControlEnabled
+        : name === "REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED"
+          ? workerEnabled
+          : exactBinaryFlag(env, name),
+    ]),
+  );
+  const provisioningMode = requiredEnv(
+    "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE",
+    env,
+  );
+  if (provisioningMode !== "client_triggered_t0") {
+    throw new Error(
+      "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE must be client_triggered_t0",
+    );
+  }
+
+  const common = Object.fromEntries(
+    reviewV2RequiredRuntimeEnvNames.map((name) => [
+      name,
+      requiredEnv(name, env),
+    ]),
+  );
+  const selected = {
+    ...flags,
+    REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE: provisioningMode,
+    ...common,
+  };
+  if (role === "api") {
+    Object.assign(
+      selected,
+      Object.fromEntries(
+        reviewV2ApiOnlyRuntimeEnvNames.map((name) => [
+          name,
+          requiredEnv(name, env),
+        ]),
+      ),
+    );
+  }
+  return selected;
+}
+
 export class RenderClient {
   constructor(apiKey) {
     this.apiKey = apiKey;
@@ -715,7 +823,18 @@ export function buildServiceEnv({
   if (role === "api") {
     Object.assign(values, readOptionalEnvVars(env, apiOnlyGitLabEnvKeys));
   }
+  Object.assign(values, reviewV2RuntimeEnvForRole(env, role));
   Object.assign(values, reviewV2ContextEnvForRole(env, role));
+  if (
+    values.REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED === "1" ||
+    values.REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED === "1" ||
+    values.REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE === "1" ||
+    values.REVIEW_ROUTER_PROGRESS_FILE_COVERAGE === "1" ||
+    values.REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES === "1"
+  ) {
+    values.REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION =
+      reviewV2ProjectionPolicyVersion;
+  }
   Object.assign(values, {
     REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "0",
     REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED: "0",
