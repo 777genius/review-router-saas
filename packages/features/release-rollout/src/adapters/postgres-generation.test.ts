@@ -14,7 +14,7 @@ describe("PostgreSQL secret and connection boundary", () => {
     const passfile = connection.env.PGPASSFILE!;
     expect(connection.args.join(" ")).not.toContain("s3cret");
     expect(JSON.stringify(connection.env)).not.toContain("s3cret");
-    expect(passfile.startsWith("/tmp/rr-pgpass-")).toBe(true);
+    expect(passfile).toMatch(/\/rr-pgpass-[^/]+\/pgpass$/u);
     expect(readFileSync(passfile, "utf8")).toContain("s3cret");
     connection.cleanup();
     expect(existsSync(passfile)).toBe(false);
