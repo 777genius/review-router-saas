@@ -17,20 +17,20 @@ const authorityReadiness = (
     roleName,
     systemIdentifier: "authority-system",
     postgresMajor: 17,
+    schemaVersion: 5,
     controlRoutine: true,
     providerRoutine: true,
     installerRoutine: false,
     readerRoutine: false,
-    prepareEffectRoutine: true,
-    dispatchPermitRoutine: true,
-    reconcileEffectRoutine: true,
-    abandonPreparedRoutine: true,
-    sourceFreezePrepareRoutine: true,
-    sourceFreezePrepareExecute: roleName === "reviewrouter_release_control",
-    sourceFreezeRecordRoutine: true,
-    sourceFreezeRecordExecute: roleName === "reviewrouter_release_control",
-    sourceFreezeCompleteRoutine: true,
-    sourceFreezeCompleteExecute: roleName === "reviewrouter_release_control",
+    externalEffectProtocol: true,
+    sourceFreezeProtocol: true,
+    selectiveRecoveryProtocol: true,
+    lateRunnerEffectProtocol: true,
+    compensationCheckpointDefinition: true,
+    requiredTriggers: true,
+    authorityAclExact: true,
+    publicAuthorityRevoked: true,
+    authorityTablesRevoked: true,
   },
 ];
 const installerReadiness = [
@@ -38,20 +38,20 @@ const installerReadiness = [
     roleName: "reviewrouter_activation_permit_installer",
     systemIdentifier: "target-system",
     postgresMajor: 17,
+    schemaVersion: 0,
     controlRoutine: false,
     providerRoutine: false,
     installerRoutine: true,
     readerRoutine: true,
-    prepareEffectRoutine: false,
-    dispatchPermitRoutine: false,
-    reconcileEffectRoutine: false,
-    abandonPreparedRoutine: false,
-    sourceFreezePrepareRoutine: true,
-    sourceFreezePrepareExecute: false,
-    sourceFreezeRecordRoutine: true,
-    sourceFreezeRecordExecute: false,
-    sourceFreezeCompleteRoutine: true,
-    sourceFreezeCompleteExecute: false,
+    externalEffectProtocol: false,
+    sourceFreezeProtocol: false,
+    selectiveRecoveryProtocol: false,
+    lateRunnerEffectProtocol: false,
+    compensationCheckpointDefinition: false,
+    requiredTriggers: false,
+    authorityAclExact: false,
+    publicAuthorityRevoked: false,
+    authorityTablesRevoked: false,
   },
 ];
 const readerReadiness = [
@@ -59,20 +59,20 @@ const readerReadiness = [
     roleName: "reviewrouter_activation_receipt_reader",
     systemIdentifier: "target-system",
     postgresMajor: 17,
+    schemaVersion: 0,
     controlRoutine: false,
     providerRoutine: false,
     installerRoutine: false,
     readerRoutine: true,
-    prepareEffectRoutine: false,
-    dispatchPermitRoutine: false,
-    reconcileEffectRoutine: false,
-    abandonPreparedRoutine: false,
-    sourceFreezePrepareRoutine: true,
-    sourceFreezePrepareExecute: false,
-    sourceFreezeRecordRoutine: true,
-    sourceFreezeRecordExecute: false,
-    sourceFreezeCompleteRoutine: true,
-    sourceFreezeCompleteExecute: false,
+    externalEffectProtocol: false,
+    sourceFreezeProtocol: false,
+    selectiveRecoveryProtocol: false,
+    lateRunnerEffectProtocol: false,
+    compensationCheckpointDefinition: false,
+    requiredTriggers: false,
+    authorityAclExact: false,
+    publicAuthorityRevoked: false,
+    authorityTablesRevoked: false,
   },
 ];
 const witnessReadiness = [
@@ -84,6 +84,37 @@ const witnessReadiness = [
     externalEffectRoutine: true,
   },
 ];
+
+const createReleaseControlHealthApp = (
+  controlOverrides: Record<string, unknown> = {},
+) =>
+  createReleaseControlApp({
+    controlPrisma: {
+      $queryRaw: vi.fn().mockResolvedValue([
+        {
+          ...authorityReadiness("reviewrouter_release_control")[0],
+          ...controlOverrides,
+        },
+      ]),
+    } as never,
+    providerAuthorityPrisma: {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValue(
+          authorityReadiness("reviewrouter_provider_authority"),
+        ),
+    } as never,
+    permitInstallerPrisma: {
+      $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+    } as never,
+    targetReceiptReaderPrisma: {
+      $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+    } as never,
+    credentials: {
+      controlTokenSha256: digest("control"),
+      providerAuthorityTokenSha256: digest("provider"),
+    },
+  });
 
 describe("release authority process composition", () => {
   it("builds focused use cases from distinct control and provider connections", () => {
@@ -577,7 +608,44 @@ describe("release authority process composition", () => {
         $queryRaw: vi.fn().mockResolvedValue([
           {
             ...authorityReadiness("reviewrouter_release_control")[0],
-            dispatchPermitRoutine: false,
+            externalEffectProtocol: false,
+          },
+        ]),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_provider_authority"),
+          ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+      } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    await app.close();
+  });
+
+  it("fails health for an authority database stopped after 000003", async () => {
+    const app = await createReleaseControlApp({
+      controlPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue([
+          {
+            ...authorityReadiness("reviewrouter_release_control")[0],
+            schemaVersion: 3,
+            selectiveRecoveryProtocol: false,
+            lateRunnerEffectProtocol: false,
+            requiredTriggers: false,
           },
         ]),
       } as never,
@@ -606,80 +674,61 @@ describe("release authority process composition", () => {
   });
 
   it.each([
-    "sourceFreezePrepareRoutine",
-    "sourceFreezeRecordRoutine",
-    "sourceFreezeCompleteRoutine",
-  ] as const)("fails health when %s is absent", async (routine) => {
-    const app = await createReleaseControlApp({
-      controlPrisma: {
-        $queryRaw: vi.fn().mockResolvedValue([
-          {
-            ...authorityReadiness("reviewrouter_release_control")[0],
-            [routine]: false,
-          },
-        ]),
-      } as never,
-      providerAuthorityPrisma: {
-        $queryRaw: vi
-          .fn()
-          .mockResolvedValue(
-            authorityReadiness("reviewrouter_provider_authority"),
-          ),
-      } as never,
-      permitInstallerPrisma: {
-        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
-      } as never,
-      targetReceiptReaderPrisma: {
-        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
-      } as never,
-      credentials: {
-        controlTokenSha256: digest("control"),
-        providerAuthorityTokenSha256: digest("provider"),
-      },
-    });
-    expect(
-      (await app.inject({ method: "GET", url: "/health" })).statusCode,
-    ).toBe(503);
-    await app.close();
-  });
+    "authorityAclExact",
+    "publicAuthorityRevoked",
+    "authorityTablesRevoked",
+  ] as const)(
+    "fails health when the authority %s invariant is false",
+    async (acl) => {
+      const app = await createReleaseControlApp({
+        controlPrisma: {
+          $queryRaw: vi.fn().mockResolvedValue([
+            {
+              ...authorityReadiness("reviewrouter_release_control")[0],
+              [acl]: false,
+            },
+          ]),
+        } as never,
+        providerAuthorityPrisma: {
+          $queryRaw: vi
+            .fn()
+            .mockResolvedValue(
+              authorityReadiness("reviewrouter_provider_authority"),
+            ),
+        } as never,
+        permitInstallerPrisma: {
+          $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+        } as never,
+        targetReceiptReaderPrisma: {
+          $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+        } as never,
+        credentials: {
+          controlTokenSha256: digest("control"),
+          providerAuthorityTokenSha256: digest("provider"),
+        },
+      });
+      expect(
+        (await app.inject({ method: "GET", url: "/health" })).statusCode,
+      ).toBe(503);
+      await app.close();
+    },
+  );
 
   it.each([
-    "sourceFreezePrepareExecute",
-    "sourceFreezeRecordExecute",
-    "sourceFreezeCompleteExecute",
-  ] as const)("fails health when %s is not granted", async (acl) => {
-    const app = await createReleaseControlApp({
-      controlPrisma: {
-        $queryRaw: vi.fn().mockResolvedValue([
-          {
-            ...authorityReadiness("reviewrouter_release_control")[0],
-            [acl]: false,
-          },
-        ]),
-      } as never,
-      providerAuthorityPrisma: {
-        $queryRaw: vi
-          .fn()
-          .mockResolvedValue(
-            authorityReadiness("reviewrouter_provider_authority"),
-          ),
-      } as never,
-      permitInstallerPrisma: {
-        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
-      } as never,
-      targetReceiptReaderPrisma: {
-        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
-      } as never,
-      credentials: {
-        controlTokenSha256: digest("control"),
-        providerAuthorityTokenSha256: digest("provider"),
-      },
-    });
-    expect(
-      (await app.inject({ method: "GET", url: "/health" })).statusCode,
-    ).toBe(503);
-    await app.close();
-  });
+    "selectiveRecoveryProtocol",
+    "lateRunnerEffectProtocol",
+    "compensationCheckpointDefinition",
+    "requiredTriggers",
+  ] as const)(
+    "fails health when the required %s proof is absent",
+    async (proof) => {
+      const app = await createReleaseControlHealthApp({ [proof]: false });
+      expect(
+        (await app.inject({ method: "GET", url: "/health" })).statusCode,
+      ).toBe(503);
+      await app.close();
+    },
+  );
 
   it("fails witness health when its required 000002 effect routine is absent", async () => {
     const app = await createReleaseWitnessApp({
