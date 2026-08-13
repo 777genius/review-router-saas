@@ -100,8 +100,9 @@ passwords, backup material, or raw recovery witnesses.
    The installer applies `000001_release_authority`,
    `000002_external_effect_protocol`,
    `000002_transactional_service_transition`,
-   `000003_partial_source_freeze`, and `000005_late_runner_effects` in that
-   order, each exactly once in one transaction. It is fresh-install-only: never
+   `000003_partial_source_freeze`, `000004_selective_source_recovery`, and
+   `000005_late_runner_effects` in that order, each exactly once in one
+   transaction. It is fresh-install-only: never
    run it against an existing authority catalog or substitute application
    Prisma migration tooling. Retain this DB across cutovers.
 
@@ -150,8 +151,8 @@ pnpm release-rollout:rehearsal
 
 Replace both image placeholders with the immutable digest pins approved in CI;
 the check intentionally fails when opt-in or either pin is absent.
-The rehearsal uses the same ordered one-transaction authority migration bundle
-as installation: 000001 once, then 000002 once, then 000003 once.
+The rehearsal uses the same complete ordered one-transaction authority migration
+bundle as installation, including selective recovery and late-effect handling.
 
 CI must pass on the protected candidate SHA. Live E2E requires a newly created
 disposable repository/project, source/target PG17 DBs, runner services, and
