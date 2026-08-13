@@ -90,6 +90,19 @@ export class PostgreSqlRolloutLedgerAdapter implements RunnerJobLedger {
     );
     return JSON.parse(value) as PersistedRunnerJob[];
   }
+  async currentRunner(
+    rolloutId: string,
+    lifecycle: "role" | "cutover",
+  ): Promise<{ identity: RunnerIdentity; observation: StepObservation }> {
+    const value = this.sql(
+      `SELECT json_build_object('identity',runner_identity,'observation',provision_observation)::text FROM reviewrouter_bootstrap.release_runner_job_ledger WHERE rollout_id=${literal(rolloutId)} AND lifecycle=${literal(lifecycle)} AND runner_identity IS NOT NULL AND terminal_at IS NULL`,
+    );
+    if (!value) throw new Error("runner_current_identity_missing");
+    return JSON.parse(value) as {
+      identity: RunnerIdentity;
+      observation: StepObservation;
+    };
+  }
   async markTerminal(
     jobId: string,
     observation: StepObservation,

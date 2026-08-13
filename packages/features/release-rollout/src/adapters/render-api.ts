@@ -319,6 +319,17 @@ export class RenderApiAdapter {
     };
   }
 
+  async listAllJobs(serviceId: string): Promise<readonly RenderJob[]> {
+    const all: RenderJob[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listJobs(serviceId, cursor);
+      all.push(...page.items);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return Object.freeze(all);
+  }
+
   async listLogs(input: {
     ownerId: string;
     resourceId: string;

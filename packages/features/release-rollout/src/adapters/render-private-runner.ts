@@ -58,6 +58,10 @@ export interface RunnerJobLedger {
   }): Promise<void>;
   persistCreatedJob(value: PersistedRunnerJob): Promise<void>;
   listOpenJobs(rolloutId: string): Promise<readonly PersistedRunnerJob[]>;
+  currentRunner(
+    rolloutId: string,
+    lifecycle: "role" | "cutover",
+  ): Promise<{ identity: RunnerIdentity; observation: StepObservation }>;
   markTerminal(jobId: string, observation: StepObservation): Promise<void>;
   persistValidatedIdentity(
     jobId: string,
@@ -162,6 +166,20 @@ function sameProvenance(a: RunnerProvenance, b: RunnerProvenance): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+function sameValue(a: unknown, b: unknown): boolean {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, entry]) => [key, canonical(entry)]),
+      );
+    return value;
+  };
+  return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
 export class RenderPrivateRunnerAdapter {
   constructor(
     private readonly ledger: RunnerJobLedger,
@@ -206,7 +224,7 @@ export class RenderPrivateRunnerAdapter {
         `${input.rolloutId}:${input.lifecycle}:${input.runId}:${input.workflowJobId}:${input.baseServiceId}`,
       )
       .digest("hex")}`;
-    await this.ledger.persistProvisioningIntent({
+    const intentResult = await this.ledger.persistProvisioningIntent({
       id: provisioningIntentId,
       rolloutId: input.rolloutId,
       serviceId: input.baseServiceId,
@@ -240,53 +258,102 @@ export class RenderPrivateRunnerAdapter {
       }),
     ).toString("base64url");
     const startCommand = `node /runner/bootstrap.mjs --intent ${provisioningIntentId} --context ${encodedContext}`;
-    const created = await api.createJob(input.baseServiceId, {
-      startCommand,
-      ...(input.planId ? { planId: input.planId } : {}),
-    });
+    let created: RenderJob;
+    let bindingRequired = true;
+    const providerCreatedByThisCall = intentResult === "created";
+    if (intentResult === "created") {
+      created = await api.createJob(input.baseServiceId, {
+        startCommand,
+        ...(input.planId ? { planId: input.planId } : {}),
+      });
+    } else {
+      const current = await this.readMatchingCurrent(input, observedProvenance);
+      if (current) return current;
+      const bound = (await this.ledger.listOpenJobs(input.rolloutId)).filter(
+        (entry) => entry.provisioningIntentId === provisioningIntentId,
+      );
+      if (bound.length > 1)
+        throw new Error("render_runner_intent_multiple_bound_jobs");
+      if (bound.length === 1) {
+        bindingRequired = false;
+        created = await api.getJob(input.baseServiceId, bound[0]!.jobId);
+      } else {
+        const matching = (await api.listAllJobs(input.baseServiceId)).filter(
+          (job) => job.startCommand === startCommand,
+        );
+        if (matching.length === 0)
+          throw new Error("render_runner_intent_reconciliation_pending");
+        if (matching.length > 1)
+          throw new Error("render_runner_intent_multiple_provider_jobs");
+        created = matching[0]!;
+      }
+    }
     // This durable write deliberately precedes every post-create validation.
     try {
-      await this.ledger.persistCreatedJob({
-        rolloutId: input.rolloutId,
-        serviceId: input.baseServiceId,
-        jobId: created.id,
-        observedAt: this.now().toISOString(),
-        cleanupCanary,
-        lifecycle: input.lifecycle,
-        provisioningIntentId,
-      });
+      if (bindingRequired)
+        await this.ledger.persistCreatedJob({
+          rolloutId: input.rolloutId,
+          serviceId: input.baseServiceId,
+          jobId: created.id,
+          observedAt: this.now().toISOString(),
+          cleanupCanary,
+          lifecycle: input.lifecycle,
+          provisioningIntentId,
+        });
+      bindingRequired = false;
       await this.ledger.recordProvisioningOutcome({
         intentId: provisioningIntentId,
         jobId: created.id,
         outcome: "bound",
       });
     } catch (error) {
-      let observation: StepObservation | undefined;
-      try {
-        observation = await this.observeCleanup({
-          api,
-          baseServiceId: input.baseServiceId,
-          jobId: created.id,
-          cleanupCanary,
-          lifecycle: input.lifecycle,
-          timeoutPolls: 30,
-        });
-      } finally {
+      if (!bindingRequired) throw error;
+      if (!providerCreatedByThisCall) {
+        const concurrentlyBound = (
+          await this.ledger.listOpenJobs(input.rolloutId)
+        ).some(
+          (entry) =>
+            entry.provisioningIntentId === provisioningIntentId &&
+            entry.jobId === created.id,
+        );
+        if (!concurrentlyBound) throw error;
         await this.ledger.recordProvisioningOutcome({
           intentId: provisioningIntentId,
           jobId: created.id,
-          outcome: observation
-            ? "persistence_failed_cleaned"
-            : "persistence_failed_unknown",
-          ...(observation ? { observation } : {}),
+          outcome: "bound",
+        });
+      } else {
+        let observation: StepObservation | undefined;
+        try {
+          observation = await this.observeCleanup({
+            api,
+            baseServiceId: input.baseServiceId,
+            jobId: created.id,
+            cleanupCanary,
+            lifecycle: input.lifecycle,
+            timeoutPolls: 30,
+          });
+        } finally {
+          await this.ledger.recordProvisioningOutcome({
+            intentId: provisioningIntentId,
+            jobId: created.id,
+            outcome: observation
+              ? "persistence_failed_cleaned"
+              : "persistence_failed_unknown",
+            ...(observation ? { observation } : {}),
+          });
+        }
+        throw new Error("render_runner_job_persistence_failed", {
+          cause: error,
         });
       }
-      throw new Error("render_runner_job_persistence_failed", { cause: error });
     }
     if (
       created.serviceId !== input.baseServiceId ||
       created.startCommand !== startCommand ||
-      created.status !== "pending" ||
+      (providerCreatedByThisCall
+        ? created.status !== "pending"
+        : terminal.has(created.status)) ||
       created.planId !== input.planId
     )
       throw new Error("render_runner_create_response_mismatch");
@@ -339,16 +406,80 @@ export class RenderPrivateRunnerAdapter {
         githubWorkflowJobId: input.workflowJobId,
       },
     };
-    await this.ledger.persistValidatedIdentity(
-      created.id,
-      identity,
-      provisionObservation,
-    );
-    return {
+    const result = {
       jobId: created.id,
       identity,
       observation: provisionObservation,
     };
+    try {
+      await this.ledger.persistValidatedIdentity(
+        created.id,
+        identity,
+        provisionObservation,
+      );
+    } catch (error) {
+      const current = await this.readMatchingCurrent(input, observedProvenance);
+      if (!current || current.jobId !== created.id) throw error;
+      return current;
+    }
+    return result;
+  }
+
+  private async readMatchingCurrent(
+    input: RenderRunnerRequest,
+    observedProvenance: RunnerProvenance,
+  ): Promise<
+    | { identity: RunnerIdentity; observation: StepObservation; jobId: string }
+    | undefined
+  > {
+    let current: { identity: RunnerIdentity; observation: StepObservation };
+    try {
+      current = await this.ledger.currentRunner(
+        input.rolloutId,
+        input.lifecycle,
+      );
+    } catch {
+      return undefined;
+    }
+    const expectedIdentity: RunnerIdentity = {
+      organization: input.organization,
+      repository: input.repository,
+      workflowPath: input.workflowPath,
+      workflowRef: input.workflowRef,
+      event: input.event,
+      actor: input.actor,
+      runId: input.runId,
+      runAttempt: input.runAttempt,
+      workflowJobId: input.workflowJobId,
+      workflowJobName: input.workflowJobName,
+      commitSha: input.commitSha,
+      runnerName: input.runnerName,
+      cleanupCanary: `rr-cleanup:${input.rolloutId}:${input.runnerName}`,
+      renderJobId: current.identity.renderJobId,
+      baseServiceId: input.baseServiceId,
+      runnerGroupId: input.runnerGroupId,
+      runnerGroupName: input.runnerGroupName,
+      uniqueRunnerLabel: input.runnerName,
+      workFolder: `_work/${input.runnerName}`,
+      ...(input.planId ? { planId: input.planId } : {}),
+      provenance: observedProvenance,
+      imageAttestation: input.imageAttestation,
+    };
+    if (
+      !sameValue(current.identity, expectedIdentity) ||
+      !sameValue(current.observation.facts, current.identity) ||
+      current.observation.step !==
+        (input.lifecycle === "role"
+          ? RolloutStep.ProvisionRoleRunner
+          : RolloutStep.ProvisionCutoverRunner) ||
+      current.observation.provider?.renderJobId !==
+        current.identity.renderJobId ||
+      current.observation.provider?.renderDeployId !==
+        observedProvenance.deployId ||
+      current.observation.provider?.githubWorkflowJobId !== input.workflowJobId
+    )
+      throw new Error("render_runner_current_intent_mismatch");
+    return { ...current, jobId: current.identity.renderJobId };
   }
 
   async cleanup(input: {

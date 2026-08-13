@@ -52,6 +52,33 @@ const request: RenderRunnerRequest = {
   planId: "starter-plus",
   apiKey: "redacted",
 };
+function startCommandForIntent(intent: string): string {
+  const context = Buffer.from(
+    JSON.stringify({
+      organization: request.organization,
+      repository: request.repository,
+      workflowPath: request.workflowPath,
+      workflowRef: request.workflowRef,
+      event: request.event,
+      actor: request.actor,
+      runId: request.runId,
+      runAttempt: request.runAttempt,
+      commitSha: request.commitSha,
+      workflowJobId: request.workflowJobId,
+      workflowJobName: request.workflowJobName,
+      runnerGroupId: request.runnerGroupId,
+      runnerGroupName: request.runnerGroupName,
+      runnerName: request.runnerName,
+      uniqueRunnerLabel: request.runnerName,
+      workFolder: `_work/${request.runnerName}`,
+      rolloutId: request.rolloutId,
+      lifecycle: request.lifecycle,
+      provisioningIntentId: intent,
+      cleanupCanary: `rr-cleanup:${request.rolloutId}:${request.runnerName}`,
+    }),
+  ).toString("base64url");
+  return `node /runner/bootstrap.mjs --intent ${intent} --context ${context}`;
+}
 const service = {
   id: request.baseServiceId,
   ownerId: request.ownerId,
@@ -87,6 +114,7 @@ const ledger = () => ({
   recordProvisioningOutcome: vi.fn().mockResolvedValue(undefined),
   persistCreatedJob: vi.fn().mockResolvedValue(undefined),
   listOpenJobs: vi.fn().mockResolvedValue([]),
+  currentRunner: vi.fn().mockRejectedValue(new Error("runner_missing")),
   markTerminal: vi.fn().mockResolvedValue(undefined),
   persistValidatedIdentity: vi.fn().mockResolvedValue(undefined),
 });
@@ -182,6 +210,187 @@ describe("Render private runner contract", () => {
     ).rejects.toThrow("ledger_unavailable");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
+
+  it("returns the current bound runner on controller replay without another provider create", async () => {
+    const jobLedger = ledger();
+    jobLedger.persistProvisioningIntent
+      .mockResolvedValueOnce("created")
+      .mockResolvedValueOnce("existing");
+    let current: { identity: object; observation: object } | undefined;
+    jobLedger.persistValidatedIdentity.mockImplementation(
+      async (_jobId, identity, observation) => {
+        current = { identity, observation };
+      },
+    );
+    jobLedger.currentRunner.mockImplementation(async () => {
+      if (!current) throw new Error("runner_missing");
+      return current;
+    });
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith(`/services/${request.baseServiceId}`))
+        return json(service);
+      if (url.includes("/deploys")) return json(deploys);
+      if (init?.method === "POST")
+        return json(
+          {
+            ...created,
+            startCommand: JSON.parse(String(init.body)).startCommand,
+          },
+          201,
+        );
+      throw new Error(`unexpected_render_call:${url}`);
+    });
+    const adapter = new RenderPrivateRunnerAdapter(
+      jobLedger,
+      witness(),
+      providerWitness(),
+      fetchImpl,
+    );
+    const first = await adapter.provision(request);
+    await expect(adapter.provision(request)).resolves.toEqual(first);
+    expect(
+      fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(1);
+  });
+
+  it("reconciles the deterministic provider job after create response loss", async () => {
+    const jobLedger = ledger();
+    jobLedger.persistProvisioningIntent
+      .mockResolvedValueOnce("created")
+      .mockResolvedValueOnce("existing");
+    let lostStartCommand = "";
+    const firstFetch = vi
+      .fn()
+      .mockResolvedValueOnce(json(service))
+      .mockResolvedValueOnce(json(deploys))
+      .mockImplementationOnce(async (_url, init) => {
+        lostStartCommand = JSON.parse(String(init?.body)).startCommand;
+        throw new Error("connection_lost_after_create");
+      });
+    const adapter = new RenderPrivateRunnerAdapter(
+      jobLedger,
+      witness(),
+      providerWitness(),
+      firstFetch,
+    );
+    await expect(adapter.provision(request)).rejects.toThrow(
+      "connection_lost_after_create",
+    );
+
+    const replayFetch = vi
+      .fn()
+      .mockResolvedValueOnce(json(service))
+      .mockResolvedValueOnce(json(deploys))
+      .mockResolvedValueOnce(
+        json([
+          {
+            job: { ...created, startCommand: lostStartCommand },
+            cursor: null,
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(json(deploys));
+    const result = await new RenderPrivateRunnerAdapter(
+      jobLedger,
+      witness(),
+      providerWitness(),
+      replayFetch,
+    ).provision(request);
+    expect(result.jobId).toBe(created.id);
+    expect(jobLedger.persistCreatedJob).toHaveBeenCalledTimes(1);
+    expect(
+      replayFetch.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(0);
+  });
+
+  it("reuses an existing ledger-bound active job without listing or creating jobs", async () => {
+    const jobLedger = ledger();
+    jobLedger.persistProvisioningIntent.mockResolvedValue("existing");
+    jobLedger.listOpenJobs.mockImplementation(async () => [
+      {
+        rolloutId: request.rolloutId,
+        serviceId: request.baseServiceId,
+        jobId: created.id,
+        observedAt: created.createdAt,
+        cleanupCanary: `rr-cleanup:${request.rolloutId}:${request.runnerName}`,
+        lifecycle: request.lifecycle,
+        provisioningIntentId: String(
+          jobLedger.persistProvisioningIntent.mock.calls[0]?.[0].id,
+        ),
+      },
+    ]);
+    let expectedCommand = "";
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith(`/services/${request.baseServiceId}`))
+        return json(service);
+      if (url.includes("/deploys")) return json(deploys);
+      if (url.endsWith(`/jobs/${created.id}`)) {
+        const intent =
+          jobLedger.persistProvisioningIntent.mock.calls[0]?.[0].id;
+        expectedCommand = startCommandForIntent(String(intent));
+        return json({ ...created, startCommand: expectedCommand });
+      }
+      throw new Error(`unexpected_render_call:${url}:${init?.method ?? "GET"}`);
+    });
+    const result = await new RenderPrivateRunnerAdapter(
+      jobLedger,
+      witness(),
+      providerWitness(),
+      fetchImpl,
+    ).provision(request);
+    expect(result.jobId).toBe(created.id);
+    expect(result.identity.renderJobId).toBe(created.id);
+    expect(expectedCommand).not.toBe("");
+    expect(jobLedger.persistCreatedJob).not.toHaveBeenCalled();
+    expect(
+      fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(0);
+  });
+
+  it.each([
+    ["no", []],
+    [
+      "multiple",
+      [
+        { ...created, id: "job-duplicate-1" },
+        { ...created, id: "job-duplicate-2" },
+      ],
+    ],
+  ])(
+    "fails closed when an existing intent has %s reconcilable provider jobs",
+    async (_case, jobs) => {
+      const jobLedger = ledger();
+      jobLedger.persistProvisioningIntent.mockResolvedValue("existing");
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(json(service))
+        .mockResolvedValueOnce(json(deploys))
+        .mockImplementationOnce(async (_url, init) => {
+          const intent = jobLedger.persistProvisioningIntent.mock.calls[0]?.[0];
+          return json(
+            jobs.map((job) => ({
+              job: { ...job, startCommand: startCommandForIntent(intent.id) },
+              cursor: null,
+            })),
+          );
+        });
+      await expect(
+        new RenderPrivateRunnerAdapter(
+          jobLedger,
+          witness(),
+          providerWitness(),
+          fetchImpl,
+        ).provision(request),
+      ).rejects.toThrow(
+        jobs.length === 0
+          ? "render_runner_intent_reconciliation_pending"
+          : "render_runner_intent_multiple_provider_jobs",
+      );
+      expect(
+        fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"),
+      ).toHaveLength(0);
+    },
+  );
 
   it("directly proves cleanup and records reconciliation when created-job persistence fails", async () => {
     const jobLedger = ledger();
