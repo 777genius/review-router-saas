@@ -114,6 +114,7 @@
     "hosted:api-demo:check": "node scripts/check-hosted-api-demo.mjs",
     "web:ui-audit": "node scripts/check-ui-layout.mjs",
     "hosted:ui-audit": "node scripts/check-ui-layout.mjs --base-url https://reviewrouter.site",
+    "hosted:progress-canary": "node scripts/run-hosted-live-progress-canary.mjs",
     "release:sync-major": "node scripts/sync-major-release-tag.mjs"
   },
   "dependencies": {
