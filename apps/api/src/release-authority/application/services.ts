@@ -106,16 +106,25 @@ export class ProviderAuthorityDecisionService {
 
 export class RunnerOperationsService {
   constructor(private readonly repository: RunnerOperationsLedgerPort) {}
-  persistIntent = (
-    input: Parameters<RunnerOperationsLedgerPort["persistIntent"]>[0],
-  ) => this.repository.persistIntent(input);
+  persistProvisioningIntent = (
+    input: Parameters<
+      RunnerOperationsLedgerPort["persistProvisioningIntent"]
+    >[0],
+  ) => this.repository.persistProvisioningIntent(input);
   listIntents = (rolloutId: string) => this.repository.listIntents(rolloutId);
-  claimProviderCreation = (
-    input: Parameters<RunnerOperationsLedgerPort["claimProviderCreation"]>[0],
-  ) => this.repository.claimProviderCreation(input);
-  recordIntentOutcome = (
-    input: Parameters<RunnerOperationsLedgerPort["recordIntentOutcome"]>[0],
-  ) => this.repository.recordIntentOutcome(input);
+  acquireProviderDispatchPermit = (
+    input: Parameters<
+      RunnerOperationsLedgerPort["acquireProviderDispatchPermit"]
+    >[0],
+  ) => this.repository.acquireProviderDispatchPermit(input);
+  abandonPreparedEffect = (
+    input: Parameters<RunnerOperationsLedgerPort["abandonPreparedEffect"]>[0],
+  ) => this.repository.abandonPreparedEffect(input);
+  reconcileProvisioningEffect = (
+    input: Parameters<
+      RunnerOperationsLedgerPort["reconcileProvisioningEffect"]
+    >[0],
+  ) => this.repository.reconcileProvisioningEffect(input);
   persistJob = (input: PersistedJob) => this.repository.persistJob(input);
   listOpenJobs = (rolloutId: string) => this.repository.listOpenJobs(rolloutId);
   persistIdentity = (

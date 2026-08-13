@@ -45,14 +45,39 @@ class QueryRecorder {
               observation: { step: "cleanup_role_runner" },
               witness: { canary: "canary", providerStatus: "succeeded" },
             }
-          : text.includes("release_runner_claim_provider_creation")
+          : text.includes("release_runner_prepare_effect")
             ? {
-                result: "acquired",
-                leaseExpiresAt: "2026-08-12T00:02:00.000Z",
+                state: "prepared",
+                ownerId: "rrc-00000000-0000-4000-8000-000000000001",
+                epoch: 0,
+                providerId: null,
+                safeForCompensation: false,
               }
-            : text.includes("release_runner_persist_intent")
-              ? "created"
-              : true;
+            : text.includes("release_runner_acquire_dispatch_permit")
+              ? {
+                  state: "dispatching",
+                  ownerId: "rrc-00000000-0000-4000-8000-000000000001",
+                  epoch: 1,
+                  providerId: null,
+                  safeForCompensation: false,
+                }
+              : text.includes("release_runner_abandon_prepared")
+                ? {
+                    state: "abandoned",
+                    ownerId: "rrc-00000000-0000-4000-8000-000000000001",
+                    epoch: 0,
+                    providerId: null,
+                    safeForCompensation: true,
+                  }
+                : text.includes("release_runner_reconcile_effect")
+                  ? {
+                      state: "bound",
+                      ownerId: "rrc-00000000-0000-4000-8000-000000000001",
+                      epoch: 1,
+                      providerId: "job",
+                      safeForCompensation: false,
+                    }
+                  : true;
     return [{ value }] as T;
   }
 }
@@ -208,28 +233,56 @@ describe("release authority postgres JSONB bindings", () => {
       startCommandSha256: `sha256:${"b".repeat(64)}`,
       creationLeaseOwner: "rrc-00000000-0000-4000-8000-000000000001",
     } as const;
-    await adapter.persistIntent(intent);
+    await expect(
+      adapter.persistProvisioningIntent(intent),
+    ).resolves.toMatchObject({
+      state: "prepared",
+      epoch: 0,
+    });
     expectJsonbBinding(recorder.queries.at(-1)!, intent);
 
-    const creationClaim = {
+    const dispatchPermit = {
       intentId: intent.id,
       claimantId: "rrc-00000000-0000-4000-8000-000000000001",
       startCommandSha256: `sha256:${"b".repeat(64)}`,
-      observedNoMatchAt: observedAt,
+      expectedEpoch: 0,
       leaseSeconds: 120,
-      discoveryGraceSeconds: 120,
     } as const;
-    await adapter.claimProviderCreation(creationClaim);
-    expectJsonbBinding(recorder.queries.at(-1)!, creationClaim);
+    await expect(
+      adapter.acquireProviderDispatchPermit(dispatchPermit),
+    ).resolves.toMatchObject({ state: "dispatching", epoch: 1 });
+    expectJsonbBinding(recorder.queries.at(-1)!, dispatchPermit);
 
-    const outcome = {
+    const reconciliation = {
       intentId: intent.id,
+      claimantId: dispatchPermit.claimantId,
+      expectedEpoch: 1,
       jobId: "job",
-      outcome: "bound",
-      observation: { step: dangerous },
+      reconciliation: { result: "pending", safeForCompensation: false },
     } as const;
-    await adapter.recordIntentOutcome(outcome as never);
-    expectJsonbBinding(recorder.queries.at(-1)!, outcome);
+    await expect(
+      adapter.reconcileProvisioningEffect(reconciliation),
+    ).resolves.toMatchObject({ state: "bound", providerId: "job" });
+    expectJsonbBinding(recorder.queries.at(-1)!, reconciliation);
+
+    const abandon = {
+      intentId: intent.id,
+      claimantId: dispatchPermit.claimantId,
+      expectedEpoch: 0,
+    } as const;
+    await expect(adapter.abandonPreparedEffect(abandon)).resolves.toMatchObject(
+      {
+        state: "abandoned",
+        safeForCompensation: true,
+      },
+    );
+    const abandonQuery = recorder.queries.at(-1)!;
+    expect(abandonQuery.text).toContain("release_runner_abandon_prepared");
+    expect(abandonQuery.values).toEqual([
+      abandon.intentId,
+      abandon.claimantId,
+      abandon.expectedEpoch,
+    ]);
 
     const job = {
       rolloutId: "rollout",
@@ -274,5 +327,32 @@ describe("release authority postgres JSONB bindings", () => {
     } as const;
     await witnessAdapter.persistProviderWitness("job", witness as never);
     expectJsonbBinding(recorder.queries.at(-1)!, witness);
+
+    const routineNames = recorder.queries.map((query) => query.text).join("\n");
+    expect(routineNames).not.toContain("release_runner_persist_intent");
+    expect(routineNames).not.toContain(
+      "release_runner_claim_provider_creation",
+    );
+    expect(routineNames).not.toContain("release_runner_record_intent_outcome");
+  });
+
+  it("rejects malformed external-effect routine results", async () => {
+    const prisma = {
+      $queryRaw: async () => [
+        {
+          value: {
+            state: "dispatching",
+            ownerId: "rrc-00000000-0000-4000-8000-000000000001",
+            epoch: 0,
+            providerId: null,
+            safeForCompensation: false,
+          },
+        },
+      ],
+    } as unknown as PrismaClient;
+    const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+    await expect(
+      adapter.persistProvisioningIntent({} as never),
+    ).rejects.toThrow(/external_effect_/u);
   });
 });
