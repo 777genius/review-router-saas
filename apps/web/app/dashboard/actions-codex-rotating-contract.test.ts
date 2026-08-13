@@ -4,7 +4,10 @@ import { describe, expect, it } from "vitest";
 describe("dashboard rotating namespace activation contract", () => {
   it("detects rotating providers with the canonical persisted auth mode", () => {
     const source = readFileSync(
-      new URL("./actions.ts", import.meta.url),
+      new URL(
+        "../../src/server/codex-rotating-workflow-activation.ts",
+        import.meta.url,
+      ),
       "utf8",
     );
 
@@ -14,13 +17,14 @@ describe("dashboard rotating namespace activation contract", () => {
 
   it("uses the witness-bound namespace inspector without a latest-claim fallback", () => {
     const source = readFileSync(
-      new URL("./actions.ts", import.meta.url),
+      new URL(
+        "../../src/server/codex-rotating-workflow-activation.ts",
+        import.meta.url,
+      ),
       "utf8",
     );
     const activation = source.slice(
-      source.indexOf(
-        "async function activateConfirmedCodexNamespaceAfterWorkflowMerge",
-      ),
+      0,
       source.indexOf("function readGitHubRepositoryIdentity"),
     );
 
@@ -39,9 +43,7 @@ describe("dashboard rotating namespace activation contract", () => {
       source.indexOf(
         "async function resolveCodexRotatingProvisioningActionRef",
       ),
-      source.indexOf(
-        "async function activateConfirmedCodexNamespaceAfterWorkflowMerge",
-      ),
+      source.indexOf("function readGitHubRepositoryIdentity"),
     );
 
     expect(helper).toContain(
