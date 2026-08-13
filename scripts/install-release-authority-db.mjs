@@ -120,7 +120,7 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
       jsonb_build_object(
         'owner', pg_catalog.pg_get_userbyid(nspowner),
         'acl',pg_temp.release_authority_acl_fingerprint(
-          coalesce(nspacl,pg_catalog.acldefault('n',nspowner)))
+          coalesce(nspacl,pg_catalog.acldefault('n',nspowner))))
     FROM target
     UNION ALL
     SELECT 'relation', relation.relname,
