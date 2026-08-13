@@ -4,12 +4,7 @@ import type { CommandExecutor } from "./process-command";
 
 describe("PostgreSQL runner-effect ledger SQL contract", () => {
   it("uses the production durable identity and witnessed terminal routines for late jobs", async () => {
-    const execute = vi.fn(
-      (
-        _command: Parameters<CommandExecutor["execute"]>[0],
-        _args: Parameters<CommandExecutor["execute"]>[1],
-      ) => ({ stdout: "t\n" }),
-    );
+    const execute = vi.fn(() => ({ stdout: "t\n" }));
     const commands: CommandExecutor = {
       execute,
       hashStdout: vi.fn(),
