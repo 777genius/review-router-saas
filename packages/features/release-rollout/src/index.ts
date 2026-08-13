@@ -9,6 +9,7 @@ export * from "./adapters/render-provider-freeze";
 export * from "./adapters/process-command";
 export * from "./adapters/postgres-generation";
 export * from "./adapters/render-target-services";
+export * from "./adapters/runtime-generation-witness";
 export * from "./adapters/render-backup-identity";
 export * from "./adapters/render-api";
 export * from "./adapters/http-runner-ledger";

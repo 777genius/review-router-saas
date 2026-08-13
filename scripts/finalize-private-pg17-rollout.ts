@@ -140,6 +140,9 @@ const useCases = new ReleaseRolloutUseCases({
         url: required("REVIEW_ROUTER_LIVE_CANARY_URL"),
         expectedCommitSha: rollout.expectedCommitSha,
         expectedSystemIdentifier: rollout.target.systemIdentifier,
+        expectedRecoveryWitnessSha256: required(
+          "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256",
+        ),
         rolloutId: rollout.rolloutId,
         bearerToken: required("REVIEW_ROUTER_LIVE_CANARY_TOKEN"),
       });

@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { RenderTargetServicesAdapter } from "./render-target-services";
 import { ProviderAuthorityOperation } from "../application/ports";
+import { fingerprintRuntimeRecoveryWitness } from "./runtime-generation-witness";
 
+const recoveryWitness = "w".repeat(64);
+const recoveryWitnessSha256 =
+  fingerprintRuntimeRecoveryWitness(recoveryWitness);
 const json = (value: unknown, status = 200, headers?: Record<string, string>) =>
   new Response(JSON.stringify(value), {
     status,
@@ -71,7 +75,46 @@ describe("Render target switch and live canary", () => {
         ),
       )
       .mockResolvedValueOnce(json({}, 200))
-      .mockResolvedValueOnce(json(env(targetUrl)))
+      .mockResolvedValueOnce(
+        json([
+          ...env(targetUrl),
+          {
+            envVar: {
+              key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+              value: recoveryWitness,
+            },
+            cursor: null,
+          },
+          {
+            envVar: {
+              key: "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
+              value: recoveryWitnessSha256,
+            },
+            cursor: null,
+          },
+          {
+            envVar: {
+              key: "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
+              value: expected.provenance.commitSha,
+            },
+            cursor: null,
+          },
+          {
+            envVar: {
+              key: "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
+              value: fence.rolloutId,
+            },
+            cursor: null,
+          },
+          {
+            envVar: {
+              key: "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+              value: fence.fencedAt,
+            },
+            cursor: null,
+          },
+        ]),
+      )
       .mockResolvedValueOnce(
         json(
           {
@@ -92,6 +135,8 @@ describe("Render target switch and live canary", () => {
       targetSystemIdentifier: "200",
       targetDatabaseUrls: { [expected.serviceId]: targetUrl },
       releaseCommitSha: expected.provenance.commitSha,
+      targetRecoveryWitness: recoveryWitness,
+      targetRecoveryWitnessSha256: recoveryWitnessSha256,
       services: [expected],
       fence,
       decision: stageDecision,
@@ -109,10 +154,20 @@ describe("Render target switch and live canary", () => {
       ([url, init]) =>
         String(url).endsWith("/env-vars") && init?.method === "PUT",
     );
-    expect(JSON.parse(String(replacement?.[1]?.body))).toEqual([
-      { key: "DATABASE_URL", value: targetUrl },
-      { key: "UNCHANGED", value: "yes" },
-    ]);
+    expect(JSON.parse(String(replacement?.[1]?.body))).toEqual(
+      expect.arrayContaining([
+        { key: "DATABASE_URL", value: targetUrl },
+        { key: "UNCHANGED", value: "yes" },
+        {
+          key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+          value: recoveryWitness,
+        },
+        {
+          key: "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
+          value: recoveryWitnessSha256,
+        },
+      ]),
+    );
   });
 
   it("rejects a target hostname hidden in a source URL password", async () => {
@@ -130,6 +185,8 @@ describe("Render target switch and live canary", () => {
             "postgresql://reviewrouter_api:target.internal@source.internal/reviewrouter",
         },
         releaseCommitSha: expected.provenance.commitSha,
+        targetRecoveryWitness: recoveryWitness,
+        targetRecoveryWitnessSha256: recoveryWitnessSha256,
         services: [expected],
         fence,
         decision: stageDecision,
@@ -146,6 +203,8 @@ describe("Render target switch and live canary", () => {
         targetSystemIdentifier: "200",
         targetDatabaseUrls: {},
         releaseCommitSha: expected.provenance.commitSha,
+        targetRecoveryWitness: recoveryWitness,
+        targetRecoveryWitnessSha256: recoveryWitnessSha256,
         services: [expected],
         fence,
         decision: { ...stageDecision, targetSystemIdentifier: "attacker" },
@@ -166,6 +225,13 @@ describe("Render target switch and live canary", () => {
           ...body,
           commitSha: "a".repeat(40),
           databaseSystemIdentifier: "200",
+          recoveryWitnessSha256: recoveryWitnessSha256,
+          runtimeWitnessProofs: ["api", "web", "worker"].map((runtimeRole) => ({
+            runtimeRole,
+            databaseRole: `reviewrouter_${runtimeRole}`,
+            recoveryWitnessSha256: recoveryWitnessSha256,
+            provedAt: "2026-08-12T00:00:00.500Z",
+          })),
           writeReadRoundTrip: true,
           observedAt: "2026-08-12T00:00:01.000Z",
         },
@@ -181,6 +247,7 @@ describe("Render target switch and live canary", () => {
       url: "https://api.example.test/internal/release-canary",
       expectedCommitSha: "a".repeat(40),
       expectedSystemIdentifier: "200",
+      expectedRecoveryWitnessSha256: recoveryWitnessSha256,
       rolloutId: "rollout-target-1",
       bearerToken: "canary-secret",
     });

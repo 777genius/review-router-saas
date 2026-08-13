@@ -1697,6 +1697,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_migration IN SCHEMA publi
 ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_migration IN SCHEMA public GRANT USAGE ON SEQUENCES TO ${username};`,
   )
   .join("\n")}
+GRANT EXECUTE ON FUNCTION public.reviewrouter_record_runtime_generation_witness_proof(TEXT, TEXT, TEXT, TEXT) TO reviewrouter_web, reviewrouter_api, reviewrouter_worker;
+GRANT EXECUTE ON FUNCTION public.reviewrouter_read_runtime_generation_witness_proofs(TEXT, TEXT) TO reviewrouter_api;
+GRANT EXECUTE ON FUNCTION public.reviewrouter_runtime_generation_write_read_canary(TEXT, TEXT) TO reviewrouter_api;
 GRANT CONNECT ON DATABASE ${databaseTarget} TO reviewrouter_codex_effect_authority;
 GRANT USAGE ON SCHEMA public TO reviewrouter_codex_effect_authority;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM reviewrouter_codex_effect_authority;

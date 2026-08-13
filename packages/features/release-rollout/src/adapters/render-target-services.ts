@@ -9,6 +9,7 @@ import {
   ProviderAuthorityOperation,
   type ProviderAuthorityDecision,
 } from "../application/ports";
+import { runtimeGenerationWitnessReplacement } from "./runtime-generation-witness";
 
 export type TargetServiceExpectation = {
   readonly serviceId: string;
@@ -41,6 +42,8 @@ export class RenderTargetServicesAdapter {
     targetSystemIdentifier: string;
     targetDatabaseUrls: Readonly<Record<string, string>>;
     releaseCommitSha: string;
+    targetRecoveryWitness: string;
+    targetRecoveryWitnessSha256: string;
     services: readonly TargetServiceExpectation[];
     fence: TargetSwitchFence;
     decision: ProviderAuthorityDecision;
@@ -68,6 +71,10 @@ export class RenderTargetServicesAdapter {
     )
       throw new Error("render_target_stage_context_invalid");
     const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
+    const witnessReplacement = runtimeGenerationWitnessReplacement({
+      witness: input.targetRecoveryWitness,
+      expectedSha256: input.targetRecoveryWitnessSha256,
+    });
     const facts = [];
     for (const expected of input.services) {
       if (
@@ -128,7 +135,13 @@ export class RenderTargetServicesAdapter {
         throw new Error("render_target_database_binding_mismatch");
       const envReplacement = await api.replaceEnvPreservingAll(
         expected.serviceId,
-        { [expected.databaseEnvKey]: replacement },
+        {
+          [expected.databaseEnvKey]: replacement,
+          ...witnessReplacement,
+          REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: input.fence.rolloutId,
+          REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: input.releaseCommitSha,
+          REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: input.fence.fencedAt,
+        },
       );
       const created = await api.createDeploy(expected.serviceId);
       let rechecked = await api.listAllDeploys(expected.serviceId);
@@ -161,6 +174,7 @@ export class RenderTargetServicesAdapter {
         databaseName: expected.databaseName,
         databaseRole: expected.databaseRole,
         databaseSystemIdentifier: input.targetSystemIdentifier,
+        recoveryWitnessSha256: input.targetRecoveryWitnessSha256,
         suspended: true,
         targetSwitchFenceNonce: input.fence.nonce,
         targetSwitchFenceVersion: input.fence.version,
@@ -249,6 +263,7 @@ export class RenderTargetServicesAdapter {
     url: string;
     expectedCommitSha: string;
     expectedSystemIdentifier: string;
+    expectedRecoveryWitnessSha256: string;
     rolloutId: string;
     bearerToken: string;
     fetchImpl?: RenderFetch;
@@ -256,6 +271,7 @@ export class RenderTargetServicesAdapter {
     if (
       !input.url.startsWith("https://") ||
       !input.bearerToken ||
+      !/^[a-f0-9]{64}$/u.test(input.expectedRecoveryWitnessSha256) ||
       !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(input.rolloutId)
     )
       throw new Error("render_target_canary_url_invalid");
@@ -281,6 +297,21 @@ export class RenderTargetServicesAdapter {
     if (
       value.commitSha !== input.expectedCommitSha ||
       value.databaseSystemIdentifier !== input.expectedSystemIdentifier ||
+      value.recoveryWitnessSha256 !== input.expectedRecoveryWitnessSha256 ||
+      !Array.isArray(value.runtimeWitnessProofs) ||
+      value.runtimeWitnessProofs.length !== 3 ||
+      value.runtimeWitnessProofs.some((item, index) => {
+        if (!item || typeof item !== "object" || Array.isArray(item))
+          return true;
+        const proof = item as Record<string, unknown>;
+        const role = ["api", "web", "worker"][index];
+        return (
+          proof.runtimeRole !== role ||
+          proof.databaseRole !== `reviewrouter_${role}` ||
+          proof.recoveryWitnessSha256 !== input.expectedRecoveryWitnessSha256 ||
+          typeof proof.provedAt !== "string"
+        );
+      }) ||
       value.writeReadRoundTrip !== true ||
       value.rolloutId !== input.rolloutId ||
       value.nonce !== nonce ||
@@ -299,6 +330,8 @@ export class RenderTargetServicesAdapter {
       facts: {
         commitSha: value.commitSha,
         databaseSystemIdentifier: value.databaseSystemIdentifier,
+        recoveryWitnessSha256: value.recoveryWitnessSha256,
+        runtimeWitnessProofs: value.runtimeWitnessProofs,
         writeReadRoundTrip: true,
         rolloutId: input.rolloutId,
         nonce,

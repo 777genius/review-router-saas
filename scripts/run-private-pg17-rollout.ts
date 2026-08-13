@@ -124,6 +124,12 @@ const useCases = new ReleaseRolloutUseCases({
           required("REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON"),
         ) as Record<string, string>,
         releaseCommitSha: rollout.expectedCommitSha,
+        targetRecoveryWitness: required(
+          "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS",
+        ),
+        targetRecoveryWitnessSha256: required(
+          "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256",
+        ),
         services: JSON.parse(
           required("REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON"),
         ) as TargetServiceExpectation[],

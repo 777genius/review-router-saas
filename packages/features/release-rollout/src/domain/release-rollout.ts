@@ -733,6 +733,7 @@ function assertStepFacts(
             service.suspended !== true ||
             typeof service.deployId !== "string" ||
             !digestPattern.test(String(service.envSha256)) ||
+            !/^[a-f0-9]{64}$/u.test(String(service.recoveryWitnessSha256)) ||
             (provenance.kind === "git"
               ? provenance.commitSha !== rollout.expectedCommitSha
               : provenance.kind !== "image" ||
@@ -809,6 +810,9 @@ function assertStepFacts(
       if (
         facts.commitSha !== rollout.expectedCommitSha ||
         facts.databaseSystemIdentifier !== rollout.target.systemIdentifier ||
+        !/^[a-f0-9]{64}$/u.test(String(facts.recoveryWitnessSha256)) ||
+        !Array.isArray(facts.runtimeWitnessProofs) ||
+        facts.runtimeWitnessProofs.length !== 3 ||
         facts.writeReadRoundTrip !== true
       )
         throw new Error("live_canary_observation_invalid");

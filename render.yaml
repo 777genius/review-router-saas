@@ -202,6 +202,19 @@ envVarGroups:
       # fingerprinted at runtime and must never be emitted to logs.
       - key: REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS
         sync: false
+      # Staged together with the witness during a generation cutover. Every
+      # runtime role verifies this fingerprint and records a DB-bound proof
+      # before its process starts. Neither value may be logged.
+      - key: REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256
+        sync: false
+      - key: REVIEW_ROUTER_RUNTIME_ROLLOUT_ID
+        sync: false
+      - key: REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA
+        sync: false
+      - key: REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT
+        sync: false
+      - key: REVIEW_ROUTER_LIVE_CANARY_TOKEN_SHA256
+        sync: false
       - key: REVIEW_ROUTER_ACTION_OIDC_AUDIENCE
         value: reviewrouter
       - key: REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH

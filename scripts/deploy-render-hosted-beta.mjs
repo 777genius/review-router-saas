@@ -740,6 +740,7 @@ export function buildServiceEnv({
   webUrl,
   apiUrl,
 }) {
+  const runtimeGeneration = resolveRuntimeGenerationProofEnv(env);
   const stableSecrets = resolveStableSecuritySecrets(env);
   const installer = resolveCodexRotatingInstallerDescriptor(env);
   const values = {
@@ -770,6 +771,19 @@ export function buildServiceEnv({
     REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: installer.sha256,
     REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS:
       stableSecrets.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS,
+    REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256:
+      runtimeGeneration.expectedWitnessSha256,
+    REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: runtimeGeneration.rolloutId,
+    REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: runtimeGeneration.commitSha,
+    REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: runtimeGeneration.startedAt,
+    ...(role === "api"
+      ? {
+          REVIEW_ROUTER_LIVE_CANARY_TOKEN_SHA256: requiredEnv(
+            "REVIEW_ROUTER_LIVE_CANARY_TOKEN_SHA256",
+            env,
+          ),
+        }
+      : {}),
     REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter",
     REVIEW_ROUTER_ACTION_SESSION_SECRET:
       stableSecrets.REVIEW_ROUTER_ACTION_SESSION_SECRET,
@@ -842,6 +856,30 @@ export function buildServiceEnv({
   });
   if (role !== "worker") values.PORT = "10000";
   return asEnvVars(values);
+}
+
+function resolveRuntimeGenerationProofEnv(env) {
+  const expectedWitnessSha256 = requiredEnv(
+    "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
+    env,
+  );
+  const rolloutId = requiredEnv("REVIEW_ROUTER_RUNTIME_ROLLOUT_ID", env);
+  const commitSha = requiredEnv(
+    "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
+    env,
+  );
+  const startedAt = requiredEnv(
+    "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+    env,
+  );
+  if (
+    !/^[a-f0-9]{64}$/u.test(expectedWitnessSha256) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(rolloutId) ||
+    !/^[a-f0-9]{40}$/u.test(commitSha) ||
+    new Date(startedAt).toISOString() !== startedAt
+  )
+    throw new Error("runtime generation proof environment is invalid");
+  return { expectedWitnessSha256, rolloutId, commitSha, startedAt };
 }
 
 export async function addToEnvironment(client, environmentId, resourceIds) {

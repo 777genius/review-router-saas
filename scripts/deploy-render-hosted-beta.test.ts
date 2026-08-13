@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -44,6 +44,22 @@ const installerTuple = Object.freeze({
 const dormantReviewV2Env = Object.freeze({
   REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED: "0",
   REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: "0",
+});
+const runtimeGenerationProofEnv = Object.freeze({
+  REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: "d".repeat(64),
+  REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: "rollout-image-w2",
+  REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: actionSha,
+  REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: "2026-08-13T00:00:00.000Z",
+  REVIEW_ROUTER_LIVE_CANARY_TOKEN_SHA256: "e".repeat(64),
+});
+
+beforeEach(() => {
+  for (const [key, value] of Object.entries(runtimeGenerationProofEnv))
+    vi.stubEnv(key, value);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 function activeReviewV2Env() {
