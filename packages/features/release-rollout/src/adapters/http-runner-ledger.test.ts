@@ -171,6 +171,85 @@ describe("authenticated runner ledger reconciliation", () => {
       }),
     ).resolves.toBe("recorded");
   });
+
+  it("accepts SQL-valid unknown freeze status with suspended services", async () => {
+    const checkpoint = {
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastReceiptSha256: `sha256:${"0".repeat(64)}`,
+      lastStep: "freeze_provider_services",
+      receiptCount: 3,
+      sourceFreeze: {
+        status: "unknown",
+        serviceIds: ["srv-a"],
+        services: [
+          {
+            serviceId: "srv-a",
+            latestSuccessfulDeployId: "dep-a",
+            observedAt: "2026-08-13T00:00:00.000Z",
+          },
+        ],
+      },
+    };
+    const adapter = new AuthenticatedRunnerLedgerAdapter(
+      "https://control.example.test",
+      "control-token",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify(checkpoint), { status: 200 }),
+        ),
+    );
+
+    await expect(
+      adapter.observeCompensationCheckpoint({
+        rolloutId: "rollout-1",
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+      }),
+    ).resolves.toEqual(checkpoint);
+  });
+
+  it.each([
+    ["none", ["srv-a"]],
+    ["partial", []],
+    ["complete", []],
+  ] as const)(
+    "rejects malformed %s freeze status and suspended-service combination",
+    async (status, serviceIds) => {
+      const services = serviceIds.map((serviceId) => ({
+        serviceId,
+        latestSuccessfulDeployId: "dep-a",
+        observedAt: "2026-08-13T00:00:00.000Z",
+      }));
+      const adapter = new AuthenticatedRunnerLedgerAdapter(
+        "https://control.example.test",
+        "control-token",
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              activationBoundary: "before",
+              state: "pre_activation",
+              lastReceiptSha256: `sha256:${"0".repeat(64)}`,
+              lastStep: "freeze_provider_services",
+              receiptCount: 3,
+              sourceFreeze: { status, serviceIds, services },
+            }),
+            { status: 200 },
+          ),
+        ),
+      );
+
+      await expect(
+        adapter.observeCompensationCheckpoint({
+          rolloutId: "rollout-1",
+          sourceSystemIdentifier: "100",
+          targetSystemIdentifier: "200",
+        }),
+      ).rejects.toThrow("runner_ledger_compensation_checkpoint_invalid");
+    },
+  );
+
   it.each([
     ["activated", "activated_forward_only"],
     ["forward_repair_required", "activation_uncertain_forward_only"],

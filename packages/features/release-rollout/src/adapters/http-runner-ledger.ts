@@ -432,8 +432,9 @@ export class AuthenticatedRunnerLedgerAdapter
           !Number.isFinite(Date.parse(item.observedAt))
         );
       }) ||
-      (freeze.status === "partial" || freeze.status === "complete") !==
-        freezeServiceIds.length > 0
+      (freeze.status === "none" && freezeServiceIds.length > 0) ||
+      ((freeze.status === "partial" || freeze.status === "complete") &&
+        freezeServiceIds.length === 0)
     )
       throw new Error("runner_ledger_compensation_checkpoint_invalid");
     return value as unknown as CompensationCheckpoint;

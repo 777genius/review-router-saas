@@ -383,6 +383,41 @@ describe("release compensation reconciliation", () => {
     },
   );
 
+  it("returns a durable retryable denial for unknown nonempty freeze evidence", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastStep: RolloutStep.VerifyProtectedEnvironment,
+      receiptCount: 2,
+      sourceFreeze: {
+        status: "unknown",
+        serviceIds: ["srv-source"],
+        services: [
+          {
+            serviceId: "srv-source",
+            latestSuccessfulDeployId: "dep-source",
+            observedAt: "2026-08-13T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+    dependencies.ledger.listProvisioningIntents.mockResolvedValue([]);
+    const useCase = new ReleaseCompensationReconciliationUseCase(dependencies);
+    await expect(useCase.execute(rollout)).resolves.toMatchObject({
+      outcome: "denied",
+      externalEffects: { reason: "missing_evidence" },
+    });
+    await expect(useCase.execute(rollout)).resolves.toMatchObject({
+      outcome: "denied",
+      externalEffects: { reason: "missing_evidence" },
+    });
+    expect(
+      dependencies.ledger.observeCompensationCheckpoint,
+    ).toHaveBeenCalledTimes(2);
+    expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+    expect(dependencies.ledger.compareAndSet).not.toHaveBeenCalled();
+  });
+
   it("treats proven no source mutation and zero runner intents as a no-op", async () => {
     const dependencies = ports({
       activationBoundary: "before",

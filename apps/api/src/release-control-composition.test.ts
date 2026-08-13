@@ -25,6 +25,12 @@ const authorityReadiness = (
     dispatchPermitRoutine: true,
     reconcileEffectRoutine: true,
     abandonPreparedRoutine: true,
+    sourceFreezePrepareRoutine: true,
+    sourceFreezePrepareExecute: roleName === "reviewrouter_release_control",
+    sourceFreezeRecordRoutine: true,
+    sourceFreezeRecordExecute: roleName === "reviewrouter_release_control",
+    sourceFreezeCompleteRoutine: true,
+    sourceFreezeCompleteExecute: roleName === "reviewrouter_release_control",
   },
 ];
 const installerReadiness = [
@@ -40,6 +46,12 @@ const installerReadiness = [
     dispatchPermitRoutine: false,
     reconcileEffectRoutine: false,
     abandonPreparedRoutine: false,
+    sourceFreezePrepareRoutine: true,
+    sourceFreezePrepareExecute: false,
+    sourceFreezeRecordRoutine: true,
+    sourceFreezeRecordExecute: false,
+    sourceFreezeCompleteRoutine: true,
+    sourceFreezeCompleteExecute: false,
   },
 ];
 const readerReadiness = [
@@ -55,6 +67,12 @@ const readerReadiness = [
     dispatchPermitRoutine: false,
     reconcileEffectRoutine: false,
     abandonPreparedRoutine: false,
+    sourceFreezePrepareRoutine: true,
+    sourceFreezePrepareExecute: false,
+    sourceFreezeRecordRoutine: true,
+    sourceFreezeRecordExecute: false,
+    sourceFreezeCompleteRoutine: true,
+    sourceFreezeCompleteExecute: false,
   },
 ];
 const witnessReadiness = [
@@ -560,6 +578,82 @@ describe("release authority process composition", () => {
           {
             ...authorityReadiness("reviewrouter_release_control")[0],
             dispatchPermitRoutine: false,
+          },
+        ]),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_provider_authority"),
+          ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+      } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    await app.close();
+  });
+
+  it.each([
+    "sourceFreezePrepareRoutine",
+    "sourceFreezeRecordRoutine",
+    "sourceFreezeCompleteRoutine",
+  ] as const)("fails health when %s is absent", async (routine) => {
+    const app = await createReleaseControlApp({
+      controlPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue([
+          {
+            ...authorityReadiness("reviewrouter_release_control")[0],
+            [routine]: false,
+          },
+        ]),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_provider_authority"),
+          ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+      } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    await app.close();
+  });
+
+  it.each([
+    "sourceFreezePrepareExecute",
+    "sourceFreezeRecordExecute",
+    "sourceFreezeCompleteExecute",
+  ] as const)("fails health when %s is not granted", async (acl) => {
+    const app = await createReleaseControlApp({
+      controlPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue([
+          {
+            ...authorityReadiness("reviewrouter_release_control")[0],
+            [acl]: false,
           },
         ]),
       } as never,

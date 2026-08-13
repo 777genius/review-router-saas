@@ -33,6 +33,12 @@ type DatabaseReadiness = Readonly<{
   dispatchPermitRoutine: boolean;
   reconcileEffectRoutine: boolean;
   abandonPreparedRoutine: boolean;
+  sourceFreezePrepareRoutine: boolean;
+  sourceFreezePrepareExecute: boolean;
+  sourceFreezeRecordRoutine: boolean;
+  sourceFreezeRecordExecute: boolean;
+  sourceFreezeCompleteRoutine: boolean;
+  sourceFreezeCompleteExecute: boolean;
 }>;
 
 async function observeDatabaseReadiness(
@@ -49,7 +55,25 @@ async function observeDatabaseReadiness(
       to_regprocedure('release_authority.release_runner_prepare_effect(jsonb)') IS NOT NULL AS "prepareEffectRoutine",
       to_regprocedure('release_authority.release_runner_acquire_dispatch_permit(jsonb)') IS NOT NULL AS "dispatchPermitRoutine",
       to_regprocedure('release_authority.release_runner_reconcile_effect(jsonb)') IS NOT NULL AS "reconcileEffectRoutine",
-      to_regprocedure('release_authority.release_runner_abandon_prepared(text,text,bigint)') IS NOT NULL AS "abandonPreparedRoutine"
+      to_regprocedure('release_authority.release_runner_abandon_prepared(text,text,bigint)') IS NOT NULL AS "abandonPreparedRoutine",
+      to_regprocedure('release_authority.release_source_freeze_prepare(text,text,text,integer,text,text,text,text,timestamptz,jsonb,boolean)') IS NOT NULL AS "sourceFreezePrepareRoutine",
+      coalesce(pg_catalog.has_function_privilege(
+        current_user,
+        to_regprocedure('release_authority.release_source_freeze_prepare(text,text,text,integer,text,text,text,text,timestamptz,jsonb,boolean)'),
+        'EXECUTE'
+      ), false) AS "sourceFreezePrepareExecute",
+      to_regprocedure('release_authority.release_source_freeze_record(text,text,text,integer,text,text,text,text,timestamptz,jsonb)') IS NOT NULL AS "sourceFreezeRecordRoutine",
+      coalesce(pg_catalog.has_function_privilege(
+        current_user,
+        to_regprocedure('release_authority.release_source_freeze_record(text,text,text,integer,text,text,text,text,timestamptz,jsonb)'),
+        'EXECUTE'
+      ), false) AS "sourceFreezeRecordExecute",
+      to_regprocedure('release_authority.release_source_freeze_complete(text,text,text,integer,text,text,jsonb,timestamptz)') IS NOT NULL AS "sourceFreezeCompleteRoutine",
+      coalesce(pg_catalog.has_function_privilege(
+        current_user,
+        to_regprocedure('release_authority.release_source_freeze_complete(text,text,text,integer,text,text,jsonb,timestamptz)'),
+        'EXECUTE'
+      ), false) AS "sourceFreezeCompleteExecute"
   `);
   if (rows.length !== 1 || !rows[0])
     throw new Error("release_control_database_identity_unavailable");
@@ -165,6 +189,12 @@ export async function createReleaseControlApp(input: {
         !control.dispatchPermitRoutine ||
         !control.reconcileEffectRoutine ||
         !control.abandonPreparedRoutine ||
+        !control.sourceFreezePrepareRoutine ||
+        !control.sourceFreezePrepareExecute ||
+        !control.sourceFreezeRecordRoutine ||
+        !control.sourceFreezeRecordExecute ||
+        !control.sourceFreezeCompleteRoutine ||
+        !control.sourceFreezeCompleteExecute ||
         !provider.providerRoutine ||
         !installer.installerRoutine ||
         !reader.readerRoutine
