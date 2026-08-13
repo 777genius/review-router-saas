@@ -213,6 +213,14 @@ envVarGroups:
         value: "0"
       - key: REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED
         value: "0"
+      - key: REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE
+        value: "0"
+      - key: REVIEW_ROUTER_PROGRESS_FILE_COVERAGE
+        value: "0"
+      - key: REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES
+        value: "0"
+      - key: REVIEW_ROUTER_PROGRESS_REPOSITORIES
+        value: ""
       - key: REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID
         sync: false
       - key: REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON

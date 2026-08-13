@@ -5,10 +5,12 @@ import type {
   AttachReviewObservationCommand,
   FinalizeReviewExecutionCommand,
   FailAbandonedPreparedExecutionCommand,
+  FailExpiredRunningExecutionCommand,
   ReleaseReviewInvocationLeaseCommand,
   RenewReviewInvocationLeaseCommand,
   ReviewExecutionCommandPort,
   SupersedeReviewExecutionCommand,
+  TerminalizeReviewWorkSlotCommand,
 } from "../ports/review-execution-ports";
 
 export class ReviewInvocationLeaseService {
@@ -60,5 +62,13 @@ export class ReviewExecutionLifecycleService {
 
   failAbandonedPrepared(command: FailAbandonedPreparedExecutionCommand) {
     return this.commands.failAbandonedPreparedExecution(command);
+  }
+
+  terminalizeWorkSlot(command: TerminalizeReviewWorkSlotCommand) {
+    return this.commands.terminalizeWorkSlot(command);
+  }
+
+  failExpiredRunning(command: FailExpiredRunningExecutionCommand) {
+    return this.commands.failExpiredRunningExecution(command);
   }
 }

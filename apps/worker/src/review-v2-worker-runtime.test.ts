@@ -57,6 +57,16 @@ describe("review v2 worker runtime", () => {
       publicationProcessed: 0,
       publicationManualRequired: 0,
       publicationTerminalUnknown: 0,
+      progressPromoted: 0,
+      progressClaimed: 0,
+      progressPublished: 0,
+      progressDeferred: 0,
+      progressSuppressed: 0,
+      progressFailed: 0,
+      expiredExecutionsScanned: 0,
+      expiredExecutionsRecovered: 0,
+      expiredExecutionConflicts: 0,
+      expiredExecutionFailures: 0,
     });
     expect(composed).toBe(false);
 
@@ -126,6 +136,7 @@ describe("review v2 worker runtime", () => {
               manualRequired: 1,
               terminalUnknown: 1,
               settledExecutionIds: ["execution-1", "execution-1"],
+              progressSettlements: [],
             };
           },
         },
@@ -140,8 +151,103 @@ describe("review v2 worker runtime", () => {
       publicationProcessed: 3,
       publicationManualRequired: 1,
       publicationTerminalUnknown: 1,
+      progressPromoted: 0,
+      progressClaimed: 0,
+      progressPublished: 0,
+      progressDeferred: 0,
+      progressSuppressed: 0,
+      progressFailed: 0,
+      expiredExecutionsScanned: 0,
+      expiredExecutionsRecovered: 0,
+      expiredExecutionConflicts: 0,
+      expiredExecutionFailures: 0,
     });
     expect(fixture.publications.requestCalls).toBe(1);
+  });
+
+  it("settles the final publication before terminal progress and its comment", async () => {
+    const fixture = await createFixture();
+    const order: string[] = [];
+
+    await runReviewV2Maintenance({
+      runtime: fixture.runtime,
+      ownerIdHash,
+      dueLimit: 10,
+      publication: {
+        async runMaintenance() {
+          order.push("final-publication");
+          return {
+            processed: 1,
+            manualRequired: 0,
+            terminalUnknown: 0,
+            settledExecutionIds: ["execution-1"],
+            progressSettlements: [
+              { executionId: "execution-1", outcome: "failed" },
+            ],
+          };
+        },
+      },
+      progress: {
+        async promoteSettledExecutions({ settlements }) {
+          order.push(
+            `terminal:${settlements.map(({ executionId, outcome }) => `${executionId}:${outcome}`).join(",")}`,
+          );
+          return 1;
+        },
+        async runMaintenance() {
+          order.push("progress-publication");
+          return {
+            claimed: 1,
+            published: 1,
+            deferred: 0,
+            suppressed: 0,
+            failed: 0,
+          };
+        },
+      },
+    });
+
+    expect(order).toEqual([
+      "final-publication",
+      "terminal:execution-1:failed",
+      "progress-publication",
+    ]);
+  });
+
+  it("isolates progress promotion and publication failures", async () => {
+    const fixture = await createFixture();
+    await expect(
+      runReviewV2Maintenance({
+        runtime: fixture.runtime,
+        ownerIdHash,
+        dueLimit: 10,
+        publication: {
+          async runMaintenance() {
+            return {
+              processed: 1,
+              manualRequired: 0,
+              terminalUnknown: 0,
+              settledExecutionIds: ["execution-1"],
+              progressSettlements: [
+                { executionId: "execution-1", outcome: "succeeded" },
+              ],
+            };
+          },
+        },
+        progress: {
+          async promoteSettledExecutions() {
+            throw new Error("projection_corrupt");
+          },
+          async runMaintenance() {
+            throw new Error("github_unavailable");
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      publicationProcessed: 1,
+      progressPromoted: 0,
+      progressFailed: 2,
+    });
   });
 
   it("quarantines malformed finalized events and retries temporarily missing facts", async () => {

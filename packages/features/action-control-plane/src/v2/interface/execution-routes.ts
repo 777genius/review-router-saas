@@ -11,6 +11,7 @@ export type RegisterReviewExecutionV2RoutesDependencies =
     readonly restore?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewExecutionRestore>;
     readonly start?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewExecutionStart>;
     readonly supersede?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewExecutionSupersede>;
+    readonly terminalizeWorkSlot?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewExecutionWorkSlotTerminalize>;
     readonly attachObservation?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewExecutionObservationAttach>;
     readonly adoptObservation?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewExecutionObservationAdopt>;
     readonly finalize?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewExecutionFinalize>;
@@ -40,6 +41,12 @@ export async function registerReviewExecutionV2Routes(
     ReviewActionV2OperationId.ReviewExecutionSupersede,
     dependencies,
     dependencies.supersede,
+  );
+  registerReviewActionV2Operation(
+    app,
+    ReviewActionV2OperationId.ReviewExecutionWorkSlotTerminalize,
+    dependencies,
+    dependencies.terminalizeWorkSlot,
   );
   registerReviewActionV2Operation(
     app,

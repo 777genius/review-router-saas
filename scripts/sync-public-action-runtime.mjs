@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   statSync,
   writeSync,
 } from "node:fs";
@@ -114,7 +115,7 @@ function assertGitRepo(name, repo) {
     throw new Error(`${name} repo not found: ${repo}`);
   }
   const topLevel = git(repo, ["rev-parse", "--show-toplevel"]);
-  if (path.resolve(topLevel) !== repo) {
+  if (realpathSync(path.resolve(topLevel)) !== realpathSync(repo)) {
     throw new Error(`${name} repo path is not its git root: ${repo}`);
   }
 }

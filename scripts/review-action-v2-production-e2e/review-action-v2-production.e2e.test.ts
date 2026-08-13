@@ -261,8 +261,116 @@ describeWithDatabase.sequential(
       ).toHaveLength(1);
       await expectTerminalSuccess(fixture, flow.executionId);
     }, 60_000);
+
+    it("publishes durable 108-file progress, recovers six retried units, and reconciles duplicate comments", async () => {
+      const fixture = requiredHarness(harness);
+      const flow = await fixture.createCommittedFlow({
+        slotCount: 72,
+        eligibleFileCount: 108,
+        attachSlotCount: 0,
+        pathSlotIndex: (pathIndex) =>
+          pathIndex < 84 ? Math.floor(pathIndex / 2) : pathIndex - 42,
+        workSlotId: (executionId, slotIndex) =>
+          `${executionId}-slot-${String(slotIndex).padStart(3, "0")}`,
+      });
+
+      await fixture.setProgressFixture({
+        executionId: flow.executionId,
+        completed: 42,
+        retrying: 6,
+        retriedSlotIndexes: [66, 67, 68, 69, 70, 71],
+      });
+      await fixture.makeProgressDue();
+      const initialPublication = await fixture.publishProgress();
+      expect(initialPublication).toMatchObject({ published: 1 });
+      const comments = progressComments(fixture);
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.body).toContain(
+        "Review units: 42 of 72 complete (58%)",
+      );
+      expect(comments[0]?.body).toContain(
+        "Files in completed units: 84 of 108",
+      );
+      expect(comments[0]?.body).toContain("Units currently retrying: 6");
+
+      await fixture.setProgressFixture({
+        executionId: flow.executionId,
+        completed: 72,
+        recovered: 6,
+        retriedSlotIndexes: [66, 67, 68, 69, 70, 71],
+      });
+      await fixture.makeProgressDue();
+      const recoveredPublication = await fixture.publishProgress();
+      expect(recoveredPublication).toMatchObject({ published: 1 });
+      expect(progressComments(fixture)).toHaveLength(1);
+      expect(progressComments(fixture)[0]?.body).toContain(
+        "Review units: 72 of 72 complete (100%)",
+      );
+      expect(progressComments(fixture)[0]?.body).toContain(
+        "Units recovered by retry: 6",
+      );
+
+      fixture.fakeGitHub.seedProgressDuplicate(
+        progressComments(fixture)[0]!.body,
+      );
+      fixture.fakeGitHub.seedProgressDuplicate(
+        progressComments(fixture)[0]!.body,
+      );
+      await fixture.prisma.reviewProgressPublicationV1.updateMany({
+        where: { activeExecutionId: flow.executionId },
+        data: { publishedVersion: { decrement: 1n } },
+      });
+      await fixture.makeProgressDue();
+      await expect(fixture.publishProgress()).resolves.toMatchObject({
+        deferred: 1,
+      });
+      await fixture.makeProgressDue();
+      const result = await fixture.publishProgress();
+      expect(
+        result,
+        JSON.stringify(await fixture.readProgressPublication(), (_, value) =>
+          typeof value === "bigint" ? value.toString() : value,
+        ),
+      ).toMatchObject({ published: 1 });
+      expect(progressComments(fixture)).toHaveLength(1);
+    }, 60_000);
+
+    it("renders complete with gaps below 100 percent after durable exhaustion", async () => {
+      const fixture = requiredHarness(harness);
+      const flow = await fixture.createCommittedFlow({
+        slotCount: 4,
+        eligibleFileCount: 8,
+        attachSlotCount: 0,
+      });
+      await fixture.setProgressFixture({
+        executionId: flow.executionId,
+        completed: 3,
+      });
+      await fixture.terminalizeProgressSlot(flow.executionId, 3);
+      await fixture.setExecutionProgressState(flow.executionId, "partial");
+      await expect(
+        fixture.promoteProgress(flow.executionId, "succeeded"),
+      ).resolves.toBe(1);
+      await fixture.makeProgressDue();
+      await expect(fixture.publishProgress()).resolves.toMatchObject({
+        published: 1,
+      });
+      const body = progressComments(fixture)[0]?.body ?? "";
+      expect(body).toContain("**Phase:** Complete with gaps");
+      expect(body).toContain("Review units: 3 of 4 complete (75%)");
+      expect(body).toContain("Units not completed after retries: 1");
+      expect(body).not.toContain("complete (100%)");
+    }, 60_000);
   },
 );
+
+function progressComments(fixture: ReviewActionV2E2EHarness) {
+  return fixture.fakeGitHub.comments.filter(
+    (comment) =>
+      comment.user.login === "reviewrouter-e2e[bot]" &&
+      comment.body.includes("<!-- review-router-live-progress -->"),
+  );
+}
 
 async function expectTerminalSuccess(
   fixture: ReviewActionV2E2EHarness,

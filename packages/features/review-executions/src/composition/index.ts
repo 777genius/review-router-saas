@@ -21,6 +21,7 @@ import {
 import { ReviewRequestedIntentService } from "../application/use-cases/review-requested-intent-service";
 import { StartReviewExecution } from "../application/use-cases/start-review-execution";
 import { CheckCurrentReviewExecutionRevision } from "../application/use-cases/check-current-review-execution-revision";
+import { RecoverExpiredReviewExecutions } from "../application/use-cases/recover-expired-review-executions";
 
 export type ReviewExecutionsCompositionDependencies = Readonly<{
   authorizationFacts: ReviewExecutionAuthorizationFactsPort;
@@ -44,6 +45,7 @@ export type ReviewExecutionsComposition = Readonly<{
   executionLifecycle: ReviewExecutionLifecycleService;
   requestedIntents: ReviewRequestedIntentService;
   currentRevision: CheckCurrentReviewExecutionRevision;
+  recoverExpiredExecutions: RecoverExpiredReviewExecutions;
 }>;
 
 export function createReviewExecutionsUseCases(
@@ -87,6 +89,11 @@ export function createReviewExecutionsUseCases(
     currentRevision: new CheckCurrentReviewExecutionRevision(
       dependencies.currentRevision,
       dependencies.executionQueries,
+    ),
+    recoverExpiredExecutions: new RecoverExpiredReviewExecutions(
+      dependencies.executionQueries,
+      dependencies.executionCommands,
+      dependencies.clock,
     ),
   });
 }

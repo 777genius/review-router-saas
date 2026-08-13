@@ -16,4 +16,5 @@ export * from "./application/use-cases/review-execution-application-services";
 export * from "./application/use-cases/review-requested-intent-service";
 export * from "./application/use-cases/dispatch-due-review-requested-intents";
 export * from "./application/use-cases/recover-review-requested-dispatches";
+export * from "./application/use-cases/recover-expired-review-executions";
 export * from "./application/use-cases/ensure-review-requested-rerun-intent";

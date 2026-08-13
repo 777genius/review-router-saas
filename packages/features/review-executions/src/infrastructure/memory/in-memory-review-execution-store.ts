@@ -6,6 +6,7 @@ import type {
   ConfirmReviewExecutionAdmissionCommand,
   FinalizeReviewExecutionCommand,
   FailAbandonedPreparedExecutionCommand,
+  FailExpiredRunningExecutionCommand,
   PrepareReviewExecutionCommand,
   ReleaseReviewInvocationLeaseCommand,
   RenewReviewInvocationLeaseCommand,
@@ -17,6 +18,7 @@ import type {
   ReviewInvocationLeaseTransitionResult,
   ReviewObservationAttachmentResult,
   SupersedeReviewExecutionCommand,
+  TerminalizeReviewWorkSlotCommand,
 } from "../../application/ports/review-execution-ports";
 import type { InvocationFlightQueryPort } from "../../application/ports/invocation-flight-ports";
 import {
@@ -32,6 +34,7 @@ import {
 import {
   ReviewInvocationLeasePurpose,
   ReviewInvocationLeaseState,
+  ReviewExecutionState,
   createEmptyReviewExecutionStream,
   reviewExecutionIsTerminal,
   scopeKey,
@@ -56,12 +59,15 @@ import {
   LeaseTransitionDecisionStatus,
   ObservationAttachmentDecisionStatus,
   decideAbandonedPreparationFailure,
+  decideExpiredRunningExecutionFailure,
   decideExecutionAdmission,
   decideExecutionFinalization,
   decideExecutionFinalizationReplay,
   decideExecutionPreparation,
   decideExecutionPreparationReplay,
   decideExecutionSupersession,
+  decideWorkSlotTerminalization,
+  WorkSlotTerminalizationDecisionStatus,
   decideFreshObservationAttachment,
   decideLeaseAcquire,
   decideLeaseAcquireReplay,
@@ -91,6 +97,44 @@ export class InMemoryReviewExecutionStore
     ReviewExecutionPrunerPort,
     InvocationFlightQueryPort
 {
+  async listExpiredRunning(input: {
+    readonly now: Date;
+    readonly limit: number;
+  }) {
+    if (
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > 256
+    ) {
+      throw new Error("review_execution_recovery_limit_invalid");
+    }
+    return [...this.executionScope.keys()]
+      .map((executionId) => {
+        const record = this.recordForExecution(executionId);
+        const execution = record?.executions.get(executionId);
+        return record && execution ? { record, execution } : null;
+      })
+      .filter(
+        (
+          entry,
+        ): entry is { record: StreamRecord; execution: ReviewExecution } =>
+          entry !== null &&
+          entry.execution.state === ReviewExecutionState.Running &&
+          entry.record.stream.activeExecutionId ===
+            entry.execution.executionId &&
+          entry.execution.executionDeadlineAt <= input.now,
+      )
+      .sort(
+        (left, right) =>
+          left.execution.executionDeadlineAt.getTime() -
+            right.execution.executionDeadlineAt.getTime() ||
+          left.execution.executionId.localeCompare(right.execution.executionId),
+      )
+      .slice(0, input.limit)
+      .map(({ record, execution }) =>
+        this.snapshot(record, execution.executionId),
+      );
+  }
   private readonly streams = new Map<string, StreamRecord>();
   private readonly executionScope = new Map<string, string>();
   private readonly leases = new Map<string, ReviewInvocationLease>();
@@ -798,6 +842,81 @@ export class InMemoryReviewExecutionStore
       }
       record.executions.set(execution.executionId, decision.execution);
       record.stream = decision.stream;
+      return {
+        status: ReviewExecutionLifecycleTransitionStatus.Applied,
+        snapshot: this.snapshot(record, execution.executionId),
+      };
+    });
+  }
+
+  async terminalizeWorkSlot(command: TerminalizeReviewWorkSlotCommand) {
+    return this.atomic(() => {
+      const record = this.streams.get(scopeKey(command.scope));
+      const execution = record?.executions.get(command.executionId);
+      if (!record || !execution) {
+        return { status: ReviewExecutionLifecycleTransitionStatus.Missing };
+      }
+      const decision = decideWorkSlotTerminalization({
+        stream: record.stream,
+        execution,
+        ...command,
+      });
+      if (decision.status === WorkSlotTerminalizationDecisionStatus.Restored) {
+        return {
+          status: ReviewExecutionLifecycleTransitionStatus.Restored,
+          snapshot: this.snapshot(record, execution.executionId),
+        };
+      }
+      if (
+        decision.status === WorkSlotTerminalizationDecisionStatus.NotEligible
+      ) {
+        return { status: ReviewExecutionLifecycleTransitionStatus.NotEligible };
+      }
+      if (decision.status === WorkSlotTerminalizationDecisionStatus.Conflict) {
+        return {
+          status: ReviewExecutionLifecycleTransitionStatus.ConcurrencyConflict,
+        };
+      }
+      record.executions.set(execution.executionId, decision.execution);
+      return {
+        status: ReviewExecutionLifecycleTransitionStatus.Applied,
+        snapshot: this.snapshot(record, execution.executionId),
+      };
+    });
+  }
+
+  async failExpiredRunningExecution(
+    command: FailExpiredRunningExecutionCommand,
+  ) {
+    return this.atomic(() => {
+      const record = this.streams.get(scopeKey(command.scope));
+      const execution = record?.executions.get(command.executionId);
+      if (!record || !execution) {
+        return { status: ReviewExecutionLifecycleTransitionStatus.Missing };
+      }
+      const decision = decideExpiredRunningExecutionFailure({
+        stream: record.stream,
+        execution,
+        activeLeases: this.activeLeases(execution.executionId),
+        now: command.now,
+      });
+      if (decision.status === ExecutionLifecycleDecisionStatus.Restored) {
+        return {
+          status: ReviewExecutionLifecycleTransitionStatus.Restored,
+          snapshot: this.snapshot(record, execution.executionId),
+        };
+      }
+      if (record.stream.version !== command.expectedStreamVersion) {
+        return {
+          status: ReviewExecutionLifecycleTransitionStatus.ConcurrencyConflict,
+        };
+      }
+      if (decision.status === ExecutionLifecycleDecisionStatus.NotEligible) {
+        return { status: ReviewExecutionLifecycleTransitionStatus.NotEligible };
+      }
+      record.executions.set(execution.executionId, decision.execution);
+      record.stream = decision.stream;
+      this.persistRevokedLeases(decision.revokedLeases);
       return {
         status: ReviewExecutionLifecycleTransitionStatus.Applied,
         snapshot: this.snapshot(record, execution.executionId),

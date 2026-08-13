@@ -4,6 +4,7 @@ import {
   CurrentReviewRevisionStatus,
   DispatchDueReviewRequestedIntents,
   RecoverReviewRequestedDispatches,
+  RecoverExpiredReviewExecutions,
   PublicationPermitValidationStatus,
   ReviewCoverageState,
   ReviewExecutionAdmissionStatus,
@@ -33,6 +34,7 @@ import {
   ReviewRequestedTriggerKind,
   ReviewTaskKind,
   ReviewWorkSlotState,
+  ReviewWorkSlotTerminalReason,
   StartReviewExecution,
   StartReviewExecutionStatus,
   createEmptyReviewExecutionStream,
@@ -42,11 +44,19 @@ import {
   decideExecutionPreparation,
   decideExecutionPreparationReplay,
   ExecutionPreparationReplayDecisionStatus,
+  ExecutionLifecycleDecisionStatus,
   decideReviewRequestedAdmission,
   decideReviewRequestedRegistration,
   ReviewRequestedRegistrationDecisionStatus,
   prepareWorkSlots,
+  canonicalReviewAssignmentManifestHashPreimage,
+  canonicalReviewAssignmentManifestJson,
+  canonicalReviewExecutionPlanHashPreimage,
+  validateReviewAssignmentManifest,
   validatePublicationPermit,
+  decideExpiredRunningExecutionFailure,
+  decideWorkSlotTerminalization,
+  WorkSlotTerminalizationDecisionStatus,
   type ClockPort,
   type CurrentReviewRevisionPort,
   type PrepareReviewExecutionCommand,
@@ -110,6 +120,257 @@ describe("review execution domain", () => {
         limits,
       ),
     ).toThrowError("review_execution_attempt_budget_out_of_bounds");
+  });
+
+  it("validates canonical assignment manifests against known work slots", () => {
+    const manifest = validateReviewAssignmentManifest(
+      {
+        manifestVersion: 1,
+        assignments: [
+          { workSlotId: "slot-1", paths: ["src/a.ts", "src/b.ts"] },
+        ],
+        eligiblePaths: ["src/a.ts", "src/b.ts", "src/c.ts"],
+        uncoveredPaths: ["src/c.ts"],
+        excludedPaths: ["generated/out.ts"],
+      },
+      ["slot-1"],
+    );
+    expect(manifest.assignments[0]?.paths).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(() =>
+      validateReviewAssignmentManifest(
+        { ...manifest, eligiblePaths: ["src/b.ts", "src/a.ts"] },
+        ["slot-1"],
+      ),
+    ).toThrowError("review_assignment_manifest_paths_not_canonical");
+    expect(() =>
+      validateReviewAssignmentManifest(
+        {
+          ...manifest,
+          assignments: [{ workSlotId: "slot-1", paths: ["../secret"] }],
+        },
+        ["slot-1"],
+      ),
+    ).toThrowError("review_assignment_manifest_path_invalid");
+    expect(() =>
+      validateReviewAssignmentManifest(
+        { ...manifest, uncoveredPaths: ["src/a.ts"] },
+        ["slot-1"],
+      ),
+    ).toThrowError("review_assignment_manifest_uncovered_assigned_overlap");
+    expect(() =>
+      validateReviewAssignmentManifest({ ...manifest, uncoveredPaths: [] }, [
+        "slot-1",
+      ]),
+    ).toThrowError("review_assignment_manifest_eligible_unaccounted");
+  });
+
+  it("domain-separates manifest and manifest-bound plan hashes", () => {
+    expect(canonicalReviewAssignmentManifestHashPreimage("{}")).toBe(
+      "rr.review-assignment-manifest.v1\0{}",
+    );
+    expect(
+      canonicalReviewExecutionPlanHashPreimage({
+        assignmentManifestHash: hash("a"),
+        compatibilityKey: hash("b"),
+        reviewRevisionHash: hash("c"),
+        workSlots: [],
+      }),
+    ).toBe(
+      `rr.review-work-plan.v2\0{"assignmentManifestHash":"${hash("a")}","compatibilityKey":"${hash("b")}","reviewRevisionHash":"${hash("c")}","workSlots":[]}`,
+    );
+  });
+
+  it("terminalizes work slots idempotently behind the active-generation barrier", () => {
+    const prepared = decideExecutionPreparation({
+      stream: createEmptyReviewExecutionStream(scope, baseTime),
+      priorPrepared: null,
+      ...prepareCommand(),
+    });
+    const execution = {
+      ...prepared.execution,
+      state: ReviewExecutionState.Running,
+    };
+    const stream = {
+      ...prepared.stream,
+      preparedExecutionId: null,
+      activeExecutionId: execution.executionId,
+      currentRevision: revision,
+    };
+    const input = {
+      stream,
+      execution,
+      workSlotId: "slot-1",
+      terminalState: ReviewWorkSlotState.Exhausted as const,
+      reasonCode: ReviewWorkSlotTerminalReason.AttemptBudgetExhausted,
+      generation: execution.generation,
+      reviewRevisionHash: revision.reviewRevisionHash,
+      now: plus(1),
+    };
+    const applied = decideWorkSlotTerminalization(input);
+    expect(applied.status).toBe(WorkSlotTerminalizationDecisionStatus.Applied);
+    if (!("execution" in applied)) throw new Error("terminalization_missing");
+    expect(
+      decideWorkSlotTerminalization({ ...input, execution: applied.execution })
+        .status,
+    ).toBe(WorkSlotTerminalizationDecisionStatus.Restored);
+    expect(
+      decideWorkSlotTerminalization({
+        ...input,
+        execution: {
+          ...applied.execution,
+          state: ReviewExecutionState.Failed,
+        },
+        stream: { ...stream, activeExecutionId: null },
+      }).status,
+    ).toBe(WorkSlotTerminalizationDecisionStatus.Restored);
+    expect(
+      decideWorkSlotTerminalization({
+        ...input,
+        execution: applied.execution,
+        generation: execution.generation + 1n,
+      }).status,
+    ).toBe(WorkSlotTerminalizationDecisionStatus.NotEligible);
+    expect(
+      decideWorkSlotTerminalization({
+        ...input,
+        reasonCode: ReviewWorkSlotTerminalReason.DeadlineReached,
+      }).status,
+    ).toBe(WorkSlotTerminalizationDecisionStatus.Conflict);
+  });
+
+  it("fails an expired running execution and revokes its active leases", () => {
+    const prepared = decideExecutionPreparation({
+      stream: createEmptyReviewExecutionStream(scope, baseTime),
+      priorPrepared: null,
+      ...prepareCommand(),
+      admissionDeadlineAt: plus(1),
+      executionDeadlineAt: plus(2),
+    });
+    const execution = {
+      ...prepared.execution,
+      state: ReviewExecutionState.Running,
+    };
+    const decision = decideExpiredRunningExecutionFailure({
+      stream: {
+        ...prepared.stream,
+        preparedExecutionId: null,
+        activeExecutionId: execution.executionId,
+        currentRevision: revision,
+      },
+      execution,
+      activeLeases: [],
+      now: plus(3),
+    });
+    expect(decision.execution.state).toBe(ReviewExecutionState.Failed);
+    expect(decision.execution.workSlots[0]?.state).toBe(
+      ReviewWorkSlotState.Cancelled,
+    );
+    expect(decision.stream.activeExecutionId).toBeNull();
+    const activeLease = {
+      ...leaseCommand(),
+      ...scope,
+      authorizationId: execution.authorizationId,
+      producerReleaseId: execution.producerReleaseId,
+      mutationEpoch: execution.mutationEpoch,
+      reviewRevisionHash: revision.reviewRevisionHash,
+      state: ReviewInvocationLeaseState.Active,
+      fencingToken: 1n,
+      attemptOrdinal: 1,
+      lastRenewRequestIdHash: null,
+      lastRenewRequestHash: null,
+      executionGeneration: execution.generation,
+      acquiredAt: baseTime,
+      renewedAt: baseTime,
+    };
+    const restored = decideExpiredRunningExecutionFailure({
+      stream: decision.stream,
+      execution: decision.execution,
+      activeLeases: [activeLease],
+      now: plus(4),
+    });
+    expect(restored.status).toBe(ExecutionLifecycleDecisionStatus.Restored);
+    expect(restored.revokedLeases[0]?.state).toBe(
+      ReviewInvocationLeaseState.Revoked,
+    );
+  });
+
+  it("bounded recovery scans and fails expired running executions", async () => {
+    const executions = new InMemoryReviewExecutionStore();
+    await executions.prepareExecution({
+      ...prepareCommand(),
+      admissionDeadlineAt: plus(1),
+      executionDeadlineAt: plus(2),
+    });
+    await executions.confirmAdmission({
+      scope,
+      expectedStreamVersion: 1n,
+      executionId: "execution-1",
+      authorizationId: "authorization-1",
+      mutationEpoch: 1n,
+      requestedRevision: revision,
+      observedRevision: revision,
+      verdict: ReviewExecutionAdmissionVerdict.Current,
+      checkedAt: plus(1),
+    });
+    const recovery = new RecoverExpiredReviewExecutions(
+      executions,
+      executions,
+      { now: () => plus(3) },
+    );
+    expect(await recovery.execute({ limit: 10 })).toEqual({
+      scanned: 1,
+      recovered: 1,
+      conflicts: 0,
+      failures: 0,
+    });
+    expect(
+      (await executions.findExecution("execution-1"))?.execution.state,
+    ).toBe(ReviewExecutionState.Failed);
+    expect(await recovery.execute({ limit: 10 })).toEqual({
+      scanned: 0,
+      recovered: 0,
+      conflicts: 0,
+      failures: 0,
+    });
+  });
+
+  it("continues expired recovery after one candidate command fails", async () => {
+    const candidates = ["execution-a", "execution-b"].map((executionId) => ({
+      stream: {
+        ...createEmptyReviewExecutionStream(scope, baseTime),
+        version: 2n,
+      },
+      execution: {
+        ...decideExecutionPreparation({
+          stream: createEmptyReviewExecutionStream(scope, baseTime),
+          priorPrepared: null,
+          ...prepareCommand({ executionId }),
+        }).execution,
+        executionId,
+        state: ReviewExecutionState.Running,
+      },
+      observationRefs: [],
+      activeLeases: [],
+      artifact: null,
+    }));
+    const failExpiredRunningExecution = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("database_unavailable"))
+      .mockResolvedValueOnce({
+        status: ReviewExecutionLifecycleTransitionStatus.Applied,
+      });
+    const recovery = new RecoverExpiredReviewExecutions(
+      { listExpiredRunning: vi.fn(async () => candidates) } as never,
+      { failExpiredRunningExecution } as never,
+      { now: () => plus(3) },
+    );
+    expect(await recovery.execute({ limit: 2 })).toEqual({
+      scanned: 2,
+      recovered: 1,
+      conflicts: 0,
+      failures: 1,
+    });
+    expect(failExpiredRunningExecution).toHaveBeenCalledTimes(2);
   });
 
   it("uses bigint fencing tokens beyond Number.MAX_SAFE_INTEGER without reuse", () => {
@@ -823,6 +1084,76 @@ describe("start and admission saga", () => {
       state: ReviewRequestedIntentState.Dispatched,
       authorizationId: "authorization-1",
       executionId: "execution-1",
+    });
+  });
+
+  it("admits only a canonical manifest bound to both manifest and plan hashes", async () => {
+    const store = new InMemoryReviewExecutionStore();
+    const useCase = startUseCase(store, {
+      authorizationRevision: revision,
+      revisions: [revision, revision],
+    });
+    const base = startInput("execution-manifest");
+    const manifestCanonicalJson = canonicalReviewAssignmentManifestJson({
+      manifestVersion: 1,
+      assignments: [{ workSlotId: "slot-1", paths: ["src/a.ts"] }],
+      eligiblePaths: ["src/a.ts"],
+      uncoveredPaths: [],
+      excludedPaths: [],
+    });
+    const assignmentManifestHash = createHash("sha256")
+      .update(
+        canonicalReviewAssignmentManifestHashPreimage(manifestCanonicalJson),
+        "utf8",
+      )
+      .digest("hex");
+    const compatibilityKey = hash("b");
+    const planHash = createHash("sha256")
+      .update(
+        canonicalReviewExecutionPlanHashPreimage({
+          assignmentManifestHash,
+          compatibilityKey,
+          reviewRevisionHash: revision.reviewRevisionHash,
+          workSlots: base.workSlots,
+        }),
+        "utf8",
+      )
+      .digest("hex");
+
+    await expect(
+      useCase.execute({
+        ...base,
+        compatibilityKey,
+        planHash,
+        assignmentManifestCanonicalJson: manifestCanonicalJson,
+        assignmentManifestHash,
+      }),
+    ).resolves.toMatchObject({ status: StartReviewExecutionStatus.Admitted });
+    await expect(
+      useCase.execute({
+        ...base,
+        executionId: "execution-tampered",
+        compatibilityKey,
+        planHash,
+        assignmentManifestCanonicalJson: manifestCanonicalJson,
+        assignmentManifestHash: hash("c"),
+      }),
+    ).resolves.toEqual({
+      status: StartReviewExecutionStatus.AssignmentManifestRejected,
+      rejectionReason: "review_assignment_manifest_hash_mismatch",
+    });
+    await expect(
+      useCase.execute({
+        ...base,
+        executionId: "execution-plan-tampered",
+        compatibilityKey,
+        planHash: hash("d"),
+        assignmentManifestCanonicalJson: manifestCanonicalJson,
+        assignmentManifestHash,
+      }),
+    ).resolves.toEqual({
+      status: StartReviewExecutionStatus.AssignmentManifestRejected,
+      rejectionReason: "review_assignment_manifest_plan_hash_mismatch",
     });
   });
 

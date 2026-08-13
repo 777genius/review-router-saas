@@ -36,6 +36,16 @@ export type ReviewV2MaintenanceResult = {
   readonly publicationProcessed: number;
   readonly publicationManualRequired: number;
   readonly publicationTerminalUnknown: number;
+  readonly progressPromoted: number;
+  readonly progressClaimed: number;
+  readonly progressPublished: number;
+  readonly progressDeferred: number;
+  readonly progressSuppressed: number;
+  readonly progressFailed: number;
+  readonly expiredExecutionsScanned: number;
+  readonly expiredExecutionsRecovered: number;
+  readonly expiredExecutionConflicts: number;
+  readonly expiredExecutionFailures: number;
 };
 
 export type ReviewV2IntentMaintenanceRuntime = {
@@ -47,12 +57,40 @@ export type ReviewV2IntentMaintenanceRuntime = {
   }>;
 };
 
+export type ReviewV2ExecutionRecoveryRuntime = {
+  execute(input: { readonly limit: number }): Promise<{
+    readonly scanned: number;
+    readonly recovered: number;
+    readonly conflicts: number;
+    readonly failures: number;
+  }>;
+};
+
 export type ReviewV2PublicationMaintenanceRuntime = {
   runMaintenance(): Promise<{
     readonly processed: number;
     readonly manualRequired: number;
     readonly terminalUnknown: number;
     readonly settledExecutionIds: readonly string[];
+    readonly progressSettlements: readonly ReviewProgressSettlement[];
+  }>;
+};
+
+export type ReviewProgressSettlement = Readonly<{
+  executionId: string;
+  outcome: "succeeded" | "failed" | "superseded";
+}>;
+
+export type ReviewV2ProgressMaintenanceRuntime = {
+  promoteSettledExecutions(input: {
+    readonly settlements: readonly ReviewProgressSettlement[];
+  }): Promise<number>;
+  runMaintenance(): Promise<{
+    readonly claimed: number;
+    readonly published: number;
+    readonly deferred: number;
+    readonly suppressed: number;
+    readonly failed: number;
   }>;
 };
 
@@ -82,7 +120,9 @@ export function createReviewV2WorkerFeature(input: {
     readonly ownerIdHash: string;
     readonly dueLimit: number;
     readonly intents?: ReviewV2IntentMaintenanceRuntime;
+    readonly executionRecovery?: ReviewV2ExecutionRecoveryRuntime;
     readonly publication?: ReviewV2PublicationMaintenanceRuntime;
+    readonly progress?: ReviewV2ProgressMaintenanceRuntime;
     readonly ingressHandlers?: readonly OutboxHandler[];
   };
 }): ReviewV2WorkerFeature {
@@ -100,6 +140,16 @@ export function createReviewV2WorkerFeature(input: {
         publicationProcessed: 0,
         publicationManualRequired: 0,
         publicationTerminalUnknown: 0,
+        progressPromoted: 0,
+        progressClaimed: 0,
+        progressPublished: 0,
+        progressDeferred: 0,
+        progressSuppressed: 0,
+        progressFailed: 0,
+        expiredExecutionsScanned: 0,
+        expiredExecutionsRecovered: 0,
+        expiredExecutionConflicts: 0,
+        expiredExecutionFailures: 0,
       }),
     };
   }
@@ -129,7 +179,11 @@ export function createReviewV2WorkerFeature(input: {
         ownerIdHash: enabled.ownerIdHash,
         dueLimit: enabled.dueLimit,
         ...(enabled.intents ? { intents: enabled.intents } : {}),
+        ...(enabled.executionRecovery
+          ? { executionRecovery: enabled.executionRecovery }
+          : {}),
         ...(enabled.publication ? { publication: enabled.publication } : {}),
+        ...(enabled.progress ? { progress: enabled.progress } : {}),
       }),
   };
 }
@@ -182,13 +236,18 @@ export async function runReviewV2Maintenance(input: {
   readonly ownerIdHash: string;
   readonly dueLimit: number;
   readonly intents?: ReviewV2IntentMaintenanceRuntime;
+  readonly executionRecovery?: ReviewV2ExecutionRecoveryRuntime;
   readonly publication?: ReviewV2PublicationMaintenanceRuntime;
+  readonly progress?: ReviewV2ProgressMaintenanceRuntime;
 }): Promise<ReviewV2MaintenanceResult> {
   requireOwnerHash(input.ownerIdHash);
   if (!Number.isSafeInteger(input.dueLimit) || input.dueLimit <= 0) {
     throw new Error("review_v2_worker_due_limit_invalid");
   }
   const recovery = await input.runtime.schedulers.recovery.scanNextPage();
+  const executionRecovery = await input.executionRecovery?.execute({
+    limit: input.dueLimit,
+  });
   const intents = await input.intents?.runMaintenance();
   const due = await input.runtime.schedulers.due.execute({
     ownerIdHash: input.ownerIdHash,
@@ -211,6 +270,30 @@ export async function runReviewV2Maintenance(input: {
       result.status !== AdvanceReviewCompletionProcessStatus.Missing &&
       result.status !== AdvanceReviewCompletionProcessStatus.StaleClaim,
   ).length;
+  let progressPromoted = 0;
+  let progressPromotionFailed = false;
+  if (input.progress && publication) {
+    try {
+      progressPromoted = await input.progress.promoteSettledExecutions({
+        settlements: publication.progressSettlements,
+      });
+    } catch {
+      progressPromotionFailed = true;
+    }
+  }
+  // The final review publication always runs first. Progress is deliberately
+  // last so it can never delay or overtake the user-visible review result.
+  let progress:
+    | Awaited<ReturnType<ReviewV2ProgressMaintenanceRuntime["runMaintenance"]>>
+    | undefined;
+  let progressPublicationFailed = false;
+  if (input.progress) {
+    try {
+      progress = await input.progress.runMaintenance();
+    } catch {
+      progressPublicationFailed = true;
+    }
+  }
   return {
     intentsScanned: intents?.scanned ?? 0,
     intentsDispatched: intents?.dispatched ?? 0,
@@ -221,6 +304,19 @@ export async function runReviewV2Maintenance(input: {
     publicationProcessed: publication?.processed ?? 0,
     publicationManualRequired: publication?.manualRequired ?? 0,
     publicationTerminalUnknown: publication?.terminalUnknown ?? 0,
+    progressPromoted,
+    progressClaimed: progress?.claimed ?? 0,
+    progressPublished: progress?.published ?? 0,
+    progressDeferred: progress?.deferred ?? 0,
+    progressSuppressed: progress?.suppressed ?? 0,
+    progressFailed:
+      (progress?.failed ?? 0) +
+      Number(progressPromotionFailed) +
+      Number(progressPublicationFailed),
+    expiredExecutionsScanned: executionRecovery?.scanned ?? 0,
+    expiredExecutionsRecovered: executionRecovery?.recovered ?? 0,
+    expiredExecutionConflicts: executionRecovery?.conflicts ?? 0,
+    expiredExecutionFailures: executionRecovery?.failures ?? 0,
   };
 }
 
