@@ -110,6 +110,10 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
         'owner',pg_catalog.pg_get_userbyid(relation.relowner),
         'replicaIdentity',relation.relreplident,'rowSecurity',relation.relrowsecurity,
         'forceRowSecurity',relation.relforcerowsecurity,
+        'options',coalesce(to_jsonb(relation.reloptions),'[]'::jsonb),
+        'accessMethod',coalesce(access_method.amname,''),
+        'tablespace',CASE WHEN relation.reltablespace=0 THEN ''
+          ELSE pg_catalog.pg_tablespace_location(relation.reltablespace) END,
         'acl',(SELECT coalesce(jsonb_agg(jsonb_build_array(
           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
           acl.privilege_type,acl.is_grantable) ORDER BY
@@ -123,7 +127,16 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
           'type',replace(pg_catalog.format_type(attribute.atttypid,attribute.atttypmod),p_schema,'release_authority'),
           'notNull',attribute.attnotnull,'identity',attribute.attidentity,
           'generated',attribute.attgenerated,'compression',attribute.attcompression,
+          'collation',CASE WHEN attribute.attcollation=0 THEN ''
+            ELSE attribute.attcollation::regcollation::text END,
+          'storage',attribute.attstorage,'statistics',attribute.attstattarget,
           'default',replace(coalesce(pg_catalog.pg_get_expr(default_record.adbin,default_record.adrelid),''),p_schema,'release_authority')
+          ,'acl',(SELECT coalesce(jsonb_agg(jsonb_build_array(
+            CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
+            acl.privilege_type,acl.is_grantable) ORDER BY
+              CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
+              acl.privilege_type,acl.is_grantable),'[]'::jsonb)
+            FROM pg_catalog.aclexplode(coalesce(attribute.attacl,'{}'::aclitem[])) acl)
         ) ORDER BY attribute.attnum),'[]'::jsonb)
           FROM pg_catalog.pg_attribute attribute
           LEFT JOIN pg_catalog.pg_attrdef default_record
@@ -143,14 +156,17 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
           FROM pg_catalog.pg_sequence sequence_record WHERE sequence_record.seqrelid=relation.oid)
       )
     FROM pg_catalog.pg_class relation JOIN target ON target.oid=relation.relnamespace
+    LEFT JOIN pg_catalog.pg_am access_method ON access_method.oid=relation.relam
     UNION ALL
     SELECT 'function', procedure.oid::regprocedure::text,
       jsonb_build_object(
         'identityArgs',replace(pg_catalog.pg_get_function_identity_arguments(procedure.oid),p_schema,'release_authority'),
+        'arguments',replace(pg_catalog.pg_get_function_arguments(procedure.oid),p_schema,'release_authority'),
         'result',replace(pg_catalog.pg_get_function_result(procedure.oid),p_schema,'release_authority'),
         'kind',procedure.prokind,'language',language.lanname,'volatility',procedure.provolatile,
         'strict',procedure.proisstrict,'securityDefiner',procedure.prosecdef,
         'leakproof',procedure.proleakproof,'parallel',procedure.proparallel,
+        'cost',procedure.procost,'rows',procedure.prorows,
         'config',coalesce(to_jsonb(procedure.proconfig),'[]'::jsonb),
         'owner',pg_catalog.pg_get_userbyid(procedure.proowner),
         'source',replace(procedure.prosrc,p_schema,'release_authority'),
@@ -241,13 +257,15 @@ export function releaseAuthorityMigrationBundle(root = process.cwd()) {
   if (!bootstrapMigration || !forwardMigration)
     throw new Error("release_authority_migrations_empty");
   const historicalMigrations = migrations.slice(0, -2);
-  const shadowMigrations = (schema, firstTwo) =>
-    [...firstTwo, ...historicalMigrations.slice(2)].flatMap(
-      ({ path, source }) => [
-        `\\echo building verified catalog ${schema} from ${path}`,
-        migrationBody(rewriteAuthoritySchema(source, schema), path),
-      ],
-    );
+  // Audit the two published variants at their last independently observable
+  // boundary. Migration 000003 replaces the only catalog difference between
+  // the 000001 byte variants, so building shadows through later migrations
+  // would make a mixed pair indistinguishable and fabricate its history.
+  const shadowMigrations = (schema, migrationsToAudit) =>
+    migrationsToAudit.flatMap(({ path, source }) => [
+      `\\echo building verified catalog ${schema} from ${path}`,
+      migrationBody(rewriteAuthoritySchema(source, schema), path),
+    ]);
   const expectedHistoryValues = releaseAuthorityMigrationManifest
     .slice(0, -1)
     .map(
@@ -303,6 +321,15 @@ export function releaseAuthorityMigrationBundle(root = process.cwd()) {
      $catalog_verification$;`,
     "DROP SCHEMA release_authority_verify_canonical CASCADE;",
     "DROP SCHEMA release_authority_verify_legacy CASCADE;",
+    ...historicalMigrations
+      .slice(2)
+      .flatMap(({ path, source }) => [
+        `\\echo applying ${path}`,
+        migrationBody(source, path),
+      ]),
+    `UPDATE release_authority_catalog_verification
+       SET catalog_fingerprint=
+         pg_temp.release_authority_catalog_fingerprint('release_authority');`,
     "\\endif",
     "\\endif",
     "\\if :authority_history_present",
@@ -321,6 +348,10 @@ export function releaseAuthorityMigrationBundle(root = process.cwd()) {
              FROM release_authority.schema_migration)
        OR (SELECT count(*) <> 10 FROM release_authority.schema_migration
              WHERE position <= 10)
+       OR (SELECT byte_variant FROM release_authority.schema_migration
+             WHERE position=1) IS DISTINCT FROM
+          (SELECT byte_variant FROM release_authority.schema_migration
+             WHERE position=2)
        OR EXISTS (
          SELECT position,migration_name,checksum_sha256,byte_variant
            FROM release_authority.schema_migration WHERE position <= 10

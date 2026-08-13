@@ -67,54 +67,85 @@ test "$atomic_residue" = 0:0:0:0
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000002.sql >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000002_transactional_service_transition/migration.sql" \
   "$name:/tmp/service-transition.sql" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/service-transition.sql >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000003_partial_source_freeze/migration.sql" \
   "$name:/tmp/migration-000003.sql" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000003.sql >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000004_selective_source_recovery/migration.sql" \
   "$name:/tmp/migration-000004.sql" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000004.sql >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000005_late_runner_effects/migration.sql" \
   "$name:/tmp/migration-000005.sql" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000005.sql >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000006_runner_provider_creation_boundary/migration.sql" \
   "$name:/tmp/migration-000006.sql" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000006.sql >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000007_compensation_effect_fence/migration.sql" \
   "$name:/tmp/migration-000007.sql" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000007.sql >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000008_trigger_helper_acl/migration.sql" \
   "$name:/tmp/migration-000008.sql" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000008.sql >/dev/null
 
-# Complete-catalog verification must reject changes outside the old sampled
-# preflight, including an unsampled routine body and a disabled trigger.
+# The only ledgerless catalogs accepted below are exact two-file audit
+# boundaries. Later migrations are applied only after that byte variant is
+# identified, while both mixed pairs and every catalog modification fail
+# before schema_migration exists.
 node -e "import('./scripts/install-release-authority-db.mjs').then(m => process.stdout.write(m.releaseAuthorityMigrationBundle(process.cwd())))" \
   > /tmp/release-authority-install-$$.sql
 docker cp "/tmp/release-authority-install-$$.sql" "$name:/tmp/release-authority-install.sql" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
-  "CREATE DATABASE rr_modified_catalog TEMPLATE postgres" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_modified_catalog -c \
-  "CREATE OR REPLACE FUNCTION release_authority.release_source_freeze_immutable()
-   RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS \$\$
-   BEGIN RETURN NEW; END \$\$;
-   ALTER TABLE release_authority.source_freeze_observation
-     DISABLE TRIGGER release_source_freeze_immutable_guard" >/dev/null
-if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_modified_catalog \
-  -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
-  echo "modified unsampled authority catalog was stamped canonical" >&2
-  exit 1
-fi
-test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_modified_catalog -Atc \
-  "SELECT to_regclass('release_authority.schema_migration') IS NULL")" = t
 
-# A mixed pair of the two published histories is not one of the audited byte
-# variants and must not be inferred from whichever routine happens to survive.
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
-  "CREATE DATABASE rr_ambiguous_catalog" >/dev/null
+for database in rr_modified_schema rr_modified_routine rr_disabled_trigger rr_owner_mismatch rr_acl_mismatch; do
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+    "CREATE DATABASE $database TEMPLATE postgres" >/dev/null
+done
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_modified_schema -c \
+  "ALTER TABLE release_authority.runner_intent
+     ADD COLUMN unaudited_catalog_change boolean" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_modified_routine -c \
+  "CREATE OR REPLACE FUNCTION release_authority.release_runner_terminal_effect()
+   RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS \$\$
+   BEGIN RETURN NEW; END \$\$" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_disabled_trigger -c \
+  "ALTER TABLE release_authority.runner_job
+     DISABLE TRIGGER release_runner_terminal_effect_trigger" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_owner_mismatch -c \
+  "ALTER SCHEMA release_authority OWNER TO reviewrouter_release_control" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_acl_mismatch -c \
+  "GRANT SELECT ON TABLE release_authority.runner_intent TO PUBLIC" >/dev/null
+for database in rr_modified_schema rr_modified_routine rr_disabled_trigger rr_owner_mismatch rr_acl_mismatch; do
+  if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d "$database" \
+    -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+    echo "modified authority catalog $database was stamped" >&2
+    exit 1
+  fi
+  test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d "$database" -Atc \
+    "SELECT to_regclass('release_authority.schema_migration') IS NULL")" = t
+done
+
+for database in rr_mixed_legacy_current rr_mixed_current_legacy rr_mixed_erased_evidence rr_supported_legacy rr_partial_catalog; do
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+    "CREATE DATABASE $database" >/dev/null
+done
 docker cp "$root/packages/platform/release-authority-db/legacy-catalog/000001_release_authority/migration.sql" \
   "$name:/tmp/legacy-000001.sql" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_ambiguous_catalog \
+docker cp "$root/packages/platform/release-authority-db/legacy-catalog/000002_external_effect_protocol/migration.sql" \
+  "$name:/tmp/legacy-000002.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_legacy_current \
+  -f /tmp/legacy-000001.sql >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_legacy_current \
+  -f /tmp/migration-000002.sql >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_current_legacy \
+  -f /tmp/migration.sql >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_current_legacy \
+  -f /tmp/legacy-000002.sql >/dev/null
+for database in rr_mixed_legacy_current rr_mixed_current_legacy; do
+  if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d "$database" \
+    -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+    echo "ambiguous mixed authority catalog $database was stamped" >&2
+    exit 1
+  fi
+  test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d "$database" -Atc \
+    "SELECT to_regclass('release_authority.schema_migration') IS NULL")" = t
+done
+
+# Preserve the original adversarial reproduction. Migration 000003 overwrites
+# the only remaining 000001 catalog difference, so a verifier that compares
+# only the eventual through-000008 catalog will stamp this mixed history.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_erased_evidence \
   -f /tmp/legacy-000001.sql >/dev/null
 for migration_file in \
   /tmp/migration-000002.sql \
@@ -125,19 +156,74 @@ for migration_file in \
   /tmp/migration-000006.sql \
   /tmp/migration-000007.sql \
   /tmp/migration-000008.sql; do
-  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_ambiguous_catalog \
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_erased_evidence \
     -f "$migration_file" >/dev/null
 done
-if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_ambiguous_catalog \
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_erased_evidence \
   -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
   echo "ambiguous mixed legacy authority catalog was stamped canonical" >&2
   exit 1
 fi
-test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_ambiguous_catalog -Atc \
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_erased_evidence -Atc \
   "SELECT to_regclass('release_authority.schema_migration') IS NULL")" = t
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_partial_catalog \
+  -f /tmp/migration.sql >/dev/null
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_partial_catalog \
+  -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+  echo "partial authority catalog was stamped" >&2
+  exit 1
+fi
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_partial_catalog -Atc \
+  "SELECT to_regclass('release_authority.schema_migration') IS NULL")" = t
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_supported_legacy \
+  -f /tmp/legacy-000001.sql >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_supported_legacy \
+  -f /tmp/legacy-000002.sql >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_supported_legacy \
+  -f /tmp/release-authority-install.sql >/dev/null
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_supported_legacy -Atc \
+  "SELECT string_agg(position::text||':'||byte_variant,',' ORDER BY position)
+     FROM release_authority.schema_migration WHERE position<=2")" = \
+  "1:legacy_equivalent,2:legacy_equivalent"
 
 rm -f "/tmp/release-authority-install-$$.sql"
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/release-authority-install.sql >/dev/null
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT string_agg(position::text||':'||byte_variant,',' ORDER BY position)
+     FROM release_authority.schema_migration WHERE position<=2")" = \
+  "1:canonical,2:canonical"
+# Both accepted variants must be idempotent without changing their manifests.
+canonical_manifest=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_schema_migration_manifest()")
+legacy_manifest=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_supported_legacy -Atc \
+  "SELECT release_authority.release_schema_migration_manifest()")
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+  -f /tmp/release-authority-install.sql >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_supported_legacy \
+  -f /tmp/release-authority-install.sql >/dev/null
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_schema_migration_manifest()")" = "$canonical_manifest"
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_supported_legacy -Atc \
+  "SELECT release_authority.release_schema_migration_manifest()")" = "$legacy_manifest"
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "CREATE DATABASE rr_mixed_ledger TEMPLATE postgres" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_ledger -c \
+  "UPDATE release_authority.schema_migration
+     SET checksum_sha256='sha256:e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b',
+         byte_variant='legacy_equivalent'
+   WHERE position=1" >/dev/null
+mixed_ledger_before=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_ledger -Atc \
+  "SELECT release_authority.release_schema_migration_manifest()")
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_ledger \
+  -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+  echo "mixed existing migration ledger was accepted" >&2
+  exit 1
+fi
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_ledger -Atc \
+  "SELECT release_authority.release_schema_migration_manifest()")" = "$mixed_ledger_before"
 
 postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
