@@ -566,7 +566,9 @@ export async function executeDisposableRehearsal(
           const requestBody = JSON.parse(String(init?.body ?? "{}"));
           if (/^[a-z_]{1,80}$/u.test(String(requestBody.step ?? "")))
             step = requestBody.step;
-        } catch {}
+        } catch {
+          step = "unparseable";
+        }
         process.stderr.write(
           `rehearsal_control_request_failed:${init?.method ?? "GET"}:${requestUrl.pathname}:${response.statusCode}:${code}:${step}\n`,
         );

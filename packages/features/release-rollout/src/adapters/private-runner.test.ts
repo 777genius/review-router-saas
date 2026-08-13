@@ -365,7 +365,7 @@ describe("Render private runner contract", () => {
         .fn()
         .mockResolvedValueOnce(json(service))
         .mockResolvedValueOnce(json(deploys))
-        .mockImplementationOnce(async (_url, init) => {
+        .mockImplementationOnce(async () => {
           const intent = jobLedger.persistProvisioningIntent.mock.calls[0]?.[0];
           return json(
             jobs.map((job) => ({
