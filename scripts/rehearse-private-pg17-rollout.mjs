@@ -21,7 +21,13 @@ import {
   AuthenticatedRunnerLedgerAdapter,
   HttpProviderAuthorityDecisionAdapter,
   RolloutStep,
+  TransactionalServiceCutover,
+  environmentKeysSha256,
+  environmentSha256,
   sha256Canonical,
+  sourceRecoveryManifestSha256,
+  sourceServiceContractSha256,
+  targetServiceContractSha256,
   transitionFailure,
 } from "../packages/features/release-rollout/src/index.ts";
 import { createPrismaClient } from "../packages/platform/db/src/index.ts";
@@ -863,6 +869,157 @@ async function verifyProductionPathRehearsal(facts) {
     facts: value,
     ...(provider ? { provider } : {}),
   });
+  const sourceWitness = `source_rehearsal_${"w".repeat(48)}`;
+  const targetWitness = `target_rehearsal_${"x".repeat(48)}`;
+  const rawSha256 = (value) =>
+    createHash("sha256").update(value, "utf8").digest("hex");
+  const serviceRoles = ["api", "web", "worker"];
+  const sourceEnvironments = new Map();
+  const protectedSourceEnvironment = {};
+  const sourceServices = serviceRoles.map((role) => {
+    const serviceId = `srv-target-${role}`;
+    const protectedValues = {
+      DATABASE_URL: `postgresql://source/${role}`,
+      REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: sourceWitness,
+      REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: rawSha256(sourceWitness),
+      ...(["api", "web"].includes(role)
+        ? {
+            REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+              "postgresql://source/effect-authority",
+          }
+        : {}),
+    };
+    protectedSourceEnvironment[serviceId] = protectedValues;
+    const environment = [
+      ...Object.entries(protectedValues).map(([key, value]) => ({
+        key,
+        value,
+      })),
+      { key: "UNKNOWN_SECRET", value: `preserved-${role}` },
+    ];
+    sourceEnvironments.set(serviceId, environment);
+    const value = {
+      serviceId,
+      ownerId: "tea-disposable",
+      type: role === "worker" ? "background_worker" : "web_service",
+      runtime: "node",
+      repository: "https://github.com/777genius/review-router-saas",
+      branch: "main",
+      rootDir: "",
+      sourceCommitSha: rollout.expectedCommitSha,
+      buildCommand: "pnpm build",
+      startCommand: `pnpm ${role}:start`,
+      preDeployCommand: "",
+      healthCheckPath: role === "worker" ? null : "/health",
+      region: "frankfurt",
+      plan: "starter",
+      maxShutdownDelaySeconds: role === "worker" ? 120 : 60,
+      autoDeploy: "no",
+      databaseEnvKey: "DATABASE_URL",
+      databaseRole: `reviewrouter_${role}`,
+      sourceEnvSha256: environmentSha256(environment),
+      sourceEnvKeysSha256: environmentKeysSha256(environment),
+    };
+    return {
+      ...value,
+      serviceContractSha256: sourceServiceContractSha256(value),
+    };
+  });
+  const sourceManifestValue = {
+    schemaVersion: "reviewrouter.render-source-recovery.v1",
+    rolloutId: rollout.rolloutId,
+    services: sourceServices,
+  };
+  const sourceManifest = {
+    ...sourceManifestValue,
+    manifestSha256: sourceRecoveryManifestSha256(sourceManifestValue),
+  };
+  const targetContracts = serviceRoles.map((role) => {
+    const serviceId = `srv-target-${role}`;
+    const environmentDelta = {
+      DATABASE_URL: `postgresql://target/${role}`,
+      REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: targetWitness,
+      REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: rawSha256(targetWitness),
+      ...(["api", "web"].includes(role)
+        ? {
+            REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+              "postgresql://target/effect-authority",
+          }
+        : {}),
+      REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: rollout.expectedCommitSha,
+      REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: rollout.rolloutId,
+      REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: "2026-08-12T00:00:00.000Z",
+    };
+    const environment = [
+      ...Object.entries(environmentDelta).map(([key, value]) => ({
+        key,
+        value,
+      })),
+      { key: "UNKNOWN_SECRET", value: `preserved-${role}` },
+    ];
+    const value = {
+      serviceId,
+      imageUrl: `ghcr.io/777genius/review-router-saas-runtime@${digest}`,
+      environmentDelta,
+      removeKeys: [],
+      environmentSha256: environmentSha256(environment),
+    };
+    return {
+      ...value,
+      serviceContractSha256: targetServiceContractSha256(value),
+    };
+  });
+  const stagedServices = new Map(
+    sourceServices.map((service) => [
+      service.serviceId,
+      {
+        serviceId: service.serviceId,
+        suspended: true,
+        serviceContractSha256: service.serviceContractSha256,
+        environmentSha256: service.sourceEnvSha256,
+        provenance: { kind: "git", commitSha: service.sourceCommitSha },
+      },
+    ]),
+  );
+  const transactionalServices = new TransactionalServiceCutover(facts.ledger, {
+    observe: async (serviceId) => stagedServices.get(serviceId),
+    suspend: async (serviceId) => {
+      stagedServices.get(serviceId).suspended = true;
+    },
+    resume: async (serviceId) => {
+      stagedServices.get(serviceId).suspended = false;
+    },
+    configureTarget: async () => undefined,
+    configureSource: async () => undefined,
+    replaceEnvironment: async (serviceId) => {
+      const contract = targetContracts.find(
+        (item) => item.serviceId === serviceId,
+      );
+      stagedServices.get(serviceId).environmentSha256 =
+        contract.environmentSha256;
+      return contract.environmentSha256;
+    },
+    deployImage: async (serviceId, imageUrl) => {
+      const contract = targetContracts.find(
+        (item) => item.serviceId === serviceId,
+      );
+      const deployId = `dep-${serviceId}`;
+      stagedServices.set(serviceId, {
+        serviceId,
+        suspended: true,
+        serviceContractSha256: contract.serviceContractSha256,
+        environmentSha256: contract.environmentSha256,
+        provenance: { kind: "image", imageUrl, deployId },
+      });
+      return deployId;
+    },
+    deployCommit: async () => {
+      throw new Error("disposable_target_stage_commit_deploy_unexpected");
+    },
+    waitForDeploy: async () => undefined,
+    reconcileCommitDeploy: async () => null,
+    quiesceDeploys: async () => undefined,
+  });
   const sqlConfiguration = disposableSqlConfiguration();
   const generated = {
     roleBootstrapSha256: `sha256:${sha256Canonical(roleProvisioningSql(sqlConfiguration))}`,
@@ -1221,54 +1378,64 @@ COMMIT;
         observed(RolloutStep.CompleteCompensation, { aclRestored: true }),
     },
     services: {
-      stageTarget: async (fence) =>
-        observed(
+      stageTarget: async (fence) => {
+        const deployIds = await transactionalServices.stage({
+          source: sourceManifest,
+          protectedEnvironment: protectedSourceEnvironment,
+          target: targetContracts,
+        });
+        const checkpoints = await facts.ledger.read(rollout.rolloutId);
+        const targetContractHash = checkpoints.at(-1)?.targetContractSha256;
+        if (!targetContractHash)
+          throw new Error("private_pg17_rehearsal_target_contract_missing");
+        return observed(
           RolloutStep.StageTargetServices,
-          [
-            {
-              serviceId: "srv-target",
-              deployId: "dep-disposable",
-              provenance: {
-                kind: "git",
-                commitSha: rollout.expectedCommitSha,
-              },
-              envSha256: digest,
-              recoveryWitnessSha256:
-                facts.canonicalEnv
-                  .REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256,
-              suspended: true,
-              targetSwitchFenceNonce: fence.nonce,
-              targetSwitchFenceVersion: fence.version,
-            },
-          ],
-          {
-            renderServiceIds: ["srv-target"],
-            renderDeployIds: ["dep-disposable"],
+          targetContracts.map((contract, index) => ({
+            serviceId: contract.serviceId,
+            deployId: deployIds[index],
+            provenance: { kind: "image", imageSha: digest },
+            envSha256: contract.environmentSha256,
+            recoveryWitnessSha256: rawSha256(targetWitness),
+            suspended: true,
             targetSwitchFenceNonce: fence.nonce,
             targetSwitchFenceVersion: fence.version,
-            serviceRecoveryManifestSha256: digest,
-            targetServiceContractSha256: digest,
-          },
-        ),
-      resumeDeployAndObserve: async () =>
-        observed(
-          RolloutStep.ResumeTargetServices,
-          [
-            {
-              serviceId: "srv-target",
-              deployId: "dep-disposable",
-              resumed: true,
-            },
-          ],
+          })),
           {
-            renderServiceIds: ["srv-target"],
-            renderDeployIds: ["dep-disposable"],
+            renderServiceIds: targetContracts.map((item) => item.serviceId),
+            renderDeployIds: deployIds,
+            targetSwitchFenceNonce: fence.nonce,
+            targetSwitchFenceVersion: fence.version,
+            serviceRecoveryManifestSha256: sourceManifest.manifestSha256,
+            targetServiceContractSha256: targetContractHash,
           },
-        ),
+        );
+      },
+      resumeDeployAndObserve: async () => {
+        const services = targetContracts.map((contract) => {
+          const current = stagedServices.get(contract.serviceId);
+          current.suspended = false;
+          return {
+            serviceId: contract.serviceId,
+            deployId: current.provenance.deployId,
+            resumed: true,
+          };
+        });
+        return observed(RolloutStep.ResumeTargetServices, services, {
+          renderServiceIds: services.map((item) => item.serviceId),
+          renderDeployIds: services.map((item) => item.deployId),
+        });
+      },
       verifyLiveCanary: async () =>
         observed(RolloutStep.VerifyLiveCanary, {
           commitSha: rollout.expectedCommitSha,
           databaseSystemIdentifier: rollout.target.systemIdentifier,
+          recoveryWitnessSha256: rawSha256(targetWitness),
+          runtimeWitnessProofs: serviceRoles.map((runtimeRole) => ({
+            runtimeRole,
+            databaseRole: `reviewrouter_${runtimeRole}`,
+            recoveryWitnessSha256: rawSha256(targetWitness),
+            provedAt: "2026-08-12T00:00:05.000Z",
+          })),
           writeReadRoundTrip: true,
         }),
     },
@@ -1360,7 +1527,10 @@ COMMIT;
           ).observationSha256,
           receipts: current.receipts,
           activation: current.activationReceipt,
-          resumedTargetDeployIds: ["dep-disposable"],
+          resumedTargetDeployIds: targetContracts.map(
+            (contract) =>
+              stagedServices.get(contract.serviceId).provenance.deployId,
+          ),
           liveCanarySha256: digest,
           cleanups: [
             {

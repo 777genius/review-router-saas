@@ -35,6 +35,7 @@ describe("disposable dual-version rehearsal", () => {
     );
     for (const required of [
       "ReleaseRolloutUseCases",
+      "TransactionalServiceCutover",
       "AuthenticatedRunnerLedgerAdapter",
       "HttpProviderAuthorityDecisionAdapter",
       "createReleaseControlApp",
@@ -52,6 +53,8 @@ describe("disposable dual-version rehearsal", () => {
       "private_pg17_rehearsal_authority_conflict_unproven",
       "private_pg17_rehearsal_authority_outage_unproven",
       "private_pg17_rehearsal_authority_database_isolation_unproven",
+      "sourceRecoveryManifestSha256",
+      "targetServiceContractSha256",
       "executeCanonicalRoleBootstrap",
       "executeCanonicalReleaseMigration",
       "executePrivateGenerationActivation",
