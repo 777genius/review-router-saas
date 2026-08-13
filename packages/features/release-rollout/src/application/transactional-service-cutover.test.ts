@@ -7,6 +7,7 @@ import {
   sourceServiceContractSha256,
   targetServiceContractSha256,
   type ProtectedSourceEnvironment,
+  type EnvironmentMutationOutcome,
   type ServiceTransitionLedger,
   type ServiceTransitionCheckpoint,
   type SourceRecoveryManifest,
@@ -351,8 +352,9 @@ const harness = (fail?: string, failOrdinal = 1) => {
           set: Record<string, string>;
           remove: readonly string[];
           expectedBeforeSha256?: string;
+          expectedAfterSha256: string;
         },
-      ) => {
+      ): Promise<EnvironmentMutationOutcome> => {
         const env = currentEnv.get(id)!;
         if (
           input.expectedBeforeSha256 &&
@@ -368,7 +370,15 @@ const harness = (fail?: string, failOrdinal = 1) => {
         );
         current.get(id)!.environmentSha256 = value;
         crash("replaceEnvironment");
-        return value;
+        return {
+          status: "applied" as const,
+          previousEnvironmentSha256: input.expectedBeforeSha256 ?? value,
+          environmentSha256: value,
+          environmentKeysSha256: environmentKeysSha256(
+            [...env].map(([key, value]) => ({ key, value })),
+          ),
+          replayed: false,
+        };
       },
     ),
     deployImage: vi.fn(async (id: string, imageUrl: string) => {
@@ -417,6 +427,37 @@ describe("transactional same-service cutover", () => {
       outcome: "target_staged",
     });
   });
+
+  it.each([
+    [
+      "conflict",
+      {
+        status: "conflict" as const,
+        observedEnvironmentSha256: `sha256:${"d".repeat(64)}`,
+      },
+    ],
+    [
+      "ambiguous",
+      {
+        status: "ambiguous" as const,
+        observedEnvironmentSha256: `sha256:${"e".repeat(64)}`,
+      },
+    ],
+  ])(
+    "stops application policy on an environment %s",
+    async (status, outcome) => {
+      const test = harness();
+      test.provider.replaceEnvironment.mockResolvedValueOnce(outcome);
+      await expect(
+        test.cutover.stage({ source, protectedEnvironment, target }),
+      ).rejects.toThrow(`service_transition_environment_${status}`);
+      expect(test.checkpoints).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ step: "target_env_applied" }),
+        ]),
+      );
+    },
+  );
 
   it.each(
     [1, 2, 3].flatMap((ordinal) =>
@@ -552,7 +593,13 @@ describe("transactional same-service cutover", () => {
     const test = harness();
     await test.cutover.stage({ source, protectedEnvironment, target });
     const wrongHash = `sha256:${"d".repeat(64)}`;
-    test.provider.replaceEnvironment.mockResolvedValueOnce(wrongHash);
+    test.provider.replaceEnvironment.mockResolvedValueOnce({
+      status: "applied",
+      previousEnvironmentSha256: target[2]!.environmentSha256,
+      environmentSha256: wrongHash,
+      environmentKeysSha256: source.services[2]!.sourceEnvKeysSha256,
+      replayed: false,
+    });
 
     await expect(
       test.cutover.recover({ source, protectedEnvironment, target }),

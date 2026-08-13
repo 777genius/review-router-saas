@@ -137,6 +137,23 @@ export type ObservedRenderService = Readonly<{
     | { kind: "image"; imageUrl: string; deployId: string };
 }>;
 
+export type EnvironmentMutationOutcome =
+  | Readonly<{
+      status: "applied";
+      previousEnvironmentSha256: string;
+      environmentSha256: string;
+      environmentKeysSha256: string;
+      replayed: boolean;
+    }>
+  | Readonly<{
+      status: "conflict";
+      observedEnvironmentSha256: string;
+    }>
+  | Readonly<{
+      status: "ambiguous";
+      observedEnvironmentSha256?: string;
+    }>;
+
 export interface TransactionalRenderProvider {
   observe(serviceId: string): Promise<ObservedRenderService>;
   suspend(serviceId: string): Promise<void>;
@@ -149,8 +166,9 @@ export interface TransactionalRenderProvider {
       set: Readonly<Record<string, string>>;
       remove: readonly string[];
       expectedBeforeSha256?: string;
+      expectedAfterSha256: string;
     },
-  ): Promise<string>;
+  ): Promise<EnvironmentMutationOutcome>;
   captureSourceManifest(input: {
     rolloutId: string;
     services: readonly Readonly<{
@@ -378,6 +396,16 @@ export function validateServiceTransitionContracts(
   );
 }
 
+const requireAppliedEnvironment = (
+  outcome: EnvironmentMutationOutcome,
+): string => {
+  if (outcome.status === "conflict")
+    throw new Error("service_transition_environment_conflict");
+  if (outcome.status === "ambiguous")
+    throw new Error("service_transition_environment_ambiguous");
+  return outcome.environmentSha256;
+};
+
 export class TransactionalServiceCutover {
   private readonly recoveryEffects: RecoveryEffectProtocol;
   constructor(
@@ -454,14 +482,16 @@ export class TransactionalServiceCutover {
       const source = input.source.services.find(
         (item) => item.serviceId === contract.serviceId,
       )!;
-      const envHash = await this.provider.replaceEnvironment(
+      const envMutation = await this.provider.replaceEnvironment(
         contract.serviceId,
         {
           set: contract.environmentDelta,
           remove: contract.removeKeys,
           expectedBeforeSha256: source.sourceEnvSha256,
+          expectedAfterSha256: contract.environmentSha256,
         },
       );
+      const envHash = requireAppliedEnvironment(envMutation);
       if (envHash !== contract.environmentSha256)
         throw new Error("service_transition_target_env_mismatch");
       await this.checkpoint(common, contract.serviceId, "target_env_applied", {
@@ -593,15 +623,18 @@ export class TransactionalServiceCutover {
         effect: async () =>
           beforeRestore.environmentSha256 === contract.sourceEnvSha256
             ? beforeRestore.environmentSha256
-            : await this.provider.replaceEnvironment(contract.serviceId, {
-                set: sourceEnv,
-                remove: [
-                  "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
-                  "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
-                  "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
-                ],
-                expectedBeforeSha256: target.environmentSha256,
-              }),
+            : requireAppliedEnvironment(
+                await this.provider.replaceEnvironment(contract.serviceId, {
+                  set: sourceEnv,
+                  remove: [
+                    "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
+                    "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
+                    "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+                  ],
+                  expectedBeforeSha256: target.environmentSha256,
+                  expectedAfterSha256: contract.sourceEnvSha256,
+                }),
+              ),
         reconcileConsumed: async () => {
           const observed = await this.provider.observe(contract.serviceId);
           return observed.environmentSha256 === contract.sourceEnvSha256

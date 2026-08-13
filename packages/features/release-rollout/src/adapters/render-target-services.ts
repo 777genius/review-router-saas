@@ -133,16 +133,21 @@ export class RenderTargetServicesAdapter {
         decodeURIComponent(databaseUrl.username) !== expected.databaseRole
       )
         throw new Error("render_target_database_binding_mismatch");
-      const envReplacement = await api.replaceEnvPreservingAll(
-        expected.serviceId,
-        {
+      const envReplacement = await api.patchEnvPreservingAll({
+        serviceId: expected.serviceId,
+        set: {
           [expected.databaseEnvKey]: replacement,
           ...witnessReplacement,
           REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: input.fence.rolloutId,
           REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: input.releaseCommitSha,
           REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: input.fence.fencedAt,
         },
-      );
+        remove: [],
+      });
+      if (envReplacement.status === "conflict")
+        throw new Error("render_target_environment_conflict");
+      if (envReplacement.status === "ambiguous")
+        throw new Error("render_target_environment_ambiguous");
       const created = await api.createDeploy(expected.serviceId);
       let rechecked = await api.listAllDeploys(expected.serviceId);
       let pinned = rechecked.find((deploy) => deploy.id === created.id);
@@ -168,8 +173,8 @@ export class RenderTargetServicesAdapter {
         serviceId: expected.serviceId,
         deployId: created.id,
         provenance: expected.provenance,
-        envSha256: envReplacement.afterSha256,
-        previousEnvSha256: envReplacement.beforeSha256,
+        envSha256: envReplacement.environmentSha256,
+        previousEnvSha256: envReplacement.previousEnvironmentSha256,
         databaseHostname: databaseUrl.hostname,
         databaseName: expected.databaseName,
         databaseRole: expected.databaseRole,

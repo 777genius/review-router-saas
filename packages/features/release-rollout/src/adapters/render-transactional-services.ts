@@ -5,6 +5,7 @@ import {
   sourceServiceContractSha256,
   targetServiceContractSha256,
   type ObservedRenderService,
+  type EnvironmentMutationOutcome,
   type RenderServiceContract,
   type TargetServiceContract,
   type ProtectedSourceEnvironment,
@@ -194,10 +195,10 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
       set: Readonly<Record<string, string>>;
       remove: readonly string[];
       expectedBeforeSha256?: string;
+      expectedAfterSha256: string;
     },
-  ): Promise<string> {
-    return (await this.api.patchEnvPreservingAll({ serviceId, ...input }))
-      .afterSha256;
+  ): Promise<EnvironmentMutationOutcome> {
+    return this.api.patchEnvPreservingAll({ serviceId, ...input });
   }
 
   async planEnvironmentDelta(input: {
