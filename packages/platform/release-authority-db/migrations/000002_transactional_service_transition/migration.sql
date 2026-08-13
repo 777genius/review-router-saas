@@ -180,7 +180,8 @@ BEGIN
     deploy_id,observed_contract_sha256,observed_env_sha256,intent_at)
   VALUES (transition.rollout_id,next_sequence,p_input->>'serviceId',p_input->>'step',
     transition.manifest_sha256,transition.target_contract_sha256,p_input->>'deployId',
-    p_input->>'observedContractSha256',p_input->>'observedEnvSha256',p_input->>'intentAt');
+    p_input->>'observedContractSha256',p_input->>'observedEnvSha256',
+    (p_input->>'intentAt')::timestamptz);
   RETURN p_input || jsonb_build_object('sequence',next_sequence);
 END $body$;
 
