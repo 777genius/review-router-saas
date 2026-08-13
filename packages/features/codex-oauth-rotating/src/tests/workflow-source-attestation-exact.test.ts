@@ -85,15 +85,17 @@ describe("exact active workflow attestation", () => {
     const actionRef =
       "777genius/review-router@0123456789abcdef0123456789abcdef01234567";
     const apiUrl = "https://api.reviewrouter.site";
-    const metadata = readCanonicalCodexRotatingT0WorkflowSourceMetadata(
-      renderCanonicalCodexRotatingT0WorkflowV4({
-        actionRef,
-        apiUrl,
-        providerInstanceId: "codex-rotating:123456",
-        refreshScheduleCron: null,
-        activeSecretNamespace: namespace,
-      }),
-    );
+    const workflow = renderCanonicalCodexRotatingT0WorkflowV4({
+      actionRef,
+      apiUrl,
+      providerInstanceId: "codex-rotating:123456",
+      refreshScheduleCron: null,
+      activeSecretNamespace: namespace,
+    });
+    expect(workflow).toContain("  pull_request_target:");
+    expect(workflow).not.toContain("  pull_request:");
+    const metadata =
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(workflow);
     const trusted = {
       metadata,
       observedRepositoryId: "123456",

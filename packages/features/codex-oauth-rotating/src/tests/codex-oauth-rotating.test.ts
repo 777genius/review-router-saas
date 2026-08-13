@@ -39,6 +39,7 @@ import {
   validateCodexAuthJsonBytes,
   validateCodexRotatingPrelease,
 } from "../domain/codex-oauth-rotating";
+import { allocateVersionedProviderSecretNamespace } from "../domain/provider-secret-namespace";
 import {
   readCanonicalCodexRotatingT0WorkflowSourceMetadata,
   workflowDocumentSemanticSha256,
@@ -965,6 +966,56 @@ exit 17
     expect(workflowDocumentSemanticSha256(lifecycleWorkflow)).toBe(
       "daa7a6562a4a3484f2c2ea6474f3ab5c51df509172456f4565bcc3c437d59e96",
     );
+
+    const versionedSecretWorkflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:1163183284",
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      activeSecretNamespace: allocateVersionedProviderSecretNamespace({
+        scope: {
+          repositoryId: "1163183284",
+          providerInstanceId: "codex-rotating:1163183284",
+        },
+        epoch: 1n,
+        randomBytes: () => Buffer.alloc(16, 1),
+      }),
+    });
+    expect(versionedSecretWorkflow).toContain("  pull_request_target:");
+    expect(versionedSecretWorkflow).not.toContain("  pull_request:");
+    expect(versionedSecretWorkflow).toContain(
+      "github.event_name == 'pull_request_target'",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(versionedSecretWorkflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+        versionedSecretWorkflow,
+      ),
+    ).toMatchObject({
+      actionRef: `777genius/review-router@${actionSha}`,
+      workflowSchemaVersion: 4,
+    });
+
+    const untrustedVersionedIngress = versionedSecretWorkflow
+      .replace("  pull_request_target:", "  pull_request:")
+      .replace(
+        "github.event_name == 'pull_request_target'",
+        "github.event_name == 'pull_request'",
+      );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(untrustedVersionedIngress).errors,
+    ).toContain("t0_pull_request_target_ingress_required");
+    expect(() =>
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+        untrustedVersionedIngress,
+      ),
+    ).toThrow("codex_rotating_t0_workflow_source_not_canonical");
 
     const scheduledLifecycleWorkflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: `777genius/review-router@${actionSha}`,
