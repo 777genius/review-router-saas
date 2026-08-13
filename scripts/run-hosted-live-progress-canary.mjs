@@ -3,6 +3,8 @@ import { createHash, createPrivateKey, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 export const liveProgressMarker = "<!-- review-router-live-progress -->";
+export const liveProgressSourceMarkerPrefix =
+  "<!-- review-router-live-progress-source ";
 const pinnedTarget = Object.freeze({
   repository: "777genius/review-router-saas-e2e",
   repositoryId: 1228051727,
@@ -143,7 +145,10 @@ export async function verifyHostedProgressCanary(
       Date.parse(comment.updated_at) >
         Date.parse(receipt.baselineCommentUpdatedAt);
     if (fingerprint !== lastFingerprint && updatedAfterTriggerBaseline) {
-      const next = parseProgressComment(comment, config);
+      const next = parseProgressComment(comment, config, {
+        sourceRunId: String(config.sourceRunId),
+        sourceRunAttempt: String(receipt.sourceRunAttempt + 1),
+      });
       assertMonotonic(observations.at(-1), next);
       observations.push(next);
       lastFingerprint = fingerprint;
@@ -199,7 +204,7 @@ export function assertRerunAttempt(run, receipt, config) {
     throw new Error("hosted_progress_canary_rerun_attempt_contract_mismatch");
 }
 
-export function parseProgressComment(comment, config) {
+export function parseProgressComment(comment, config, expectedSource) {
   if (
     comment.user?.login?.toLowerCase() !== config.expectedBotLogin ||
     comment.performed_via_github_app?.slug?.toLowerCase() !==
@@ -207,6 +212,14 @@ export function parseProgressComment(comment, config) {
     occurrences(comment.body, liveProgressMarker) !== 1
   )
     throw new Error("hosted_progress_canary_comment_identity_invalid");
+  const sourceIdentity = parseSourceIdentity(comment.body);
+  if (
+    expectedSource !== undefined &&
+    (sourceIdentity === null ||
+      sourceIdentity.sourceRunId !== expectedSource.sourceRunId ||
+      sourceIdentity.sourceRunAttempt !== expectedSource.sourceRunAttempt)
+  )
+    throw new Error("hosted_progress_canary_comment_source_mismatch");
   const units = numbers(comment.body, /Review units: (\d+) of (\d+) complete/u);
   const files = numbers(
     comment.body,
@@ -223,7 +236,23 @@ export function parseProgressComment(comment, config) {
     unassignedFiles: metric(comment.body, "Files not assigned"),
     excludedFiles: metric(comment.body, "Files unavailable or excluded"),
     exhaustedUnits: metric(comment.body, "Units not completed after retries"),
+    sourceIdentity,
   };
+}
+
+export function parseSourceIdentity(body) {
+  const lines = body
+    .split(/\r?\n/u)
+    .filter((line) => line.includes(liveProgressSourceMarkerPrefix));
+  if (lines.length === 0) return null;
+  if (lines.length !== 1)
+    throw new Error("hosted_progress_canary_comment_source_invalid");
+  const match =
+    /^<!-- review-router-live-progress-source run-id=([1-9][0-9]{0,19}) run-attempt=([1-9][0-9]{0,9}) -->$/u.exec(
+      lines[0],
+    );
+  if (!match) throw new Error("hosted_progress_canary_comment_source_invalid");
+  return { sourceRunId: match[1], sourceRunAttempt: match[2] };
 }
 
 export function assertMonotonic(previous, next) {
@@ -235,7 +264,10 @@ export function assertMonotonic(previous, next) {
     next.totalFiles !== previous.totalFiles ||
     next.completedUnits < previous.completedUnits ||
     next.coveredFiles < previous.coveredFiles ||
-    phaseRank(next.phase) < phaseRank(previous.phase)
+    phaseRank(next.phase) < phaseRank(previous.phase) ||
+    next.sourceIdentity?.sourceRunId !== previous.sourceIdentity?.sourceRunId ||
+    next.sourceIdentity?.sourceRunAttempt !==
+      previous.sourceIdentity?.sourceRunAttempt
   )
     throw new Error("hosted_progress_canary_progress_not_monotonic");
 }

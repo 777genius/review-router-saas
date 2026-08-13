@@ -3,6 +3,8 @@ import {
   assertMonotonic,
   assertRerunAttempt,
   createInstallationGitHub,
+  parseProgressComment,
+  parseSourceIdentity,
   readCanaryConfig,
   triggerHostedProgressCanary,
   verifyHostedProgressCanary,
@@ -142,6 +144,42 @@ describe("hosted live-progress canary", () => {
         configFixture(),
       ),
     ).toThrow("hosted_progress_canary_rerun_attempt_contract_mismatch");
+  });
+
+  it("requires every observed update to carry the exact rerun source", () => {
+    const config = configFixture();
+    const exact = progress("Reviewing", 1, 72, 1, 108, 1);
+    expect(
+      parseProgressComment(comment(41, exact), config, {
+        sourceRunId: "123",
+        sourceRunAttempt: "2",
+      }).sourceIdentity,
+    ).toEqual({ sourceRunId: "123", sourceRunAttempt: "2" });
+    expect(() =>
+      parseProgressComment(
+        comment(41, exact.replace("run-attempt=2", "run-attempt=3")),
+        config,
+        { sourceRunId: "123", sourceRunAttempt: "2" },
+      ),
+    ).toThrow("hosted_progress_canary_comment_source_mismatch");
+    expect(() =>
+      parseProgressComment(
+        comment(
+          41,
+          exact.replace(
+            /<!-- review-router-live-progress-source[^\n]+-->\n/u,
+            "",
+          ),
+        ),
+        config,
+        { sourceRunId: "123", sourceRunAttempt: "2" },
+      ),
+    ).toThrow("hosted_progress_canary_comment_source_mismatch");
+    expect(() =>
+      parseSourceIdentity(
+        exact.replace("run-id=123", "run-id=123 --><script>"),
+      ),
+    ).toThrow("hosted_progress_canary_comment_source_invalid");
   });
 
   it("proves one bot/app comment ID, dynamic updates and exact terminal coverage", async () => {
@@ -367,7 +405,7 @@ function progress(
   files: number,
   second: number,
 ) {
-  return `<!-- review-router-live-progress -->\n**Phase:** ${phase}\nReview units: ${completed} of ${total} complete (50%)\nFiles in completed units: ${covered} of ${files}\nFiles not assigned: 0\nFiles unavailable or excluded: 0\nUnits not completed after retries: 0\nLast update: 2026-08-13 10:00:0${second} UTC`;
+  return `<!-- review-router-live-progress -->\n<!-- review-router-live-progress-source run-id=123 run-attempt=2 -->\n**Phase:** ${phase}\nReview units: ${completed} of ${total} complete (50%)\nFiles in completed units: ${covered} of ${files}\nFiles not assigned: 0\nFiles unavailable or excluded: 0\nUnits not completed after retries: 0\nLast update: 2026-08-13 10:00:0${second} UTC`;
 }
 function observation(
   completedUnits: number,
@@ -382,6 +420,7 @@ function observation(
     totalUnits: 72,
     coveredFiles,
     totalFiles: 108,
+    sourceIdentity: { sourceRunId: "123", sourceRunAttempt: "2" },
   };
 }
 function tickingClock() {
