@@ -15,6 +15,7 @@ import {
   type TargetServiceExpectation,
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
+import { parseSourceWriterServiceIds } from "./lib/source-writer-service-ids";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -71,9 +72,9 @@ const useCases = new ReleaseRolloutUseCases({
     compensateAndObserve: async ({ decision, databaseWitness }) =>
       await sourceProvider.compensateAndObserve({
         apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
-        sourceWriterServiceIds: JSON.parse(
+        sourceWriterServiceIds: parseSourceWriterServiceIds(
           required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
-        ) as string[],
+        ),
         sourceSystemIdentifier: rollout.source.systemIdentifier,
         decision,
         databaseWitness,

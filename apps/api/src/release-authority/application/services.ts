@@ -1,7 +1,6 @@
 import type {
   PersistedJob,
   PersistedProviderCleanupWitness,
-  ProvisioningIntent,
   ActivationPermitInstallerPort,
   ReleaseAuthorityLedgerPort,
   ReleaseRolloutReconciliationPort,
@@ -107,9 +106,13 @@ export class ProviderAuthorityDecisionService {
 
 export class RunnerOperationsService {
   constructor(private readonly repository: RunnerOperationsLedgerPort) {}
-  persistIntent = (input: ProvisioningIntent) =>
-    this.repository.persistIntent(input);
+  persistIntent = (
+    input: Parameters<RunnerOperationsLedgerPort["persistIntent"]>[0],
+  ) => this.repository.persistIntent(input);
   listIntents = (rolloutId: string) => this.repository.listIntents(rolloutId);
+  claimProviderCreation = (
+    input: Parameters<RunnerOperationsLedgerPort["claimProviderCreation"]>[0],
+  ) => this.repository.claimProviderCreation(input);
   recordIntentOutcome = (
     input: Parameters<RunnerOperationsLedgerPort["recordIntentOutcome"]>[0],
   ) => this.repository.recordIntentOutcome(input);

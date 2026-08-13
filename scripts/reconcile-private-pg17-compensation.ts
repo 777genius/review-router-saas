@@ -9,6 +9,7 @@ import {
   RenderProviderFreezeAdapter,
   type ReleaseRollout,
 } from "../packages/features/release-rollout/src/index";
+import { parseCompensationSourceWriterServiceIds } from "./reconcile-private-pg17-compensation-config";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -47,9 +48,9 @@ const useCase = new ReleaseCompensationReconciliationUseCase({
     compensateAndObserve: async ({ decision, databaseWitness }) =>
       provider.compensateAndObserve({
         apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
-        sourceWriterServiceIds: JSON.parse(
+        sourceWriterServiceIds: parseCompensationSourceWriterServiceIds(
           required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
-        ) as string[],
+        ),
         sourceSystemIdentifier: rollout.source.systemIdentifier,
         decision,
         databaseWitness,

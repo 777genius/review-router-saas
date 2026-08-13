@@ -1,4 +1,5 @@
 import type {
+  CreateRunnerProvisioningIntent,
   PersistedRunnerJob,
   RunnerProvisioningIntent,
   RunnerCleanupWitnessPort,
@@ -56,7 +57,7 @@ export class AuthenticatedRunnerLedgerAdapter
     });
   }
   async persistProvisioningIntent(
-    value: RunnerProvisioningIntent,
+    value: CreateRunnerProvisioningIntent,
   ): Promise<"created" | "existing"> {
     const result = (await this.request("/v1/runner-jobs/intents", {
       method: "POST",
@@ -72,9 +73,49 @@ export class AuthenticatedRunnerLedgerAdapter
     const value = await this.request(
       `/v1/runner-jobs/intents?rollout_id=${encodeURIComponent(rolloutId)}`,
     );
-    if (!Array.isArray(value))
+    if (
+      !Array.isArray(value) ||
+      value.some(
+        (entry) =>
+          !entry ||
+          typeof entry !== "object" ||
+          typeof (entry as RunnerProvisioningIntent).id !== "string" ||
+          typeof (entry as RunnerProvisioningIntent).startCommandSha256 !==
+            "string" ||
+          ((entry as RunnerProvisioningIntent).creationLeaseOwner !== null &&
+            typeof (entry as RunnerProvisioningIntent).creationLeaseOwner !==
+              "string") ||
+          ((entry as RunnerProvisioningIntent).creationLeaseExpiresAt !==
+            null &&
+            typeof (entry as RunnerProvisioningIntent)
+              .creationLeaseExpiresAt !== "string") ||
+          ((entry as RunnerProvisioningIntent).creationLeaseOwner === null) !==
+            ((entry as RunnerProvisioningIntent).creationLeaseExpiresAt ===
+              null),
+      )
+    )
       throw new Error("runner_ledger_provisioning_intents_invalid");
     return value as RunnerProvisioningIntent[];
+  }
+  async claimProviderCreation(
+    input: Parameters<RunnerJobLedger["claimProviderCreation"]>[0],
+  ): ReturnType<RunnerJobLedger["claimProviderCreation"]> {
+    const value = (await this.request(
+      `/v1/runner-jobs/intents/${encodeURIComponent(input.intentId)}/provider-creation-claim`,
+      { method: "POST", body: JSON.stringify(input) },
+    )) as Record<string, unknown>;
+    if (
+      value.result !== "acquired" &&
+      value.result !== "held" &&
+      value.result !== "discovery_grace" &&
+      value.result !== "bound"
+    )
+      throw new Error("runner_ledger_provider_creation_claim_invalid");
+    if (value.result === "acquired" && typeof value.leaseExpiresAt !== "string")
+      throw new Error("runner_ledger_provider_creation_claim_invalid");
+    return value as Awaited<
+      ReturnType<RunnerJobLedger["claimProviderCreation"]>
+    >;
   }
   async recordProvisioningOutcome(input: {
     intentId: string;

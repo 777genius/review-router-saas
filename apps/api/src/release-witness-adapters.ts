@@ -10,11 +10,21 @@ import type {
   CleanupObservationSeed,
   CleanupObservationSeedPort,
   NormalizedCleanupEvidence,
+  ProviderTerminalStatus,
   RenderCleanupObservationPort,
 } from "./release-witness-domain.js";
 
 const safePath =
   /^\/runner\/_work\/rr-[A-Za-z0-9][A-Za-z0-9._-]{1,125}(\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})*$/u;
+const providerTerminalStatuses = new Set<ProviderTerminalStatus>([
+  "succeeded",
+  "failed",
+  "canceled",
+]);
+const isProviderTerminalStatus = (
+  status: string,
+): status is ProviderTerminalStatus =>
+  providerTerminalStatuses.has(status as ProviderTerminalStatus);
 const timestamp = (value: string): number => {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed))
@@ -84,7 +94,7 @@ export class RenderCleanupObservationAdapter implements RenderCleanupObservation
     if (
       job.id !== seed.jobId ||
       job.serviceId !== seed.serviceId ||
-      job.status !== "succeeded" ||
+      !isProviderTerminalStatus(job.status) ||
       !job.createdAt ||
       !job.finishedAt
     )
@@ -142,7 +152,7 @@ export class RenderCleanupObservationAdapter implements RenderCleanupObservation
     return Object.freeze({
       jobId: seed.jobId,
       canary: seed.cleanupCanary,
-      providerStatus: "succeeded",
+      providerStatus: job.status,
       containerTerminated: true,
       logSha256: `sha256:${createHash("sha256")
         .update(receipt.log.message)

@@ -882,6 +882,7 @@ async function verifyProductionPathRehearsal(facts) {
     const intentId = `rri-${createHash("sha256")
       .update(`disposable-rehearsal:${lifecycle}:${identity.workflowJobId}`)
       .digest("hex")}`;
+    const rehearsalStartCommand = `node /runner/bootstrap.mjs --intent ${intentId}`;
     await ledger.persistProvisioningIntent({
       id: intentId,
       rolloutId: rollout.rolloutId,
@@ -890,6 +891,10 @@ async function verifyProductionPathRehearsal(facts) {
       workflowJobId: identity.workflowJobId,
       runnerName: identity.runnerName,
       createdAt: observation.observedAt,
+      startCommandSha256: `sha256:${createHash("sha256")
+        .update(rehearsalStartCommand)
+        .digest("hex")}`,
+      creationLeaseOwner: `rrc-${lifecycle === "role" ? "00000000-0000-4000-8000-000000000001" : "00000000-0000-4000-8000-000000000002"}`,
     });
     await ledger.persistCreatedJob({
       rolloutId: rollout.rolloutId,

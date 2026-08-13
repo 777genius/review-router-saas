@@ -7,6 +7,7 @@ import {
   type ProviderAuthorityDecision,
   type ProviderStateWitness,
 } from "../application/ports";
+import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
 
 const active = new Set([
   "created",
@@ -30,9 +31,7 @@ export class RenderProviderFreezeAdapter {
     if (
       !input.apiKey ||
       !input.ownerId ||
-      !input.sourceWriterServiceIds.length ||
-      new Set(input.sourceWriterServiceIds).size !==
-        input.sourceWriterServiceIds.length
+      !sourceWriterServiceIdsAreValid(input.sourceWriterServiceIds)
     )
       throw new Error("render_freeze_context_invalid");
     const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
@@ -130,7 +129,7 @@ export class RenderProviderFreezeAdapter {
   }): Promise<ProviderStateWitness> {
     if (
       !input.apiKey ||
-      !input.sourceWriterServiceIds.length ||
+      !sourceWriterServiceIdsAreValid(input.sourceWriterServiceIds) ||
       input.decision.decision !== "allow" ||
       input.decision.operation !== ProviderAuthorityOperation.ResumeSource ||
       input.decision.sourceSystemIdentifier !== input.sourceSystemIdentifier ||

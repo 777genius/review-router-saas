@@ -45,9 +45,14 @@ class QueryRecorder {
               observation: { step: "cleanup_role_runner" },
               witness: { canary: "canary", providerStatus: "succeeded" },
             }
-          : text.includes("release_runner_persist_intent")
-            ? "created"
-            : true;
+          : text.includes("release_runner_claim_provider_creation")
+            ? {
+                result: "acquired",
+                leaseExpiresAt: "2026-08-12T00:02:00.000Z",
+              }
+            : text.includes("release_runner_persist_intent")
+              ? "created"
+              : true;
     return [{ value }] as T;
   }
 }
@@ -200,9 +205,22 @@ describe("release authority postgres JSONB bindings", () => {
       workflowJobId: "10",
       runnerName: "runner",
       createdAt: observedAt,
+      startCommandSha256: `sha256:${"b".repeat(64)}`,
+      creationLeaseOwner: "rrc-00000000-0000-4000-8000-000000000001",
     } as const;
     await adapter.persistIntent(intent);
     expectJsonbBinding(recorder.queries.at(-1)!, intent);
+
+    const creationClaim = {
+      intentId: intent.id,
+      claimantId: "rrc-00000000-0000-4000-8000-000000000001",
+      startCommandSha256: `sha256:${"b".repeat(64)}`,
+      observedNoMatchAt: observedAt,
+      leaseSeconds: 120,
+      discoveryGraceSeconds: 120,
+    } as const;
+    await adapter.claimProviderCreation(creationClaim);
+    expectJsonbBinding(recorder.queries.at(-1)!, creationClaim);
 
     const outcome = {
       intentId: intent.id,

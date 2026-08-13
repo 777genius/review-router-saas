@@ -6,8 +6,8 @@ import type {
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
 import type {
+  CreateProvisioningIntent,
   PersistRunnerRegistrationInput,
-  ProvisioningIntent,
   RolloutBinding,
   PersistedJob,
 } from "../domain/model.js";
@@ -253,7 +253,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     { preHandler: control },
     async (request) => ({
       result: await dependencies.runnerOperations.persistIntent(
-        record(request.body) as ProvisioningIntent,
+        record(request.body) as CreateProvisioningIntent,
       ),
     }),
   );
@@ -262,6 +262,15 @@ export async function registerReleaseRolloutLedgerRoutes(
     { preHandler: control },
     async (request) =>
       dependencies.runnerOperations.listIntents(request.query.rollout_id),
+  );
+  app.post(
+    "/v1/runner-jobs/intents/:intentId/provider-creation-claim",
+    { preHandler: control },
+    async (request) =>
+      dependencies.runnerOperations.claimProviderCreation({
+        ...record(request.body),
+        intentId: (request.params as { intentId: string }).intentId,
+      } as never),
   );
   app.put<{ Params: { intentId: string } }>(
     "/v1/runner-jobs/intents/:intentId/outcome",

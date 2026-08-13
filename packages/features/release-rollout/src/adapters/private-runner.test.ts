@@ -111,6 +111,7 @@ const created = {
 const ledger = () => ({
   persistProvisioningIntent: vi.fn().mockResolvedValue("created"),
   listProvisioningIntents: vi.fn().mockResolvedValue([]),
+  claimProviderCreation: vi.fn().mockResolvedValue({ result: "held" }),
   recordProvisioningOutcome: vi.fn().mockResolvedValue(undefined),
   persistCreatedJob: vi.fn().mockResolvedValue(undefined),
   listOpenJobs: vi.fn().mockResolvedValue([]),
@@ -385,6 +386,81 @@ describe("Render private runner contract", () => {
         jobs.length === 0
           ? "render_runner_intent_reconciliation_pending"
           : "render_runner_intent_multiple_provider_jobs",
+      );
+      expect(
+        fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"),
+      ).toHaveLength(0);
+    },
+  );
+
+  it("lets exactly one expired-lease claimant create after provider discovery grace", async () => {
+    const jobLedger = ledger();
+    jobLedger.persistProvisioningIntent.mockResolvedValue("existing");
+    jobLedger.claimProviderCreation.mockResolvedValue({
+      result: "acquired",
+      leaseExpiresAt: "2026-08-12T00:02:00.000Z",
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(json(service))
+      .mockResolvedValueOnce(json(deploys))
+      .mockResolvedValueOnce(json([]))
+      .mockImplementationOnce(async (_url, init) =>
+        json(
+          {
+            ...created,
+            startCommand: JSON.parse(String(init?.body)).startCommand,
+          },
+          201,
+        ),
+      )
+      .mockResolvedValueOnce(json(deploys));
+
+    await expect(
+      new RenderPrivateRunnerAdapter(
+        jobLedger,
+        witness(),
+        providerWitness(),
+        fetchImpl,
+      ).provision(request),
+    ).resolves.toMatchObject({ jobId: created.id });
+    expect(jobLedger.claimProviderCreation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startCommandSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        leaseSeconds: 120,
+        discoveryGraceSeconds: 120,
+      }),
+    );
+    expect(
+      fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(1);
+  });
+
+  it.each(["held", "discovery_grace", "bound"] as const)(
+    "does not POST when the atomic provider creation claim is %s",
+    async (claimResult) => {
+      const jobLedger = ledger();
+      jobLedger.persistProvisioningIntent.mockResolvedValue("existing");
+      jobLedger.claimProviderCreation.mockResolvedValue({
+        result: claimResult,
+      });
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(json(service))
+        .mockResolvedValueOnce(json(deploys))
+        .mockResolvedValueOnce(json([]));
+
+      await expect(
+        new RenderPrivateRunnerAdapter(
+          jobLedger,
+          witness(),
+          providerWitness(),
+          fetchImpl,
+        ).provision(request),
+      ).rejects.toThrow(
+        claimResult === "bound"
+          ? "render_runner_intent_binding_raced"
+          : "render_runner_intent_reconciliation_pending",
       );
       expect(
         fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"),

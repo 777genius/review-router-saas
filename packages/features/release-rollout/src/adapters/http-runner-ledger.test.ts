@@ -122,6 +122,44 @@ describe("authenticated runner ledger reconciliation", () => {
   );
 });
 
+describe("authenticated runner provider creation lease", () => {
+  it("posts an exact claim to the intent-scoped authority route", async () => {
+    const claim = {
+      intentId: `rri-${"a".repeat(64)}`,
+      claimantId: "rrc-00000000-0000-4000-8000-000000000001",
+      startCommandSha256: `sha256:${"b".repeat(64)}`,
+      observedNoMatchAt: "2026-08-12T00:03:00.000Z",
+      leaseSeconds: 120,
+      discoveryGraceSeconds: 120,
+    };
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          result: "acquired",
+          leaseExpiresAt: "2026-08-12T00:05:00.000Z",
+        }),
+        { status: 200 },
+      ),
+    );
+    const adapter = new AuthenticatedRunnerLedgerAdapter(
+      "https://control.example.test",
+      "control-token",
+      fetchImpl,
+    );
+
+    await expect(adapter.claimProviderCreation(claim)).resolves.toMatchObject({
+      result: "acquired",
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://control.example.test/v1/runner-jobs/intents/${claim.intentId}/provider-creation-claim`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(claim),
+      }),
+    );
+  });
+});
+
 describe("authenticated cleanup observation trigger", () => {
   it("submits only job identity and an empty trigger body", async () => {
     const fetchImpl = vi

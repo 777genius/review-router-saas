@@ -13,6 +13,7 @@ import type {
   PersistedJob,
   PersistedProviderCleanupWitness,
   PersistRunnerRegistrationInput,
+  CreateProvisioningIntent,
   ProvisioningIntent,
   ReleaseAuthorityState,
   ReleaseCompensationCheckpoint,
@@ -261,7 +262,7 @@ export class RoutineReleaseControlLedgerAdapter
   }
 
   async persistIntent(
-    input: ProvisioningIntent,
+    input: CreateProvisioningIntent,
   ): Promise<"created" | "existing"> {
     const value = await firstValue(
       this.prisma,
@@ -277,9 +278,50 @@ export class RoutineReleaseControlLedgerAdapter
       this.prisma,
       Prisma.sql`SELECT release_authority.release_runner_list_intents(${rolloutId}) AS value`,
     );
-    if (!Array.isArray(value))
+    if (
+      !Array.isArray(value) ||
+      value.some(
+        (entry) =>
+          !entry ||
+          typeof entry !== "object" ||
+          typeof (entry as ProvisioningIntent).id !== "string" ||
+          typeof (entry as ProvisioningIntent).startCommandSha256 !==
+            "string" ||
+          ((entry as ProvisioningIntent).creationLeaseOwner !== null &&
+            typeof (entry as ProvisioningIntent).creationLeaseOwner !==
+              "string") ||
+          ((entry as ProvisioningIntent).creationLeaseExpiresAt !== null &&
+            typeof (entry as ProvisioningIntent).creationLeaseExpiresAt !==
+              "string") ||
+          ((entry as ProvisioningIntent).creationLeaseOwner === null) !==
+            ((entry as ProvisioningIntent).creationLeaseExpiresAt === null),
+      )
+    )
       throw new Error("release_runner_intents_invalid");
     return value as ProvisioningIntent[];
+  }
+
+  async claimProviderCreation(
+    input: Parameters<RunnerOperationsLedgerPort["claimProviderCreation"]>[0],
+  ): ReturnType<RunnerOperationsLedgerPort["claimProviderCreation"]> {
+    const value = requiredRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_runner_claim_provider_creation(${asJsonb(input)}) AS value`,
+      ),
+    );
+    if (
+      value.result !== "acquired" &&
+      value.result !== "held" &&
+      value.result !== "discovery_grace" &&
+      value.result !== "bound"
+    )
+      throw new Error("release_runner_provider_creation_claim_invalid");
+    if (value.result === "acquired" && typeof value.leaseExpiresAt !== "string")
+      throw new Error("release_runner_provider_creation_claim_invalid");
+    return value as Awaited<
+      ReturnType<RunnerOperationsLedgerPort["claimProviderCreation"]>
+    >;
   }
 
   async recordIntentOutcome(

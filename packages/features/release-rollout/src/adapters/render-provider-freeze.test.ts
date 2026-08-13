@@ -17,6 +17,29 @@ const service = {
 };
 
 describe("Render provider writer inventory", () => {
+  it.each([
+    ["duplicate", [service.id, service.id]],
+    ["unsafe", ["../../unsafe"]],
+    [
+      "too many",
+      Array.from({ length: 101 }, (_, index) => `srv-writer${index}`),
+    ],
+  ])(
+    "rejects %s writer IDs before contacting Render",
+    async (_label, serviceIds) => {
+      const fetchImpl = vi.fn();
+
+      await expect(
+        new RenderProviderFreezeAdapter(fetchImpl).freezeAndObserve({
+          apiKey: "redacted",
+          ownerId: service.ownerId,
+          sourceWriterServiceIds: serviceIds,
+        }),
+      ).rejects.toThrow("render_freeze_context_invalid");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
   it("discovers every database-credential service before accepting the declaration", async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (url.includes("/env-vars"))
