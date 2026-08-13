@@ -128,7 +128,7 @@ try {
   const observation = collectObservation(rehearsalUrl);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000067 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000069 rehearsal passed.\n",
   );
 } finally {
   psql(
@@ -254,7 +254,7 @@ function proveReleaseAuthorityMarkerIsolation(url) {
   ]).stdout.trim();
   assert(
     forbiddenObjects === "0",
-    "000067 no-op marker created release authority objects in the application database",
+    "000069 no-op marker created release authority objects in the application database",
   );
   for (const role of [
     "reviewrouter_release_control",
@@ -265,7 +265,7 @@ function proveReleaseAuthorityMarkerIsolation(url) {
         "-Atc",
         `SELECT count(*) FROM pg_roles WHERE rolname=${quoteLiteral(role)}`,
       ]).stdout.trim() === "0",
-      `000067 no-op marker created external authority role ${role} in the application database`,
+      `000069 no-op marker created external authority role ${role} in the application database`,
     );
   }
 }

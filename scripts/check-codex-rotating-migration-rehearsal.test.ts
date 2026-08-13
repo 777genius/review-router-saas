@@ -42,6 +42,41 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
+  it("rehearses canonical migrations 000067, 000068, and 000069 in order", () => {
+    const inventory =
+      /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
+        source,
+      )?.[1];
+
+    expect(inventory).toBeDefined();
+    expect(
+      [...(inventory ?? "").matchAll(/migration\d+Name/gu)].map(
+        ([name]) => name,
+      ),
+    ).toEqual([
+      "migration60Name",
+      "migration61Name",
+      "migration62Name",
+      "migration63Name",
+      "migration64Name",
+      "migration65Name",
+      "migration66Name",
+      "migration67Name",
+      "migration68Name",
+      "migration69Name",
+    ]);
+    expect(source).toContain(
+      'const migration67Name = "000067_review_live_progress"',
+    );
+    expect(source).toContain(
+      'const migration68Name = "000068_validate_review_assignment_manifest"',
+    );
+    expect(source).toContain(
+      'const migration69Name = "000069_release_rollout_ledger"',
+    );
+    expect(source).not.toContain("000067_release_rollout_ledger");
+  });
+
   it("reads the database generation binding as shared-object metadata", () => {
     expect(source).toContain("shobj_description(oid, 'pg_database')");
     expect(source).not.toMatch(/\bobj_description\(oid, 'pg_database'\)/u);

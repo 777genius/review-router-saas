@@ -7,6 +7,7 @@ import {
   checkedInCodexRotatingMigrationChecksums,
   forwardUnpublishedCodexRotatingMigration,
   immutableCodexRotatingMigrationChecksums,
+  obsoleteReleaseRolloutLedgerMigrationAlias,
   unpublishedNonAtomicCodexOAuthSetupPayloadClaimChecksum,
   type CodexRotatingMigrationHistoryRow,
 } from "./codex-rotating-migration-history-policy";
@@ -59,7 +60,7 @@ describe("Codex rotating immutable migration history policy", () => {
     );
   });
 
-  it("pins the exact checked-in digest for the unpublished 000067 no-op marker", () => {
+  it("pins the exact checked-in digest for the unpublished 000069 no-op marker", () => {
     const checkedInDigest = createHash("sha256")
       .update(
         readFileSync(
@@ -81,7 +82,7 @@ describe("Codex rotating immutable migration history policy", () => {
     );
   });
 
-  it("keeps 000067 free of application database and authority DDL", () => {
+  it("keeps 000069 free of application database and authority DDL", () => {
     const source = readFileSync(
       resolve(
         "packages/platform/db/prisma/migrations",
@@ -99,7 +100,7 @@ describe("Codex rotating immutable migration history policy", () => {
     expect(source).not.toMatch(/reviewrouter_release_(?:control|witness)/u);
   });
 
-  it("loads the exact 000067 source digest and queries its prepublication history", () => {
+  it("loads the exact 000069 source digest and queries it plus the obsolete alias", () => {
     const expectedMigrationNames = Object.keys(
       checkedInCodexRotatingMigrationChecksums,
     );
@@ -114,12 +115,19 @@ describe("Codex rotating immutable migration history policy", () => {
       ?.map((name) => name.slice(1, -1));
 
     expect(sourceMigrationNames).toEqual(expectedMigrationNames);
-    expect(queriedMigrationNames).toEqual(expectedMigrationNames);
+    expect(queriedMigrationNames).toEqual([
+      ...expectedMigrationNames.slice(0, -1),
+      obsoleteReleaseRolloutLedgerMigrationAlias,
+      forwardUnpublishedCodexRotatingMigration.name,
+    ]);
     expect(sourceMigrationNames).toContain(
       forwardUnpublishedCodexRotatingMigration.name,
     );
     expect(queriedMigrationNames).toContain(
       forwardUnpublishedCodexRotatingMigration.name,
+    );
+    expect(queriedMigrationNames).toContain(
+      obsoleteReleaseRolloutLedgerMigrationAlias,
     );
   });
 
@@ -175,7 +183,7 @@ describe("Codex rotating immutable migration history policy", () => {
     }
 
     const forwardDigest =
-      /000067 no-op marker policy[\s\S]+?exact checked-in SHA-256 is\s+`([a-f0-9]{64})`/u.exec(
+      /000069 no-op marker policy[\s\S]+?exact checked-in SHA-256 is\s+`([a-f0-9]{64})`/u.exec(
         runbook,
       )?.[1];
     expect(forwardDigest).toBe(
@@ -232,7 +240,24 @@ describe("Codex rotating immutable migration history policy", () => {
     ).toThrow("codex_rotating_000061_preexisting_history_forbidden");
   });
 
-  it("rejects any prepublication history for forward migration 000067", () => {
+  it("rejects the obsolete 000067 rollout-ledger alias regardless of row state", () => {
+    expect(() =>
+      assertCodexRotatingMigrationHistoryIsPristine([
+        {
+          migration_name: obsoleteReleaseRolloutLedgerMigrationAlias,
+          checksum: "obsolete-alias-checksum",
+          finished_at: null,
+          rolled_back_at: null,
+          applied_steps_count: 0,
+        },
+      ]),
+    ).toThrow(
+      "codex_rotating_obsolete_000067_release_rollout_ledger_alias_forbidden:" +
+        "recreate_the_database_from_history_using_000069_release_rollout_ledger",
+    );
+  });
+
+  it("rejects any prepublication history for forward migration 000069", () => {
     expect(() =>
       assertCodexRotatingMigrationHistoryIsPristine([
         {
@@ -250,7 +275,7 @@ describe("Codex rotating immutable migration history policy", () => {
   });
 
   it.each(["rewritten", "unfinished", "rolled_back", "duplicate"] as const)(
-    "rejects %s prepublication 000067 history rather than blessing it",
+    "rejects %s prepublication 000069 history rather than blessing it",
     (kind) => {
       const original: CodexRotatingMigrationHistoryRow = {
         migration_name: forwardUnpublishedCodexRotatingMigration.name,
