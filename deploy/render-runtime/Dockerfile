@@ -6,6 +6,7 @@ WORKDIR /app
 
 ENV CI=1 \
     NEXT_TELEMETRY_DISABLED=1 \
+    REVIEW_ROUTER_WEB_URL=https://reviewrouter.site \
     PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH
 

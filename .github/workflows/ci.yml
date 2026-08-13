@@ -161,6 +161,31 @@ jobs:
       - name: Run disposable self-hosted E2E
         run: pnpm self-hosted:e2e
 
+  hosted-runtime-image:
+    name: Hosted runtime OCI build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+
+      - name: Build hosted runtime image without publishing
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+        with:
+          context: .
+          file: deploy/render-runtime/Dockerfile
+          platforms: linux/amd64
+          push: false
+          provenance: false
+          secrets: |
+            subscription_runtime_deploy_key_b64=${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
+
   quality:
     name: Quality Gates
     runs-on: ubuntu-latest
