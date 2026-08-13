@@ -376,7 +376,6 @@ export class RenderPrivateRunnerAdapter {
             timedOut: false,
           });
           const reconciliation = reconciliationResult.reconciliation;
-          effect = reconciliationResult.record;
           throw new Error(
             reconciliation.result === "blocked" &&
               reconciliation.reason === "duplicate"
