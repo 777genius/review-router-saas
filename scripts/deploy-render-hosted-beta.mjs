@@ -609,11 +609,8 @@ export class RenderClient {
   }
 }
 
-export function serviceDetails({ type, startCommand, healthCheckPath }) {
+export function serviceDetails({ type, healthCheckPath }) {
   const details = {
-    envSpecificDetails: {
-      dockerCommand: startCommand,
-    },
     maxShutdownDelaySeconds: type === "background_worker" ? 120 : 60,
     plan: "starter",
     // Database rollout runs in the trusted GitHub migration workflow.
@@ -698,6 +695,7 @@ export function buildServiceEnv({
     REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES:
       env.REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES ?? "0",
     REVIEW_ROUTER_PUBLIC_API_URL: apiUrl,
+    REVIEW_ROUTER_RUNTIME_ROLE: role,
     REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY:
       stableSecrets.REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY,
     REVIEW_ROUTER_WEB_URL: webUrl,
@@ -909,7 +907,6 @@ export async function convergeImmutableRuntimeImage(
     autoDeployTrigger: "off",
     image: { imagePath: imageUrl },
     serviceDetails: {
-      envSpecificDetails: { dockerCommand: spec.startCommand },
       preDeployCommand: "",
     },
   });

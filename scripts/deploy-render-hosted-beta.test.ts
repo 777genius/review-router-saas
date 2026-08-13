@@ -627,7 +627,6 @@ describe("Render hosted deploy hardening", () => {
       ownerId: "owner-1",
       projectId: "project-1",
       serviceDetails: expect.objectContaining({
-        envSpecificDetails: { dockerCommand: "pnpm api:start" },
         runtime: "image",
       }),
       type: "web_service",
@@ -1537,7 +1536,6 @@ describe("Render hosted deploy hardening", () => {
       autoDeployTrigger: "off",
       image: { imagePath: imageUrl },
       serviceDetails: {
-        envSpecificDetails: { dockerCommand: "pnpm api:start" },
         preDeployCommand: "",
       },
     });

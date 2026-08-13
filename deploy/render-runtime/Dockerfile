@@ -58,9 +58,11 @@ RUN corepack enable \
   && corepack prepare pnpm@10.33.0 --activate
 
 COPY --from=build --chown=node:node /app /app
+COPY --chown=root:root deploy/render-runtime/entrypoint.sh /usr/local/bin/reviewrouter-runtime
+RUN chmod 0555 /usr/local/bin/reviewrouter-runtime
 
 USER node
 
 EXPOSE 10000
 
-CMD ["pnpm", "api:start"]
+ENTRYPOINT ["/usr/local/bin/reviewrouter-runtime"]

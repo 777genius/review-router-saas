@@ -62,7 +62,6 @@ services:
       # Release tooling replaces this example with an exact @sha256 digest.
       # Mutable tags are forbidden for production runtime deployment.
       url: ghcr.io/777genius/review-router-saas-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
-    dockerCommand: pnpm web:start
     healthCheckPath: /
     # Runtime deploys are explicit and follow the exclusive migration evidence gate.
     autoDeployTrigger: off
@@ -73,6 +72,8 @@ services:
         value: 24
       - key: PORT
         value: 10000
+      - key: REVIEW_ROUTER_RUNTIME_ROLE
+        value: web
       - key: DATABASE_URL
         # Provision reviewrouter_web as a non-owner runtime role, then enter
         # its private URL during Blueprint sync. Never use the database owner.
@@ -88,7 +89,6 @@ services:
     region: frankfurt
     image:
       url: ghcr.io/777genius/review-router-saas-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
-    dockerCommand: pnpm api:start
     healthCheckPath: /health
     # Runtime deploys are explicit and follow the exclusive migration evidence gate.
     autoDeployTrigger: off
@@ -99,6 +99,8 @@ services:
         value: 24
       - key: PORT
         value: 10000
+      - key: REVIEW_ROUTER_RUNTIME_ROLE
+        value: api
       - key: DATABASE_URL
         # Provision reviewrouter_api as a non-owner runtime role.
         sync: false
@@ -133,12 +135,13 @@ services:
     region: frankfurt
     image:
       url: ghcr.io/777genius/review-router-saas-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
-    dockerCommand: pnpm worker:start
     # Runtime deploys are explicit and follow the exclusive migration evidence gate.
     autoDeployTrigger: off
     maxShutdownDelaySeconds: 120
     envVars:
       - fromGroup: reviewrouter-hosted-beta
+      - key: REVIEW_ROUTER_RUNTIME_ROLE
+        value: worker
       - key: NODE_VERSION
         value: 24
       - key: DATABASE_URL
