@@ -19,6 +19,7 @@ const pinnedTarget = Object.freeze({
   expectedExcludedFiles: 0,
   sourceWorkflowPath: ".github/workflows/reviewrouter-codex.yml",
 });
+const expectedActionReleaseTag = "v1.0.107";
 const terminalPhases = new Set([
   "Complete",
   "Complete with gaps",
@@ -68,6 +69,7 @@ export async function triggerHostedProgressCanary(config, github, nowIso) {
     source.head_sha,
   );
   const authority = deriveWorkflowAuthority(workflow);
+  const release = await resolveActionReleaseAuthority(github, authority);
   const effectiveConfig = { ...config, ...authority };
   assertSourceRun(source, effectiveConfig, pullHeadSha);
   const baseline = ownedMarkerComments(
@@ -87,6 +89,7 @@ export async function triggerHostedProgressCanary(config, github, nowIso) {
     sourceRunId: source.id,
     sourceRunAttempt: source.run_attempt,
     producerSha: authority.producerSha,
+    release,
     sourceWorkflowBlobSha: authority.sourceWorkflowBlobSha,
     baselineCommentId: baseline[0]?.id ?? null,
     baselineCommentUpdatedAt: baseline[0]?.updated_at ?? null,
@@ -114,6 +117,9 @@ export async function verifyHostedProgressCanary(
   )
     throw new Error("hosted_progress_canary_source_workflow_blob_mismatch");
   const effectiveConfig = { ...config, ...authority };
+  const release = await resolveActionReleaseAuthority(github, authority);
+  if (JSON.stringify(release) !== JSON.stringify(receipt.release))
+    throw new Error("hosted_progress_canary_release_authority_changed");
   const deadline = now() + config.timeoutMs;
   const observations = [];
   let attempt;
@@ -358,6 +364,17 @@ export function createInstallationGitHub({
       appJwt: createJwt(appId, privateKey),
     });
   }
+  async function publicRequest(path) {
+    const response = await fetchImpl(`https://api.github.com${path}`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+    if (!response.ok)
+      throw new Error(`hosted_progress_canary_github_${response.status}`);
+    return response.json();
+  }
   return {
     authenticate,
     getInstallation: (id) => appRequest(`/app/installations/${id}`),
@@ -385,6 +402,10 @@ export function createInstallationGitHub({
     },
     getFile: (repo, path, ref) =>
       request(`/repos/${repo}/contents/${path}?ref=${ref}`),
+    getReleaseByTag: (repo, tag) =>
+      publicRequest(`/repos/${repo}/releases/tags/${tag}`),
+    getGitRef: (repo, ref) => publicRequest(`/repos/${repo}/git/ref/${ref}`),
+    getGitTag: (repo, sha) => publicRequest(`/repos/${repo}/git/tags/${sha}`),
     rerunWorkflow: (repo, id) =>
       request(`/repos/${repo}/actions/runs/${id}/rerun`, { method: "POST" }),
     listComments: (repo, number) =>
@@ -452,6 +473,7 @@ function assertReceipt(receipt, config) {
     receipt.pullRequest !== config.pullRequest ||
     receipt.sourceRunId !== config.sourceRunId ||
     !/^[0-9a-f]{40}$/u.test(receipt.producerSha ?? "") ||
+    !validReleaseReceipt(receipt.release, receipt.producerSha) ||
     !/^[0-9a-f]{40}$/u.test(receipt.sourceWorkflowBlobSha ?? "") ||
     !(
       receipt.baselineCommentId === null ||
@@ -522,6 +544,50 @@ export function deriveWorkflowAuthority(workflow) {
     producerWorkflowPath: `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${producerSha}`,
     sourceWorkflowBlobSha,
   };
+}
+async function resolveActionReleaseAuthority(github, authority) {
+  const repository = "777genius/review-router";
+  const release = await github.getReleaseByTag(
+    repository,
+    expectedActionReleaseTag,
+  );
+  if (
+    release.tag_name !== expectedActionReleaseTag ||
+    release.draft !== false ||
+    release.prerelease !== false ||
+    release.immutable !== true ||
+    !Number.isSafeInteger(release.id) ||
+    !Number.isFinite(Date.parse(release.published_at ?? ""))
+  )
+    throw new Error("hosted_progress_canary_release_not_immutable");
+  let object = (
+    await github.getGitRef(repository, `tags/${expectedActionReleaseTag}`)
+  ).object;
+  const seen = new Set();
+  for (let depth = 0; depth < 8 && object?.type === "tag"; depth += 1) {
+    if (!/^[0-9a-f]{40}$/u.test(object.sha) || seen.has(object.sha))
+      throw new Error("hosted_progress_canary_release_tag_invalid");
+    seen.add(object.sha);
+    object = (await github.getGitTag(repository, object.sha)).object;
+  }
+  if (object?.type !== "commit" || object.sha !== authority.producerSha)
+    throw new Error("hosted_progress_canary_release_commit_mismatch");
+  return {
+    tag: expectedActionReleaseTag,
+    releaseId: release.id,
+    publishedAt: new Date(release.published_at).toISOString(),
+    immutable: true,
+    commit: object.sha,
+  };
+}
+function validReleaseReceipt(release, producerSha) {
+  return (
+    release?.tag === expectedActionReleaseTag &&
+    Number.isSafeInteger(release.releaseId) &&
+    Number.isFinite(Date.parse(release.publishedAt ?? "")) &&
+    release.immutable === true &&
+    release.commit === producerSha
+  );
 }
 function hasExactReferencedProducer(workflows, config) {
   if (!Array.isArray(workflows)) return false;

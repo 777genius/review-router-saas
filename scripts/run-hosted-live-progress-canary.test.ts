@@ -122,6 +122,43 @@ describe("hosted live-progress canary", () => {
     ).rejects.toThrow("hosted_progress_canary_producer_pin_invalid");
   });
 
+  it("fails closed until the exact v1.0.107 release is immutable", async () => {
+    const github = fakeGitHub();
+    github.getReleaseByTag.mockResolvedValue({
+      id: 107,
+      tag_name: "v1.0.107",
+      draft: false,
+      prerelease: false,
+      immutable: false,
+      published_at: "2026-08-13T10:00:00Z",
+    });
+    await expect(
+      triggerHostedProgressCanary(
+        configFixture(),
+        github,
+        () => "2026-08-13T10:00:00Z",
+      ),
+    ).rejects.toThrow("hosted_progress_canary_release_not_immutable");
+    expect(github.rerunWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("peels an annotated release tag to the exact producer commit", async () => {
+    const github = fakeGitHub();
+    github.getGitRef.mockResolvedValue({
+      object: { type: "tag", sha: "d".repeat(40) },
+    });
+    github.getGitTag.mockResolvedValue({
+      object: { type: "commit", sha: producer },
+    });
+    await expect(
+      triggerHostedProgressCanary(
+        configFixture(),
+        github,
+        () => "2026-08-13T10:00:00Z",
+      ),
+    ).resolves.toMatchObject({ release: releaseAuthority() });
+  });
+
   it("rejects fixture paths that no longer match the pinned large profile", async () => {
     const github = fakeGitHub();
     github.getPullFiles.mockResolvedValue(
@@ -340,6 +377,7 @@ function effectiveConfig() {
     producerSha: producer,
     producerWorkflowPath: `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${producer}`,
     sourceWorkflowBlobSha: workflowBlob,
+    release: releaseAuthority(),
   };
 }
 function receipt() {
@@ -353,6 +391,7 @@ function receipt() {
     sourceRunAttempt: 1,
     producerSha: producer,
     sourceWorkflowBlobSha: workflowBlob,
+    release: releaseAuthority(),
     baselineCommentId: null,
     baselineCommentUpdatedAt: null,
     triggeredAt: "2026-08-13T10:00:00Z",
@@ -380,6 +419,20 @@ function fakeGitHub() {
     getWorkflowRun: vi.fn(async () => sourceRun()),
     getWorkflowRunAttempt: vi.fn(async () => null),
     getFile: vi.fn(async () => workflowFile()),
+    getReleaseByTag: vi.fn(async () => ({
+      id: 107,
+      tag_name: "v1.0.107",
+      draft: false,
+      prerelease: false,
+      immutable: true,
+      published_at: "2026-08-13T10:00:00Z",
+    })),
+    getGitRef: vi.fn(async () => ({
+      object: { type: "commit", sha: producer },
+    })),
+    getGitTag: vi.fn(async () => {
+      throw new Error("unexpected annotated tag peel");
+    }),
     rerunWorkflow: vi.fn(async () => undefined),
     listComments: vi.fn(async () => []),
   };
@@ -474,6 +527,15 @@ function workflowFile(
     type: "file",
     encoding: "base64",
     content: Buffer.from(source).toString("base64"),
+  };
+}
+function releaseAuthority() {
+  return {
+    tag: "v1.0.107",
+    releaseId: 107,
+    publishedAt: "2026-08-13T10:00:00.000Z",
+    immutable: true,
+    commit: producer,
   };
 }
 
