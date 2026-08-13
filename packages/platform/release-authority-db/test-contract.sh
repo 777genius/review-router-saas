@@ -91,7 +91,7 @@ docker cp "/tmp/release-authority-install-$$.sql" "$name:/tmp/release-authority-
 # Exercise the canonical ACL serializer directly on PostgreSQL 17. Multiple
 # rows must sort independently of input order, PUBLIC must remain explicit,
 # default ACLs must be expanded, and null/zero-dimensional ACLs must be empty.
-node -e 'import("./scripts/install-release-authority-db.mjs").then(m => process.stdout.write(m.releaseAuthorityCatalogFingerprintSql + String.raw`
+node -e 'import("./scripts/install-release-authority-db.mjs").then(m => process.stdout.write(m.releaseAuthorityAclFingerprintSql + String.raw`
 WITH forward(value) AS (SELECT pg_temp.release_authority_acl_fingerprint(ARRAY[
   '\''postgres=arwdDxt/postgres'\''::aclitem,
   '\''=r/postgres'\''::aclitem,

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  releaseAuthorityAclFingerprintSql,
   releaseAuthorityCatalogFingerprintSql,
   releaseAuthorityMigrationBundle,
   releaseAuthorityMigrationManifest,
@@ -191,26 +192,29 @@ describe("release authority database installation", () => {
     ).toBe("cd50e36c2b357fe03a81204b99f38c5c1e6b9ff94660dfecb9a2fccb782a512e");
   });
   it("serializes ACL rows canonically without passing empty arrays to aclexplode", () => {
-    const aclHelper = releaseAuthorityCatalogFingerprintSql.slice(
-      releaseAuthorityCatalogFingerprintSql.indexOf(
-        "CREATE FUNCTION pg_temp.release_authority_acl_fingerprint",
-      ),
-      releaseAuthorityCatalogFingerprintSql.indexOf(
-        "CREATE FUNCTION pg_temp.release_authority_catalog_fingerprint",
-      ),
+    expect(releaseAuthorityAclFingerprintSql).toContain(
+      "jsonb_agg(jsonb_build_object(",
     );
-    expect(aclHelper).toContain("jsonb_agg(jsonb_build_object(");
-    expect(aclHelper).toContain("'grantor'");
-    expect(aclHelper).toContain("'grantee'");
-    expect(aclHelper).toContain("'privilege_type'");
-    expect(aclHelper).toContain("'is_grantable'");
-    expect(aclHelper).toContain("WHEN acl.grantee=0 THEN 'PUBLIC'");
-    expect(aclHelper).toContain(
+    expect(releaseAuthorityAclFingerprintSql).toContain("'grantor'");
+    expect(releaseAuthorityAclFingerprintSql).toContain("'grantee'");
+    expect(releaseAuthorityAclFingerprintSql).toContain("'privilege_type'");
+    expect(releaseAuthorityAclFingerprintSql).toContain("'is_grantable'");
+    expect(releaseAuthorityAclFingerprintSql).toContain(
+      "WHEN acl.grantee=0 THEN 'PUBLIC'",
+    );
+    expect(releaseAuthorityAclFingerprintSql).toContain(
       "acl.privilege_type,acl.is_grantable),'[]'::jsonb",
     );
-    expect(aclHelper).toContain("pg_catalog.cardinality(p_acl)>0");
-    expect(aclHelper).toContain("ELSE NULL::aclitem[]");
-    expect(aclHelper).not.toContain("jsonb_build_array");
+    expect(releaseAuthorityAclFingerprintSql).toContain(
+      "pg_catalog.cardinality(p_acl)>0",
+    );
+    expect(releaseAuthorityAclFingerprintSql).toContain("ELSE NULL::aclitem[]");
+    expect(releaseAuthorityAclFingerprintSql).not.toContain(
+      "jsonb_build_array",
+    );
+    expect(releaseAuthorityCatalogFingerprintSql).toContain(
+      `\n${releaseAuthorityAclFingerprintSql}\n\nCREATE FUNCTION pg_temp.release_authority_catalog_fingerprint`,
+    );
     expect(releaseAuthorityCatalogFingerprintSql).not.toContain(
       "'{}'::aclitem[]",
     );
