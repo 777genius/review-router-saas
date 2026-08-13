@@ -229,10 +229,22 @@ function parseSnapshot(value: unknown): ProgressSnapshot {
     typeof value.updatedAt !== "string" ||
     !isRecord(counts) ||
     !validCounts(counts) ||
-    !validCoverage(fileCoverage)
+    !validCoverage(fileCoverage) ||
+    !validOptionalSourceIdentity(value.sourceIdentity)
   )
     throw new Error("review_progress_snapshot_invalid");
   return value as unknown as ProgressSnapshot;
+}
+
+function validOptionalSourceIdentity(value: unknown): boolean {
+  if (value === undefined) return true;
+  return (
+    isRecord(value) &&
+    typeof value.sourceRunId === "string" &&
+    /^[1-9][0-9]{0,19}$/u.test(value.sourceRunId) &&
+    typeof value.sourceRunAttempt === "string" &&
+    /^[1-9][0-9]{0,9}$/u.test(value.sourceRunAttempt)
+  );
 }
 
 function validCounts(value: Record<string, unknown>): boolean {

@@ -38,6 +38,10 @@ export async function captureReviewProgress(
   const terminalOutcome = terminalFor(execution);
   const computed = computeProgressSnapshot({
     generation: Number(execution.generation),
+    sourceIdentity: {
+      sourceRunId: execution.sourceRunId,
+      sourceRunAttempt: execution.sourceRunAttempt,
+    },
     slots: execution.workSlots.map(
       (slot): ReviewSlotProgressInput => ({
         slotId: slot.workSlotId,
@@ -295,11 +299,23 @@ function parseProgressSnapshot(value: Prisma.JsonValue): ProgressSnapshot {
     !Number.isFinite(Date.parse(value.updatedAt)) ||
     !isProgressCounts(value.counts) ||
     !isFileCoverage(value.fileCoverage) ||
+    !isOptionalSourceIdentity(value.sourceIdentity) ||
     (value.phase === "terminal") !== (value.terminal !== "none")
   ) {
     throw new Error("review_progress_snapshot_invalid");
   }
   return value as unknown as ProgressSnapshot;
+}
+
+function isOptionalSourceIdentity(value: unknown): boolean {
+  if (value === undefined) return true;
+  return (
+    isRecord(value) &&
+    typeof value.sourceRunId === "string" &&
+    /^[1-9][0-9]{0,19}$/u.test(value.sourceRunId) &&
+    typeof value.sourceRunAttempt === "string" &&
+    /^[1-9][0-9]{0,9}$/u.test(value.sourceRunAttempt)
+  );
 }
 
 function scope(execution: ReviewExecution) {

@@ -21,6 +21,9 @@ describe("ReviewProgressPublisher", () => {
           expect(parameters.body).toContain(
             "<!-- review-router-live-progress -->",
           );
+          expect(parameters.body).toContain(
+            "<!-- review-router-live-progress-source run-id=700001 run-attempt=2 -->",
+          );
           return {
             data: {
               id: 77,
@@ -94,6 +97,47 @@ describe("ReviewProgressPublisher", () => {
         safeCode: "review_progress_snapshot_invalid",
       }),
     );
+  });
+
+  it("publishes a legacy v1 snapshot without a source marker", async () => {
+    const legacySnapshot = { ...progressSnapshot() };
+    delete legacySnapshot.sourceIdentity;
+    const publication = claimed(legacySnapshot);
+    const store = fakeStore(publication);
+    const bodies: string[] = [];
+    const publisher = createPublisher(store, async () => ({
+      botLogin: "review-router[bot]",
+      request: async (route, parameters = {}) => {
+        if (route.includes("/pulls/")) return pull();
+        if (route.startsWith("GET")) return { data: [] };
+        bodies.push(String(parameters.body));
+        return {
+          data: {
+            id: 77,
+            body: parameters.body,
+            user: { login: "review-router[bot]" },
+          },
+        };
+      },
+    }));
+    await expect(publisher.runMaintenance()).resolves.toMatchObject({
+      published: 1,
+      suppressed: 0,
+    });
+    expect(bodies[0]).not.toContain("review-router-live-progress-source");
+  });
+
+  it("suppresses a malformed source identity", async () => {
+    const publication = claimed({
+      ...progressSnapshot(),
+      sourceIdentity: { sourceRunId: "700001 -->", sourceRunAttempt: "2" },
+    });
+    const store = fakeStore(publication);
+    const factory = vi.fn();
+    await expect(
+      createPublisher(store, factory).runMaintenance(),
+    ).resolves.toMatchObject({ suppressed: 1, published: 0 });
+    expect(factory).not.toHaveBeenCalled();
   });
 
   it("coalesces 72 durable events into one latest-version GitHub mutation", async () => {
@@ -242,6 +286,7 @@ function progressSnapshot(): ProgressSnapshot {
       optionalCompleted: 0,
     },
     fileCoverage: { valid: false },
+    sourceIdentity: { sourceRunId: "700001", sourceRunAttempt: "2" },
   };
 }
 

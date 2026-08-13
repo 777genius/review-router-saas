@@ -78,6 +78,11 @@ export type ProgressTerminal =
   | "cancelled"
   | "superseded";
 
+export type ProgressSourceIdentity = {
+  readonly sourceRunId: string;
+  readonly sourceRunAttempt: string;
+};
+
 export type ProgressSnapshot = {
   readonly schemaVersion: 1;
   readonly generation: number;
@@ -86,6 +91,8 @@ export type ProgressSnapshot = {
   readonly updatedAt: string;
   readonly counts: ProgressCounts;
   readonly fileCoverage: FileCoverage;
+  /** Non-secret GitHub Actions identity used to causally bind hosted progress. */
+  readonly sourceIdentity?: ProgressSourceIdentity | undefined;
 };
 
 export type ComputeProgressSnapshotInput = {
@@ -95,6 +102,7 @@ export type ComputeProgressSnapshotInput = {
   readonly updatedAt: Date | string;
   readonly slots: readonly ReviewSlotProgressInput[];
   readonly assignmentManifest?: ReviewAssignmentManifest | undefined;
+  readonly sourceIdentity?: ProgressSourceIdentity | undefined;
   /** Allows a terminal execution to complete after required retries exhaust. */
   readonly allowPartial?: boolean | undefined;
 };
@@ -103,6 +111,9 @@ export function computeProgressSnapshot(
   input: ComputeProgressSnapshotInput,
 ): ProgressSnapshot {
   assertNonNegativeInteger(input.generation, "progress_generation_invalid");
+  if (input.sourceIdentity !== undefined) {
+    assertProgressSourceIdentity(input.sourceIdentity);
+  }
   assertLifecycle(input.phase, input.terminal);
   const updatedAt = normalizeInstant(input.updatedAt);
   const slots = new Map<string, ReviewSlotProgressInput>();
@@ -145,7 +156,21 @@ export function computeProgressSnapshot(
     updatedAt,
     counts,
     fileCoverage: computeFileCoverage(input.assignmentManifest, slots),
+    ...(input.sourceIdentity === undefined
+      ? {}
+      : { sourceIdentity: { ...input.sourceIdentity } }),
   };
+}
+
+export function assertProgressSourceIdentity(
+  identity: ProgressSourceIdentity,
+): void {
+  if (!isCanonicalPositiveDecimal(identity.sourceRunId, 20)) {
+    throw new Error("progress_source_run_id_invalid");
+  }
+  if (!isCanonicalPositiveDecimal(identity.sourceRunAttempt, 10)) {
+    throw new Error("progress_source_run_attempt_invalid");
+  }
 }
 
 export function assertProgressTransition(
@@ -159,6 +184,15 @@ export function assertProgressTransition(
     throw new Error("progress_generation_regressed");
   }
   if (next.generation > previous.generation) return;
+  if (
+    previous.sourceIdentity !== undefined &&
+    (next.sourceIdentity === undefined ||
+      next.sourceIdentity.sourceRunId !== previous.sourceIdentity.sourceRunId ||
+      next.sourceIdentity.sourceRunAttempt !==
+        previous.sourceIdentity.sourceRunAttempt)
+  ) {
+    throw new Error("progress_source_identity_changed");
+  }
   if (Date.parse(next.updatedAt) < Date.parse(previous.updatedAt)) {
     throw new Error("progress_update_time_regressed");
   }
@@ -205,6 +239,10 @@ export function assertProgressTransition(
       throw new Error("progress_file_coverage_regressed");
     }
   }
+}
+
+function isCanonicalPositiveDecimal(value: string, maxDigits: number): boolean {
+  return new RegExp(`^[1-9][0-9]{0,${maxDigits - 1}}$`, "u").test(value);
 }
 
 function assertLifecycle(
