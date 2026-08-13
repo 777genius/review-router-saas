@@ -213,7 +213,7 @@ describe("release authority database installation", () => {
       "jsonb_build_array",
     );
     expect(releaseAuthorityCatalogFingerprintSql).toContain(
-      `\n${releaseAuthorityAclFingerprintSql}\n\nCREATE FUNCTION pg_temp.release_authority_catalog_fingerprint`,
+      `\n${releaseAuthorityAclFingerprintSql}\n\nCREATE OR REPLACE FUNCTION pg_temp.release_authority_catalog_fingerprint`,
     );
     expect(releaseAuthorityCatalogFingerprintSql).not.toContain(
       "'{}'::aclitem[]",
@@ -253,7 +253,7 @@ describe("release authority database installation", () => {
         verifier text NOT NULL CHECK (verifier = 'complete_catalog_v1')
       ) ON COMMIT DROP;
 
-      CREATE FUNCTION pg_temp.release_authority_acl_fingerprint(p_acl aclitem[])
+      CREATE OR REPLACE FUNCTION pg_temp.release_authority_acl_fingerprint(p_acl aclitem[])
       RETURNS jsonb LANGUAGE sql STABLE SET search_path = pg_catalog AS $acl$
         SELECT coalesce(jsonb_agg(jsonb_build_object(
           'grantor',CASE WHEN acl.grantor=0 THEN 'PUBLIC'
@@ -274,7 +274,7 @@ describe("release authority database installation", () => {
         END) acl
       $acl$;
 
-      CREATE FUNCTION pg_temp.release_authority_catalog_fingerprint(p_schema text)
+      CREATE OR REPLACE FUNCTION pg_temp.release_authority_catalog_fingerprint(p_schema text)
       RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
         WITH target AS (
           SELECT oid, nspowner, nspacl FROM pg_catalog.pg_namespace WHERE nspname=p_schema
@@ -465,8 +465,8 @@ describe("release authority database installation", () => {
     expect(eleventh).toBeGreaterThan(tenth);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
-    expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(3);
-    expect(bundle.match(/ADD COLUMN effect_state/gu)).toHaveLength(3);
+    expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(4);
+    expect(bundle.match(/ADD COLUMN effect_state/gu)).toHaveLength(4);
     expect(
       bundle.match(/CREATE TABLE release_authority\.service_transition \(/gu),
     ).toHaveLength(2);
