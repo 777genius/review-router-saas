@@ -19,7 +19,7 @@ const pinnedTarget = Object.freeze({
   expectedExcludedFiles: 0,
   sourceWorkflowPath: ".github/workflows/reviewrouter-codex.yml",
 });
-const expectedActionReleaseTag = "v1.0.107";
+const expectedActionReleaseTag = "v1.0.108";
 const terminalPhases = new Set([
   "Complete",
   "Complete with gaps",
