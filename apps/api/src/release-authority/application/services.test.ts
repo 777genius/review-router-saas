@@ -5,7 +5,11 @@ import type {
 } from "@reviewrouter/features-release-rollout";
 import {
   ReleaseAuthorityService,
+  ReleaseRolloutReconciliationService,
+  RunnerOperationsService,
   type ReleaseAuthorityLedgerPort,
+  type ReleaseRolloutReconciliationPort,
+  type RunnerOperationsLedgerPort,
   type TargetActivationFacts,
   type TargetActivationReceiptReaderPort,
 } from "../../release-rollout-ledger.js";
@@ -51,6 +55,10 @@ const targetReceipt: ActivationReceipt = {
 };
 
 const targetFacts: TargetActivationFacts = {
+  rolloutId: targetReceipt.rolloutId,
+  expectedCommitSha: targetReceipt.expectedCommitSha,
+  sourceSystemIdentifier: targetReceipt.sourceSystemIdentifier,
+  targetSystemIdentifier: targetReceipt.targetSystemIdentifier,
   canonicalPrivilegesSha256: targetReceipt.canonicalPrivilegesSha256,
   catalogFactsSha256: targetReceipt.catalogFactsSha256,
   transactionId: targetReceipt.transactionId,
@@ -61,6 +69,8 @@ const targetFacts: TargetActivationFacts = {
   permitEpoch: targetReceipt.permitEpoch,
   permitNonce: targetReceipt.permitNonce,
   targetDeployIds: targetReceipt.targetDeployIds,
+  activatedAt: targetReceipt.observedAt,
+  activationObservationSha256: targetReceipt.observationSha256,
 };
 
 const finalizeInput = {
@@ -128,5 +138,130 @@ describe("independent target activation receipt verification", () => {
       }),
     ).rejects.toThrow("target_activation_receipt_mismatch");
     expect(fixture.finalizeActivation).not.toHaveBeenCalled();
+  });
+});
+
+describe("target-aware uncertain activation reconciliation", () => {
+  const context = {
+    rolloutId: authorization.rolloutId,
+    runId: targetReceipt.runId,
+    runAttempt: targetReceipt.runAttempt,
+    state: "outcome_unknown" as const,
+    activationBoundary: "uncertain" as const,
+    receiptOrdinal: 13,
+    authorization,
+  };
+
+  const reconcileWith = async (
+    proof: Awaited<ReturnType<TargetActivationReceiptReaderPort["read"]>>,
+  ) => {
+    const reconcile = vi.fn().mockResolvedValue({ state: "result" });
+    const repository = {
+      context: vi.fn().mockResolvedValue(context),
+      reconcile,
+    } as unknown as ReleaseRolloutReconciliationPort;
+    const reader = {
+      read: vi.fn().mockResolvedValue(proof),
+    } satisfies TargetActivationReceiptReaderPort;
+    await new ReleaseRolloutReconciliationService(repository, reader).reconcile(
+      authorization.rolloutId,
+    );
+    return reconcile.mock.calls[0]?.[0];
+  };
+
+  it("reconstructs the exact immutable receipt chain from matching target facts", async () => {
+    const input = await reconcileWith(targetFacts);
+    expect(input.targetObservation.kind).toBe("matching_activation_receipt");
+    expect(input.targetObservation.authorization).toEqual(authorization);
+    expect(input.targetObservation.activationReceipt).toMatchObject({
+      rolloutId: authorization.rolloutId,
+      runId: targetReceipt.runId,
+      runAttempt: targetReceipt.runAttempt,
+      receiptId: `${authorization.rolloutId}:activate_target_generation:14`,
+      previousReceiptSha256: authorization.previousReceiptSha256,
+      permitEpoch: authorization.epoch,
+      permitNonce: authorization.nonce,
+    });
+    expect(input.targetObservation.nextReceiptSha256).toBe(
+      input.targetObservation.activationReceipt.receiptSha256,
+    );
+  });
+
+  it.each([
+    [null, "target_receipt_absent"],
+    [
+      { receiptAbsent: true, permitAbsent: true },
+      "activation_absent_without_revocation",
+    ],
+    [
+      { ...targetFacts, permitNonce: "f".repeat(32) },
+      "target_receipt_conflict",
+    ],
+  ] as const)(
+    "keeps source fenced for target evidence %j",
+    async (proof, kind) => {
+      const input = await reconcileWith(proof);
+      expect(input.targetObservation).toEqual({ kind });
+    },
+  );
+
+  it("keeps source fenced when the independent target read fails", async () => {
+    const reconcile = vi.fn().mockResolvedValue({ state: "result" });
+    const repository = {
+      context: vi.fn().mockResolvedValue(context),
+      reconcile,
+    } as unknown as ReleaseRolloutReconciliationPort;
+    const reader = {
+      read: vi.fn().mockRejectedValue(new Error("target unavailable")),
+    } satisfies TargetActivationReceiptReaderPort;
+    await new ReleaseRolloutReconciliationService(repository, reader).reconcile(
+      authorization.rolloutId,
+    );
+    expect(reconcile).toHaveBeenCalledWith({
+      rolloutId: authorization.rolloutId,
+      targetObservation: { kind: "target_read_unavailable" },
+    });
+  });
+});
+
+describe("witness-gated runner terminal ordering", () => {
+  const observation = {
+    step: "cleanup_role_runner",
+    observedAt: "2026-08-12T00:02:00.000Z",
+  } as never;
+
+  it("does not invoke terminal CAS when independent witness is unproven", async () => {
+    const markTerminal = vi.fn();
+    const repository = {
+      cleanupWitness: vi
+        .fn()
+        .mockRejectedValue(
+          new Error("release runner independent cleanup witness unproven"),
+        ),
+      markTerminal,
+    } as unknown as RunnerOperationsLedgerPort;
+    const service = new RunnerOperationsService(repository);
+
+    await expect(service.markTerminal("job-1", observation)).rejects.toThrow(
+      "independent cleanup witness unproven",
+    );
+    expect(markTerminal).not.toHaveBeenCalled();
+  });
+
+  it("checks the exact job witness before invoking terminal CAS", async () => {
+    const calls: string[] = [];
+    const repository = {
+      cleanupWitness: vi.fn(async (jobId: string) => {
+        calls.push(`witness:${jobId}`);
+        return { canary: "canary" };
+      }),
+      markTerminal: vi.fn(async (jobId: string) => {
+        calls.push(`terminal:${jobId}`);
+      }),
+    } as unknown as RunnerOperationsLedgerPort;
+    const service = new RunnerOperationsService(repository);
+
+    await service.markTerminal("job-1", observation);
+    expect(calls).toEqual(["witness:job-1", "terminal:job-1"]);
   });
 });

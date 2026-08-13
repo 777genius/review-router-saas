@@ -107,7 +107,9 @@ CREATE TABLE release_authority.runner_job (
   "runner_identity" jsonb,
   "provision_observation" jsonb,
   UNIQUE ("rollout_id","lifecycle"),
-  CHECK ("terminal_at" IS NULL OR "terminal_at" >= "observed_at")
+  CHECK ("terminal_at" IS NULL OR "terminal_at" >= "observed_at"),
+  CHECK ("terminal_at" IS NULL OR
+    ("cleanup_observation" IS NOT NULL AND "cleanup_provider_witness" IS NOT NULL))
 );
 
 CREATE TABLE release_authority.provider_authority_decision (
@@ -722,7 +724,7 @@ BEGIN
         AND step = 'activate_target_generation' AND receipt_sha256 = p_next_receipt_sha256
         AND provider_binding IS NOT DISTINCT FROM p_provider);
   END IF;
-  IF NOT FOUND OR current_row.state NOT IN ('activation_authorized','outcome_unknown')
+  IF NOT FOUND OR current_row.state NOT IN ('activation_authorized','outcome_unknown','forward_repair_required')
     OR current_row.source_system_identifier <> p_authorization->>'sourceSystemIdentifier'
     OR current_row.target_system_identifier <> p_authorization->>'targetSystemIdentifier'
     OR current_row.last_receipt_sha256 <> p_authorization->>'previousReceiptSha256'
@@ -856,10 +858,25 @@ END $body$;
 CREATE FUNCTION release_authority.release_runner_mark_terminal(p_job_id text, p_observation jsonb)
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
+DECLARE job release_authority.runner_job%ROWTYPE; witness jsonb;
 BEGIN
+  SELECT * INTO job FROM release_authority.runner_job
+  WHERE job_id = p_job_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'release runner terminal job missing'; END IF;
+  witness := job.cleanup_provider_witness;
+  IF witness IS NULL OR witness->>'jobId' <> job.job_id
+    OR witness->>'canary' <> job.cleanup_canary
+    OR witness->>'providerStatus' <> 'succeeded'
+    OR witness->>'containerTerminated' <> 'true'
+    OR jsonb_typeof(witness->'removedPaths') <> 'array'
+    OR jsonb_array_length(witness->'removedPaths') = 0
+    OR jsonb_typeof(witness->'remainingPaths') <> 'array'
+    OR jsonb_array_length(witness->'remainingPaths') <> 0
+  THEN RAISE EXCEPTION 'release runner terminal cleanup witness unproven'; END IF;
   UPDATE release_authority.runner_job SET terminal_at = clock_timestamp(),
     cleanup_observation = p_observation
-  WHERE job_id = p_job_id AND terminal_at IS NULL;
+  WHERE job_id = p_job_id AND terminal_at IS NULL
+    AND cleanup_provider_witness = witness;
   IF NOT FOUND THEN RAISE EXCEPTION 'release runner terminal cas failed'; END IF;
   RETURN true;
 END $body$;
@@ -895,30 +912,160 @@ BEGIN
     'removedPaths', witness->'removedPaths', 'remainingPaths', '[]'::jsonb);
 END $body$;
 
-CREATE FUNCTION release_authority.release_rollout_reconcile(p_rollout_id text) RETURNS jsonb
+CREATE FUNCTION release_authority.release_runner_terminal_cleanup_fact(
+  p_rollout_id text, p_lifecycle text
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER STABLE SET search_path = pg_catalog
+AS $body$
+DECLARE job release_authority.runner_job%ROWTYPE; witness jsonb;
+BEGIN
+  IF p_lifecycle NOT IN ('role','cutover') THEN
+    RAISE EXCEPTION 'release runner lifecycle invalid';
+  END IF;
+  SELECT * INTO STRICT job FROM release_authority.runner_job
+  WHERE rollout_id = p_rollout_id AND lifecycle = p_lifecycle;
+  witness := job.cleanup_provider_witness;
+  IF job.terminal_at IS NULL OR job.cleanup_observation IS NULL
+    OR witness IS NULL OR witness->>'jobId' <> job.job_id
+    OR witness->>'canary' <> job.cleanup_canary
+    OR witness->>'providerStatus' <> 'succeeded'
+    OR witness->>'containerTerminated' <> 'true'
+    OR jsonb_typeof(witness->'removedPaths') <> 'array'
+    OR jsonb_array_length(witness->'removedPaths') = 0
+    OR jsonb_typeof(witness->'remainingPaths') <> 'array'
+    OR jsonb_array_length(witness->'remainingPaths') <> 0
+  THEN RAISE EXCEPTION 'release runner witness gated terminal cleanup unproven'; END IF;
+  RETURN jsonb_build_object(
+    'jobId', job.job_id, 'lifecycle', job.lifecycle,
+    'canary', job.cleanup_canary,
+    'terminalAt', to_char(job.terminal_at AT TIME ZONE 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'observation', job.cleanup_observation,
+    'witness', release_authority.release_runner_cleanup_witness(job.job_id));
+END $body$;
+
+CREATE FUNCTION release_authority.release_rollout_reconciliation_context(
+  p_rollout_id text
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER STABLE SET search_path = pg_catalog
+AS $body$
+DECLARE current_row release_authority.rollout%ROWTYPE;
+DECLARE authorization_value jsonb;
+DECLARE receipt_ordinal integer;
+BEGIN
+  SELECT * INTO STRICT current_row FROM release_authority.rollout
+    WHERE rollout_id = p_rollout_id;
+  SELECT count(*)::integer INTO receipt_ordinal
+    FROM release_authority.receipt WHERE rollout_id = p_rollout_id;
+  authorization_value := CASE WHEN current_row.activation_permit_nonce IS NULL THEN NULL
+    ELSE jsonb_build_object(
+      'rolloutId', current_row.rollout_id,
+      'expectedCommitSha', current_row.expected_commit_sha,
+      'postgresMajor', current_row.activation_postgres_major,
+      'migrationChecksum', current_row.activation_migration_checksum,
+      'epoch', current_row.activation_epoch,
+      'nonce', current_row.activation_permit_nonce,
+      'sourceSystemIdentifier', current_row.source_system_identifier,
+      'targetSystemIdentifier', current_row.target_system_identifier,
+      'previousReceiptSha256', current_row.activation_previous_receipt_sha256,
+      'targetDeployIds', current_row.activation_target_deploy_ids,
+      'authorizedAt', current_row.activation_authorized_at)
+    END;
+  RETURN jsonb_build_object(
+    'rolloutId', current_row.rollout_id,
+    'runId', current_row.run_id,
+    'runAttempt', current_row.run_attempt,
+    'state', current_row.state,
+    'activationBoundary', current_row.activation_boundary,
+    'receiptOrdinal', receipt_ordinal,
+    'authorization', authorization_value);
+END $body$;
+
+CREATE FUNCTION release_authority.release_rollout_compensation_checkpoint(
+  p_rollout_id text, p_source_system_identifier text,
+  p_target_system_identifier text
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER STABLE SET search_path = pg_catalog
+AS $body$
+DECLARE current_row release_authority.rollout%ROWTYPE;
+DECLARE latest_receipt release_authority.receipt%ROWTYPE;
+DECLARE receipt_count integer;
+BEGIN
+  SELECT * INTO STRICT current_row FROM release_authority.rollout
+    WHERE rollout_id = p_rollout_id
+      AND source_system_identifier = p_source_system_identifier
+      AND target_system_identifier = p_target_system_identifier;
+  SELECT count(*)::integer INTO receipt_count FROM release_authority.receipt
+    WHERE rollout_id = p_rollout_id;
+  SELECT * INTO latest_receipt FROM release_authority.receipt
+    WHERE rollout_id = p_rollout_id ORDER BY ordinal DESC LIMIT 1;
+  RETURN jsonb_build_object(
+    'activationBoundary', current_row.activation_boundary,
+    'state', current_row.state,
+    'lastReceiptSha256', current_row.last_receipt_sha256,
+    'lastStep', latest_receipt.step,
+    'receiptCount', receipt_count);
+END $body$;
+
+CREATE FUNCTION release_authority.release_rollout_reconcile(
+  p_rollout_id text, p_target_observation jsonb
+) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
-DECLARE boundary text; open_jobs bigint; compensated boolean;
+DECLARE current_row release_authority.rollout%ROWTYPE;
+DECLARE open_jobs bigint; compensated boolean; finalized boolean;
 BEGIN
-  SELECT activation_boundary INTO STRICT boundary
-    FROM release_authority.rollout WHERE rollout_id = p_rollout_id;
+  SELECT * INTO STRICT current_row FROM release_authority.rollout
+    WHERE rollout_id = p_rollout_id FOR UPDATE;
   SELECT count(*) INTO open_jobs FROM release_authority.runner_job
     WHERE rollout_id = p_rollout_id AND terminal_at IS NULL;
   IF open_jobs <> 0 THEN RAISE EXCEPTION 'release rollout reconciliation open jobs'; END IF;
-  IF boundary = 'before' THEN
+  IF current_row.activation_boundary = 'before' THEN
+    IF current_row.state = 'compensating' THEN
+      RETURN jsonb_build_object('state','pre_activation_recovery_required',
+        'sourceEligible',false,'sourceAclRestored',false,
+        'sourceServicesResumed',false,'openRunnerJobs',0);
+    END IF;
     SELECT EXISTS (SELECT 1 FROM release_authority.receipt
       WHERE rollout_id = p_rollout_id AND step = 'complete_compensation') INTO compensated;
     IF NOT compensated THEN RAISE EXCEPTION 'release rollout compensation receipt missing'; END IF;
     RETURN jsonb_build_object('state','pre_activation_compensated','sourceEligible',true,
       'sourceAclRestored',true,'sourceServicesResumed',true,'openRunnerJobs',0);
   END IF;
-  IF boundary = 'uncertain' THEN
+  IF current_row.activation_boundary = 'uncertain' AND
+     p_target_observation->>'kind' = 'matching_activation_receipt' THEN
+    IF p_target_observation->>'nextReceiptSha256' IS DISTINCT FROM
+         p_target_observation->'activationReceipt'->>'receiptSha256'
+      OR p_target_observation->'activationReceipt'->>'rolloutId' IS DISTINCT FROM
+         p_target_observation->'authorization'->>'rolloutId'
+      OR p_target_observation->'activationReceipt'->>'expectedCommitSha' IS DISTINCT FROM
+         p_target_observation->'authorization'->>'expectedCommitSha'
+      OR p_target_observation->'activationReceipt'->>'sourceSystemIdentifier' IS DISTINCT FROM
+         p_target_observation->'authorization'->>'sourceSystemIdentifier'
+      OR p_target_observation->'activationReceipt'->>'targetSystemIdentifier' IS DISTINCT FROM
+         p_target_observation->'authorization'->>'targetSystemIdentifier'
+    THEN RAISE EXCEPTION 'release rollout reconciliation receipt identity conflict'; END IF;
+    SELECT release_authority.release_rollout_finalize_activation(
+      p_target_observation->'authorization',
+      p_target_observation->'activationReceipt'->'provider',
+      p_target_observation->>'nextReceiptSha256',
+      p_target_observation->'activationReceipt') INTO finalized;
+    IF NOT finalized THEN
+      RAISE EXCEPTION 'release rollout reconciliation activation conflict';
+    END IF;
+    RETURN jsonb_build_object('state','activated','sourceEligible',false,
+      'sourceAclRestored',false,'sourceServicesResumed',false,'openRunnerJobs',0);
+  END IF;
+  IF current_row.activation_boundary = 'uncertain' THEN
     UPDATE release_authority.rollout SET state = 'forward_repair_required',
       updated_at = clock_timestamp()
-    WHERE rollout_id = p_rollout_id AND state = 'outcome_unknown';
+    WHERE rollout_id = p_rollout_id AND state IN (
+      'activation_authorized','outcome_unknown');
   END IF;
-  RETURN jsonb_build_object('state', CASE WHEN boundary = 'activated'
+  RETURN jsonb_build_object('state', CASE WHEN current_row.activation_boundary = 'activated'
     THEN 'activated' ELSE 'forward_repair_required' END,
+    'reason', CASE WHEN current_row.activation_boundary = 'activated' THEN NULL
+      ELSE p_target_observation->>'kind' END,
     'sourceEligible',false,'sourceAclRestored',false,
     'sourceServicesResumed',false,'openRunnerJobs',0);
 END $body$;
@@ -952,7 +1099,10 @@ REVOKE ALL ON FUNCTION release_authority.release_runner_current(text,text) FROM 
 REVOKE ALL ON FUNCTION release_authority.release_runner_mark_terminal(text,jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_cleanup_observation(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_cleanup_witness(text) FROM PUBLIC;
-REVOKE ALL ON FUNCTION release_authority.release_rollout_reconcile(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_runner_terminal_cleanup_fact(text,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_rollout_reconciliation_context(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_rollout_compensation_checkpoint(text,text,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_rollout_reconcile(text,jsonb) FROM PUBLIC;
 
 DO $operational_acl$
 BEGIN
@@ -978,7 +1128,10 @@ BEGIN
     GRANT EXECUTE ON FUNCTION release_authority.release_runner_mark_terminal(text,jsonb) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_runner_cleanup_observation(text) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_runner_cleanup_witness(text) TO reviewrouter_release_control;
-    GRANT EXECUTE ON FUNCTION release_authority.release_rollout_reconcile(text) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_runner_terminal_cleanup_fact(text,text) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_rollout_reconciliation_context(text) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_rollout_compensation_checkpoint(text,text,text) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_rollout_reconcile(text,jsonb) TO reviewrouter_release_control;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'reviewrouter_provider_authority') THEN
     GRANT USAGE ON SCHEMA release_authority TO reviewrouter_provider_authority;

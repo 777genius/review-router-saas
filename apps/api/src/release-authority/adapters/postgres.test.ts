@@ -36,9 +36,18 @@ class QueryRecorder {
             decisionId: "decision",
             decidedAt: observedAt,
           }
-        : text.includes("release_runner_persist_intent")
-          ? "created"
-          : true;
+        : text.includes("release_runner_terminal_cleanup_fact")
+          ? {
+              jobId: "job",
+              lifecycle: "role",
+              canary: "canary",
+              terminalAt: observedAt,
+              observation: { step: "cleanup_role_runner" },
+              witness: { canary: "canary", providerStatus: "succeeded" },
+            }
+          : text.includes("release_runner_persist_intent")
+            ? "created"
+            : true;
     return [{ value }] as T;
   }
 }
@@ -228,6 +237,11 @@ describe("release authority postgres JSONB bindings", () => {
 
     await adapter.markTerminal("job", observation as never);
     expectJsonbBinding(recorder.queries.at(-1)!, observation);
+
+    await adapter.terminalCleanupFact("rollout", "role");
+    expect(recorder.queries.at(-1)!.text).toContain(
+      "release_runner_terminal_cleanup_fact",
+    );
 
     const witness = {
       jobId: "job",

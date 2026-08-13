@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type {
   TargetActivationFacts,
@@ -18,6 +19,11 @@ export class RoutineTargetActivationReceiptReaderAdapter implements TargetActiva
     if (value === null) return null;
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error("target_activation_receipt_result_invalid");
-    return value as TargetActivationFacts;
+    return {
+      ...value,
+      activationObservationSha256: `sha256:${createHash("sha256")
+        .update(JSON.stringify(value))
+        .digest("hex")}`,
+    } as TargetActivationFacts;
   }
 }

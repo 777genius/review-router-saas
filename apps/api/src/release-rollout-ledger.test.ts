@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type {
   ActivationAuthorization,
   ProviderAuthorityRequest,
+  StepObservation,
 } from "@reviewrouter/features-release-rollout";
 import {
   registerReleaseRolloutLedgerRoutes,
@@ -28,9 +29,7 @@ type CombinedLedgerPort = ReleaseAuthorityLedgerPort &
   RunnerOperationsLedgerPort &
   ReleaseRolloutReconciliationPort;
 
-class ConcurrentRepository
-  implements CombinedLedgerPort
-{
+class ConcurrentRepository implements CombinedLedgerPort {
   private claimed: typeof binding | undefined;
   private receipt = `sha256:${"0".repeat(64)}`;
   private state: "before" | "uncertain" | "activated" = "before";
@@ -118,6 +117,20 @@ class ConcurrentRepository
       ? ("activated" as const)
       : ("activation_authorized" as const);
   }
+  async compensationCheckpoint() {
+    return {
+      activationBoundary: this.state,
+      state:
+        this.state === "activated"
+          ? ("activated" as const)
+          : this.state === "uncertain"
+            ? ("activation_authorized" as const)
+            : ("pre_activation" as const),
+      lastReceiptSha256: this.receipt,
+      lastStep: null,
+      receiptCount: 0,
+    };
+  }
   async finalizeActivation() {
     if (this.state !== "uncertain") return false;
     this.state = "activated";
@@ -168,10 +181,45 @@ class ConcurrentRepository
   async cleanupWitness(): Promise<never> {
     throw new Error("unused");
   }
+  async terminalCleanupFact(rolloutId: string, lifecycle: "role" | "cutover") {
+    return {
+      jobId: "job-clean",
+      lifecycle,
+      canary: `rr-cleanup:${rolloutId}:runner`,
+      terminalAt: "2026-08-12T00:03:00.000Z",
+      observation: {
+        step: "cleanup_role_runner",
+        observedAt: "2026-08-12T00:02:00.000Z",
+        facts: {},
+      } as StepObservation,
+      witness: {
+        providerStatus: "succeeded" as const,
+        listenerStopped: true as const,
+        workspaceRemoved: true as const,
+        credentialProcessGone: true as const,
+        canary: `rr-cleanup:${rolloutId}:runner`,
+        observedAt: "2026-08-12T00:01:00.000Z",
+        providerLogSha256: `sha256:${"4".repeat(64)}`,
+        removedPaths: ["/runner/_work/rr-safe/repo"],
+        remainingPaths: [] as const,
+      },
+    };
+  }
   async persistRegistration(
     input: Parameters<RunnerOperationsLedgerPort["persistRegistration"]>[0],
   ) {
     this.registration = input;
+  }
+  async context(rolloutId: string) {
+    return {
+      rolloutId,
+      runId: binding.runId,
+      runAttempt: binding.runAttempt,
+      state: "forward_repair_required" as const,
+      activationBoundary: this.state,
+      receiptOrdinal: 0,
+      authorization: this.authorization ?? null,
+    };
   }
   async reconcile() {
     return { state: "activation_uncertain_forward_only" };
@@ -281,6 +329,29 @@ describe("release rollout ledger internal API", () => {
     await expect(
       service.persistIntent({ ...intent, serviceId: "srv-attacker" }),
     ).rejects.toThrow("intent_conflict");
+  });
+
+  it("returns the witness-gated terminal fact for the exact rollout lifecycle", async () => {
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(new ConcurrentRepository()),
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/runner-jobs/terminal-cleanup-fact?rollout_id=${binding.rolloutId}&lifecycle=role`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      jobId: "job-clean",
+      lifecycle: "role",
+      canary: `rr-cleanup:${binding.rolloutId}:runner`,
+      witness: {
+        providerStatus: "succeeded",
+        canary: `rr-cleanup:${binding.rolloutId}:runner`,
+      },
+    });
+    await app.close();
   });
 
   it("persists only allowlisted non-secret JIT registration metadata", async () => {

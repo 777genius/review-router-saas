@@ -14,6 +14,7 @@ import type {
   RunnerIdentity,
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
+import { sha256Canonical } from "@reviewrouter/features-release-rollout";
 export class ReleaseAuthorityService {
   constructor(
     private readonly repository: ReleaseAuthorityLedgerPort,
@@ -48,7 +49,8 @@ export class ReleaseAuthorityService {
     const receipt = await this.targetReceiptReader.read(
       input.authorization.rolloutId,
     );
-    if (!receipt) throw new Error("target_activation_receipt_missing");
+    if (!receipt || "receiptAbsent" in receipt)
+      throw new Error("target_activation_receipt_missing");
     const proposed = input.activationReceipt;
     const authorization = input.authorization;
     if (
@@ -88,6 +90,9 @@ export class ReleaseAuthorityService {
   authorityState = (
     input: Parameters<ReleaseAuthorityLedgerPort["authorityState"]>[0],
   ) => this.repository.authorityState(input);
+  compensationCheckpoint = (
+    input: Parameters<ReleaseAuthorityLedgerPort["compensationCheckpoint"]>[0],
+  ) => this.repository.compensationCheckpoint(input);
   verifyFinalAuthority = (
     input: Parameters<ReleaseAuthorityLedgerPort["verifyFinalAuthority"]>[0],
   ) => this.repository.verifyFinalAuthority(input);
@@ -117,11 +122,15 @@ export class RunnerOperationsService {
   ) => this.repository.persistIdentity(jobId, identity, observation);
   currentRunner = (rolloutId: string, lifecycle: "role" | "cutover") =>
     this.repository.currentRunner(rolloutId, lifecycle);
-  markTerminal = (jobId: string, observation: StepObservation) =>
-    this.repository.markTerminal(jobId, observation);
+  markTerminal = async (jobId: string, observation: StepObservation) => {
+    await this.repository.cleanupWitness(jobId);
+    await this.repository.markTerminal(jobId, observation);
+  };
   cleanupObservation = (jobId: string) =>
     this.repository.cleanupObservation(jobId);
   cleanupWitness = (jobId: string) => this.repository.cleanupWitness(jobId);
+  terminalCleanupFact = (rolloutId: string, lifecycle: "role" | "cutover") =>
+    this.repository.terminalCleanupFact(rolloutId, lifecycle);
   persistRegistration = (
     input: Parameters<RunnerOperationsLedgerPort["persistRegistration"]>[0],
   ) => this.repository.persistRegistration(input);
@@ -136,6 +145,145 @@ export class RunnerCleanupWitnessService {
 }
 
 export class ReleaseRolloutReconciliationService {
-  constructor(private readonly repository: ReleaseRolloutReconciliationPort) {}
-  reconcile = (rolloutId: string) => this.repository.reconcile(rolloutId);
+  constructor(
+    private readonly repository: ReleaseRolloutReconciliationPort,
+    private readonly targetReceiptReader?: TargetActivationReceiptReaderPort,
+  ) {}
+
+  reconcile = async (rolloutId: string) => {
+    const context = await this.repository.context(rolloutId);
+    if (context.activationBoundary !== "uncertain")
+      return this.repository.reconcile({
+        rolloutId,
+        targetObservation: { kind: "not_required" },
+      });
+    if (!this.targetReceiptReader)
+      return this.repository.reconcile({
+        rolloutId,
+        targetObservation: { kind: "target_read_unavailable" },
+      });
+
+    let target;
+    try {
+      target = await this.targetReceiptReader.read(rolloutId);
+    } catch {
+      return this.repository.reconcile({
+        rolloutId,
+        targetObservation: { kind: "target_read_unavailable" },
+      });
+    }
+    if (target && "receiptAbsent" in target)
+      return this.repository.reconcile({
+        rolloutId,
+        targetObservation: { kind: "activation_absent_without_revocation" },
+      });
+    if (!target)
+      return this.repository.reconcile({
+        rolloutId,
+        targetObservation: { kind: "target_receipt_absent" },
+      });
+
+    const authorization = context.authorization;
+    if (!authorization || !targetMatchesAuthorization(target, authorization))
+      return this.repository.reconcile({
+        rolloutId,
+        targetObservation: { kind: "target_receipt_conflict" },
+      });
+    const activationReceipt = activationReceiptFromTarget(
+      context,
+      authorization,
+      target,
+    );
+    return this.repository.reconcile({
+      rolloutId,
+      targetObservation: {
+        kind: "matching_activation_receipt",
+        authorization,
+        nextReceiptSha256: activationReceipt.receiptSha256,
+        activationReceipt,
+      },
+    });
+  };
+}
+
+function targetMatchesAuthorization(
+  target: Exclude<
+    Awaited<ReturnType<TargetActivationReceiptReaderPort["read"]>>,
+    null | { receiptAbsent: true }
+  >,
+  authorization: import("@reviewrouter/features-release-rollout").ActivationAuthorization,
+): boolean {
+  const digest = /^sha256:[a-f0-9]{64}$/u;
+  return (
+    target.rolloutId === authorization.rolloutId &&
+    target.expectedCommitSha === authorization.expectedCommitSha &&
+    target.sourceSystemIdentifier === authorization.sourceSystemIdentifier &&
+    target.targetSystemIdentifier === authorization.targetSystemIdentifier &&
+    target.postgresMajor === authorization.postgresMajor &&
+    target.migrationChecksum === authorization.migrationChecksum &&
+    target.permitEpoch === authorization.epoch &&
+    target.permitNonce === authorization.nonce &&
+    JSON.stringify(target.targetDeployIds) ===
+      JSON.stringify(authorization.targetDeployIds) &&
+    target.firstWriteBoundary === true &&
+    digest.test(target.canonicalPrivilegesSha256) &&
+    digest.test(target.catalogFactsSha256) &&
+    digest.test(target.firstWriteReceiptSha256) &&
+    digest.test(target.activationObservationSha256) &&
+    /^[0-9]+$/u.test(target.transactionId) &&
+    Number.isFinite(Date.parse(target.activatedAt))
+  );
+}
+
+function activationReceiptFromTarget(
+  context: import("../domain/model.js").ReleaseRolloutReconciliationContext,
+  authorization: import("@reviewrouter/features-release-rollout").ActivationAuthorization,
+  target: Exclude<
+    Awaited<ReturnType<TargetActivationReceiptReaderPort["read"]>>,
+    null | { receiptAbsent: true }
+  >,
+): import("@reviewrouter/features-release-rollout").ActivationReceipt {
+  const facts = {
+    rolloutId: target.rolloutId,
+    sourceSystemIdentifier: target.sourceSystemIdentifier,
+    targetSystemIdentifier: target.targetSystemIdentifier,
+    postgresMajor: target.postgresMajor,
+    expectedCommitSha: target.expectedCommitSha,
+    migrationChecksum: target.migrationChecksum,
+    targetDeployIds: target.targetDeployIds,
+    permitEpoch: target.permitEpoch,
+    permitNonce: target.permitNonce,
+    canonicalPrivilegesSha256: target.canonicalPrivilegesSha256,
+    catalogFactsSha256: target.catalogFactsSha256,
+    firstWriteReceiptSha256: target.firstWriteReceiptSha256,
+    transactionId: target.transactionId,
+    activatedAt: target.activatedAt,
+    firstWriteBoundary: true as const,
+    observationSha256: target.activationObservationSha256,
+  };
+  const base = {
+    step: "activate_target_generation" as const,
+    receiptId: `${authorization.rolloutId}:activate_target_generation:${context.receiptOrdinal + 1}`,
+    observedAt: target.activatedAt,
+    rolloutId: authorization.rolloutId,
+    expectedCommitSha: authorization.expectedCommitSha,
+    runId: context.runId,
+    runAttempt: context.runAttempt,
+    sourceSystemIdentifier: authorization.sourceSystemIdentifier,
+    targetSystemIdentifier: authorization.targetSystemIdentifier,
+    provider: undefined,
+    observationSha256: `sha256:${sha256Canonical(facts)}`,
+    previousReceiptSha256: authorization.previousReceiptSha256,
+    canonicalPrivilegesSha256: target.canonicalPrivilegesSha256,
+    catalogFactsSha256: target.catalogFactsSha256,
+    transactionId: target.transactionId,
+    firstWriteReceiptSha256: target.firstWriteReceiptSha256,
+    firstWriteBoundary: true as const,
+    postgresMajor: target.postgresMajor,
+    migrationChecksum: target.migrationChecksum,
+    permitEpoch: target.permitEpoch,
+    permitNonce: target.permitNonce,
+    targetDeployIds: target.targetDeployIds,
+  };
+  return { ...base, receiptSha256: `sha256:${sha256Canonical(base)}` };
 }

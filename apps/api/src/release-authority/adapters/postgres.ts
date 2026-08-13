@@ -15,11 +15,14 @@ import type {
   PersistRunnerRegistrationInput,
   ProvisioningIntent,
   ReleaseAuthorityState,
+  ReleaseCompensationCheckpoint,
   ReleaseAuthorityLedgerPort,
   ReleaseRolloutReconciliationPort,
+  ReleaseRolloutReconciliationContext,
   RolloutBinding,
   RunnerCleanupWitnessPort,
   RunnerOperationsLedgerPort,
+  WitnessGatedTerminalCleanupFact,
 } from "../domain/model.js";
 
 type JsonRow = { value: unknown };
@@ -217,6 +220,19 @@ export class RoutineReleaseControlLedgerAdapter
     return value as ReleaseAuthorityState;
   }
 
+  async compensationCheckpoint(
+    input: Parameters<ReleaseAuthorityLedgerPort["compensationCheckpoint"]>[0],
+  ): Promise<ReleaseCompensationCheckpoint> {
+    return requiredRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_rollout_compensation_checkpoint(
+          ${input.rolloutId}, ${input.sourceSystemIdentifier},
+          ${input.targetSystemIdentifier}) AS value`,
+      ),
+    ) as ReleaseCompensationCheckpoint;
+  }
+
   async verifyFinalAuthority(
     input: Parameters<ReleaseAuthorityLedgerPort["verifyFinalAuthority"]>[0],
   ): Promise<boolean> {
@@ -348,6 +364,18 @@ export class RoutineReleaseControlLedgerAdapter
     ) as IndependentCleanupWitness;
   }
 
+  async terminalCleanupFact(
+    rolloutId: string,
+    lifecycle: "role" | "cutover",
+  ): Promise<WitnessGatedTerminalCleanupFact> {
+    return requiredRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_runner_terminal_cleanup_fact(${rolloutId}, ${lifecycle}) AS value`,
+      ),
+    ) as WitnessGatedTerminalCleanupFact;
+  }
+
   async persistRegistration(
     input: PersistRunnerRegistrationInput,
   ): Promise<void> {
@@ -363,11 +391,25 @@ export class RoutineReleaseControlLedgerAdapter
       throw new Error("release_runner_registration_conflict");
   }
 
-  async reconcile(rolloutId: string): Promise<Record<string, unknown>> {
+  async context(
+    rolloutId: string,
+  ): Promise<ReleaseRolloutReconciliationContext> {
     return requiredRecord(
       await firstValue(
         this.prisma,
-        Prisma.sql`SELECT release_authority.release_rollout_reconcile(${rolloutId}) AS value`,
+        Prisma.sql`SELECT release_authority.release_rollout_reconciliation_context(${rolloutId}) AS value`,
+      ),
+    ) as ReleaseRolloutReconciliationContext;
+  }
+
+  async reconcile(
+    input: Parameters<ReleaseRolloutReconciliationPort["reconcile"]>[0],
+  ): Promise<Record<string, unknown>> {
+    return requiredRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_rollout_reconcile(
+          ${input.rolloutId}, ${asJsonb(input.targetObservation)}) AS value`,
       ),
     );
   }

@@ -83,6 +83,21 @@ export type IndependentCleanupWitness = Readonly<{
   removedPaths: readonly string[];
   remainingPaths: readonly [];
 }>;
+export type WitnessGatedTerminalCleanupFact = Readonly<{
+  jobId: string;
+  lifecycle: "role" | "cutover";
+  canary: string;
+  terminalAt: string;
+  observation: StepObservation;
+  witness: IndependentCleanupWitness;
+}>;
+export type ReleaseCompensationCheckpoint = Readonly<{
+  activationBoundary: "before" | "uncertain" | "activated";
+  state: ReleaseAuthorityState;
+  lastReceiptSha256: string;
+  lastStep: string | null;
+  receiptCount: number;
+}>;
 
 export interface ReleaseAuthorityLedgerPort {
   claim(input: RolloutBinding): Promise<"claimed" | "duplicate">;
@@ -130,6 +145,12 @@ export interface ReleaseAuthorityLedgerPort {
       "rolloutId" | "sourceSystemIdentifier" | "targetSystemIdentifier"
     >,
   ): Promise<ReleaseAuthorityState>;
+  compensationCheckpoint(
+    input: Pick<
+      RolloutBinding,
+      "rolloutId" | "sourceSystemIdentifier" | "targetSystemIdentifier"
+    >,
+  ): Promise<ReleaseCompensationCheckpoint>;
   verifyFinalAuthority(
     input: RolloutBinding & {
       expectedReceiptSha256: string;
@@ -150,6 +171,10 @@ export interface ActivationPermitInstallerPort {
 export type TargetActivationFacts = Readonly<
   Pick<
     ActivationReceipt,
+    | "rolloutId"
+    | "expectedCommitSha"
+    | "sourceSystemIdentifier"
+    | "targetSystemIdentifier"
     | "canonicalPrivilegesSha256"
     | "catalogFactsSha256"
     | "transactionId"
@@ -160,11 +185,21 @@ export type TargetActivationFacts = Readonly<
     | "permitEpoch"
     | "permitNonce"
     | "targetDeployIds"
-  >
+  > & {
+    readonly activatedAt: string;
+    readonly activationObservationSha256: string;
+  }
 >;
 
+export type TargetActivationAbsenceProof = Readonly<{
+  receiptAbsent: true;
+  permitAbsent: true;
+}>;
+
 export interface TargetActivationReceiptReaderPort {
-  read(rolloutId: string): Promise<TargetActivationFacts | null>;
+  read(
+    rolloutId: string,
+  ): Promise<TargetActivationFacts | TargetActivationAbsenceProof | null>;
 }
 
 export interface RunnerOperationsLedgerPort {
@@ -193,6 +228,10 @@ export interface RunnerOperationsLedgerPort {
   markTerminal(jobId: string, observation: StepObservation): Promise<void>;
   cleanupObservation(jobId: string): Promise<StepObservation>;
   cleanupWitness(jobId: string): Promise<IndependentCleanupWitness>;
+  terminalCleanupFact(
+    rolloutId: string,
+    lifecycle: "role" | "cutover",
+  ): Promise<WitnessGatedTerminalCleanupFact>;
   persistRegistration(input: PersistRunnerRegistrationInput): Promise<void>;
 }
 
@@ -204,5 +243,37 @@ export interface RunnerCleanupWitnessPort {
 }
 
 export interface ReleaseRolloutReconciliationPort {
-  reconcile(rolloutId: string): Promise<Record<string, unknown>>;
+  context(rolloutId: string): Promise<ReleaseRolloutReconciliationContext>;
+  reconcile(
+    input: ReleaseRolloutReconciliationInput,
+  ): Promise<Record<string, unknown>>;
 }
+
+export type ReleaseRolloutReconciliationContext = Readonly<{
+  rolloutId: string;
+  runId: string;
+  runAttempt: number;
+  state: ReleaseAuthorityState;
+  activationBoundary: "before" | "uncertain" | "activated";
+  receiptOrdinal: number;
+  authorization: ActivationAuthorization | null;
+}>;
+
+export type ReleaseRolloutReconciliationInput = Readonly<{
+  rolloutId: string;
+  targetObservation:
+    | Readonly<{
+        kind: "matching_activation_receipt";
+        authorization: ActivationAuthorization;
+        nextReceiptSha256: string;
+        activationReceipt: ActivationReceipt;
+      }>
+    | Readonly<{
+        kind:
+          | "activation_absent_without_revocation"
+          | "target_read_unavailable"
+          | "target_receipt_absent"
+          | "target_receipt_conflict"
+          | "not_required";
+      }>;
+}>;

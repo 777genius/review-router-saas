@@ -222,6 +222,22 @@ export async function registerReleaseRolloutLedgerRoutes(
       }),
     }),
   );
+  app.get<{
+    Params: { rolloutId: string };
+    Querystring: {
+      source_system_identifier: string;
+      target_system_identifier: string;
+    };
+  }>(
+    "/v1/rollouts/:rolloutId/compensation-checkpoint",
+    { preHandler: control },
+    async (request) =>
+      dependencies.authority.compensationCheckpoint({
+        rolloutId: request.params.rolloutId,
+        sourceSystemIdentifier: request.query.source_system_identifier,
+        targetSystemIdentifier: request.query.target_system_identifier,
+      }),
+  );
   app.post<{ Params: { rolloutId: string } }>(
     "/v1/rollouts/:rolloutId/verify-final-authority",
     { preHandler: control },
@@ -325,6 +341,17 @@ export async function registerReleaseRolloutLedgerRoutes(
     { preHandler: control },
     async (request) =>
       dependencies.runnerOperations.cleanupWitness(request.params.jobId),
+  );
+  app.get<{
+    Querystring: { rollout_id: string; lifecycle: "role" | "cutover" };
+  }>(
+    "/v1/runner-jobs/terminal-cleanup-fact",
+    { preHandler: control },
+    async (request) =>
+      dependencies.runnerOperations.terminalCleanupFact(
+        request.query.rollout_id,
+        request.query.lifecycle,
+      ),
   );
   app.post(
     "/v1/runner-jobs/registration",

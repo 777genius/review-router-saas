@@ -107,7 +107,10 @@ export function composeReleaseControlDependencies(
       providerAuthorityAdapter,
     ),
     runnerOperations: new RunnerOperationsService(adapter),
-    reconciliation: new ReleaseRolloutReconciliationService(adapter),
+    reconciliation: new ReleaseRolloutReconciliationService(
+      adapter,
+      targetReceiptReader,
+    ),
     ...credentials,
   };
 }

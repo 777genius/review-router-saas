@@ -182,8 +182,12 @@ docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrout
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
   "INSERT INTO release_authority.runner_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at)
    VALUES ('rri-'||repeat('3',64),'r3','svc','role','30','rr-test','$now');
-   INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,lifecycle,terminal_at)
-   VALUES ('job-clean','r3','rri-'||repeat('3',64),'svc','$now','canary','role','$now');" >/dev/null
+   INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,lifecycle)
+   VALUES ('job-clean','r3','rri-'||repeat('3',64),'svc','$now','canary','role');" >/dev/null
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_mark_terminal('job-clean','{\"step\":\"cleanup_role_runner\"}')" >/dev/null 2>&1; then
+  echo "terminal CAS without provider cleanup witness unexpectedly succeeded" >&2
+  exit 1
+fi
 cleanup_seed=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
   "SELECT release_authority.release_runner_cleanup_observation_seed('job-clean') =
     jsonb_build_object('jobId','job-clean','serviceId','svc',
@@ -205,6 +209,43 @@ test "$cleanup_saved" = t
 cleanup_replayed=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"succeeded\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/repo\"],\"remainingPaths\":[],\"providerLogId\":\"log-1\",\"providerObservedAt\":\"$now\"}')")
 test "$cleanup_replayed" = t
+terminal_saved=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_mark_terminal('job-clean','{\"step\":\"cleanup_role_runner\",\"observedAt\":\"$now\"}')")
+test "$terminal_saved" = t
+terminal_fact=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_terminal_cleanup_fact('r3','role')->>'jobId'")
+test "$terminal_fact" = job-clean
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "INSERT INTO release_authority.rollout(
+     rollout_id,expected_commit_sha,run_id,run_attempt,
+     source_system_identifier,target_system_identifier,
+     authoritative_system_identifier,state,activation_boundary,
+     source_permanently_ineligible,last_receipt_sha256,
+     activation_permit_nonce,activation_epoch,activation_job_id,
+     activation_previous_receipt_sha256,activation_target_deploy_ids,
+     activation_postgres_major,activation_migration_checksum,activation_authorized_at)
+   VALUES
+    ('r-reconcile',repeat('5',40),'50',1,'150','250','250','outcome_unknown',
+     'uncertain',true,'sha256:'||repeat('6',64),repeat('7',32),1,'51',
+     'sha256:'||repeat('6',64),'[\"dep-r\"]',17,'sha256:'||repeat('8',64),'$now'),
+    ('r-absence',repeat('9',40),'60',1,'160','260','260','outcome_unknown',
+     'uncertain',true,'sha256:'||repeat('a',64),repeat('b',32),1,'61',
+     'sha256:'||repeat('a',64),'[\"dep-a\"]',17,'sha256:'||repeat('c',64),'$now');" >/dev/null
+reconcile_context=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_rollout_reconciliation_context('r-reconcile')->'authorization'->>'nonce'")
+test "$reconcile_context" = "$(printf '7%.0s' $(seq 1 32))"
+matching_observation='{"kind":"matching_activation_receipt","authorization":{"rolloutId":"r-reconcile","expectedCommitSha":"'$(printf '5%.0s' $(seq 1 40))'","postgresMajor":17,"migrationChecksum":"sha256:'$(printf '8%.0s' $(seq 1 64))'","epoch":1,"nonce":"'$(printf '7%.0s' $(seq 1 32))'","sourceSystemIdentifier":"150","targetSystemIdentifier":"250","previousReceiptSha256":"sha256:'$(printf '6%.0s' $(seq 1 64))'","targetDeployIds":["dep-r"],"authorizedAt":"'$now'"},"nextReceiptSha256":"sha256:'$(printf 'd%.0s' $(seq 1 64))'","activationReceipt":{"rolloutId":"r-reconcile","expectedCommitSha":"'$(printf '5%.0s' $(seq 1 40))'","sourceSystemIdentifier":"150","targetSystemIdentifier":"250","receiptSha256":"sha256:'$(printf 'd%.0s' $(seq 1 64))'","permitEpoch":1,"permitNonce":"'$(printf '7%.0s' $(seq 1 32))'","previousReceiptSha256":"sha256:'$(printf '6%.0s' $(seq 1 64))'","targetDeployIds":["dep-r"]}}'
+reconciled_activation=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_rollout_reconcile('r-reconcile','$matching_observation')->>'state'")
+test "$reconciled_activation" = activated
+reconciled_replay=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_rollout_reconcile('r-reconcile','{\"kind\":\"not_required\"}')->>'state'")
+test "$reconciled_replay" = activated
+absence_state=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_rollout_reconcile('r-absence','{\"kind\":\"activation_absent_without_revocation\"}')->>'state'")
+test "$absence_state" = forward_repair_required
+absence_fence=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT activation_boundary||':'||source_permanently_ineligible||':'||authoritative_system_identifier FROM release_authority.rollout WHERE rollout_id='r-absence'")
+test "$absence_fence" = uncertain:true:260
 
 control_acl=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.observe_state('r1','100','200')")
