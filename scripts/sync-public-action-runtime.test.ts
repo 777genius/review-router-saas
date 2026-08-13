@@ -198,7 +198,15 @@ describe("public Action runtime sync", () => {
     expect(workflow).toContain(
       "Rotating installer descriptor SHA-256: $INSTALLER_DESCRIPTOR_SHA256",
     );
+    expect(workflow).toContain('runtime_path="hosted-runtime-image.json"');
+    expect(workflow).toContain("--draft\n");
+    expect(workflow).toContain(
+      "Published immutable release $VERSION is missing required assets",
+    );
+    expect(workflow).toContain('if [[ "$release_is_draft" != "true" ]]');
     expect(workflow).toContain('gh release upload "$VERSION"');
+    expect(workflow).toContain('gh release edit "$VERSION"');
+    expect(workflow).toContain("--draft=false");
   });
 
   it("verifies the hosted runtime image through an anonymous pull", () => {
