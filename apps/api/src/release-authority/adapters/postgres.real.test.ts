@@ -133,7 +133,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       },
     ]);
 
-    const nextReceiptSha256 = `sha256:${"1".repeat(64)}`;
+    const nextReceiptSha256 = `sha256:${"4".repeat(64)}`;
     await expect(
       ledger.compareAndSet({
         ...binding,
