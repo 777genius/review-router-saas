@@ -120,13 +120,11 @@ describe("authenticated runner ledger reconciliation", () => {
   });
 
   it("durably prepares a source freeze effect before provider suspension", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ mutationRequired: true }), {
-          status: 200,
-        }),
-      );
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ mutationRequired: true }), {
+        status: 200,
+      }),
+    );
     const adapter = new AuthenticatedRunnerLedgerAdapter(
       "https://control.example.test",
       "control-token",
