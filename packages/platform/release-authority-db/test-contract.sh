@@ -1304,20 +1304,20 @@ done
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r-recovery-permit',repeat('2',40),'91',1,'191','291');
    SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
-     'id','rri-'||repeat('2',64),'rolloutId','r-recovery-permit','serviceId','svc-recovery-permit',
+     'id','rri-'||repeat('3',63)||'2','rolloutId','r-recovery-permit','serviceId','svc-recovery-permit',
      'lifecycle','role','workflowJobId','911','runnerName','rr-recovery-permit','createdAt','$now',
-     'startCommandSha256','sha256:'||repeat('2',64),
+     'startCommandSha256','sha256:'||repeat('3',63)||'2',
      'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000091'));
    UPDATE release_authority.runner_intent SET effect_lease_expires_at=clock_timestamp()-interval '1 second'
-     WHERE intent_id='rri-'||repeat('2',64);
+     WHERE intent_id='rri-'||repeat('3',63)||'2';
    SELECT release_authority.release_runner_abandon_prepared(
-     'rri-'||repeat('2',64),'rrc-00000000-0000-4000-8000-000000000091',0);
+     'rri-'||repeat('3',63)||'2','rrc-00000000-0000-4000-8000-000000000091',0);
    INSERT INTO release_authority.source_freeze_observation(
      rollout_id,service_id,phase,latest_successful_deploy_id,observed_at,declared_service_ids)
    VALUES ('r-recovery-permit','srv-recovery','suspended','dep-recovery','$now','[\"srv-recovery\"]'::jsonb);
    SELECT release_authority.release_rollout_append_receipt(
      'r-recovery-permit',repeat('2',40),'91',1,'191','291','begin_compensation',
-     'sha256:'||repeat('0',64),'sha256:'||repeat('2',64),'191','before','before',NULL)" >/dev/null
+     'sha256:'||repeat('0',64),'sha256:'||repeat('3',63)||'2','191','before','before',NULL)" >/dev/null
 recovery_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_intend(jsonb_build_object(
@@ -1363,7 +1363,7 @@ docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
     'jobId','job-recovery-late','rolloutId','r-recovery-permit',
-    'provisioningIntentId','rri-'||repeat('2',64),'serviceId','svc-recovery-permit',
+    'provisioningIntentId','rri-'||repeat('3',63)||'2','serviceId','svc-recovery-permit',
     'observedAt','$now','providerCreationNotBefore','$now',
     'cleanupCanary','rr-cleanup:r-recovery-permit:rr-recovery-permit','lifecycle','role'))" >/dev/null
 test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
