@@ -93,12 +93,18 @@ CREATE FUNCTION release_authority.release_runner_prepare_effect(p_intent jsonb)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
 DECLARE current_row release_authority.runner_intent%ROWTYPE;
+DECLARE rollout_row release_authority.rollout%ROWTYPE;
 BEGIN
   IF coalesce(p_intent->>'id','') !~ '^rri-[a-f0-9]{64}$'
     OR coalesce(p_intent->>'creationLeaseOwner','') !~ '^rrc-[0-9a-f-]{36}$'
     OR coalesce(p_intent->>'startCommandSha256','') !~ '^sha256:[a-f0-9]{64}$'
     OR coalesce(p_intent->>'lifecycle','') NOT IN ('role','cutover')
   THEN RAISE EXCEPTION 'release runner effect preparation invalid'; END IF;
+
+  SELECT * INTO rollout_row FROM release_authority.rollout
+    WHERE rollout_id = p_intent->>'rolloutId' FOR UPDATE;
+  IF NOT FOUND OR rollout_row.state <> 'pre_activation'
+    THEN RAISE EXCEPTION 'release runner effect preparation frozen'; END IF;
 
   INSERT INTO release_authority.runner_intent(
     intent_id, rollout_id, service_id, lifecycle, workflow_job_id, runner_name,
@@ -137,6 +143,7 @@ CREATE FUNCTION release_authority.release_runner_acquire_dispatch_permit(p_input
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
 DECLARE current_row release_authority.runner_intent%ROWTYPE;
+DECLARE rollout_row release_authority.rollout%ROWTYPE;
 BEGIN
   IF coalesce(p_input->>'claimantId','') !~ '^rrc-[0-9a-f-]{36}$'
     OR coalesce(p_input->>'startCommandSha256','') !~ '^sha256:[a-f0-9]{64}$'
@@ -145,6 +152,10 @@ BEGIN
   THEN RAISE EXCEPTION 'release runner dispatch permit invalid'; END IF;
   SELECT * INTO STRICT current_row FROM release_authority.runner_intent
     WHERE intent_id = p_input->>'intentId' FOR UPDATE;
+  SELECT * INTO STRICT rollout_row FROM release_authority.rollout
+    WHERE rollout_id = current_row.rollout_id FOR UPDATE;
+  IF rollout_row.state <> 'pre_activation'
+    THEN RAISE EXCEPTION 'release runner dispatch frozen'; END IF;
   IF current_row.start_command_sha256 <> p_input->>'startCommandSha256'
     THEN RAISE EXCEPTION 'release runner dispatch command conflict'; END IF;
   IF current_row.effect_state = 'prepared'
@@ -291,10 +302,31 @@ CREATE TRIGGER release_runner_terminal_effect_trigger
 AFTER UPDATE OF terminal_at ON release_authority.runner_job
 FOR EACH ROW EXECUTE FUNCTION release_authority.release_runner_terminal_effect();
 
+CREATE FUNCTION release_authority.release_runner_compensation_gate() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $body$
+BEGIN
+  IF OLD.state = 'pre_activation' AND NEW.state = 'compensating' AND
+    (NOT EXISTS (
+       SELECT 1 FROM release_authority.runner_intent
+       WHERE rollout_id = NEW.rollout_id
+     ) OR EXISTS (
+       SELECT 1 FROM release_authority.runner_intent
+       WHERE rollout_id = NEW.rollout_id AND
+         (effect_state NOT IN ('cleaned','abandoned') OR
+          NOT effect_safe_for_compensation)
+     ))
+  THEN RAISE EXCEPTION 'release runner effects unsafe for compensation'; END IF;
+  RETURN NEW;
+END $body$;
+CREATE TRIGGER release_runner_compensation_gate_trigger
+BEFORE UPDATE OF state ON release_authority.rollout
+FOR EACH ROW EXECUTE FUNCTION release_authority.release_runner_compensation_gate();
+
 REVOKE ALL ON FUNCTION release_authority.release_runner_prepare_effect(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_acquire_dispatch_permit(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_reconcile_effect(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_abandon_prepared(text,text,bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_runner_compensation_gate() FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_persist_intent(jsonb) FROM reviewrouter_release_control;
 REVOKE ALL ON FUNCTION release_authority.release_runner_claim_provider_creation(jsonb) FROM reviewrouter_release_control;
 REVOKE ALL ON FUNCTION release_authority.release_runner_record_intent_outcome(jsonb) FROM reviewrouter_release_control;

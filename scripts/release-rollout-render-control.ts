@@ -7,6 +7,7 @@ import {
   RenderPrivateRunnerAdapter,
   RenderProviderFreezeAdapter,
   type RunnerIdentity,
+  type RunnerReconciliationReport,
 } from "../packages/features/release-rollout/src/index";
 import { parseFreezeSourceWriterServiceIds } from "./release-rollout-render-control-config";
 
@@ -57,6 +58,36 @@ const positiveInteger = (name: string, fallback: number): number => {
   if (!Number.isSafeInteger(value) || value <= 0)
     throw new Error(`release_rollout_control_invalid:${name}`);
   return value;
+};
+export const reconcileWithBoundedBackoff = async (options: {
+  attempts: number;
+  initialDelayMs: number;
+  maximumDelayMs: number;
+  reconcile: () => Promise<RunnerReconciliationReport>;
+  sleep?: (milliseconds: number) => Promise<void>;
+}): Promise<RunnerReconciliationReport> => {
+  const sleep =
+    options.sleep ??
+    ((milliseconds: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  let report: RunnerReconciliationReport | undefined;
+  for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
+    report = await options.reconcile();
+    if (report.result !== "pending") return report;
+    if (attempt < options.attempts)
+      await sleep(
+        Math.min(
+          options.maximumDelayMs,
+          options.initialDelayMs * 2 ** (attempt - 1),
+        ),
+      );
+  }
+  return {
+    ...report!,
+    result: "blocked",
+    safeForCompensation: false,
+    reason: "timeout",
+  };
 };
 export const resolveWorkflowJobId = async (
   name: string,
@@ -250,19 +281,32 @@ if (mode === "freeze") {
 } else if (mode === "reconcile" || mode === "cleanup-runners") {
   const { ledger, useCases: runnerUseCases } = runnerControl();
   const path = required("REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE");
-  const observations = await runnerUseCases.reconcile(
-    required("REVIEW_ROUTER_ROLLOUT_ID"),
-    required("RENDER_RUNNER_CONTROL_API_KEY"),
-  );
+  const report = await reconcileWithBoundedBackoff({
+    attempts: positiveInteger("REVIEW_ROUTER_RECONCILIATION_ATTEMPTS", 8),
+    initialDelayMs: positiveInteger(
+      "REVIEW_ROUTER_RECONCILIATION_INITIAL_DELAY_MS",
+      5_000,
+    ),
+    maximumDelayMs: positiveInteger(
+      "REVIEW_ROUTER_RECONCILIATION_MAXIMUM_DELAY_MS",
+      30_000,
+    ),
+    reconcile: async () =>
+      await runnerUseCases.reconcile(
+        required("REVIEW_ROUTER_ROLLOUT_ID"),
+        required("RENDER_RUNNER_CONTROL_API_KEY"),
+      ),
+  });
   const rollout =
-    mode === "reconcile"
+    mode === "reconcile" && report.safeForCompensation
       ? await ledger.reconcileRollout(required("REVIEW_ROUTER_ROLLOUT_ID"))
       : null;
   writeFileSync(
     path,
-    `${JSON.stringify({ rolloutId: required("REVIEW_ROUTER_ROLLOUT_ID"), observations, rollout })}\n`,
+    `${JSON.stringify({ rolloutId: required("REVIEW_ROUTER_ROLLOUT_ID"), ...report, rollout })}\n`,
     { encoding: "utf8", mode: 0o600 },
   );
+  if (!report.safeForCompensation) process.exitCode = 1;
 } else if (mode === "verify-cleanup-file") {
   JSON.parse(
     readFileSync(required("REVIEW_ROUTER_CLEANUP_RECEIPT_FILE"), "utf8"),

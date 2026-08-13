@@ -15,6 +15,10 @@ import {
   ExternalEffectReconciliationUseCase,
 } from "../application/external-effect-protocol";
 import {
+  reconcileCompensationSafety,
+  type CompensationSafetyReconciliation,
+} from "../application/reconcile-compensation";
+import {
   RenderApiAdapter,
   type RenderDeploy,
   type RenderFetch,
@@ -112,6 +116,9 @@ export interface RunnerCleanupWitnessPort {
 export interface RunnerProviderWitnessPort {
   observe(jobId: string): Promise<void>;
 }
+
+export type RunnerReconciliationReport = CompensationSafetyReconciliation &
+  Readonly<{ observations: readonly StepObservation[] }>;
 
 export interface RenderRunnerRequest {
   readonly rolloutId: string;
@@ -662,7 +669,7 @@ export class RenderPrivateRunnerAdapter {
   async reconcileOrphans(
     rolloutId: string,
     apiKey: string,
-  ): Promise<readonly StepObservation[]> {
+  ): Promise<RunnerReconciliationReport> {
     const open = await this.ledger.listOpenJobs(rolloutId);
     const intents = await this.ledger.listProvisioningIntents(rolloutId);
     const reconciliationBoundary = this.reconciliationBoundary();
@@ -695,16 +702,27 @@ export class RenderPrivateRunnerAdapter {
       } while (cursor);
     }
     const cleanableDiscovered: PersistedRunnerJob[] = [];
+    let duplicateObserved = false;
     for (const intent of intents) {
-      const matching = discovered.filter(
-        (entry) => entry.provisioningIntentId === intent.id,
+      const matching = [...open, ...discovered].filter(
+        (entry, index, all) =>
+          entry.provisioningIntentId === intent.id &&
+          all.findIndex((candidate) => candidate.jobId === entry.jobId) ===
+            index,
       );
       if (matching.length > 1) {
+        duplicateObserved = true;
         await reconciliationBoundary.blocked({
           effectId: intent.id,
           ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
           expectedEpoch: intent.effect.epoch,
           reason: "duplicate",
+        });
+      } else if (intent.effect.state === ExternalEffectState.Prepared) {
+        await this.ledger.abandonPreparedEffect({
+          intentId: intent.id,
+          claimantId: intent.effect.ownerId!,
+          expectedEpoch: intent.effect.epoch,
         });
       } else if (
         matching.length === 0 &&
@@ -717,7 +735,7 @@ export class RenderPrivateRunnerAdapter {
           matchingProviderIds: [],
           timedOut: false,
         });
-      } else {
+      } else if (!open.some((entry) => entry.jobId === matching[0]?.jobId)) {
         cleanableDiscovered.push(...matching);
       }
     }
@@ -744,7 +762,7 @@ export class RenderPrivateRunnerAdapter {
             providerId: entry.jobId,
             reason: cleanupBlockReason(error),
           });
-        throw error;
+        continue;
       }
       observations.push(observation);
       if (open.some((known) => known.jobId === entry.jobId))
@@ -759,6 +777,20 @@ export class RenderPrivateRunnerAdapter {
           evidence: observation,
         });
     }
-    return observations;
+    const finalIntents = await this.ledger.listProvisioningIntents(rolloutId);
+    const safety = duplicateObserved
+      ? {
+          result: "blocked" as const,
+          safeForCompensation: false,
+          reason: "duplicate" as const,
+          intentCount: finalIntents.length,
+          intents: finalIntents.map(({ id, effect }) => ({
+            id,
+            state: effect.state,
+            safeForCompensation: effect.safeForCompensation,
+          })),
+        }
+      : reconcileCompensationSafety(finalIntents);
+    return { ...safety, observations };
   }
 }

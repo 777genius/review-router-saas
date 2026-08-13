@@ -1,4 +1,10 @@
 import {
+  ExternalEffectState,
+  assertExternalEffectRecord,
+  type ExternalEffectRecord,
+  type ExternalEffectReconciliation,
+} from "../domain/external-effect";
+import {
   RolloutStep,
   sha256Canonical,
   type ReleaseRollout,
@@ -36,16 +42,111 @@ type CompensationPorts = {
       nextActivationBoundary: "before";
     }): Promise<boolean>;
     reconcileRollout(rolloutId: string): Promise<unknown>;
+    listProvisioningIntents(rolloutId: string): Promise<
+      readonly {
+        readonly id: string;
+        readonly effect: ExternalEffectRecord & {
+          readonly reconciliation?: ExternalEffectReconciliation;
+        };
+      }[]
+    >;
   };
   compensateDatabase(): Promise<DatabaseAclWitness>;
   provider: Pick<ProviderControlPort, "compensateAndObserve">;
 };
 
+export type CompensationSafetyReconciliation = Readonly<{
+  result: "clean" | "pending" | "blocked";
+  safeForCompensation: boolean;
+  reason?: "unknown" | "duplicate" | "timeout" | "missing_evidence";
+  intentCount: number;
+  intents: readonly Readonly<{
+    id: string;
+    state: ExternalEffectRecord["state"];
+    safeForCompensation: boolean;
+  }>[];
+}>;
+
+/** Application gate: transport adapters supply durable facts; only this gate decides safety. */
+export function reconcileCompensationSafety(
+  evidence: readonly {
+    readonly id: string;
+    readonly effect: ExternalEffectRecord & {
+      readonly reconciliation?: ExternalEffectReconciliation;
+    };
+  }[],
+): CompensationSafetyReconciliation {
+  if (evidence.length === 0)
+    return {
+      result: "blocked",
+      safeForCompensation: false,
+      reason: "missing_evidence",
+      intentCount: 0,
+      intents: [],
+    };
+  if (new Set(evidence.map(({ id }) => id)).size !== evidence.length)
+    return {
+      result: "blocked",
+      safeForCompensation: false,
+      reason: "duplicate",
+      intentCount: evidence.length,
+      intents: [],
+    };
+
+  const intents = evidence.map(({ id, effect: value }) => {
+    const effect = assertExternalEffectRecord(value);
+    return {
+      id,
+      state: effect.state,
+      safeForCompensation: effect.safeForCompensation,
+    };
+  });
+  const blocked = evidence.find(
+    ({ effect }) => effect.state === ExternalEffectState.Blocked,
+  );
+  if (blocked) {
+    const reportedReason = blocked.effect.reconciliation;
+    return {
+      result: "blocked",
+      safeForCompensation: false,
+      reason:
+        reportedReason?.result === "blocked" &&
+        (reportedReason.reason === "duplicate" ||
+          reportedReason.reason === "timeout")
+          ? reportedReason.reason
+          : "unknown",
+      intentCount: intents.length,
+      intents,
+    };
+  }
+  if (
+    intents.every(
+      ({ state, safeForCompensation }) =>
+        (state === ExternalEffectState.Cleaned ||
+          state === ExternalEffectState.Abandoned) &&
+        safeForCompensation,
+    )
+  )
+    return {
+      result: "clean",
+      safeForCompensation: true,
+      intentCount: intents.length,
+      intents,
+    };
+  return {
+    result: "pending",
+    safeForCompensation: false,
+    intentCount: intents.length,
+    intents,
+  };
+}
+
 export class ReleaseCompensationReconciliationUseCase {
   constructor(private readonly ports: CompensationPorts) {}
 
   async execute(rollout: ReleaseRollout): Promise<{
-    outcome: "compensated" | "forward_only";
+    outcome: "compensated" | "forward_only" | "denied";
+    externalEffects?: CompensationSafetyReconciliation;
     reconciliation: unknown;
   }> {
     let checkpoint = await this.checkpoint(rollout);
@@ -55,6 +156,16 @@ export class ReleaseCompensationReconciliationUseCase {
         reconciliation: await this.ports.ledger.reconcileRollout(
           rollout.rolloutId,
         ),
+      };
+
+    const externalEffects = reconcileCompensationSafety(
+      await this.ports.ledger.listProvisioningIntents(rollout.rolloutId),
+    );
+    if (!externalEffects.safeForCompensation)
+      return {
+        outcome: "denied",
+        externalEffects,
+        reconciliation: null,
       };
 
     if (checkpoint.state === "pre_activation")
@@ -121,6 +232,7 @@ export class ReleaseCompensationReconciliationUseCase {
       throw new Error("release_compensation_checkpoint_incomplete");
     return {
       outcome: "compensated",
+      externalEffects,
       reconciliation: await this.ports.ledger.reconcileRollout(
         rollout.rolloutId,
       ),

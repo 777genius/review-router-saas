@@ -57,4 +57,6 @@ const useCase = new ReleaseCompensationReconciliationUseCase({
       }),
   },
 });
-process.stdout.write(`${JSON.stringify(await useCase.execute(rollout))}\n`);
+const result = await useCase.execute(rollout);
+process.stdout.write(`${JSON.stringify(result)}\n`);
+if (result.outcome === "denied") process.exitCode = 1;

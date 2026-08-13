@@ -82,7 +82,18 @@ jobs:
           REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
           REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
           REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: provision-reconciliation.json
+          REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8
+          REVIEW_ROUTER_RECONCILIATION_INITIAL_DELAY_MS: 5000
+          REVIEW_ROUTER_RECONCILIATION_MAXIMUM_DELAY_MS: 30000
         run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: provision-reconciliation-${{ steps.context.outputs.rollout_id }}-${{ github.event.workflow_run.id }}
+          path: provision-reconciliation.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
 
   cleanup:
     if: >-
@@ -115,4 +126,15 @@ jobs:
           REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
           REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
           REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: runner-cleanup-reconciliation.json
+          REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8
+          REVIEW_ROUTER_RECONCILIATION_INITIAL_DELAY_MS: 5000
+          REVIEW_ROUTER_RECONCILIATION_MAXIMUM_DELAY_MS: 30000
         run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: runner-cleanup-reconciliation-${{ steps.context.outputs.rollout_id }}-${{ github.event.workflow_run.id }}
+          path: runner-cleanup-reconciliation.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0

@@ -502,7 +502,7 @@ export class ReleaseRolloutUseCases {
 }
 
 /** Application boundary for hosted controller commands that do not own the aggregate artifact. */
-export class PrivateRunnerControlUseCases<Provision, Cleanup> {
+export class PrivateRunnerControlUseCases<Provision, Cleanup, Reconciliation> {
   constructor(
     private readonly runner: {
       provision(input: Provision): Promise<unknown>;
@@ -510,7 +510,7 @@ export class PrivateRunnerControlUseCases<Provision, Cleanup> {
       reconcileOrphans(
         rolloutId: string,
         apiKey: string,
-      ): Promise<readonly StepObservation[]>;
+      ): Promise<Reconciliation>;
     },
   ) {}
 

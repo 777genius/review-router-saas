@@ -95,6 +95,11 @@ describe("private-network PG17 workflow security contract", () => {
     ).toContain('repositoryIdentity.default_branch !== "main"');
     expect(controller).toContain("REVIEW_ROUTER_RUNNER_GROUP_ID");
     expect(controller).toContain("cleanup-runners");
+    expect(controller).toContain("REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8");
+    expect(controller).toContain(
+      "REVIEW_ROUTER_RECONCILIATION_MAXIMUM_DELAY_MS: 30000",
+    );
+    expect(controller).toContain("runner-cleanup-reconciliation.json");
     expect(workflow).not.toContain("outputs.label");
     expect(controller).toContain(
       "REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}",
@@ -147,6 +152,11 @@ describe("private-network PG17 workflow security contract", () => {
     expect(reconcile).toContain("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON:");
     expect(reconcile).toContain("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN:");
     expect(reconcile).toContain("RENDER_SERVICE_SUSPENSION_API_KEY:");
+    expect(reconcile).toContain("REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8");
+    expect(reconcile.indexOf("cleanup-runners")).toBeLessThan(
+      reconcile.indexOf("reconcile-private-pg17-compensation.ts"),
+    );
+    expect(reconcile).toContain("compensation-gate-");
     expect(reconcile).not.toContain("RENDER_TARGET_SWITCH_API_KEY:");
   });
 
