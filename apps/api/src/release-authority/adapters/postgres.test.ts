@@ -97,6 +97,88 @@ const expectJsonbBinding = (query: Prisma.Sql, expected: unknown): void => {
 };
 
 describe("release authority postgres JSONB bindings", () => {
+  it("serializes prepared, dispatching, bound, and cleaned list results with owner retention", async () => {
+    const ownerId = "rrc-00000000-0000-4000-8000-000000000001";
+    const base = {
+      rolloutId: "rollout",
+      serviceId: "service",
+      lifecycle: "role",
+      workflowJobId: "123",
+      runnerName: "runner",
+      createdAt: observedAt,
+      startCommandSha256: `sha256:${"b".repeat(64)}`,
+      creationLeaseOwner: ownerId,
+    };
+    const intents = [
+      {
+        ...base,
+        id: `rri-${"1".repeat(64)}`,
+        creationLeaseExpiresAt: "2026-08-12T00:02:00.000Z",
+        effect: {
+          state: "prepared",
+          ownerId,
+          epoch: 0,
+          providerId: null,
+          safeForCompensation: false,
+        },
+      },
+      ...(["dispatching", "bound", "cleaned"] as const).map((state, index) => ({
+        ...base,
+        id: `rri-${String(index + 2).repeat(64)}`,
+        creationLeaseExpiresAt: null,
+        effect: {
+          state,
+          ownerId,
+          epoch: 1,
+          providerId: state === "dispatching" ? null : `job-${index}`,
+          safeForCompensation: state === "cleaned",
+        },
+      })),
+    ];
+    const prisma = {
+      $queryRaw: async () => [{ value: intents }],
+    } as unknown as PrismaClient;
+    const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+    await expect(adapter.listIntents("rollout")).resolves.toEqual(intents);
+  });
+
+  it("rejects a list result whose expiry contradicts the canonical effect state", async () => {
+    const ownerId = "rrc-00000000-0000-4000-8000-000000000001";
+    const prisma = {
+      $queryRaw: async () => [
+        {
+          value: [
+            {
+              id: `rri-${"1".repeat(64)}`,
+              rolloutId: "rollout",
+              serviceId: "service",
+              lifecycle: "role",
+              workflowJobId: "123",
+              runnerName: "runner",
+              createdAt: observedAt,
+              startCommandSha256: `sha256:${"b".repeat(64)}`,
+              creationLeaseOwner: ownerId,
+              creationLeaseExpiresAt: "2026-08-12T00:02:00.000Z",
+              effect: {
+                state: "dispatching",
+                ownerId,
+                epoch: 1,
+                providerId: null,
+                safeForCompensation: false,
+              },
+            },
+          ],
+        },
+      ],
+    } as unknown as PrismaClient;
+    const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+    await expect(adapter.listIntents("rollout")).rejects.toThrow(
+      "release_runner_intents_invalid",
+    );
+  });
+
   it("maps only known authority SQL conflicts to HTTP 409", async () => {
     const conflict = Object.assign(new Error("raw query failed"), {
       code: "P2010",

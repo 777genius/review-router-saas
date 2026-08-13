@@ -123,6 +123,94 @@ describe("authenticated runner ledger reconciliation", () => {
 });
 
 describe("authenticated runner provider creation lease", () => {
+  it("lists prepared, dispatching, bound, and cleaned intents through the canonical contract", async () => {
+    const ownerId = "rrc-00000000-0000-4000-8000-000000000001";
+    const base = {
+      id: `rri-${"a".repeat(64)}`,
+      rolloutId: "rollout-1",
+      serviceId: "service-1",
+      lifecycle: "role" as const,
+      workflowJobId: "123",
+      runnerName: "rr-runner",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      startCommandSha256: `sha256:${"b".repeat(64)}`,
+      creationLeaseOwner: ownerId,
+    };
+    const intents = [
+      {
+        ...base,
+        creationLeaseExpiresAt: "2026-08-12T00:02:00.000Z",
+        effect: {
+          state: "prepared",
+          ownerId,
+          epoch: 0,
+          providerId: null,
+          safeForCompensation: false,
+        },
+      },
+      ...(["dispatching", "bound", "cleaned"] as const).map((state, index) => ({
+        ...base,
+        id: `rri-${String(index + 1).repeat(64)}`,
+        creationLeaseExpiresAt: null,
+        effect: {
+          state,
+          ownerId,
+          epoch: 1,
+          providerId: state === "dispatching" ? null : `job-${index}`,
+          safeForCompensation: state === "cleaned",
+        },
+      })),
+    ];
+    const adapter = new AuthenticatedRunnerLedgerAdapter(
+      "https://control.example.test",
+      "control-token",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify(intents), { status: 200 }),
+        ),
+    );
+
+    await expect(adapter.listProvisioningIntents("rollout-1")).resolves.toEqual(
+      intents,
+    );
+  });
+
+  it("rejects listed intents whose lease does not match their effect state", async () => {
+    const invalid = {
+      id: `rri-${"a".repeat(64)}`,
+      rolloutId: "rollout-1",
+      serviceId: "service-1",
+      lifecycle: "role",
+      workflowJobId: "123",
+      runnerName: "rr-runner",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      startCommandSha256: `sha256:${"b".repeat(64)}`,
+      creationLeaseOwner: "rrc-00000000-0000-4000-8000-000000000001",
+      creationLeaseExpiresAt: "2026-08-12T00:02:00.000Z",
+      effect: {
+        state: "dispatching",
+        ownerId: "rrc-00000000-0000-4000-8000-000000000001",
+        epoch: 1,
+        providerId: null,
+        safeForCompensation: false,
+      },
+    };
+    const adapter = new AuthenticatedRunnerLedgerAdapter(
+      "https://control.example.test",
+      "control-token",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify([invalid]), { status: 200 }),
+        ),
+    );
+
+    await expect(adapter.listProvisioningIntents("rollout-1")).rejects.toThrow(
+      "runner_ledger_provisioning_intents_invalid",
+    );
+  });
+
   it("prepares the durable effect before any provider dispatch", async () => {
     const intent = {
       id: `rri-${"a".repeat(64)}`,

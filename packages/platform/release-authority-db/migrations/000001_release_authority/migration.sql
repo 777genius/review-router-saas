@@ -1106,7 +1106,8 @@ BEGIN
   SELECT count(*)::integer INTO receipt_count FROM release_authority.receipt
     WHERE rollout_id = p_rollout_id;
   SELECT * INTO latest_receipt FROM release_authority.receipt
-    WHERE rollout_id = p_rollout_id ORDER BY ordinal DESC LIMIT 1;
+    WHERE rollout_id = p_rollout_id
+      AND receipt_sha256 = current_row.last_receipt_sha256;
   RETURN jsonb_build_object(
     'activationBoundary', current_row.activation_boundary,
     'state', current_row.state,

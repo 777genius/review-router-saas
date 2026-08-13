@@ -8,7 +8,10 @@ import type {
   StepObservation,
   TargetSwitchFence,
 } from "@reviewrouter/features-release-rollout";
-import { assertExternalEffectRecord } from "@reviewrouter/features-release-rollout";
+import {
+  assertExternalEffectRecord,
+  assertRunnerProvisioningIntentRecord,
+} from "@reviewrouter/features-release-rollout";
 import type {
   IndependentCleanupWitness,
   PersistedJob,
@@ -284,29 +287,13 @@ export class RoutineReleaseControlLedgerAdapter
       this.prisma,
       Prisma.sql`SELECT release_authority.release_runner_list_intents(${rolloutId}) AS value`,
     );
-    if (
-      !Array.isArray(value) ||
-      value.some(
-        (entry) =>
-          !entry ||
-          typeof entry !== "object" ||
-          typeof (entry as ProvisioningIntent).id !== "string" ||
-          typeof (entry as ProvisioningIntent).startCommandSha256 !==
-            "string" ||
-          !(entry as ProvisioningIntent).effect ||
-          ((entry as ProvisioningIntent).creationLeaseOwner !== null &&
-            typeof (entry as ProvisioningIntent).creationLeaseOwner !==
-              "string") ||
-          ((entry as ProvisioningIntent).creationLeaseExpiresAt !== null &&
-            typeof (entry as ProvisioningIntent).creationLeaseExpiresAt !==
-              "string") ||
-          ((entry as ProvisioningIntent).creationLeaseOwner === null) !==
-            ((entry as ProvisioningIntent).creationLeaseExpiresAt === null),
-      )
-    )
+    if (!Array.isArray(value))
       throw new Error("release_runner_intents_invalid");
-    for (const entry of value)
-      assertExternalEffectRecord((entry as ProvisioningIntent).effect);
+    try {
+      for (const entry of value) assertRunnerProvisioningIntentRecord(entry);
+    } catch {
+      throw new Error("release_runner_intents_invalid");
+    }
     return value as ProvisioningIntent[];
   }
 

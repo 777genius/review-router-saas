@@ -3,6 +3,7 @@ import type {
   ActivationReceipt,
   ExternalEffectControlReconciliation,
   ExternalEffectRecord,
+  RunnerProvisioningIntentRecord,
   ProviderAuthorityDecision,
   ProviderAuthorityRequest,
   RunnerIdentity,
@@ -35,19 +36,7 @@ export type RolloutBinding = {
   sourceSystemIdentifier: string;
   targetSystemIdentifier: string;
 };
-export type ProvisioningIntent = {
-  id: string;
-  rolloutId: string;
-  serviceId: string;
-  lifecycle: "role" | "cutover";
-  workflowJobId: string;
-  runnerName: string;
-  createdAt: string;
-  startCommandSha256: string;
-  creationLeaseOwner: string | null;
-  creationLeaseExpiresAt: string | null;
-  effect: ExternalEffectRecord;
-};
+export type ProvisioningIntent = RunnerProvisioningIntentRecord;
 export type CreateProvisioningIntent = Omit<
   ProvisioningIntent,
   "creationLeaseOwner" | "creationLeaseExpiresAt" | "effect"

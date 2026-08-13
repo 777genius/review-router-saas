@@ -9,6 +9,7 @@ import {
   ExternalEffectState,
   type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
+  type RunnerProvisioningIntentRecord,
 } from "../domain/external-effect";
 import {
   ExternalEffectDispatchUseCase,
@@ -44,19 +45,7 @@ export interface PersistedRunnerJob {
   readonly lifecycle: "role" | "cutover";
   readonly provisioningIntentId: string;
 }
-export interface RunnerProvisioningIntent {
-  readonly id: string;
-  readonly rolloutId: string;
-  readonly serviceId: string;
-  readonly lifecycle: "role" | "cutover";
-  readonly workflowJobId: string;
-  readonly runnerName: string;
-  readonly createdAt: string;
-  readonly startCommandSha256: string;
-  readonly creationLeaseOwner: string | null;
-  readonly creationLeaseExpiresAt: string | null;
-  readonly effect: ExternalEffectRecord;
-}
+export type RunnerProvisioningIntent = RunnerProvisioningIntentRecord;
 export type CreateRunnerProvisioningIntent = Omit<
   RunnerProvisioningIntent,
   "creationLeaseOwner" | "creationLeaseExpiresAt" | "effect"

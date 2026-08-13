@@ -19,6 +19,7 @@ import type { RunnerIdentity } from "../domain/release-rollout";
 import type { CompensationCheckpoint } from "../application/ports";
 import {
   assertExternalEffectRecord,
+  assertRunnerProvisioningIntentRecord,
   type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
 } from "../domain/external-effect";
@@ -80,31 +81,13 @@ export class AuthenticatedRunnerLedgerAdapter
     const value = await this.request(
       `/v1/runner-jobs/intents?rollout_id=${encodeURIComponent(rolloutId)}`,
     );
-    if (
-      !Array.isArray(value) ||
-      value.some(
-        (entry) =>
-          !entry ||
-          typeof entry !== "object" ||
-          typeof (entry as RunnerProvisioningIntent).id !== "string" ||
-          typeof (entry as RunnerProvisioningIntent).startCommandSha256 !==
-            "string" ||
-          !(entry as RunnerProvisioningIntent).effect ||
-          ((entry as RunnerProvisioningIntent).creationLeaseOwner !== null &&
-            typeof (entry as RunnerProvisioningIntent).creationLeaseOwner !==
-              "string") ||
-          ((entry as RunnerProvisioningIntent).creationLeaseExpiresAt !==
-            null &&
-            typeof (entry as RunnerProvisioningIntent)
-              .creationLeaseExpiresAt !== "string") ||
-          ((entry as RunnerProvisioningIntent).creationLeaseOwner === null) !==
-            ((entry as RunnerProvisioningIntent).creationLeaseExpiresAt ===
-              null),
-      )
-    )
+    if (!Array.isArray(value))
       throw new Error("runner_ledger_provisioning_intents_invalid");
-    for (const entry of value)
-      assertExternalEffectRecord((entry as RunnerProvisioningIntent).effect);
+    try {
+      for (const entry of value) assertRunnerProvisioningIntentRecord(entry);
+    } catch {
+      throw new Error("runner_ledger_provisioning_intents_invalid");
+    }
     return value as RunnerProvisioningIntent[];
   }
   async acquireProviderDispatchPermit(

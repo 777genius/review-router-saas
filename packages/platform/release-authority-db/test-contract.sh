@@ -3,7 +3,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../../.." && pwd)
 name="rr-release-authority-pg17-$$"
-docker run -d --rm --name "$name" -e POSTGRES_PASSWORD=test postgres:17-alpine >/dev/null
+docker run -d --rm --name "$name" -p 127.0.0.1::5432 -e POSTGRES_PASSWORD=test postgres:17-alpine >/dev/null
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
 
 for _ in $(seq 1 60); do
@@ -69,6 +69,12 @@ atomic_residue=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_a
 test "$atomic_residue" = 0:0:0:0
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000002.sql >/dev/null
+
+postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
+REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
+REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_TEST_URL="postgresql://reviewrouter_release_witness:witness@127.0.0.1:$postgres_port/postgres" \
+  pnpm exec vitest --configLoader runner run \
+    apps/api/src/release-authority/adapters/postgres.real.test.ts
 
 legacy_effect=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT effect_state||':'||effect_safe_for_compensation||':'||effect_block_reason||':'||
@@ -177,11 +183,23 @@ effect_intent='{"id":"rri-'$(printf '2%.0s' $(seq 1 64))'","rolloutId":"r-effect
 prepared_effect=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_prepare_effect('$effect_intent')->>'state'")
 test "$prepared_effect" = prepared
+prepared_listing=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (intent->>'state')||':'||(listed->>'creationLeaseOwner')||':'||
+      ((listed->>'creationLeaseExpiresAt') IS NOT NULL)
+   FROM (SELECT release_authority.release_runner_list_intents('r-effect')->0 listed) value,
+        LATERAL (SELECT listed->'effect' intent) effect")
+test "$prepared_listing" = prepared:rrc-00000000-0000-4000-8000-000000000011:true
 permit_input_a='{"intentId":"rri-'$(printf '2%.0s' $(seq 1 64))'","claimantId":"rrc-00000000-0000-4000-8000-000000000011","startCommandSha256":"sha256:'$(printf '3%.0s' $(seq 1 64))'","expectedEpoch":0,"leaseSeconds":120}'
 permit_input_b='{"intentId":"rri-'$(printf '2%.0s' $(seq 1 64))'","claimantId":"rrc-00000000-0000-4000-8000-000000000012","startCommandSha256":"sha256:'$(printf '3%.0s' $(seq 1 64))'","expectedEpoch":0,"leaseSeconds":120}'
 permit_a=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT (release_authority.release_runner_acquire_dispatch_permit('$permit_input_a')->>'state')||':'||(release_authority.release_runner_acquire_dispatch_permit('$permit_input_a')->>'ownerId')")
 test "$permit_a" = dispatching:rrc-00000000-0000-4000-8000-000000000011
+dispatching_listing=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (intent->>'state')||':'||(listed->>'creationLeaseOwner')||':'||
+      ((listed->>'creationLeaseExpiresAt') IS NOT NULL)
+   FROM (SELECT release_authority.release_runner_list_intents('r-effect')->0 listed) value,
+        LATERAL (SELECT listed->'effect' intent) effect")
+test "$dispatching_listing" = dispatching:rrc-00000000-0000-4000-8000-000000000011:false
 permit_b=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT (release_authority.release_runner_acquire_dispatch_permit('$permit_input_b')->>'state')||':'||(release_authority.release_runner_acquire_dispatch_permit('$permit_input_b')->>'ownerId')")
 test "$permit_b" = dispatching:rrc-00000000-0000-4000-8000-000000000011
@@ -211,6 +229,12 @@ bound_effect=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1
   "SELECT release_authority.release_runner_reconcile_effect(
     '{\"intentId\":\"rri-$(printf '2%.0s' $(seq 1 64))\",\"claimantId\":\"rrc-00000000-0000-4000-8000-000000000099\",\"expectedEpoch\":1,\"jobId\":\"job-effect\",\"reconciliation\":{\"result\":\"pending\",\"safeForCompensation\":false}}')->>'state'")
 test "$bound_effect" = bound
+bound_listing=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (intent->>'state')||':'||(listed->>'creationLeaseOwner')||':'||
+      ((listed->>'creationLeaseExpiresAt') IS NOT NULL)
+   FROM (SELECT release_authority.release_runner_list_intents('r-effect')->0 listed) value,
+        LATERAL (SELECT listed->'effect' intent) effect")
+test "$bound_listing" = bound:rrc-00000000-0000-4000-8000-000000000011:false
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_reconcile_effect(jsonb_build_object(
     'intentId','rri-'||repeat('2',64),'claimantId','rrc-00000000-0000-4000-8000-000000000099',
@@ -249,6 +273,12 @@ clean_effect=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT effect_state||':'||effect_safe_for_compensation
    FROM release_authority.runner_intent WHERE intent_id='rri-'||repeat('2',64)")
 test "$clean_effect" = cleaned:true
+cleaned_listing=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (intent->>'state')||':'||(listed->>'creationLeaseOwner')||':'||
+      ((listed->>'creationLeaseExpiresAt') IS NOT NULL)
+   FROM (SELECT release_authority.release_runner_list_intents('r-effect')->0 listed) value,
+        LATERAL (SELECT listed->'effect' intent) effect")
+test "$cleaned_listing" = cleaned:rrc-00000000-0000-4000-8000-000000000011:false
 
 # Discovery remains authoritative after cleanup: a provider job that appears
 # late must be durably witnessable and must revoke compensation safety.
@@ -480,6 +510,13 @@ fi
 # Compensation must fail closed when runner-effect evidence is absent or unsafe.
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r-comp-no-intent', repeat('5',40), '6', 1, '105', '205')" >/dev/null
+empty_checkpoint=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (checkpoint->>'activationBoundary')||':'||(checkpoint->>'state')||':'||
+      (checkpoint->>'lastReceiptSha256')||':'||coalesce(checkpoint->>'lastStep','null')||':'||
+      (checkpoint->>'receiptCount')
+   FROM (SELECT release_authority.release_rollout_compensation_checkpoint(
+      'r-comp-no-intent','105','205') checkpoint) value")
+test "$empty_checkpoint" = before:pre_activation:sha256:$(printf '0%.0s' $(seq 1 64)):null:0
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_append_receipt(
     'r-comp-no-intent',repeat('5',40),'6',1,'105','205','begin_compensation',
@@ -554,6 +591,13 @@ test "$r3_abandoned_intent" = abandoned:true
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_append_receipt('r3',repeat('c',40),'3',1,'102','202',
     'begin_compensation','sha256:'||repeat('0',64),'sha256:'||repeat('2',64),'102','before','before',NULL)" >/dev/null
+compensation_checkpoint=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (checkpoint->>'activationBoundary')||':'||(checkpoint->>'state')||':'||
+      (checkpoint->>'lastReceiptSha256')||':'||(checkpoint->>'lastStep')||':'||
+      (checkpoint->>'receiptCount')
+   FROM (SELECT release_authority.release_rollout_compensation_checkpoint(
+      'r3','102','202') checkpoint) value")
+test "$compensation_checkpoint" = before:compensating:sha256:$(printf '2%.0s' $(seq 1 64)):begin_compensation:1
 resume_source_request='{"rolloutId":"r3","operation":"resume_source","sourceSystemIdentifier":"102","targetSystemIdentifier":"202","expectedReceiptSha256":"sha256:'$(printf '2%.0s' $(seq 1 64))'","activationBoundary":"before"}'
 docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
   "SELECT release_authority.release_provider_authority_decide('$resume_source_request')" >/dev/null
