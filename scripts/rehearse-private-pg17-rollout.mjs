@@ -70,6 +70,20 @@ function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
+function redactedErrorChain(error) {
+  const messages = [];
+  let current = error;
+  while (current instanceof Error && messages.length < 5) {
+    messages.push(current.message);
+    current = current.cause;
+  }
+  return messages
+    .join(":")
+    .replace(/PASSWORD\s+'[^']*'/giu, "PASSWORD '[redacted]'")
+    .replace(/postgres(?:ql)?:\/\/[^\s]+/giu, "[redacted-database-url]")
+    .slice(0, 2_000);
+}
+
 const disposableSqlConfiguration = () => ({
   roles: [
     { role: "api", username: "reviewrouter_api", password: "disposable-api" },
@@ -1753,7 +1767,7 @@ if (
       );
   } catch (error) {
     process.stderr.write(
-      `FAIL: ${error instanceof Error ? error.message : "private_pg17_rehearsal_failed"}\n`,
+      `FAIL: ${error instanceof Error ? redactedErrorChain(error) : "private_pg17_rehearsal_failed"}\n`,
     );
     process.exitCode = 1;
   }

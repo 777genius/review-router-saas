@@ -69,6 +69,7 @@ describe("disposable dual-version rehearsal", () => {
       '"000069_release_rollout_ledger"',
       "private_pg17_rehearsal_source_migration_failed:exit=",
       "[redacted-database-url]",
+      "redactedErrorChain",
     ])
       expect(source).toContain(required);
     expect(source).not.toContain(
