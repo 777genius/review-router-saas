@@ -38,6 +38,20 @@ export interface ProviderAuthorityDecision extends ProviderAuthorityRequest {
 export interface ProviderAuthorityDecisionPort {
   decide(input: ProviderAuthorityRequest): Promise<ProviderAuthorityDecision>;
 }
+export interface CompensationCheckpoint {
+  readonly activationBoundary: "before" | "uncertain" | "activated";
+  readonly state:
+    | "pre_activation"
+    | "compensating"
+    | "compensated"
+    | "activation_authorized"
+    | "activated"
+    | "outcome_unknown"
+    | "forward_repair_required";
+  readonly lastReceiptSha256: string;
+  readonly lastStep: string | null;
+  readonly receiptCount: number;
+}
 export interface DatabaseAclWitness {
   readonly systemIdentifier: string;
   readonly aclSha256: string;

@@ -1,0 +1,161 @@
+import { describe, expect, it, vi } from "vitest";
+import { createReleaseRollout, RolloutStep } from "../domain/release-rollout";
+import { ReleaseCompensationReconciliationUseCase } from "./reconcile-compensation";
+
+const rollout = createReleaseRollout({
+  rolloutId: "rollout-reconcile-test",
+  expectedCommitSha: "d".repeat(40),
+  execution: {
+    organization: "rr-control",
+    controlRepository: "rr-control/releases",
+    workflowPath: ".github/workflows/private-network-pg17-rollout.yml",
+    workflowRef: "refs/heads/main",
+    event: "workflow_dispatch",
+    actor: "operator",
+    runId: "12",
+    runAttempt: 1,
+    roleJobName: "private-role-job",
+    cutoverJobName: "private-cutover-job",
+  },
+  source: {
+    renderResourceId: "dpg-source",
+    internalHostname: "source.internal",
+    databaseName: "reviewrouter",
+    systemIdentifier: "1",
+    majorVersion: 16,
+    recoveryWitnessSha256: "b".repeat(64),
+  },
+  target: {
+    renderResourceId: "dpg-target",
+    internalHostname: "target.internal",
+    databaseName: "reviewrouter",
+    systemIdentifier: "2",
+    majorVersion: 17,
+    recoveryWitnessSha256: "c".repeat(64),
+  },
+});
+const databaseWitness = {
+  systemIdentifier: "1",
+  aclSha256: `sha256:${"a".repeat(64)}`,
+  observedAt: "2026-08-13T00:00:00.000Z",
+  sourceWritesRestored: true as const,
+};
+const providerWitness = {
+  serviceIds: ["srv-source"],
+  deployIds: ["dep-source"],
+  observedAt: "2026-08-13T00:00:01.000Z",
+  resumed: true as const,
+};
+
+function ports(initial: {
+  activationBoundary: "before" | "uncertain" | "activated";
+  state: "pre_activation" | "compensating" | "compensated" | "activated";
+  lastStep: string | null;
+  receiptCount: number;
+}) {
+  let checkpoint = {
+    ...initial,
+    lastReceiptSha256: `sha256:${"0".repeat(64)}`,
+  };
+  const compareAndSet = vi.fn().mockImplementation(async (input) => {
+    checkpoint = {
+      ...checkpoint,
+      state:
+        input.step === RolloutStep.CompleteCompensation
+          ? "compensated"
+          : "compensating",
+      lastStep: input.step,
+      lastReceiptSha256: input.nextReceiptSha256,
+      receiptCount: checkpoint.receiptCount + 1,
+    };
+    return true;
+  });
+  return {
+    authority: {
+      decide: vi.fn().mockImplementation(async (input) => ({
+        ...input,
+        decision: "allow",
+        decisionId: "decision-1",
+        decidedAt: "2026-08-13T00:00:00.000Z",
+      })),
+    },
+    ledger: {
+      observeCompensationCheckpoint: vi.fn(async () => checkpoint),
+      compareAndSet,
+      reconcileRollout: vi.fn().mockResolvedValue({ state: "ok" }),
+    },
+    compensateDatabase: vi.fn().mockResolvedValue(databaseWitness),
+    provider: {
+      compensateAndObserve: vi.fn().mockResolvedValue(providerWitness),
+    },
+  };
+}
+
+describe("release compensation reconciliation", () => {
+  it("compensates a crash after freeze and appends complete receipts", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastStep: RolloutStep.FreezeProviderServices,
+      receiptCount: 3,
+    });
+    const result = await new ReleaseCompensationReconciliationUseCase(
+      dependencies,
+    ).execute(rollout);
+    expect(result.outcome).toBe("compensated");
+    expect(dependencies.ledger.compareAndSet).toHaveBeenCalledTimes(3);
+    expect(dependencies.authority.decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "resume_source",
+        activationBoundary: "before",
+      }),
+    );
+  });
+
+  it("is an exact no-effect retry after compensation completed", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "compensated",
+      lastStep: RolloutStep.CompleteCompensation,
+      receiptCount: 6,
+    });
+    await new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+      rollout,
+    );
+    expect(dependencies.ledger.compareAndSet).not.toHaveBeenCalled();
+    expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+    expect(dependencies.provider.compensateAndObserve).not.toHaveBeenCalled();
+  });
+
+  it("stays forward-only after activation", async () => {
+    const dependencies = ports({
+      activationBoundary: "activated",
+      state: "activated",
+      lastStep: RolloutStep.ActivateTargetGeneration,
+      receiptCount: 14,
+    });
+    const result = await new ReleaseCompensationReconciliationUseCase(
+      dependencies,
+    ).execute(rollout);
+    expect(result.outcome).toBe("forward_only");
+    expect(dependencies.authority.decide).not.toHaveBeenCalled();
+    expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+  });
+
+  it("completes an incomplete compensation without repeating effects", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "compensating",
+      lastStep: RolloutStep.EffectCompensation,
+      receiptCount: 5,
+    });
+    await new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+      rollout,
+    );
+    expect(dependencies.ledger.compareAndSet).toHaveBeenCalledTimes(1);
+    expect(dependencies.ledger.compareAndSet).toHaveBeenCalledWith(
+      expect.objectContaining({ step: RolloutStep.CompleteCompensation }),
+    );
+    expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+  });
+});

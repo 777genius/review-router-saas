@@ -27,8 +27,10 @@ describe("private-network PG17 workflow security contract", () => {
     const databaseJobs = jobs(workflow).filter((block) =>
       block.includes("DATABASE_URL"),
     );
-    expect(databaseJobs).toHaveLength(2);
-    for (const block of databaseJobs) {
+    expect(databaseJobs).toHaveLength(3);
+    for (const block of databaseJobs.filter(
+      (block) => !block.startsWith("  always-reconcile:"),
+    )) {
       expect(block).toContain(
         "group: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}",
       );
@@ -40,7 +42,12 @@ describe("private-network PG17 workflow security contract", () => {
     for (const block of jobs(workflow).filter((item) =>
       item.includes("runs-on: ubuntu-24.04"),
     )) {
-      expect(block).not.toContain("DATABASE_URL");
+      if (block.startsWith("  always-reconcile:")) {
+        expect(
+          block.match(/REVIEW_ROUTER_SOURCE_DATABASE_URL:/gu),
+        ).toHaveLength(1);
+        expect(block).not.toContain("REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON:");
+      } else expect(block).not.toContain("DATABASE_URL");
       expect(block).not.toMatch(/\bpsql\b|\bpg_dump\b|\bpg_restore\b/u);
     }
   });
@@ -111,7 +118,12 @@ describe("private-network PG17 workflow security contract", () => {
     )!;
     expect(reconcile).toContain("REVIEW_ROUTER_RUNNER_WITNESS_TOKEN:");
     expect(reconcile).toContain("REVIEW_ROUTER_RUNNER_WITNESS_URL:");
-    expect(reconcile).not.toContain("REVIEW_ROUTER_SOURCE_DATABASE_URL:");
+    expect(reconcile).toContain("reconcile-private-pg17-compensation.ts");
+    expect(reconcile).toContain("REVIEW_ROUTER_SOURCE_DATABASE_URL:");
+    expect(reconcile).toContain("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON:");
+    expect(reconcile).toContain("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN:");
+    expect(reconcile).toContain("RENDER_SERVICE_SUSPENSION_API_KEY:");
+    expect(reconcile).not.toContain("RENDER_TARGET_SWITCH_API_KEY:");
   });
 
   it("keeps installer and external authority credentials out of every workflow job", () => {

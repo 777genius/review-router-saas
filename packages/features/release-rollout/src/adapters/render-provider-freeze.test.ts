@@ -140,4 +140,45 @@ describe("Render provider writer inventory", () => {
     ).rejects.toThrow("render_source_compensation_authority_invalid");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("re-observes an already resumed source after a compensation crash", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({ ...service, suspended: "not_suspended" }),
+      )
+      .mockResolvedValueOnce(
+        response([
+          { deploy: { id: "dep-live", status: "live", commit: { id: "a" } } },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        response({ ...service, suspended: "not_suspended" }),
+      );
+    await expect(
+      new RenderProviderFreezeAdapter(fetchImpl).compensateAndObserve({
+        apiKey: "redacted",
+        sourceWriterServiceIds: [service.id],
+        sourceSystemIdentifier: "100",
+        databaseWitness: {
+          systemIdentifier: "100",
+          aclSha256: `sha256:${"a".repeat(64)}`,
+          observedAt: "2026-08-12T00:00:00.000Z",
+          sourceWritesRestored: true,
+        },
+        decision: {
+          rolloutId: "rollout-1",
+          operation: ProviderAuthorityOperation.ResumeSource,
+          sourceSystemIdentifier: "100",
+          targetSystemIdentifier: "200",
+          expectedReceiptSha256: `sha256:${"b".repeat(64)}`,
+          activationBoundary: "before",
+          decision: "allow",
+          decisionId: "decision-1",
+          decidedAt: "2026-08-12T00:00:00.000Z",
+        },
+      }),
+    ).resolves.toMatchObject({ resumed: true, deployIds: ["dep-live"] });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
 });

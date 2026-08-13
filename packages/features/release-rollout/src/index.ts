@@ -2,6 +2,7 @@ export * from "./domain/release-rollout";
 export * from "./domain/trusted-rollout-evidence";
 export * from "./application/ports";
 export * from "./application/use-cases";
+export * from "./application/reconcile-compensation";
 export * from "./adapters/render-private-runner";
 export * from "./adapters/github-jit-bootstrap";
 export * from "./adapters/render-provider-freeze";

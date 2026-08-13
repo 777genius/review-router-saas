@@ -296,4 +296,18 @@ jobs:
           REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
           REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
           REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: orphan-reconciliation.json
-        run: node --import tsx scripts/release-rollout-render-control.ts reconcile
+        run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: "protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1"
+          path: artifacts/preflight
+      - name: Complete safe pre-activation compensation, then reconcile
+        env:
+          REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
+          REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
+          REVIEW_ROUTER_SOURCE_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL }}
+          REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON }}
+          REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: artifacts/preflight/initial-rollout.json
+        run: node --import tsx scripts/reconcile-private-pg17-compensation.ts > compensation-reconciliation.json

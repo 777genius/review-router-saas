@@ -13,6 +13,7 @@ import type {
   TargetSwitchFence,
 } from "../domain/release-rollout";
 import type { RunnerIdentity } from "../domain/release-rollout";
+import type { CompensationCheckpoint } from "../application/ports";
 
 export class AuthenticatedRunnerLedgerAdapter
   implements
@@ -328,6 +329,35 @@ export class AuthenticatedRunnerLedgerAdapter
     if (!["before", "uncertain", "activated"].includes(String(value.state)))
       throw new Error("runner_ledger_activation_state_invalid");
     return value.state as "before" | "uncertain" | "activated";
+  }
+  async observeCompensationCheckpoint(input: {
+    rolloutId: string;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+  }): Promise<CompensationCheckpoint> {
+    const value = (await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/compensation-checkpoint?source_system_identifier=${encodeURIComponent(input.sourceSystemIdentifier)}&target_system_identifier=${encodeURIComponent(input.targetSystemIdentifier)}`,
+    )) as Record<string, unknown>;
+    if (
+      !["before", "uncertain", "activated"].includes(
+        String(value.activationBoundary),
+      ) ||
+      ![
+        "pre_activation",
+        "compensating",
+        "compensated",
+        "activation_authorized",
+        "activated",
+        "outcome_unknown",
+        "forward_repair_required",
+      ].includes(String(value.state)) ||
+      !/^sha256:[a-f0-9]{64}$/u.test(String(value.lastReceiptSha256)) ||
+      (value.lastStep !== null && typeof value.lastStep !== "string") ||
+      !Number.isSafeInteger(value.receiptCount) ||
+      Number(value.receiptCount) < 0
+    )
+      throw new Error("runner_ledger_compensation_checkpoint_invalid");
+    return value as unknown as CompensationCheckpoint;
   }
   async verifyFinalAuthority(input: {
     rolloutId: string;

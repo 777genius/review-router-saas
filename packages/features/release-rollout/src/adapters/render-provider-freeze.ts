@@ -144,7 +144,10 @@ export class RenderProviderFreezeAdapter {
     const deployIds: string[] = [];
     for (const serviceId of input.sourceWriterServiceIds) {
       const before = await api.getService(serviceId);
-      if (before.suspended !== "suspended" || before.autoDeploy !== "no")
+      if (
+        !["suspended", "not_suspended"].includes(before.suspended) ||
+        before.autoDeploy !== "no"
+      )
         throw new Error("render_source_compensation_precondition_invalid");
       const deploys = await api.listAllDeploys(serviceId);
       if (deploys.some((deploy) => active.has(deploy.status)))
@@ -152,7 +155,7 @@ export class RenderProviderFreezeAdapter {
       const latest = deploys.find((deploy) => deploy.status === "live");
       if (!latest)
         throw new Error("render_source_compensation_live_deploy_missing");
-      await api.resume(serviceId);
+      if (before.suspended === "suspended") await api.resume(serviceId);
       let after = await api.getService(serviceId);
       for (
         let poll = 0;
