@@ -84,6 +84,14 @@ describe("disposable dual-version rehearsal", () => {
     expect(
       installer.match(/000002_external_effect_protocol\/migration\.sql/gu),
     ).toHaveLength(1);
+    expect(installer.indexOf("000002_external_effect_protocol")).toBeLessThan(
+      installer.indexOf("000002_transactional_service_transition"),
+    );
+    expect(
+      installer.match(
+        /000002_transactional_service_transition\/migration\.sql/gu,
+      ),
+    ).toHaveLength(1);
     expect(source).not.toContain(
       "GRANT SELECT ON reviewrouter_activation.activation_receipt TO reviewrouter_role_bootstrap",
     );
