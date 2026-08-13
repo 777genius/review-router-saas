@@ -303,6 +303,12 @@ describe("private-network PG17 workflow security contract", () => {
     expect(controller).toContain(
       "needs.recovery-context.outputs.complete == 'false'",
     );
+    expect(controller).not.toContain(
+      "needs.recover.result == 'success' || needs.recover.result == 'skipped'",
+    );
+    expect(controller).toContain(
+      "REVIEW_ROUTER_RECOVERY_WINDOW_RESULT: ${{ needs.recover.result }}",
+    );
     expect(controller).toContain("actions: write");
     expect(controller).toContain("REVIEW_ROUTER_RECOVERY_MAXIMUM_PAGES: 2");
     expect(controller).toContain("max-parallel: 2");
