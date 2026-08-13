@@ -112,7 +112,14 @@ describe("source quiescence", () => {
         .fn()
         .mockReturnValue({ reason: "database_connect_permission_denied" }),
     };
-    const adapter = new PostgreSqlGenerationAdapter(commands);
+    const observedAt = [
+      new Date("2026-08-12T00:00:00.000Z"),
+      new Date("2026-08-12T00:00:00.200Z"),
+    ];
+    const adapter = new PostgreSqlGenerationAdapter(
+      commands,
+      () => observedAt.shift()!,
+    );
     const urls = Object.fromEntries(
       [
         "reviewrouter_api",

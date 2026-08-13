@@ -24,12 +24,23 @@ const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
-const latestLive = <T extends { status: string; createdAt?: string; id: string }>(
+const latestLive = <
+  T extends { status: string; createdAt?: string; id: string },
+>(
   deploys: readonly T[],
 ): T => {
   const live = deploys
-    .filter((item) => item.status === "live" && item.createdAt && Number.isFinite(Date.parse(item.createdAt)))
-    .sort((a, b) => Date.parse(b.createdAt!) - Date.parse(a.createdAt!) || b.id.localeCompare(a.id));
+    .filter(
+      (item) =>
+        item.status === "live" &&
+        item.createdAt &&
+        Number.isFinite(Date.parse(item.createdAt)),
+    )
+    .sort(
+      (a, b) =>
+        Date.parse(b.createdAt!) - Date.parse(a.createdAt!) ||
+        b.id.localeCompare(a.id),
+    );
   if (!live[0] || (live[1] && live[1].createdAt === live[0].createdAt))
     throw new Error("service_transition_current_live_deploy_ambiguous");
   return live[0];
@@ -149,7 +160,7 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
       image: { imagePath: contract.imageUrl },
       serviceDetails: { runtime: "image", preDeployCommand: "" },
     });
-    await this.waitForContract(contract.serviceId, contract.serviceContractSha256);
+    await this.waitForTargetConfiguration(contract);
   }
 
   async configureSource(contract: RenderServiceContract): Promise<void> {
@@ -171,7 +182,10 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
         maxShutdownDelaySeconds: contract.maxShutdownDelaySeconds,
       },
     });
-    await this.waitForContract(contract.serviceId, contract.serviceContractSha256);
+    await this.waitForContract(
+      contract.serviceId,
+      contract.serviceContractSha256,
+    );
   }
 
   async replaceEnvironment(
@@ -234,6 +248,12 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
         env.get("DATABASE_URL") !== protectedValues.DATABASE_URL ||
         env.get("REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS") !==
           protectedValues.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS ||
+        env.get("REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256") !==
+          protectedValues.REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256 ||
+        (protectedValues.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL !==
+          undefined &&
+          env.get("REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL") !==
+            protectedValues.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL) ||
         [
           "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
           "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
@@ -387,15 +407,46 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
     throw new Error("service_transition_suspension_unproven");
   }
 
-  private async waitForContract(serviceId: string, expected: string): Promise<void> {
+  private async waitForContract(
+    serviceId: string,
+    expected: string,
+  ): Promise<void> {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       try {
-        if ((await this.observe(serviceId)).serviceContractSha256 === expected) return;
+        if ((await this.observe(serviceId)).serviceContractSha256 === expected)
+          return;
       } catch (error) {
-        if (!(error instanceof Error) || error.message !== "service_transition_active_deploy_present") throw error;
+        if (
+          !(error instanceof Error) ||
+          error.message !== "service_transition_active_deploy_present"
+        )
+          throw error;
       }
       await this.sleep(2_000);
     }
     throw new Error("service_transition_configuration_unproven");
+  }
+
+  private async waitForTargetConfiguration(
+    contract: TargetServiceContract,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const service = await this.api.getService(contract.serviceId);
+      const details = record(service.serviceDetails);
+      const specific = record(details.envSpecificDetails);
+      const runtime = details.runtime ?? specific.runtime;
+      const imagePath =
+        service.imagePath ?? service.image?.imagePath ?? details.imagePath;
+      if (
+        service.id === contract.serviceId &&
+        service.autoDeploy === "no" &&
+        runtime === "image" &&
+        imagePath === contract.imageUrl &&
+        (specific.preDeployCommand ?? details.preDeployCommand ?? "") === ""
+      )
+        return;
+      await this.sleep(2_000);
+    }
+    throw new Error("service_transition_target_configuration_unproven");
   }
 }

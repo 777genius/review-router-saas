@@ -110,7 +110,10 @@ export interface WriterSuspensionObservation {
 }
 
 export class PostgreSqlGenerationAdapter {
-  constructor(private readonly commands: CommandExecutor) {}
+  constructor(
+    private readonly commands: CommandExecutor,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
 
   private psql(url: string, sql: string): string {
     const target = decomposePostgresConnection(url);
@@ -156,10 +159,10 @@ export class PostgreSqlGenerationAdapter {
   }
 
   private observeStableLegacyAmbiguity(url: string): LegacyAmbiguityEvidence {
-    const firstObservedAt = new Date().toISOString();
+    const firstObservedAt = this.now().toISOString();
     const first = this.legacyAmbiguityInventory(url);
     this.psql(url, "SELECT pg_sleep(0.2)");
-    const secondObservedAt = new Date().toISOString();
+    const secondObservedAt = this.now().toISOString();
     const second = this.legacyAmbiguityInventory(url);
     const firstDigest = digest(JSON.stringify(first));
     const secondDigest = digest(JSON.stringify(second));

@@ -17,7 +17,7 @@ export interface RenderService {
   readonly rootDir?: string;
   readonly suspended: "suspended" | "not_suspended";
   readonly autoDeploy: "yes" | "no";
-  readonly autoDeployTrigger?: "commit" | "checksPass";
+  readonly autoDeployTrigger?: "commit" | "checksPass" | "off";
   readonly imagePath?: string;
   readonly image?: { readonly imagePath: string };
   readonly serviceDetails: Record<string, unknown>;

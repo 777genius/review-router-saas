@@ -64,7 +64,24 @@ const targetUrls = JSON.parse(
   required("REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON"),
 ) as Record<string, string>;
 const sourceWitness = required("REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS");
-const exactRoles = serviceExpectations.map((item) => item.databaseRole).sort();
+const sourceWitnessSha256 = required(
+  "REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256",
+);
+const targetWitnessSha256 = required(
+  "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256",
+);
+const serviceRoles = [
+  "reviewrouter_api",
+  "reviewrouter_web",
+  "reviewrouter_worker",
+].sort();
+const reconnectRoles = [
+  ...serviceRoles,
+  "reviewrouter_codex_effect_authority",
+].sort();
+const targetEffectAuthorityUrl = required(
+  "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
+);
 if (
   serviceExpectations.length !== 3 ||
   new Set(serviceExpectations.map((item) => item.serviceId)).size !== 3 ||
@@ -72,8 +89,12 @@ if (
   serviceExpectations.some(
     (item) => !sourceUrls[item.databaseRole] || !targetUrls[item.databaseRole],
   ) ||
-  Object.keys(sourceUrls).sort().join("\0") !== exactRoles.join("\0") ||
-  Object.keys(targetUrls).sort().join("\0") !== exactRoles.join("\0")
+  serviceExpectations
+    .map((item) => item.databaseRole)
+    .sort()
+    .join("\0") !== serviceRoles.join("\0") ||
+  Object.keys(sourceUrls).sort().join("\0") !== reconnectRoles.join("\0") ||
+  Object.keys(targetUrls).sort().join("\0") !== serviceRoles.join("\0")
 )
   throw new Error("private_pg17_service_environment_scope_invalid");
 const protectedSourceEnvironment = Object.fromEntries(
@@ -82,6 +103,13 @@ const protectedSourceEnvironment = Object.fromEntries(
     {
       DATABASE_URL: sourceUrls[item.databaseRole]!,
       REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: sourceWitness,
+      REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: sourceWitnessSha256,
+      ...(["reviewrouter_api", "reviewrouter_web"].includes(item.databaseRole)
+        ? {
+            REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+              sourceUrls.reviewrouter_codex_effect_authority!,
+          }
+        : {}),
     },
   ]),
 ) as ProtectedSourceEnvironment;
@@ -110,6 +138,15 @@ for (const expectation of serviceExpectations) {
     REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: required(
       "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS",
     ),
+    REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: targetWitnessSha256,
+    ...(["reviewrouter_api", "reviewrouter_web"].includes(
+      expectation.databaseRole,
+    )
+      ? {
+          REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+            targetEffectAuthorityUrl,
+        }
+      : {}),
     REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: rollout.expectedCommitSha,
     REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: rollout.rolloutId,
     REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: rolloutStartedAt,

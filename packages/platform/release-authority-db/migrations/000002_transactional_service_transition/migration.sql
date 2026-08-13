@@ -73,7 +73,13 @@ BEGIN
     ARRAY(SELECT value FROM jsonb_array_elements_text(p_input->'serviceIds')),
     p_input->'sourceManifest',p_input->'targetContracts')
   ON CONFLICT (rollout_id) DO NOTHING;
-  IF FOUND THEN RETURN 'created'; END IF;
+  IF FOUND THEN
+    INSERT INTO release_authority.service_transition_checkpoint(
+      rollout_id,sequence,service_id,step,manifest_sha256,target_contract_sha256)
+    VALUES (p_input->>'rolloutId',1,p_input->'serviceIds'->>0,'recovery_intent',
+      p_input->>'manifestSha256',p_input->>'targetContractSha256');
+    RETURN 'created';
+  END IF;
   SELECT * INTO STRICT current_row FROM release_authority.service_transition
     WHERE rollout_id=p_input->>'rolloutId' FOR UPDATE;
   IF current_row.manifest_sha256 <> p_input->>'manifestSha256'
@@ -82,15 +88,22 @@ BEGIN
     OR current_row.source_manifest <> p_input->'sourceManifest'
     OR current_row.target_contracts <> p_input->'targetContracts'
   THEN RAISE EXCEPTION 'release service transition intent conflict'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM release_authority.service_transition_checkpoint
+    WHERE rollout_id=current_row.rollout_id AND sequence=1
+      AND service_id=current_row.service_ids[1] AND step='recovery_intent'
+  ) THEN RAISE EXCEPTION 'release service transition recovery intent missing'; END IF;
   RETURN 'existing';
 END $body$;
 
 CREATE FUNCTION release_authority.release_service_transition_contract(p_rollout_id text) RETURNS jsonb
 LANGUAGE sql SECURITY DEFINER STABLE SET search_path = pg_catalog AS $body$
-  SELECT CASE WHEN transition.rollout_id IS NULL THEN NULL ELSE jsonb_build_object(
-    'sourceManifest',transition.source_manifest,'targetContracts',transition.target_contracts)
-  END
-  FROM release_authority.service_transition transition WHERE transition.rollout_id=p_rollout_id
+  SELECT (
+    SELECT jsonb_build_object(
+      'sourceManifest',transition.source_manifest,'targetContracts',transition.target_contracts)
+    FROM release_authority.service_transition transition
+    WHERE transition.rollout_id=p_rollout_id
+  )
 $body$;
 
 CREATE FUNCTION release_authority.release_service_transition_append(p_input jsonb) RETURNS jsonb

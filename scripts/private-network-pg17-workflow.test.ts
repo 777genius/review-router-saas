@@ -149,6 +149,14 @@ describe("private-network PG17 workflow security contract", () => {
     expect(reconcile).toContain("RENDER_SERVICE_SUSPENSION_API_KEY:");
     expect(reconcile).toContain("RENDER_TARGET_SWITCH_API_KEY:");
     expect(reconcile).toContain("REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS:");
+    expect(reconcile).toContain(
+      "REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256:",
+    );
+    const cutover = jobs(workflow).find((block) =>
+      block.startsWith("  pg17-cutover-private:"),
+    )!;
+    expect(cutover).toContain("REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256:");
+    expect(cutover).toContain("REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256:");
     expect(reconcile).not.toContain(
       "REVIEW_ROUTER_SOURCE_RECOVERY_MANIFEST_JSON:",
     );

@@ -41,7 +41,11 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
        IF NOT release_authority.release_rollout_append_receipt(
          'r1',repeat('a',40),'1',1,'100','200',steps[index],previous_sha,next_sha,
          '100','before','before',CASE WHEN steps[index] = 'stage_target_services'
-           THEN '{\"renderDeployIds\":[\"dep\"]}'::jsonb ELSE NULL END) THEN
+           THEN jsonb_build_object(
+             'renderDeployIds','[\"dep-srv-a\",\"dep-srv-b\",\"dep-srv-c\"]'::jsonb,
+             'serviceRecoveryManifestSha256','sha256:'||repeat('a',64),
+             'targetServiceContractSha256','sha256:'||repeat('b',64))
+           ELSE NULL END) THEN
          RAISE EXCEPTION 'legal receipt sequence rejected at %', steps[index];
        END IF;
        previous_sha := next_sha;
@@ -60,16 +64,44 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
      lifecycle,runner_identity,provision_observation)
    VALUES ('job-cutover','r1','rri-'||repeat('1',64),'svc','$now','canary','cutover',
      '{\"workflowJobId\":\"9\"}','{\"step\":\"provision_cutover_runner\"}');" >/dev/null
+manifest_sha="sha256:$(printf 'a%.0s' $(seq 1 64))"
+target_contract_sha="sha256:$(printf 'b%.0s' $(seq 1 64))"
+transition_input='{"rolloutId":"r1","manifestSha256":"'$manifest_sha'","targetContractSha256":"'$target_contract_sha'","serviceIds":["srv-a","srv-b","srv-c"],"sourceManifest":{"manifestSha256":"'$manifest_sha'","services":[]},"targetContracts":[{"serviceId":"srv-a"},{"serviceId":"srv-b"},{"serviceId":"srv-c"}]}'
+transition_created=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_service_transition_begin('$transition_input')")
+test "$transition_created" = created
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_service_transition_contract('missing') IS NULL")" = t
+for service in srv-a srv-b srv-c; do
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+    "SELECT release_authority.release_service_transition_append(jsonb_build_object('rolloutId','r1','manifestSha256','$manifest_sha','targetContractSha256','$target_contract_sha','serviceId','$service','step','suspend_intent'))" >/dev/null
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+    "SELECT release_authority.release_service_transition_append(jsonb_build_object('rolloutId','r1','manifestSha256','$manifest_sha','targetContractSha256','$target_contract_sha','serviceId','$service','step','suspended'))" >/dev/null
+  for step in target_config_intent target_configured target_env_intent target_env_applied target_deploy_intent target_deployed target_verified; do
+    deploy_id=NULL
+    observed_contract=NULL
+    observed_env=NULL
+    if [ "$step" = target_deployed ] || [ "$step" = target_verified ]; then deploy_id="to_jsonb('dep-$service'::text)"; fi
+    if [ "$step" = target_verified ]; then
+      observed_contract="to_jsonb('sha256:$(printf 'c%.0s' $(seq 1 64))'::text)"
+      observed_env="to_jsonb('sha256:$(printf 'd%.0s' $(seq 1 64))'::text)"
+    fi
+    docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+      "SELECT release_authority.release_service_transition_append(jsonb_build_object('rolloutId','r1','manifestSha256','$manifest_sha','targetContractSha256','$target_contract_sha','serviceId','$service','step','$step','deployId',$deploy_id,'observedContractSha256',$observed_contract,'observedEnvSha256',$observed_env))" >/dev/null
+  done
+done
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_service_transition_complete('{\"rolloutId\":\"r1\",\"outcome\":\"target_staged\"}')" >/dev/null
 stage_receipt="sha256:$(printf '%064d' 13)"
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '10', '$stage_receipt', '[\"dep\"]', 17, 'sha256:'||repeat('7',64))" >/dev/null 2>&1; then
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '10', '$stage_receipt', '[\"dep-srv-a\",\"dep-srv-b\",\"dep-srv-c\"]', 17, 'sha256:'||repeat('7',64))" >/dev/null 2>&1; then
   echo "activation with an unbound cutover workflow job unexpectedly succeeded" >&2
   exit 1
 fi
 authorization=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', '$stage_receipt', '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', '$stage_receipt', '[\"dep-srv-a\",\"dep-srv-b\",\"dep-srv-c\"]', 17, 'sha256:'||repeat('7',64))")
 replay=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', '$stage_receipt', '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', '$stage_receipt', '[\"dep-srv-a\",\"dep-srv-b\",\"dep-srv-c\"]', 17, 'sha256:'||repeat('7',64))")
 state=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT state||':'||activation_epoch||':'||source_permanently_ineligible FROM release_authority.rollout WHERE rollout_id='r1'")
 
@@ -141,7 +173,7 @@ finalize_replay=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
     '{\"deploy\":\"dep\"}', 'sha256:'||repeat('1',64), activation_receipt)
    FROM release_authority.rollout WHERE rollout_id='r1'")
 authorization_after_finalize=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', '$stage_receipt', '[\"dep\"]', 17, 'sha256:'||repeat('7',64))")
+  "SELECT release_authority.authorize_activation('r1', repeat('a',40), '1', 1, '100', '200', '9', '$stage_receipt', '[\"dep-srv-a\",\"dep-srv-b\",\"dep-srv-c\"]', 17, 'sha256:'||repeat('7',64))")
 test "$finalized" = t
 test "$finalize_replay" = t
 test "$authorization_after_finalize" = "$authorization"

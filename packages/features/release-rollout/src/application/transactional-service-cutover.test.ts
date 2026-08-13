@@ -7,6 +7,7 @@ import {
   sourceServiceContractSha256,
   targetServiceContractSha256,
   type ProtectedSourceEnvironment,
+  type ServiceTransitionLedger,
   type ServiceTransitionCheckpoint,
   type SourceRecoveryManifest,
   type TargetServiceContract,
@@ -15,6 +16,8 @@ import { createHash } from "node:crypto";
 
 const sha = (value: unknown) =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+const fingerprint = (value: string) =>
+  createHash("sha256").update(value).digest("hex");
 const withHash = <T extends Record<string, unknown>>(
   value: T,
   field: "serviceContractSha256" | "manifestSha256",
@@ -27,8 +30,20 @@ const sourceEnvs = ["web", "api", "worker"].map((role) => ({
     { key: "DATABASE_URL", value: `postgres://source/${role}` },
     {
       key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
-      value: `never-log-${role}`,
+      value: `never_log_${role}_${"w".repeat(43)}`,
     },
+    {
+      key: "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
+      value: fingerprint(`never_log_${role}_${"w".repeat(43)}`),
+    },
+    ...(["web", "api"].includes(role)
+      ? [
+          {
+            key: "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
+            value: "postgres://source/effect-authority",
+          },
+        ]
+      : []),
     { key: "UNKNOWN_SECRET", value: `preserve-byte-for-byte-${role}` },
   ],
 }));
@@ -85,6 +100,17 @@ const protectedEnvironment: ProtectedSourceEnvironment = {
         REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: values.find(
           ({ key }) => key === "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
         )!.value,
+        REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: values.find(
+          ({ key }) => key === "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
+        )!.value,
+        ...(["srv-web", "srv-api"].includes(serviceId)
+          ? {
+              REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: values.find(
+                ({ key }) =>
+                  key === "REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL",
+              )!.value,
+            }
+          : {}),
       },
     ]),
   ),
@@ -92,7 +118,16 @@ const protectedEnvironment: ProtectedSourceEnvironment = {
 const target = ["web", "api", "worker"].map((role) => {
   const environmentDelta = {
     DATABASE_URL: `postgres://target/${role}`,
-    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: `target-witness-${role}`,
+    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: `target_${role}_${"x".repeat(43)}`,
+    REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: fingerprint(
+      `target_${role}_${"x".repeat(43)}`,
+    ),
+    ...(["web", "api"].includes(role)
+      ? {
+          REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+            "postgres://target/effect-authority",
+        }
+      : {}),
     REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: "a".repeat(40),
     REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: "rollout-1",
     REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: "2026-08-13T00:00:00.000Z",
@@ -146,8 +181,20 @@ const harness = (fail?: string, failOrdinal = 1) => {
       throw new Error(`crash:${name}`);
     }
   };
+  const begin = vi.fn<ServiceTransitionLedger["begin"]>(async (value) => {
+    if (checkpoints.length === 0)
+      checkpoints.push({
+        rolloutId: value.rolloutId,
+        manifestSha256: value.manifestSha256,
+        targetContractSha256: value.targetContractSha256,
+        serviceId: value.serviceIds[0]!,
+        sequence: 1,
+        step: "recovery_intent",
+      });
+    return "created";
+  });
   const ledger = {
-    begin: vi.fn(async () => "created" as const),
+    begin,
     readContract: vi.fn(async () => ({
       sourceManifest: source,
       targetContracts: target.map(({ environmentDelta: _, ...item }) => item),
@@ -291,6 +338,25 @@ describe("transactional same-service cutover", () => {
     await expect(
       test.cutover.stage({ source, protectedEnvironment, target }),
     ).rejects.toThrow("interrupted_source_recovered");
+    expect(test.provider.configureSource).toHaveBeenCalledTimes(3);
+  });
+
+  it("recovers when another runner creates the durable intent after preflight", async () => {
+    const test = harness();
+    test.ledger.begin.mockImplementationOnce(async (value) => {
+      test.checkpoints.push({
+        rolloutId: value.rolloutId,
+        manifestSha256: value.manifestSha256,
+        targetContractSha256: value.targetContractSha256,
+        serviceId: value.serviceIds[0]!,
+        sequence: 1,
+        step: "recovery_intent",
+      });
+      return "existing";
+    });
+    await expect(
+      test.cutover.stage({ source, protectedEnvironment, target }),
+    ).rejects.toThrow("concurrent_or_interrupted");
     expect(test.provider.configureSource).toHaveBeenCalledTimes(3);
   });
 

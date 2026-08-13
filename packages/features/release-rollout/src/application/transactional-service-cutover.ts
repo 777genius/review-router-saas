@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 const sha256 = (value: unknown): string =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 const digest = /^sha256:[a-f0-9]{64}$/u;
+const rawSha256 = /^[a-f0-9]{64}$/u;
+const witness = /^[A-Za-z0-9_-]{43,256}$/u;
+const witnessSha256 = (value: string): string =>
+  createHash("sha256").update(value, "utf8").digest("hex");
 const commit = /^[a-f0-9]{40}$/u;
 const image =
   /^ghcr\.io\/777genius\/review-router-saas-runtime@sha256:[a-f0-9]{64}$/u;
@@ -44,6 +48,8 @@ export type ProtectedSourceEnvironment = Readonly<
     Readonly<{
       DATABASE_URL: string;
       REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: string;
+      REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: string;
+      REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL?: string;
     }>
   >
 >;
@@ -262,6 +268,17 @@ export function validateServiceTransitionContracts(
     throw new Error("service_transition_scope_invalid");
   for (const service of source.services) {
     const originals = protectedEnvironment[service.serviceId];
+    const requiresEffectAuthority =
+      service.databaseRole === "reviewrouter_api" ||
+      service.databaseRole === "reviewrouter_web";
+    const expectedProtectedKeys = [
+      "DATABASE_URL",
+      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+      "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
+      ...(requiresEffectAuthority
+        ? ["REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL"]
+        : []),
+    ].sort();
     if (
       service.runtime !== "node" ||
       service.autoDeploy !== "no" ||
@@ -278,24 +295,59 @@ export function validateServiceTransitionContracts(
       !originals ||
       typeof originals.DATABASE_URL !== "string" ||
       typeof originals.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS !== "string" ||
+      !witness.test(originals.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS) ||
+      !rawSha256.test(
+        originals.REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256,
+      ) ||
+      (requiresEffectAuthority &&
+        typeof originals.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL !==
+          "string") ||
+      witnessSha256(originals.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS) !==
+        originals.REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256 ||
       Object.keys(originals).sort().join("\0") !==
-        "DATABASE_URL\0REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS"
+        expectedProtectedKeys.join("\0")
     )
       throw new Error("service_transition_source_contract_invalid");
   }
   for (const service of target) {
+    const sourceService = source.services.find(
+      (item) => item.serviceId === service.serviceId,
+    )!;
+    const requiresEffectAuthority =
+      sourceService.databaseRole === "reviewrouter_api" ||
+      sourceService.databaseRole === "reviewrouter_web";
     const expectedSet = [
       "DATABASE_URL",
+      "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
       "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
       "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
       "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
       "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+      ...(requiresEffectAuthority
+        ? ["REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL"]
+        : []),
     ];
     if (
       !image.test(service.imageUrl) ||
       !digest.test(service.environmentSha256) ||
       Object.keys(service.environmentDelta).sort().join("\0") !==
         expectedSet.sort().join("\0") ||
+      !rawSha256.test(
+        service.environmentDelta[
+          "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256"
+        ] ?? "",
+      ) ||
+      !witness.test(
+        service.environmentDelta["REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS"] ??
+          "",
+      ) ||
+      witnessSha256(
+        service.environmentDelta["REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS"] ??
+          "",
+      ) !==
+        service.environmentDelta[
+          "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256"
+        ] ||
       service.removeKeys.length !== 0 ||
       targetServiceContractSha256({
         serviceId: service.serviceId,
@@ -364,7 +416,7 @@ export class TransactionalServiceCutover {
     }
     const deployIds: string[] = [];
     try {
-      await this.ledger.begin({
+      const transition = await this.ledger.begin({
         ...common,
         serviceIds: input.source.services.map((item) => item.serviceId),
         sourceManifest: input.source,
@@ -376,7 +428,8 @@ export class TransactionalServiceCutover {
           serviceContractSha256: item.serviceContractSha256,
         })),
       });
-      await this.checkpoint(common, input.source.services[0]!.serviceId, "recovery_intent");
+      if (transition === "existing")
+        throw new Error("service_transition_concurrent_or_interrupted");
       for (const contract of input.target) {
         await this.checkpoint(common, contract.serviceId, "suspend_intent");
         await this.provider.suspend(contract.serviceId);
@@ -472,11 +525,7 @@ export class TransactionalServiceCutover {
       manifestSha256: input.source.manifestSha256,
       targetContractSha256,
     };
-    const checkpoints = await this.ledger.read(input.source.rolloutId);
-    if (checkpoints.length === 0)
-      await this.checkpoint(common, input.source.services[0]!.serviceId, "recovery_intent");
-    const durableCheckpoints =
-      checkpoints.length === 0 ? await this.ledger.read(input.source.rolloutId) : checkpoints;
+    const durableCheckpoints = await this.ledger.read(input.source.rolloutId);
     if (
       durableCheckpoints.length === 0 ||
       durableCheckpoints.some(

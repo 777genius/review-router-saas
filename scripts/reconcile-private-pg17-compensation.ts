@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import {
@@ -95,6 +96,13 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
     required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
   ) as Record<string, string>;
   const sourceWitness = required("REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS");
+  const sourceWitnessSha256 = required(
+    "REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256",
+  );
+  const durablePlaceholderWitness = "w".repeat(43);
+  const durablePlaceholderWitnessSha256 = createHash("sha256")
+    .update(durablePlaceholderWitness)
+    .digest("hex");
   const protectedSourceEnvironment = sourceRecoveryManifest
     ? (Object.fromEntries(
         sourceRecoveryManifest.services.map((service) => [
@@ -102,21 +110,44 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
           {
             DATABASE_URL: sourceUrls[service.databaseRole] ?? "",
             REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: sourceWitness,
+            REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: sourceWitnessSha256,
+            ...(["reviewrouter_api", "reviewrouter_web"].includes(
+              service.databaseRole,
+            )
+              ? {
+                  REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+                    sourceUrls.reviewrouter_codex_effect_authority ?? "",
+                }
+              : {}),
           },
         ]),
       ) as ProtectedSourceEnvironment)
     : {};
-  const placeholderDelta = {
-    DATABASE_URL: "durable-hash-only",
-    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "durable-hash-only",
-    REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: "durable-hash-only",
-    REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: "durable-hash-only",
-    REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: "durable-hash-only",
-  };
-  const targetServiceContracts = persistedTargets?.map((item) => ({
-    ...item,
-    environmentDelta: placeholderDelta,
-  })) as TargetServiceContract[] | undefined;
+  const targetServiceContracts = persistedTargets?.map((item) => {
+    const databaseRole = sourceRecoveryManifest?.services.find(
+      (service) => service.serviceId === item.serviceId,
+    )?.databaseRole;
+    return {
+      ...item,
+      environmentDelta: {
+        DATABASE_URL: "durable-hash-only",
+        REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: durablePlaceholderWitness,
+        REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256:
+          durablePlaceholderWitnessSha256,
+        REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: "durable-hash-only",
+        REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: "durable-hash-only",
+        REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: "durable-hash-only",
+        ...(["reviewrouter_api", "reviewrouter_web"].includes(
+          databaseRole ?? "",
+        )
+          ? {
+              REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
+                "durable-hash-only",
+            }
+          : {}),
+      },
+    };
+  }) as TargetServiceContract[] | undefined;
   const serviceTransition = new TransactionalServiceCutover(
     ledger,
     new RenderTransactionalServicesAdapter(
