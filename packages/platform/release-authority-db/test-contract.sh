@@ -7,7 +7,9 @@ docker run -d --rm --name "$name" -e POSTGRES_PASSWORD=test postgres:17-alpine >
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
 
 for _ in $(seq 1 60); do
-  if docker exec "$name" pg_isready -U postgres >/dev/null 2>&1; then break; fi
+  # The official image briefly exposes an init-only Unix socket before it
+  # restarts into the final server. TCP becomes ready only for the final server.
+  if docker exec "$name" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then break; fi
   sleep 1
 done
 
