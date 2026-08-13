@@ -132,6 +132,13 @@ export class PostgreSqlRolloutLedgerAdapter implements RunnerJobLedger {
       observation: StepObservation;
     };
   }
+  async cleanupObservation(jobId: string): Promise<StepObservation> {
+    const value = this.sql(
+      `SELECT release_authority.release_runner_cleanup_observation(${literal(jobId)})::text`,
+    );
+    if (!value) throw new Error("runner_cleanup_observation_missing");
+    return JSON.parse(value) as StepObservation;
+  }
   async markTerminal(
     jobId: string,
     observation: StepObservation,

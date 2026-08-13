@@ -2,6 +2,12 @@
 -- one atomic prepared -> dispatching transition; dispatching is never lease-redriven.
 BEGIN;
 
+-- Provider reconciliation must retain every job created for an intent. The
+-- original lifecycle uniqueness rule made a second provider job impossible to
+-- witness and clean, precisely when duplicate evidence is most safety-critical.
+ALTER TABLE release_authority.runner_job
+  DROP CONSTRAINT runner_job_rollout_id_lifecycle_key;
+
 ALTER TABLE release_authority.runner_intent
   ADD COLUMN effect_state text NOT NULL DEFAULT 'blocked',
   ADD COLUMN effect_epoch bigint NOT NULL DEFAULT 0,
@@ -224,8 +230,7 @@ DECLARE persisted release_authority.runner_job%ROWTYPE;
 BEGIN
   SELECT * INTO STRICT intent FROM release_authority.runner_intent
     WHERE intent_id = p_job->>'provisioningIntentId' FOR UPDATE;
-  IF intent.effect_state <> 'dispatching'
-    OR intent.rollout_id <> p_job->>'rolloutId'
+  IF intent.rollout_id <> p_job->>'rolloutId'
     OR intent.service_id <> p_job->>'serviceId'
     OR intent.lifecycle <> p_job->>'lifecycle'
     OR coalesce(p_job->>'jobId','') = ''
@@ -264,11 +269,12 @@ BEGIN
   THEN RAISE EXCEPTION 'release runner reconciliation safety invalid'; END IF;
   SELECT * INTO STRICT current_row FROM release_authority.runner_intent
     WHERE intent_id = p_input->>'intentId' FOR UPDATE;
-  IF current_row.effect_state IN ('cleaned','abandoned','blocked')
+  IF current_row.effect_state = 'blocked'
     THEN RETURN release_authority.release_runner_effect_snapshot(current_row); END IF;
-  IF current_row.effect_state NOT IN ('prepared','dispatching','bound')
+  IF current_row.effect_state NOT IN ('prepared','dispatching','bound','cleaned','abandoned')
     OR current_row.effect_epoch <> (p_input->>'expectedEpoch')::bigint
     OR (current_row.effect_state = 'prepared' AND result <> 'blocked')
+    OR (current_row.effect_state IN ('cleaned','abandoned') AND result <> 'blocked')
   THEN RAISE EXCEPTION 'release runner reconciliation fence conflict'; END IF;
 
   IF result = 'blocked' THEN
