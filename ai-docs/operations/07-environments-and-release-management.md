@@ -209,6 +209,11 @@ The SaaS `Release` workflow validates:
 - a successful `CI` run exists for the exact SaaS `HEAD`
 - when `sync_production_action_ref=true`, production Render credentials can
   dry-run the requested Action ref override
+- one `linux/amd64` hosted runtime image containing web, API, and worker builds
+  from the exact release commit and publishes to GHCR
+- GHCR resolves the published image to an immutable OCI manifest digest; the
+  workflow uploads `hosted-runtime-image-<version>` with the exact
+  commit/image URL/digest tuple used by the Render deployment gate
 
 Only after those gates pass, it creates `v1.0.x`, force-moves `v1`, and creates
 the GitHub Release. Hosted beta production keeps `REVIEW_ROUTER_ACTION_REF` on

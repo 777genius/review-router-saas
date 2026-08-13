@@ -1,6 +1,9 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  activationAuthorityProvisioningSql,
   assertCanonicalRoleTopology,
+  canonicalRoleTopologyObservationSql,
   canonicalDatabaseGenerationObservationSql,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
@@ -31,6 +34,48 @@ function environment() {
     REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
   };
 }
+
+describe("application database release-authority isolation", () => {
+  it("keeps migration 000069 as an immutable no-op marker", () => {
+    const migration = readFileSync(
+      new URL(
+        "../packages/platform/db/prisma/migrations/000069_release_rollout_ledger/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(migration).toContain("immutable history marker");
+    expect(migration).not.toMatch(
+      /\b(?:CREATE|ALTER|DROP|GRANT|REVOKE)\s+(?:ROLE|TABLE|FUNCTION|PROCEDURE)\b/iu,
+    );
+    expect(migration).not.toContain("release_rollout_ledger");
+  });
+
+  it("provisions only target-local activation capability", () => {
+    const sql = activationAuthorityProvisioningSql();
+    expect(sql).toContain("reviewrouter_activation.activation_permit");
+    expect(sql).toContain("reviewrouter_activation.activation_receipt");
+    expect(sql).toContain("reviewrouter_activation_permit_installer");
+    expect(sql).toContain("external activation guard is not pre-provisioned");
+    expect(sql).toContain(
+      "REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM reviewrouter_activation_permit_installer",
+    );
+    expect(sql).toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit",
+    );
+    expect(sql).toContain(
+      "GRANT CONNECT ON DATABASE %I TO reviewrouter_activation_permit_installer;",
+    );
+    expect(sql).toContain("REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC;");
+    expect(sql).toContain("current_database())\n\\gexec\nSELECT format(");
+    expect(sql).toContain("DO $installer_database_acl$");
+    expect(sql).not.toContain(
+      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.activate_generation(text,text) TO reviewrouter_activation_permit_installer",
+    );
+    expect(sql).not.toMatch(/reviewrouter_release_(?:control|witness)/u);
+    expect(sql).not.toMatch(/public\."release_(?:rollout|runner)_/u);
+  });
+});
 
 describe("canonical exclusive release migration caller", () => {
   it("rejects role-attribute drift and non-canonical bootstrap topology", () => {
@@ -64,6 +109,16 @@ describe("canonical exclusive release migration caller", () => {
         inheritOption: false,
         setOption: false,
       })),
+      guard: {
+        username: "reviewrouter_activation_receipt_guard",
+        login: false,
+        superuser: false,
+        createDatabase: false,
+        createRole: false,
+        replication: false,
+        bypassRls: false,
+        membershipCount: 0,
+      },
       ownership: {
         databaseOwner: "reviewrouter_role_bootstrap",
         publicSchemaOwner: "reviewrouter_release_migration",
@@ -109,6 +164,18 @@ describe("canonical exclusive release migration caller", () => {
     expect(() =>
       assertCanonicalRoleTopology({
         ...observation,
+        guard: { ...observation.guard, superuser: true },
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
+        guard: { ...observation.guard, membershipCount: 1 },
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
         ownership: {
           ...observation.ownership,
           publicSchemaOwner: "reviewrouter_role_bootstrap",
@@ -127,9 +194,84 @@ describe("canonical exclusive release migration caller", () => {
     ]);
     const provisioning = roleProvisioningSql(configuration);
     const grants = runtimeGrantSql(configuration);
-    expect(provisioning.match(/CREATE ROLE/g)).toHaveLength(5);
-    expect(provisioning.match(/NOCREATEDB/g)).toHaveLength(5);
-    expect(provisioning.match(/NOCREATEROLE/g)).toHaveLength(10);
+    const activationAuthority = activationAuthorityProvisioningSql();
+    const observationSql = canonicalRoleTopologyObservationSql();
+    const createdRoleIdentities = [
+      ...provisioning.matchAll(/CREATE ROLE ([a-z_]+) ([^;]+);/gu),
+    ].map(([, username, attributes]) => ({ attributes, username }));
+    expect(createdRoleIdentities).toEqual(
+      [
+        "reviewrouter_api",
+        "reviewrouter_web",
+        "reviewrouter_worker",
+        "reviewrouter_codex_effect_authority",
+        "reviewrouter_release_migration",
+      ].map((username) => ({
+        username,
+        attributes:
+          "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '" +
+          (username === "reviewrouter_api"
+            ? "api-secret"
+            : username === "reviewrouter_web"
+              ? "web-secret"
+              : username === "reviewrouter_worker"
+                ? "worker-secret"
+                : username === "reviewrouter_codex_effect_authority"
+                  ? "signer-secret"
+                  : "release") +
+          "'",
+      })),
+    );
+    expect(provisioning).not.toMatch(
+      /ALTER ROLE [^;]+\b(?:SUPERUSER|NOSUPERUSER|CREATEDB|NOCREATEDB|REPLICATION|NOREPLICATION|BYPASSRLS|NOBYPASSRLS)\b/gu,
+    );
+    expect(provisioning).not.toContain(
+      "ALTER ROLE reviewrouter_activation_receipt_guard",
+    );
+    expect(provisioning).not.toContain(
+      "aclexplode(coalesce(attribute.attacl,'{}'::aclitem[]))",
+    );
+    expect(provisioning).toContain("OR observed.rolcanlogin");
+    expect(provisioning).toContain("OR observed.rolsuper");
+    expect(provisioning).toContain("OR observed.rolcreatedb");
+    expect(provisioning).toContain("OR observed.rolcreaterole");
+    expect(provisioning).toContain("OR observed.rolreplication");
+    expect(provisioning).toContain("OR observed.rolbypassrls");
+    expect(provisioning).toContain(
+      "external activation receipt guard is not pre-provisioned canonically",
+    );
+    for (const removedAuthorityArtifact of [
+      "reviewrouter_release_control",
+      "reviewrouter_release_witness",
+      "release_rollout_ledger",
+      "release_rollout_receipt_ledger",
+      "release_runner_provisioning_intent",
+      "release_runner_job_ledger",
+      "release_rollout_claim",
+      "release_runner_persist_cleanup_witness",
+    ]) {
+      expect(provisioning).not.toContain(removedAuthorityArtifact);
+      expect(grants).not.toContain(removedAuthorityArtifact);
+      expect(observationSql).not.toContain(removedAuthorityArtifact);
+    }
+    expect(provisioning).not.toContain(
+      "GRANT reviewrouter_activation_receipt_guard TO",
+    );
+    expect(provisioning).toContain(
+      "activation receipt guard must have no membership edges",
+    );
+    expect(provisioning).toContain(
+      "AND granted.rolname <> 'reviewrouter_activation_receipt_guard'",
+    );
+    expect(observationSql).toContain("'membershipCount', (SELECT count(*)");
+    expect(observationSql).toContain(
+      "AND granted.rolname <> 'reviewrouter_activation_receipt_guard'",
+    );
+    expect(
+      provisioning.match(
+        /ALTER ROLE reviewrouter_[a-z_]+ LOGIN NOCREATEROLE PASSWORD/gu,
+      ),
+    ).toHaveLength(5);
     expect(provisioning).toContain(
       "refusing to converge unexpectedly privileged role",
     );
@@ -158,7 +300,13 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(provisioning).not.toContain("ALTER DATABASE");
     expect(provisioning).toContain(
-      "GRANT CONNECT, CREATE ON DATABASE %I TO reviewrouter_release_migration",
+      "GRANT CREATE ON DATABASE %I TO reviewrouter_release_migration",
+    );
+    expect(provisioning).toContain(
+      "GRANT CONNECT ON DATABASE %I TO reviewrouter_release_migration WITH GRANT OPTION",
+    );
+    expect(provisioning).toContain(
+      "release migration database delegation is non-canonical",
     );
     expect(provisioning).toContain(
       "GRANT USAGE, CREATE ON SCHEMA public TO reviewrouter_release_migration",
@@ -167,10 +315,14 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap",
     );
-    expect(provisioning).toContain(
+    expect(provisioning).not.toContain(
       "DROP SCHEMA IF EXISTS reviewrouter_bootstrap",
     );
     expect(provisioning).toContain("SECURITY DEFINER");
+    expect(activationAuthorityProvisioningSql()).toContain(
+      "pg_catalog.sha256(convert_to(",
+    );
+    expect(provisioning).not.toContain("public.digest(");
     expect(provisioning).toContain(
       "reviewrouter_bootstrap.consume_migration_evidence",
     );
@@ -179,8 +331,32 @@ describe("canonical exclusive release migration caller", () => {
       "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
     );
     expect(grants).not.toContain("GRANT reviewrouter_release_migration");
+    expect(grants).not.toContain("GRANT EXECUTE ON FUNCTION public.digest");
+    expect(grants).toContain("runtime CONNECT state mismatch for %");
+    expect(grants).toContain("PUBLIC retained database CONNECT");
     expect(grants).toContain(
       'GRANT EXECUTE ON FUNCTION public."codex_oauth_sign_database_authority"(text) TO reviewrouter_codex_effect_authority',
+    );
+    expect(grants).toContain(
+      "GRANT EXECUTE ON FUNCTION public.reviewrouter_record_runtime_generation_witness_proof(TEXT, TEXT, TEXT, TEXT) TO reviewrouter_web, reviewrouter_api, reviewrouter_worker",
+    );
+    expect(grants).toContain(
+      "GRANT EXECUTE ON FUNCTION public.reviewrouter_read_runtime_generation_witness_proofs(TEXT, TEXT) TO reviewrouter_api",
+    );
+    expect(grants).toContain(
+      "GRANT EXECUTE ON FUNCTION public.reviewrouter_runtime_generation_write_read_canary(TEXT, TEXT) TO reviewrouter_api",
+    );
+    expect(activationAuthority).toContain(
+      "WHEN proname='reviewrouter_record_runtime_generation_witness_proof' THEN",
+    );
+    expect(activationAuthority).toContain(
+      "role_kind IN ('api','web','worker')",
+    );
+    expect(activationAuthority).toContain(
+      "WHEN role_kind='api' AND proname='reviewrouter_read_runtime_generation_witness_proofs' THEN",
+    );
+    expect(activationAuthority).toContain(
+      "WHEN role_kind='api' AND proname='reviewrouter_runtime_generation_write_read_canary' THEN",
     );
     expect(grants).toContain(
       "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM reviewrouter_codex_effect_authority",
@@ -366,6 +542,16 @@ describe("canonical exclusive release migration caller", () => {
             inheritOption: false,
             setOption: false,
           })),
+          guard: {
+            username: "reviewrouter_activation_receipt_guard",
+            login: false,
+            superuser: false,
+            createDatabase: false,
+            createRole: false,
+            replication: false,
+            bypassRls: false,
+            membershipCount: 0,
+          },
           ownership: {
             databaseOwner: "reviewrouter_role_bootstrap",
             publicSchemaOwner: "reviewrouter_release_migration",
@@ -439,6 +625,28 @@ describe("canonical exclusive release migration caller", () => {
     };
     expect(resolveReleaseMigrationConfiguration(env).releaseUrl).toContain(
       "reviewrouter_release_migration",
+    );
+  });
+
+  it("keeps loopback identity available only through an explicit test dependency", () => {
+    const env = Object.fromEntries(
+      Object.entries(environment()).map(([name, value]) => [
+        name,
+        typeof value === "string"
+          ? value.replaceAll("db.internal", "127.0.0.1:55432")
+          : value,
+      ]),
+    );
+    expect(() => resolveReleaseMigrationConfiguration(env)).toThrow(
+      "release_migration_private_database_host_required",
+    );
+    const configuration = resolveReleaseMigrationConfiguration(env, (value) => {
+      const url = value instanceof URL ? value : new URL(value);
+      if (url.hostname !== "127.0.0.1") throw new Error("test_non_loopback");
+      return `${url.hostname}:${url.port}${url.pathname}`;
+    });
+    expect(configuration.databaseIdentity).toBe(
+      "127.0.0.1:55432/review_router",
     );
   });
 

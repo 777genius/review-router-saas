@@ -19,12 +19,17 @@ export const immutableCodexRotatingMigrationChecksums = Object.freeze({
     "4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666",
   "000065_codex_oauth_authority_acl_hardening":
     "ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c",
+  "000066_codex_oauth_rotating_cascade_authority":
+    "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8",
 });
 
 export const forwardUnpublishedCodexRotatingMigration = Object.freeze({
-  name: "000066_codex_oauth_rotating_cascade_authority",
-  checksum: "3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8",
+  name: "000069_release_rollout_ledger",
+  checksum: "82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05",
 });
+
+export const obsoleteReleaseRolloutLedgerMigrationAlias =
+  "000067_release_rollout_ledger";
 
 export const checkedInCodexRotatingMigrationChecksums = Object.freeze({
   ...immutableCodexRotatingMigrationChecksums,
@@ -44,9 +49,10 @@ const editedBeforeRolloutMigration =
  * other historical migrations may be absent or have exactly one successful
  * row bearing the immutable checked-in checksum. The non-atomic 000063 digest
  * existed only on an unpublished local side branch and is never accepted as
- * released history. Forward migration 000066 is pinned above but remains
- * unpublished, so this pre-release policy rejects every preexisting 000066
- * history row; the post-release verifier separately requires one exact success.
+ * released history. Forward migration 000069 is an immutable no-op marker: it
+ * is pinned above but remains unpublished, so this pre-release policy rejects
+ * every preexisting 000069 history row. Release Authority state lives only in
+ * its dedicated external PostgreSQL database.
  */
 export function assertCodexRotatingMigrationHistoryIsPristine(
   rows: readonly CodexRotatingMigrationHistoryRow[],
@@ -54,11 +60,22 @@ export function assertCodexRotatingMigrationHistoryIsPristine(
   if (
     rows.some(
       (row) =>
+        row.migration_name === obsoleteReleaseRolloutLedgerMigrationAlias,
+    )
+  ) {
+    throw new Error(
+      "codex_rotating_obsolete_000067_release_rollout_ledger_alias_forbidden:" +
+        "recreate_the_database_from_history_using_000069_release_rollout_ledger",
+    );
+  }
+  if (
+    rows.some(
+      (row) =>
         row.migration_name === forwardUnpublishedCodexRotatingMigration.name,
     )
   ) {
     throw new Error(
-      "codex_rotating_000066_prepublication_history_forbidden:" +
+      "codex_rotating_000069_prepublication_history_forbidden:" +
         "use_the_forward_release_migration_once_from_the_immutable_release_caller",
     );
   }

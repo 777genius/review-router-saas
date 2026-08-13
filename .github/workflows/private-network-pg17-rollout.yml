@@ -1,0 +1,332 @@
+name: Private-network PostgreSQL 17 release rollout
+run-name: private-pg17:${{ inputs.rollout_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      rollout_id:
+        description: Globally unique non-reusable rollout identifier
+        required: true
+        type: string
+      expected_sha:
+        description: Exact protected main commit
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: private-network-pg17-production
+  cancel-in-progress: false
+
+env:
+  REVIEW_ROUTER_EXPECTED_SHA: ${{ inputs.expected_sha }}
+  REVIEW_ROUTER_ROLLOUT_ID: ${{ inputs.rollout_id }}
+  REVIEW_ROUTER_RELEASE_CONTROL_ORG: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_ORG }}
+  REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY }}
+  REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+  REVIEW_ROUTER_RUNNER_GROUP_ID: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_ID }}
+  REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID }}
+  REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_URL }}
+  REVIEW_ROUTER_PROVIDER_AUTHORITY_URL: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_URL }}
+  REVIEW_ROUTER_RELEASE_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RELEASE_WITNESS_URL }}
+  REVIEW_ROUTER_ROLE_WORKFLOW_JOB_NAME: copy-and-role-bootstrap-private
+  REVIEW_ROUTER_CUTOVER_WORKFLOW_JOB_NAME: pg17-cutover-private
+  REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_SOURCE_RENDER_DATABASE_ID }}
+  REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID: ${{ vars.REVIEW_ROUTER_TARGET_RENDER_DATABASE_ID }}
+  REVIEW_ROUTER_SOURCE_INTERNAL_HOSTNAME: ${{ vars.REVIEW_ROUTER_SOURCE_INTERNAL_HOSTNAME }}
+  REVIEW_ROUTER_TARGET_INTERNAL_HOSTNAME: ${{ vars.REVIEW_ROUTER_TARGET_INTERNAL_HOSTNAME }}
+  REVIEW_ROUTER_SOURCE_DATABASE_NAME: ${{ vars.REVIEW_ROUTER_SOURCE_DATABASE_NAME }}
+  REVIEW_ROUTER_TARGET_DATABASE_NAME: ${{ vars.REVIEW_ROUTER_TARGET_DATABASE_NAME }}
+  REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER }}
+  REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER }}
+  REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256 }}
+  REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256 }}
+
+jobs:
+  protected-preflight:
+    name: protected-release-preflight
+    environment: production-release-preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - name: Observe protected environment and exact release identity
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_PRIVILEGED_ENVIRONMENTS_JSON: '["production-release-preflight","production-runner-control","production-role-bootstrap","production-runner-ledger-read","production","production-service-switch"]'
+          REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: protected-environment-preflight.json
+        run: node --import tsx scripts/observe-private-pg17-protected-environment.ts
+      - name: Durably claim rollout and receipt observed preflight policy
+        env:
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: protected-environment-preflight.json
+          REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: initial-rollout.json
+        run: node --import tsx scripts/initialize-private-pg17-rollout.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1
+          path: |
+            protected-environment-preflight.json
+            initial-rollout.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  freeze-source-writers:
+    name: freeze-source-writers
+    needs: protected-preflight
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      observation: ${{ steps.freeze.outputs.observation }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: freeze
+        name: Suspend and re-observe every source writer
+        env:
+          RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
+          RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
+          REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
+        run: node --import tsx scripts/release-rollout-render-control.ts freeze
+
+  role-bootstrap-private:
+    name: copy-and-role-bootstrap-private
+    needs: freeze-source-writers
+    environment: production-role-bootstrap
+    runs-on:
+      group: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}
+      labels: ${{ format('rr-{0}-role-bootstrap', github.run_id) }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1
+          path: preflight
+      - name: Copy, bind the restored generation, prove equivalence, and bootstrap roles
+        env:
+          REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}
+          REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: copy-and-role-bootstrap-private
+          REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: preflight/initial-rollout.json
+          REVIEW_ROUTER_FREEZE_OBSERVATION: ${{ needs.freeze-source-writers.outputs.observation }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          RENDER_PROVENANCE_READ_API_KEY: ${{ secrets.RENDER_PROVENANCE_READ_API_KEY }}
+          RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
+          REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
+          REVIEW_ROUTER_SOURCE_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL }}
+          REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON }}
+          REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL }}
+          REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
+          REVIEW_ROUTER_API_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_API_DATABASE_URL }}
+          REVIEW_ROUTER_WEB_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WEB_DATABASE_URL }}
+          REVIEW_ROUTER_WORKER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WORKER_DATABASE_URL }}
+          REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
+          REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON }}
+          REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON: ${{ vars.REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON }}
+          REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
+          REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST }}
+        run: node --import tsx scripts/run-private-pg17-copy-bootstrap.ts > copy-bootstrap-evidence.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: copy-bootstrap-${{ inputs.rollout_id }}-${{ github.run_id }}-1
+          path: copy-bootstrap-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  await-role-runner-cleanup:
+    name: await-role-runner-cleanup
+    needs: role-bootstrap-private
+    environment: production-runner-ledger-read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - env:
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LIFECYCLE: role
+        run: node --import tsx scripts/await-private-runner-cleanup.ts
+
+  pg17-cutover-private:
+    name: pg17-cutover-private
+    needs: await-role-runner-cleanup
+    environment: production
+    runs-on:
+      group: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}
+      labels: ${{ format('rr-{0}-cutover', github.run_id) }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: copy-bootstrap-${{ inputs.rollout_id }}-${{ github.run_id }}-1
+          path: copy-bootstrap
+      - name: Migrate, stage, and cross the transactional activation boundary
+        env:
+          REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}
+          REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: pg17-cutover-private
+          REVIEW_ROUTER_COPY_BOOTSTRAP_EVIDENCE_FILE: copy-bootstrap/copy-bootstrap-evidence.json
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
+          REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
+          REVIEW_ROUTER_SOURCE_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL }}
+          REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON }}
+          RENDER_TARGET_SWITCH_API_KEY: ${{ secrets.RENDER_TARGET_SWITCH_API_KEY }}
+          REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON: ${{ secrets.REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON }}
+          REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL }}
+          REVIEW_ROUTER_API_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_API_DATABASE_URL }}
+          REVIEW_ROUTER_WEB_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WEB_DATABASE_URL }}
+          REVIEW_ROUTER_WORKER_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_WORKER_DATABASE_URL }}
+          REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
+          REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON: ${{ vars.REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON }}
+          REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_SOURCE_DATABASE_SYSTEM_IDENTIFIER }}
+          REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER }}
+          REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256 }}
+          REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256 }}
+          REVIEW_ROUTER_TARGET_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS }}
+          REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS }}
+          REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
+          REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST }}
+        run: node --import tsx scripts/run-private-pg17-rollout.ts > private-rollout-body.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: private-rollout-body-${{ inputs.rollout_id }}-${{ github.run_id }}-1
+          path: private-rollout-body.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  await-cutover-runner-cleanup:
+    name: await-cutover-runner-cleanup
+    needs: pg17-cutover-private
+    environment: production-runner-ledger-read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - env:
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LIFECYCLE: cutover
+        run: node --import tsx scripts/await-private-runner-cleanup.ts
+
+  finalize-trusted-rollout:
+    name: finalize-target-and-trusted-evidence
+    needs: await-cutover-runner-cleanup
+    environment: production-service-switch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          {
+            name: "private-rollout-body-${{ inputs.rollout_id }}-${{ github.run_id }}-1",
+            path: artifacts/body,
+          }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          {
+            name: "protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1",
+            path: artifacts/preflight,
+          }
+      - name: Resume exact target deploys, run live write/read canary, assemble and verify
+        env:
+          REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
+          REVIEW_ROUTER_PRIVATE_ROLLOUT_BODY_FILE: artifacts/body/private-rollout-body.json
+          REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: artifacts/preflight/protected-environment-preflight.json
+          REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON: ${{ vars.REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON }}
+          REVIEW_ROUTER_LIVE_CANARY_URL: ${{ vars.REVIEW_ROUTER_LIVE_CANARY_URL }}
+          REVIEW_ROUTER_LIVE_CANARY_TOKEN: ${{ secrets.REVIEW_ROUTER_LIVE_CANARY_TOKEN }}
+          REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256 }}
+        run: node --import tsx scripts/finalize-private-pg17-rollout.ts > finalized-rollout.json
+      - env:
+          REVIEW_ROUTER_FINALIZED_ROLLOUT_FILE: finalized-rollout.json
+        run: node --import tsx scripts/assemble-private-pg17-trusted-evidence.ts > trusted-rollout-evidence.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trusted-private-pg17-${{ inputs.rollout_id }}-${{ github.run_id }}-1
+          path: trusted-rollout-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  always-reconcile:
+    name: always-reconcile-runners-and-compensation
+    if: ${{ always() }}
+    needs:
+      [
+        freeze-source-writers,
+        role-bootstrap-private,
+        pg17-cutover-private,
+        finalize-trusted-rollout,
+      ]
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - name: Idempotently reconcile persisted jobs and rollout boundary
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
+          REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: orphan-reconciliation.json
+          REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8
+          REVIEW_ROUTER_RECONCILIATION_INITIAL_DELAY_MS: 5000
+          REVIEW_ROUTER_RECONCILIATION_MAXIMUM_DELAY_MS: 30000
+        run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: compensation-gate-${{ inputs.rollout_id }}-${{ github.run_id }}-1
+          path: orphan-reconciliation.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: "protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1"
+          path: artifacts/preflight
+      - name: Complete safe pre-activation compensation, then reconcile
+        env:
+          REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
+          RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
+          REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
+          REVIEW_ROUTER_SOURCE_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL }}
+          REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON }}
+          REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: artifacts/preflight/initial-rollout.json
+          RENDER_TARGET_SWITCH_API_KEY: ${{ secrets.RENDER_TARGET_SWITCH_API_KEY }}
+          REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS }}
+          REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256 }}
+          REVIEW_ROUTER_TARGET_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS }}
+        run: node --import tsx scripts/reconcile-private-pg17-compensation.ts > compensation-reconciliation.json

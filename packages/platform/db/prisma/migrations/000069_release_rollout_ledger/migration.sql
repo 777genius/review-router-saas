@@ -1,0 +1,3 @@
+-- Release authority deliberately has no objects in the application migration chain.
+-- See packages/platform/release-authority-db. This migration remains as an
+-- immutable history marker so source/target databases never acquire authority state.

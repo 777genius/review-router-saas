@@ -1,6 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +18,7 @@ import {
   assertMigrationEvidencePayload,
   assertSelectedDatabaseIdentity,
   buildServiceEnv,
+  convergeImmutableRuntimeImage,
   disableAndVerifyPreDeployCommand,
   ensureDatabase,
   ensureService,
@@ -34,6 +41,65 @@ const installerTuple = Object.freeze({
   REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
   REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
 });
+const dormantReviewV2Env = Object.freeze({
+  REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED: "0",
+  REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: "0",
+});
+const runtimeGenerationProofEnv = Object.freeze({
+  REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: "d".repeat(64),
+  REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: "rollout-image-w2",
+  REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: actionSha,
+  REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: "2026-08-13T00:00:00.000Z",
+  REVIEW_ROUTER_LIVE_CANARY_TOKEN_SHA256: "e".repeat(64),
+});
+
+beforeEach(() => {
+  for (const [key, value] of Object.entries(runtimeGenerationProofEnv))
+    vi.stubEnv(key, value);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+function activeReviewV2Env() {
+  const keyRing = JSON.stringify([
+    {
+      keyId: "review-v2-active",
+      secretBase64: Buffer.alloc(32, 7).toString("base64"),
+      verifyUntil: null,
+    },
+  ]);
+  return {
+    REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE: "client_triggered_t0",
+    REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED: "0",
+    REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED: "0",
+    REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY: "0",
+    REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID: "review-v2-active",
+    REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON: keyRing,
+    REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID: "review-v2-active",
+    REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON: keyRing,
+    REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON: "[]",
+    REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON: "[]",
+    REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64: Buffer.alloc(
+      32,
+      8,
+    ).toString("base64"),
+    REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID: "context-active",
+    REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON: JSON.stringify([
+      {
+        keyId: "context-active",
+        secretBase64: Buffer.alloc(32, 9).toString("base64"),
+        verifyUntil: null,
+      },
+    ]),
+    REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: "a".repeat(64),
+  };
+}
 const forbiddenRuntimeDeployDotenvName =
   "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL";
 const forbiddenRuntimeDeployDotenvMessage = `${forbiddenRuntimeDeployDotenvName} is forbidden in the runtime deploy environment file`;
@@ -205,47 +271,35 @@ describe("Render hosted deploy hardening", () => {
     expect(guidance).toContain("operations/02-runbooks.md");
   });
 
-  it("checks in immutable exclusive migration and rollout evidence workflows", () => {
-    const migration = readFileSync(
+  it("retains the existing legacy production workflows while PG17 stays opt-in", () => {
+    for (const path of [
       ".github/workflows/codex-rotating-release-migration.yml",
-      "utf8",
-    );
-    const rollout = readFileSync(
       ".github/workflows/codex-rotating-rollout-evidence.yml",
-      "utf8",
-    );
-    const bootstrap = readFileSync(
       ".github/workflows/codex-rotating-role-bootstrap.yml",
+    ]) {
+      expect(existsSync(path)).toBe(true);
+      const legacy = readFileSync(path, "utf8");
+      expect(legacy).toContain("workflow_dispatch:");
+      expect(legacy).toContain("runs-on: ubuntu-24.04");
+      expect(legacy).not.toContain("private-network-pg17-rollout.yml");
+    }
+    const privateRollout = readFileSync(
+      ".github/workflows/private-network-pg17-rollout.yml",
       "utf8",
     );
-    expect(migration).toContain(
-      "node scripts/run-codex-rotating-release-migration.mjs > migration-output.json",
+    expect(privateRollout).toContain("group: private-network-pg17-production");
+    expect(privateRollout).toContain(
+      "scripts/run-private-pg17-copy-bootstrap.ts",
     );
-    expect(migration).toContain(
-      "group: codex-rotating-database-mutation-production",
+    expect(privateRollout).toContain("scripts/run-private-pg17-rollout.ts");
+    expect(privateRollout).toContain("environment: production-role-bootstrap");
+    expect(privateRollout).toContain("runs-on:");
+    expect(privateRollout).toContain(
+      "group: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}",
     );
-    expect(migration).not.toContain("run-render-codex-rotating-migration-job");
-    expect(bootstrap).toContain(
-      "node scripts/run-codex-rotating-role-bootstrap.mjs > role-bootstrap-output.json",
-    );
-    expect(bootstrap).toContain(
-      "group: codex-rotating-database-mutation-production",
-    );
-    expect(migration).not.toContain(
-      "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
-    );
-    expect(bootstrap).toContain("environment: production-role-bootstrap");
-    expect(migration).toContain(
-      "node scripts/assemble-codex-rotating-trusted-evidence.mjs",
-    );
-    expect(migration).toContain(
-      "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-    );
-    expect(rollout).toContain(
-      "node scripts/assemble-codex-rotating-trusted-rollout.mjs",
-    );
-    expect(rollout).not.toContain("MIGRATION_EVIDENCE_FILE");
-    expect(`${migration}\n${bootstrap}\n${rollout}`).not.toMatch(
+    expect(privateRollout).toContain("rr-{0}-role-bootstrap");
+    expect(privateRollout).toContain("rr-{0}-cutover");
+    expect(privateRollout).not.toMatch(
       /actions\/(?:checkout|upload-artifact)@v\d/u,
     );
   });
@@ -256,8 +310,11 @@ describe("Render hosted deploy hardening", () => {
     expect(blueprint).toContain("user: reviewrouter_role_bootstrap");
     expect(blueprint).not.toContain("preDeployCommand:");
     expect(blueprint).not.toContain("property: connectionString");
-    expect(blueprint.match(/autoDeployTrigger: off/g)).toHaveLength(3);
+    expect(blueprint.match(/autoDeployTrigger: off/g)).toHaveLength(5);
     expect(blueprint).not.toContain("autoDeployTrigger: commit");
+    expect(blueprint).not.toMatch(
+      /- key: SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64(?:\s|$)/u,
+    );
     for (const key of [
       "REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY",
       "REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL",
@@ -268,6 +325,17 @@ describe("Render hosted deploy hardening", () => {
         1,
       );
     }
+  });
+
+  it("pins GitHub's official Ed25519 host key in the OCI build", () => {
+    const dockerfile = readFileSync("deploy/render-runtime/Dockerfile", "utf8");
+    const officialGitHubEd25519HostKey =
+      "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+
+    expect(dockerfile).toContain(officialGitHubEd25519HostKey);
+    expect(dockerfile).not.toContain(
+      "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5K9okWi0dh2l9GKJl",
+    );
   });
 
   it("derives the exact hosted tuple only from a digest-pinned release descriptor", () => {
@@ -600,6 +668,44 @@ describe("Render hosted deploy hardening", () => {
     expect(client.request).not.toHaveBeenCalled();
   });
 
+  it("creates new runtime services from the exact immutable image", async () => {
+    const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`;
+    const request = vi.fn().mockResolvedValue({
+      service: { id: "srv-1", name: "reviewrouter-api" },
+    });
+    await expect(
+      ensureService(
+        { list: vi.fn().mockResolvedValue([]), request } as never,
+        {
+          healthCheckPath: "/health",
+          name: "reviewrouter-api",
+          role: "api",
+          startCommand: "pnpm api:start",
+          type: "web_service",
+        },
+        {
+          allowCreate: true,
+          environmentId: "production",
+          imageUrl,
+          ownerId: "owner-1",
+          projectId: "project-1",
+        } as never,
+      ),
+    ).resolves.toMatchObject({ id: "srv-1" });
+    expect(request).toHaveBeenCalledWith("POST", "/services", {
+      autoDeployTrigger: "off",
+      environmentId: "production",
+      image: { imagePath: imageUrl },
+      name: "reviewrouter-api",
+      ownerId: "owner-1",
+      projectId: "project-1",
+      serviceDetails: expect.objectContaining({
+        runtime: "image",
+      }),
+      type: "web_service",
+    });
+  });
+
   it("refuses to skip prepare by creating resources during runtime-deploy", async () => {
     const client = { list: vi.fn().mockResolvedValue([]), request: vi.fn() };
     await expect(
@@ -657,6 +763,7 @@ describe("Render hosted deploy hardening", () => {
           REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES: "1",
           REVIEW_ROUTER_PROGRESS_REPOSITORIES:
             "777genius/review-router-saas-e2e",
+          ...activeReviewV2Env(),
         },
       }).map(({ key, value }) => [key, value]),
     );
@@ -681,6 +788,97 @@ describe("Render hosted deploy hardening", () => {
     ).toHaveProperty("preDeployCommand", null);
   });
 
+  it("preserves the explicit active review v2 tuple without copying unknown env", () => {
+    const v2 = activeReviewV2Env();
+    const common = {
+      GITHUB_APP_CLIENT_ID: "client",
+      GITHUB_APP_CLIENT_SECRET: "secret",
+      GITHUB_APP_ID: "1",
+      GITHUB_APP_SLUG: "reviewrouter",
+      GITHUB_WEBHOOK_SECRET: "secret",
+      AUTH_SECRET: "a".repeat(32),
+      REVIEW_ROUTER_ACTION_SESSION_SECRET: "s".repeat(32),
+      REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: "t".repeat(32),
+      REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+      REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
+      ...installerTuple,
+      ...v2,
+      REVIEW_ROUTER_UNKNOWN_RUNTIME_VALUE: "must-not-cross-put",
+    };
+    const api = Object.fromEntries(
+      buildServiceEnv({
+        databaseUrl: "postgres://internal/db",
+        privateKey: "private-key-not-logged",
+        role: "api",
+        webUrl: "https://reviewrouter.example",
+        apiUrl: "https://api.reviewrouter.example",
+        env: common,
+      }).map(({ key, value }) => [key, value]),
+    );
+    const worker = Object.fromEntries(
+      buildServiceEnv({
+        databaseUrl: "postgres://internal/db",
+        privateKey: "private-key-not-logged",
+        role: "worker",
+        webUrl: "https://reviewrouter.example",
+        apiUrl: "https://api.reviewrouter.example",
+        env: common,
+      }).map(({ key, value }) => [key, value]),
+    );
+
+    for (const [key, value] of Object.entries(v2)) {
+      expect(api[key], key).toBe(value);
+      if (
+        !key.startsWith("REVIEW_ROUTER_REVIEW_V2_CONTEXT_") &&
+        key !== "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256"
+      ) {
+        expect(worker[key], key).toBe(value);
+      }
+    }
+    expect(api.REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION).toBe(
+      "review-projection-policy.v5-t0",
+    );
+    expect(worker.REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64).toBe(
+      undefined,
+    );
+    expect(worker.REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256).toBe(
+      undefined,
+    );
+    expect(api.REVIEW_ROUTER_UNKNOWN_RUNTIME_VALUE).toBe(undefined);
+  });
+
+  it("fails closed when an active review v2 tuple is incomplete", () => {
+    const v2 = activeReviewV2Env();
+    delete (v2 as Record<string, string>)[
+      "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON"
+    ];
+    expect(() =>
+      buildServiceEnv({
+        databaseUrl: "postgres://internal/db",
+        privateKey: "private-key-not-logged",
+        role: "api",
+        webUrl: "https://reviewrouter.example",
+        apiUrl: "https://api.reviewrouter.example",
+        env: {
+          GITHUB_APP_CLIENT_ID: "client",
+          GITHUB_APP_CLIENT_SECRET: "secret",
+          GITHUB_APP_ID: "1",
+          GITHUB_APP_SLUG: "reviewrouter",
+          GITHUB_WEBHOOK_SECRET: "secret",
+          AUTH_SECRET: "a".repeat(32),
+          REVIEW_ROUTER_ACTION_SESSION_SECRET: "s".repeat(32),
+          REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: "t".repeat(32),
+          REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
+          REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
+          ...installerTuple,
+          ...v2,
+        },
+      }),
+    ).toThrow(
+      "Missing required value: REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON",
+    );
+  });
+
   it("converges every service on one explicit rotating SHA and recovery witness", () => {
     const witness = "shared-recovery-witness-".padEnd(43, "x");
     const env = {
@@ -701,6 +899,7 @@ describe("Render hosted deploy hardening", () => {
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
       REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: witness,
+      ...dormantReviewV2Env,
       REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL:
         "postgresql://reviewrouter_codex_effect_authority:authority@db.internal/review_router",
     };
@@ -903,6 +1102,7 @@ describe("Render hosted deploy hardening", () => {
         REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
         REVIEW_ROUTER_CODEX_ROTATING_ACTION_REF: actionRef,
         ...installerTuple,
+        ...dormantReviewV2Env,
       },
     });
     const client = {
@@ -1225,6 +1425,7 @@ describe("Render hosted deploy hardening", () => {
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL: `https://raw.githubusercontent.com/777genius/review-router/${"a".repeat(40)}/scripts/seed-codex-rotating-auth.sh`,
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION: "v1.2.3",
       REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: "c".repeat(64),
+      ...dormantReviewV2Env,
     };
     vi.stubEnv("REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS", "");
     expect(() =>
@@ -1361,38 +1562,37 @@ describe("Render hosted deploy hardening", () => {
 
   it.each([
     [
-      "commit",
-      "a".repeat(40),
+      "reference",
+      `ghcr.io/777genius/review-router-saas-runtime@sha256:${"d".repeat(64)}`,
       `sha256:${"c".repeat(64)}`,
-      "resolved commit mismatch",
+      "resolved image reference mismatch",
     ],
     [
-      "image",
-      "b".repeat(40),
+      "digest",
+      `ghcr.io/777genius/review-router-saas-runtime@sha256:${"c".repeat(64)}`,
       `sha256:${"d".repeat(64)}`,
       "resolved image digest mismatch",
     ],
   ])(
     "aborts on resolved %s mismatch",
-    async (_kind, observedCommit, observedImage, message) => {
-      const expectedCommit = "b".repeat(40);
+    async (_kind, observedRef, observedImage, message) => {
       const expectedImage = `sha256:${"c".repeat(64)}`;
+      const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@${expectedImage}`;
       const request = vi
         .fn()
         .mockResolvedValueOnce({ id: "dep-1" })
         .mockResolvedValueOnce({
           id: "dep-1",
           status: "live",
-          commitId: observedCommit,
-          imageDigest: observedImage,
+          image: { ref: observedRef, sha: observedImage },
         });
       await expect(
         triggerAndVerifyDeploy(
           { request } as never,
           { id: "srv-1", name: "api" },
           {
-            commit: expectedCommit,
             imageDigest: expectedImage,
+            imageUrl,
             maxAttempts: 1,
           },
         ),
@@ -1401,8 +1601,8 @@ describe("Render hosted deploy hardening", () => {
   );
 
   it("waits for the resolved deploy identifier and exact immutable facts", async () => {
-    const commit = "a".repeat(40);
     const imageDigest = `sha256:${"b".repeat(64)}`;
+    const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@${imageDigest}`;
     const request = vi
       .fn()
       .mockResolvedValueOnce({ deploy: { id: "dep-1" } })
@@ -1410,17 +1610,28 @@ describe("Render hosted deploy hardening", () => {
       .mockResolvedValueOnce({
         id: "dep-1",
         status: "live",
-        commitId: commit,
-        imageDigest,
+        artifactId: "art-1",
+        image: { ref: imageUrl, sha: imageDigest },
       });
     const poll = vi.fn(async () => undefined);
     await expect(
       triggerAndVerifyDeploy(
         { request } as never,
         { id: "srv-1", name: "api" },
-        { commit, imageDigest, poll, maxAttempts: 2 },
+        { imageDigest, imageUrl, poll, maxAttempts: 2 },
       ),
-    ).resolves.toMatchObject({ id: "dep-1", commit, imageDigest });
+    ).resolves.toMatchObject({
+      artifactId: "art-1",
+      id: "dep-1",
+      imageDigest,
+      imageRef: imageUrl,
+    });
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      "POST",
+      "/services/srv-1/deploys",
+      { clearCache: "do_not_clear", imageUrl },
+    );
     expect(poll).toHaveBeenCalledOnce();
   });
 
@@ -1430,8 +1641,8 @@ describe("Render hosted deploy hardening", () => {
         { request: vi.fn().mockResolvedValue({}) } as never,
         { id: "srv-1", name: "api" },
         {
-          commit: "a".repeat(40),
           imageDigest: `sha256:${"b".repeat(64)}`,
+          imageUrl: `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`,
         },
       ),
     ).rejects.toThrow("did not return a deploy id");
@@ -1447,8 +1658,8 @@ describe("Render hosted deploy hardening", () => {
         { request: terminal } as never,
         { id: "srv-1", name: "api" },
         {
-          commit: "a".repeat(40),
           imageDigest: `sha256:${"b".repeat(64)}`,
+          imageUrl: `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`,
           maxAttempts: 1,
         },
       ),
@@ -1463,12 +1674,96 @@ describe("Render hosted deploy hardening", () => {
         { request: unresolved } as never,
         { id: "srv-1", name: "api" },
         {
-          commit: "a".repeat(40),
           imageDigest: `sha256:${"b".repeat(64)}`,
+          imageUrl: `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`,
           poll: async () => undefined,
           maxAttempts: 1,
         },
       ),
     ).rejects.toThrow("deploy did not resolve");
+  });
+
+  it("converges an existing service to the exact image-backed runtime", async () => {
+    const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        image: { imagePath: imageUrl },
+        serviceDetails: { runtime: "image" },
+      });
+    await expect(
+      convergeImmutableRuntimeImage(
+        { request } as never,
+        { id: "srv-1", name: "api" },
+        { startCommand: "pnpm api:start" },
+        imageUrl,
+      ),
+    ).resolves.toEqual({ runtime: "image", imagePath: imageUrl });
+    expect(request).toHaveBeenNthCalledWith(1, "PATCH", "/services/srv-1", {
+      autoDeployTrigger: "off",
+      image: { imagePath: imageUrl },
+      serviceDetails: {
+        preDeployCommand: "",
+        runtime: "image",
+      },
+    });
+  });
+
+  it("fails closed when Render keeps the existing native runtime", async () => {
+    const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        image: { imagePath: imageUrl },
+        serviceDetails: { runtime: "image" },
+      })
+      .mockResolvedValueOnce({
+        image: { imagePath: imageUrl },
+        serviceDetails: { runtime: "node" },
+      });
+
+    await expect(
+      convergeImmutableRuntimeImage(
+        { request } as never,
+        { id: "srv-1", name: "api" },
+        { startCommand: "pnpm api:start" },
+        imageUrl,
+      ),
+    ).rejects.toThrow("did not converge on the immutable image source");
+    expect(request).toHaveBeenNthCalledWith(2, "GET", "/services/srv-1");
+  });
+
+  it("fails closed when Render keeps a mutable image source", async () => {
+    const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        image: {
+          imagePath: "ghcr.io/777genius/review-router-saas-runtime:latest",
+        },
+        serviceDetails: { runtime: "image" },
+      });
+
+    await expect(
+      convergeImmutableRuntimeImage(
+        { request } as never,
+        { id: "srv-1", name: "api" },
+        { startCommand: "pnpm api:start" },
+        imageUrl,
+      ),
+    ).rejects.toThrow("did not converge on the immutable image source");
+  });
+
+  it("refuses a mutable or non-canonical runtime image", async () => {
+    await expect(
+      convergeImmutableRuntimeImage(
+        { request: vi.fn() } as never,
+        { id: "srv-1", name: "api" },
+        { startCommand: "pnpm api:start" },
+        "ghcr.io/777genius/review-router-saas-runtime:latest",
+      ),
+    ).rejects.toThrow("canonical GHCR repository and exact digest");
   });
 });

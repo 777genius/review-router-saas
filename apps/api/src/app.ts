@@ -151,6 +151,7 @@ import {
 } from "./review-investigation-operator-routes.js";
 import { appRouter } from "./trpc.js";
 import { ProductionHostedReviewPreleaseGate } from "./hosted-review-prelease-gate.js";
+import { registerRuntimeGenerationCanaryRoute } from "./runtime-generation-canary-routes.js";
 
 export type CreateApiAppOptions = {
   readonly githubWebhookSecret?: string;
@@ -259,6 +260,37 @@ export async function createApiApp(
     options.healthDependencies ??
       (prisma ? [new PrismaHealthDependency(prisma)] : []),
   );
+
+  const runtimeCanaryTokenSha256 =
+    reviewActionV2Env.REVIEW_ROUTER_LIVE_CANARY_TOKEN_SHA256?.trim();
+  const runtimeReleaseCommitSha =
+    reviewActionV2Env.REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA?.trim();
+  const runtimeRecoveryWitnessSha256 =
+    reviewActionV2Env.REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256?.trim();
+  const runtimeRolloutStartedAt =
+    reviewActionV2Env.REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT?.trim();
+  if (
+    runtimeCanaryTokenSha256 ||
+    runtimeReleaseCommitSha ||
+    runtimeRecoveryWitnessSha256 ||
+    runtimeRolloutStartedAt
+  ) {
+    if (
+      !prisma ||
+      !runtimeCanaryTokenSha256 ||
+      !runtimeReleaseCommitSha ||
+      !runtimeRecoveryWitnessSha256 ||
+      !runtimeRolloutStartedAt
+    )
+      throw new Error("runtime_generation_canary_configuration_incomplete");
+    await registerRuntimeGenerationCanaryRoute(app, {
+      prisma,
+      tokenSha256: runtimeCanaryTokenSha256,
+      releaseCommitSha: runtimeReleaseCommitSha,
+      expectedRecoveryWitnessSha256: runtimeRecoveryWitnessSha256,
+      rolloutStartedAt: new Date(runtimeRolloutStartedAt),
+    });
+  }
 
   const operatorReviewConfigDependencies =
     options.operatorReviewConfigDependencies ??

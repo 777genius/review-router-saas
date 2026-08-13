@@ -5,7 +5,10 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { reviewV2ContextEnvForRole } from "./review-v2-render-env.mjs";
+import {
+  reviewV2ContextEnvForRole,
+  reviewV2ProjectionPolicyVersion,
+} from "./review-v2-render-env.mjs";
 import { isLoopbackHostname } from "../packages/shared/src/validation/loopback-hostname.mjs";
 import { resolveCodexRotatingInstallerDescriptor } from "../packages/shared/src/validation/codex-rotating-installer-descriptor.mjs";
 import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
@@ -572,6 +575,111 @@ function readOptionalEnvVars(env, keys) {
   return values;
 }
 
+const reviewV2ActivationFlagNames = Object.freeze([
+  "REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED",
+  "REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED",
+  "REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED",
+  "REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED",
+  "REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED",
+  "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY",
+  "REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED",
+]);
+
+const reviewV2RequiredRuntimeEnvNames = Object.freeze([
+  "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID",
+  "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON",
+  "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID",
+  "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON",
+  "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON",
+  "REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON",
+]);
+
+const reviewV2ApiOnlyRuntimeEnvNames = Object.freeze([
+  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64",
+  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID",
+  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON",
+  "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256",
+]);
+
+function exactBinaryFlag(env, name) {
+  const value = requiredEnv(name, env);
+  if (value !== "0" && value !== "1") {
+    throw new Error(`${name} must be exactly 0 or 1`);
+  }
+  return value;
+}
+
+function reviewV2RuntimeEnvForRole(env, role) {
+  // These two flags already exist in the hosted production contract. Requiring
+  // them prevents a full Render PUT from silently turning an active rollout off.
+  const runControlEnabled = exactBinaryFlag(
+    env,
+    "REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED",
+  );
+  const workerEnabled = exactBinaryFlag(
+    env,
+    "REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED",
+  );
+  const progressEnabled = [
+    "REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE",
+    "REVIEW_ROUTER_PROGRESS_FILE_COVERAGE",
+    "REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES",
+  ].some((name) => env[name] === "1");
+  const active =
+    runControlEnabled === "1" || workerEnabled === "1" || progressEnabled;
+
+  if (!active) {
+    return {
+      REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED: runControlEnabled,
+      REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: workerEnabled,
+    };
+  }
+
+  const flags = Object.fromEntries(
+    reviewV2ActivationFlagNames.map((name) => [
+      name,
+      name === "REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED"
+        ? runControlEnabled
+        : name === "REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED"
+          ? workerEnabled
+          : exactBinaryFlag(env, name),
+    ]),
+  );
+  const provisioningMode = requiredEnv(
+    "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE",
+    env,
+  );
+  if (provisioningMode !== "client_triggered_t0") {
+    throw new Error(
+      "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE must be client_triggered_t0",
+    );
+  }
+
+  const common = Object.fromEntries(
+    reviewV2RequiredRuntimeEnvNames.map((name) => [
+      name,
+      requiredEnv(name, env),
+    ]),
+  );
+  const selected = {
+    ...flags,
+    REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE: provisioningMode,
+    ...common,
+  };
+  if (role === "api") {
+    Object.assign(
+      selected,
+      Object.fromEntries(
+        reviewV2ApiOnlyRuntimeEnvNames.map((name) => [
+          name,
+          requiredEnv(name, env),
+        ]),
+      ),
+    );
+  }
+  return selected;
+}
+
 export class RenderClient {
   constructor(apiKey) {
     this.apiKey = apiKey;
@@ -609,20 +717,15 @@ export class RenderClient {
   }
 }
 
-export function serviceDetails({ type, startCommand, healthCheckPath }) {
+export function serviceDetails({ type, healthCheckPath }) {
   const details = {
-    envSpecificDetails: {
-      buildCommand:
-        "pnpm --version && pnpm install --frozen-lockfile && pnpm db:generate && pnpm build",
-      startCommand,
-    },
     maxShutdownDelaySeconds: type === "background_worker" ? 120 : 60,
     plan: "starter",
     // Database rollout runs in the trusted GitHub migration workflow.
     // Runtime services must represent per-service migration callers as null.
     preDeployCommand: null,
     region: "frankfurt",
-    runtime: "node",
+    runtime: "image",
   };
   if (type === "web_service") details.healthCheckPath = healthCheckPath;
   return details;
@@ -637,6 +740,7 @@ export function buildServiceEnv({
   webUrl,
   apiUrl,
 }) {
+  const runtimeGeneration = resolveRuntimeGenerationProofEnv(env);
   const stableSecrets = resolveStableSecuritySecrets(env);
   const installer = resolveCodexRotatingInstallerDescriptor(env);
   const values = {
@@ -667,6 +771,19 @@ export function buildServiceEnv({
     REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256: installer.sha256,
     REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS:
       stableSecrets.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS,
+    REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256:
+      runtimeGeneration.expectedWitnessSha256,
+    REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: runtimeGeneration.rolloutId,
+    REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: runtimeGeneration.commitSha,
+    REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: runtimeGeneration.startedAt,
+    ...(role === "api"
+      ? {
+          REVIEW_ROUTER_LIVE_CANARY_TOKEN_SHA256: requiredEnv(
+            "REVIEW_ROUTER_LIVE_CANARY_TOKEN_SHA256",
+            env,
+          ),
+        }
+      : {}),
     REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter",
     REVIEW_ROUTER_ACTION_SESSION_SECRET:
       stableSecrets.REVIEW_ROUTER_ACTION_SESSION_SECRET,
@@ -700,6 +817,7 @@ export function buildServiceEnv({
     REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES:
       env.REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES ?? "0",
     REVIEW_ROUTER_PUBLIC_API_URL: apiUrl,
+    REVIEW_ROUTER_RUNTIME_ROLE: role,
     REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY:
       stableSecrets.REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY,
     REVIEW_ROUTER_WEB_URL: webUrl,
@@ -719,7 +837,18 @@ export function buildServiceEnv({
   if (role === "api") {
     Object.assign(values, readOptionalEnvVars(env, apiOnlyGitLabEnvKeys));
   }
+  Object.assign(values, reviewV2RuntimeEnvForRole(env, role));
   Object.assign(values, reviewV2ContextEnvForRole(env, role));
+  if (
+    values.REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED === "1" ||
+    values.REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED === "1" ||
+    values.REVIEW_ROUTER_PROGRESS_PROJECTION_CAPTURE === "1" ||
+    values.REVIEW_ROUTER_PROGRESS_FILE_COVERAGE === "1" ||
+    values.REVIEW_ROUTER_HOSTED_PROGRESS_COMMENT_WRITES === "1"
+  ) {
+    values.REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION =
+      reviewV2ProjectionPolicyVersion;
+  }
   Object.assign(values, {
     REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED: "0",
     REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED: "0",
@@ -727,6 +856,30 @@ export function buildServiceEnv({
   });
   if (role !== "worker") values.PORT = "10000";
   return asEnvVars(values);
+}
+
+function resolveRuntimeGenerationProofEnv(env) {
+  const expectedWitnessSha256 = requiredEnv(
+    "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
+    env,
+  );
+  const rolloutId = requiredEnv("REVIEW_ROUTER_RUNTIME_ROLLOUT_ID", env);
+  const commitSha = requiredEnv(
+    "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
+    env,
+  );
+  const startedAt = requiredEnv(
+    "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+    env,
+  );
+  if (
+    !/^[a-f0-9]{64}$/u.test(expectedWitnessSha256) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(rolloutId) ||
+    !/^[a-f0-9]{40}$/u.test(commitSha) ||
+    new Date(startedAt).toISOString() !== startedAt
+  )
+    throw new Error("runtime generation proof environment is invalid");
+  return { expectedWitnessSha256, rolloutId, commitSha, startedAt };
 }
 
 export async function addToEnvironment(client, environmentId, resourceIds) {
@@ -861,16 +1014,68 @@ export async function ensureService(client, spec, common) {
   console.log(`creating service ${spec.name}`);
   const created = await client.request("POST", "/services", {
     autoDeployTrigger: "off",
-    branch: common.branch,
+    image: { imagePath: common.imageUrl },
     name: spec.name,
     environmentId: common.environmentId,
     ownerId: common.ownerId,
     projectId: common.projectId,
-    repo: common.repo,
     serviceDetails: serviceDetails(spec),
     type: spec.type,
   });
   return created.service ?? created;
+}
+
+function observedRuntimeImage(service) {
+  const value = service.service ?? service;
+  const details = value.serviceDetails ?? {};
+  return {
+    runtime:
+      details.runtime ??
+      details.env ??
+      details.envSpecificDetails?.runtime ??
+      null,
+    imagePath:
+      value.image?.imagePath ??
+      value.image?.url ??
+      value.imagePath ??
+      details.image?.imagePath ??
+      details.image?.url ??
+      details.imagePath ??
+      null,
+  };
+}
+
+export async function convergeImmutableRuntimeImage(
+  client,
+  service,
+  spec,
+  imageUrl,
+) {
+  if (
+    !/^ghcr\.io\/777genius\/review-router-saas-runtime@sha256:[a-f0-9]{64}$/u.test(
+      imageUrl,
+    )
+  ) {
+    throw new Error(
+      "hosted runtime image must use the canonical GHCR repository and exact digest",
+    );
+  }
+  await client.request("PATCH", `/services/${service.id}`, {
+    autoDeployTrigger: "off",
+    image: { imagePath: imageUrl },
+    serviceDetails: {
+      preDeployCommand: "",
+      runtime: "image",
+    },
+  });
+  const observed = await client.request("GET", `/services/${service.id}`);
+  const facts = observedRuntimeImage(observed);
+  if (facts.runtime !== "image" || facts.imagePath !== imageUrl) {
+    throw new Error(
+      `Render service ${service.name} did not converge on the immutable image source`,
+    );
+  }
+  return facts;
 }
 
 export async function verifyResourceScope(
@@ -1420,13 +1625,10 @@ function resolvedDeployFacts(deploy) {
   return {
     id: value.id ?? null,
     status: value.status ?? null,
-    commit:
-      value.commit?.id ??
-      value.commitId ??
-      value.commit?.sha ??
-      value.sha ??
-      null,
+    artifactId: value.artifactId ?? null,
+    imageRef: value.image?.ref ?? null,
     imageDigest:
+      value.image?.sha ??
       value.image?.digest ??
       value.imageDigest ??
       value.build?.imageDigest ??
@@ -1438,7 +1640,7 @@ export async function triggerAndVerifyDeploy(
   client,
   service,
   {
-    commit,
+    imageUrl,
     imageDigest,
     poll = async () => new Promise((resolve) => setTimeout(resolve, 10_000)),
     maxAttempts = 180,
@@ -1450,7 +1652,7 @@ export async function triggerAndVerifyDeploy(
     `/services/${service.id}/deploys`,
     {
       clearCache: "do_not_clear",
-      commitId: commit,
+      imageUrl,
     },
   );
   const createdId = resolvedDeployFacts(created).id;
@@ -1474,9 +1676,9 @@ export async function triggerAndVerifyDeploy(
       );
     }
     if (facts.status === "live") {
-      if (facts.commit !== commit) {
+      if (facts.imageRef !== imageUrl) {
         throw new Error(
-          `Render service ${service.name} resolved commit mismatch`,
+          `Render service ${service.name} resolved image reference mismatch`,
         );
       }
       if (facts.imageDigest !== imageDigest) {
@@ -1514,8 +1716,6 @@ export async function main() {
     );
   }
   const scope = { ownerId, projectId, environmentId };
-  const repo = requiredEnv("RENDER_REPO", env);
-  const branch = env.RENDER_BRANCH ?? "main";
   const commit = requiredEnv("REVIEW_ROUTER_RENDER_COMMIT_SHA", env);
   const imageDigest = requiredEnv("REVIEW_ROUTER_RENDER_IMAGE_DIGEST", env);
   if (!/^[a-f0-9]{40}$/u.test(commit))
@@ -1526,6 +1726,7 @@ export async function main() {
     throw new Error(
       "REVIEW_ROUTER_RENDER_IMAGE_DIGEST must be an exact sha256 digest",
     );
+  const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@${imageDigest}`;
   const webUrl = env.REVIEW_ROUTER_WEB_URL ?? "https://reviewrouter.site";
   const apiUrl = env.REVIEW_ROUTER_API_URL ?? "https://api.reviewrouter.site";
   assertHostedDeployEnv({ apiUrl, env, envFile, webUrl });
@@ -1582,15 +1783,14 @@ export async function main() {
   const common = {
     allowCreate: phase === "prepare",
     apiUrl,
-    branch,
     databaseUrls,
     env,
     installerDescriptor,
+    imageUrl,
     environmentId,
     ownerId,
     projectId,
     privateKey,
-    repo,
     webUrl,
   };
   const serviceSpecs = [
@@ -1668,10 +1868,15 @@ export async function main() {
   // Scope is fetched again immediately before each complete secret-bearing PUT.
   for (const { service, spec } of services)
     await syncService(client, service, spec, common);
+  for (const { service, spec } of services)
+    await convergeImmutableRuntimeImage(client, service, spec, imageUrl);
   const resolvedDeploys = [];
   for (const { service } of services)
     resolvedDeploys.push(
-      await triggerAndVerifyDeploy(client, service, { commit, imageDigest }),
+      await triggerAndVerifyDeploy(client, service, {
+        imageDigest,
+        imageUrl,
+      }),
     );
 
   console.log(

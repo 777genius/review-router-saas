@@ -101,6 +101,10 @@ describe("Prisma review progress projection", () => {
           snapshotJson: expect.objectContaining({
             phase: "assembling",
             terminal: "none",
+            sourceIdentity: {
+              sourceRunId: "700001",
+              sourceRunAttempt: "1",
+            },
           }),
         }),
       }),
@@ -182,7 +186,7 @@ function execution(overrides: Partial<ReviewExecution> = {}): ReviewExecution {
     assignmentManifestHash: null,
     assignmentManifestCanonicalJson: null,
     protocolLimitsProfileId: "limits-1",
-    sourceRunId: "run-1",
+    sourceRunId: "700001",
     sourceRunAttempt: "1",
     workSlots: [
       {

@@ -31,6 +31,30 @@ const input = (
 });
 
 describe("computeProgressSnapshot", () => {
+  it("binds source identity within a generation but permits legacy enrichment", () => {
+    const legacy = computeProgressSnapshot(input([], { generation: 1 }));
+    const bound = computeProgressSnapshot(
+      input([], {
+        generation: 1,
+        sourceIdentity: { sourceRunId: "700001", sourceRunAttempt: "2" },
+      }),
+    );
+    expect(() => assertProgressTransition(legacy, bound)).not.toThrow();
+    expect(() => assertProgressTransition(bound, legacy)).toThrow(
+      "progress_source_identity_changed",
+    );
+    expect(() =>
+      assertProgressTransition(
+        bound,
+        computeProgressSnapshot(
+          input([], {
+            generation: 1,
+            sourceIdentity: { sourceRunId: "700001", sourceRunAttempt: "3" },
+          }),
+        ),
+      ),
+    ).toThrow("progress_source_identity_changed");
+  });
   it.each(["preparing", "reviewing", "assembling", "publishing"] as const)(
     "accepts execution lifecycle phase %s",
     (phase) => {

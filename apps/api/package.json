@@ -6,6 +6,7 @@
   "dependencies": {
     "@octokit/app": "^16.1.2",
     "@octokit/request": "^10.0.9",
+    "@prisma/client": "^7.8.0",
     "@reviewrouter/features-action-control-plane": "workspace:*",
     "@reviewrouter/features-api-demo": "workspace:*",
     "@reviewrouter/features-auth": "workspace:*",
@@ -17,6 +18,7 @@
     "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",
+    "@reviewrouter/features-release-rollout": "workspace:*",
     "@reviewrouter/features-audit-log": "workspace:*",
     "@reviewrouter/features-review-config": "workspace:*",
     "@reviewrouter/features-review-execution-checkpoints": "workspace:*",
@@ -43,6 +45,8 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "release-control:start": "node --conditions=production dist/release-control-server.js",
+    "release-witness:start": "node --conditions=production dist/release-witness-server.js",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }

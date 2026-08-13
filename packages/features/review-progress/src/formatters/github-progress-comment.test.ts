@@ -6,6 +6,7 @@ import {
 import {
   formatGithubProgressComment,
   githubProgressCommentMarker,
+  parseGithubProgressSourceIdentity,
 } from "./github-progress-comment";
 
 describe("formatGithubProgressComment", () => {
@@ -28,6 +29,7 @@ describe("formatGithubProgressComment", () => {
     );
     const snapshot = computeProgressSnapshot({
       generation: 1,
+      sourceIdentity: { sourceRunId: "700001", sourceRunAttempt: "2" },
       phase: "reviewing",
       terminal: "none",
       updatedAt: "2026-08-12T17:04:05.000Z",
@@ -44,6 +46,9 @@ describe("formatGithubProgressComment", () => {
     });
     const comment = formatGithubProgressComment(snapshot);
     expect(comment.split(githubProgressCommentMarker)).toHaveLength(2);
+    expect(comment).toContain(
+      "<!-- review-router-live-progress-source run-id=700001 run-attempt=2 -->",
+    );
     expect(comment).toContain("## ReviewRouter");
     expect(comment).toContain("**Phase:** Reviewing");
     expect(comment).toContain("Review units: 42 of 72 complete (58%)");
@@ -56,6 +61,53 @@ describe("formatGithubProgressComment", () => {
     expect(comment).toContain(
       "A review unit is one planned piece of review work.",
     );
+  });
+
+  it("keeps legacy snapshots identity-less and rejects marker injection", () => {
+    const legacy = computeProgressSnapshot({
+      generation: 1,
+      phase: "reviewing",
+      terminal: "none",
+      updatedAt: "2026-08-12T17:00:00Z",
+      slots: [],
+    });
+    expect(formatGithubProgressComment(legacy)).not.toContain(
+      "review-router-live-progress-source",
+    );
+    expect(() =>
+      computeProgressSnapshot({
+        generation: 1,
+        phase: "reviewing",
+        terminal: "none",
+        updatedAt: "2026-08-12T17:00:00Z",
+        slots: [],
+        sourceIdentity: {
+          sourceRunId: "7 --> hostile",
+          sourceRunAttempt: "1",
+        },
+      }),
+    ).toThrow("progress_source_run_id_invalid");
+  });
+
+  it("parses only one exact canonical source marker", () => {
+    expect(
+      parseGithubProgressSourceIdentity(
+        `${githubProgressCommentMarker}\n<!-- review-router-live-progress-source run-id=700001 run-attempt=2 -->`,
+      ),
+    ).toEqual({ sourceRunId: "700001", sourceRunAttempt: "2" });
+    expect(parseGithubProgressSourceIdentity(githubProgressCommentMarker)).toBe(
+      null,
+    );
+    expect(() =>
+      parseGithubProgressSourceIdentity(
+        "<!-- review-router-live-progress-source run-id=0700001 run-attempt=2 -->",
+      ),
+    ).toThrow("progress_source_identity_marker_invalid");
+    expect(() =>
+      parseGithubProgressSourceIdentity(
+        "<!-- review-router-live-progress-source run-id=700001 run-attempt=2 -->\n<!-- review-router-live-progress-source run-id=700001 run-attempt=3 -->",
+      ),
+    ).toThrow("progress_source_identity_marker_invalid");
   });
 
   it("labels complete-with-gaps honestly and leaks no identities", () => {

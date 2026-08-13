@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { canonicalProviderJson } from "./codex-rotating-provider-provenance.mjs";
 import { gitBlobSha } from "./lib/github-actions-trusted-evidence.mjs";
 
-const workflowPath = ".github/workflows/codex-rotating-release-migration.yml";
+const workflowPath = ".github/workflows/private-network-pg17-rollout.yml";
 const sha256 = (value) =>
   createHash("sha256")
     .update(Buffer.from(canonicalProviderJson(value)))

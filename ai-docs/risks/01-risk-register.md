@@ -386,3 +386,48 @@ Mitigation:
 - scrub headers/cookies/tokens
 - no raw webhook payload logs
 - privacy-safe telemetry policy
+
+### R31 - Private database cutover escapes its network boundary
+
+Severity: critical.
+
+Risk: a GitHub-hosted runner receives a private database URL, or a reusable
+runner/base service retains database and GitHub bootstrap credentials together.
+
+Mitigation:
+
+- GitHub-hosted jobs are Render provisioning/freeze/cleanup controls only
+- every DB command runs on a unique repository JIT runner inside Render
+- runner-base has no DB environment group or database credential
+- real subprocess tests prove bootstrap credentials are absent before workflow
+- workflow contract tests reject database variables on hosted jobs
+
+### R32 - PG17 activation opens writes before evidence is durable
+
+Severity: critical.
+
+Risk: runtime DML opens during staging, existing sessions bypass the gate, or
+PG16 is promoted after PG17 has accepted a write.
+
+Mitigation:
+
+- suspend writers and revoke source runtime `CONNECT`; require zero sessions
+- restore with no owner/ACL and compare rows, hashes, schema, and history
+- converge then revoke target privileges in the migration transaction
+- canonical grants and immutable activation receipt share one commit
+- after that first-write boundary, recover only by PG17 forward repair/PITR or
+  a PG17-compatible application rollback
+
+### R33 - Provider response drift creates an untracked runner
+
+Severity: high.
+
+Risk: Render or GitHub changes a one-off/JIT response and the rollout accepts a
+mutable artifact, reused runner, wrong repository, or unverified cleanup.
+
+Mitigation:
+
+- strict exact-shape adapters and immutable service/deploy/image binding
+- adversarial API-drift, replay, timeout, wrong-identity, and cleanup tests
+- bounded no-job timeout and one-job JIT configuration
+- fail closed and update the adapter contract before retrying

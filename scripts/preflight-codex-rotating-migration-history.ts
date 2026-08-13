@@ -16,6 +16,7 @@ const migrationNames = [
   "000064_codex_oauth_versioned_secret_namespaces",
   "000065_codex_oauth_authority_acl_hardening",
   "000066_codex_oauth_rotating_cascade_authority",
+  "000069_release_rollout_ledger",
 ] as const;
 
 const sourceDigests = Object.fromEntries(
@@ -46,7 +47,10 @@ for (const [migrationName, immutableChecksum] of Object.entries(
   }
 }
 
-const databaseUrl = process.env.DATABASE_URL;
+const credentialPath = process.env.REVIEW_ROUTER_DATABASE_URL_FILE;
+const databaseUrl = credentialPath
+  ? (await readFile(credentialPath, "utf8")).trim()
+  : process.env.DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("codex_rotating_migration_preflight_database_url_required");
 }
@@ -69,7 +73,9 @@ try {
             '000063_codex_oauth_setup_payload_claim',
             '000064_codex_oauth_versioned_secret_namespaces',
             '000065_codex_oauth_authority_acl_hardening',
-            '000066_codex_oauth_rotating_cascade_authority'
+            '000066_codex_oauth_rotating_cascade_authority',
+            '000067_release_rollout_ledger',
+            '000069_release_rollout_ledger'
           )
         `
       : [];

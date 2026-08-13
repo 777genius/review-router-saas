@@ -81,6 +81,8 @@ and a canonical schema-3 workflow.
 - [Review configuration operator CLI](./docs/operations/review-configuration-operator-cli.md)
 - [Self-hosted privacy boundary](./docs/privacy-self-hosted.md)
 - [Self-hosted architecture decision](./docs/adr/ADR-review-router-self-hosted-control-plane.md)
+- [Private PostgreSQL 17 release rollout](./docs/operations/private-pg17-release-rollout.md)
+- [Private PostgreSQL 17 release authority decision](./docs/adr/ADR-private-pg17-release-authority.md)
 
 ## Contributor Start Here
 

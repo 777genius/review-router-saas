@@ -53,7 +53,7 @@ const migrationFiles = [
 ];
 assertExactMigrationInventory(
   readdirSync(resolve(checkoutRoot, "packages/platform/db/prisma/migrations"))
-    .filter((name) => /^0000(?:6[0-6])_codex_oauth_/u.test(name))
+    .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_codex_oauth_/u.test(name))
     .sort(),
   migrationFiles.map(([id]) => id),
 );

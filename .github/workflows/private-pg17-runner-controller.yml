@@ -1,0 +1,243 @@
+name: Private PG17 runner controller
+
+on:
+  workflow_run:
+    workflows: [Private-network PostgreSQL 17 release rollout]
+    types: [requested, completed]
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+    inputs:
+      target_run_id:
+        description: Exact private PG17 rollout workflow run to recover (blank scans retained runs)
+        required: false
+        type: string
+      sweep_checkpoint:
+        description: Internal restart checkpoint for a bounded retained-run sweep
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: private-pg17-runner-${{ github.event.workflow_run.id || inputs.target_run_id || github.run_id }}-${{ github.event.action || github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  recovery-context:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.runs.outputs.matrix }}
+      complete: ${{ steps.runs.outputs.complete }}
+      checkpoint: ${{ steps.runs.outputs.checkpoint }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: runs
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ inputs.target_run_id }}
+          REVIEW_ROUTER_RECOVERY_SWEEP_CHECKPOINT: ${{ inputs.sweep_checkpoint }}
+          REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+          REVIEW_ROUTER_RECOVERY_MAXIMUM_PAGES: 2
+        run: node --import tsx scripts/discover-private-pg17-recovery-runs.ts
+
+  recover:
+    needs: recovery-context
+    if: needs.recovery-context.outputs.matrix != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        target: ${{ fromJSON(needs.recovery-context.outputs.matrix) }}
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: context
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ matrix.target.run_id }}
+          REVIEW_ROUTER_TARGET_RUN_ATTEMPT: ${{ matrix.target.run_attempt }}
+          REVIEW_ROUTER_TARGET_SHA: ${{ matrix.target.head_sha }}
+          REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+        run: node --import tsx scripts/resolve-private-pg17-run-context.ts
+      - name: Reconcile every known or late provider runner with bounded backoff
+        env:
+          RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
+          REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
+          REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
+          REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: scheduled-reconciliation.json
+          REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8
+          REVIEW_ROUTER_RECONCILIATION_INITIAL_DELAY_MS: 5000
+          REVIEW_ROUTER_RECONCILIATION_MAXIMUM_DELAY_MS: 30000
+        run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: scheduled-runner-reconciliation-${{ steps.context.outputs.rollout_id }}-${{ matrix.target.run_id }}
+          path: scheduled-reconciliation.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+
+  continue-recovery-sweep:
+    needs: [recovery-context, recover]
+    if: >-
+      always() &&
+      needs.recovery-context.result == 'success' &&
+      (needs.recover.result == 'success' || needs.recover.result == 'skipped') &&
+      needs.recovery-context.outputs.complete == 'false'
+    permissions:
+      actions: write
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - name: Dispatch the exact next bounded sweep window with bounded backoff
+        env:
+          GITHUB_CONTROL_WRITE_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_RECOVERY_SWEEP_CHECKPOINT: ${{ needs.recovery-context.outputs.checkpoint }}
+        run: node --import tsx scripts/dispatch-private-pg17-recovery-continuation.ts
+
+  provision:
+    if: >-
+      github.event.action == 'requested' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job_name: copy-and-role-bootstrap-private
+            purpose: role-bootstrap
+          - job_name: pg17-cutover-private
+            purpose: cutover
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: context
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_run.id }}
+          REVIEW_ROUTER_TARGET_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          REVIEW_ROUTER_TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+          REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+        run: node --import tsx scripts/resolve-private-pg17-run-context.ts
+      - name: Validate target workflow job and provision exact JIT runner
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
+          REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
+          REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
+          REVIEW_ROUTER_EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
+          REVIEW_ROUTER_TARGET_SHA: ${{ steps.context.outputs.expected_sha }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_run.id }}
+          REVIEW_ROUTER_TARGET_RUN_ATTEMPT: ${{ steps.context.outputs.run_attempt }}
+          REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: ${{ matrix.job_name }}
+          REVIEW_ROUTER_RUNNER_PURPOSE: ${{ matrix.purpose }}
+          REVIEW_ROUTER_TARGET_JOB_POLL_ATTEMPTS: 600
+          REVIEW_ROUTER_TARGET_JOB_POLL_INTERVAL_MS: 30000
+          REVIEW_ROUTER_RELEASE_CONTROL_ORG: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_ORG }}
+          REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY }}
+          REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+          REVIEW_ROUTER_RUNNER_GROUP_ID: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_ID }}
+          REVIEW_ROUTER_RUNNER_GROUP_NAME: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}
+          REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID: ${{ vars.REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID }}
+          REVIEW_ROUTER_RUNNER_PROVENANCE_JSON: ${{ vars.REVIEW_ROUTER_RUNNER_PROVENANCE_JSON }}
+          REVIEW_ROUTER_RUNNER_IMAGE_ATTESTATION_JSON: ${{ vars.REVIEW_ROUTER_RUNNER_IMAGE_ATTESTATION_JSON }}
+          REVIEW_ROUTER_RUNNER_COMPUTE_PLAN_ID: ${{ vars.REVIEW_ROUTER_RUNNER_COMPUTE_PLAN_ID }}
+          RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
+        run: node --import tsx scripts/release-rollout-render-control.ts provision
+      - name: Unconditionally reconcile created or orphaned runner jobs
+        if: ${{ failure() }}
+        env:
+          RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
+          REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
+          REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
+          REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: provision-reconciliation.json
+          REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8
+          REVIEW_ROUTER_RECONCILIATION_INITIAL_DELAY_MS: 5000
+          REVIEW_ROUTER_RECONCILIATION_MAXIMUM_DELAY_MS: 30000
+        run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: provision-reconciliation-${{ steps.context.outputs.rollout_id }}-${{ github.event.workflow_run.id }}
+          path: provision-reconciliation.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+
+  cleanup:
+    if: >-
+      always() && github.event.action == 'completed' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'main'
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: context
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ github.event.workflow_run.id }}
+          REVIEW_ROUTER_TARGET_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          REVIEW_ROUTER_TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+          REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+        run: node --import tsx scripts/resolve-private-pg17-run-context.ts
+      - name: Poll terminal state, prove cleanup canary, reconcile orphan ledger
+        env:
+          RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
+          REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
+          REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
+          REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: runner-cleanup-reconciliation.json
+          REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8
+          REVIEW_ROUTER_RECONCILIATION_INITIAL_DELAY_MS: 5000
+          REVIEW_ROUTER_RECONCILIATION_MAXIMUM_DELAY_MS: 30000
+        run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: runner-cleanup-reconciliation-${{ steps.context.outputs.rollout_id }}-${{ github.event.workflow_run.id }}
+          path: runner-cleanup-reconciliation.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0

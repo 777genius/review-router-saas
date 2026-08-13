@@ -1,0 +1,5 @@
+-- Service transition authority deliberately has no objects in the application
+-- database chain. The durable ledger migration is
+-- packages/platform/release-authority-db/migrations/000002_transactional_service_transition.
+-- This immutable marker prevents the authority state from being copied into the
+-- source or target application generation.

@@ -67,6 +67,9 @@
     "codex-rotating:installer-portability": "vitest run apps/web/src/server/codex-rotating-seed-script.test.ts",
     "codex-rotating:loopback-proof": "REVIEW_ROUTER_CODEX_ROTATING_WIRE_PROOF=1 vitest run apps/web/src/server/codex-rotating-one-shot-curl.real.test.ts apps/api/src/github/one-shot-github-secret-put.protocol.test.ts apps/api/src/github/one-shot-github-secret-put.real.test.ts apps/api/src/github/codex-rotating-integrated-fault.real.test.ts",
     "codex-rotating:rollout-proof": "vitest run scripts/verify-codex-rotating-rollout.test.ts",
+    "release-rollout:rehearsal": "node --import tsx scripts/rehearse-private-pg17-rollout.mjs",
+    "release-rollout:evidence:assemble": "node --import tsx scripts/assemble-private-pg17-trusted-evidence.ts",
+    "release-rollout:evidence:verify": "node --import tsx scripts/verify-private-pg17-trusted-evidence.ts",
     "codex-rotating:production-writer-observation": "node scripts/capture-codex-rotating-production-writer.mjs",
     "codex-rotating:secret-write-boundary": "node scripts/check-codex-secret-write-boundary.mjs",
     "review-v2:e2e": "REVIEW_ROUTER_REVIEW_V2_E2E=1 vitest run scripts/review-action-v2-production-e2e/review-action-v2-production.e2e.test.ts",
@@ -82,6 +85,8 @@
     "spike:distributed-lock:e2e": "tsx spikes/github-oidc/src/distributed-lock-e2e.ts",
     "spike:github-memory:e2e": "node scripts/run-github-memory-smoke.mjs",
     "api:start": "node --conditions=production apps/api/dist/server.js",
+    "release-control:start": "pnpm --filter @reviewrouter/api release-control:start",
+    "release-witness:start": "pnpm --filter @reviewrouter/api release-witness:start",
     "worker:start": "node --conditions=production apps/worker/dist/worker.js",
     "runtime:smoke": "node scripts/run-with-env.mjs node scripts/check-production-runtime.mjs",
     "action:build": "node scripts/build-codex-rotating-action.mjs",
@@ -109,6 +114,7 @@
     "hosted:api-demo:check": "node scripts/check-hosted-api-demo.mjs",
     "web:ui-audit": "node scripts/check-ui-layout.mjs",
     "hosted:ui-audit": "node scripts/check-ui-layout.mjs --base-url https://reviewrouter.site",
+    "hosted:progress-canary": "node scripts/run-hosted-live-progress-canary.mjs",
     "release:sync-major": "node scripts/sync-major-release-tag.mjs"
   },
   "dependencies": {

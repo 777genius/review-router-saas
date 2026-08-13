@@ -6,6 +6,41 @@ import type {
 
 export const githubProgressCommentMarker =
   "<!-- review-router-live-progress -->";
+export const githubProgressSourceIdentityMarkerPrefix =
+  "<!-- review-router-live-progress-source ";
+
+export function formatGithubProgressSourceIdentityMarker(
+  sourceRunId: string,
+  sourceRunAttempt: string,
+): string {
+  if (!/^[1-9][0-9]{0,19}$/u.test(sourceRunId)) {
+    throw new Error("progress_source_run_id_invalid");
+  }
+  if (!/^[1-9][0-9]{0,9}$/u.test(sourceRunAttempt)) {
+    throw new Error("progress_source_run_attempt_invalid");
+  }
+  return `${githubProgressSourceIdentityMarkerPrefix}run-id=${sourceRunId} run-attempt=${sourceRunAttempt} -->`;
+}
+
+export function parseGithubProgressSourceIdentity(
+  body: string,
+): { readonly sourceRunId: string; readonly sourceRunAttempt: string } | null {
+  const sourceLines = body
+    .split(/\r?\n/u)
+    .filter((line) => line.includes(githubProgressSourceIdentityMarkerPrefix));
+  if (sourceLines.length === 0) return null;
+  if (sourceLines.length !== 1) {
+    throw new Error("progress_source_identity_marker_invalid");
+  }
+  const match =
+    /^<!-- review-router-live-progress-source run-id=([1-9][0-9]{0,19}) run-attempt=([1-9][0-9]{0,9}) -->$/u.exec(
+      sourceLines[0]!,
+    );
+  if (match === null) {
+    throw new Error("progress_source_identity_marker_invalid");
+  }
+  return { sourceRunId: match[1]!, sourceRunAttempt: match[2]! };
+}
 
 export function formatGithubProgressComment(
   snapshot: ProgressSnapshot,
@@ -14,6 +49,14 @@ export function formatGithubProgressComment(
   const percent = percentage(counts.requiredCompleted, counts.requiredTotal);
   const lines = [
     githubProgressCommentMarker,
+    ...(snapshot.sourceIdentity === undefined
+      ? []
+      : [
+          formatGithubProgressSourceIdentityMarker(
+            snapshot.sourceIdentity.sourceRunId,
+            snapshot.sourceIdentity.sourceRunAttempt,
+          ),
+        ]),
     "## ReviewRouter",
     "",
     `**Phase:** ${phaseLabel(snapshot.phase, snapshot.terminal)}`,

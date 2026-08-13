@@ -4,13 +4,64 @@
 
 services:
   - type: web
-    name: reviewrouter-web
+    name: reviewrouter-release-control
     runtime: node
     plan: starter
     region: frankfurt
     branch: main
     buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
-    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 pnpm web:start
+    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 HOST=0.0.0.0 pnpm release-control:start
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: 24
+      - key: PORT
+        value: 10000
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_DATABASE_URL
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_DATABASE_URL
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_CONTROL_TOKEN_SHA256
+        sync: false
+      - key: REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256
+        sync: false
+      - key: REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_DATABASE_URL
+        sync: false
+      - key: REVIEW_ROUTER_ACTIVATION_RECEIPT_READER_DATABASE_URL
+        sync: false
+
+  - type: web
+    name: reviewrouter-release-witness
+    runtime: node
+    plan: starter
+    region: frankfurt
+    branch: main
+    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
+    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 HOST=0.0.0.0 pnpm release-witness:start
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: 24
+      - key: PORT
+        value: 10000
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_DATABASE_URL
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_WITNESS_TRIGGER_TOKEN_SHA256
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_WITNESS_RENDER_READ_TOKEN
+        sync: false
+
+  - type: web
+    name: reviewrouter-web
+    runtime: image
+    plan: starter
+    region: frankfurt
+    image:
+      # Release tooling replaces this example with an exact @sha256 digest.
+      # Mutable tags are forbidden for production runtime deployment.
+      url: ghcr.io/777genius/review-router-saas-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
     healthCheckPath: /
     # Runtime deploys are explicit and follow the exclusive migration evidence gate.
     autoDeployTrigger: off
@@ -21,6 +72,8 @@ services:
         value: 24
       - key: PORT
         value: 10000
+      - key: REVIEW_ROUTER_RUNTIME_ROLE
+        value: web
       - key: DATABASE_URL
         # Provision reviewrouter_web as a non-owner runtime role, then enter
         # its private URL during Blueprint sync. Never use the database owner.
@@ -31,12 +84,11 @@ services:
 
   - type: web
     name: reviewrouter-api
-    runtime: node
+    runtime: image
     plan: starter
     region: frankfurt
-    branch: main
-    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
-    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 HOST=0.0.0.0 pnpm api:start
+    image:
+      url: ghcr.io/777genius/review-router-saas-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
     healthCheckPath: /health
     # Runtime deploys are explicit and follow the exclusive migration evidence gate.
     autoDeployTrigger: off
@@ -47,6 +99,8 @@ services:
         value: 24
       - key: PORT
         value: 10000
+      - key: REVIEW_ROUTER_RUNTIME_ROLE
+        value: api
       - key: DATABASE_URL
         # Provision reviewrouter_api as a non-owner runtime role.
         sync: false
@@ -76,17 +130,18 @@ services:
 
   - type: worker
     name: reviewrouter-worker
-    runtime: node
+    runtime: image
     plan: starter
     region: frankfurt
-    branch: main
-    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
-    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 pnpm worker:start
+    image:
+      url: ghcr.io/777genius/review-router-saas-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
     # Runtime deploys are explicit and follow the exclusive migration evidence gate.
     autoDeployTrigger: off
     maxShutdownDelaySeconds: 120
     envVars:
       - fromGroup: reviewrouter-hosted-beta
+      - key: REVIEW_ROUTER_RUNTIME_ROLE
+        value: worker
       - key: NODE_VERSION
         value: 24
       - key: DATABASE_URL
@@ -115,8 +170,6 @@ envVarGroups:
         generateValue: true
       - key: REVIEW_ROUTER_ACTION_SESSION_SECRET
         generateValue: true
-      - key: SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64
-        sync: false
       - key: REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS
         value: "1"
       - key: REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING
@@ -148,6 +201,19 @@ envVarGroups:
       # One operator-managed value is shared by every database writer. It is
       # fingerprinted at runtime and must never be emitted to logs.
       - key: REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS
+        sync: false
+      # Staged together with the witness during a generation cutover. Every
+      # runtime role verifies this fingerprint and records a DB-bound proof
+      # before its process starts. Neither value may be logged.
+      - key: REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256
+        sync: false
+      - key: REVIEW_ROUTER_RUNTIME_ROLLOUT_ID
+        sync: false
+      - key: REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA
+        sync: false
+      - key: REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT
+        sync: false
+      - key: REVIEW_ROUTER_LIVE_CANARY_TOKEN_SHA256
         sync: false
       - key: REVIEW_ROUTER_ACTION_OIDC_AUDIENCE
         value: reviewrouter
