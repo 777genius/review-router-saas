@@ -81,14 +81,7 @@ const migrationBody = (source, path) => {
 // schema object shape, routine body, trigger, owner, and ACL.  A canonical
 // shadow is produced from the immutable migration bytes in the same
 // transaction, so there is no hand-maintained sample of "important" objects.
-export const releaseAuthorityCatalogFingerprintSql = String.raw`
-CREATE TEMP TABLE release_authority_catalog_verification (
-  catalog_fingerprint text NOT NULL,
-  byte_variant text NOT NULL CHECK (byte_variant IN ('canonical','legacy_equivalent')),
-  verifier text NOT NULL CHECK (verifier = 'complete_catalog_v1')
-) ON COMMIT DROP;
-
-CREATE FUNCTION pg_temp.release_authority_acl_fingerprint(p_acl aclitem[])
+export const releaseAuthorityAclFingerprintSql = String.raw`CREATE FUNCTION pg_temp.release_authority_acl_fingerprint(p_acl aclitem[])
 RETURNS jsonb LANGUAGE sql STABLE SET search_path = pg_catalog AS $acl$
   SELECT coalesce(jsonb_agg(jsonb_build_object(
     'grantor',CASE WHEN acl.grantor=0 THEN 'PUBLIC'
@@ -107,7 +100,16 @@ RETURNS jsonb LANGUAGE sql STABLE SET search_path = pg_catalog AS $acl$
     WHEN pg_catalog.cardinality(p_acl)>0 THEN p_acl
     ELSE NULL::aclitem[]
   END) acl
-$acl$;
+$acl$;`;
+
+export const releaseAuthorityCatalogFingerprintSql = String.raw`
+CREATE TEMP TABLE release_authority_catalog_verification (
+  catalog_fingerprint text NOT NULL,
+  byte_variant text NOT NULL CHECK (byte_variant IN ('canonical','legacy_equivalent')),
+  verifier text NOT NULL CHECK (verifier = 'complete_catalog_v1')
+) ON COMMIT DROP;
+
+${releaseAuthorityAclFingerprintSql}
 
 CREATE FUNCTION pg_temp.release_authority_catalog_fingerprint(p_schema text)
 RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
