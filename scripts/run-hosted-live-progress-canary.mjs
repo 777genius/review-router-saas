@@ -1,12 +1,18 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import { createPrivateKey, sign } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 export const liveProgressMarker = "<!-- review-router-live-progress -->";
-
-const disposableTargets = new Map([
-  ["777genius/review-router-saas-e2e", "R_kgDOSTKVDw"],
-]);
-
+const pinnedTarget = Object.freeze({
+  repository: "777genius/review-router-saas-e2e",
+  repositoryId: 1228051727,
+  repositoryNodeId: "R_kgDOSTKVDw",
+  pullRequest: 37,
+  changedFiles: 108,
+  branch: "test/context-gateway-v103-batches-20260811",
+  fixturePrefix: "src/batch-",
+  sourceWorkflowPath: ".github/workflows/reviewrouter-codex.yml",
+});
 const terminalPhases = new Set([
   "Complete",
   "Complete with gaps",
@@ -15,406 +21,496 @@ const terminalPhases = new Set([
   "Superseded",
 ]);
 
-export function readHostedProgressCanaryConfig(env = process.env) {
+export function readCanaryConfig(env = process.env) {
+  if (env.REVIEW_ROUTER_RUN_HOSTED_PROGRESS_CANARY !== "1")
+    throw new Error("hosted_progress_canary_confirmation_required");
   const config = {
-    repository: required(env, "REVIEW_ROUTER_HOSTED_CANARY_REPOSITORY"),
-    repositoryNodeId: required(
-      env,
-      "REVIEW_ROUTER_HOSTED_CANARY_REPOSITORY_NODE_ID",
+    ...pinnedTarget,
+    installationId: positive(env.REVIEW_ROUTER_HOSTED_CANARY_INSTALLATION_ID),
+    sourceRunId: positive(env.REVIEW_ROUTER_HOSTED_CANARY_SOURCE_RUN_ID),
+    producerSha: sha(env.REVIEW_ROUTER_HOSTED_CANARY_PRODUCER_SHA),
+    sourceWorkflowBlobSha: sha(
+      env.REVIEW_ROUTER_HOSTED_CANARY_SOURCE_WORKFLOW_BLOB_SHA,
     ),
-    pullRequest: positiveInteger(
-      required(env, "REVIEW_ROUTER_HOSTED_CANARY_PR_NUMBER"),
-      "REVIEW_ROUTER_HOSTED_CANARY_PR_NUMBER",
-    ),
-    runId: positiveInteger(
-      required(env, "REVIEW_ROUTER_HOSTED_CANARY_RUN_ID"),
-      "REVIEW_ROUTER_HOSTED_CANARY_RUN_ID",
-    ),
-    workflowPath: required(env, "REVIEW_ROUTER_HOSTED_CANARY_WORKFLOW_PATH"),
     expectedBotLogin: required(
-      env,
-      "REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_BOT_LOGIN",
+      env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_BOT_LOGIN,
     ).toLowerCase(),
-    expectedChangedFiles: positiveInteger(
-      required(env, "REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_CHANGED_FILES"),
-      "REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_CHANGED_FILES",
+    expectedAppSlug: required(
+      env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_APP_SLUG,
+    ).toLowerCase(),
+    expectedReviewUnits: positive(
+      env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_REVIEW_UNITS,
     ),
-    expectedReviewedFiles: positiveInteger(
-      required(env, "REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_REVIEWED_FILES"),
-      "REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_REVIEWED_FILES",
+    expectedReviewedFiles: nonNegative(
+      env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_REVIEWED_FILES,
     ),
-    expectedExcludedFiles: nonNegativeInteger(
-      required(env, "REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_EXCLUDED_FILES"),
-      "REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_EXCLUDED_FILES",
+    expectedExcludedFiles: nonNegative(
+      env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_EXCLUDED_FILES,
     ),
-    pollIntervalMs: positiveInteger(
+    pollIntervalMs: positive(
       env.REVIEW_ROUTER_HOSTED_CANARY_POLL_INTERVAL_MS ?? "10000",
-      "REVIEW_ROUTER_HOSTED_CANARY_POLL_INTERVAL_MS",
     ),
-    timeoutMs: positiveInteger(
+    timeoutMs: positive(
       env.REVIEW_ROUTER_HOSTED_CANARY_TIMEOUT_MS ?? "5400000",
-      "REVIEW_ROUTER_HOSTED_CANARY_TIMEOUT_MS",
     ),
   };
-  if (env.REVIEW_ROUTER_RUN_HOSTED_PROGRESS_CANARY !== "1") {
-    throw new Error(
-      "hosted_progress_canary_confirmation_required: set REVIEW_ROUTER_RUN_HOSTED_PROGRESS_CANARY=1",
-    );
-  }
-  assertDisposableTarget(config.repository, config.repositoryNodeId);
-  if (config.expectedChangedFiles < 100) {
-    throw new Error("hosted_progress_canary_fixture_not_large");
-  }
   if (
     config.expectedReviewedFiles + config.expectedExcludedFiles !==
-    config.expectedChangedFiles
-  ) {
+    config.changedFiles
+  )
     throw new Error("hosted_progress_canary_expected_coverage_inconsistent");
-  }
-  if (
-    config.workflowPath !== ".github/workflows/reviewrouter-codex.yml" ||
-    !/^[a-z0-9][a-z0-9-]*\[bot\]$/u.test(config.expectedBotLogin)
-  ) {
-    throw new Error("hosted_progress_canary_identity_contract_invalid");
-  }
+  if (!/^[a-z0-9][a-z0-9-]*\[bot\]$/u.test(config.expectedBotLogin))
+    throw new Error("hosted_progress_canary_bot_login_invalid");
   return config;
 }
 
-export async function runHostedProgressCanary(config, dependencies) {
-  assertDisposableTarget(config.repository, config.repositoryNodeId);
-  const { github, now, sleep } = dependencies;
-  const repository = await github.getRepository(config.repository);
-  if (
-    repository.full_name !== config.repository ||
-    repository.node_id !== config.repositoryNodeId
-  ) {
-    throw new Error("hosted_progress_canary_repository_identity_mismatch");
-  }
-
-  const pull = await github.getPullRequest(
+export async function triggerHostedProgressCanary(config, github, nowIso) {
+  assertPinned(config);
+  await assertFixture(github, config);
+  const installation = await github.getInstallation(config.installationId);
+  if (installation.app_slug?.toLowerCase() !== config.expectedAppSlug)
+    throw new Error("hosted_progress_canary_installation_app_mismatch");
+  const source = await github.getWorkflowRun(
     config.repository,
-    config.pullRequest,
+    config.sourceRunId,
   );
-  if (
-    pull.state !== "open" ||
-    pull.head?.repo?.full_name !== config.repository ||
-    pull.changed_files !== config.expectedChangedFiles
-  ) {
-    throw new Error("hosted_progress_canary_pull_request_contract_mismatch");
-  }
-  const headSha = pull.head?.sha;
-  if (!/^[0-9a-f]{40}$/u.test(headSha ?? "")) {
-    throw new Error("hosted_progress_canary_head_sha_invalid");
-  }
-
-  const runBefore = await github.getWorkflowRun(
+  assertSourceRun(source, config);
+  const workflow = await github.getFile(
     config.repository,
-    config.runId,
+    config.sourceWorkflowPath,
+    source.head_sha,
   );
-  assertWorkflowRun(
-    runBefore,
-    config.pullRequest,
-    headSha,
-    config.workflowPath,
+  if (workflow.sha !== config.sourceWorkflowBlobSha)
+    throw new Error("hosted_progress_canary_source_workflow_blob_mismatch");
+  const baseline = ownedMarkerComments(
+    await github.listComments(config.repository, config.pullRequest),
+    config,
   );
-  if (runBefore.status !== "completed") {
-    throw new Error("hosted_progress_canary_run_not_rerunnable");
-  }
-
-  const baseline = markerComments(
-    await github.listIssueComments(config.repository, config.pullRequest),
-    config.expectedBotLogin,
-  );
-  if (baseline.length > 1) {
+  if (baseline.length > 1)
     throw new Error("hosted_progress_canary_multiple_marker_comments");
-  }
-  const baselineComment = baseline[0];
-  if (
-    baselineComment &&
-    (typeof baselineComment.id !== "number" ||
-      !Number.isFinite(Date.parse(baselineComment.updated_at ?? "")))
-  ) {
-    throw new Error("hosted_progress_canary_comment_contract_invalid");
-  }
-  const baselineUpdatedAt = baselineComment
-    ? Date.parse(baselineComment.updated_at)
-    : undefined;
-  const triggerTime = now();
-  await github.rerunWorkflow(config.repository, config.runId);
+  const triggeredAt = nowIso();
+  await github.rerunWorkflow(config.repository, config.sourceRunId);
+  return {
+    schemaVersion: 1,
+    repositoryId: config.repositoryId,
+    repositoryNodeId: config.repositoryNodeId,
+    pullRequest: config.pullRequest,
+    headSha: source.head_sha,
+    sourceRunId: source.id,
+    sourceRunAttempt: source.run_attempt,
+    producerSha: config.producerSha,
+    sourceWorkflowBlobSha: config.sourceWorkflowBlobSha,
+    baselineCommentId: baseline[0]?.id ?? null,
+    baselineCommentUpdatedAt: baseline[0]?.updated_at ?? null,
+    triggeredAt,
+  };
+}
 
+export async function verifyHostedProgressCanary(
+  config,
+  receipt,
+  { github, now, sleep },
+) {
+  assertPinned(config);
+  assertReceipt(receipt, config);
+  await assertFixture(github, config, receipt.headSha);
+  const deadline = now() + config.timeoutMs;
   const observations = [];
-  let markerCommentId = baselineComment?.id;
-  let lastFingerprint = baselineComment
-    ? `${baselineComment.updated_at}\n${baselineComment.body}`
-    : undefined;
-  let rerunObserved = false;
-  let finalRun;
-  const deadline = triggerTime + config.timeoutMs;
+  let dispatch;
+  let requestId;
+  let commentId = receipt.baselineCommentId ?? undefined;
+  let lastFingerprint;
 
   while (now() <= deadline) {
-    const run = await github.getWorkflowRun(config.repository, config.runId);
-    assertWorkflowRun(run, config.pullRequest, headSha, config.workflowPath);
-    if (run.run_attempt > runBefore.run_attempt) rerunObserved = true;
-
-    const comments = markerComments(
-      await github.listIssueComments(config.repository, config.pullRequest),
-      config.expectedBotLogin,
+    const source = await github.getWorkflowRun(
+      config.repository,
+      config.sourceRunId,
     );
-    if (comments.length > 1) {
-      throw new Error("hosted_progress_canary_multiple_marker_comments");
-    }
-    const comment = comments[0];
-    if (comment) {
-      if (markerCommentId !== undefined && comment.id !== markerCommentId) {
-        throw new Error("hosted_progress_canary_comment_id_changed");
-      }
-      markerCommentId ??= comment.id;
-      const fingerprint = `${comment.updated_at}\n${comment.body}`;
-      if (fingerprint !== lastFingerprint) {
-        const observation = parseProgressComment(comment);
-        if (
-          baselineUpdatedAt !== undefined &&
-          Date.parse(observation.updatedAt) <= baselineUpdatedAt
-        ) {
-          throw new Error("hosted_progress_canary_stale_comment_update");
-        }
-        assertMonotonicObservation(observations.at(-1), observation);
-        observations.push(observation);
-        lastFingerprint = fingerprint;
-      }
-    }
-
     if (
-      rerunObserved &&
-      run.status === "completed" &&
-      terminalPhases.has(observations.at(-1)?.phase ?? "")
+      source.run_attempt <= receipt.sourceRunAttempt ||
+      source.event !== "pull_request" ||
+      source.head_sha !== receipt.headSha
     ) {
-      finalRun = run;
-      break;
+      await sleep(config.pollIntervalMs);
+      continue;
     }
+    const runs = await github.listWorkflowRuns(
+      config.repository,
+      config.sourceWorkflowPath,
+      "workflow_dispatch",
+      receipt.headSha,
+    );
+    dispatch ??= selectServerDispatch(runs, receipt, config);
+    if (!dispatch) {
+      await sleep(config.pollIntervalMs);
+      continue;
+    }
+    const current = await github.getWorkflowRun(config.repository, dispatch.id);
+    const identity = assertServerDispatch(
+      current,
+      receipt,
+      config,
+      dispatch.id,
+    );
+    requestId ??= identity.requestId;
+    if (identity.requestId !== requestId)
+      throw new Error("hosted_progress_canary_request_identity_changed");
+    dispatch = current;
+
+    const comments = ownedMarkerComments(
+      await github.listComments(config.repository, config.pullRequest),
+      config,
+    );
+    if (comments.length !== 1)
+      throw new Error("hosted_progress_canary_marker_cardinality_invalid");
+    const comment = comments[0];
+    commentId ??= comment.id;
+    if (comment.id !== commentId)
+      throw new Error("hosted_progress_canary_comment_id_changed");
+    const fingerprint = `${comment.updated_at}\n${comment.body}`;
+    const updatedAfterTriggerBaseline =
+      receipt.baselineCommentUpdatedAt === null ||
+      Date.parse(comment.updated_at) >
+        Date.parse(receipt.baselineCommentUpdatedAt);
+    if (fingerprint !== lastFingerprint && updatedAfterTriggerBaseline) {
+      const next = parseProgressComment(comment, config);
+      assertMonotonic(observations.at(-1), next);
+      observations.push(next);
+      lastFingerprint = fingerprint;
+    }
+    if (
+      current.status === "completed" &&
+      terminalPhases.has(observations.at(-1)?.phase)
+    )
+      break;
     await sleep(config.pollIntervalMs);
   }
 
-  if (!rerunObserved)
-    throw new Error("hosted_progress_canary_rerun_not_observed");
-  if (!finalRun) throw new Error("hosted_progress_canary_timed_out");
-  if (finalRun.conclusion !== "success") {
-    throw new Error("hosted_progress_canary_workflow_failed");
-  }
-  if (observations.length < 2) {
-    throw new Error("hosted_progress_canary_not_dynamically_updated");
-  }
-  if (!observations.some((item) => !terminalPhases.has(item.phase))) {
-    throw new Error("hosted_progress_canary_intermediate_state_missing");
-  }
+  if (!dispatch) throw new Error("hosted_progress_canary_dispatch_not_found");
+  if (dispatch.status !== "completed" || dispatch.conclusion !== "success")
+    throw new Error("hosted_progress_canary_dispatch_not_successful");
+  if (
+    observations.length < 2 ||
+    !observations.some((item) => !terminalPhases.has(item.phase))
+  )
+    throw new Error("hosted_progress_canary_dynamic_update_missing");
   const final = observations.at(-1);
   if (
     final.phase !== "Complete" ||
-    final.completedUnits !== final.totalUnits ||
+    final.completedUnits !== config.expectedReviewUnits ||
+    final.totalUnits !== config.expectedReviewUnits ||
     final.coveredFiles !== config.expectedReviewedFiles ||
     final.totalFiles !== config.expectedReviewedFiles ||
     final.unassignedFiles !== 0 ||
     final.excludedFiles !== config.expectedExcludedFiles ||
     final.exhaustedUnits !== 0
-  ) {
+  )
     throw new Error("hosted_progress_canary_final_coverage_incomplete");
-  }
-
   return {
-    repository: config.repository,
-    pullRequest: config.pullRequest,
-    headSha,
-    runId: config.runId,
-    runAttempt: finalRun.run_attempt,
-    markerCommentId,
+    requestId,
+    sourceRunId: config.sourceRunId,
+    sourceRunAttempt: receipt.sourceRunAttempt + 1,
+    dispatchRunId: dispatch.id,
+    commentId,
     progressUpdates: observations.length,
-    reviewedFiles: final.coveredFiles,
-    reviewUnits: final.totalUnits,
     terminal: final.phase,
   };
 }
 
-export function parseProgressComment(comment) {
+export function selectServerDispatch(runs, receipt, config) {
+  const matches = runs.filter((run) => {
+    try {
+      assertServerDispatch(run, receipt, config, run.id);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (matches.length > 1)
+    throw new Error("hosted_progress_canary_dispatch_ambiguous");
+  return matches[0];
+}
+
+export function assertServerDispatch(run, receipt, config, expectedId) {
+  const requestId = run.display_title?.match(
+    /^ReviewRouter review (rr_[a-zA-Z0-9_-]+)$/u,
+  )?.[1];
   if (
-    typeof comment?.id !== "number" ||
-    typeof comment?.body !== "string" ||
-    comment.user?.type !== "Bot" ||
+    run.id !== expectedId ||
+    run.event !== "workflow_dispatch" ||
+    run.head_sha !== receipt.headSha ||
+    run.path !== config.sourceWorkflowPath ||
+    Date.parse(run.created_at) < Date.parse(receipt.triggeredAt) ||
+    !requestId ||
+    !run.referenced_workflows?.some(
+      (workflow) => workflow.ref === config.producerSha,
+    )
+  )
+    throw new Error("hosted_progress_canary_dispatch_contract_mismatch");
+  return { requestId };
+}
+
+export function parseProgressComment(comment, config) {
+  if (
+    comment.user?.login?.toLowerCase() !== config.expectedBotLogin ||
+    comment.performed_via_github_app?.slug?.toLowerCase() !==
+      config.expectedAppSlug ||
     occurrences(comment.body, liveProgressMarker) !== 1
-  ) {
-    throw new Error("hosted_progress_canary_comment_contract_invalid");
-  }
-  const phase = capture(comment.body, /\*\*Phase:\*\* ([^\n]+)/u, "phase");
-  const units = captureNumbers(
-    comment.body,
-    /Review units: (\d+) of (\d+) complete \(\d+%\)/u,
-    "review_units",
-  );
-  const files = captureNumbers(
+  )
+    throw new Error("hosted_progress_canary_comment_identity_invalid");
+  const units = numbers(comment.body, /Review units: (\d+) of (\d+) complete/u);
+  const files = numbers(
     comment.body,
     /Files in completed units: (\d+) of (\d+)/u,
-    "file_coverage",
   );
   return {
     commentId: comment.id,
-    updatedAt: requireInstant(comment.updated_at),
-    phase,
+    updatedAt: instant(comment.updated_at),
+    phase: capture(comment.body, /\*\*Phase:\*\* ([^\n]+)/u),
     completedUnits: units[0],
     totalUnits: units[1],
     coveredFiles: files[0],
     totalFiles: files[1],
-    unassignedFiles: singleNumber(comment.body, "Files not assigned"),
-    excludedFiles: singleNumber(comment.body, "Files unavailable or excluded"),
-    exhaustedUnits: singleNumber(
-      comment.body,
-      "Units not completed after retries",
-    ),
+    unassignedFiles: metric(comment.body, "Files not assigned"),
+    excludedFiles: metric(comment.body, "Files unavailable or excluded"),
+    exhaustedUnits: metric(comment.body, "Units not completed after retries"),
   };
 }
 
-export function assertMonotonicObservation(previous, next) {
+export function assertMonotonic(previous, next) {
   if (!previous) return;
-  if (Date.parse(next.updatedAt) <= Date.parse(previous.updatedAt)) {
-    throw new Error("hosted_progress_canary_sequence_not_monotonic");
-  }
   if (
     next.commentId !== previous.commentId ||
+    Date.parse(next.updatedAt) <= Date.parse(previous.updatedAt) ||
     next.totalUnits !== previous.totalUnits ||
-    next.totalFiles !== previous.totalFiles
-  ) {
-    throw new Error("hosted_progress_canary_manifest_changed");
-  }
-  if (
+    next.totalFiles !== previous.totalFiles ||
     next.completedUnits < previous.completedUnits ||
     next.coveredFiles < previous.coveredFiles ||
     phaseRank(next.phase) < phaseRank(previous.phase)
-  ) {
-    throw new Error("hosted_progress_canary_progress_regressed");
-  }
+  )
+    throw new Error("hosted_progress_canary_progress_not_monotonic");
 }
 
-export function createGhGitHub() {
+export function createInstallationGitHub({
+  appId,
+  privateKey,
+  installationId,
+  fetchImpl = globalThis.fetch,
+}) {
+  const appJwt = createAppJwt(appId, privateKey);
+  let token;
+  async function request(path, options = {}) {
+    const response = await fetchImpl(`https://api.github.com${path}`, {
+      ...options,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        Authorization: `Bearer ${options.appAuth ? appJwt : token}`,
+      },
+    });
+    if (!response.ok)
+      throw new Error(`hosted_progress_canary_github_${response.status}`);
+    return response.status === 204 ? null : response.json();
+  }
   return {
-    getRepository: (repo) => api(`repos/${repo}`),
-    getPullRequest: (repo, number) => api(`repos/${repo}/pulls/${number}`),
-    getWorkflowRun: (repo, runId) => api(`repos/${repo}/actions/runs/${runId}`),
-    listIssueComments: (repo, number) =>
-      apiPages(`repos/${repo}/issues/${number}/comments?per_page=100`),
-    rerunWorkflow(repo, runId) {
-      command(["run", "rerun", String(runId), "--repo", repo]);
+    async authenticate() {
+      const issued = await request(
+        `/app/installations/${installationId}/access_tokens`,
+        {
+          method: "POST",
+          appAuth: true,
+          body: JSON.stringify({
+            repository_ids: [pinnedTarget.repositoryId],
+            permissions: {
+              actions: "write",
+              issues: "read",
+              metadata: "read",
+              pull_requests: "read",
+              contents: "read",
+            },
+          }),
+        },
+      );
+      if (
+        issued.repositories?.length !== 1 ||
+        issued.repositories[0]?.id !== pinnedTarget.repositoryId ||
+        issued.permissions?.actions !== "write" ||
+        issued.permissions?.contents !== "read" ||
+        issued.permissions?.issues !== "read" ||
+        issued.permissions?.pull_requests !== "read"
+      )
+        throw new Error("hosted_progress_canary_token_scope_invalid");
+      token = issued.token;
     },
+    getInstallation: (id) =>
+      request(`/app/installations/${id}`, { appAuth: true }),
+    getRepository: (repo) => request(`/repos/${repo}`),
+    getPullRequest: (repo, number) => request(`/repos/${repo}/pulls/${number}`),
+    getPullFiles: (repo, number) =>
+      paginate(request, `/repos/${repo}/pulls/${number}/files?per_page=100`, 2),
+    getWorkflowRun: (repo, id) => request(`/repos/${repo}/actions/runs/${id}`),
+    getFile: (repo, path, ref) =>
+      request(`/repos/${repo}/contents/${path}?ref=${ref}`),
+    rerunWorkflow: (repo, id) =>
+      request(`/repos/${repo}/actions/runs/${id}/rerun`, { method: "POST" }),
+    listComments: (repo, number) =>
+      paginate(
+        request,
+        `/repos/${repo}/issues/${number}/comments?per_page=100`,
+        10,
+      ),
+    listWorkflowRuns: (repo, workflow, event, headSha) =>
+      request(
+        `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=${event}&head_sha=${headSha}&per_page=100`,
+      ).then((body) => body.workflow_runs),
   };
 }
 
-function assertDisposableTarget(repository, nodeId) {
-  if (disposableTargets.get(repository) !== nodeId) {
-    throw new Error("hosted_progress_canary_target_not_allowlisted");
-  }
-}
-
-function assertWorkflowRun(run, pullRequest, headSha, workflowPath) {
+async function assertFixture(github, config, expectedHead) {
+  const repo = await github.getRepository(config.repository);
   if (
-    run.event !== "pull_request" ||
-    run.head_sha !== headSha ||
-    run.path !== workflowPath ||
-    !run.pull_requests?.some((pull) => pull.number === pullRequest) ||
-    !Number.isInteger(run.run_attempt)
-  ) {
-    throw new Error("hosted_progress_canary_workflow_run_contract_mismatch");
-  }
-}
-
-function markerComments(comments, expectedBotLogin) {
-  const marked = comments.filter(
-    (comment) =>
-      typeof comment.body === "string" &&
-      comment.body.includes(liveProgressMarker),
+    repo.id !== config.repositoryId ||
+    repo.node_id !== config.repositoryNodeId ||
+    repo.full_name !== config.repository
+  )
+    throw new Error("hosted_progress_canary_repository_identity_mismatch");
+  const pull = await github.getPullRequest(
+    config.repository,
+    config.pullRequest,
   );
   if (
-    marked.some(
-      (comment) =>
-        comment.user?.type !== "Bot" ||
-        comment.user?.login?.toLowerCase() !== expectedBotLogin,
+    pull.number !== config.pullRequest ||
+    pull.state !== "open" ||
+    pull.changed_files !== config.changedFiles ||
+    pull.head?.repo?.id !== config.repositoryId ||
+    pull.head?.ref !== config.branch ||
+    (expectedHead && pull.head.sha !== expectedHead)
+  )
+    throw new Error("hosted_progress_canary_pull_contract_mismatch");
+  const files = await github.getPullFiles(
+    config.repository,
+    config.pullRequest,
+  );
+  if (
+    files.length !== config.changedFiles ||
+    !files.some((file) => file.filename.startsWith(config.fixturePrefix))
+  )
+    throw new Error("hosted_progress_canary_fixture_profile_mismatch");
+}
+function assertSourceRun(run, config) {
+  if (
+    run.id !== config.sourceRunId ||
+    run.event !== "pull_request" ||
+    run.status !== "completed" ||
+    (run.head_sha !== undefined && !/^[0-9a-f]{40}$/u.test(run.head_sha)) ||
+    run.path !== config.sourceWorkflowPath ||
+    !run.pull_requests?.some((pull) => pull.number === config.pullRequest) ||
+    !run.referenced_workflows?.some(
+      (workflow) => workflow.ref === config.producerSha,
     )
-  ) {
-    throw new Error("hosted_progress_canary_marker_author_invalid");
-  }
+  )
+    throw new Error("hosted_progress_canary_source_run_contract_mismatch");
+}
+function assertReceipt(receipt, config) {
+  if (
+    receipt.schemaVersion !== 1 ||
+    receipt.repositoryId !== config.repositoryId ||
+    receipt.repositoryNodeId !== config.repositoryNodeId ||
+    receipt.pullRequest !== config.pullRequest ||
+    receipt.sourceRunId !== config.sourceRunId ||
+    receipt.producerSha !== config.producerSha ||
+    receipt.sourceWorkflowBlobSha !== config.sourceWorkflowBlobSha ||
+    !(
+      receipt.baselineCommentId === null ||
+      Number.isSafeInteger(receipt.baselineCommentId)
+    ) ||
+    !(
+      receipt.baselineCommentUpdatedAt === null ||
+      Number.isFinite(Date.parse(receipt.baselineCommentUpdatedAt))
+    ) ||
+    !Number.isFinite(Date.parse(receipt.triggeredAt))
+  )
+    throw new Error("hosted_progress_canary_receipt_invalid");
+  sha(receipt.headSha);
+  positive(receipt.sourceRunAttempt);
+}
+function assertPinned(config) {
+  for (const [key, value] of Object.entries(pinnedTarget))
+    if (config[key] !== value)
+      throw new Error("hosted_progress_canary_target_not_pinned");
+}
+function ownedMarkerComments(comments, config) {
+  const marked = comments.filter((item) =>
+    item.body?.includes(liveProgressMarker),
+  );
+  marked.forEach((item) => parseProgressComment(item, config));
   return marked;
 }
-
-function api(endpoint) {
-  const result = command([
-    "api",
-    `/${endpoint}`,
-    "-H",
-    "Accept: application/vnd.github+json",
-  ]);
-  try {
-    return JSON.parse(result.stdout);
-  } catch {
-    throw new Error("hosted_progress_canary_github_response_invalid");
+async function paginate(request, path, pages) {
+  const rows = [];
+  for (let page = 1; page <= pages; page++) {
+    const result = await request(`${path}&page=${page}`);
+    if (!Array.isArray(result))
+      throw new Error("hosted_progress_canary_page_invalid");
+    rows.push(...result);
+    if (result.length < 100) return rows;
   }
+  throw new Error("hosted_progress_canary_pagination_limit_exceeded");
 }
-
-function apiPages(endpoint) {
-  const result = command([
-    "api",
-    `/${endpoint}`,
-    "-H",
-    "Accept: application/vnd.github+json",
-    "--paginate",
-    "--slurp",
-  ]);
-  try {
-    const pages = JSON.parse(result.stdout);
-    if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
-      throw new Error("invalid");
-    }
-    return pages.flat();
-  } catch {
-    throw new Error("hosted_progress_canary_github_response_invalid");
-  }
+function createAppJwt(appId, privateKey) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(
+    JSON.stringify({ alg: "RS256", typ: "JWT" }),
+  ).toString("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({ iat: now - 30, exp: now + 540, iss: String(appId) }),
+  ).toString("base64url");
+  const input = `${header}.${payload}`;
+  return `${input}.${sign("RSA-SHA256", Buffer.from(input), createPrivateKey(privateKey)).toString("base64url")}`;
 }
-
-function command(args) {
-  const result = spawnSync("gh", args, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `hosted_progress_canary_github_command_failed: gh ${args[0] ?? "command"}`,
-    );
-  }
+function required(value) {
+  if (!value?.trim())
+    throw new Error("hosted_progress_canary_required_value_missing");
+  return value.trim();
+}
+function positive(value) {
+  const result = Number(value);
+  if (!Number.isSafeInteger(result) || result < 1)
+    throw new Error("hosted_progress_canary_positive_integer_required");
   return result;
 }
-
-function capture(body, pattern, field) {
-  const value = body.match(pattern)?.[1];
-  if (!value) throw new Error(`hosted_progress_canary_${field}_missing`);
+function nonNegative(value) {
+  const result = Number(value);
+  if (!Number.isSafeInteger(result) || result < 0)
+    throw new Error("hosted_progress_canary_non_negative_integer_required");
+  return result;
+}
+function sha(value) {
+  if (!/^[0-9a-f]{40}$/u.test(value ?? ""))
+    throw new Error("hosted_progress_canary_sha_invalid");
   return value;
 }
-
-function captureNumbers(body, pattern, field) {
-  const match = body.match(pattern);
-  if (!match) throw new Error(`hosted_progress_canary_${field}_missing`);
+function capture(body, regex) {
+  const value = body?.match(regex)?.[1];
+  if (!value) throw new Error("hosted_progress_canary_comment_metric_missing");
+  return value;
+}
+function numbers(body, regex) {
+  const match = body?.match(regex);
+  if (!match) throw new Error("hosted_progress_canary_comment_metric_missing");
   return [Number(match[1]), Number(match[2])];
 }
-
-function singleNumber(body, label) {
-  return Number(capture(body, new RegExp(`${label}: (\\d+)`, "u"), "metric"));
+function metric(body, label) {
+  return Number(capture(body, new RegExp(`${label}: (\\d+)`, "u")));
 }
-
-function requireInstant(value) {
-  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
-    throw new Error("hosted_progress_canary_updated_at_invalid");
-  }
+function instant(value) {
+  if (!Number.isFinite(Date.parse(value)))
+    throw new Error("hosted_progress_canary_instant_invalid");
   return new Date(value).toISOString();
 }
-
-function occurrences(value, needle) {
-  return value.split(needle).length - 1;
+function occurrences(body, marker) {
+  return typeof body === "string" ? body.split(marker).length - 1 : 0;
 }
-
 function phaseRank(phase) {
   return (
     {
@@ -431,44 +527,48 @@ function phaseRank(phase) {
   );
 }
 
-function required(env, name) {
-  const value = env[name]?.trim();
-  if (!value) throw new Error(`hosted_progress_canary_missing_${name}`);
-  return value;
-}
-
-function positiveInteger(value, name) {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new Error(`hosted_progress_canary_invalid_${name}`);
-  }
-  return parsed;
-}
-
-function nonNegativeInteger(value, name) {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new Error(`hosted_progress_canary_invalid_${name}`);
-  }
-  return parsed;
-}
-
 async function main() {
-  const result = await runHostedProgressCanary(
-    readHostedProgressCanaryConfig(),
-    {
-      github: createGhGitHub(),
-      now: () => Date.now(),
-      sleep: (milliseconds) =>
-        new Promise((resolve) => setTimeout(resolve, milliseconds)),
-    },
-  );
-  console.log(JSON.stringify(result));
+  const mode = process.argv[2];
+  if (!new Set(["trigger", "verify"]).has(mode))
+    throw new Error("usage: hosted:progress-canary -- trigger|verify");
+  const config = readCanaryConfig();
+  const github = createInstallationGitHub({
+    appId: required(process.env.REVIEW_ROUTER_HOSTED_CANARY_APP_ID),
+    privateKey: await readFile(
+      required(process.env.REVIEW_ROUTER_HOSTED_CANARY_PRIVATE_KEY_FILE),
+      "utf8",
+    ),
+    installationId: config.installationId,
+  });
+  await github.authenticate();
+  if (mode === "trigger")
+    console.log(
+      JSON.stringify(
+        await triggerHostedProgressCanary(config, github, () =>
+          new Date().toISOString(),
+        ),
+      ),
+    );
+  else {
+    const receipt = JSON.parse(
+      await readFile(
+        required(process.env.REVIEW_ROUTER_HOSTED_CANARY_RECEIPT_FILE),
+        "utf8",
+      ),
+    );
+    console.log(
+      JSON.stringify(
+        await verifyHostedProgressCanary(config, receipt, {
+          github,
+          now: Date.now,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        }),
+      ),
+    );
+  }
 }
-
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === `file://${process.argv[1]}`)
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   });
-}
