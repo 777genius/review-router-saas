@@ -292,12 +292,15 @@ const observe = (step: (typeof steps)[number], index: number) => {
             deployId: "dep-target",
             provenance: { kind: "git", commitSha: "d".repeat(40) },
             envSha256: digest,
+            recoveryWitnessSha256: "a".repeat(64),
             suspended: true,
           },
         ],
         provider: {
           renderServiceIds: ["srv-target"],
           renderDeployIds: ["dep-target"],
+          serviceRecoveryManifestSha256: digest,
+          targetServiceContractSha256: digest,
         },
       };
     case RolloutStep.ActivateTargetGeneration:
