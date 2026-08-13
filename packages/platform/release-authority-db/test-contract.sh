@@ -238,19 +238,19 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
        THEN RAISE EXCEPTION 'duplicate effect was not blocked unsafe'; END IF;
 
      PERFORM release_authority.release_rollout_claim('r-timeout',repeat('d',40),'84',1,'184','284');
-     base := jsonb_build_object('id','rri-'||repeat('8',64),'rolloutId','r-timeout',
+     base := jsonb_build_object('id','rri-'||repeat('c',64),'rolloutId','r-timeout',
        'serviceId','svc-timeout','lifecycle','role','workflowJobId','841','runnerName','rr-timeout',
        'createdAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
        'startCommandSha256','sha256:'||repeat('a',64),
        'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000041');
      PERFORM release_authority.release_runner_prepare_effect(base);
      PERFORM release_authority.release_runner_acquire_dispatch_permit(jsonb_build_object(
-       'intentId','rri-'||repeat('8',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
+       'intentId','rri-'||repeat('c',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
        'startCommandSha256','sha256:'||repeat('a',64),'expectedEpoch',0,'leaseSeconds',120));
      UPDATE release_authority.runner_intent SET effect_discovery_deadline=clock_timestamp()-interval '1 second'
-       WHERE intent_id='rri-'||repeat('8',64);
+       WHERE intent_id='rri-'||repeat('c',64);
      snapshot := release_authority.release_runner_reconcile_effect(jsonb_build_object(
-       'intentId','rri-'||repeat('8',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
+       'intentId','rri-'||repeat('c',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
        'expectedEpoch',1,'reconciliation',jsonb_build_object('result','pending','safeForCompensation',false)));
      IF snapshot->>'state' <> 'blocked' OR (snapshot->>'safeForCompensation')::boolean
        THEN RAISE EXCEPTION 'discovery timeout was not blocked unsafe'; END IF;
