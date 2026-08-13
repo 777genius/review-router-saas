@@ -88,6 +88,27 @@ CREATE TEMP TABLE release_authority_catalog_verification (
   verifier text NOT NULL CHECK (verifier = 'complete_catalog_v1')
 ) ON COMMIT DROP;
 
+CREATE FUNCTION pg_temp.release_authority_acl_fingerprint(p_acl aclitem[])
+RETURNS jsonb LANGUAGE sql STABLE SET search_path = pg_catalog AS $acl$
+  SELECT coalesce(jsonb_agg(jsonb_build_object(
+    'grantor',CASE WHEN acl.grantor=0 THEN 'PUBLIC'
+      ELSE pg_catalog.pg_get_userbyid(acl.grantor) END,
+    'grantee',CASE WHEN acl.grantee=0 THEN 'PUBLIC'
+      ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
+    'privilege_type',acl.privilege_type,
+    'is_grantable',acl.is_grantable
+  ) ORDER BY
+    CASE WHEN acl.grantor=0 THEN 'PUBLIC'
+      ELSE pg_catalog.pg_get_userbyid(acl.grantor) END,
+    CASE WHEN acl.grantee=0 THEN 'PUBLIC'
+      ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
+    acl.privilege_type,acl.is_grantable),'[]'::jsonb)
+  FROM pg_catalog.aclexplode(CASE
+    WHEN pg_catalog.cardinality(p_acl)>0 THEN p_acl
+    ELSE NULL::aclitem[]
+  END) acl
+$acl$;
+
 CREATE FUNCTION pg_temp.release_authority_catalog_fingerprint(p_schema text)
 RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
   WITH target AS (
@@ -96,12 +117,8 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
     SELECT 'schema', p_schema,
       jsonb_build_object(
         'owner', pg_catalog.pg_get_userbyid(nspowner),
-        'acl', (SELECT coalesce(jsonb_agg(jsonb_build_array(
-          CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-          acl.privilege_type, acl.is_grantable) ORDER BY
-            CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-            acl.privilege_type,acl.is_grantable), '[]'::jsonb)
-          FROM pg_catalog.aclexplode(coalesce(nspacl,pg_catalog.acldefault('n',nspowner))) acl))
+        'acl',pg_temp.release_authority_acl_fingerprint(
+          coalesce(nspacl,pg_catalog.acldefault('n',nspowner)))
     FROM target
     UNION ALL
     SELECT 'relation', relation.relname,
@@ -114,14 +131,10 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
         'accessMethod',coalesce(access_method.amname,''),
         'tablespace',CASE WHEN relation.reltablespace=0 THEN ''
           ELSE pg_catalog.pg_tablespace_location(relation.reltablespace) END,
-        'acl',(SELECT coalesce(jsonb_agg(jsonb_build_array(
-          CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-          acl.privilege_type,acl.is_grantable) ORDER BY
-            CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-            acl.privilege_type,acl.is_grantable),'[]'::jsonb)
-          FROM pg_catalog.aclexplode(coalesce(relation.relacl,pg_catalog.acldefault(
+        'acl',pg_temp.release_authority_acl_fingerprint(
+          coalesce(relation.relacl,pg_catalog.acldefault(
             CASE WHEN relation.relkind='S' THEN 'S'::"char" ELSE 'r'::"char" END,
-            relation.relowner))) acl),
+            relation.relowner))),
         'columns',(SELECT coalesce(jsonb_agg(jsonb_build_object(
           'position',attribute.attnum,'name',attribute.attname,
           'type',replace(pg_catalog.format_type(attribute.atttypid,attribute.atttypmod),p_schema,'release_authority'),
@@ -131,12 +144,7 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
             ELSE attribute.attcollation::regcollation::text END,
           'storage',attribute.attstorage,'statistics',attribute.attstattarget,
           'default',replace(coalesce(pg_catalog.pg_get_expr(default_record.adbin,default_record.adrelid),''),p_schema,'release_authority')
-          ,'acl',(SELECT coalesce(jsonb_agg(jsonb_build_array(
-            CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-            acl.privilege_type,acl.is_grantable) ORDER BY
-              CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-              acl.privilege_type,acl.is_grantable),'[]'::jsonb)
-            FROM pg_catalog.aclexplode(coalesce(attribute.attacl,'{}'::aclitem[])) acl)
+          ,'acl',pg_temp.release_authority_acl_fingerprint(attribute.attacl)
         ) ORDER BY attribute.attnum),'[]'::jsonb)
           FROM pg_catalog.pg_attribute attribute
           LEFT JOIN pg_catalog.pg_attrdef default_record
@@ -170,12 +178,8 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
         'config',coalesce(to_jsonb(procedure.proconfig),'[]'::jsonb),
         'owner',pg_catalog.pg_get_userbyid(procedure.proowner),
         'source',replace(procedure.prosrc,p_schema,'release_authority'),
-        'acl',(SELECT coalesce(jsonb_agg(jsonb_build_array(
-          CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-          acl.privilege_type,acl.is_grantable) ORDER BY
-            CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-            acl.privilege_type,acl.is_grantable),'[]'::jsonb)
-          FROM pg_catalog.aclexplode(coalesce(procedure.proacl,pg_catalog.acldefault('f',procedure.proowner))) acl)
+        'acl',pg_temp.release_authority_acl_fingerprint(
+          coalesce(procedure.proacl,pg_catalog.acldefault('f',procedure.proowner)))
       )
     FROM pg_catalog.pg_proc procedure
     JOIN target ON target.oid=procedure.pronamespace
@@ -197,12 +201,8 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
         'base',replace(CASE WHEN type_record.typbasetype=0 THEN '' ELSE type_record.typbasetype::regtype::text END,p_schema,'release_authority'),
         'element',replace(CASE WHEN type_record.typelem=0 THEN '' ELSE type_record.typelem::regtype::text END,p_schema,'release_authority'),
         'default',coalesce(type_record.typdefault,''),
-        'acl',(SELECT coalesce(jsonb_agg(jsonb_build_array(
-          CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-          acl.privilege_type,acl.is_grantable) ORDER BY
-            CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-            acl.privilege_type,acl.is_grantable),'[]'::jsonb)
-          FROM pg_catalog.aclexplode(coalesce(type_record.typacl,pg_catalog.acldefault('T',type_record.typowner))) acl),
+        'acl',pg_temp.release_authority_acl_fingerprint(
+          coalesce(type_record.typacl,pg_catalog.acldefault('T',type_record.typowner))),
         'enum',(SELECT coalesce(jsonb_agg(enum_record.enumlabel ORDER BY enum_record.enumsortorder),'[]'::jsonb)
           FROM pg_catalog.pg_enum enum_record WHERE enum_record.enumtypid=type_record.oid)
       )

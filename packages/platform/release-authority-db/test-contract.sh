@@ -88,6 +88,35 @@ node -e "import('./scripts/install-release-authority-db.mjs').then(m => process.
   > /tmp/release-authority-install-$$.sql
 docker cp "/tmp/release-authority-install-$$.sql" "$name:/tmp/release-authority-install.sql" >/dev/null
 
+# Exercise the canonical ACL serializer directly on PostgreSQL 17. Multiple
+# rows must sort independently of input order, PUBLIC must remain explicit,
+# default ACLs must be expanded, and null/zero-dimensional ACLs must be empty.
+node -e 'import("./scripts/install-release-authority-db.mjs").then(m => process.stdout.write(m.releaseAuthorityCatalogFingerprintSql + String.raw`
+WITH forward(value) AS (SELECT pg_temp.release_authority_acl_fingerprint(ARRAY[
+  '\''postgres=arwdDxt/postgres'\''::aclitem,
+  '\''=r/postgres'\''::aclitem,
+  '\''reviewrouter_release_control=r*/postgres'\''::aclitem
+])), reverse_order(value) AS (SELECT pg_temp.release_authority_acl_fingerprint(ARRAY[
+  '\''reviewrouter_release_control=r*/postgres'\''::aclitem,
+  '\''=r/postgres'\''::aclitem,
+  '\''postgres=arwdDxt/postgres'\''::aclitem
+]))
+SELECT jsonb_array_length(forward.value)=9
+  AND forward.value=reverse_order.value
+  AND forward.value @> '\''[{"grantor":"postgres","grantee":"PUBLIC","privilege_type":"SELECT","is_grantable":false}]'\''::jsonb
+  AND forward.value @> '\''[{"grantor":"postgres","grantee":"reviewrouter_release_control","privilege_type":"SELECT","is_grantable":true}]'\''::jsonb
+FROM forward,reverse_order;
+SELECT pg_temp.release_authority_acl_fingerprint(NULL::aclitem[])='\''[]'\''::jsonb
+  AND pg_temp.release_authority_acl_fingerprint('\''{}'\''::aclitem[])='\''[]'\''::jsonb;
+SELECT pg_temp.release_authority_acl_fingerprint(
+  pg_catalog.acldefault('\''f'\'',(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='\''postgres'\'')))
+  @> '\''[{"grantor":"postgres","grantee":"PUBLIC","privilege_type":"EXECUTE","is_grantable":false}]'\''::jsonb;
+`))' > /tmp/release-authority-acl-regression-$$.sql
+docker cp "/tmp/release-authority-acl-regression-$$.sql" \
+  "$name:/tmp/release-authority-acl-regression.sql" >/dev/null
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -At \
+  -f /tmp/release-authority-acl-regression.sql)" = $'t\nt\nt'
+
 for database in rr_modified_schema rr_modified_routine rr_disabled_trigger rr_owner_mismatch rr_acl_mismatch; do
   docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
     "CREATE DATABASE $database TEMPLATE postgres" >/dev/null
@@ -188,7 +217,8 @@ test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_supported_
      FROM release_authority.schema_migration WHERE position<=2")" = \
   "1:legacy_equivalent,2:legacy_equivalent"
 
-rm -f "/tmp/release-authority-install-$$.sql"
+rm -f "/tmp/release-authority-install-$$.sql" \
+  "/tmp/release-authority-acl-regression-$$.sql"
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/release-authority-install.sql >/dev/null
 test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT string_agg(position::text||':'||byte_variant,',' ORDER BY position)
