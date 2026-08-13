@@ -27,6 +27,14 @@ import {
   assertRecoveryEffectConsumptionResult,
   assertRecoveryEffectRecordBinding,
 } from "../domain/recovery-effect";
+import {
+  fromRenderSourceRecoveryManifestV1,
+  fromRenderTargetServiceContractV1,
+  toRenderSourceRecoveryManifestV1,
+  toRenderTargetServiceContractV1,
+  type RenderSourceRecoveryManifestV1,
+  type RenderTargetServiceContractV1,
+} from "./render-service-transition-compatibility";
 
 export class AuthenticatedRunnerLedgerAdapter
   implements
@@ -448,7 +456,13 @@ export class AuthenticatedRunnerLedgerAdapter
   ): Promise<"created" | "existing"> {
     const value = (await this.request("/v1/service-transitions", {
       method: "POST",
-      body: JSON.stringify(input),
+      body: JSON.stringify({
+        ...input,
+        sourceManifest: toRenderSourceRecoveryManifestV1(input.sourceManifest),
+        targetContracts: input.targetContracts.map(
+          toRenderTargetServiceContractV1,
+        ),
+      }),
     })) as Record<string, unknown>;
     if (value.result !== "created" && value.result !== "existing")
       throw new Error("runner_ledger_service_transition_begin_invalid");
@@ -457,9 +471,22 @@ export class AuthenticatedRunnerLedgerAdapter
   async readContract(
     rolloutId: string,
   ): Promise<Awaited<ReturnType<ServiceTransitionLedger["readContract"]>>> {
-    return (await this.request(
+    const value = (await this.request(
       `/v1/service-transitions/${encodeURIComponent(rolloutId)}/contract`,
-    )) as Awaited<ReturnType<ServiceTransitionLedger["readContract"]>>;
+    )) as {
+      sourceManifest: RenderSourceRecoveryManifestV1;
+      targetContracts: readonly RenderTargetServiceContractV1[];
+    } | null;
+    return value
+      ? {
+          sourceManifest: fromRenderSourceRecoveryManifestV1(
+            value.sourceManifest,
+          ),
+          targetContracts: value.targetContracts.map(
+            fromRenderTargetServiceContractV1,
+          ),
+        }
+      : null;
   }
   async append(
     checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,

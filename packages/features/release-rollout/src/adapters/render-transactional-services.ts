@@ -1,17 +1,26 @@
 import {
   environmentKeysSha256,
   environmentSha256,
-  sourceRecoveryManifestSha256,
-  sourceServiceContractSha256,
-  targetServiceContractSha256,
-  type ObservedRenderService,
-  type EnvironmentMutationOutcome,
-  type RenderServiceContract,
-  type TargetServiceContract,
+  targetServiceConfigurationSha256,
+  type ObservedServiceState,
+  type TargetServiceRelease,
   type ProtectedSourceEnvironment,
   type SourceRecoveryManifest,
-  type TransactionalRenderProvider,
-} from "../application/transactional-service-cutover";
+  type SourceServiceSnapshot,
+} from "../domain/service-transition";
+import type {
+  EnvironmentMutationOutcome,
+  TransactionalServiceProvider,
+} from "../application/service-transition-ports";
+import {
+  RENDER_SOURCE_CONFIGURATION_FORMAT,
+  RENDER_SOURCE_RECOVERY_FORMAT,
+  fromRenderSourceRecoveryManifestV1,
+  renderSourceRecoveryManifestSha256,
+  renderSourceConfigurationV1,
+  renderSourceServiceContractSha256,
+  type RenderSourceServiceContractV1,
+} from "./render-service-transition-compatibility";
 import { RenderApiAdapter, type RenderFetch } from "./render-api";
 
 const active = new Set([
@@ -47,7 +56,7 @@ const latestLive = <
   return live[0];
 };
 
-export class RenderTransactionalServicesAdapter implements TransactionalRenderProvider {
+export class RenderTransactionalServicesAdapter implements TransactionalServiceProvider {
   private readonly api: RenderApiAdapter;
   constructor(
     apiKey: string,
@@ -59,7 +68,7 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
     this.api = new RenderApiAdapter(apiKey, fetchImpl);
   }
 
-  async observe(serviceId: string): Promise<ObservedRenderService> {
+  async observe(serviceId: string): Promise<ObservedServiceState> {
     const [service, environment, deploys] = await Promise.all([
       this.api.getService(serviceId),
       this.api.listAllEnv(serviceId),
@@ -110,16 +119,16 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
           "string")
     )
       throw new Error("service_transition_native_contract_incomplete");
-    const serviceContractSha256 =
+    const configurationSha256 =
       runtime === "image" && typeof imagePath === "string"
-        ? targetServiceContractSha256({
+        ? targetServiceConfigurationSha256({
             serviceId,
-            imageUrl: imagePath,
+            artifact: { kind: "container_image", reference: imagePath },
             environmentSha256: environmentSha256(environment),
           })
-        : sourceServiceContractSha256({
+        : renderSourceServiceContractSha256({
             ...(sourceContract as Omit<
-              RenderServiceContract,
+              RenderSourceServiceContractV1,
               "serviceContractSha256"
             >),
             sourceCommitSha: live.commit?.id ?? "",
@@ -130,13 +139,17 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
     return {
       serviceId,
       suspended: service.suspended === "suspended",
-      serviceContractSha256,
+      configurationSha256,
       environmentSha256: environmentSha256(environment),
       provenance:
         runtime === "image" && typeof imagePath === "string" && live.image
-          ? { kind: "image", imageUrl: imagePath, deployId: live.id }
+          ? {
+              kind: "container_image",
+              reference: imagePath,
+              deploymentId: live.id,
+            }
           : live.commit
-            ? { kind: "git", commitSha: live.commit.id }
+            ? { kind: "source_revision", revision: live.commit.id }
             : (() => {
                 throw new Error("service_transition_provenance_unproven");
               })(),
@@ -155,37 +168,40 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
     await this.waitForSuspension(serviceId, false);
   }
 
-  async configureTarget(contract: TargetServiceContract): Promise<void> {
+  async configureTarget(contract: TargetServiceRelease): Promise<void> {
     await this.api.patchService(contract.serviceId, {
       autoDeployTrigger: "off",
-      image: { imagePath: contract.imageUrl },
+      image: { imagePath: contract.artifact.reference },
       serviceDetails: { runtime: "image", preDeployCommand: "" },
     });
     await this.waitForTargetConfiguration(contract);
   }
 
-  async configureSource(contract: RenderServiceContract): Promise<void> {
+  async configureSource(contract: SourceServiceSnapshot): Promise<void> {
+    if (contract.configuration.format !== RENDER_SOURCE_CONFIGURATION_FORMAT)
+      throw new Error("render_service_transition_configuration_format_invalid");
+    const configuration = renderSourceConfigurationV1(contract);
     await this.api.patchService(contract.serviceId, {
       autoDeployTrigger: "off",
-      repo: contract.repository,
-      branch: contract.branch,
-      rootDir: contract.rootDir,
+      repo: String(configuration.repository),
+      branch: String(configuration.branch),
+      rootDir: String(configuration.rootDir),
       serviceDetails: {
         runtime: "node",
         envSpecificDetails: {
-          buildCommand: contract.buildCommand,
-          startCommand: contract.startCommand,
+          buildCommand: String(configuration.buildCommand),
+          startCommand: String(configuration.startCommand),
         },
-        preDeployCommand: contract.preDeployCommand,
-        healthCheckPath: contract.healthCheckPath,
-        region: contract.region,
-        plan: contract.plan,
-        maxShutdownDelaySeconds: contract.maxShutdownDelaySeconds,
+        preDeployCommand: String(configuration.preDeployCommand),
+        healthCheckPath: configuration.healthCheckPath as string | null,
+        region: String(configuration.region),
+        plan: String(configuration.plan),
+        maxShutdownDelaySeconds: Number(configuration.maxShutdownDelaySeconds),
       },
     });
     await this.waitForContract(
       contract.serviceId,
-      contract.serviceContractSha256,
+      contract.configuration.sha256,
     );
   }
 
@@ -225,7 +241,7 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
   }): Promise<SourceRecoveryManifest> {
     if (input.services.length !== 3)
       throw new Error("service_transition_scope_invalid");
-    const services: RenderServiceContract[] = [];
+    const services: RenderSourceServiceContractV1[] = [];
     for (const expected of input.services) {
       if (expected.databaseEnvKey !== "DATABASE_URL")
         throw new Error("service_transition_database_env_key_invalid");
@@ -280,7 +296,7 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
       const value = {
         serviceId: service.id,
         ownerId: service.ownerId,
-        type: service.type as RenderServiceContract["type"],
+        type: service.type as RenderSourceServiceContractV1["type"],
         runtime: "node" as const,
         repository: service.repo,
         branch: service.branch,
@@ -304,55 +320,61 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
       };
       services.push({
         ...value,
-        serviceContractSha256: sourceServiceContractSha256(value),
+        serviceContractSha256: renderSourceServiceContractSha256(value),
       });
     }
-    const manifest = {
-      schemaVersion: "reviewrouter.render-source-recovery.v1" as const,
+    const manifest: Omit<
+      import("./render-service-transition-compatibility").RenderSourceRecoveryManifestV1,
+      "manifestSha256"
+    > = {
+      schemaVersion: RENDER_SOURCE_RECOVERY_FORMAT,
       rolloutId: input.rolloutId,
       services: Object.freeze(services),
     };
-    return {
+    return fromRenderSourceRecoveryManifestV1({
       ...manifest,
-      manifestSha256: sourceRecoveryManifestSha256(manifest),
-    };
+      manifestSha256: renderSourceRecoveryManifestSha256(manifest),
+    });
   }
 
-  async deployImage(serviceId: string, imageUrl: string): Promise<string> {
-    if (!imageUrl.includes("@sha256:"))
+  async deployArtifact(serviceId: string, reference: string): Promise<string> {
+    if (!reference.includes("@sha256:"))
       throw new Error("service_transition_image_digest_invalid");
     const deploy = await this.api.createPinnedDeploy(serviceId);
     return deploy.id;
   }
 
-  async deployCommit(serviceId: string, commitSha: string): Promise<string> {
-    const deploy = await this.api.createPinnedDeploy(serviceId, commitSha);
+  async deploySourceRevision(
+    serviceId: string,
+    revision: string,
+  ): Promise<string> {
+    const deploy = await this.api.createPinnedDeploy(serviceId, revision);
     return deploy.id;
   }
 
-  async waitForDeploy(
+  async waitForDeployment(
     serviceId: string,
     deployId: string,
     expected:
-      | { kind: "image"; imageUrl: string }
-      | { kind: "git"; commitSha: string },
+      | { kind: "container_image"; reference: string }
+      | { kind: "source_revision"; revision: string },
   ): Promise<void> {
     for (let attempt = 0; attempt < 90; attempt += 1) {
       const selected = await this.api.getDeploy(serviceId, deployId);
       if (selected.status === "live") {
-        if (expected.kind === "git") {
-          if (selected.commit?.id !== expected.commitSha || selected.image)
+        if (expected.kind === "source_revision") {
+          if (selected.commit?.id !== expected.revision || selected.image)
             throw new Error("service_transition_deploy_provenance_mismatch");
         } else {
-          const expectedDigest = expected.imageUrl.slice(
-            expected.imageUrl.indexOf("sha256:") + 7,
+          const expectedDigest = expected.reference.slice(
+            expected.reference.indexOf("sha256:") + 7,
           );
           const actualDigest = selected.image?.sha.replace(/^sha256:/u, "");
           if (
             actualDigest !== expectedDigest ||
             selected.commit ||
             (selected.image?.ref !== undefined &&
-              selected.image.ref !== expected.imageUrl)
+              selected.image.ref !== expected.reference)
           )
             throw new Error("service_transition_deploy_provenance_mismatch");
         }
@@ -365,19 +387,19 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
     throw new Error("service_transition_deploy_timeout");
   }
 
-  async reconcileCommitDeploy(input: {
+  async reconcileSourceDeployment(input: {
     serviceId: string;
-    commitSha: string;
+    revision: string;
     intentAt: string;
   }): Promise<string | null> {
     const intentTime = Date.parse(input.intentAt);
     if (!Number.isFinite(intentTime))
       throw new Error("service_transition_deploy_intent_time_invalid");
-    await this.quiesceDeploys(input.serviceId);
+    await this.quiesceDeployments(input.serviceId);
     const candidates = (await this.api.listAllDeploys(input.serviceId)).filter(
       (deploy) =>
         deploy.status === "live" &&
-        deploy.commit?.id === input.commitSha &&
+        deploy.commit?.id === input.revision &&
         !deploy.image &&
         typeof deploy.createdAt === "string" &&
         Date.parse(deploy.createdAt) >= intentTime - 1_000,
@@ -387,7 +409,7 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
     return candidates[0]?.id ?? null;
   }
 
-  async quiesceDeploys(serviceId: string): Promise<void> {
+  async quiesceDeployments(serviceId: string): Promise<void> {
     for (let attempt = 0; attempt < 90; attempt += 1) {
       const deploys = await this.api.listAllDeploys(serviceId);
       if (!deploys.some((deploy) => active.has(deploy.status))) return;
@@ -414,7 +436,7 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
   ): Promise<void> {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       try {
-        if ((await this.observe(serviceId)).serviceContractSha256 === expected)
+        if ((await this.observe(serviceId)).configurationSha256 === expected)
           return;
       } catch (error) {
         if (
@@ -429,7 +451,7 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
   }
 
   private async waitForTargetConfiguration(
-    contract: TargetServiceContract,
+    contract: TargetServiceRelease,
   ): Promise<void> {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       const service = await this.api.getService(contract.serviceId);
@@ -442,7 +464,7 @@ export class RenderTransactionalServicesAdapter implements TransactionalRenderPr
         service.id === contract.serviceId &&
         service.autoDeploy === "no" &&
         runtime === "image" &&
-        imagePath === contract.imageUrl &&
+        imagePath === contract.artifact.reference &&
         (specific.preDeployCommand ?? details.preDeployCommand ?? "") === ""
       )
         return;

@@ -14,9 +14,9 @@ import {
   type RunnerIdentity,
   type StepObservation,
   type ProtectedSourceEnvironment,
-  type TargetServiceContract,
+  type TargetServiceRelease,
   type TargetServiceExpectation,
-  targetServiceContractSha256,
+  targetServiceConfigurationSha256,
   assertVerifiedReleaseImageProvenance,
   sameReleaseImageProvenance,
   type VerifiedReleaseImageProvenance,
@@ -164,7 +164,7 @@ const sourceRecoveryManifest = await renderServices.captureSourceManifest({
   protectedEnvironment: protectedSourceEnvironment,
 });
 const rolloutStartedAt = new Date().toISOString();
-const targetServiceContracts: TargetServiceContract[] = [];
+const targetServiceContracts: TargetServiceRelease[] = [];
 for (const expectation of serviceExpectations) {
   const sourceContract = sourceRecoveryManifest.services.find(
     (item) => item.serviceId === expectation.serviceId,
@@ -193,18 +193,21 @@ for (const expectation of serviceExpectations) {
     serviceId: expectation.serviceId,
     set: environmentDelta,
     remove: [],
-    expectedBeforeSha256: sourceContract.sourceEnvSha256,
+    expectedBeforeSha256: sourceContract.sourceEnvironmentSha256,
   });
   const value = {
     serviceId: expectation.serviceId,
-    imageUrl: releaseImageProvenance.identity.imageUrl,
+    artifact: {
+      kind: "container_image" as const,
+      reference: releaseImageProvenance.identity.imageUrl,
+    },
     environmentDelta,
     removeKeys: [] as string[],
     environmentSha256: planned.environmentSha256,
   };
   targetServiceContracts.push({
     ...value,
-    serviceContractSha256: targetServiceContractSha256(value),
+    configurationSha256: targetServiceConfigurationSha256(value),
   });
 }
 const transactionalServices = new TransactionalServiceCutover(
@@ -323,8 +326,10 @@ const useCases = new ReleaseRolloutUseCases({
           deployId,
           provenance: {
             kind: "image",
-            imageSha: targetServiceContracts[index]!.imageUrl.slice(
-              targetServiceContracts[index]!.imageUrl.indexOf("sha256:"),
+            imageSha: targetServiceContracts[index]!.artifact.reference.slice(
+              targetServiceContracts[index]!.artifact.reference.indexOf(
+                "sha256:",
+              ),
             ),
           },
           envSha256: targetServiceContracts[index]!.environmentSha256,

@@ -39,7 +39,7 @@ describe("Render transactional services", () => {
       "render-token",
       fetchImpl,
       sleep,
-    ).quiesceDeploys(serviceId);
+    ).quiesceDeployments(serviceId);
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -84,9 +84,9 @@ describe("Render transactional services", () => {
       new RenderTransactionalServicesAdapter(
         "render-token",
         fetchImpl,
-      ).reconcileCommitDeploy({
+      ).reconcileSourceDeployment({
         serviceId,
-        commitSha,
+        revision: commitSha,
         intentAt: "2026-08-12T00:00:00.000Z",
       }),
     ).resolves.toBe("dep-intended");
@@ -113,9 +113,9 @@ describe("Render transactional services", () => {
       new RenderTransactionalServicesAdapter(
         "render-token",
         fetchImpl,
-      ).reconcileCommitDeploy({
+      ).reconcileSourceDeployment({
         serviceId,
-        commitSha,
+        revision: commitSha,
         intentAt: "2026-08-12T00:00:00.000Z",
       }),
     ).resolves.toBe("dep-live");
@@ -137,9 +137,9 @@ describe("Render transactional services", () => {
       new RenderTransactionalServicesAdapter(
         "render-token",
         fetchImpl,
-      ).reconcileCommitDeploy({
+      ).reconcileSourceDeployment({
         serviceId,
-        commitSha,
+        revision: commitSha,
         intentAt: "2026-08-12T00:00:00.000Z",
       }),
     ).rejects.toThrow("service_transition_deploy_reconciliation_ambiguous");
@@ -156,7 +156,7 @@ describe("Render transactional services", () => {
         "render-token",
         fetchImpl,
         sleep,
-      ).quiesceDeploys(serviceId),
+      ).quiesceDeployments(serviceId),
     ).rejects.toThrow("service_transition_active_deploy_timeout");
     expect(fetchImpl).toHaveBeenCalledTimes(90);
     expect(sleep).toHaveBeenCalledTimes(90);
@@ -165,7 +165,7 @@ describe("Render transactional services", () => {
   it.each([
     {
       name: "git",
-      expected: { kind: "git" as const, commitSha },
+      expected: { kind: "source_revision" as const, revision: commitSha },
       observed: {
         id: "dep-git",
         status: "live",
@@ -174,7 +174,7 @@ describe("Render transactional services", () => {
     },
     {
       name: "image",
-      expected: { kind: "image" as const, imageUrl },
+      expected: { kind: "container_image" as const, reference: imageUrl },
       observed: {
         id: "dep-image",
         status: "live",
@@ -193,7 +193,7 @@ describe("Render transactional services", () => {
         new RenderTransactionalServicesAdapter(
           "render-token",
           fetchImpl,
-        ).waitForDeploy(serviceId, observed.id, expected),
+        ).waitForDeployment(serviceId, observed.id, expected),
       ).rejects.toThrow("service_transition_deploy_provenance_mismatch");
       expect(fetchImpl).toHaveBeenCalledOnce();
     },

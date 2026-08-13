@@ -130,6 +130,38 @@ describe("review-investigations architecture ratchet", () => {
   });
 });
 
+describe("release-rollout provider-neutral boundary", () => {
+  it("rejects provider vocabulary from neutral application contracts", () => {
+    const root = createFixture(
+      'export enum InvestigationState { Open = "open" }\n',
+    );
+    writeFile(
+      root,
+      "packages/features/release-rollout/src/application/service-transition-ports.ts",
+      "export interface RenderServiceContract { id: string }\n",
+    );
+
+    expect(() => runChecker(root)).toThrow(
+      /release-rollout domain\/application contracts must be provider-neutral/,
+    );
+  });
+
+  it("rejects adapter imports from neutral rollout policy", () => {
+    const root = createFixture(
+      'export enum InvestigationState { Open = "open" }\n',
+    );
+    writeFile(
+      root,
+      "packages/features/release-rollout/src/domain/service-transition.ts",
+      'import { api } from "../adapters/vendor-api";\nexport const value = api;\n',
+    );
+
+    expect(() => runChecker(root)).toThrow(
+      /release-rollout domain\/application must not import provider adapters/,
+    );
+  });
+});
+
 function createFixture(domainSource: string): string {
   const root = mkdtempSync(join(tmpdir(), "reviewrouter-architecture-"));
   fixtureRoots.push(root);
