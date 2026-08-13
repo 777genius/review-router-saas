@@ -118,7 +118,7 @@ jobs:
         with:
           name: protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1
           path: preflight
-      - name: Copy, prove quiescence/equivalence, and bootstrap roles
+      - name: Copy, bind the restored generation, prove equivalence, and bootstrap roles
         env:
           REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}
           REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: copy-and-role-bootstrap-private

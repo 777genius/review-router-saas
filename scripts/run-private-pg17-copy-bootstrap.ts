@@ -16,6 +16,7 @@ import {
   type WriterSuspensionObservation,
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
+import { executePrivatePg17GenerationBinding } from "./initialize-private-pg17-generation-binding.mjs";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -73,6 +74,7 @@ let equivalence: Awaited<
   ReturnType<PostgreSqlGenerationAdapter["verifyEquivalence"]>
 >;
 let roleBootstrap: StepObservation;
+let generationBinding: StepObservation;
 const unavailable = async (): Promise<never> => {
   throw new Error("private_pg17_port_not_available_in_copy_phase");
 };
@@ -119,7 +121,7 @@ const useCases = new ReleaseRolloutUseCases({
   database: {
     captureBackup: async () => {
       database.observeIdentity(sourceUrl, source);
-      database.observeIdentity(targetUrl, target);
+      database.observeTargetBeforeBinding(targetUrl, target);
       const backup = await new RenderBackupIdentityAdapter().capture({
         apiKey: required("RENDER_PROVENANCE_READ_API_KEY"),
         sourceDatabaseId: source.renderResourceId,
@@ -166,6 +168,10 @@ const useCases = new ReleaseRolloutUseCases({
       return equivalence.observation;
     },
     bootstrapTargetRoles: async () => {
+      generationBinding = executePrivatePg17GenerationBinding(
+        process.env,
+        commands,
+      );
       roleBootstrap = canonical.bootstrapTargetRoles(process.env);
       return roleBootstrap;
     },
@@ -214,5 +220,5 @@ try {
   });
 }
 process.stdout.write(
-  `${JSON.stringify({ rollout, roleBootstrapRunner: runner, backup: backupResult!.backup, quiescence: quiescence!.evidence, equivalence: equivalence!.evidence, roleBootstrap: roleBootstrap!.facts })}\n`,
+  `${JSON.stringify({ rollout, roleBootstrapRunner: runner, backup: backupResult!.backup, quiescence: quiescence!.evidence, equivalence: equivalence!.evidence, generationBinding: generationBinding!.facts, roleBootstrap: roleBootstrap!.facts })}\n`,
 );

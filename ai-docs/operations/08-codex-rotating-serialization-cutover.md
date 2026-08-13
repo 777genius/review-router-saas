@@ -179,14 +179,21 @@ For a restore or writer promotion, use this exact sequence:
    configure every writer with W2, and restart them. Automatic runtime work is
    expected to remain blocked on persisted W1 fingerprints and must perform no
    provider write.
-3. Submit the operator recovery with a stable `recoveryRequestId` and the exact
+3. In the protected private-network rollout, the role-bootstrap runner
+   initializes the database comment binding immediately after `pg_restore` and
+   before role bootstrap or migration. The one-shot requires the exact PG17
+   `system_identifier`, the expected restored W1 binding (including the legacy
+   witness-only form, or an unbound fresh target), and W2's SHA-256. It is
+   idempotent only for that exact target binding and rejects malformed, foreign,
+   or differently bound database comments.
+4. Submit the operator recovery with a stable `recoveryRequestId` and the exact
    acknowledgement `all_prior_installers_and_writers_are_stopped` (or the
    distinct account-switch acknowledgement when that mode is intended).
-4. Under the provider lock, recovery permanently retires W1 active,
+5. Under the provider lock, recovery permanently retires W1 active,
    dispatch-authorized, confirmed-candidate, and remote-unknown namespaces,
    preserves their W1 fingerprints, and advances the mutation fence. A missing
    acknowledgement or partial retirement fails closed and allocates nothing.
-5. Fetch the new recovery manifest and complete setup. Its claim and fresh,
+6. Fetch the new recovery manifest and complete setup. Its claim and fresh,
    never-reused namespace carry only the W2 fingerprint. Keep runtime traffic
    disabled until that W2 namespace is definitely written, workflow-attested,
    and active; only then does W2 runtime become usable.

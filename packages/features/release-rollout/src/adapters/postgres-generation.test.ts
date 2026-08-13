@@ -29,6 +29,56 @@ describe("PostgreSQL secret and connection boundary", () => {
   );
 });
 
+describe("target generation pre-binding", () => {
+  const target = {
+    renderResourceId: "dpg-target",
+    internalHostname: "target.internal",
+    databaseName: "reviewrouter",
+    systemIdentifier: "200",
+    majorVersion: 17,
+    recoveryWitnessSha256: "b".repeat(64),
+  };
+
+  it.each([
+    null,
+    JSON.stringify({
+      version: 1,
+      systemIdentifier: "200",
+      recoveryWitnessSha256: "b".repeat(64),
+    }),
+  ])("accepts a fresh or already idempotently bound target: %s", (binding) => {
+    const adapter = new PostgreSqlGenerationAdapter({
+      execute: vi.fn(() => ({
+        stdout: `${JSON.stringify({ systemIdentifier: "200", majorVersion: 17, databaseName: "reviewrouter", binding })}\n`,
+      })),
+      hashStdout: vi.fn(),
+      executeExpectingFailure: vi.fn(),
+    });
+    expect(
+      adapter.observeTargetBeforeBinding(
+        "postgresql://reviewrouter_role_bootstrap:s@target.internal/reviewrouter",
+        target,
+      ),
+    ).toBe(target);
+  });
+
+  it("rejects a foreign comment before restore", () => {
+    const adapter = new PostgreSqlGenerationAdapter({
+      execute: vi.fn(() => ({
+        stdout: `${JSON.stringify({ systemIdentifier: "200", majorVersion: 17, databaseName: "reviewrouter", binding: '{"recoveryWitnessSha256":"foreign"}' })}\n`,
+      })),
+      hashStdout: vi.fn(),
+      executeExpectingFailure: vi.fn(),
+    });
+    expect(() =>
+      adapter.observeTargetBeforeBinding(
+        "postgresql://reviewrouter_role_bootstrap:s@target.internal/reviewrouter",
+        target,
+      ),
+    ).toThrow("postgres_generation_unbound_target_identity_mismatch");
+  });
+});
+
 describe("source quiescence", () => {
   it("requires observed writer suspension, committed effective ACL denial, bounded zeros, and failed reconnect probes", () => {
     const execute = vi.fn((_command, args: readonly string[]) => {

@@ -156,6 +156,39 @@ export class PostgreSqlGenerationAdapter {
     return expected;
   }
 
+  observeTargetBeforeBinding(
+    url: string,
+    expected: DatabaseGenerationIdentity,
+  ): DatabaseGenerationIdentity {
+    const observed = JSON.parse(
+      this.psql(
+        url,
+        `SELECT json_build_object('systemIdentifier', system_identifier::text, 'majorVersion', current_setting('server_version_num')::integer / 10000, 'databaseName', current_database(), 'binding', shobj_description(database.oid, 'pg_database')) FROM pg_control_system(), pg_database database WHERE database.datname = current_database()`,
+      ),
+    );
+    const targetBinding = {
+      version: 1,
+      systemIdentifier: expected.systemIdentifier,
+      recoveryWitnessSha256: expected.recoveryWitnessSha256,
+    };
+    let observedBinding: unknown;
+    try {
+      observedBinding =
+        observed.binding === null ? null : JSON.parse(observed.binding);
+    } catch {
+      throw new Error("postgres_generation_unbound_target_identity_mismatch");
+    }
+    if (
+      observed.systemIdentifier !== expected.systemIdentifier ||
+      observed.majorVersion !== expected.majorVersion ||
+      observed.databaseName !== expected.databaseName ||
+      (observedBinding !== null &&
+        JSON.stringify(observedBinding) !== JSON.stringify(targetBinding))
+    )
+      throw new Error("postgres_generation_unbound_target_identity_mismatch");
+    return expected;
+  }
+
   compensateSource(input: {
     adminUrl: string;
     source: DatabaseGenerationIdentity;
