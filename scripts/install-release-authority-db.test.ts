@@ -123,6 +123,43 @@ describe("release authority database installation", () => {
     );
     expect(migration).toContain("intent_rollout_id");
     expect(migration).toContain("release_schema_migration_manifest");
+    expect(migration).toContain("complete catalog verification");
+    expect(migration).toContain(
+      "release_authority_catalog_fingerprint('release_authority')",
+    );
+  });
+  it("proves every pre-ledger catalog object against canonical and exact published legacy shadows", () => {
+    const bundle = releaseAuthorityMigrationBundle();
+    expect(bundle).toContain("release_authority_verify_canonical");
+    expect(bundle).toContain("release_authority_verify_legacy");
+    expect(bundle).toContain("complete_catalog_v1");
+    expect(bundle).toContain(
+      "legacy catalog is ambiguous or modified; audited repair required",
+    );
+    expect(bundle).toContain("procedure.prosrc");
+    expect(bundle).toContain("pg_catalog.pg_get_triggerdef");
+    expect(bundle).toContain("pg_catalog.pg_get_constraintdef");
+    expect(bundle).toContain("pg_catalog.pg_get_indexdef");
+    expect(bundle).toContain("pg_catalog.aclexplode");
+    expect(bundle).toContain("pg_catalog.pg_enum");
+    expect(
+      createHash("sha256")
+        .update(
+          readFileSync(
+            "packages/platform/release-authority-db/legacy-catalog/000001_release_authority/migration.sql",
+          ),
+        )
+        .digest("hex"),
+    ).toBe("e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b");
+    expect(
+      createHash("sha256")
+        .update(
+          readFileSync(
+            "packages/platform/release-authority-db/legacy-catalog/000002_external_effect_protocol/migration.sql",
+          ),
+        )
+        .digest("hex"),
+    ).toBe("cd50e36c2b357fe03a81204b99f38c5c1e6b9ff94660dfecb9a2fccb782a512e");
   });
   it("installs single-use rollout-first recovery effect permits", () => {
     const migration = readFileSync(
@@ -162,7 +199,7 @@ describe("release authority database installation", () => {
       "4ee3a75a1528870df6d66a24eded9fc588aed2681b82aef57335ad7bbadf1260",
       "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
       "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
-      "bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
+      "f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4",
       "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
     ]);
     const bundle = releaseAuthorityMigrationBundle();
@@ -205,8 +242,8 @@ describe("release authority database installation", () => {
     expect(eleventh).toBeGreaterThan(tenth);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
-    expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(1);
-    expect(bundle.match(/ADD COLUMN effect_state/gu)).toHaveLength(1);
+    expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(3);
+    expect(bundle.match(/ADD COLUMN effect_state/gu)).toHaveLength(3);
     expect(
       bundle.match(/CREATE TABLE release_authority\.service_transition \(/gu),
     ).toHaveLength(1);

@@ -3,7 +3,21 @@
 BEGIN;
 
 DO $preflight$
+DECLARE verified_fingerprint text;
 BEGIN
+  IF to_regclass('pg_temp.release_authority_catalog_verification') IS NULL THEN
+    RAISE EXCEPTION 'release authority migration 000009 requires complete catalog verification; audited repair required';
+  END IF;
+  SELECT catalog_fingerprint INTO verified_fingerprint
+  FROM pg_temp.release_authority_catalog_verification
+  WHERE verifier='complete_catalog_v1'
+    AND byte_variant IN ('canonical','legacy_equivalent');
+  IF NOT FOUND OR EXISTS (
+    SELECT 1 FROM pg_temp.release_authority_catalog_verification OFFSET 1
+  ) OR verified_fingerprint IS DISTINCT FROM
+    pg_temp.release_authority_catalog_fingerprint('release_authority') THEN
+    RAISE EXCEPTION 'release authority migration 000009 catalog verification mismatch; audited repair required';
+  END IF;
   IF NOT EXISTS (
     SELECT 1
     FROM pg_catalog.pg_attribute attribute
@@ -53,15 +67,9 @@ DO $history$
 DECLARE migration_000001_variant text;
 DECLARE migration_000002_variant text;
 BEGIN
-  migration_000002_variant := CASE WHEN
-    pg_catalog.pg_get_functiondef(to_regprocedure(
-      'release_authority.release_runner_acquire_dispatch_permit(jsonb)'
-    )) LIKE '%intent_rollout_id%'
-    THEN 'legacy_equivalent' ELSE 'canonical' END;
-  -- 000003 necessarily replaces the changed 000001 routine, so its final
-  -- catalog text cannot identify the earlier bytes.  The two accidentally
-  -- republished files were released as one pair; 000002 retains a durable
-  -- distinguishing definition until this migration converges both repairs.
+  SELECT byte_variant INTO STRICT migration_000002_variant
+  FROM pg_temp.release_authority_catalog_verification
+  WHERE verifier='complete_catalog_v1';
   migration_000001_variant := migration_000002_variant;
 
   INSERT INTO release_authority.schema_migration

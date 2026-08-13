@@ -21,6 +21,21 @@ export type ReleaseControlCredentials = Readonly<{
   providerAuthorityTokenSha256: string;
 }>;
 
+const readinessGate = <Service extends object>(
+  service: Service,
+  assertReady: () => Promise<void>,
+): Service =>
+  new Proxy(service, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (typeof value !== "function") return value;
+      return async (...args: readonly unknown[]) => {
+        await assertReady();
+        return Reflect.apply(value, target, args);
+      };
+    },
+  });
+
 const credentialSha256 = /^[a-f0-9]{64}$/u;
 
 export function composeReleaseControlDependencies(
@@ -107,6 +122,54 @@ export async function createReleaseControlApp(input: {
     input.permitInstallerPrisma,
     input.targetReceiptReaderPrisma,
   );
+  const assertMutationAuthorityReady = async () => {
+    const [control, provider, installer, reader] = await Promise.all([
+      observeReleaseAuthorityDatabaseReadiness(input.controlPrisma),
+      observeReleaseAuthorityDatabaseReadiness(input.providerAuthorityPrisma),
+      observeReleaseAuthorityDatabaseReadiness(input.permitInstallerPrisma),
+      observeReleaseAuthorityDatabaseReadiness(input.targetReceiptReaderPrisma),
+    ]);
+    if (
+      !releaseControlDatabaseSetIsReady({
+        control,
+        provider,
+        installer,
+        reader,
+      })
+    )
+      throw new Error("release_control_mutation_authority_degraded");
+  };
+  const gatedDependencies: ReleaseControlRouteDependencies = {
+    ...dependencies,
+    authority: readinessGate(
+      dependencies.authority,
+      assertMutationAuthorityReady,
+    ),
+    ...(dependencies.providerAuthority
+      ? {
+          providerAuthority: readinessGate(
+            dependencies.providerAuthority,
+            assertMutationAuthorityReady,
+          ),
+        }
+      : {}),
+    runnerOperations: readinessGate(
+      dependencies.runnerOperations,
+      assertMutationAuthorityReady,
+    ),
+    reconciliation: readinessGate(
+      dependencies.reconciliation,
+      assertMutationAuthorityReady,
+    ),
+    ...(dependencies.serviceTransition
+      ? {
+          serviceTransition: readinessGate(
+            dependencies.serviceTransition,
+            assertMutationAuthorityReady,
+          ),
+        }
+      : {}),
+  };
   app.get("/health", async (_request, reply) => {
     try {
       const [control, provider, installer, reader] = await Promise.all([
@@ -135,6 +198,6 @@ export async function createReleaseControlApp(input: {
       });
     }
   });
-  await registerReleaseControlRoutes(app, dependencies);
+  await registerReleaseControlRoutes(app, gatedDependencies);
   return app;
 }
