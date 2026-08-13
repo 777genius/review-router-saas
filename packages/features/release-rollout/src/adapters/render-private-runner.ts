@@ -6,6 +6,15 @@ import {
   type StepObservation,
 } from "../domain/release-rollout";
 import {
+  ExternalEffectState,
+  type ExternalEffectRecord,
+  type ExternalEffectReconciliation,
+} from "../domain/external-effect";
+import {
+  ExternalEffectDispatchUseCase,
+  ExternalEffectReconciliationUseCase,
+} from "../application/external-effect-protocol";
+import {
   RenderApiAdapter,
   type RenderDeploy,
   type RenderFetch,
@@ -42,38 +51,39 @@ export interface RunnerProvisioningIntent {
   readonly startCommandSha256: string;
   readonly creationLeaseOwner: string | null;
   readonly creationLeaseExpiresAt: string | null;
+  readonly effect: ExternalEffectRecord;
 }
 export type CreateRunnerProvisioningIntent = Omit<
   RunnerProvisioningIntent,
-  "creationLeaseOwner" | "creationLeaseExpiresAt"
+  "creationLeaseOwner" | "creationLeaseExpiresAt" | "effect"
 > & { readonly creationLeaseOwner: string };
-export type RunnerProviderCreationClaim =
-  | { readonly result: "acquired"; readonly leaseExpiresAt: string }
-  | { readonly result: "held" | "discovery_grace" | "bound" };
 export interface RunnerJobLedger {
   persistProvisioningIntent(
     value: CreateRunnerProvisioningIntent,
-  ): Promise<"created" | "existing">;
+  ): Promise<ExternalEffectRecord>;
   listProvisioningIntents(
     rolloutId: string,
   ): Promise<readonly RunnerProvisioningIntent[]>;
-  claimProviderCreation(input: {
+  acquireProviderDispatchPermit(input: {
     intentId: string;
     claimantId: string;
     startCommandSha256: string;
-    observedNoMatchAt: string;
+    expectedEpoch: number;
     leaseSeconds: number;
-    discoveryGraceSeconds: number;
-  }): Promise<RunnerProviderCreationClaim>;
-  recordProvisioningOutcome(input: {
+  }): Promise<ExternalEffectRecord>;
+  abandonPreparedEffect(input: {
     intentId: string;
-    jobId: string;
-    outcome:
-      | "bound"
-      | "persistence_failed_cleaned"
-      | "persistence_failed_unknown";
+    claimantId: string;
+    expectedEpoch: number;
+  }): Promise<ExternalEffectRecord>;
+  reconcileProvisioningEffect(input: {
+    intentId: string;
+    claimantId: string;
+    expectedEpoch: number;
+    jobId?: string;
+    reconciliation: ExternalEffectReconciliation;
     observation?: StepObservation;
-  }): Promise<void>;
+  }): Promise<ExternalEffectRecord>;
   persistCreatedJob(value: PersistedRunnerJob): Promise<void>;
   listOpenJobs(rolloutId: string): Promise<readonly PersistedRunnerJob[]>;
   currentRunner(
@@ -198,6 +208,13 @@ function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 }
 
+function cleanupBlockReason(error: unknown): "timeout" | "unknown" {
+  return error instanceof Error &&
+    error.message === "render_runner_cleanup_terminal_timeout"
+    ? "timeout"
+    : "unknown";
+}
+
 export class RenderPrivateRunnerAdapter {
   constructor(
     private readonly ledger: RunnerJobLedger,
@@ -209,6 +226,22 @@ export class RenderPrivateRunnerAdapter {
 
   private client(token: string): RenderApiAdapter {
     return new RenderApiAdapter(token, this.fetchImpl);
+  }
+
+  private reconciliationBoundary(): ExternalEffectReconciliationUseCase {
+    return new ExternalEffectReconciliationUseCase({
+      reconcile: async (value) =>
+        await this.ledger.reconcileProvisioningEffect({
+          intentId: value.effectId,
+          claimantId: value.ownerId,
+          expectedEpoch: value.expectedEpoch,
+          ...(value.providerId ? { jobId: value.providerId } : {}),
+          reconciliation: value.reconciliation,
+          ...(value.evidence
+            ? { observation: value.evidence as StepObservation }
+            : {}),
+        }),
+    });
   }
 
   async provision(input: RenderRunnerRequest): Promise<{
@@ -271,8 +304,7 @@ export class RenderPrivateRunnerAdapter {
     const claimantId = `rrc-${randomUUID()}`;
     const intentCreatedAt = this.now();
     const leaseSeconds = 120;
-    const discoveryGraceSeconds = 120;
-    const intentResult = await this.ledger.persistProvisioningIntent({
+    const prepareInput: CreateRunnerProvisioningIntent = {
       id: provisioningIntentId,
       rolloutId: input.rolloutId,
       serviceId: input.baseServiceId,
@@ -282,16 +314,36 @@ export class RenderPrivateRunnerAdapter {
       createdAt: intentCreatedAt.toISOString(),
       startCommandSha256,
       creationLeaseOwner: claimantId,
+    };
+    const dispatchBoundary = new ExternalEffectDispatchUseCase({
+      prepare: async (value: CreateRunnerProvisioningIntent) =>
+        await this.ledger.persistProvisioningIntent(value),
+      acquireDispatchPermit: async (value) =>
+        await this.ledger.acquireProviderDispatchPermit({
+          intentId: value.effectId,
+          claimantId: value.ownerId,
+          startCommandSha256,
+          expectedEpoch: value.expectedEpoch,
+          leaseSeconds,
+        }),
     });
-    let created: RenderJob;
+    const reconciliationBoundary = this.reconciliationBoundary();
+    const dispatch = await dispatchBoundary.execute({
+      effectId: provisioningIntentId,
+      ownerId: claimantId,
+      prepare: prepareInput,
+      dispatch: async () =>
+        await api.createJob(input.baseServiceId, {
+          startCommand,
+          ...(input.planId ? { planId: input.planId } : {}),
+        }),
+    });
+    const intent = dispatch.record;
+    let created: RenderJob = dispatch.response as RenderJob;
     let bindingRequired = true;
-    let providerCreatedByThisCall = intentResult === "created";
-    if (providerCreatedByThisCall) {
-      created = await api.createJob(input.baseServiceId, {
-        startCommand,
-        ...(input.planId ? { planId: input.planId } : {}),
-      });
-    } else {
+    const providerCreatedByThisCall = dispatch.response !== undefined;
+    let effect = intent;
+    if (!providerCreatedByThisCall) {
       const current = await this.readMatchingCurrent(input, observedProvenance);
       if (current) return current;
       const bound = (await this.ledger.listOpenJobs(input.rolloutId)).filter(
@@ -303,33 +355,29 @@ export class RenderPrivateRunnerAdapter {
         bindingRequired = false;
         created = await api.getJob(input.baseServiceId, bound[0]!.jobId);
       } else {
+        if (effect.state !== ExternalEffectState.Dispatching)
+          throw new Error(`render_runner_effect_${effect.state}`);
         const matching = (await api.listAllJobs(input.baseServiceId)).filter(
           (job) => job.startCommand === startCommand,
         );
-        if (matching.length > 1)
-          throw new Error("render_runner_intent_multiple_provider_jobs");
-        if (matching.length === 1) created = matching[0]!;
-        else {
-          const claim = await this.ledger.claimProviderCreation({
-            intentId: provisioningIntentId,
-            claimantId,
-            startCommandSha256,
-            observedNoMatchAt: this.now().toISOString(),
-            leaseSeconds,
-            discoveryGraceSeconds,
+        if (matching.length !== 1) {
+          const reconciliationResult = await reconciliationBoundary.discover({
+            effectId: provisioningIntentId,
+            ownerId: claimantId,
+            expectedEpoch: effect.epoch,
+            matchingProviderIds: matching.map((job) => job.id),
+            timedOut: false,
           });
-          if (claim.result !== "acquired")
-            throw new Error(
-              claim.result === "bound"
-                ? "render_runner_intent_binding_raced"
-                : "render_runner_intent_reconciliation_pending",
-            );
-          providerCreatedByThisCall = true;
-          created = await api.createJob(input.baseServiceId, {
-            startCommand,
-            ...(input.planId ? { planId: input.planId } : {}),
-          });
+          const reconciliation = reconciliationResult.reconciliation;
+          effect = reconciliationResult.record;
+          throw new Error(
+            reconciliation.result === "blocked" &&
+              reconciliation.reason === "duplicate"
+              ? "render_runner_intent_multiple_provider_jobs"
+              : "render_runner_intent_reconciliation_pending",
+          );
         }
+        created = matching[0]!;
       }
     }
     // This durable write deliberately precedes every post-create validation.
@@ -345,11 +393,15 @@ export class RenderPrivateRunnerAdapter {
           provisioningIntentId,
         });
       bindingRequired = false;
-      await this.ledger.recordProvisioningOutcome({
-        intentId: provisioningIntentId,
-        jobId: created.id,
-        outcome: "bound",
-      });
+      effect = (
+        await reconciliationBoundary.discover({
+          effectId: provisioningIntentId,
+          ownerId: claimantId,
+          expectedEpoch: effect.epoch,
+          matchingProviderIds: [created.id],
+          timedOut: false,
+        })
+      ).record;
     } catch (error) {
       if (!bindingRequired) throw error;
       if (!providerCreatedByThisCall) {
@@ -361,13 +413,16 @@ export class RenderPrivateRunnerAdapter {
             entry.jobId === created.id,
         );
         if (!concurrentlyBound) throw error;
-        await this.ledger.recordProvisioningOutcome({
-          intentId: provisioningIntentId,
-          jobId: created.id,
-          outcome: "bound",
+        await reconciliationBoundary.discover({
+          effectId: provisioningIntentId,
+          ownerId: claimantId,
+          expectedEpoch: effect.epoch,
+          matchingProviderIds: [created.id],
+          timedOut: false,
         });
       } else {
         let observation: StepObservation | undefined;
+        let blockReason: "timeout" | "unknown" = "unknown";
         try {
           observation = await this.observeCleanup({
             api,
@@ -377,15 +432,27 @@ export class RenderPrivateRunnerAdapter {
             lifecycle: input.lifecycle,
             timeoutPolls: 30,
           });
+        } catch (cleanupError) {
+          blockReason = cleanupBlockReason(cleanupError);
+          throw cleanupError;
         } finally {
-          await this.ledger.recordProvisioningOutcome({
-            intentId: provisioningIntentId,
-            jobId: created.id,
-            outcome: observation
-              ? "persistence_failed_cleaned"
-              : "persistence_failed_unknown",
-            ...(observation ? { observation } : {}),
-          });
+          if (observation)
+            await reconciliationBoundary.cleaned({
+              effectId: provisioningIntentId,
+              ownerId: claimantId,
+              expectedEpoch: effect.epoch,
+              providerId: created.id,
+              cleanupProven: true,
+              evidence: observation,
+            });
+          else
+            await reconciliationBoundary.blocked({
+              effectId: provisioningIntentId,
+              ownerId: claimantId,
+              expectedEpoch: effect.epoch,
+              providerId: created.id,
+              reason: blockReason,
+            });
         }
         throw new Error("render_runner_job_persistence_failed", {
           cause: error,
@@ -598,6 +665,7 @@ export class RenderPrivateRunnerAdapter {
   ): Promise<readonly StepObservation[]> {
     const open = await this.ledger.listOpenJobs(rolloutId);
     const intents = await this.ledger.listProvisioningIntents(rolloutId);
+    const reconciliationBoundary = this.reconciliationBoundary();
     const knownJobIds = new Set(open.map((entry) => entry.jobId));
     const discovered: PersistedRunnerJob[] = [];
     for (const intent of intents) {
@@ -626,24 +694,69 @@ export class RenderPrivateRunnerAdapter {
         cursor = page.nextCursor ?? undefined;
       } while (cursor);
     }
+    const cleanableDiscovered: PersistedRunnerJob[] = [];
+    for (const intent of intents) {
+      const matching = discovered.filter(
+        (entry) => entry.provisioningIntentId === intent.id,
+      );
+      if (matching.length > 1) {
+        await reconciliationBoundary.blocked({
+          effectId: intent.id,
+          ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
+          expectedEpoch: intent.effect.epoch,
+          reason: "duplicate",
+        });
+      } else if (
+        matching.length === 0 &&
+        intent.effect.state === ExternalEffectState.Dispatching
+      ) {
+        await reconciliationBoundary.discover({
+          effectId: intent.id,
+          ownerId: intent.effect.ownerId!,
+          expectedEpoch: intent.effect.epoch,
+          matchingProviderIds: [],
+          timedOut: false,
+        });
+      } else {
+        cleanableDiscovered.push(...matching);
+      }
+    }
     const observations: StepObservation[] = [];
-    for (const entry of [...open, ...discovered]) {
-      const observation = await this.observeCleanup({
-        api: this.client(apiKey),
-        baseServiceId: entry.serviceId,
-        jobId: entry.jobId,
-        cleanupCanary: entry.cleanupCanary,
-        lifecycle: entry.lifecycle,
-      });
+    for (const entry of [...open, ...cleanableDiscovered]) {
+      const intent = intents.find(
+        (value) => value.id === entry.provisioningIntentId,
+      );
+      let observation: StepObservation;
+      try {
+        observation = await this.observeCleanup({
+          api: this.client(apiKey),
+          baseServiceId: entry.serviceId,
+          jobId: entry.jobId,
+          cleanupCanary: entry.cleanupCanary,
+          lifecycle: entry.lifecycle,
+        });
+      } catch (error) {
+        if (intent)
+          await reconciliationBoundary.blocked({
+            effectId: intent.id,
+            ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
+            expectedEpoch: intent.effect.epoch,
+            providerId: entry.jobId,
+            reason: cleanupBlockReason(error),
+          });
+        throw error;
+      }
       observations.push(observation);
       if (open.some((known) => known.jobId === entry.jobId))
         await this.ledger.markTerminal(entry.jobId, observation);
       else
-        await this.ledger.recordProvisioningOutcome({
-          intentId: entry.provisioningIntentId,
-          jobId: entry.jobId,
-          outcome: "persistence_failed_cleaned",
-          observation,
+        await reconciliationBoundary.cleaned({
+          effectId: entry.provisioningIntentId,
+          ownerId: intent?.effect.ownerId ?? `rrc-${randomUUID()}`,
+          expectedEpoch: intent?.effect.epoch ?? 0,
+          providerId: entry.jobId,
+          cleanupProven: true,
+          evidence: observation,
         });
     }
     return observations;

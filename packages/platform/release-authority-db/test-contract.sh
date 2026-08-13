@@ -17,6 +17,22 @@ docker cp "$root/packages/platform/release-authority-db/migrations/000001_releas
   "$name:/tmp/migration.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration.sql >/dev/null
 
+# Seed an unresolved v1 effect before the forward migration; it must fail closed.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-legacy', repeat('9',40), '90', 1, '190', '290');
+   INSERT INTO release_authority.runner_intent(
+     intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,start_command_sha256)
+   VALUES ('rri-'||repeat('9',64),'r-legacy','svc-legacy','role','990','rr-legacy',clock_timestamp(),'sha256:'||repeat('9',64));" >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000002_external_effect_protocol/migration.sql" \
+  "$name:/tmp/migration-000002.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000002.sql >/dev/null
+
+legacy_effect=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT effect_state||':'||effect_safe_for_compensation||':'||effect_block_reason||':'||
+    (release_authority.release_runner_effect_snapshot(r)->'reconciliation'->>'result')
+   FROM release_authority.runner_intent r WHERE intent_id='rri-'||repeat('9',64)")
+test "$legacy_effect" = blocked:false:unresolved_legacy:blocked
+
 first=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r1', repeat('a',40), '1', 1, '100', '200')")
 duplicate=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
@@ -75,36 +91,109 @@ test "$duplicate" = duplicate
 test "$authorization" = "$replay"
 test "$state" = activation_authorized:1:true
 
-lease_intent='{"id":"rri-'$(printf 'e%.0s' $(seq 1 64))'","rolloutId":"r1","serviceId":"svc-lease","lifecycle":"role","workflowJobId":"99","runnerName":"rr-lease","createdAt":"'$now'","startCommandSha256":"sha256:'$(printf 'f%.0s' $(seq 1 64))'","creationLeaseOwner":"rrc-00000000-0000-4000-8000-000000000001"}'
-lease_created=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
-  "SELECT release_authority.release_runner_persist_intent('$lease_intent')")
-test "$lease_created" = created
-held_claim=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
-  "SELECT release_authority.release_runner_claim_provider_creation(jsonb_build_object('intentId','rri-'||repeat('e',64),'claimantId','rrc-00000000-0000-4000-8000-000000000002','startCommandSha256','sha256:'||repeat('f',64),'observedNoMatchAt','$now','leaseSeconds',120,'discoveryGraceSeconds',120))->>'result'")
-test "$held_claim" = held
+# Adversarial external-effect state machine: the durable permit is the only POST authority.
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "UPDATE release_authority.runner_intent SET creation_lease_expires_at=clock_timestamp()-interval '1 second' WHERE intent_id='rri-'||repeat('e',64)" >/dev/null
-grace_claim=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
-  "SELECT release_authority.release_runner_claim_provider_creation(jsonb_build_object('intentId','rri-'||repeat('e',64),'claimantId','rrc-00000000-0000-4000-8000-000000000002','startCommandSha256','sha256:'||repeat('f',64),'observedNoMatchAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),'leaseSeconds',120,'discoveryGraceSeconds',120))->>'result'")
-test "$grace_claim" = discovery_grace
+  "SELECT release_authority.release_rollout_claim('r-effect', repeat('e',40), '81', 1, '181', '281')" >/dev/null
+effect_intent='{"id":"rri-'$(printf '2%.0s' $(seq 1 64))'","rolloutId":"r-effect","serviceId":"svc-effect","lifecycle":"role","workflowJobId":"811","runnerName":"rr-effect","createdAt":"'$now'","startCommandSha256":"sha256:'$(printf '3%.0s' $(seq 1 64))'","creationLeaseOwner":"rrc-00000000-0000-4000-8000-000000000011"}'
+prepared_effect=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_prepare_effect('$effect_intent')->>'state'")
+test "$prepared_effect" = prepared
+permit_input_a='{"intentId":"rri-'$(printf '2%.0s' $(seq 1 64))'","claimantId":"rrc-00000000-0000-4000-8000-000000000011","startCommandSha256":"sha256:'$(printf '3%.0s' $(seq 1 64))'","expectedEpoch":0,"leaseSeconds":120}'
+permit_input_b='{"intentId":"rri-'$(printf '2%.0s' $(seq 1 64))'","claimantId":"rrc-00000000-0000-4000-8000-000000000012","startCommandSha256":"sha256:'$(printf '3%.0s' $(seq 1 64))'","expectedEpoch":0,"leaseSeconds":120}'
+permit_a=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (release_authority.release_runner_acquire_dispatch_permit('$permit_input_a')->>'state')||':'||(release_authority.release_runner_acquire_dispatch_permit('$permit_input_a')->>'ownerId')")
+test "$permit_a" = dispatching:rrc-00000000-0000-4000-8000-000000000011
+permit_b=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (release_authority.release_runner_acquire_dispatch_permit('$permit_input_b')->>'state')||':'||(release_authority.release_runner_acquire_dispatch_permit('$permit_input_b')->>'ownerId')")
+test "$permit_b" = dispatching:rrc-00000000-0000-4000-8000-000000000011
+
+# A lost/delayed response remains dispatching; discovery may bind, but no lease can redrive POST.
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+    'jobId','job-effect','rolloutId','r-effect','provisioningIntentId','rri-'||repeat('2',64),
+    'serviceId','svc-effect','observedAt','$now','cleanupCanary','rr-cleanup:r-effect:rr-effect',
+    'lifecycle','role'))" >/dev/null
+bound_effect=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_reconcile_effect(
+    '{\"intentId\":\"rri-$(printf '2%.0s' $(seq 1 64))\",\"claimantId\":\"rrc-00000000-0000-4000-8000-000000000099\",\"expectedEpoch\":1,\"jobId\":\"job-effect\",\"reconciliation\":{\"result\":\"pending\",\"safeForCompensation\":false}}')->>'state'")
+test "$bound_effect" = bound
+clean_effect=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_reconcile_effect(jsonb_build_object(
+    'intentId','rri-'||repeat('2',64),'claimantId','rrc-00000000-0000-4000-8000-000000000099',
+    'expectedEpoch',1,'jobId','job-effect',
+    'reconciliation',jsonb_build_object('result','clean','safeForCompensation',true),
+    'observation',jsonb_build_object('step','cleanup_role_runner',
+      'provider',jsonb_build_object('renderJobId','job-effect'),
+      'facts',jsonb_build_object(
+        'provider',jsonb_build_object('id','job-effect','serviceId','svc-effect','status','succeeded'),
+        'runner',jsonb_build_object('listenerStopped',true,'workspaceRemoved',true,
+          'credentialProcessGone',true,'canary','rr-cleanup:r-effect:rr-effect')))))->>'safeForCompensation'")
+test "$clean_effect" = true
+
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "UPDATE release_authority.runner_intent SET first_no_match_observed_at=clock_timestamp()-interval '121 seconds' WHERE intent_id='rri-'||repeat('e',64)" >/dev/null
-claim_sql_prefix="SELECT release_authority.release_runner_claim_provider_creation(jsonb_build_object('intentId','rri-'||repeat('e',64),'claimantId','"
-claim_sql_suffix="','startCommandSha256','sha256:'||repeat('f',64),'observedNoMatchAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),'leaseSeconds',120,'discoveryGraceSeconds',120))->>'result'"
-docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc "${claim_sql_prefix}rrc-00000000-0000-4000-8000-000000000003${claim_sql_suffix}" >"/tmp/rr-lease-a-$$" &
-claim_pid_a=$!
-docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc "${claim_sql_prefix}rrc-00000000-0000-4000-8000-000000000004${claim_sql_suffix}" >"/tmp/rr-lease-b-$$" &
-claim_pid_b=$!
-wait "$claim_pid_a" "$claim_pid_b"
-claim_results=$(sort "/tmp/rr-lease-a-$$" "/tmp/rr-lease-b-$$" | tr '\n' ' ')
-rm "/tmp/rr-lease-a-$$" "/tmp/rr-lease-b-$$"
-test "$claim_results" = "acquired held "
-bound_without_owner=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
-  "SELECT release_authority.release_runner_record_intent_outcome(jsonb_build_object('intentId','rri-'||repeat('e',64),'jobId','job-discovered','outcome','bound'))")
-test "$bound_without_owner" = t
-lease_cleared=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT (creation_lease_owner IS NULL AND creation_lease_expires_at IS NULL)::text FROM release_authority.runner_intent WHERE intent_id='rri-'||repeat('e',64)")
-test "$lease_cleared" = true
+  "DO \$\$
+   DECLARE base jsonb; snapshot jsonb;
+   BEGIN
+     PERFORM release_authority.release_rollout_claim('r-before',repeat('b',40),'82',1,'182','282');
+     base := jsonb_build_object('id','rri-'||repeat('4',64),'rolloutId','r-before',
+       'serviceId','svc-before','lifecycle','role','workflowJobId','821','runnerName','rr-before',
+       'createdAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
+       'startCommandSha256','sha256:'||repeat('5',64),
+       'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000021');
+     PERFORM release_authority.release_runner_prepare_effect(base);
+     UPDATE release_authority.runner_intent SET effect_lease_expires_at=clock_timestamp()-interval '1 second'
+       WHERE intent_id='rri-'||repeat('4',64);
+     base := jsonb_set(base,'{creationLeaseOwner}','\"rrc-00000000-0000-4000-8000-000000000022\"');
+     snapshot := release_authority.release_runner_prepare_effect(base);
+     IF snapshot->>'state' <> 'prepared' OR snapshot->>'ownerId' <> 'rrc-00000000-0000-4000-8000-000000000022'
+       THEN RAISE EXCEPTION 'crash-before-permit prepared lease did not redrive'; END IF;
+     snapshot := release_authority.release_runner_acquire_dispatch_permit(jsonb_build_object(
+       'intentId','rri-'||repeat('4',64),'claimantId','rrc-00000000-0000-4000-8000-000000000022',
+       'startCommandSha256','sha256:'||repeat('5',64),'expectedEpoch',0,'leaseSeconds',120));
+     IF snapshot->>'state' <> 'dispatching' OR (snapshot->>'epoch')::integer <> 1
+       THEN RAISE EXCEPTION 'crash-before-permit redrive was not permitted'; END IF;
+
+     PERFORM release_authority.release_rollout_claim('r-duplicate',repeat('c',40),'83',1,'183','283');
+     base := jsonb_build_object('id','rri-'||repeat('6',64),'rolloutId','r-duplicate',
+       'serviceId','svc-duplicate','lifecycle','role','workflowJobId','831','runnerName','rr-duplicate',
+       'createdAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
+       'startCommandSha256','sha256:'||repeat('7',64),
+       'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000031');
+     PERFORM release_authority.release_runner_prepare_effect(base);
+     PERFORM release_authority.release_runner_acquire_dispatch_permit(jsonb_build_object(
+       'intentId','rri-'||repeat('6',64),'claimantId','rrc-00000000-0000-4000-8000-000000000031',
+       'startCommandSha256','sha256:'||repeat('7',64),'expectedEpoch',0,'leaseSeconds',120));
+     snapshot := release_authority.release_runner_reconcile_effect(jsonb_build_object(
+       'intentId','rri-'||repeat('6',64),'claimantId','rrc-00000000-0000-4000-8000-000000000031',
+       'expectedEpoch',1,'reconciliation',jsonb_build_object('result','blocked','safeForCompensation',false,'reason','duplicate')));
+     IF snapshot->>'state' <> 'blocked' OR (snapshot->>'safeForCompensation')::boolean
+       THEN RAISE EXCEPTION 'duplicate effect was not blocked unsafe'; END IF;
+
+     PERFORM release_authority.release_rollout_claim('r-timeout',repeat('d',40),'84',1,'184','284');
+     base := jsonb_build_object('id','rri-'||repeat('8',64),'rolloutId','r-timeout',
+       'serviceId','svc-timeout','lifecycle','role','workflowJobId','841','runnerName','rr-timeout',
+       'createdAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
+       'startCommandSha256','sha256:'||repeat('a',64),
+       'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000041');
+     PERFORM release_authority.release_runner_prepare_effect(base);
+     PERFORM release_authority.release_runner_acquire_dispatch_permit(jsonb_build_object(
+       'intentId','rri-'||repeat('8',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
+       'startCommandSha256','sha256:'||repeat('a',64),'expectedEpoch',0,'leaseSeconds',120));
+     UPDATE release_authority.runner_intent SET effect_discovery_deadline=clock_timestamp()-interval '1 second'
+       WHERE intent_id='rri-'||repeat('8',64);
+     snapshot := release_authority.release_runner_reconcile_effect(jsonb_build_object(
+       'intentId','rri-'||repeat('8',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
+       'expectedEpoch',1,'reconciliation',jsonb_build_object('result','pending','safeForCompensation',false)));
+     IF snapshot->>'state' <> 'blocked' OR (snapshot->>'safeForCompensation')::boolean
+       THEN RAISE EXCEPTION 'discovery timeout was not blocked unsafe'; END IF;
+   END \$\$;" >/dev/null
+
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_claim_provider_creation('{}')" >/dev/null 2>&1; then
+  echo "legacy provider creation authority unexpectedly remained executable" >&2
+  exit 1
+fi
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r-order', repeat('d',40), '4', 1, '103', '203')" >/dev/null
