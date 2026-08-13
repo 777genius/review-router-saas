@@ -8,6 +8,7 @@ import {
   RenderProviderFreezeAdapter,
   type RunnerIdentity,
   type RunnerReconciliationReport,
+  type ReleaseRollout,
 } from "../packages/features/release-rollout/src/index";
 import { parseFreezeSourceWriterServiceIds } from "./release-rollout-render-control-config";
 
@@ -151,12 +152,53 @@ export const resolveWorkflowJobId = async (
 };
 
 if (mode === "freeze") {
+  const rollout = JSON.parse(
+    readFileSync(required("REVIEW_ROUTER_INITIAL_ROLLOUT_FILE"), "utf8"),
+  ) as ReleaseRollout;
+  const ledger = new AuthenticatedRunnerLedgerAdapter(
+    required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
+    required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
+  );
+  const sourceWriterServiceIds = parseFreezeSourceWriterServiceIds(
+    required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
+  );
   const observation = await new RenderProviderFreezeAdapter().freezeAndObserve({
     apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
     ownerId: required("RENDER_OWNER_ID"),
-    sourceWriterServiceIds: parseFreezeSourceWriterServiceIds(
-      required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
-    ),
+    sourceWriterServiceIds,
+    prepareMutation: async (evidence) =>
+      await ledger.prepareSourceFreezeMutation({
+        rolloutId: rollout.rolloutId,
+        expectedCommitSha: rollout.expectedCommitSha,
+        runId: rollout.execution.runId,
+        runAttempt: rollout.execution.runAttempt,
+        sourceSystemIdentifier: rollout.source.systemIdentifier,
+        targetSystemIdentifier: rollout.target.systemIdentifier,
+        declaredServiceIds: sourceWriterServiceIds,
+        ...evidence,
+      }),
+    recordMutation: async (evidence) => {
+      await ledger.recordSourceFreezeMutation({
+        rolloutId: rollout.rolloutId,
+        expectedCommitSha: rollout.expectedCommitSha,
+        runId: rollout.execution.runId,
+        runAttempt: rollout.execution.runAttempt,
+        sourceSystemIdentifier: rollout.source.systemIdentifier,
+        targetSystemIdentifier: rollout.target.systemIdentifier,
+        declaredServiceIds: sourceWriterServiceIds,
+        ...evidence,
+      });
+    },
+  });
+  await ledger.completeSourceFreeze({
+    rolloutId: rollout.rolloutId,
+    expectedCommitSha: rollout.expectedCommitSha,
+    runId: rollout.execution.runId,
+    runAttempt: rollout.execution.runAttempt,
+    sourceSystemIdentifier: rollout.source.systemIdentifier,
+    targetSystemIdentifier: rollout.target.systemIdentifier,
+    declaredServiceIds: sourceWriterServiceIds,
+    observedAt: observation.observedAt,
   });
   output({
     observation: Buffer.from(JSON.stringify(observation)).toString("base64url"),

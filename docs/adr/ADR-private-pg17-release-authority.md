@@ -39,7 +39,13 @@ evidence.
   cleanup observations.
 
 Their database roles have routine-only grants and no direct table access.
-Tokens, logins, services, and URLs are distinct.
+The HTTP boundary has exactly three distinct bearer credentials: release
+control, provider authority, and release witness. Their canonical stored hashes
+are `REVIEW_ROUTER_RELEASE_CONTROL_TOKEN_SHA256`,
+`REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256`, and
+`REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256`. Tokens, logins, services, and
+control/witness URLs are distinct; runner-ledger and runner-witness names are
+adapter-local inputs, not additional deployment variables or credentials.
 
 ### Target-local one-shot permit
 
@@ -57,8 +63,9 @@ Activation locks and validates the permit against rollout ID, source/target
 system identifiers, PostgreSQL major, expected commit, migration checksum,
 target deploy IDs, epoch, nonce, and current target catalog facts. One
 transaction grants canonical runtime privileges, crosses the first-write
-boundary, writes an immutable receipt, and consumes the permit. Replay returns
-the matching receipt; torn consumption fails closed.
+boundary, writes an immutable receipt, and consumes the permit. A byte-identical
+activation request replay is implemented as an idempotent read of that same
+matching receipt; any conflicting replay or torn consumption fails closed.
 
 ### Provider authority and compensation
 
@@ -73,6 +80,15 @@ permanently ineligible. An ambiguous activation becomes
 `activation_uncertain`: do not compensate, resume either side, rerun
 activation, or start another rollout until authority state and target receipt
 are reconciled.
+
+Source freeze is a sequential external effect. Each required running-to-
+suspended transition has an immutable authority intent before the provider
+call and an immutable completion before the next service is attempted. An
+unpaired intent is unknown and blocks compensation. Compensation derives its
+resume set solely from paired observations. The database transition to
+compensation requires at least one such pair and safe runner-effect state; an
+authority-backed complete inventory with no mutations and no runner intents is
+handled as a no-op.
 
 ### Prohibitions
 

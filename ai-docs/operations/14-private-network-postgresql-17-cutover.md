@@ -26,6 +26,16 @@ The protected `main` workflow is dispatch-only and rejects run attempts other
 than one. `production-release-preflight` must require at least one reviewer,
 prevent self-review, and allow protected branches only. Preflight reads and
 hashes the observed GitHub policy; a variable claiming the policy is not proof.
+Every dispatch also supplies the immutable release workflow run ID and hosted
+runtime identity artifact ID. Before rollout claim or any provider/database
+mutation, preflight downloads that exact artifact, verifies its GitHub artifact
+attestation was issued by this repository's protected release workflow on
+`refs/heads/main`, and requires the release run, artifact metadata, identity
+repository, identity commit, OCI digest, and immutable image URL all to bind the
+exact `expected_sha`. A stale digest variable is not an input and cannot select
+the deployed image. Missing, expired, foreign, stale, or contradictory release
+evidence fails closed. The verified binding is carried through every phase and
+included in the final trusted rollout evidence.
 The `workflow_job` controller observes the numeric queued job ID, exact name,
 run/attempt, SHA, actor, workflow path/ref, event, organization, and repository
 before it creates a JIT runner.
@@ -96,11 +106,19 @@ Missing, unavailable, stale, duplicate, or contradictory ledger responses stop
 the rollout. Do not bypass this dependency with artifacts, labels, or in-memory
 state.
 
-The dedicated authority is installed in order from
-`000001_release_authority`, `000002_external_effect_protocol`, and
-`000002_transactional_service_transition`. The disposable PG16 to PG17
-rehearsal and the dedicated authority contract must both execute that complete
-inventory before a release is eligible for production.
+The dedicated authority's canonical migration chain is, in order:
+`000001_release_authority`, `000002_external_effect_protocol`,
+`000002_transactional_service_transition`, `000003_partial_source_freeze`,
+`000004_selective_source_recovery`, `000005_late_runner_effects`,
+`000006_runner_provider_creation_boundary`,
+`000007_compensation_effect_fence`, `000008_trigger_helper_acl`,
+`000009_authority_history_and_forward_repairs`, and
+`000010_recovery_effect_permits`. The final five migrations bind provider
+creation time, recheck late effects at every compensation boundary, remove the
+remaining public trigger-helper grant, establish an immutable migration
+history, and fence every recovery effect with a single-use permit.
+The disposable PG16 to PG17 rehearsal and dedicated authority contract must
+execute this complete inventory before a release is eligible for production.
 
 The hosted runner controller receives the plaintext witness credential as
 `REVIEW_ROUTER_RUNNER_WITNESS_TOKEN`; the runner container never receives it.
@@ -168,7 +186,10 @@ allowlisted environment; errors expose only a step/command code.
 
 The source sequence is mandatory:
 
-1. suspend every source writer and re-observe every service suspended;
+1. inspect every source writer sequentially, durably prepare an authority
+   mutation intent before each required suspend call, re-observe it suspended,
+   persist an immutable completion observation, and finally persist the
+   complete inspected inventory;
 2. revoke `CONNECT` from PUBLIC and runtime roles and commit it;
 3. terminate existing sessions;
 4. observe at least three bounded zero-session samples;
@@ -176,9 +197,16 @@ The source sequence is mandatory:
    before revocation, then require the exact database CONNECT
    permission-denied class from that same credential/system.
 
-`writersSuspended` is never synthesized. A definite failure before activation
-enters compensation: source ACL/environment is restored and source writers are
-resumed and re-observed. An accepted or uncertain activation permanently bans
+`writersSuspended` is never synthesized. If freeze stops part-way, the durable
+intent/completion observations—not the adapter process—name the exact mutated
+subset. An unresolved intent is an unknown provider effect and denies
+compensation. A definite
+failure before activation enters compensation only after the database gate
+proves that subset and runner external effects are safe; source ACL/environment
+is restored and exactly that subset is resumed and re-observed. Zero runner
+intents are safe only with partial/complete mutation evidence. A completed
+freeze receipt proving no source mutation is a no-op; absent evidence is
+unknown and remains denied. An accepted or uncertain activation permanently bans
 PG16 promotion and allows only PG17 forward repair/PITR.
 
 Equivalence is restricted to `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, streams
@@ -214,8 +242,9 @@ The always-running reconciliation job cleans every persisted orphan. The
 completed-run controller redrives durable discovery and cleanup with bounded
 exponential backoff until it emits `clean` or an explicit `blocked` result; it
 does not redrive provider creation. Every reconciliation artifact includes
-`safeForCompensation`. That value is true only when nonempty durable intent
-evidence proves every intent `cleaned` or `abandoned`. Pending discovery, a
+`safeForCompensation`. That value is true when durable intent evidence proves
+every existing intent `cleaned` or `abandoned`; zero intents are accepted only
+when authority-owned freeze evidence proves a source mutation. Pending discovery, a
 timeout, duplicate provider jobs, unknown/legacy state, partial cleanup, or
 missing evidence leaves it false. The compensation application gate re-reads
 those durable facts immediately before beginning or replaying compensation and
@@ -234,7 +263,7 @@ lifecycles, and no remaining Docker resources.
 
 External prerequisites are intentionally blockers, not defaults: dedicated
 control repository, exact restricted runner group, protected environments,
-three Render credentials, root-owned App key secret file, immutable runner
+four Render credentials, root-owned App key secret file, immutable runner
 service provenance, authenticated backup/export witness, and the durable ledger
 API backed by the installed PostgreSQL schema. Until each is independently
 observed, this implementation is not dispatchable and production remains

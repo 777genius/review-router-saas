@@ -1,4 +1,13 @@
 import { createHash } from "node:crypto";
+import type { ProviderStateWitness } from "./ports";
+import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
+import type { RecoveryEffectAuthorityPort } from "./recovery-effect-protocol";
+import { RecoveryEffectProtocol } from "./recovery-effect-protocol";
+import {
+  RecoveryEffectKind,
+  RecoveryEffectState,
+  type RecoveryEffectRecord,
+} from "../domain/recovery-effect";
 
 const sha256 = (value: unknown): string =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
@@ -95,7 +104,7 @@ export type ServiceTransitionCheckpoint = Readonly<{
   intentAt?: string;
 }>;
 
-export interface ServiceTransitionLedger {
+export interface ServiceTransitionLedger extends RecoveryEffectAuthorityPort {
   begin(input: {
     rolloutId: string;
     manifestSha256: string;
@@ -370,10 +379,16 @@ export function validateServiceTransitionContracts(
 }
 
 export class TransactionalServiceCutover {
+  private readonly recoveryEffects: RecoveryEffectProtocol;
   constructor(
     private readonly ledger: ServiceTransitionLedger,
     private readonly provider: TransactionalRenderProvider,
-  ) {}
+    private readonly recoveryOwnerId: string,
+  ) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/u.test(recoveryOwnerId))
+      throw new Error("service_transition_recovery_owner_invalid");
+    this.recoveryEffects = new RecoveryEffectProtocol(ledger);
+  }
 
   async stage(input: {
     source: SourceRecoveryManifest;
@@ -400,8 +415,7 @@ export class TransactionalServiceCutover {
     )
       throw new Error("service_transition_foreign_checkpoint");
     if (existing.length > 0) {
-      await this.recover({ ...input, targetContractSha256 });
-      throw new Error("service_transition_interrupted_source_recovered");
+      throw new Error("service_transition_interrupted_recovery_required");
     }
     for (const service of input.source.services) {
       const observed = await this.provider.observe(service.serviceId);
@@ -415,96 +429,78 @@ export class TransactionalServiceCutover {
         throw new Error("service_transition_source_preflight_mismatch");
     }
     const deployIds: string[] = [];
-    try {
-      const transition = await this.ledger.begin({
-        ...common,
-        serviceIds: input.source.services.map((item) => item.serviceId),
-        sourceManifest: input.source,
-        targetContracts: input.target.map((item) => ({
-          serviceId: item.serviceId,
-          imageUrl: item.imageUrl,
-          removeKeys: item.removeKeys,
-          environmentSha256: item.environmentSha256,
-          serviceContractSha256: item.serviceContractSha256,
-        })),
+    const transition = await this.ledger.begin({
+      ...common,
+      serviceIds: input.source.services.map((item) => item.serviceId),
+      sourceManifest: input.source,
+      targetContracts: input.target.map((item) => ({
+        serviceId: item.serviceId,
+        imageUrl: item.imageUrl,
+        removeKeys: item.removeKeys,
+        environmentSha256: item.environmentSha256,
+        serviceContractSha256: item.serviceContractSha256,
+      })),
+    });
+    if (transition === "existing")
+      throw new Error("service_transition_concurrent_or_interrupted");
+    for (const contract of input.target) {
+      await this.checkpoint(common, contract.serviceId, "suspend_intent");
+      await this.provider.suspend(contract.serviceId);
+      await this.checkpoint(common, contract.serviceId, "suspended");
+      await this.checkpoint(common, contract.serviceId, "target_config_intent");
+      await this.provider.configureTarget(contract);
+      await this.checkpoint(common, contract.serviceId, "target_configured");
+      await this.checkpoint(common, contract.serviceId, "target_env_intent");
+      const source = input.source.services.find(
+        (item) => item.serviceId === contract.serviceId,
+      )!;
+      const envHash = await this.provider.replaceEnvironment(
+        contract.serviceId,
+        {
+          set: contract.environmentDelta,
+          remove: contract.removeKeys,
+          expectedBeforeSha256: source.sourceEnvSha256,
+        },
+      );
+      if (envHash !== contract.environmentSha256)
+        throw new Error("service_transition_target_env_mismatch");
+      await this.checkpoint(common, contract.serviceId, "target_env_applied", {
+        observedEnvSha256: envHash,
       });
-      if (transition === "existing")
-        throw new Error("service_transition_concurrent_or_interrupted");
-      for (const contract of input.target) {
-        await this.checkpoint(common, contract.serviceId, "suspend_intent");
-        await this.provider.suspend(contract.serviceId);
-        await this.checkpoint(common, contract.serviceId, "suspended");
-        await this.checkpoint(
-          common,
-          contract.serviceId,
-          "target_config_intent",
-        );
-        await this.provider.configureTarget(contract);
-        await this.checkpoint(common, contract.serviceId, "target_configured");
-        await this.checkpoint(common, contract.serviceId, "target_env_intent");
-        const source = input.source.services.find(
-          (item) => item.serviceId === contract.serviceId,
-        )!;
-        const envHash = await this.provider.replaceEnvironment(
-          contract.serviceId,
-          {
-            set: contract.environmentDelta,
-            remove: contract.removeKeys,
-            expectedBeforeSha256: source.sourceEnvSha256,
-          },
-        );
-        if (envHash !== contract.environmentSha256)
-          throw new Error("service_transition_target_env_mismatch");
-        await this.checkpoint(
-          common,
-          contract.serviceId,
-          "target_env_applied",
-          {
-            observedEnvSha256: envHash,
-          },
-        );
-        await this.checkpoint(
-          common,
-          contract.serviceId,
-          "target_deploy_intent",
-        );
-        const deployId = await this.provider.deployImage(
-          contract.serviceId,
-          contract.imageUrl,
-        );
-        await this.provider.waitForDeploy(contract.serviceId, deployId, {
-          kind: "image",
-          imageUrl: contract.imageUrl,
-        });
-        await this.checkpoint(common, contract.serviceId, "target_deployed", {
-          deployId,
-        });
-        const observed = await this.provider.observe(contract.serviceId);
-        if (
-          !observed.suspended ||
-          observed.environmentSha256 !== contract.environmentSha256 ||
-          observed.serviceContractSha256 !== contract.serviceContractSha256 ||
-          observed.provenance.kind !== "image" ||
-          observed.provenance.imageUrl !== contract.imageUrl ||
-          observed.provenance.deployId !== deployId
-        )
-          throw new Error("service_transition_target_verification_failed");
-        await this.checkpoint(common, contract.serviceId, "target_verified", {
-          deployId,
-          observedContractSha256: observed.serviceContractSha256,
-          observedEnvSha256: observed.environmentSha256,
-        });
-        deployIds.push(deployId);
-      }
-      await this.ledger.complete({
-        rolloutId: input.source.rolloutId,
-        outcome: "target_staged",
+      await this.checkpoint(common, contract.serviceId, "target_deploy_intent");
+      const deployId = await this.provider.deployImage(
+        contract.serviceId,
+        contract.imageUrl,
+      );
+      await this.provider.waitForDeploy(contract.serviceId, deployId, {
+        kind: "image",
+        imageUrl: contract.imageUrl,
       });
-      return Object.freeze(deployIds);
-    } catch (error) {
-      await this.recover({ ...input, targetContractSha256 });
-      throw error;
+      await this.checkpoint(common, contract.serviceId, "target_deployed", {
+        deployId,
+      });
+      const observed = await this.provider.observe(contract.serviceId);
+      if (
+        !observed.suspended ||
+        observed.environmentSha256 !== contract.environmentSha256 ||
+        observed.serviceContractSha256 !== contract.serviceContractSha256 ||
+        observed.provenance.kind !== "image" ||
+        observed.provenance.imageUrl !== contract.imageUrl ||
+        observed.provenance.deployId !== deployId
+      )
+        throw new Error("service_transition_target_verification_failed");
+      await this.checkpoint(common, contract.serviceId, "target_verified", {
+        deployId,
+        observedContractSha256: observed.serviceContractSha256,
+        observedEnvSha256: observed.environmentSha256,
+      });
+      deployIds.push(deployId);
     }
+    await this.ledger.complete({
+      rolloutId: input.source.rolloutId,
+      outcome: "target_staged",
+    });
+    return Object.freeze(deployIds);
   }
 
   async recover(input: {
@@ -557,25 +553,68 @@ export class TransactionalServiceCutover {
         contract.serviceId,
         "restore_config_intent",
       );
-      await this.provider.configureSource(contract);
+      await this.requireCompletedRecoveryEffect(
+        await this.recoveryEffects.execute({
+          rolloutId: input.source.rolloutId,
+          effectKey: `restore_service_config:${contract.serviceId}`,
+          kind: RecoveryEffectKind.RestoreServiceConfig,
+          serviceId: contract.serviceId,
+          ownerId: this.recoveryOwnerId,
+          effect: async () => {
+            await this.provider.configureSource(contract);
+            return this.provider.observe(contract.serviceId);
+          },
+          reconcileConsumed: async () => {
+            const observed = await this.provider.observe(contract.serviceId);
+            return observed.suspended &&
+              observed.serviceContractSha256 === contract.serviceContractSha256
+              ? observed
+              : null;
+          },
+          observe: async (observed) => ({
+            serviceId: contract.serviceId,
+            serviceContractSha256: observed.serviceContractSha256,
+            suspended: observed.suspended,
+          }),
+        }),
+      );
       await this.checkpoint(
         common,
         contract.serviceId,
         "source_config_restored",
       );
       await this.checkpoint(common, contract.serviceId, "restore_env_intent");
-      const envHash =
-        beforeRestore.environmentSha256 === contract.sourceEnvSha256
-          ? contract.sourceEnvSha256
-          : await this.provider.replaceEnvironment(contract.serviceId, {
-              set: sourceEnv,
-              remove: [
-                "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
-                "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
-                "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
-              ],
-              expectedBeforeSha256: target.environmentSha256,
-            });
+      const envEffect = await this.recoveryEffects.execute({
+        rolloutId: input.source.rolloutId,
+        effectKey: `restore_service_environment:${contract.serviceId}`,
+        kind: RecoveryEffectKind.RestoreServiceEnvironment,
+        serviceId: contract.serviceId,
+        ownerId: this.recoveryOwnerId,
+        effect: async () =>
+          beforeRestore.environmentSha256 === contract.sourceEnvSha256
+            ? contract.sourceEnvSha256
+            : await this.provider.replaceEnvironment(contract.serviceId, {
+                set: sourceEnv,
+                remove: [
+                  "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
+                  "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
+                  "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+                ],
+                expectedBeforeSha256: target.environmentSha256,
+              }),
+        reconcileConsumed: async () => {
+          const observed = await this.provider.observe(contract.serviceId);
+          return observed.environmentSha256 === contract.sourceEnvSha256
+            ? observed.environmentSha256
+            : null;
+        },
+        observe: async (environmentSha256) => ({
+          serviceId: contract.serviceId,
+          environmentSha256,
+        }),
+      });
+      await this.requireCompletedRecoveryEffect(envEffect);
+      const envHash = contract.sourceEnvSha256;
       if (envHash !== contract.sourceEnvSha256)
         throw new Error("service_transition_source_env_restore_failed");
       await this.checkpoint(common, contract.serviceId, "source_env_restored", {
@@ -603,21 +642,50 @@ export class TransactionalServiceCutover {
             item.serviceId === contract.serviceId &&
             item.step === "source_deployed",
         )?.deployId;
-      const deployId =
-        persistedDeploy ??
-        (await this.provider.reconcileCommitDeploy({
+      const deployEffect = await this.recoveryEffects.execute({
+        rolloutId: input.source.rolloutId,
+        effectKey: `restore_service_deploy:${contract.serviceId}`,
+        kind: RecoveryEffectKind.RestoreServiceDeploy,
+        serviceId: contract.serviceId,
+        ownerId: this.recoveryOwnerId,
+        effect: async () => {
+          const deployId =
+            persistedDeploy ??
+            (await this.provider.reconcileCommitDeploy({
+              serviceId: contract.serviceId,
+              commitSha: contract.sourceCommitSha,
+              intentAt: persistedIntentAt ?? restoreIntentAt,
+            })) ??
+            (await this.provider.deployCommit(
+              contract.serviceId,
+              contract.sourceCommitSha,
+            ));
+          await this.provider.waitForDeploy(contract.serviceId, deployId, {
+            kind: "git",
+            commitSha: contract.sourceCommitSha,
+          });
+          return deployId;
+        },
+        reconcileConsumed: async () => {
+          const deployId = await this.provider.reconcileCommitDeploy({
+            serviceId: contract.serviceId,
+            commitSha: contract.sourceCommitSha,
+            intentAt: persistedIntentAt ?? restoreIntentAt,
+          });
+          if (!deployId) return null;
+          await this.provider.waitForDeploy(contract.serviceId, deployId, {
+            kind: "git",
+            commitSha: contract.sourceCommitSha,
+          });
+          return deployId;
+        },
+        observe: async (deployId) => ({
           serviceId: contract.serviceId,
-          commitSha: contract.sourceCommitSha,
-          intentAt: persistedIntentAt ?? restoreIntentAt,
-        })) ??
-        (await this.provider.deployCommit(
-          contract.serviceId,
-          contract.sourceCommitSha,
-        ));
-      await this.provider.waitForDeploy(contract.serviceId, deployId, {
-        kind: "git",
-        commitSha: contract.sourceCommitSha,
+          deployId,
+        }),
       });
+      await this.requireCompletedRecoveryEffect(deployEffect);
+      const deployId = this.deployIdFromRecoveryEffect(deployEffect);
       await this.checkpoint(common, contract.serviceId, "source_deployed", {
         deployId,
       });
@@ -642,8 +710,10 @@ export class TransactionalServiceCutover {
     source: SourceRecoveryManifest;
     protectedEnvironment: ProtectedSourceEnvironment;
     target: readonly TargetServiceContract[];
+    /** Exact authority-ledger IDs durably observed suspended by this rollout. */
+    sourceWriterServiceIds: readonly string[];
     restoreSourceWritesAndVerify: () => Promise<void>;
-  }): Promise<void> {
+  }): Promise<ProviderStateWitness> {
     const targetContractSha256 = validateServiceTransitionContracts(
       input.source,
       input.protectedEnvironment,
@@ -654,25 +724,82 @@ export class TransactionalServiceCutover {
       manifestSha256: input.source.manifestSha256,
       targetContractSha256,
     };
+    if (
+      !sourceWriterServiceIdsAreValid(input.sourceWriterServiceIds) ||
+      input.sourceWriterServiceIds.some(
+        (serviceId) =>
+          !input.source.services.some(
+            (service) => service.serviceId === serviceId,
+          ),
+      )
+    )
+      throw new Error("service_transition_recovery_scope_mismatch");
     const checkpoints = await this.ledger.read(input.source.rolloutId);
+    const verifiedDeployIds = new Map<string, string>();
     for (const service of input.source.services) {
-      if (
-        !checkpoints.some(
+      const verified = [...checkpoints]
+        .reverse()
+        .find(
           (item) =>
             item.serviceId === service.serviceId &&
             item.step === "source_verified",
-        )
-      )
+        );
+      if (!verified)
         throw new Error("service_transition_source_restore_checkpoint_missing");
+      if (verified.deployId)
+        verifiedDeployIds.set(service.serviceId, verified.deployId);
     }
-    await input.restoreSourceWritesAndVerify();
+    for (const serviceId of input.sourceWriterServiceIds)
+      if (!verifiedDeployIds.has(serviceId))
+        throw new Error("service_transition_source_deploy_checkpoint_missing");
+    await this.requireCompletedRecoveryEffect(
+      await this.recoveryEffects.execute({
+        rolloutId: input.source.rolloutId,
+        effectKey: "restore_database_writes",
+        kind: RecoveryEffectKind.RestoreDatabaseWrites,
+        ownerId: this.recoveryOwnerId,
+        effect: async () => {
+          await input.restoreSourceWritesAndVerify();
+          return { sourceWritesRestored: true as const };
+        },
+        observe: async (value) => ({
+          ...value,
+          observedAt: new Date().toISOString(),
+        }),
+      }),
+    );
     await this.checkpoint(
       common,
       input.source.services[0]!.serviceId,
       "source_acl_restored",
     );
-    for (const service of input.source.services) {
-      await this.provider.resume(service.serviceId);
+    const deployIds: string[] = [];
+    for (const serviceId of input.sourceWriterServiceIds) {
+      const service = input.source.services.find(
+        (candidate) => candidate.serviceId === serviceId,
+      )!;
+      const resumeEffect = await this.recoveryEffects.execute({
+        rolloutId: input.source.rolloutId,
+        effectKey: `resume_source_service:${service.serviceId}`,
+        kind: RecoveryEffectKind.ResumeSourceService,
+        serviceId: service.serviceId,
+        ownerId: this.recoveryOwnerId,
+        effect: async () => {
+          await this.provider.resume(service.serviceId);
+          return this.provider.observe(service.serviceId);
+        },
+        reconcileConsumed: async () => {
+          const observed = await this.provider.observe(service.serviceId);
+          return observed.suspended ? null : observed;
+        },
+        observe: async (observed) => ({
+          serviceId: service.serviceId,
+          resumed: !observed.suspended,
+          serviceContractSha256: observed.serviceContractSha256,
+          environmentSha256: observed.environmentSha256,
+        }),
+      });
+      await this.requireCompletedRecoveryEffect(resumeEffect);
       const observed = await this.provider.observe(service.serviceId);
       if (
         observed.suspended ||
@@ -683,10 +810,17 @@ export class TransactionalServiceCutover {
       )
         throw new Error("service_transition_source_resume_unproven");
       await this.checkpoint(common, service.serviceId, "source_resumed");
+      deployIds.push(verifiedDeployIds.get(service.serviceId)!);
     }
     await this.ledger.complete({
       rolloutId: input.source.rolloutId,
       outcome: "source_recovered",
+    });
+    return Object.freeze({
+      serviceIds: Object.freeze([...input.sourceWriterServiceIds]),
+      deployIds: Object.freeze(deployIds),
+      observedAt: new Date().toISOString(),
+      resumed: true as const,
     });
   }
 
@@ -701,5 +835,25 @@ export class TransactionalServiceCutover {
     facts: Partial<ServiceTransitionCheckpoint> = {},
   ): Promise<void> {
     await this.ledger.append({ ...common, serviceId, step, ...facts });
+  }
+
+  private async requireCompletedRecoveryEffect(
+    record: RecoveryEffectRecord,
+  ): Promise<void> {
+    if (record.state === RecoveryEffectState.ForwardRepair)
+      throw new Error("service_transition_recovery_forward_repair_required");
+    if (record.state !== RecoveryEffectState.Completed)
+      throw new Error("service_transition_recovery_effect_ambiguous");
+  }
+
+  private deployIdFromRecoveryEffect(record: RecoveryEffectRecord): string {
+    const observation = record.observation as { deployId?: unknown } | null;
+    if (
+      !observation ||
+      typeof observation.deployId !== "string" ||
+      !observation.deployId
+    )
+      throw new Error("service_transition_source_deploy_observation_missing");
+    return observation.deployId;
   }
 }

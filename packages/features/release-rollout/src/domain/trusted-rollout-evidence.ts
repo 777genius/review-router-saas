@@ -8,6 +8,10 @@ import {
   type RunnerIdentity,
   type StepReceipt,
 } from "./release-rollout";
+import {
+  assertVerifiedReleaseImageProvenance,
+  type VerifiedReleaseImageProvenance,
+} from "./release-image-provenance";
 
 export interface BackupIdentity {
   readonly renderResourceId: string;
@@ -99,9 +103,15 @@ export interface LegacyReconciliationEvidence {
   readonly status: "reconciled";
 }
 export interface TrustedRolloutEvidence {
-  readonly schemaVersion: 3;
+  readonly schemaVersion: 5;
   readonly rolloutId: string;
   readonly releaseCommitSha: string;
+  readonly releaseImageProvenance: VerifiedReleaseImageProvenance;
+  readonly targetDeploys: readonly {
+    readonly serviceId: string;
+    readonly deployId: string;
+    readonly imageDigest: string;
+  }[];
   readonly execution: ReleaseExecutionIdentity;
   readonly runners: readonly [RunnerIdentity, RunnerIdentity];
   readonly source: DatabaseGenerationIdentity;
@@ -136,7 +146,7 @@ const exact = (value: object, keys: readonly string[]): boolean =>
 export function assembleTrustedRolloutEvidence(
   value: Omit<TrustedRolloutEvidence, "schemaVersion" | "evidenceSha256">,
 ): TrustedRolloutEvidence {
-  const unsigned = Object.freeze({ ...value, schemaVersion: 3 as const });
+  const unsigned = Object.freeze({ ...value, schemaVersion: 5 as const });
   const evidence = Object.freeze({
     ...unsigned,
     evidenceSha256: `sha256:${sha256Canonical(unsigned)}`,
@@ -152,6 +162,8 @@ export function assertTrustedRolloutEvidence(
       "schemaVersion",
       "rolloutId",
       "releaseCommitSha",
+      "releaseImageProvenance",
+      "targetDeploys",
       "execution",
       "runners",
       "source",
@@ -169,7 +181,7 @@ export function assertTrustedRolloutEvidence(
       "assembledAt",
       "evidenceSha256",
     ]) ||
-    value.schemaVersion !== 3 ||
+    value.schemaVersion !== 5 ||
     !sha.test(value.releaseCommitSha) ||
     value.execution.runAttempt !== 1 ||
     value.execution.event !== "workflow_dispatch" ||
@@ -242,6 +254,28 @@ export function assertTrustedRolloutEvidence(
     !value.resumedTargetDeployIds.length
   )
     throw new Error("trusted_rollout_evidence_invariant_failed");
+  assertVerifiedReleaseImageProvenance(value.releaseImageProvenance, {
+    sourceRepository: value.execution.controlRepository,
+    sourceRevision: value.releaseCommitSha,
+    imageRepository: value.releaseImageProvenance.claim.imageRepository,
+    verificationPolicySha256:
+      value.releaseImageProvenance.verification.policySha256,
+  });
+  if (
+    value.targetDeploys.length === 0 ||
+    new Set(value.targetDeploys.map((deploy) => deploy.serviceId)).size !==
+      value.targetDeploys.length ||
+    new Set(value.targetDeploys.map((deploy) => deploy.deployId)).size !==
+      value.targetDeploys.length ||
+    value.targetDeploys.some(
+      (deploy) =>
+        !/^[A-Za-z0-9_-]+$/u.test(deploy.serviceId) ||
+        !/^[A-Za-z0-9_-]+$/u.test(deploy.deployId) ||
+        deploy.imageDigest !==
+          value.releaseImageProvenance.identity.imageDigest,
+    )
+  )
+    throw new Error("trusted_rollout_evidence_target_image_invalid");
   const zero = `sha256:${"0".repeat(64)}`;
   const requiredSteps = [
     RolloutStep.ClaimRollout,
@@ -300,6 +334,8 @@ export function assertTrustedRolloutEvidence(
         (receipt) => receipt.step === RolloutStep.ResumeTargetServices,
       )?.provider?.renderDeployIds,
     ) !== canonicalJson(value.resumedTargetDeployIds) ||
+    canonicalJson(value.targetDeploys.map((deploy) => deploy.deployId)) !==
+      canonicalJson(value.resumedTargetDeployIds) ||
     !value.receipts.some(
       (receipt) => canonicalJson(receipt) === canonicalJson(value.activation),
     ) ||

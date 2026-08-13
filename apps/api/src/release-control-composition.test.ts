@@ -11,16 +11,84 @@ const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 
 const authorityReadiness = (
-  roleName: "reviewrouter_release_control" | "reviewrouter_provider_authority",
+  roleName:
+    | "reviewrouter_release_control"
+    | "reviewrouter_provider_authority"
+    | "reviewrouter_release_witness",
 ) => [
   {
     roleName,
     systemIdentifier: "authority-system",
     postgresMajor: 17,
+    schemaVersion: 10,
+    migrationManifest: [
+      [
+        "000001_release_authority",
+        "eb4039b43228a07c241593d4d6dd863eceac7731d5898b0264e9bc67b3d746cf",
+      ],
+      [
+        "000002_external_effect_protocol",
+        "66a1cd48303f31691596ae4e64d952d0fe3543444d042b17243c1a60efb10201",
+      ],
+      [
+        "000002_transactional_service_transition",
+        "5f52fdc1fcf6e37fabe9a69908d3c4e4bf82dfa6ab24c6b2ee9c4f3cda2a1099",
+      ],
+      [
+        "000003_partial_source_freeze",
+        "02dcd03e3d86c362598537e2ac7afc1dff2d20713fa01158f65e02db621d0da5",
+      ],
+      [
+        "000004_selective_source_recovery",
+        "c86e2546a9e135f5b23142a2ef1eb70bc12a0b41345f29abd5d2e5b7cbcaed97",
+      ],
+      [
+        "000005_late_runner_effects",
+        "35db45ebd364e6f8cbeafbfb0ab6ac0056fe7e51de2b5fe844b91f1207ba1cfb",
+      ],
+      [
+        "000006_runner_provider_creation_boundary",
+        "4ee3a75a1528870df6d66a24eded9fc588aed2681b82aef57335ad7bbadf1260",
+      ],
+      [
+        "000007_compensation_effect_fence",
+        "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
+      ],
+      [
+        "000008_trigger_helper_acl",
+        "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
+      ],
+      [
+        "000009_authority_history_and_forward_repairs",
+        "bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
+      ],
+      [
+        "000010_recovery_effect_permits",
+        "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
+      ],
+    ].map(([migrationName, checksum], index) => ({
+      position: index + 1,
+      migrationName,
+      checksumSha256: `sha256:${checksum}`,
+      byteVariant: "canonical",
+    })),
     controlRoutine: true,
     providerRoutine: true,
     installerRoutine: false,
     readerRoutine: false,
+    externalEffectProtocol: true,
+    sourceFreezeProtocol: true,
+    selectiveRecoveryProtocol: true,
+    lateRunnerEffectProtocol: true,
+    recoveryEffectProtocol: true,
+    compensationCheckpointDefinition: true,
+    runnerProviderBoundary: true,
+    cleanupWitnessTemporalSemantics: true,
+    requiredTriggers: true,
+    authorityOwnershipExact: true,
+    authorityAclExact: true,
+    publicAuthorityRevoked: true,
+    authorityTablesRevoked: true,
   },
 ];
 const installerReadiness = [
@@ -28,10 +96,25 @@ const installerReadiness = [
     roleName: "reviewrouter_activation_permit_installer",
     systemIdentifier: "target-system",
     postgresMajor: 17,
+    schemaVersion: 0,
+    migrationManifest: [],
     controlRoutine: false,
     providerRoutine: false,
     installerRoutine: true,
     readerRoutine: true,
+    externalEffectProtocol: false,
+    sourceFreezeProtocol: false,
+    selectiveRecoveryProtocol: false,
+    lateRunnerEffectProtocol: false,
+    recoveryEffectProtocol: false,
+    compensationCheckpointDefinition: false,
+    runnerProviderBoundary: false,
+    cleanupWitnessTemporalSemantics: false,
+    requiredTriggers: false,
+    authorityOwnershipExact: false,
+    authorityAclExact: false,
+    publicAuthorityRevoked: false,
+    authorityTablesRevoked: false,
   },
 ];
 const readerReadiness = [
@@ -39,20 +122,59 @@ const readerReadiness = [
     roleName: "reviewrouter_activation_receipt_reader",
     systemIdentifier: "target-system",
     postgresMajor: 17,
+    schemaVersion: 0,
+    migrationManifest: [],
     controlRoutine: false,
     providerRoutine: false,
     installerRoutine: false,
     readerRoutine: true,
+    externalEffectProtocol: false,
+    sourceFreezeProtocol: false,
+    selectiveRecoveryProtocol: false,
+    lateRunnerEffectProtocol: false,
+    recoveryEffectProtocol: false,
+    compensationCheckpointDefinition: false,
+    runnerProviderBoundary: false,
+    cleanupWitnessTemporalSemantics: false,
+    requiredTriggers: false,
+    authorityOwnershipExact: false,
+    authorityAclExact: false,
+    publicAuthorityRevoked: false,
+    authorityTablesRevoked: false,
   },
 ];
-const witnessReadiness = [
-  {
-    roleName: "reviewrouter_release_witness",
-    postgresMajor: 17,
-    seedRoutine: true,
-    persistRoutine: true,
-  },
-];
+const witnessReadiness = authorityReadiness("reviewrouter_release_witness");
+
+const createReleaseControlHealthApp = (
+  controlOverrides: Record<string, unknown> = {},
+) =>
+  createReleaseControlApp({
+    controlPrisma: {
+      $queryRaw: vi.fn().mockResolvedValue([
+        {
+          ...authorityReadiness("reviewrouter_release_control")[0],
+          ...controlOverrides,
+        },
+      ]),
+    } as never,
+    providerAuthorityPrisma: {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValue(
+          authorityReadiness("reviewrouter_provider_authority"),
+        ),
+    } as never,
+    permitInstallerPrisma: {
+      $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+    } as never,
+    targetReceiptReaderPrisma: {
+      $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+    } as never,
+    credentials: {
+      controlTokenSha256: digest("control"),
+      providerAuthorityTokenSha256: digest("provider"),
+    },
+  });
 
 describe("release authority process composition", () => {
   it("builds focused use cases from distinct control and provider connections", () => {
@@ -450,9 +572,13 @@ describe("release authority process composition", () => {
   });
 
   it("maps durable provider policy conflicts to a redacted 409", async () => {
-    const providerQuery = vi
-      .fn()
-      .mockRejectedValue(new Error("provider authority replay conflict"));
+    const providerQuery = vi.fn().mockRejectedValue(
+      Object.assign(new Error("prisma query failed"), {
+        code: "P2010",
+        message:
+          "\nInvalid `prisma.$queryRaw()` invocation:\n\n\nRaw query failed. Code: `P0001`. Message: `provider authority state denied`",
+      }),
+    );
     const app = await createReleaseControlApp({
       controlPrisma: {} as never,
       providerAuthorityPrisma: { $queryRaw: providerQuery } as never,
@@ -478,7 +604,8 @@ describe("release authority process composition", () => {
     });
     expect(response.statusCode).toBe(409);
     expect(response.json().message).toBe("provider_authority_decision_denied");
-    expect(response.body).not.toContain("replay conflict");
+    expect(response.body).not.toContain("state denied");
+    expect(response.body).not.toContain("P0001");
     await app.close();
   });
 
@@ -537,6 +664,197 @@ describe("release authority process composition", () => {
       reason: "database_unavailable",
     });
     expect(response.body).not.toContain("secret database detail");
+    await app.close();
+  });
+
+  it("fails health when the required 000002 external-effect routines are absent", async () => {
+    const app = await createReleaseControlApp({
+      controlPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue([
+          {
+            ...authorityReadiness("reviewrouter_release_control")[0],
+            externalEffectProtocol: false,
+          },
+        ]),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_provider_authority"),
+          ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+      } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    await app.close();
+  });
+
+  it("fails health for an authority database stopped after 000003", async () => {
+    const app = await createReleaseControlApp({
+      controlPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue([
+          {
+            ...authorityReadiness("reviewrouter_release_control")[0],
+            schemaVersion: 3,
+            selectiveRecoveryProtocol: false,
+            lateRunnerEffectProtocol: false,
+            requiredTriggers: false,
+          },
+        ]),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_provider_authority"),
+          ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+      } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    await app.close();
+  });
+
+  it.each([
+    "authorityAclExact",
+    "authorityOwnershipExact",
+    "publicAuthorityRevoked",
+    "authorityTablesRevoked",
+  ] as const)(
+    "fails health when the authority %s invariant is false",
+    async (acl) => {
+      const app = await createReleaseControlApp({
+        controlPrisma: {
+          $queryRaw: vi.fn().mockResolvedValue([
+            {
+              ...authorityReadiness("reviewrouter_release_control")[0],
+              [acl]: false,
+            },
+          ]),
+        } as never,
+        providerAuthorityPrisma: {
+          $queryRaw: vi
+            .fn()
+            .mockResolvedValue(
+              authorityReadiness("reviewrouter_provider_authority"),
+            ),
+        } as never,
+        permitInstallerPrisma: {
+          $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+        } as never,
+        targetReceiptReaderPrisma: {
+          $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+        } as never,
+        credentials: {
+          controlTokenSha256: digest("control"),
+          providerAuthorityTokenSha256: digest("provider"),
+        },
+      });
+      expect(
+        (await app.inject({ method: "GET", url: "/health" })).statusCode,
+      ).toBe(503);
+      await app.close();
+    },
+  );
+
+  it.each([
+    "selectiveRecoveryProtocol",
+    "lateRunnerEffectProtocol",
+    "recoveryEffectProtocol",
+    "compensationCheckpointDefinition",
+    "runnerProviderBoundary",
+    "cleanupWitnessTemporalSemantics",
+    "requiredTriggers",
+  ] as const)(
+    "fails health when the required %s proof is absent",
+    async (proof) => {
+      const app = await createReleaseControlHealthApp({ [proof]: false });
+      expect(
+        (await app.inject({ method: "GET", url: "/health" })).statusCode,
+      ).toBe(503);
+      await app.close();
+    },
+  );
+
+  it("fails health when ordered migration identity evidence is incomplete", async () => {
+    const manifest = authorityReadiness(
+      "reviewrouter_release_control",
+    )[0]!.migrationManifest.slice(0, -1);
+    const app = await createReleaseControlHealthApp({
+      migrationManifest: manifest,
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    await app.close();
+  });
+
+  it("accepts the exact previously published 000001/000002 byte variants after 000009", async () => {
+    const migrationManifest = authorityReadiness(
+      "reviewrouter_release_control",
+    )[0]!.migrationManifest.map((entry, index) =>
+      index === 0
+        ? {
+            ...entry,
+            checksumSha256:
+              "sha256:e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b",
+            byteVariant: "legacy_equivalent",
+          }
+        : index === 1
+          ? {
+              ...entry,
+              checksumSha256:
+                "sha256:cd50e36c2b357fe03a81204b99f38c5c1e6b9ff94660dfecb9a2fccb782a512e",
+              byteVariant: "legacy_equivalent",
+            }
+          : entry,
+    );
+    const app = await createReleaseControlHealthApp({ migrationManifest });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(200);
+    await app.close();
+  });
+
+  it("fails witness health when centralized temporal proof is absent", async () => {
+    const app = await createReleaseWitnessApp({
+      witnessPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue([
+          {
+            ...witnessReadiness[0],
+            cleanupWitnessTemporalSemantics: false,
+          },
+        ]),
+      } as never,
+      triggerTokenSha256: digest("witness"),
+      renderReadToken: "read-only",
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
     await app.close();
   });
 

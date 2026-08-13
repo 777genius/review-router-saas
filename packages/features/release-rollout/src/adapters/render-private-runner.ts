@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   RolloutStep,
   type RunnerIdentity,
+  type ProviderCreationBoundary,
   type RunnerProvenance,
   type StepObservation,
 } from "../domain/release-rollout";
@@ -9,6 +10,7 @@ import {
   ExternalEffectState,
   type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
+  type RunnerProvisioningIntentRecord,
 } from "../domain/external-effect";
 import {
   ExternalEffectDispatchUseCase,
@@ -35,7 +37,7 @@ const activeDeploy = new Set([
   "pre_deploy_in_progress",
 ]);
 
-export interface PersistedRunnerJob {
+export interface PersistedRunnerJob extends ProviderCreationBoundary {
   readonly rolloutId: string;
   readonly serviceId: string;
   readonly jobId: string;
@@ -44,19 +46,7 @@ export interface PersistedRunnerJob {
   readonly lifecycle: "role" | "cutover";
   readonly provisioningIntentId: string;
 }
-export interface RunnerProvisioningIntent {
-  readonly id: string;
-  readonly rolloutId: string;
-  readonly serviceId: string;
-  readonly lifecycle: "role" | "cutover";
-  readonly workflowJobId: string;
-  readonly runnerName: string;
-  readonly createdAt: string;
-  readonly startCommandSha256: string;
-  readonly creationLeaseOwner: string | null;
-  readonly creationLeaseExpiresAt: string | null;
-  readonly effect: ExternalEffectRecord;
-}
+export type RunnerProvisioningIntent = RunnerProvisioningIntentRecord;
 export type CreateRunnerProvisioningIntent = Omit<
   RunnerProvisioningIntent,
   "creationLeaseOwner" | "creationLeaseExpiresAt" | "effect"
@@ -304,6 +294,7 @@ export class RenderPrivateRunnerAdapter {
     const startCommandSha256 = `sha256:${createHash("sha256").update(startCommand).digest("hex")}`;
     const claimantId = `rrc-${randomUUID()}`;
     const intentCreatedAt = this.now();
+    let providerCreationNotBefore = intentCreatedAt.toISOString();
     const leaseSeconds = 120;
     const prepareInput: CreateRunnerProvisioningIntent = {
       id: provisioningIntentId,
@@ -377,6 +368,12 @@ export class RenderPrivateRunnerAdapter {
               : "render_runner_intent_reconciliation_pending",
           );
         }
+        const durableIntents = (
+          await this.ledger.listProvisioningIntents(input.rolloutId)
+        ).filter((entry) => entry.id === provisioningIntentId);
+        if (durableIntents.length !== 1)
+          throw new Error("render_runner_intent_temporal_boundary_missing");
+        providerCreationNotBefore = durableIntents[0]!.createdAt;
         created = matching[0]!;
       }
     }
@@ -388,6 +385,7 @@ export class RenderPrivateRunnerAdapter {
           serviceId: input.baseServiceId,
           jobId: created.id,
           observedAt: this.now().toISOString(),
+          providerCreationNotBefore,
           cleanupCanary,
           lifecycle: input.lifecycle,
           provisioningIntentId,
@@ -421,17 +419,9 @@ export class RenderPrivateRunnerAdapter {
           timedOut: false,
         });
       } else {
-        // Cleanup observation is itself a privileged provider-side effect.  A
-        // job that the ledger could not persist must first be made durably
-        // unsafe and left for reconciliation; witnessing it here would erase
-        // the only retryable path between provider creation and durable bind.
-        await reconciliationBoundary.blocked({
-          effectId: provisioningIntentId,
-          ownerId: claimantId,
-          expectedEpoch: effect.epoch,
-          providerId: created.id,
-          reason: "unknown",
-        });
+        // The durable dispatching fence is already compensation-unsafe and can
+        // never authorize another POST.  Leave transient persistence failure
+        // retryable so discovery can retain and clean the provider identity.
         throw new Error("render_runner_job_persistence_failed", {
           cause: error,
         });
@@ -670,7 +660,8 @@ export class RenderPrivateRunnerAdapter {
               rolloutId,
               serviceId: intent.serviceId,
               jobId: job.id,
-              observedAt: job.createdAt ?? intent.createdAt,
+              observedAt: this.now().toISOString(),
+              providerCreationNotBefore: intent.createdAt,
               cleanupCanary: `rr-cleanup:${rolloutId}:${intent.runnerName}`,
               lifecycle: intent.lifecycle,
               provisioningIntentId: intent.id,
@@ -680,7 +671,6 @@ export class RenderPrivateRunnerAdapter {
       } while (cursor);
     }
     let duplicateObserved = false;
-    let persistenceBlocked = false;
 
     // Persist every newly discovered provider identity before binding,
     // blocking, or invoking either cleanup witness.  In particular, duplicate
@@ -694,17 +684,9 @@ export class RenderPrivateRunnerAdapter {
       try {
         await this.ledger.persistCreatedJob(entry);
       } catch {
-        persistenceBlocked = true;
         duplicateObserved ||=
           intent.effect.providerId !== null &&
           intent.effect.providerId !== entry.jobId;
-        await reconciliationBoundary.blocked({
-          effectId: intent.id,
-          ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
-          expectedEpoch: intent.effect.epoch,
-          providerId: entry.jobId,
-          reason: duplicateObserved ? "duplicate" : "unknown",
-        });
       }
     }
     // Persistence is idempotent and discovery also sees already-terminal
@@ -717,13 +699,19 @@ export class RenderPrivateRunnerAdapter {
     );
 
     for (const intent of intents) {
+      const observedProviderIds = new Set([
+        ...[...refreshedOpen, ...discovered]
+          .filter((entry) => entry.provisioningIntentId === intent.id)
+          .map((entry) => entry.jobId),
+        ...(intent.effect.providerId ? [intent.effect.providerId] : []),
+      ]);
       const matching = [...refreshedOpen, ...durableDiscovered].filter(
         (entry, index, all) =>
           entry.provisioningIntentId === intent.id &&
           all.findIndex((candidate) => candidate.jobId === entry.jobId) ===
             index,
       );
-      if (matching.length > 1) {
+      if (observedProviderIds.size > 1) {
         duplicateObserved = true;
         await reconciliationBoundary.blocked({
           effectId: intent.id,
@@ -732,7 +720,12 @@ export class RenderPrivateRunnerAdapter {
           reason: "duplicate",
         });
       } else if (intent.effect.state === ExternalEffectState.Prepared) {
-        if (matching.length === 0)
+        const expiresAt = intent.creationLeaseExpiresAt;
+        if (
+          matching.length === 0 &&
+          expiresAt !== null &&
+          Date.parse(expiresAt) <= this.now().getTime()
+        )
           await this.ledger.abandonPreparedEffect({
             intentId: intent.id,
             claimantId: intent.effect.ownerId!,
@@ -790,22 +783,19 @@ export class RenderPrivateRunnerAdapter {
       await this.ledger.markTerminal(entry.jobId, observation);
     }
     const finalIntents = await this.ledger.listProvisioningIntents(rolloutId);
-    const safety =
-      duplicateObserved || persistenceBlocked
-        ? {
-            result: "blocked" as const,
-            safeForCompensation: false,
-            reason: (duplicateObserved ? "duplicate" : "unknown") as
-              | "duplicate"
-              | "unknown",
-            intentCount: finalIntents.length,
-            intents: finalIntents.map(({ id, effect }) => ({
-              id,
-              state: effect.state,
-              safeForCompensation: effect.safeForCompensation,
-            })),
-          }
-        : reconcileCompensationSafety(finalIntents);
+    const safety = duplicateObserved
+      ? {
+          result: "blocked" as const,
+          safeForCompensation: false,
+          reason: "duplicate" as const,
+          intentCount: finalIntents.length,
+          intents: finalIntents.map(({ id, effect }) => ({
+            id,
+            state: effect.state,
+            safeForCompensation: effect.safeForCompensation,
+          })),
+        }
+      : reconcileCompensationSafety(finalIntents);
     return { ...safety, observations };
   }
 }

@@ -8,7 +8,11 @@ import type {
   StepObservation,
   TargetSwitchFence,
 } from "@reviewrouter/features-release-rollout";
-import { assertExternalEffectRecord } from "@reviewrouter/features-release-rollout";
+import {
+  assertExternalEffectRecord,
+  assertRunnerProvisioningIntentRecord,
+  assertRecoveryEffectRecord,
+} from "@reviewrouter/features-release-rollout";
 import type {
   IndependentCleanupWitness,
   PersistedJob,
@@ -31,38 +35,18 @@ import type {
   ServiceTransitionCheckpoint,
   ServiceTransitionLedger,
 } from "@reviewrouter/features-release-rollout";
+import {
+  normalizeReleaseAuthorityRoutineError,
+  ReleaseAuthorityAdapterConflictError,
+  ReleaseAuthorityAdapterUnexpectedError,
+} from "./routine-errors.js";
+
+export {
+  ReleaseAuthorityAdapterConflictError,
+  ReleaseAuthorityAdapterUnexpectedError,
+};
 
 type JsonRow = { value: unknown };
-
-const conflictMessages = new Set([
-  "release rollout claim identity conflict",
-  "release authority activation identity conflict",
-  "release authority activation replay conflict",
-  "release authority activation receipt conflict",
-  "provider authority replay conflict",
-  "release runner intent identity conflict",
-]);
-
-const normalizeRoutineError = (error: unknown): never => {
-  const value =
-    error && typeof error === "object"
-      ? (error as {
-          code?: unknown;
-          message?: unknown;
-          meta?: { code?: unknown; message?: unknown };
-        })
-      : undefined;
-  const databaseCode = value?.meta?.code ?? value?.code;
-  const detail = String(value?.meta?.message ?? value?.message ?? "");
-  if (
-    databaseCode === "P0001" &&
-    [...conflictMessages].some((message) => detail.includes(message))
-  )
-    throw Object.assign(new Error("release_authority_conflict"), {
-      statusCode: 409,
-    });
-  throw error;
-};
 
 const firstValue = async (
   prisma: PrismaClient,
@@ -72,7 +56,7 @@ const firstValue = async (
   try {
     rows = await prisma.$queryRaw<JsonRow[]>(query);
   } catch (error) {
-    normalizeRoutineError(error);
+    normalizeReleaseAuthorityRoutineError(error);
   }
   if (!rows || rows.length !== 1)
     throw new Error("release_control_routine_result_missing");
@@ -114,6 +98,59 @@ export class RoutineReleaseControlLedgerAdapter
     if (value !== "claimed" && value !== "duplicate")
       throw new Error("release_rollout_claim_result_invalid");
     return value;
+  }
+
+  async recordSourceFreezeMutation(
+    input: Parameters<
+      ReleaseAuthorityLedgerPort["recordSourceFreezeMutation"]
+    >[0],
+  ): Promise<"recorded" | "existing"> {
+    const value = await firstValue(
+      this.prisma,
+      Prisma.sql`SELECT release_authority.release_source_freeze_record(
+        ${input.rolloutId}, ${input.expectedCommitSha}, ${input.runId},
+        ${input.runAttempt}, ${input.sourceSystemIdentifier},
+        ${input.targetSystemIdentifier}, ${input.serviceId},
+        ${input.latestSuccessfulDeployId}, ${input.observedAt},
+        ${asJsonb(input.declaredServiceIds)}) AS value`,
+    );
+    if (value !== "recorded" && value !== "existing")
+      throw new Error("release_source_freeze_record_result_invalid");
+    return value;
+  }
+
+  async completeSourceFreeze(
+    input: Parameters<ReleaseAuthorityLedgerPort["completeSourceFreeze"]>[0],
+  ): Promise<"recorded" | "existing"> {
+    const value = await firstValue(
+      this.prisma,
+      Prisma.sql`SELECT release_authority.release_source_freeze_complete(
+        ${input.rolloutId}, ${input.expectedCommitSha}, ${input.runId},
+        ${input.runAttempt}, ${input.sourceSystemIdentifier},
+        ${input.targetSystemIdentifier}, ${asJsonb(input.declaredServiceIds)},
+        ${input.observedAt}) AS value`,
+    );
+    if (value !== "recorded" && value !== "existing")
+      throw new Error("release_source_freeze_complete_result_invalid");
+    return value;
+  }
+
+  async prepareSourceFreezeMutation(
+    input: Parameters<
+      ReleaseAuthorityLedgerPort["prepareSourceFreezeMutation"]
+    >[0],
+  ): Promise<boolean> {
+    return requiredBoolean(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_source_freeze_prepare(
+          ${input.rolloutId}, ${input.expectedCommitSha}, ${input.runId},
+          ${input.runAttempt}, ${input.sourceSystemIdentifier},
+          ${input.targetSystemIdentifier}, ${input.serviceId},
+          ${input.latestSuccessfulDeployId}, ${input.observedAt},
+          ${asJsonb(input.declaredServiceIds)}, ${input.beforeSuspended}) AS value`,
+      ),
+    );
   }
 
   async compareAndSet(
@@ -284,29 +321,13 @@ export class RoutineReleaseControlLedgerAdapter
       this.prisma,
       Prisma.sql`SELECT release_authority.release_runner_list_intents(${rolloutId}) AS value`,
     );
-    if (
-      !Array.isArray(value) ||
-      value.some(
-        (entry) =>
-          !entry ||
-          typeof entry !== "object" ||
-          typeof (entry as ProvisioningIntent).id !== "string" ||
-          typeof (entry as ProvisioningIntent).startCommandSha256 !==
-            "string" ||
-          !(entry as ProvisioningIntent).effect ||
-          ((entry as ProvisioningIntent).creationLeaseOwner !== null &&
-            typeof (entry as ProvisioningIntent).creationLeaseOwner !==
-              "string") ||
-          ((entry as ProvisioningIntent).creationLeaseExpiresAt !== null &&
-            typeof (entry as ProvisioningIntent).creationLeaseExpiresAt !==
-              "string") ||
-          ((entry as ProvisioningIntent).creationLeaseOwner === null) !==
-            ((entry as ProvisioningIntent).creationLeaseExpiresAt === null),
-      )
-    )
+    if (!Array.isArray(value))
       throw new Error("release_runner_intents_invalid");
-    for (const entry of value)
-      assertExternalEffectRecord((entry as ProvisioningIntent).effect);
+    try {
+      for (const entry of value) assertRunnerProvisioningIntentRecord(entry);
+    } catch {
+      throw new Error("release_runner_intents_invalid");
+    }
     return value as ProvisioningIntent[];
   }
 
@@ -525,6 +546,48 @@ export class RoutineReleaseControlLedgerAdapter
       await firstValue(
         this.prisma,
         Prisma.sql`SELECT release_authority.release_service_transition_complete(${asJsonb(input)}) AS value`,
+      ),
+    );
+  }
+  async intendRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["intendRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["intendRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_recovery_effect_intend(${asJsonb(input)}) AS value`,
+      ),
+    );
+  }
+  async claimRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["claimRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["claimRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_recovery_effect_claim(${asJsonb(input)}) AS value`,
+      ),
+    );
+  }
+  async consumeRecoveryEffectPermit(
+    input: Parameters<
+      ServiceTransitionLedger["consumeRecoveryEffectPermit"]
+    >[0],
+  ): ReturnType<ServiceTransitionLedger["consumeRecoveryEffectPermit"]> {
+    return assertRecoveryEffectRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_recovery_effect_consume(${asJsonb(input)}) AS value`,
+      ),
+    );
+  }
+  async completeRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["completeRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["completeRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_recovery_effect_complete(${asJsonb(input)}) AS value`,
       ),
     );
   }

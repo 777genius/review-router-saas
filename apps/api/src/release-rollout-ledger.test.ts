@@ -7,15 +7,17 @@ import type {
   ProviderAuthorityRequest,
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
+import { registerReleaseRolloutLedgerRoutes } from "./release-authority/adapters/http";
 import {
-  registerReleaseRolloutLedgerRoutes,
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
   RunnerOperationsService,
-  type ReleaseAuthorityLedgerPort,
-  type ReleaseRolloutReconciliationPort,
-  type RunnerOperationsLedgerPort,
-} from "./release-rollout-ledger";
+} from "./release-authority/application/services";
+import type {
+  ReleaseAuthorityLedgerPort,
+  ReleaseRolloutReconciliationPort,
+  RunnerOperationsLedgerPort,
+} from "./release-authority/domain/model";
 
 const binding = {
   rolloutId: "rollout-ledger-test",
@@ -31,6 +33,15 @@ type CombinedLedgerPort = ReleaseAuthorityLedgerPort &
   ReleaseRolloutReconciliationPort;
 
 class ConcurrentRepository implements CombinedLedgerPort {
+  async completeSourceFreeze() {
+    return "recorded" as const;
+  }
+  async prepareSourceFreezeMutation() {
+    return true;
+  }
+  async recordSourceFreezeMutation() {
+    return "recorded" as const;
+  }
   private claimed: typeof binding | undefined;
   private receipt = `sha256:${"0".repeat(64)}`;
   private state: "before" | "uncertain" | "activated" = "before";
@@ -41,6 +52,9 @@ class ConcurrentRepository implements CombinedLedgerPort {
   effectCalls: string[] = [];
   registration:
     | Parameters<RunnerOperationsLedgerPort["persistRegistration"]>[0]
+    | undefined;
+  persistedJob:
+    | Parameters<RunnerOperationsLedgerPort["persistJob"]>[0]
     | undefined;
 
   async claim(input: typeof binding) {
@@ -131,6 +145,7 @@ class ConcurrentRepository implements CombinedLedgerPort {
       lastReceiptSha256: this.receipt,
       lastStep: null,
       receiptCount: 0,
+      sourceFreeze: { status: "none" as const, serviceIds: [], services: [] },
     };
   }
   async finalizeActivation() {
@@ -214,7 +229,11 @@ class ConcurrentRepository implements CombinedLedgerPort {
       safeForCompensation: false,
     };
   }
-  async persistJob() {}
+  async persistJob(
+    input: Parameters<RunnerOperationsLedgerPort["persistJob"]>[0],
+  ) {
+    this.persistedJob = input;
+  }
   async listOpenJobs() {
     return [] as const;
   }
@@ -284,6 +303,278 @@ const services = (repository: CombinedLedgerPort) => ({
 });
 
 describe("release rollout ledger internal API", () => {
+  it("requires the authority-owned provider creation boundary on runner jobs", async () => {
+    const repository = new ConcurrentRepository();
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(repository),
+    });
+    const payload = {
+      rolloutId: binding.rolloutId,
+      serviceId: "srv-disposable",
+      jobId: "job-role",
+      observedAt: "2026-08-12T00:00:01.000Z",
+      providerCreationNotBefore: "2026-08-12T00:00:00.000Z",
+      cleanupCanary: "rr-cleanup:rollout-ledger-test:rr-role",
+      lifecycle: "role",
+      provisioningIntentId: `rri-${"a".repeat(64)}`,
+    };
+    const headers = { authorization: `Bearer ${token}` };
+
+    const stalePayload: Partial<typeof payload> = { ...payload };
+    delete stalePayload.providerCreationNotBefore;
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v1/runner-jobs",
+          headers,
+          payload: stalePayload,
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(repository.persistedJob).toBeUndefined();
+
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v1/runner-jobs",
+          headers,
+          payload,
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(repository.persistedJob).toEqual(payload);
+    await app.close();
+  });
+
+  it("rejects malformed service-transition completion input with HTTP 400", async () => {
+    const completed: unknown[] = [];
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(new ConcurrentRepository()),
+      serviceTransition: {
+        complete: async (input: unknown) => completed.push(input),
+      } as never,
+    });
+    const request = (payload: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/service-transitions/rollout-1/complete",
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+
+    expect((await request({})).statusCode).toBe(400);
+    expect((await request({ outcome: "invalid" })).statusCode).toBe(400);
+    expect(
+      (await request({ outcome: "source_recovered", extra: true })).statusCode,
+    ).toBe(400);
+    expect(completed).toEqual([]);
+
+    expect((await request({ outcome: "source_recovered" })).statusCode).toBe(
+      204,
+    );
+    expect(completed).toEqual([
+      { rolloutId: "rollout-1", outcome: "source_recovered" },
+    ]);
+    await app.close();
+  });
+
+  it("validates the exact service-transition begin contract before dispatch", async () => {
+    const begun: unknown[] = [];
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(new ConcurrentRepository()),
+      serviceTransition: {
+        begin: async (input: unknown) => {
+          begun.push(input);
+          return "created" as const;
+        },
+      } as never,
+    });
+    const digest = `sha256:${"1".repeat(64)}`;
+    const service = (serviceId: string) => ({
+      serviceId,
+      ownerId: "owner",
+      type: "web_service",
+      runtime: "node",
+      repository: "https://source.example/owner/repository",
+      branch: "main",
+      rootDir: "",
+      sourceCommitSha: "a".repeat(40),
+      buildCommand: "pnpm build",
+      startCommand: "pnpm start",
+      preDeployCommand: "",
+      healthCheckPath: "/health",
+      region: "region",
+      plan: "plan",
+      maxShutdownDelaySeconds: 60,
+      autoDeploy: "no",
+      databaseEnvKey: "DATABASE_URL",
+      databaseRole: "reviewrouter_api",
+      sourceEnvSha256: digest,
+      sourceEnvKeysSha256: digest,
+      serviceContractSha256: digest,
+    });
+    const serviceIds = ["srv-web", "srv-api", "srv-worker"];
+    const payload = {
+      rolloutId: "rollout-1",
+      manifestSha256: digest,
+      targetContractSha256: digest,
+      serviceIds,
+      sourceManifest: {
+        schemaVersion: "reviewrouter.render-source-recovery.v1",
+        rolloutId: "rollout-1",
+        services: serviceIds.map(service),
+        manifestSha256: digest,
+      },
+      targetContracts: serviceIds.map((serviceId) => ({
+        serviceId,
+        imageUrl: `registry.example/owner/runtime@${digest}`,
+        removeKeys: [],
+        environmentSha256: digest,
+        serviceContractSha256: digest,
+      })),
+    };
+    const request = (candidate: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/service-transitions",
+        headers: { authorization: `Bearer ${token}` },
+        payload: candidate,
+      });
+
+    for (const invalid of [
+      { ...payload, extra: true },
+      { ...payload, serviceIds: ["srv-web", "srv-api", "srv-api"] },
+      {
+        ...payload,
+        sourceManifest: { ...payload.sourceManifest, rolloutId: "foreign" },
+      },
+      {
+        ...payload,
+        sourceManifest: {
+          ...payload.sourceManifest,
+          services: [
+            { ...payload.sourceManifest.services[0], unexpected: true },
+            ...payload.sourceManifest.services.slice(1),
+          ],
+        },
+      },
+      {
+        ...payload,
+        targetContracts: payload.targetContracts.map((item, index) =>
+          index === 0 ? { ...item, environmentDelta: {} } : item,
+        ),
+      },
+    ])
+      expect((await request(invalid)).statusCode).toBe(400);
+    expect(begun).toEqual([]);
+
+    expect((await request(payload)).statusCode).toBe(200);
+    expect(begun).toEqual([payload]);
+    await app.close();
+  });
+
+  it("validates exact step-specific service-transition checkpoints", async () => {
+    const appended: unknown[] = [];
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(new ConcurrentRepository()),
+      serviceTransition: {
+        append: async (input: unknown) => {
+          appended.push(input);
+          return { ...(input as object), sequence: 1 };
+        },
+      } as never,
+    });
+    const digest = `sha256:${"2".repeat(64)}`;
+    const base = {
+      manifestSha256: digest,
+      targetContractSha256: digest,
+      serviceId: "srv-api",
+    };
+    const request = (payload: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/service-transitions/rollout-1/checkpoints",
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+
+    for (const invalid of [
+      { ...base, step: "unknown" },
+      { ...base, step: "suspended", deployId: "not-allowed" },
+      { ...base, step: "target_deployed" },
+      { ...base, step: "target_verified", deployId: "dep-1" },
+      {
+        ...base,
+        step: "restore_deploy_intent",
+        intentAt: "not-a-timestamp",
+      },
+      { ...base, step: "source_verified", deployId: "dep-1", extra: true },
+    ])
+      expect((await request(invalid)).statusCode).toBe(400);
+    expect(appended).toEqual([]);
+
+    const valid = {
+      ...base,
+      step: "target_verified",
+      deployId: "dep-1",
+      observedContractSha256: digest,
+      observedEnvSha256: digest,
+    };
+    expect((await request(valid)).statusCode).toBe(200);
+    expect(appended).toEqual([{ ...valid, rolloutId: "rollout-1" }]);
+    await app.close();
+  });
+
+  it("returns sanitized transition conflict and unexpected failures", async () => {
+    const app = Fastify();
+    let failure: Error = Object.assign(
+      new Error("release_authority_conflict"),
+      {
+        statusCode: 409,
+      },
+    );
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(new ConcurrentRepository()),
+      serviceTransition: {
+        append: async () => {
+          throw failure;
+        },
+      } as never,
+    });
+    const digest = `sha256:${"3".repeat(64)}`;
+    const request = () =>
+      app.inject({
+        method: "POST",
+        url: "/v1/service-transitions/rollout-1/checkpoints",
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          manifestSha256: digest,
+          targetContractSha256: digest,
+          serviceId: "srv-api",
+          step: "suspended",
+        },
+      });
+
+    const conflict = await request();
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.body).not.toContain("database");
+
+    failure = Object.assign(new Error("release_authority_adapter_failure"), {
+      statusCode: 500,
+      cause: new Error("sensitive database detail"),
+    });
+    const unexpected = await request();
+    expect(unexpected.statusCode).toBe(500);
+    expect(unexpected.body).not.toContain("sensitive database detail");
+    await app.close();
+  });
+
   it("authenticates internal callers and keeps claim idempotent", async () => {
     const app = Fastify();
     await registerReleaseRolloutLedgerRoutes(app, {
@@ -312,6 +603,70 @@ describe("release rollout ledger internal API", () => {
     });
     expect(first.json()).toEqual({ result: "claimed" });
     expect(duplicate.json()).toEqual({ result: "duplicate" });
+    await app.close();
+  });
+
+  it("accepts only rollout-bound source freeze mutation observations", async () => {
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(
+      app,
+      services(new ConcurrentRepository()),
+    );
+    const payload = {
+      ...binding,
+      serviceId: "srv-source",
+      latestSuccessfulDeployId: "dep-source",
+      observedAt: "2026-08-13T00:00:00.000Z",
+      declaredServiceIds: ["srv-source", "srv-other"],
+    };
+    const prepared = await app.inject({
+      method: "POST",
+      url: `/v1/rollouts/${binding.rolloutId}/source-freeze-preparations`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { ...payload, beforeSuspended: false },
+    });
+    expect(prepared.statusCode).toBe(200);
+    expect(prepared.json()).toEqual({ mutationRequired: true });
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/v1/rollouts/${binding.rolloutId}/source-freeze-mutations`,
+      headers: { authorization: `Bearer ${token}` },
+      payload,
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toEqual({ result: "recorded" });
+    const completed = await app.inject({
+      method: "POST",
+      url: `/v1/rollouts/${binding.rolloutId}/source-freeze-completion`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        ...binding,
+        declaredServiceIds: payload.declaredServiceIds,
+        observedAt: payload.observedAt,
+      },
+    });
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json()).toEqual({ result: "recorded" });
+    const mismatched = await app.inject({
+      method: "POST",
+      url: "/v1/rollouts/another/source-freeze-mutations",
+      headers: { authorization: `Bearer ${token}` },
+      payload,
+    });
+    expect(mismatched.statusCode).toBe(400);
+    for (const invalid of [
+      { ...payload, runId: 123 },
+      { ...payload, sourceSystemIdentifier: 100 },
+      { ...payload, serviceId: 123 },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/rollouts/${binding.rolloutId}/source-freeze-mutations`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: invalid,
+      });
+      expect(response.statusCode).toBe(400);
+    }
     await app.close();
   });
 

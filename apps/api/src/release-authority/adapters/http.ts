@@ -18,6 +18,10 @@ import type {
   ReleaseServiceTransitionService,
   RunnerOperationsService,
 } from "../application/services.js";
+import {
+  serviceTransitionAppendRequest,
+  serviceTransitionBeginRequest,
+} from "./service-transition-http-validation.js";
 export type ReleaseRolloutLedgerRouteDependencies = {
   authority: ReleaseAuthorityService;
   runnerOperations: RunnerOperationsService;
@@ -73,10 +77,154 @@ const invalidEffectRequest = (): never => {
     statusCode: 400,
   });
 };
+const persistedJobRequest = (value: unknown): PersistedJob => {
+  const body = record(value);
+  const observedAt = Date.parse(String(body.observedAt));
+  const providerCreationNotBefore = Date.parse(
+    String(body.providerCreationNotBefore),
+  );
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "serviceId",
+      "jobId",
+      "observedAt",
+      "providerCreationNotBefore",
+      "cleanupCanary",
+      "lifecycle",
+      "provisioningIntentId",
+    ]) ||
+    !nonemptyString(body.rolloutId) ||
+    !nonemptyString(body.serviceId) ||
+    !nonemptyString(body.jobId) ||
+    typeof body.observedAt !== "string" ||
+    typeof body.providerCreationNotBefore !== "string" ||
+    !Number.isFinite(observedAt) ||
+    !Number.isFinite(providerCreationNotBefore) ||
+    observedAt < providerCreationNotBefore ||
+    !nonemptyString(body.cleanupCanary) ||
+    !["role", "cutover"].includes(String(body.lifecycle)) ||
+    !intentIdPattern.test(String(body.provisioningIntentId))
+  )
+    throw Object.assign(new Error("release_runner_job_request_invalid"), {
+      statusCode: 400,
+    });
+  return body as PersistedJob;
+};
 const intentIdPattern = /^rri-[a-f0-9]{64}$/u;
 const claimantIdPattern =
   /^rrc-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const commandHashPattern = /^sha256:[a-f0-9]{64}$/u;
+const sourceServiceIdPattern = /^srv-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+const sourceFreezeRequest = (
+  value: unknown,
+  rolloutId: string,
+  prepare = false,
+) => {
+  const body = record(value);
+  const declared = body.declaredServiceIds;
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "expectedCommitSha",
+      "runId",
+      "runAttempt",
+      "sourceSystemIdentifier",
+      "targetSystemIdentifier",
+      "serviceId",
+      "latestSuccessfulDeployId",
+      "observedAt",
+      "declaredServiceIds",
+      ...(prepare ? ["beforeSuspended"] : []),
+    ]) ||
+    body.rolloutId !== rolloutId ||
+    typeof body.expectedCommitSha !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(body.expectedCommitSha) ||
+    typeof body.runId !== "string" ||
+    !/^[1-9][0-9]*$/u.test(body.runId) ||
+    body.runAttempt !== 1 ||
+    typeof body.sourceSystemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(body.sourceSystemIdentifier) ||
+    typeof body.targetSystemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(body.targetSystemIdentifier) ||
+    typeof body.serviceId !== "string" ||
+    !sourceServiceIdPattern.test(body.serviceId) ||
+    !nonemptyString(body.latestSuccessfulDeployId) ||
+    typeof body.observedAt !== "string" ||
+    !Number.isFinite(Date.parse(body.observedAt)) ||
+    !Array.isArray(declared) ||
+    declared.length < 1 ||
+    declared.length > 100 ||
+    declared.some(
+      (id) => typeof id !== "string" || !sourceServiceIdPattern.test(id),
+    ) ||
+    new Set(declared).size !== declared.length ||
+    !declared.includes(body.serviceId) ||
+    (prepare && typeof body.beforeSuspended !== "boolean")
+  )
+    throw Object.assign(new Error("release_source_freeze_request_invalid"), {
+      statusCode: 400,
+    });
+  return body;
+};
+const sourceFreezeCompletionRequest = (value: unknown, rolloutId: string) => {
+  const body = record(value);
+  const declared = body.declaredServiceIds;
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "expectedCommitSha",
+      "runId",
+      "runAttempt",
+      "sourceSystemIdentifier",
+      "targetSystemIdentifier",
+      "declaredServiceIds",
+      "observedAt",
+    ]) ||
+    body.rolloutId !== rolloutId ||
+    typeof body.expectedCommitSha !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(body.expectedCommitSha) ||
+    typeof body.runId !== "string" ||
+    !/^[1-9][0-9]*$/u.test(body.runId) ||
+    body.runAttempt !== 1 ||
+    typeof body.sourceSystemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(body.sourceSystemIdentifier) ||
+    typeof body.targetSystemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(body.targetSystemIdentifier) ||
+    typeof body.observedAt !== "string" ||
+    !Number.isFinite(Date.parse(body.observedAt)) ||
+    !Array.isArray(declared) ||
+    declared.length < 1 ||
+    declared.length > 100 ||
+    declared.some(
+      (id) => typeof id !== "string" || !sourceServiceIdPattern.test(id),
+    ) ||
+    new Set(declared).size !== declared.length
+  )
+    throw Object.assign(
+      new Error("release_source_freeze_completion_request_invalid"),
+      { statusCode: 400 },
+    );
+  return body;
+};
+const serviceTransitionCompletionRequest = (
+  value: unknown,
+  rolloutId: string,
+): {
+  rolloutId: string;
+  outcome: "target_staged" | "source_recovered";
+} => {
+  const body = record(value);
+  if (
+    !exactKeys(body, ["outcome"]) ||
+    (body.outcome !== "target_staged" && body.outcome !== "source_recovered")
+  )
+    throw Object.assign(
+      new Error("release_service_transition_request_invalid"),
+      { statusCode: 400 },
+    );
+  return { rolloutId, outcome: body.outcome };
+};
 const effectPathBody = (
   value: unknown,
   intentId: string,
@@ -201,18 +349,55 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/service-transitions",
     { preHandler: control },
     async (request) => ({
-      result: await serviceTransition().begin(record(request.body) as never),
+      result: await serviceTransition().begin(
+        serviceTransitionBeginRequest(request.body),
+      ),
     }),
   );
   app.post<{ Params: { rolloutId: string } }>(
     "/v1/service-transitions/:rolloutId/checkpoints",
     { preHandler: control },
     async (request) => ({
-      checkpoint: await serviceTransition().append({
+      checkpoint: await serviceTransition().append(
+        serviceTransitionAppendRequest(request.body, request.params.rolloutId),
+      ),
+    }),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/recovery-effects/intend",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().intendRecoveryEffect({
         ...record(request.body),
         rolloutId: request.params.rolloutId,
       } as never),
-    }),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/recovery-effects/claim",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().claimRecoveryEffect({
+        ...record(request.body),
+        rolloutId: request.params.rolloutId,
+      } as never),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/recovery-effects/consume",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().consumeRecoveryEffectPermit({
+        ...record(request.body),
+        rolloutId: request.params.rolloutId,
+      } as never),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/recovery-effects/complete",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().completeRecoveryEffect({
+        ...record(request.body),
+        rolloutId: request.params.rolloutId,
+      } as never),
   );
   app.get<{ Params: { rolloutId: string } }>(
     "/v1/service-transitions/:rolloutId/contract",
@@ -229,10 +414,12 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/service-transitions/:rolloutId/complete",
     { preHandler: control },
     async (request, reply) => {
-      await serviceTransition().complete({
-        ...record(request.body),
-        rolloutId: request.params.rolloutId,
-      } as never);
+      await serviceTransition().complete(
+        serviceTransitionCompletionRequest(
+          request.body,
+          request.params.rolloutId,
+        ),
+      );
       return reply.code(204).send();
     },
   );
@@ -241,6 +428,39 @@ export async function registerReleaseRolloutLedgerRoutes(
       record(request.body) as RolloutBinding,
     ),
   }));
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/rollouts/:rolloutId/source-freeze-completion",
+    { preHandler: control },
+    async (request) => {
+      const validated = sourceFreezeCompletionRequest(
+        request.body,
+        request.params.rolloutId,
+      );
+      return {
+        result: await dependencies.authority.completeSourceFreeze({
+          rolloutId: request.params.rolloutId,
+          expectedCommitSha: validated.expectedCommitSha,
+          runId: validated.runId,
+          runAttempt: validated.runAttempt,
+          sourceSystemIdentifier: validated.sourceSystemIdentifier,
+          targetSystemIdentifier: validated.targetSystemIdentifier,
+          declaredServiceIds: validated.declaredServiceIds,
+          observedAt: validated.observedAt,
+        } as never),
+      };
+    },
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/rollouts/:rolloutId/source-freeze-preparations",
+    { preHandler: control },
+    async (request) => ({
+      mutationRequired:
+        await dependencies.authority.prepareSourceFreezeMutation({
+          ...sourceFreezeRequest(request.body, request.params.rolloutId, true),
+          rolloutId: request.params.rolloutId,
+        } as never),
+    }),
+  );
   app.post<{ Params: { rolloutId: string } }>(
     "/v1/rollouts/:rolloutId/cas",
     { preHandler: control },
@@ -308,6 +528,16 @@ export async function registerReleaseRolloutLedgerRoutes(
         sourceSystemIdentifier: request.query.source_system_identifier,
         targetSystemIdentifier: request.query.target_system_identifier,
       }),
+    }),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/rollouts/:rolloutId/source-freeze-mutations",
+    { preHandler: control },
+    async (request) => ({
+      result: await dependencies.authority.recordSourceFreezeMutation({
+        ...sourceFreezeRequest(request.body, request.params.rolloutId),
+        rolloutId: request.params.rolloutId,
+      } as never),
     }),
   );
   app.get<{
@@ -439,7 +669,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     { preHandler: control },
     async (request, reply) => {
       await dependencies.runnerOperations.persistJob(
-        record(request.body) as PersistedJob,
+        persistedJobRequest(request.body),
       );
       return reply.code(204).send();
     },

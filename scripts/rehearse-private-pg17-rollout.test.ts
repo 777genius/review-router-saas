@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { validateRehearsalConfiguration } from "./rehearse-private-pg17-rollout.mjs";
+import {
+  createRehearsalRunnerJobBinding,
+  validateRehearsalConfiguration,
+} from "./rehearse-private-pg17-rollout.mjs";
 
 const digest = "d".repeat(64);
 describe("disposable dual-version rehearsal", () => {
@@ -28,6 +31,31 @@ describe("disposable dual-version rehearsal", () => {
       "private_pg17_rehearsal_explicit_opt_in_required",
     );
   });
+  it("binds the persisted runner job to the authority-owned pre-dispatch time", () => {
+    const providerCreationNotBefore = "2026-08-12T00:00:00.000Z";
+    expect(
+      createRehearsalRunnerJobBinding({
+        identity: {
+          baseServiceId: "srv-disposable",
+          renderJobId: "job-role",
+          cleanupCanary: "rr-cleanup:disposable-rehearsal:rr-role",
+        },
+        observation: { observedAt: "2026-08-12T00:00:01.000Z" },
+        lifecycle: "role",
+        provisioningIntentId: `rri-${"a".repeat(64)}`,
+        providerCreationNotBefore,
+      }),
+    ).toEqual({
+      rolloutId: "disposable-rehearsal",
+      serviceId: "srv-disposable",
+      jobId: "job-role",
+      observedAt: "2026-08-12T00:00:01.000Z",
+      providerCreationNotBefore,
+      cleanupCanary: "rr-cleanup:disposable-rehearsal:rr-role",
+      lifecycle: "role",
+      provisioningIntentId: `rri-${"a".repeat(64)}`,
+    });
+  });
   it("routes rehearsal state through production use cases, SQL generators, and evidence verifier", () => {
     const source = readFileSync(
       "scripts/rehearse-private-pg17-rollout.mjs",
@@ -40,9 +68,7 @@ describe("disposable dual-version rehearsal", () => {
       "HttpProviderAuthorityDecisionAdapter",
       "createReleaseControlApp",
       "rr-authority-pg17-",
-      '"000001_release_authority"',
-      '"000002_external_effect_protocol"',
-      '"000002_transactional_service_transition"',
+      "releaseAuthorityMigrationBundle",
       "activationAuthorityProvisioningSql",
       "reviewrouter_activation_permit_installer",
       "reviewrouter_activation_receipt_reader",
@@ -73,6 +99,39 @@ describe("disposable dual-version rehearsal", () => {
       "redactedErrorChain",
     ])
       expect(source).toContain(required);
+    const installer = readFileSync(
+      "scripts/install-release-authority-db.mjs",
+      "utf8",
+    );
+    expect(installer.indexOf("000001_release_authority")).toBeLessThan(
+      installer.indexOf("000002_external_effect_protocol"),
+    );
+    expect(
+      installer.match(/000001_release_authority\/migration\.sql/gu),
+    ).toHaveLength(1);
+    expect(
+      installer.match(/000002_external_effect_protocol\/migration\.sql/gu),
+    ).toHaveLength(1);
+    expect(installer.indexOf("000002_external_effect_protocol")).toBeLessThan(
+      installer.indexOf("000002_transactional_service_transition"),
+    );
+    expect(
+      installer.match(
+        /000002_transactional_service_transition\/migration\.sql/gu,
+      ),
+    ).toHaveLength(1);
+    expect(installer.indexOf("000003_partial_source_freeze")).toBeLessThan(
+      installer.indexOf("000005_late_runner_effects"),
+    );
+    expect(
+      installer.match(/000005_late_runner_effects\/migration\.sql/gu),
+    ).toHaveLength(1);
+    expect(installer.indexOf("000005_late_runner_effects")).toBeLessThan(
+      installer.indexOf("000007_compensation_effect_fence"),
+    );
+    expect(
+      installer.match(/000007_compensation_effect_fence\/migration\.sql/gu),
+    ).toHaveLength(1);
     expect(source).not.toContain(
       "GRANT SELECT ON reviewrouter_activation.activation_receipt TO reviewrouter_role_bootstrap",
     );

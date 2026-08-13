@@ -12,6 +12,8 @@ export interface ProviderControlPort {
   compensateAndObserve(input: {
     decision: ProviderAuthorityDecision;
     databaseWitness: DatabaseAclWitness;
+    /** Exact authority-ledger IDs whose suspension was caused by this rollout. */
+    sourceWriterServiceIds: readonly string[];
   }): Promise<ProviderStateWitness>;
 }
 
@@ -51,6 +53,17 @@ export interface CompensationCheckpoint {
   readonly lastReceiptSha256: string;
   readonly lastStep: string | null;
   readonly receiptCount: number;
+  readonly sourceFreeze: SourceFreezeEvidence;
+}
+export interface SourceFreezeServiceEvidence {
+  readonly serviceId: string;
+  readonly latestSuccessfulDeployId: string;
+  readonly observedAt: string;
+}
+export interface SourceFreezeEvidence {
+  readonly status: "none" | "partial" | "complete" | "unknown";
+  readonly serviceIds: readonly string[];
+  readonly services: readonly SourceFreezeServiceEvidence[];
 }
 export interface DatabaseAclWitness {
   readonly systemIdentifier: string;

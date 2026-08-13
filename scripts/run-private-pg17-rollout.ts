@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   AuthenticatedRunnerLedgerAdapter,
@@ -16,6 +17,9 @@ import {
   type TargetServiceContract,
   type TargetServiceExpectation,
   targetServiceContractSha256,
+  assertVerifiedReleaseImageProvenance,
+  sameReleaseImageProvenance,
+  type VerifiedReleaseImageProvenance,
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
 
@@ -28,12 +32,45 @@ const copy = JSON.parse(
   readFileSync(required("REVIEW_ROUTER_COPY_BOOTSTRAP_EVIDENCE_FILE"), "utf8"),
 ) as {
   rollout: ReleaseRollout;
+  releaseImageProvenance: VerifiedReleaseImageProvenance;
   roleBootstrapRunner: RunnerIdentity;
   backup: unknown;
   quiescence: unknown;
   equivalence: unknown;
 };
 let rollout = copy.rollout;
+const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
+  copy.releaseImageProvenance,
+  {
+    sourceRepository: required("GITHUB_REPOSITORY"),
+    sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+  },
+);
+const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
+  JSON.parse(
+    readFileSync(
+      required("REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE"),
+      "utf8",
+    ),
+  ) as VerifiedReleaseImageProvenance,
+  {
+    sourceRepository: required("GITHUB_REPOSITORY"),
+    sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+  },
+);
+if (
+  !sameReleaseImageProvenance(
+    releaseImageProvenance,
+    preflightReleaseImageProvenance,
+  )
+)
+  throw new Error("private_pg17_release_image_provenance_transplanted");
+const canonicalReleaseEnvironment = {
+  ...process.env,
+  REVIEW_ROUTER_RELEASE_COMMIT_SHA: releaseImageProvenance.identity.commit,
+  REVIEW_ROUTER_RELEASE_IMAGE_DIGEST:
+    releaseImageProvenance.identity.imageDigest,
+};
 if (
   rollout.phase !== RolloutPhase.TargetRolesBootstrapped ||
   rollout.rolloutId !== required("REVIEW_ROUTER_ROLLOUT_ID") ||
@@ -161,7 +198,7 @@ for (const expectation of serviceExpectations) {
   });
   const value = {
     serviceId: expectation.serviceId,
-    imageUrl: `ghcr.io/777genius/review-router-saas-runtime@${required("REVIEW_ROUTER_RELEASE_IMAGE_DIGEST")}`,
+    imageUrl: releaseImageProvenance.identity.imageUrl,
     environmentDelta,
     removeKeys: [] as string[],
     environmentSha256: planned.environmentSha256,
@@ -174,6 +211,7 @@ for (const expectation of serviceExpectations) {
 const transactionalServices = new TransactionalServiceCutover(
   ledger,
   renderServices,
+  `recovery-${randomUUID()}`,
 );
 const generation = new PostgreSqlGenerationAdapter(
   new RedactedProcessCommandAdapter(),
@@ -183,46 +221,35 @@ const unavailable = async (): Promise<never> => {
   throw new Error("private_pg17_port_not_available_in_cutover_phase");
 };
 let migration: unknown;
-let activation: StepObservation;
-let staged: StepObservation;
+let activation!: StepObservation;
+let staged!: StepObservation;
 const useCases = new ReleaseRolloutUseCases({
   authority,
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: unavailable,
-    compensateAndObserve: async ({ decision, databaseWitness }) => {
+    compensateAndObserve: async ({
+      decision,
+      databaseWitness,
+      sourceWriterServiceIds,
+    }) => {
       if (
         decision.decision !== "allow" ||
         decision.operation !== "resume_source" ||
+        decision.activationBoundary !== "before" ||
+        decision.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
+        databaseWitness.systemIdentifier !== rollout.source.systemIdentifier ||
+        !/^sha256:[a-f0-9]{64}$/u.test(databaseWitness.aclSha256) ||
         databaseWitness.sourceWritesRestored !== true
       )
         throw new Error("private_pg17_service_recovery_authority_invalid");
-      await transactionalServices.finalizeAuthorizedSourceRecovery({
+      return await transactionalServices.finalizeAuthorizedSourceRecovery({
         source: sourceRecoveryManifest,
         protectedEnvironment: protectedSourceEnvironment,
         target: targetServiceContracts,
+        sourceWriterServiceIds,
         restoreSourceWritesAndVerify: async () => undefined,
       });
-      const restored = await ledger.read(rollout.rolloutId);
-      return {
-        serviceIds: sourceRecoveryManifest.services.map(
-          (item) => item.serviceId,
-        ),
-        deployIds: sourceRecoveryManifest.services.map((service) => {
-          const deployId = [...restored]
-            .reverse()
-            .find(
-              (item) =>
-                item.serviceId === service.serviceId &&
-                item.step === "source_verified",
-            )?.deployId;
-          if (!deployId)
-            throw new Error("private_pg17_source_deploy_checkpoint_missing");
-          return deployId;
-        }),
-        observedAt: new Date().toISOString(),
-        resumed: true,
-      };
     },
   },
   runner: {
@@ -243,12 +270,17 @@ const useCases = new ReleaseRolloutUseCases({
     verifyEquivalence: unavailable,
     bootstrapTargetRoles: unavailable,
     runReleaseMigration: async () => {
-      const observation = canonical.runReleaseMigration(process.env);
+      const observation = canonical.runReleaseMigration(
+        canonicalReleaseEnvironment,
+      );
       migration = observation.facts;
       return observation;
     },
     activate: async (rolloutId) => {
-      activation = canonical.activateTarget(process.env, rolloutId);
+      activation = canonical.activateTarget(
+        canonicalReleaseEnvironment,
+        rolloutId,
+      );
       return activation;
     },
     compensateSource: async () => {
@@ -364,5 +396,5 @@ try {
   );
 }
 process.stdout.write(
-  `${JSON.stringify({ rollout, runners: [copy.roleBootstrapRunner, cutoverRunner], backup: copy.backup, quiescence: copy.quiescence, equivalence: copy.equivalence, migration, staged, activation })}\n`,
+  `${JSON.stringify({ rollout, releaseImageProvenance, runners: [copy.roleBootstrapRunner, cutoverRunner], backup: copy.backup, quiescence: copy.quiescence, equivalence: copy.equivalence, migration, staged, activation })}\n`,
 );

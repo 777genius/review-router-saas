@@ -4,6 +4,7 @@ import {
   ReleaseCompensationReconciliationUseCase,
   reconcileCompensationSafety,
 } from "./reconcile-compensation";
+import type { CompensationCheckpoint } from "./ports";
 
 const rollout = createReleaseRollout({
   rolloutId: "rollout-reconcile-test",
@@ -55,10 +56,22 @@ function ports(initial: {
   state: "pre_activation" | "compensating" | "compensated" | "activated";
   lastStep: string | null;
   receiptCount: number;
+  sourceFreeze?: CompensationCheckpoint["sourceFreeze"];
 }) {
-  let checkpoint = {
+  let checkpoint: CompensationCheckpoint = {
     ...initial,
     lastReceiptSha256: `sha256:${"0".repeat(64)}`,
+    sourceFreeze: initial.sourceFreeze ?? {
+      status: "complete" as const,
+      serviceIds: ["srv-source"],
+      services: [
+        {
+          serviceId: "srv-source",
+          latestSuccessfulDeployId: "dep-source",
+          observedAt: "2026-08-13T00:00:00.000Z",
+        },
+      ],
+    },
   };
   const compareAndSet = vi.fn().mockImplementation(async (input) => {
     checkpoint = {
@@ -73,7 +86,11 @@ function ports(initial: {
     };
     return true;
   });
+  let recoveryEffect:
+    | import("../domain/recovery-effect").RecoveryEffectRecord
+    | undefined;
   return {
+    recoveryOwnerId: "test-recovery-owner",
     authority: {
       decide: vi.fn().mockImplementation(async (input) => ({
         ...input,
@@ -98,9 +115,55 @@ function ports(initial: {
           },
         },
       ]),
+      intendRecoveryEffect: vi.fn(
+        async (input) =>
+          (recoveryEffect ??= {
+            ...input,
+            serviceId: null,
+            state: "intended",
+            epoch: 0,
+            claimOwnerId: null,
+            permitToken: null,
+            leaseExpiresAt: null,
+            consumedAt: null,
+            completedAt: null,
+            observation: null,
+          }),
+      ),
+      claimRecoveryEffect: vi.fn(
+        async (input) =>
+          (recoveryEffect = {
+            ...recoveryEffect!,
+            state: "claimed",
+            epoch: recoveryEffect!.epoch + 1,
+            claimOwnerId: input.ownerId,
+            permitToken: "a".repeat(64),
+            leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          }),
+      ),
+      consumeRecoveryEffectPermit: vi.fn(
+        async () =>
+          (recoveryEffect = {
+            ...recoveryEffect!,
+            state: "consumed",
+            leaseExpiresAt: null,
+            consumedAt: new Date().toISOString(),
+          }),
+      ),
+      completeRecoveryEffect: vi.fn(
+        async (input) =>
+          (recoveryEffect = {
+            ...recoveryEffect!,
+            state: "completed",
+            completedAt: new Date().toISOString(),
+            observation: input.observation,
+          }),
+      ),
     },
     compensateDatabase: vi.fn().mockResolvedValue(databaseWitness),
+    observeDatabaseCompensation: vi.fn().mockResolvedValue(null),
     provider: {
+      recoveryEffectsAreAuthorityMediated: true as const,
       compensateAndObserve: vi.fn().mockResolvedValue(providerWitness),
     },
   };
@@ -111,8 +174,8 @@ describe("release compensation reconciliation", () => {
     const dependencies = ports({
       activationBoundary: "before",
       state: "pre_activation",
-      lastStep: RolloutStep.FreezeProviderServices,
-      receiptCount: 3,
+      lastStep: RolloutStep.VerifyProtectedEnvironment,
+      receiptCount: 2,
     });
     const result = await new ReleaseCompensationReconciliationUseCase(
       dependencies,
@@ -233,6 +296,204 @@ describe("release compensation reconciliation", () => {
     });
   });
 
+  it("allows zero intents only with durable partial freeze mutation evidence", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastStep: RolloutStep.VerifyProtectedEnvironment,
+      receiptCount: 2,
+      sourceFreeze: {
+        status: "partial",
+        serviceIds: ["srv-source"],
+        services: [
+          {
+            serviceId: "srv-source",
+            latestSuccessfulDeployId: "dep-source",
+            observedAt: "2026-08-13T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+    dependencies.ledger.listProvisioningIntents.mockResolvedValue([]);
+    await expect(
+      new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+        rollout,
+      ),
+    ).resolves.toMatchObject({
+      outcome: "compensated",
+      externalEffects: { intentCount: 0 },
+    });
+    expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceWriterServiceIds: ["srv-source"] }),
+    );
+    expect(
+      dependencies.ledger.observeCompensationCheckpoint.mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      dependencies.ledger.listProvisioningIntents.mock.invocationCallOrder[0]!,
+    );
+    expect(
+      dependencies.ledger.listProvisioningIntents.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      dependencies.provider.compensateAndObserve.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it.each([
+    ["first", ["srv-a"]],
+    ["middle", ["srv-a", "srv-b"]],
+  ] as const)(
+    "resumes exactly the durably observed services after failure following the %s suspend",
+    async (_position, serviceIds) => {
+      const dependencies = ports({
+        activationBoundary: "before",
+        state: "pre_activation",
+        lastStep: RolloutStep.VerifyProtectedEnvironment,
+        receiptCount: 2,
+        sourceFreeze: {
+          status: "partial",
+          serviceIds: [...serviceIds],
+          services: serviceIds.map((serviceId) => ({
+            serviceId,
+            latestSuccessfulDeployId: `dep-${serviceId}`,
+            observedAt: "2026-08-13T00:00:00.000Z",
+          })),
+        },
+      });
+      dependencies.ledger.listProvisioningIntents.mockResolvedValue([]);
+      await new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+        rollout,
+      );
+      expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceWriterServiceIds: [...serviceIds] }),
+      );
+    },
+  );
+
+  it("never forwards a pre-suspended unchanged service to the provider", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastStep: RolloutStep.VerifyProtectedEnvironment,
+      receiptCount: 2,
+      sourceFreeze: {
+        status: "complete",
+        serviceIds: ["srv-mutated-a", "srv-mutated-b"],
+        services: ["srv-mutated-a", "srv-mutated-b"].map((serviceId) => ({
+          serviceId,
+          latestSuccessfulDeployId: `dep-${serviceId}`,
+          observedAt: "2026-08-13T00:00:00.000Z",
+        })),
+      },
+    });
+    dependencies.ledger.listProvisioningIntents.mockResolvedValue([]);
+
+    await new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+      rollout,
+    );
+
+    expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceWriterServiceIds: ["srv-mutated-a", "srv-mutated-b"],
+      }),
+    );
+    expect(
+      dependencies.provider.compensateAndObserve.mock.calls[0]?.[0]
+        .sourceWriterServiceIds,
+    ).not.toContain("srv-pre-suspended");
+  });
+
+  it.each(["unknown"] as const)(
+    "denies zero intents when freeze evidence is %s",
+    async (status) => {
+      const dependencies = ports({
+        activationBoundary: "before",
+        state: "pre_activation",
+        lastStep: RolloutStep.VerifyProtectedEnvironment,
+        receiptCount: 2,
+      });
+      dependencies.ledger.listProvisioningIntents.mockResolvedValue([]);
+      dependencies.ledger.observeCompensationCheckpoint.mockResolvedValue({
+        activationBoundary: "before",
+        state: "pre_activation",
+        lastStep: RolloutStep.VerifyProtectedEnvironment,
+        receiptCount: 2,
+        lastReceiptSha256: `sha256:${"0".repeat(64)}`,
+        sourceFreeze: { status, serviceIds: [], services: [] },
+      });
+      await expect(
+        new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+          rollout,
+        ),
+      ).resolves.toMatchObject({
+        outcome: "denied",
+        externalEffects: { reason: "missing_evidence" },
+      });
+      expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns a durable retryable denial for unknown nonempty freeze evidence", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastStep: RolloutStep.VerifyProtectedEnvironment,
+      receiptCount: 2,
+      sourceFreeze: {
+        status: "unknown",
+        serviceIds: ["srv-source"],
+        services: [
+          {
+            serviceId: "srv-source",
+            latestSuccessfulDeployId: "dep-source",
+            observedAt: "2026-08-13T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+    dependencies.ledger.listProvisioningIntents.mockResolvedValue([]);
+    const useCase = new ReleaseCompensationReconciliationUseCase(dependencies);
+    await expect(useCase.execute(rollout)).resolves.toMatchObject({
+      outcome: "denied",
+      externalEffects: { reason: "missing_evidence" },
+    });
+    await expect(useCase.execute(rollout)).resolves.toMatchObject({
+      outcome: "denied",
+      externalEffects: { reason: "missing_evidence" },
+    });
+    expect(
+      dependencies.ledger.observeCompensationCheckpoint,
+    ).toHaveBeenCalledTimes(2);
+    expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+    expect(dependencies.ledger.compareAndSet).not.toHaveBeenCalled();
+  });
+
+  it("treats proven no source mutation and zero runner intents as a no-op", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastStep: RolloutStep.VerifyProtectedEnvironment,
+      receiptCount: 2,
+    });
+    dependencies.ledger.listProvisioningIntents.mockResolvedValue([]);
+    dependencies.ledger.observeCompensationCheckpoint.mockResolvedValue({
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastStep: RolloutStep.VerifyProtectedEnvironment,
+      receiptCount: 2,
+      lastReceiptSha256: `sha256:${"0".repeat(64)}`,
+      sourceFreeze: { status: "none", serviceIds: [], services: [] },
+    });
+    await expect(
+      new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+        rollout,
+      ),
+    ).resolves.toMatchObject({ outcome: "no_op" });
+    expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+    expect(dependencies.provider.compensateAndObserve).not.toHaveBeenCalled();
+    expect(dependencies.ledger.reconcileRollout).not.toHaveBeenCalled();
+  });
+
   it("keeps source frozen on timeout evidence", async () => {
     const dependencies = ports({
       activationBoundary: "before",
@@ -266,5 +527,97 @@ describe("release compensation reconciliation", () => {
     });
     expect(dependencies.authority.decide).not.toHaveBeenCalled();
     expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+  });
+
+  it("denies a late unsafe identity after begin before any recovery effect", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastStep: RolloutStep.FreezeProviderServices,
+      receiptCount: 3,
+    });
+    const safe = await dependencies.ledger.listProvisioningIntents();
+    dependencies.ledger.listProvisioningIntents
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValue([
+        {
+          id: "intent-role",
+          effect: {
+            state: "blocked",
+            ownerId: "owner-role",
+            epoch: 2,
+            providerId: "job-late",
+            safeForCompensation: false,
+            reconciliation: {
+              result: "blocked",
+              safeForCompensation: false,
+              reason: "duplicate",
+            },
+          },
+        },
+      ]);
+
+    await expect(
+      new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+        rollout,
+      ),
+    ).resolves.toMatchObject({
+      outcome: "denied",
+      externalEffects: { reason: "duplicate", safeForCompensation: false },
+    });
+    expect(dependencies.ledger.compareAndSet).toHaveBeenCalledTimes(1);
+    expect(dependencies.authority.decide).not.toHaveBeenCalled();
+    expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+    expect(dependencies.provider.compensateAndObserve).not.toHaveBeenCalled();
+  });
+
+  it("does not complete when a late unsafe identity follows the recovery effect", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "compensating",
+      lastStep: RolloutStep.BeginCompensation,
+      receiptCount: 4,
+    });
+    const safe = await dependencies.ledger.listProvisioningIntents();
+    const blocked = [
+      {
+        id: "intent-role",
+        effect: {
+          state: "blocked",
+          ownerId: "owner-role",
+          epoch: 2,
+          providerId: "job-late",
+          safeForCompensation: false,
+          reconciliation: {
+            result: "blocked" as const,
+            safeForCompensation: false,
+            reason: "duplicate" as const,
+          },
+        },
+      },
+    ];
+    dependencies.ledger.listProvisioningIntents
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValue(blocked);
+
+    await expect(
+      new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+        rollout,
+      ),
+    ).resolves.toMatchObject({
+      outcome: "denied",
+      externalEffects: { reason: "duplicate", safeForCompensation: false },
+    });
+    expect(dependencies.compensateDatabase).toHaveBeenCalledTimes(1);
+    expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledTimes(1);
+    expect(dependencies.ledger.compareAndSet).toHaveBeenCalledTimes(1);
+    expect(dependencies.ledger.compareAndSet).toHaveBeenCalledWith(
+      expect.objectContaining({ step: RolloutStep.EffectCompensation }),
+    );
+    expect(dependencies.ledger.reconcileRollout).not.toHaveBeenCalled();
   });
 });

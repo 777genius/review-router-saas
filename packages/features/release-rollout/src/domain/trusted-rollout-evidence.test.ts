@@ -155,10 +155,43 @@ const receipts = steps.map((step, index) => {
 const activation = receipts.find(
   (receipt) => receipt.step === RolloutStep.ActivateTargetGeneration,
 )! as ActivationReceipt;
+const releaseImageIdentity = {
+  schemaVersion: "reviewrouter.hosted-runtime-image.v1" as const,
+  repository: base.execution.controlRepository,
+  commit: base.expectedCommitSha,
+  imageUrl: `ghcr.io/777genius/review-router-saas-runtime@${digest}`,
+  imageDigest: digest,
+};
+const imageRepository = "ghcr.io/777genius/review-router-saas-runtime";
+const provenancePolicySha256 = `sha256:${"e".repeat(64)}`;
 const create = () =>
   assembleTrustedRolloutEvidence({
     rolloutId: base.rolloutId,
     releaseCommitSha: base.expectedCommitSha,
+    releaseImageProvenance: {
+      schemaVersion: "reviewrouter.release-image-provenance.v2",
+      identity: releaseImageIdentity,
+      claim: {
+        identitySha256: `sha256:${sha256Canonical(releaseImageIdentity)}`,
+        sourceRepository: base.execution.controlRepository,
+        sourceRevision: base.expectedCommitSha,
+        imageRepository,
+        buildRunId: "321",
+        artifactId: "654",
+        artifactName: "hosted-runtime-image-v1.2.3",
+      },
+      verification: {
+        policySha256: provenancePolicySha256,
+        verifiedAt: "2026-08-12T00:00:00.000Z",
+      },
+    },
+    targetDeploys: [
+      {
+        serviceId: "srv-api",
+        deployId: "dep-release",
+        imageDigest: digest,
+      },
+    ],
     execution: base.execution,
     runners: [runner("job-role", "role"), runner("job-cutover", "cutover")],
     source: base.source,
@@ -287,6 +320,34 @@ const create = () =>
 describe("trusted post-cleanup evidence", () => {
   it("verifies the two runner lifecycles, receipt chain, activation, service resume, and canary", () => {
     expect(assertTrustedRolloutEvidence(create())).toEqual(create());
+  });
+  it("rejects a target deploy whose image is not the attested release image", () => {
+    const {
+      schemaVersion: _schemaVersion,
+      evidenceSha256: _hash,
+      ...unsigned
+    } = create();
+    void _schemaVersion;
+    void _hash;
+    expect(() =>
+      assembleTrustedRolloutEvidence({
+        ...unsigned,
+        targetDeploys: [
+          {
+            ...unsigned.targetDeploys[0]!,
+            imageDigest: `sha256:${"f".repeat(64)}`,
+          },
+        ],
+      }),
+    ).toThrow("trusted_rollout_evidence_target_image_invalid");
+  });
+  it("rejects legacy schema 4 evidence instead of implicitly upgrading v1 provenance", () => {
+    expect(() =>
+      assertTrustedRolloutEvidence({
+        ...create(),
+        schemaVersion: 4,
+      } as unknown as TrustedRolloutEvidence),
+    ).toThrow("trusted_rollout_evidence_invariant_failed");
   });
   it.each([
     [

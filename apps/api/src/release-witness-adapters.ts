@@ -13,6 +13,7 @@ import type {
   ProviderTerminalStatus,
   RenderCleanupObservationPort,
 } from "./release-witness-domain.js";
+import { assertCleanupProviderTemporalContract } from "./release-witness-domain.js";
 
 const safePath =
   /^\/runner\/_work\/rr-[A-Za-z0-9][A-Za-z0-9._-]{1,125}(\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})*$/u;
@@ -57,7 +58,8 @@ export class PostgresCleanupObservationAdapter
       typeof seed.jobId !== "string" ||
       typeof seed.serviceId !== "string" ||
       typeof seed.cleanupCanary !== "string" ||
-      typeof seed.observedAt !== "string"
+      typeof seed.observedAt !== "string" ||
+      typeof seed.providerCreationNotBefore !== "string"
     )
       throw new Error("release_witness_seed_invalid");
     return seed as CleanupObservationSeed;
@@ -99,14 +101,11 @@ export class RenderCleanupObservationAdapter implements RenderCleanupObservation
       !job.finishedAt
     )
       throw new Error("release_witness_terminal_job_invalid");
-    const createdAt = timestamp(job.createdAt);
-    const finishedAt = timestamp(job.finishedAt);
-    if (
-      createdAt < timestamp(seed.observedAt) ||
-      finishedAt < createdAt ||
-      finishedAt > Date.now() + 5 * 60_000
-    )
-      throw new Error("release_witness_terminal_window_invalid");
+    const { createdAt, finishedAt } = assertCleanupProviderTemporalContract({
+      seed,
+      providerCreatedAt: job.createdAt,
+      providerFinishedAt: job.finishedAt,
+    });
 
     const service = await this.api.getService(seed.serviceId);
     if (service.id !== seed.serviceId)
@@ -160,6 +159,7 @@ export class RenderCleanupObservationAdapter implements RenderCleanupObservation
       removedPaths: Object.freeze([...removedPaths]) as readonly string[],
       remainingPaths: Object.freeze([]) as readonly [],
       providerLogId: receipt.log.id,
+      providerCreatedAt: job.createdAt,
       providerObservedAt: receipt.log.timestamp,
     });
   }

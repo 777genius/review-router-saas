@@ -27,6 +27,17 @@ export class RenderProviderFreezeAdapter {
     apiKey: string;
     ownerId: string;
     sourceWriterServiceIds: readonly string[];
+    prepareMutation?: (evidence: {
+      serviceId: string;
+      latestSuccessfulDeployId: string;
+      observedAt: string;
+      beforeSuspended: boolean;
+    }) => Promise<boolean>;
+    recordMutation?: (evidence: {
+      serviceId: string;
+      latestSuccessfulDeployId: string;
+      observedAt: string;
+    }) => Promise<void>;
   }): Promise<StepObservation> {
     if (
       !input.apiKey ||
@@ -69,6 +80,7 @@ export class RenderProviderFreezeAdapter {
       .update(JSON.stringify(credentialBearing))
       .digest("hex")}`;
     const observations = [];
+    const durablyRecordedMutationIds: string[] = [];
     for (const serviceId of input.sourceWriterServiceIds) {
       const before = await api.getService(serviceId);
       if (before.ownerId !== input.ownerId || before.autoDeploy !== "no")
@@ -79,26 +91,43 @@ export class RenderProviderFreezeAdapter {
         !deploys.some((deploy) => deploy.status === "live")
       )
         throw new Error("render_freeze_deploy_state_unsafe");
-      if (before.suspended !== "suspended") await api.suspend(serviceId);
+      const latestSuccessfulDeployId = deploys.find(
+        (deploy) => deploy.status === "live",
+      )!.id;
+      const mutationRequired = input.prepareMutation
+        ? await input.prepareMutation({
+            serviceId,
+            latestSuccessfulDeployId,
+            observedAt: new Date().toISOString(),
+            beforeSuspended: before.suspended === "suspended",
+          })
+        : before.suspended !== "suspended";
+      if (mutationRequired && before.suspended !== "suspended")
+        await api.suspend(serviceId);
+      if (!mutationRequired && before.suspended !== "suspended")
+        throw new Error("render_freeze_preparation_state_contradiction");
       let after = await api.getService(serviceId);
       for (
         let poll = 0;
         after.suspended !== "suspended" && poll < 29;
         poll += 1
       ) {
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        await this.sleep(2_000);
         after = await api.getService(serviceId);
       }
       if (after.suspended !== "suspended" || after.autoDeploy !== "no")
         throw new Error("render_freeze_suspension_unproven");
-      observations.push({
+      const serviceObservation = {
         serviceId,
         suspended: true as const,
         observedAt: new Date().toISOString(),
-        latestSuccessfulDeployId: deploys.find(
-          (deploy) => deploy.status === "live",
-        )!.id,
-      });
+        latestSuccessfulDeployId,
+      };
+      if (mutationRequired && input.recordMutation) {
+        await input.recordMutation(serviceObservation);
+        durablyRecordedMutationIds.push(serviceId);
+      }
+      observations.push(serviceObservation);
     }
     return Object.freeze({
       step: RolloutStep.FreezeProviderServices,
@@ -116,6 +145,7 @@ export class RenderProviderFreezeAdapter {
         renderDeployIds: Object.freeze(
           observations.map((item) => item.latestSuccessfulDeployId),
         ),
+        renderMutatedServiceIds: Object.freeze(durablyRecordedMutationIds),
       },
     });
   }

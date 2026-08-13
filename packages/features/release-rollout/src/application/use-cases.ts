@@ -32,6 +32,10 @@ export class ReleaseRolloutUseCases {
       services: TargetServicesPort;
       evidence: TrustedEvidencePort;
       ledger: RolloutLedgerPort;
+      /** Unified authority-mediated compensation implementation. */
+      compensation?: {
+        recover(rollout: ReleaseRollout): Promise<ReleaseRollout>;
+      };
     },
   ) {}
 
@@ -452,52 +456,9 @@ export class ReleaseRolloutUseCases {
       });
       return failed;
     }
-    let compensating = await this.accept(
-      failed,
-      {
-        step: RolloutStep.BeginCompensation,
-        observedAt: new Date().toISOString(),
-        facts: {
-          activationBoundary: "before",
-          sourceSystemIdentifier: r.source.systemIdentifier,
-        },
-      },
-      RolloutStep.BeginCompensation,
-    );
-    const decision = await this.authorize(
-      compensating,
-      ProviderAuthorityOperation.ResumeSource,
-      "before",
-    );
-    const databaseWitness = await this.ports.database.compensateSource(
-      r.source,
-    );
-    const providerWitness = await this.ports.provider.compensateAndObserve({
-      decision,
-      databaseWitness,
-    });
-    compensating = await this.accept(
-      compensating,
-      {
-        step: RolloutStep.EffectCompensation,
-        observedAt: new Date().toISOString(),
-        facts: { databaseWitness, providerWitness },
-        provider: {
-          renderServiceIds: providerWitness.serviceIds,
-          renderDeployIds: providerWitness.deployIds,
-        },
-      },
-      RolloutStep.EffectCompensation,
-    );
-    return await this.accept(
-      compensating,
-      {
-        step: RolloutStep.CompleteCompensation,
-        observedAt: new Date().toISOString(),
-        facts: { activationBoundary: "before", independentWitnesses: true },
-      },
-      RolloutStep.CompleteCompensation,
-    );
+    if (!this.ports.compensation)
+      throw new Error("legacy_compensation_path_disabled");
+    return this.ports.compensation.recover(failed);
   }
 }
 

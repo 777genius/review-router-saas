@@ -17,10 +17,20 @@ import {
   type ProviderAuthorityDecisionPort,
   type ProviderControlPort,
 } from "./ports";
+import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
+import {
+  RecoveryEffectProtocol,
+  type RecoveryEffectAuthorityPort,
+} from "./recovery-effect-protocol";
+import {
+  RecoveryEffectKind,
+  RecoveryEffectState,
+} from "../domain/recovery-effect";
 
 type CompensationPorts = {
+  recoveryOwnerId: string;
   authority: ProviderAuthorityDecisionPort;
-  ledger: {
+  ledger: RecoveryEffectAuthorityPort & {
     observeCompensationCheckpoint(input: {
       rolloutId: string;
       sourceSystemIdentifier: string;
@@ -52,7 +62,11 @@ type CompensationPorts = {
     >;
   };
   compensateDatabase(): Promise<DatabaseAclWitness>;
-  provider: Pick<ProviderControlPort, "compensateAndObserve">;
+  observeDatabaseCompensation(): Promise<DatabaseAclWitness | null>;
+  provider: Pick<ProviderControlPort, "compensateAndObserve"> & {
+    /** The implementation consumes per-service recovery permits internally. */
+    readonly recoveryEffectsAreAuthorityMediated: true;
+  };
 };
 
 export type CompensationSafetyReconciliation = Readonly<{
@@ -141,15 +155,60 @@ export function reconcileCompensationSafety(
   };
 }
 
+function freezeMutationIsProven(checkpoint: CompensationCheckpoint): boolean {
+  const freeze = checkpoint.sourceFreeze;
+  return (
+    (freeze.status === "partial" || freeze.status === "complete") &&
+    sourceWriterServiceIdsAreValid(freeze.serviceIds) &&
+    freeze.services.length === freeze.serviceIds.length &&
+    freeze.services.every(
+      (service, index) =>
+        service.serviceId === freeze.serviceIds[index] &&
+        service.latestSuccessfulDeployId.length > 0 &&
+        Number.isFinite(Date.parse(service.observedAt)),
+    )
+  );
+}
+
+function missingFreezeEvidence(
+  intentCount: number,
+): CompensationSafetyReconciliation {
+  return {
+    result: "blocked",
+    safeForCompensation: false,
+    reason: "missing_evidence",
+    intentCount,
+    intents: [],
+  };
+}
+
+function zeroIntentCompensationSafety(
+  checkpoint: CompensationCheckpoint,
+): CompensationSafetyReconciliation {
+  if (freezeMutationIsProven(checkpoint))
+    return {
+      result: "clean",
+      safeForCompensation: true,
+      intentCount: 0,
+      intents: [],
+    };
+  return missingFreezeEvidence(0);
+}
+
 export class ReleaseCompensationReconciliationUseCase {
-  constructor(private readonly ports: CompensationPorts) {}
+  private readonly recoveryEffects: RecoveryEffectProtocol;
+  constructor(private readonly ports: CompensationPorts) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/u.test(ports.recoveryOwnerId))
+      throw new Error("release_compensation_recovery_owner_invalid");
+    this.recoveryEffects = new RecoveryEffectProtocol(ports.ledger);
+  }
 
   async execute(rollout: ReleaseRollout): Promise<{
-    outcome: "compensated" | "forward_only" | "denied";
+    outcome: "compensated" | "forward_only" | "denied" | "no_op";
     externalEffects?: CompensationSafetyReconciliation;
     reconciliation: unknown;
   }> {
-    let checkpoint = await this.checkpoint(rollout);
+    let { checkpoint, externalEffects } = await this.safetySnapshot(rollout);
     if (checkpoint.activationBoundary !== "before")
       return {
         outcome: "forward_only",
@@ -158,9 +217,20 @@ export class ReleaseCompensationReconciliationUseCase {
         ),
       };
 
-    const externalEffects = reconcileCompensationSafety(
-      await this.ports.ledger.listProvisioningIntents(rollout.rolloutId),
-    );
+    if (
+      externalEffects.intentCount === 0 &&
+      checkpoint.sourceFreeze.status === "none"
+    )
+      return {
+        outcome: "no_op",
+        externalEffects: {
+          result: "clean",
+          safeForCompensation: true,
+          intentCount: 0,
+          intents: [],
+        },
+        reconciliation: { state: "pre_activation_no_source_mutation" },
+      };
     if (!externalEffects.safeForCompensation)
       return {
         outcome: "denied",
@@ -169,14 +239,20 @@ export class ReleaseCompensationReconciliationUseCase {
       };
 
     if (checkpoint.state === "pre_activation")
-      checkpoint = await this.append(rollout, checkpoint, {
+      await this.append(rollout, checkpoint, {
         step: RolloutStep.BeginCompensation,
         observedAt: new Date().toISOString(),
         facts: {
           activationBoundary: "before",
           sourceSystemIdentifier: rollout.source.systemIdentifier,
+          sourceFreeze: checkpoint.sourceFreeze,
+          externalEffects,
         },
       });
+
+    ({ checkpoint, externalEffects } = await this.safetySnapshot(rollout));
+    if (!externalEffects.safeForCompensation)
+      return { outcome: "denied", externalEffects, reconciliation: null };
 
     if (
       checkpoint.state === "compensating" &&
@@ -202,12 +278,56 @@ export class ReleaseCompensationReconciliationUseCase {
         Number.isNaN(Date.parse(decision.decidedAt))
       )
         throw new Error("provider_authority_decision_invalid");
-      const databaseWitness = await this.ports.compensateDatabase();
+
+      ({ checkpoint, externalEffects } = await this.safetySnapshot(rollout));
+      if (!externalEffects.safeForCompensation)
+        return { outcome: "denied", externalEffects, reconciliation: null };
+      if (
+        checkpoint.state !== "compensating" ||
+        checkpoint.lastStep !== RolloutStep.BeginCompensation
+      )
+        throw new Error("release_compensation_checkpoint_changed");
+
+      let databaseWitness: DatabaseAclWitness | undefined;
+      const databaseEffect = await this.recoveryEffects.execute({
+        rolloutId: rollout.rolloutId,
+        effectKey: "restore_database_writes",
+        kind: RecoveryEffectKind.RestoreDatabaseWrites,
+        ownerId: this.ports.recoveryOwnerId,
+        effect: async () => {
+          databaseWitness = await this.ports.compensateDatabase();
+          return databaseWitness;
+        },
+        observe: async (witness) => witness,
+        reconcileConsumed: () => this.ports.observeDatabaseCompensation(),
+      });
+      if (databaseEffect.state === RecoveryEffectState.ForwardRepair)
+        return {
+          outcome: "forward_only",
+          externalEffects,
+          reconciliation: await this.ports.ledger.reconcileRollout(
+            rollout.rolloutId,
+          ),
+        };
+      if (databaseEffect.state !== RecoveryEffectState.Completed)
+        throw new Error("release_database_recovery_effect_ambiguous");
+      databaseWitness ??= databaseEffect.observation as DatabaseAclWitness;
+
+      ({ checkpoint, externalEffects } = await this.safetySnapshot(rollout));
+      if (!externalEffects.safeForCompensation)
+        return { outcome: "denied", externalEffects, reconciliation: null };
+
       const providerWitness = await this.ports.provider.compensateAndObserve({
         decision,
         databaseWitness,
+        sourceWriterServiceIds: checkpoint.sourceFreeze.serviceIds,
       });
-      checkpoint = await this.append(rollout, checkpoint, {
+
+      ({ checkpoint, externalEffects } = await this.safetySnapshot(rollout));
+      if (!externalEffects.safeForCompensation)
+        return { outcome: "denied", externalEffects, reconciliation: null };
+
+      await this.append(rollout, checkpoint, {
         step: RolloutStep.EffectCompensation,
         observedAt: new Date().toISOString(),
         facts: { databaseWitness, providerWitness },
@@ -216,20 +336,28 @@ export class ReleaseCompensationReconciliationUseCase {
           renderDeployIds: providerWitness.deployIds,
         },
       });
+
+      ({ checkpoint, externalEffects } = await this.safetySnapshot(rollout));
+      if (!externalEffects.safeForCompensation)
+        return { outcome: "denied", externalEffects, reconciliation: null };
     }
 
     if (
       checkpoint.state === "compensating" &&
       checkpoint.lastStep === RolloutStep.EffectCompensation
     )
-      checkpoint = await this.append(rollout, checkpoint, {
+      await this.append(rollout, checkpoint, {
         step: RolloutStep.CompleteCompensation,
         observedAt: new Date().toISOString(),
         facts: { activationBoundary: "before", independentWitnesses: true },
       });
 
+    ({ checkpoint, externalEffects } = await this.safetySnapshot(rollout));
+    if (!externalEffects.safeForCompensation)
+      return { outcome: "denied", externalEffects, reconciliation: null };
     if (checkpoint.state !== "compensated")
       throw new Error("release_compensation_checkpoint_incomplete");
+
     return {
       outcome: "compensated",
       externalEffects,
@@ -245,6 +373,25 @@ export class ReleaseCompensationReconciliationUseCase {
       sourceSystemIdentifier: rollout.source.systemIdentifier,
       targetSystemIdentifier: rollout.target.systemIdentifier,
     });
+  }
+
+  private async safetySnapshot(rollout: ReleaseRollout): Promise<{
+    checkpoint: CompensationCheckpoint;
+    externalEffects: CompensationSafetyReconciliation;
+  }> {
+    const checkpoint = await this.checkpoint(rollout);
+    const intents = await this.ports.ledger.listProvisioningIntents(
+      rollout.rolloutId,
+    );
+    const runnerSafety = intents.length
+      ? reconcileCompensationSafety(intents)
+      : zeroIntentCompensationSafety(checkpoint);
+    return {
+      checkpoint,
+      externalEffects: freezeMutationIsProven(checkpoint)
+        ? runnerSafety
+        : missingFreezeEvidence(intents.length),
+    };
   }
 
   private async append(

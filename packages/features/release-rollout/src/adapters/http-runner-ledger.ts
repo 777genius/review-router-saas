@@ -19,9 +19,11 @@ import type { RunnerIdentity } from "../domain/release-rollout";
 import type { CompensationCheckpoint } from "../application/ports";
 import {
   assertExternalEffectRecord,
+  assertRunnerProvisioningIntentRecord,
   type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
 } from "../domain/external-effect";
+import { assertRecoveryEffectRecord } from "../domain/recovery-effect";
 
 export class AuthenticatedRunnerLedgerAdapter
   implements
@@ -80,31 +82,13 @@ export class AuthenticatedRunnerLedgerAdapter
     const value = await this.request(
       `/v1/runner-jobs/intents?rollout_id=${encodeURIComponent(rolloutId)}`,
     );
-    if (
-      !Array.isArray(value) ||
-      value.some(
-        (entry) =>
-          !entry ||
-          typeof entry !== "object" ||
-          typeof (entry as RunnerProvisioningIntent).id !== "string" ||
-          typeof (entry as RunnerProvisioningIntent).startCommandSha256 !==
-            "string" ||
-          !(entry as RunnerProvisioningIntent).effect ||
-          ((entry as RunnerProvisioningIntent).creationLeaseOwner !== null &&
-            typeof (entry as RunnerProvisioningIntent).creationLeaseOwner !==
-              "string") ||
-          ((entry as RunnerProvisioningIntent).creationLeaseExpiresAt !==
-            null &&
-            typeof (entry as RunnerProvisioningIntent)
-              .creationLeaseExpiresAt !== "string") ||
-          ((entry as RunnerProvisioningIntent).creationLeaseOwner === null) !==
-            ((entry as RunnerProvisioningIntent).creationLeaseExpiresAt ===
-              null),
-      )
-    )
+    if (!Array.isArray(value))
       throw new Error("runner_ledger_provisioning_intents_invalid");
-    for (const entry of value)
-      assertExternalEffectRecord((entry as RunnerProvisioningIntent).effect);
+    try {
+      for (const entry of value) assertRunnerProvisioningIntentRecord(entry);
+    } catch {
+      throw new Error("runner_ledger_provisioning_intents_invalid");
+    }
     return value as RunnerProvisioningIntent[];
   }
   async acquireProviderDispatchPermit(
@@ -406,6 +390,9 @@ export class AuthenticatedRunnerLedgerAdapter
     const value = (await this.request(
       `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/compensation-checkpoint?source_system_identifier=${encodeURIComponent(input.sourceSystemIdentifier)}&target_system_identifier=${encodeURIComponent(input.targetSystemIdentifier)}`,
     )) as Record<string, unknown>;
+    const freeze = value.sourceFreeze as Record<string, unknown> | undefined;
+    const freezeServices = freeze?.services;
+    const freezeServiceIds = freeze?.serviceIds;
     if (
       !["before", "uncertain", "activated"].includes(
         String(value.activationBoundary),
@@ -422,7 +409,33 @@ export class AuthenticatedRunnerLedgerAdapter
       !/^sha256:[a-f0-9]{64}$/u.test(String(value.lastReceiptSha256)) ||
       (value.lastStep !== null && typeof value.lastStep !== "string") ||
       !Number.isSafeInteger(value.receiptCount) ||
-      Number(value.receiptCount) < 0
+      Number(value.receiptCount) < 0 ||
+      !freeze ||
+      !["none", "partial", "complete", "unknown"].includes(
+        String(freeze.status),
+      ) ||
+      !Array.isArray(freezeServices) ||
+      !Array.isArray(freezeServiceIds) ||
+      freezeServices.length !== freezeServiceIds.length ||
+      new Set(freezeServiceIds).size !== freezeServiceIds.length ||
+      freezeServices.some((service, index) => {
+        if (!service || typeof service !== "object" || Array.isArray(service))
+          return true;
+        const item = service as Record<string, unknown>;
+        return (
+          item.serviceId !== freezeServiceIds[index] ||
+          !/^srv-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(
+            String(item.serviceId),
+          ) ||
+          typeof item.latestSuccessfulDeployId !== "string" ||
+          !item.latestSuccessfulDeployId ||
+          typeof item.observedAt !== "string" ||
+          !Number.isFinite(Date.parse(item.observedAt))
+        );
+      }) ||
+      (freeze.status === "none" && freezeServiceIds.length > 0) ||
+      ((freeze.status === "partial" || freeze.status === "complete") &&
+        freezeServiceIds.length === 0)
     )
       throw new Error("runner_ledger_compensation_checkpoint_invalid");
     return value as unknown as CompensationCheckpoint;
@@ -448,9 +461,10 @@ export class AuthenticatedRunnerLedgerAdapter
   async append(
     checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,
   ): Promise<ServiceTransitionCheckpoint> {
+    const { rolloutId, ...body } = checkpoint;
     const value = (await this.request(
-      `/v1/service-transitions/${encodeURIComponent(checkpoint.rolloutId)}/checkpoints`,
-      { method: "POST", body: JSON.stringify(checkpoint) },
+      `/v1/service-transitions/${encodeURIComponent(rolloutId)}/checkpoints`,
+      { method: "POST", body: JSON.stringify(body) },
     )) as Record<string, unknown>;
     if (!value.checkpoint || typeof value.checkpoint !== "object")
       throw new Error("runner_ledger_service_transition_checkpoint_invalid");
@@ -474,6 +488,107 @@ export class AuthenticatedRunnerLedgerAdapter
       `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/complete`,
       { method: "POST", body: JSON.stringify({ outcome: input.outcome }) },
     );
+  }
+  async intendRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["intendRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["intendRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/intend`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  async claimRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["claimRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["claimRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/claim`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  async consumeRecoveryEffectPermit(
+    input: Parameters<
+      ServiceTransitionLedger["consumeRecoveryEffectPermit"]
+    >[0],
+  ): ReturnType<ServiceTransitionLedger["consumeRecoveryEffectPermit"]> {
+    return assertRecoveryEffectRecord(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/consume`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  async completeRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["completeRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["completeRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/complete`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  async recordSourceFreezeMutation(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    serviceId: string;
+    latestSuccessfulDeployId: string;
+    observedAt: string;
+    declaredServiceIds: readonly string[];
+  }): Promise<"recorded" | "existing"> {
+    const value = (await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/source-freeze-mutations`,
+      { method: "POST", body: JSON.stringify(input) },
+    )) as Record<string, unknown>;
+    if (value.result !== "recorded" && value.result !== "existing")
+      throw new Error("runner_ledger_source_freeze_record_invalid");
+    return value.result;
+  }
+  async prepareSourceFreezeMutation(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    serviceId: string;
+    latestSuccessfulDeployId: string;
+    observedAt: string;
+    declaredServiceIds: readonly string[];
+    beforeSuspended: boolean;
+  }): Promise<boolean> {
+    const value = (await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/source-freeze-preparations`,
+      { method: "POST", body: JSON.stringify(input) },
+    )) as Record<string, unknown>;
+    if (typeof value.mutationRequired !== "boolean")
+      throw new Error("runner_ledger_source_freeze_prepare_invalid");
+    return value.mutationRequired;
+  }
+  async completeSourceFreeze(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    declaredServiceIds: readonly string[];
+    observedAt: string;
+  }): Promise<"recorded" | "existing"> {
+    const value = (await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/source-freeze-completion`,
+      { method: "POST", body: JSON.stringify(input) },
+    )) as Record<string, unknown>;
+    if (value.result !== "recorded" && value.result !== "existing")
+      throw new Error("runner_ledger_source_freeze_complete_invalid");
+    return value.result;
   }
   async verifyFinalAuthority(input: {
     rolloutId: string;

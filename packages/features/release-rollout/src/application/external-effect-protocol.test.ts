@@ -177,4 +177,33 @@ describe("external effect reconciliation application boundary", () => {
     });
     expect(useCase).not.toHaveProperty("cleaned");
   });
+
+  it("keeps provider timeout discovery retryable and compensation-unsafe", async () => {
+    const reconcile = vi.fn().mockResolvedValue({
+      state: "dispatching",
+      ownerId: "controller-a",
+      epoch: 1,
+      providerId: null,
+      safeForCompensation: false,
+    });
+    const useCase = new ExternalEffectReconciliationUseCase({ reconcile });
+
+    await expect(
+      useCase.discover({
+        effectId: "e",
+        ownerId: "controller-a",
+        expectedEpoch: 1,
+        matchingProviderIds: [],
+        timedOut: true,
+      }),
+    ).resolves.toMatchObject({
+      record: { state: "dispatching", safeForCompensation: false },
+      reconciliation: { result: "pending", safeForCompensation: false },
+    });
+    expect(reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reconciliation: { result: "pending", safeForCompensation: false },
+      }),
+    );
+  });
 });

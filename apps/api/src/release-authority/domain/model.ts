@@ -3,8 +3,10 @@ import type {
   ActivationReceipt,
   ExternalEffectControlReconciliation,
   ExternalEffectRecord,
+  RunnerProvisioningIntentRecord,
   ProviderAuthorityDecision,
   ProviderAuthorityRequest,
+  ProviderCreationBoundary,
   RunnerIdentity,
   StepObservation,
   TargetSwitchFence,
@@ -35,24 +37,12 @@ export type RolloutBinding = {
   sourceSystemIdentifier: string;
   targetSystemIdentifier: string;
 };
-export type ProvisioningIntent = {
-  id: string;
-  rolloutId: string;
-  serviceId: string;
-  lifecycle: "role" | "cutover";
-  workflowJobId: string;
-  runnerName: string;
-  createdAt: string;
-  startCommandSha256: string;
-  creationLeaseOwner: string | null;
-  creationLeaseExpiresAt: string | null;
-  effect: ExternalEffectRecord;
-};
+export type ProvisioningIntent = RunnerProvisioningIntentRecord;
 export type CreateProvisioningIntent = Omit<
   ProvisioningIntent,
   "creationLeaseOwner" | "creationLeaseExpiresAt" | "effect"
 > & { creationLeaseOwner: string };
-export type PersistedJob = {
+export type PersistedJob = ProviderCreationBoundary & {
   rolloutId: string;
   serviceId: string;
   jobId: string;
@@ -84,6 +74,7 @@ export type PersistedProviderCleanupWitness = Readonly<{
   removedPaths: readonly string[];
   remainingPaths: readonly [];
   providerLogId: string;
+  providerCreatedAt: string;
   providerObservedAt: string;
 }>;
 export type IndependentCleanupWitness = Readonly<{
@@ -111,9 +102,39 @@ export type ReleaseCompensationCheckpoint = Readonly<{
   lastReceiptSha256: string;
   lastStep: string | null;
   receiptCount: number;
+  sourceFreeze: Readonly<{
+    status: "none" | "partial" | "complete" | "unknown";
+    serviceIds: readonly string[];
+    services: readonly Readonly<{
+      serviceId: string;
+      latestSuccessfulDeployId: string;
+      observedAt: string;
+    }>[];
+  }>;
 }>;
+export type RecordSourceFreezeMutation = RolloutBinding & {
+  serviceId: string;
+  latestSuccessfulDeployId: string;
+  observedAt: string;
+  declaredServiceIds: readonly string[];
+};
+export type PrepareSourceFreezeMutation = RecordSourceFreezeMutation & {
+  beforeSuspended: boolean;
+};
 
 export interface ReleaseAuthorityLedgerPort {
+  completeSourceFreeze(
+    input: RolloutBinding & {
+      declaredServiceIds: readonly string[];
+      observedAt: string;
+    },
+  ): Promise<"recorded" | "existing">;
+  prepareSourceFreezeMutation(
+    input: PrepareSourceFreezeMutation,
+  ): Promise<boolean>;
+  recordSourceFreezeMutation(
+    input: RecordSourceFreezeMutation,
+  ): Promise<"recorded" | "existing">;
   claim(input: RolloutBinding): Promise<"claimed" | "duplicate">;
   compareAndSet(
     input: RolloutBinding & {

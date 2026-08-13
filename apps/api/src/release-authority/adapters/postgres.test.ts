@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
+  ReleaseAuthorityAdapterUnexpectedError,
   RoutineReleaseControlLedgerAdapter,
   RoutineRunnerCleanupWitnessAdapter,
 } from "./postgres";
@@ -16,6 +17,12 @@ class QueryRecorder {
   async $queryRaw<T>(query: Prisma.Sql): Promise<T> {
     this.queries.push(query);
     const text = query.text;
+    if (text.includes("release_source_freeze_complete"))
+      return [{ value: "recorded" }] as T;
+    if (text.includes("release_source_freeze_prepare"))
+      return [{ value: true }] as T;
+    if (text.includes("release_source_freeze_record"))
+      return [{ value: "recorded" }] as T;
     const value = text.includes("authorize_activation")
       ? {
           rolloutId: "rollout",
@@ -84,7 +91,7 @@ class QueryRecorder {
 
 const expectJsonbBinding = (query: Prisma.Sql, expected: unknown): void => {
   const serialized = JSON.stringify(expected);
-  const indexes = query.values.flatMap((value, index) =>
+  const indexes = query.values.flatMap((value: unknown, index: number) =>
     value === serialized ? [index] : [],
   );
   expect(indexes.length).toBeGreaterThan(0);
@@ -97,6 +104,171 @@ const expectJsonbBinding = (query: Prisma.Sql, expected: unknown): void => {
 };
 
 describe("release authority postgres JSONB bindings", () => {
+  it("keeps late identity persistence and terminalization on the production routines", async () => {
+    const recorder = new QueryRecorder();
+    const adapter = new RoutineReleaseControlLedgerAdapter(
+      recorder as unknown as PrismaClient,
+    );
+    const job = {
+      rolloutId: "rollout-late",
+      serviceId: "svc-late",
+      jobId: "job-late",
+      observedAt,
+      providerCreationNotBefore: observedAt,
+      cleanupCanary: "rr-cleanup:rollout-late:rr-late",
+      lifecycle: "role" as const,
+      provisioningIntentId: `rri-${"d".repeat(64)}`,
+    };
+    const observation = {
+      step: "cleanup_role_runner",
+      observedAt,
+      facts: { terminal: true },
+    };
+
+    await adapter.persistJob(job);
+    await adapter.markTerminal("job-late", observation as never);
+
+    expect(recorder.queries[0]?.text).toContain("release_runner_persist_job");
+    expectJsonbBinding(recorder.queries[0]!, job);
+    expect(recorder.queries[1]?.text).toContain("release_runner_mark_terminal");
+    expectJsonbBinding(recorder.queries[1]!, observation);
+    expect(recorder.queries.map(({ text }) => text).join("\n")).not.toContain(
+      "runner_job SET",
+    );
+  });
+
+  it("binds durable source-freeze inventory as JSONB", async () => {
+    const recorder = new QueryRecorder();
+    const ledger = new RoutineReleaseControlLedgerAdapter(
+      recorder as unknown as PrismaClient,
+    );
+    await expect(
+      ledger.prepareSourceFreezeMutation({
+        rolloutId: "rollout",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        serviceId: "srv-a",
+        latestSuccessfulDeployId: "dep-a",
+        observedAt,
+        declaredServiceIds: ["srv-a", dangerous],
+        beforeSuspended: false,
+      }),
+    ).resolves.toBe(true);
+    expectJsonbBinding(recorder.queries.at(-1)!, ["srv-a", dangerous]);
+    await expect(
+      ledger.completeSourceFreeze({
+        rolloutId: "rollout",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        declaredServiceIds: ["srv-a", dangerous],
+        observedAt,
+      }),
+    ).resolves.toBe("recorded");
+    expectJsonbBinding(recorder.queries.at(-1)!, ["srv-a", dangerous]);
+    await expect(
+      ledger.recordSourceFreezeMutation({
+        rolloutId: "rollout",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        serviceId: "srv-a",
+        latestSuccessfulDeployId: "dep-a",
+        observedAt,
+        declaredServiceIds: ["srv-a", dangerous],
+      }),
+    ).resolves.toBe("recorded");
+    expectJsonbBinding(recorder.queries.at(-1)!, ["srv-a", dangerous]);
+  });
+  it("serializes prepared, dispatching, bound, and cleaned list results with owner retention", async () => {
+    const ownerId = "rrc-00000000-0000-4000-8000-000000000001";
+    const base = {
+      rolloutId: "rollout",
+      serviceId: "service",
+      lifecycle: "role",
+      workflowJobId: "123",
+      runnerName: "runner",
+      createdAt: observedAt,
+      startCommandSha256: `sha256:${"b".repeat(64)}`,
+      creationLeaseOwner: ownerId,
+    };
+    const intents = [
+      {
+        ...base,
+        id: `rri-${"1".repeat(64)}`,
+        creationLeaseExpiresAt: "2026-08-12T00:02:00.000Z",
+        effect: {
+          state: "prepared",
+          ownerId,
+          epoch: 0,
+          providerId: null,
+          safeForCompensation: false,
+        },
+      },
+      ...(["dispatching", "bound", "cleaned"] as const).map((state, index) => ({
+        ...base,
+        id: `rri-${String(index + 2).repeat(64)}`,
+        creationLeaseExpiresAt: null,
+        effect: {
+          state,
+          ownerId,
+          epoch: 1,
+          providerId: state === "dispatching" ? null : `job-${index}`,
+          safeForCompensation: state === "cleaned",
+        },
+      })),
+    ];
+    const prisma = {
+      $queryRaw: async () => [{ value: intents }],
+    } as unknown as PrismaClient;
+    const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+    await expect(adapter.listIntents("rollout")).resolves.toEqual(intents);
+  });
+
+  it("rejects a list result whose expiry contradicts the canonical effect state", async () => {
+    const ownerId = "rrc-00000000-0000-4000-8000-000000000001";
+    const prisma = {
+      $queryRaw: async () => [
+        {
+          value: [
+            {
+              id: `rri-${"1".repeat(64)}`,
+              rolloutId: "rollout",
+              serviceId: "service",
+              lifecycle: "role",
+              workflowJobId: "123",
+              runnerName: "runner",
+              createdAt: observedAt,
+              startCommandSha256: `sha256:${"b".repeat(64)}`,
+              creationLeaseOwner: ownerId,
+              creationLeaseExpiresAt: "2026-08-12T00:02:00.000Z",
+              effect: {
+                state: "dispatching",
+                ownerId,
+                epoch: 1,
+                providerId: null,
+                safeForCompensation: false,
+              },
+            },
+          ],
+        },
+      ],
+    } as unknown as PrismaClient;
+    const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+    await expect(adapter.listIntents("rollout")).rejects.toThrow(
+      "release_runner_intents_invalid",
+    );
+  });
+
   it("maps only known authority SQL conflicts to HTTP 409", async () => {
     const conflict = Object.assign(new Error("raw query failed"), {
       code: "P2010",
@@ -126,6 +298,27 @@ describe("release authority postgres JSONB bindings", () => {
       statusCode: 409,
     });
 
+    conflict.meta.message =
+      "release runner duplicate effects unsafe for activation";
+    await expect(
+      adapter.authorizeActivation({
+        rolloutId: "rollout",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        jobId: "9",
+        previousReceiptSha256: zeroReceipt,
+        targetDeployIds: ["dep-a"],
+        postgresMajor: 17,
+        migrationChecksum: `sha256:${"7".repeat(64)}`,
+      }),
+    ).rejects.toMatchObject({
+      message: "release_authority_conflict",
+      statusCode: 409,
+    });
+
     conflict.meta.message = "unexpected authority failure";
     await expect(
       adapter.claim({
@@ -136,7 +329,127 @@ describe("release authority postgres JSONB bindings", () => {
         sourceSystemIdentifier: "100",
         targetSystemIdentifier: "200",
       }),
-    ).rejects.toBe(conflict);
+    ).rejects.toBeInstanceOf(ReleaseAuthorityAdapterUnexpectedError);
+  });
+
+  it.each([
+    "release source resume lacks rollout suspension evidence",
+    "release target service transition incomplete",
+    "release source recovery manifest mismatch",
+    "release source service recovery incomplete",
+  ])(
+    "maps selective-recovery precondition conflict to HTTP 409: %s",
+    async (message) => {
+      const conflict = Object.assign(new Error("raw query failed"), {
+        code: "P2010",
+        meta: { code: "P0001", message },
+      });
+      const prisma = {
+        $queryRaw: async () => {
+          throw conflict;
+        },
+      } as unknown as PrismaClient;
+      const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+      await expect(
+        adapter.complete({ rolloutId: "rollout", outcome: "source_recovered" }),
+      ).rejects.toMatchObject({
+        message: "release_authority_conflict",
+        statusCode: 409,
+      });
+    },
+  );
+
+  it("does not expose malformed transition routine failures as client errors", async () => {
+    const malformed = Object.assign(new Error("raw query failed"), {
+      code: "P2010",
+      meta: {
+        code: "P0001",
+        message: "release service transition outcome invalid",
+      },
+    });
+    const prisma = {
+      $queryRaw: async () => {
+        throw malformed;
+      },
+    } as unknown as PrismaClient;
+    const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+    await expect(
+      adapter.complete({ rolloutId: "rollout", outcome: "invalid" as never }),
+    ).rejects.toMatchObject({
+      message: "release_authority_adapter_failure",
+      statusCode: 500,
+      cause: malformed,
+    });
+  });
+
+  it.each([
+    "release service transition intent conflict",
+    "release service transition recovery intent missing",
+    "release service transition checkpoint conflict",
+    "release service transition checkpoint replay conflict",
+    "release service transition checkpoint out of order",
+    "release service transition source verification incomplete",
+    "release service transition source acl not restored",
+    "release source recovery runner effects unsafe",
+  ])(
+    "maps exact durable transition conflicts to HTTP 409: %s",
+    async (message) => {
+      const conflict = Object.assign(new Error("raw query failed"), {
+        code: "P2010",
+        meta: { code: "P0001", message },
+      });
+      const prisma = {
+        $queryRaw: async () => {
+          throw conflict;
+        },
+      } as unknown as PrismaClient;
+      const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+      await expect(
+        adapter.append({
+          rolloutId: "rollout",
+          manifestSha256: zeroReceipt,
+          targetContractSha256: nextReceipt,
+          serviceId: "srv-api",
+          step: "suspended",
+        }),
+      ).rejects.toMatchObject({
+        message: "release_authority_conflict",
+        statusCode: 409,
+      });
+    },
+  );
+
+  it("uses exact conflict classification and sanitizes near matches", async () => {
+    const databaseFailure = Object.assign(new Error("raw query failed"), {
+      code: "P2010",
+      meta: {
+        code: "P0001",
+        message: "prefix release service transition checkpoint conflict suffix",
+      },
+    });
+    const prisma = {
+      $queryRaw: async () => {
+        throw databaseFailure;
+      },
+    } as unknown as PrismaClient;
+    const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+    await expect(
+      adapter.append({
+        rolloutId: "rollout",
+        manifestSha256: zeroReceipt,
+        targetContractSha256: nextReceipt,
+        serviceId: "srv-api",
+        step: "suspended",
+      }),
+    ).rejects.toMatchObject({
+      message: "release_authority_adapter_failure",
+      statusCode: 500,
+      cause: databaseFailure,
+    });
   });
 
   it("binds serialized JSON text and casts every routine JSON argument", async () => {
@@ -289,6 +602,7 @@ describe("release authority postgres JSONB bindings", () => {
       serviceId: dangerous,
       jobId: "job",
       observedAt,
+      providerCreationNotBefore: observedAt,
       cleanupCanary: "canary",
       lifecycle: "role",
       provisioningIntentId: intent.id,
@@ -323,6 +637,7 @@ describe("release authority postgres JSONB bindings", () => {
       removedPaths: [`/runner/_work/rr-safe/${dangerous}`],
       remainingPaths: [],
       providerLogId: "log",
+      providerCreatedAt: observedAt,
       providerObservedAt: observedAt,
     } as const;
     await witnessAdapter.persistProviderWitness("job", witness as never);

@@ -3,6 +3,7 @@ export type CleanupObservationSeed = Readonly<{
   serviceId: string;
   cleanupCanary: string;
   observedAt: string;
+  providerCreationNotBefore: string;
 }>;
 
 export type ProviderTerminalStatus = "succeeded" | "failed" | "canceled";
@@ -16,6 +17,7 @@ export type NormalizedCleanupEvidence = Readonly<{
   removedPaths: readonly string[];
   remainingPaths: readonly [];
   providerLogId: string;
+  providerCreatedAt: string;
   providerObservedAt: string;
 }>;
 
@@ -29,4 +31,34 @@ export interface CleanupEvidencePort {
 
 export interface RenderCleanupObservationPort {
   observe(seed: CleanupObservationSeed): Promise<NormalizedCleanupEvidence>;
+}
+
+const instant = (value: string): number => {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed))
+    throw new Error("release_witness_timestamp_invalid");
+  return parsed;
+};
+
+/**
+ * Domain temporal contract: the authority's pre-dispatch boundary is the
+ * lower bound for provider creation. The later durable observation is only an
+ * ordering assertion and never replaces that lower bound.
+ */
+export function assertCleanupProviderTemporalContract(input: {
+  seed: CleanupObservationSeed;
+  providerCreatedAt: string;
+  providerFinishedAt: string;
+}): Readonly<{ createdAt: number; finishedAt: number }> {
+  const notBefore = instant(input.seed.providerCreationNotBefore);
+  const persistedObservation = instant(input.seed.observedAt);
+  const createdAt = instant(input.providerCreatedAt);
+  const finishedAt = instant(input.providerFinishedAt);
+  if (
+    persistedObservation < notBefore ||
+    createdAt < notBefore ||
+    finishedAt < createdAt
+  )
+    throw new Error("release_witness_terminal_window_invalid");
+  return Object.freeze({ createdAt, finishedAt });
 }

@@ -12,8 +12,17 @@ on:
         description: Exact protected main commit
         required: true
         type: string
+      release_run_id:
+        description: Successful release workflow run that attested the image identity
+        required: true
+        type: string
+      release_artifact_id:
+        description: Immutable hosted-runtime-image artifact from that release run
+        required: true
+        type: string
 permissions:
   actions: read
+  attestations: read
   contents: read
 
 concurrency:
@@ -56,6 +65,23 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.expected_sha }}
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - name: Download exact attested release image identity
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ inputs.release_artifact_id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.release_run_id }}
+          path: release-image
+      - name: Verify release image identity and GitHub artifact attestation
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          REVIEW_ROUTER_RELEASE_ARTIFACT_ID: ${{ inputs.release_artifact_id }}
+          REVIEW_ROUTER_RELEASE_IMAGE_IDENTITY_FILE: release-image/hosted-runtime-image.json
+          REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE: verified-release-image-provenance.json
+        run: node --import tsx scripts/verify-private-pg17-release-image-provenance.ts
       - name: Observe protected environment and exact release identity
         env:
           GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
@@ -66,6 +92,7 @@ jobs:
         env:
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
           REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: protected-environment-preflight.json
+          REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE: verified-release-image-provenance.json
           REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: initial-rollout.json
         run: node --import tsx scripts/initialize-private-pg17-rollout.ts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -73,6 +100,7 @@ jobs:
           name: protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1
           path: |
             protected-environment-preflight.json
+            verified-release-image-provenance.json
             initial-rollout.json
           if-no-files-found: error
           retention-days: 30
@@ -92,12 +120,18 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.expected_sha }}
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1
+          path: preflight
       - id: freeze
         name: Suspend and re-observe every source writer
         env:
           RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
           RENDER_OWNER_ID: ${{ vars.RENDER_OWNER_ID }}
           REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
+          REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: preflight/initial-rollout.json
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
         run: node --import tsx scripts/release-rollout-render-control.ts freeze
 
   role-bootstrap-private:
@@ -139,7 +173,6 @@ jobs:
           REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON }}
           REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON: ${{ vars.REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON }}
           REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
-          REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST }}
         run: node --import tsx scripts/run-private-pg17-copy-bootstrap.ts > copy-bootstrap-evidence.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -180,11 +213,16 @@ jobs:
         with:
           name: copy-bootstrap-${{ inputs.rollout_id }}-${{ github.run_id }}-1
           path: copy-bootstrap
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1
+          path: preflight
       - name: Migrate, stage, and cross the transactional activation boundary
         env:
           REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}
           REVIEW_ROUTER_EXPECTED_WORKFLOW_JOB_NAME: pg17-cutover-private
           REVIEW_ROUTER_COPY_BOOTSTRAP_EVIDENCE_FILE: copy-bootstrap/copy-bootstrap-evidence.json
+          REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE: preflight/verified-release-image-provenance.json
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
           RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
           REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: ${{ vars.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS }}
@@ -205,7 +243,6 @@ jobs:
           REVIEW_ROUTER_TARGET_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS }}
           REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS }}
           REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
-          REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST }}
         run: node --import tsx scripts/run-private-pg17-rollout.ts > private-rollout-body.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -259,6 +296,7 @@ jobs:
           RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
           REVIEW_ROUTER_PRIVATE_ROLLOUT_BODY_FILE: artifacts/body/private-rollout-body.json
           REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: artifacts/preflight/protected-environment-preflight.json
+          REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE: artifacts/preflight/verified-release-image-provenance.json
           REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON: ${{ vars.REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON }}
           REVIEW_ROUTER_LIVE_CANARY_URL: ${{ vars.REVIEW_ROUTER_LIVE_CANARY_URL }}
           REVIEW_ROUTER_LIVE_CANARY_TOKEN: ${{ secrets.REVIEW_ROUTER_LIVE_CANARY_TOKEN }}
@@ -297,8 +335,8 @@ jobs:
           GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
           RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
-          REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
-          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
+          REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_WITNESS_TOKEN }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RELEASE_WITNESS_URL }}
           REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: orphan-reconciliation.json
           REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8
           REVIEW_ROUTER_RECONCILIATION_INITIAL_DELAY_MS: 5000
@@ -313,10 +351,12 @@ jobs:
           retention-days: 30
           compression-level: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: ${{ always() }}
         with:
           name: "protected-preflight-${{ inputs.rollout_id }}-${{ github.run_id }}-1"
           path: artifacts/preflight
       - name: Complete safe pre-activation compensation, then reconcile
+        if: ${{ always() }}
         env:
           REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN: ${{ secrets.REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN }}
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}

@@ -13,6 +13,8 @@ import {
   type ActivationPermitInstallerPort,
   type ReleaseControlRouteDependencies,
 } from "./release-rollout-ledger.js";
+import { observeReleaseAuthorityDatabaseReadiness } from "./release-authority/adapters/postgres-readiness.js";
+import { releaseControlDatabaseSetIsReady } from "./release-authority/application/readiness.js";
 
 export type ReleaseControlCredentials = Readonly<{
   controlTokenSha256: string;
@@ -20,33 +22,6 @@ export type ReleaseControlCredentials = Readonly<{
 }>;
 
 const credentialSha256 = /^[a-f0-9]{64}$/u;
-
-type DatabaseReadiness = Readonly<{
-  roleName: string;
-  systemIdentifier: string;
-  postgresMajor: number;
-  controlRoutine: boolean;
-  providerRoutine: boolean;
-  installerRoutine: boolean;
-  readerRoutine: boolean;
-}>;
-
-async function observeDatabaseReadiness(
-  prisma: PrismaClient,
-): Promise<DatabaseReadiness> {
-  const rows = await prisma.$queryRaw<DatabaseReadiness[]>(Prisma.sql`
-    SELECT current_user AS "roleName",
-      (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
-      current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
-      to_regprocedure('release_authority.release_rollout_claim(text,text,text,integer,text,text)') IS NOT NULL AS "controlRoutine",
-      to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') IS NOT NULL AS "providerRoutine",
-      to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL AS "installerRoutine",
-      to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NOT NULL AS "readerRoutine"
-  `);
-  if (rows.length !== 1 || !rows[0])
-    throw new Error("release_control_database_identity_unavailable");
-  return rows[0];
-}
 
 export function composeReleaseControlDependencies(
   controlPrisma: PrismaClient,
@@ -135,27 +110,20 @@ export async function createReleaseControlApp(input: {
   app.get("/health", async (_request, reply) => {
     try {
       const [control, provider, installer, reader] = await Promise.all([
-        observeDatabaseReadiness(input.controlPrisma),
-        observeDatabaseReadiness(input.providerAuthorityPrisma),
-        observeDatabaseReadiness(input.permitInstallerPrisma),
-        observeDatabaseReadiness(input.targetReceiptReaderPrisma),
+        observeReleaseAuthorityDatabaseReadiness(input.controlPrisma),
+        observeReleaseAuthorityDatabaseReadiness(input.providerAuthorityPrisma),
+        observeReleaseAuthorityDatabaseReadiness(input.permitInstallerPrisma),
+        observeReleaseAuthorityDatabaseReadiness(
+          input.targetReceiptReaderPrisma,
+        ),
       ]);
       if (
-        control.roleName !== "reviewrouter_release_control" ||
-        provider.roleName !== "reviewrouter_provider_authority" ||
-        installer.roleName !== "reviewrouter_activation_permit_installer" ||
-        reader.roleName !== "reviewrouter_activation_receipt_reader" ||
-        control.systemIdentifier !== provider.systemIdentifier ||
-        control.systemIdentifier === installer.systemIdentifier ||
-        installer.systemIdentifier !== reader.systemIdentifier ||
-        control.postgresMajor !== 17 ||
-        provider.postgresMajor !== 17 ||
-        installer.postgresMajor !== 17 ||
-        reader.postgresMajor !== 17 ||
-        !control.controlRoutine ||
-        !provider.providerRoutine ||
-        !installer.installerRoutine ||
-        !reader.readerRoutine
+        !releaseControlDatabaseSetIsReady({
+          control,
+          provider,
+          installer,
+          reader,
+        })
       )
         throw new Error("release_control_database_identity_invalid");
       return { status: "ok", service: "release-control" };

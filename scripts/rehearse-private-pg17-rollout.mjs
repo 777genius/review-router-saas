@@ -1,12 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from "node:crypto";
-import {
-  cpSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -41,6 +35,7 @@ import {
   roleProvisioningSql,
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
+import { releaseAuthorityMigrationBundle } from "./install-release-authority-db.mjs";
 import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
 import { createSecureCanonicalRun } from "./private-pg17-secure-canonical.ts";
 import { reconcileLegacyAmbiguity } from "./reconcile-codex-rotating-legacy-ambiguity.mjs";
@@ -64,6 +59,25 @@ export function validateRehearsalConfiguration(env) {
   )
     throw new Error("private_pg17_rehearsal_versions_invalid");
   return Object.freeze({ sourceImage, targetImage });
+}
+
+export function createRehearsalRunnerJobBinding({
+  identity,
+  observation,
+  lifecycle,
+  provisioningIntentId,
+  providerCreationNotBefore,
+}) {
+  return Object.freeze({
+    rolloutId: "disposable-rehearsal",
+    serviceId: identity.baseServiceId,
+    jobId: identity.renderJobId,
+    observedAt: observation.observedAt,
+    providerCreationNotBefore,
+    cleanupCanary: identity.cleanupCanary,
+    lifecycle,
+    provisioningIntentId,
+  });
 }
 
 function sha256(value) {
@@ -229,33 +243,21 @@ export async function executeDisposableRehearsal(
       authority,
       "CREATE EXTENSION IF NOT EXISTS pgcrypto; CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'disposable-control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'disposable-provider'; CREATE ROLE reviewrouter_release_witness LOGIN PASSWORD 'disposable-witness'",
     );
-    for (const migration of [
-      "000001_release_authority",
-      "000002_external_effect_protocol",
-      "000002_transactional_service_transition",
-    ]) {
-      execute(
-        [
-          "exec",
-          "--interactive",
-          authority,
-          "psql",
-          "-U",
-          "postgres",
-          "-d",
-          "reviewrouter",
-        ],
-        {
-          input: readFileSync(
-            join(
-              process.cwd(),
-              `packages/platform/release-authority-db/migrations/${migration}/migration.sql`,
-            ),
-            "utf8",
-          ),
-        },
-      );
-    }
+    execute(
+      [
+        "exec",
+        "--interactive",
+        authority,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "reviewrouter",
+      ],
+      {
+        input: releaseAuthorityMigrationBundle(process.cwd()),
+      },
+    );
     const preReleasePrisma = join(directory, "pre-release-prisma");
     cpSync(
       join(process.cwd(), "packages/platform/db/prisma"),
@@ -1056,6 +1058,7 @@ async function verifyProductionPathRehearsal(facts) {
   let cleanupStep = RolloutStep.CleanupRoleRunner;
   const ledger = facts.ledger;
   const witness = new PostgresCleanupObservationAdapter(facts.witnessPrisma);
+  const providerCreationBoundaries = new Map();
   const persistRunnerBinding = async (identity, observation, lifecycle) => {
     const intentId = `rri-${createHash("sha256")
       .update(`disposable-rehearsal:${lifecycle}:${identity.workflowJobId}`)
@@ -1065,6 +1068,7 @@ async function verifyProductionPathRehearsal(facts) {
       .update(rehearsalStartCommand)
       .digest("hex")}`;
     const creationLeaseOwner = `rrc-${lifecycle === "role" ? "00000000-0000-4000-8000-000000000001" : "00000000-0000-4000-8000-000000000002"}`;
+    const providerCreationNotBefore = observation.observedAt;
     await ledger.persistProvisioningIntent({
       id: intentId,
       rolloutId: rollout.rolloutId,
@@ -1072,7 +1076,7 @@ async function verifyProductionPathRehearsal(facts) {
       lifecycle,
       workflowJobId: identity.workflowJobId,
       runnerName: identity.runnerName,
-      createdAt: observation.observedAt,
+      createdAt: providerCreationNotBefore,
       startCommandSha256,
       creationLeaseOwner,
     });
@@ -1083,15 +1087,19 @@ async function verifyProductionPathRehearsal(facts) {
       expectedEpoch: 0,
       leaseSeconds: 120,
     });
-    await ledger.persistCreatedJob({
-      rolloutId: rollout.rolloutId,
-      serviceId: identity.baseServiceId,
-      jobId: identity.renderJobId,
-      observedAt: observation.observedAt,
-      cleanupCanary: identity.cleanupCanary,
-      lifecycle,
-      provisioningIntentId: intentId,
-    });
+    await ledger.persistCreatedJob(
+      createRehearsalRunnerJobBinding({
+        identity,
+        observation,
+        lifecycle,
+        provisioningIntentId: intentId,
+        providerCreationNotBefore,
+      }),
+    );
+    providerCreationBoundaries.set(
+      identity.renderJobId,
+      providerCreationNotBefore,
+    );
     await ledger.persistValidatedIdentity(
       identity.renderJobId,
       identity,
@@ -1170,6 +1178,7 @@ async function verifyProductionPathRehearsal(facts) {
           {
             renderServiceIds: ["source-writer"],
             renderDeployIds: ["dep-source"],
+            renderMutatedServiceIds: ["source-writer"],
           },
         ),
       compensateAndObserve: async () =>
@@ -1193,6 +1202,11 @@ async function verifyProductionPathRehearsal(facts) {
         return { identity: provision, observation };
       },
       cleanup: async () => {
+        const providerCreatedAt = providerCreationBoundaries.get(
+          provision.renderJobId,
+        );
+        if (!providerCreatedAt)
+          throw new Error("private_pg17_rehearsal_provider_boundary_missing");
         const observedAt = new Date(
           Date.UTC(2026, 7, 12, 0, 0, tick++),
         ).toISOString();
@@ -1220,6 +1234,7 @@ async function verifyProductionPathRehearsal(facts) {
           removedPaths: [`/runner/${provision.workFolder}`],
           remainingPaths: [],
           providerLogId: `log-${provision.renderJobId}`,
+          providerCreatedAt,
           providerObservedAt: observedAt,
         });
         await ledger.markTerminal(provision.renderJobId, observation);
@@ -1476,6 +1491,33 @@ COMMIT;
         evidence = assembleTrustedRolloutEvidence({
           rolloutId: current.rolloutId,
           releaseCommitSha: current.expectedCommitSha,
+          releaseImageProvenance: (() => {
+            const identity = {
+              schemaVersion: "reviewrouter.hosted-runtime-image.v1",
+              repository: current.execution.controlRepository,
+              commit: current.expectedCommitSha,
+              imageUrl: `ghcr.io/777genius/review-router-saas-runtime@${facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST}`,
+              imageDigest:
+                facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST,
+            };
+            return {
+              schemaVersion: "reviewrouter.release-image-provenance.v2",
+              identity,
+              claim: {
+                identitySha256: `sha256:${sha256Canonical(identity)}`,
+                sourceRepository: current.execution.controlRepository,
+                sourceRevision: current.expectedCommitSha,
+                imageRepository: "ghcr.io/777genius/review-router-saas-runtime",
+                buildRunId: "1",
+                artifactId: "1",
+                artifactName: "hosted-runtime-image-v0.0.0-rehearsal",
+              },
+              verification: {
+                policySha256: `sha256:${"e".repeat(64)}`,
+                verifiedAt: "2026-08-12T00:00:00.000Z",
+              },
+            };
+          })(),
           execution: current.execution,
           runners: [roleRunner, cutoverRunner],
           source: current.source,
@@ -1551,6 +1593,14 @@ COMMIT;
           ).observationSha256,
           receipts: current.receipts,
           activation: current.activationReceipt,
+          targetDeploys: targetContracts.map((contract) => ({
+            serviceId: contract.serviceId,
+            deployId: stagedServices.get(contract.serviceId).provenance
+              .deployId,
+            imageDigest: contract.imageUrl.slice(
+              contract.imageUrl.indexOf("sha256:"),
+            ),
+          })),
           resumedTargetDeployIds: targetContracts.map(
             (contract) =>
               stagedServices.get(contract.serviceId).provenance.deployId,

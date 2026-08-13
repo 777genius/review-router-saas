@@ -22,6 +22,19 @@ export class ReleaseAuthorityService {
     private readonly targetReceiptReader?: TargetActivationReceiptReaderPort,
   ) {}
   claim = (input: RolloutBinding) => this.repository.claim(input);
+  completeSourceFreeze = (
+    input: Parameters<ReleaseAuthorityLedgerPort["completeSourceFreeze"]>[0],
+  ) => this.repository.completeSourceFreeze(input);
+  prepareSourceFreezeMutation = (
+    input: Parameters<
+      ReleaseAuthorityLedgerPort["prepareSourceFreezeMutation"]
+    >[0],
+  ) => this.repository.prepareSourceFreezeMutation(input);
+  recordSourceFreezeMutation = (
+    input: Parameters<
+      ReleaseAuthorityLedgerPort["recordSourceFreezeMutation"]
+    >[0],
+  ) => this.repository.recordSourceFreezeMutation(input);
   cas = (input: Parameters<ReleaseAuthorityLedgerPort["compareAndSet"]>[0]) =>
     this.repository.compareAndSet(input);
   markUncertain = (input: RolloutBinding) =>
@@ -171,6 +184,26 @@ export class ReleaseServiceTransitionService {
   complete = (
     input: Parameters<ReleaseServiceTransitionLedgerPort["complete"]>[0],
   ) => this.repository.complete(input);
+  intendRecoveryEffect = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["intendRecoveryEffect"]
+    >[0],
+  ) => this.repository.intendRecoveryEffect(input);
+  claimRecoveryEffect = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["claimRecoveryEffect"]
+    >[0],
+  ) => this.repository.claimRecoveryEffect(input);
+  consumeRecoveryEffectPermit = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["consumeRecoveryEffectPermit"]
+    >[0],
+  ) => this.repository.consumeRecoveryEffectPermit(input);
+  completeRecoveryEffect = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["completeRecoveryEffect"]
+    >[0],
+  ) => this.repository.completeRecoveryEffect(input);
 }
 
 export class ReleaseRolloutReconciliationService {
