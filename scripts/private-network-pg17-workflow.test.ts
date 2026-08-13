@@ -109,6 +109,19 @@ describe("private-network PG17 workflow security contract", () => {
     );
   });
 
+  it("provides durable scheduled and exact manual late-job recovery", () => {
+    expect(controller).toContain('cron: "17,47 * * * *"');
+    expect(controller).toContain("target_run_id:");
+    expect(controller).toContain("recovery-context:");
+    expect(controller).toContain("discover-private-pg17-recovery-runs.ts");
+    expect(controller).toContain("max-parallel: 2");
+    expect(controller).toContain(
+      "Reconcile every known or late provider runner with bounded backoff",
+    );
+    expect(controller).toContain("REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8");
+    expect(controller).toContain("scheduled-reconciliation.json");
+  });
+
   it("is dispatch-only because runtime identity requires workflow_dispatch", () => {
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).not.toContain("workflow_call:");

@@ -4,16 +4,89 @@ on:
   workflow_run:
     workflows: [Private-network PostgreSQL 17 release rollout]
     types: [requested, completed]
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+    inputs:
+      target_run_id:
+        description: Exact private PG17 rollout workflow run to recover (blank scans retained runs)
+        required: false
+        type: string
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: private-pg17-runner-${{ github.event.workflow_run.id }}-${{ github.event.action }}
+  group: private-pg17-runner-${{ github.event.workflow_run.id || inputs.target_run_id || github.run_id }}-${{ github.event.action || github.event_name }}
   cancel-in-progress: false
 
 jobs:
+  recovery-context:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.runs.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: runs
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ inputs.target_run_id }}
+          REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+          REVIEW_ROUTER_RECOVERY_MAXIMUM_PAGES: 2
+        run: node --import tsx scripts/discover-private-pg17-recovery-runs.ts
+
+  recover:
+    needs: recovery-context
+    if: needs.recovery-context.outputs.matrix != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        target: ${{ fromJSON(needs.recovery-context.outputs.matrix) }}
+    environment: production-runner-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - id: context
+        env:
+          GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_TARGET_RUN_ID: ${{ matrix.target.run_id }}
+          REVIEW_ROUTER_TARGET_RUN_ATTEMPT: ${{ matrix.target.run_attempt }}
+          REVIEW_ROUTER_TARGET_SHA: ${{ matrix.target.head_sha }}
+          REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
+        run: node --import tsx scripts/resolve-private-pg17-run-context.ts
+      - name: Reconcile every known or late provider runner with bounded backoff
+        env:
+          RENDER_RUNNER_CONTROL_API_KEY: ${{ secrets.RENDER_RUNNER_CONTROL_API_KEY }}
+          REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN }}
+          REVIEW_ROUTER_RUNNER_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN }}
+          REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}
+          REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}
+          REVIEW_ROUTER_ROLLOUT_ID: ${{ steps.context.outputs.rollout_id }}
+          REVIEW_ROUTER_ORPHAN_RECONCILIATION_FILE: scheduled-reconciliation.json
+          REVIEW_ROUTER_RECONCILIATION_ATTEMPTS: 8
+          REVIEW_ROUTER_RECONCILIATION_INITIAL_DELAY_MS: 5000
+          REVIEW_ROUTER_RECONCILIATION_MAXIMUM_DELAY_MS: 30000
+        run: node --import tsx scripts/release-rollout-render-control.ts cleanup-runners
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: scheduled-runner-reconciliation-${{ steps.context.outputs.rollout_id }}-${{ matrix.target.run_id }}
+          path: scheduled-reconciliation.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+
   provision:
     if: >-
       github.event.action == 'requested' &&

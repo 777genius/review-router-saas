@@ -153,6 +153,9 @@ const ledger = () => ({
   persistCreatedJob: vi.fn().mockResolvedValue(undefined),
   listOpenJobs: vi.fn().mockResolvedValue([]),
   currentRunner: vi.fn().mockRejectedValue(new Error("runner_missing")),
+  cleanupObservation: vi
+    .fn()
+    .mockRejectedValue(new Error("cleanup_observation_missing")),
   markTerminal: vi.fn().mockResolvedValue(undefined),
   persistValidatedIdentity: vi.fn().mockResolvedValue(undefined),
 });
@@ -527,9 +530,11 @@ describe("Render private runner contract", () => {
     },
   );
 
-  it("directly proves cleanup and records reconciliation when created-job persistence fails", async () => {
+  it("durably blocks without invoking cleanup witnesses when created-job persistence fails", async () => {
     const jobLedger = ledger();
     jobLedger.persistCreatedJob.mockRejectedValue(new Error("write_lost"));
+    const cleanup = witness();
+    const provider = providerWitness();
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(json(service))
@@ -572,18 +577,24 @@ describe("Render private runner contract", () => {
     await expect(
       new RenderPrivateRunnerAdapter(
         jobLedger,
-        witness(),
-        providerWitness(),
+        cleanup,
+        provider,
         fetchImpl,
       ).provision(request),
     ).rejects.toThrow("render_runner_job_persistence_failed");
     expect(jobLedger.reconcileProvisioningEffect).toHaveBeenCalledWith(
       expect.objectContaining({
         jobId: created.id,
-        reconciliation: { result: "clean", safeForCompensation: true },
-        observation: expect.any(Object),
+        reconciliation: {
+          result: "blocked",
+          safeForCompensation: false,
+          reason: "unknown",
+        },
       }),
     );
+    expect(provider.observe).not.toHaveBeenCalled();
+    expect(cleanup.observe).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
   it.each([
@@ -698,6 +709,256 @@ describe("Render private runner contract", () => {
         lifecycle: "role",
       }),
     ).rejects.toThrow("render_runner_cleanup_canary_invalid");
+  });
+
+  const reconciliationHarness = (providerJobs: readonly object[]) => {
+    const intentId = "rri-reconciliation-test";
+    const events: string[] = [];
+    const open: Array<Record<string, unknown>> = [];
+    let effect: Record<string, unknown> = {
+      ...dispatchingEffect,
+      reconciliation: { result: "pending", safeForCompensation: false },
+    };
+    const intent = () => ({
+      id: intentId,
+      rolloutId: request.rolloutId,
+      serviceId: request.baseServiceId,
+      lifecycle: request.lifecycle,
+      workflowJobId: request.workflowJobId,
+      runnerName: request.runnerName,
+      createdAt: "2026-08-12T00:00:00.000Z",
+      startCommandSha256: `sha256:${"d".repeat(64)}`,
+      creationLeaseOwner: dispatchingEffect.ownerId,
+      creationLeaseExpiresAt: null,
+      effect,
+    });
+    const jobLedger = ledger();
+    jobLedger.listProvisioningIntents.mockImplementation(async () => [
+      intent(),
+    ]);
+    jobLedger.listOpenJobs.mockImplementation(async () => [...open] as never);
+    jobLedger.persistCreatedJob.mockImplementation(async (value) => {
+      events.push(`persist:${value.jobId}`);
+      if (!open.some((entry) => entry.jobId === value.jobId)) open.push(value);
+    });
+    jobLedger.reconcileProvisioningEffect.mockImplementation(async (value) => {
+      events.push(`${value.reconciliation.result}:${value.jobId ?? "none"}`);
+      if (value.reconciliation.result === "blocked")
+        effect = {
+          ...effect,
+          state: "blocked",
+          safeForCompensation: false,
+          reconciliation: value.reconciliation,
+        };
+      else if (value.reconciliation.result === "clean") {
+        if (effect.state !== "blocked")
+          effect = {
+            ...effect,
+            state: "cleaned",
+            providerId: value.jobId,
+            safeForCompensation: true,
+            reconciliation: value.reconciliation,
+          };
+      } else if (value.jobId)
+        effect = {
+          ...effect,
+          state: "bound",
+          providerId: value.jobId,
+          safeForCompensation: false,
+          reconciliation: value.reconciliation,
+        };
+      return effect as never;
+    });
+    jobLedger.markTerminal.mockImplementation(async (jobId) => {
+      events.push(`terminal:${jobId}`);
+      const index = open.findIndex((entry) => entry.jobId === jobId);
+      if (index >= 0) open.splice(index, 1);
+    });
+    const cleanup = witness();
+    cleanup.observe.mockImplementation(async (jobId) => {
+      events.push(`cleanup-witness:${jobId}`);
+      return {
+        listenerStopped: true,
+        workspaceRemoved: true,
+        credentialProcessGone: true,
+        canary: `rr-cleanup:${request.rolloutId}:${request.runnerName}`,
+        observedAt: "2026-08-12T00:10:00.000Z",
+      };
+    });
+    const provider = providerWitness();
+    provider.observe.mockImplementation(async (jobId) => {
+      events.push(`provider-witness:${jobId}`);
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      const path = String(url);
+      if (path.endsWith(`/services/${request.baseServiceId}/jobs`))
+        return json(providerJobs.map((job) => ({ job, cursor: null })));
+      const providerJob = providerJobs.find(
+        (job) =>
+          typeof job === "object" &&
+          job !== null &&
+          path.endsWith(`/jobs/${String((job as { id?: string }).id)}`),
+      );
+      if (providerJob) return json(providerJob);
+      throw new Error(`unexpected_render_request:${path}`);
+    });
+    return {
+      intentId,
+      events,
+      open,
+      effect: () => effect,
+      setEffect: (value: Record<string, unknown>) => {
+        effect = value;
+      },
+      jobLedger,
+      cleanup,
+      provider,
+      adapter: new RenderPrivateRunnerAdapter(
+        jobLedger,
+        cleanup,
+        provider,
+        fetchImpl,
+      ),
+    };
+  };
+
+  const reconciledJob = (intentId: string, id: string) => ({
+    id,
+    serviceId: request.baseServiceId,
+    startCommand: `node /runner/bootstrap.mjs --intent ${intentId} --context opaque`,
+    status: "succeeded",
+    createdAt: "2026-08-12T00:00:01.000Z",
+    finishedAt: "2026-08-12T00:02:00.000Z",
+  });
+
+  it("persists and binds a late lost-response job before either cleanup witness", async () => {
+    const intentId = "rri-reconciliation-test";
+    const harness = reconciliationHarness([
+      reconciledJob(intentId, "job-late"),
+    ]);
+
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({ result: "clean", safeForCompensation: true });
+    expect(harness.events).toEqual([
+      "persist:job-late",
+      "pending:job-late",
+      "provider-witness:job-late",
+      "cleanup-witness:job-late",
+      "terminal:job-late",
+      "clean:job-late",
+    ]);
+    expect(harness.open).toEqual([]);
+  });
+
+  it("persists every duplicate before blocking and safely cleans the complete set", async () => {
+    const intentId = "rri-reconciliation-test";
+    const harness = reconciliationHarness([
+      reconciledJob(intentId, "job-duplicate-a"),
+      reconciledJob(intentId, "job-duplicate-b"),
+    ]);
+
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({
+      result: "blocked",
+      reason: "duplicate",
+      safeForCompensation: false,
+    });
+    expect(harness.events.slice(0, 3)).toEqual([
+      "persist:job-duplicate-a",
+      "persist:job-duplicate-b",
+      "blocked:none",
+    ]);
+    expect(harness.jobLedger.markTerminal).toHaveBeenCalledTimes(2);
+    expect(harness.open).toEqual([]);
+  });
+
+  it("replays durable cleanup without a provider POST and leaves no stranded open job", async () => {
+    const intentId = "rri-reconciliation-test";
+    const harness = reconciliationHarness([
+      reconciledJob(intentId, "job-replay"),
+    ]);
+    harness.cleanup.observe.mockRejectedValueOnce(new Error("witness_late"));
+
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({ result: "blocked", safeForCompensation: false });
+    expect(harness.open).toHaveLength(1);
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({ result: "blocked", safeForCompensation: false });
+    expect(harness.open).toEqual([]);
+    expect(harness.jobLedger.persistCreatedJob).toHaveBeenCalledOnce();
+  });
+
+  it("finishes the durable terminal-observation replay window without rewitnessing", async () => {
+    const intentId = "rri-reconciliation-test";
+    const recovered = reconciledJob(intentId, "job-terminal-replay");
+    const harness = reconciliationHarness([recovered]);
+    harness.setEffect({
+      ...dispatchingEffect,
+      state: "bound",
+      providerId: "job-terminal-replay",
+      safeForCompensation: false,
+      reconciliation: { result: "pending", safeForCompensation: false },
+    });
+    harness.jobLedger.cleanupObservation.mockResolvedValue({
+      step: "cleanup_role_runner",
+      observedAt: "2026-08-12T00:10:00.000Z",
+      facts: {
+        provider: {
+          id: "job-terminal-replay",
+          serviceId: request.baseServiceId,
+          status: "succeeded",
+        },
+        runner: {
+          listenerStopped: true,
+          workspaceRemoved: true,
+          credentialProcessGone: true,
+          canary: `rr-cleanup:${request.rolloutId}:${request.runnerName}`,
+        },
+      },
+      provider: { renderJobId: "job-terminal-replay" },
+    });
+
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({ result: "clean", safeForCompensation: true });
+    expect(harness.jobLedger.cleanupObservation).toHaveBeenCalledWith(
+      "job-terminal-replay",
+    );
+    expect(harness.provider.observe).not.toHaveBeenCalled();
+    expect(harness.cleanup.observe).not.toHaveBeenCalled();
+  });
+
+  it("fails safe on a job appearing after clean and never witnesses an unpersisted job", async () => {
+    const intentId = "rri-reconciliation-test";
+    const original = reconciledJob(intentId, "job-original");
+    const late = reconciledJob(intentId, "job-after-clean");
+    const harness = reconciliationHarness([original, late]);
+    harness.setEffect({
+      ...dispatchingEffect,
+      state: "cleaned",
+      providerId: "job-original",
+      safeForCompensation: true,
+      reconciliation: { result: "clean", safeForCompensation: true },
+    });
+    harness.jobLedger.persistCreatedJob.mockRejectedValue(
+      new Error("terminal_effect_cannot_bind"),
+    );
+
+    for (let attempt = 0; attempt < 2; attempt += 1)
+      await expect(
+        harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+      ).resolves.toMatchObject({
+        result: "blocked",
+        reason: "duplicate",
+        safeForCompensation: false,
+      });
+    expect(harness.jobLedger.persistCreatedJob).toHaveBeenCalledTimes(2);
+    expect(harness.provider.observe).not.toHaveBeenCalled();
+    expect(harness.cleanup.observe).not.toHaveBeenCalled();
   });
 });
 
