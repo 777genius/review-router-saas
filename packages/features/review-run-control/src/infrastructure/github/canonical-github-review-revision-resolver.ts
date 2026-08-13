@@ -116,7 +116,9 @@ function selectPullRequestNumber(
   hint: number | null,
 ): number | null | "conflict" {
   if (hint !== null && !isPullRequestNumber(hint)) return "conflict";
-  if (runValues.length > 1) return "conflict";
+  if (runValues.length > 1) {
+    return hint !== null && runValues.includes(hint) ? hint : "conflict";
+  }
   if (runValues.length === 1) {
     return hint === null || hint === runValues[0] ? runValues[0]! : "conflict";
   }
