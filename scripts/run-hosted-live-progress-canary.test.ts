@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assertMonotonic,
   assertRerunAttempt,
+  createInstallationGitHub,
   readCanaryConfig,
   triggerHostedProgressCanary,
   verifyHostedProgressCanary,
@@ -65,6 +66,33 @@ describe("hosted live-progress canary", () => {
       ),
     ).rejects.toThrow("hosted_progress_canary_source_run_contract_mismatch");
     expect(github.rerunWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("rejects a failed source run and a run detached from the current PR head", async () => {
+    const failed = fakeGitHub();
+    failed.getWorkflowRun.mockResolvedValue({
+      ...sourceRun(),
+      conclusion: "failure",
+    });
+    await expect(
+      triggerHostedProgressCanary(
+        configFixture(),
+        failed,
+        () => "2026-08-13T10:00:00Z",
+      ),
+    ).rejects.toThrow("hosted_progress_canary_source_run_contract_mismatch");
+    const detached = fakeGitHub();
+    detached.getWorkflowRun.mockResolvedValue({
+      ...sourceRun(),
+      head_sha: "d".repeat(40),
+    });
+    await expect(
+      triggerHostedProgressCanary(
+        configFixture(),
+        detached,
+        () => "2026-08-13T10:00:00Z",
+      ),
+    ).rejects.toThrow("hosted_progress_canary_source_run_contract_mismatch");
   });
 
   it("rejects a source workflow blob not matching the pinned contract", async () => {
@@ -168,12 +196,58 @@ describe("hosted live-progress canary", () => {
         comment(42, progress("Complete", 2, 2, 108, 108, 2)),
       ]);
     await expect(
-      verifyHostedProgressCanary(
-        { ...configFixture(), expectedReviewUnits: 2 },
-        receipt(),
-        { github, now: tickingClock(), sleep: async () => undefined },
-      ),
+      verifyHostedProgressCanary(configFixture(), receipt(), {
+        github,
+        now: tickingClock(),
+        sleep: async () => undefined,
+      }),
     ).rejects.toThrow("hosted_progress_canary_comment_id_changed");
+  });
+
+  it("ignores caller attempts to override the immutable unit profile", () => {
+    const config = readCanaryConfig(
+      env({
+        REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_REVIEW_UNITS: "2",
+        REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_REVIEWED_FILES: "1",
+      }),
+    );
+    expect(config).toMatchObject({
+      expectedReviewUnits: 72,
+      expectedReviewedFiles: 108,
+      expectedExcludedFiles: 0,
+    });
+  });
+
+  it("refreshes a repository-scoped installation token before expiry", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(tokenResponse("token-1")))
+      .mockResolvedValueOnce(jsonResponse({ id: repoId }))
+      .mockResolvedValueOnce(jsonResponse(tokenResponse("token-2", 120)))
+      .mockResolvedValueOnce(jsonResponse({ id: repoId }))
+      .mockResolvedValueOnce(jsonResponse({ app_slug: "review-router" }));
+    const github = createInstallationGitHub({
+      appId: "1",
+      privateKey: "unused-by-test-jwt",
+      installationId: 10,
+      fetchImpl,
+      createJwt: () => "signed-test-jwt",
+    });
+    await github.authenticate();
+    await github.getRepository(repo);
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() + 51 * 60 * 1000);
+    await github.getRepository(repo);
+    await github.getInstallation(10);
+    clock.mockRestore();
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    expect(fetchImpl.mock.calls[2]?.[1]?.body).toContain(
+      `"repository_ids":[${repoId}]`,
+    );
+    expect(fetchImpl.mock.calls[4]?.[1]?.headers.Authorization).toBe(
+      "Bearer signed-test-jwt",
+    );
   });
 
   it("rejects monotonicity and incomplete final coverage false passes", () => {
@@ -192,9 +266,6 @@ function env(overrides: Record<string, string> = {}) {
     REVIEW_ROUTER_HOSTED_CANARY_SOURCE_WORKFLOW_BLOB_SHA: workflowBlob,
     REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_BOT_LOGIN: "review-router[bot]",
     REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_APP_SLUG: "review-router",
-    REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_REVIEW_UNITS: "72",
-    REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_REVIEWED_FILES: "108",
-    REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_EXCLUDED_FILES: "0",
     REVIEW_ROUTER_HOSTED_CANARY_POLL_INTERVAL_MS: "1",
     REVIEW_ROUTER_HOSTED_CANARY_TIMEOUT_MS: "1000",
     ...overrides,
@@ -237,11 +308,7 @@ function fakeGitHub() {
         repo: { id: repoId },
       },
     })),
-    getPullFiles: vi.fn(async () =>
-      Array.from({ length: 108 }, (_, index) => ({
-        filename: `src/batch-${String(index).padStart(2, "0")}/file.ts`,
-      })),
-    ),
+    getPullFiles: vi.fn(async () => fixtureFiles()),
     getWorkflowRun: vi.fn(async () => sourceRun()),
     getWorkflowRunAttempt: vi.fn(async () => null),
     getFile: vi.fn(async () => ({ sha: workflowBlob })),
@@ -262,6 +329,7 @@ function sourceRun() {
     id: 123,
     event: "pull_request",
     status: "completed",
+    conclusion: "success",
     head_sha: head,
     path: ".github/workflows/reviewrouter-codex.yml",
     pull_requests: [{ number: 37 }],
@@ -319,4 +387,34 @@ function observation(
 function tickingClock() {
   let tick = 0;
   return () => 1000 + tick++ * 10;
+}
+
+function fixtureFiles() {
+  return [
+    ".github/workflows/reviewrouter-codex.yml",
+    ".github/workflows/reviewrouter-interaction.yml",
+    ...Array.from({ length: 106 }, (_, index) => {
+      const number = index + 1;
+      const batch = Math.ceil(number / 22);
+      return `src/batch-${String(batch).padStart(2, "0")}/review-entity-${String(number).padStart(3, "0")}.ts`;
+    }),
+  ].map((filename) => ({ filename }));
+}
+
+function tokenResponse(token: string, minutes = 60) {
+  return {
+    token,
+    expires_at: new Date(Date.now() + minutes * 60 * 1000).toISOString(),
+    repositories: [{ id: repoId }],
+    permissions: {
+      actions: "write",
+      contents: "read",
+      issues: "read",
+      pull_requests: "read",
+    },
+  };
+}
+
+function jsonResponse(body: unknown) {
+  return { ok: true, status: 200, json: async () => body };
 }

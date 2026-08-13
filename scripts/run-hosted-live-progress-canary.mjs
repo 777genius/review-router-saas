@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createPrivateKey, sign } from "node:crypto";
+import { createHash, createPrivateKey, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 export const liveProgressMarker = "<!-- review-router-live-progress -->";
@@ -10,7 +10,11 @@ const pinnedTarget = Object.freeze({
   pullRequest: 37,
   changedFiles: 108,
   branch: "test/context-gateway-v103-batches-20260811",
-  fixturePrefix: "src/batch-",
+  fixturePathsSha256:
+    "b66509de865391f460c874fc02f65b5e527aa4d08521e1f1c6d5b57f8087b69b",
+  expectedReviewUnits: 72,
+  expectedReviewedFiles: 108,
+  expectedExcludedFiles: 0,
   sourceWorkflowPath: ".github/workflows/reviewrouter-codex.yml",
 });
 const terminalPhases = new Set([
@@ -38,15 +42,6 @@ export function readCanaryConfig(env = process.env) {
     expectedAppSlug: required(
       env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_APP_SLUG,
     ).toLowerCase(),
-    expectedReviewUnits: positive(
-      env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_REVIEW_UNITS,
-    ),
-    expectedReviewedFiles: nonNegative(
-      env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_REVIEWED_FILES,
-    ),
-    expectedExcludedFiles: nonNegative(
-      env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_EXCLUDED_FILES,
-    ),
     pollIntervalMs: positive(
       env.REVIEW_ROUTER_HOSTED_CANARY_POLL_INTERVAL_MS ?? "10000",
     ),
@@ -54,11 +49,6 @@ export function readCanaryConfig(env = process.env) {
       env.REVIEW_ROUTER_HOSTED_CANARY_TIMEOUT_MS ?? "5400000",
     ),
   };
-  if (
-    config.expectedReviewedFiles + config.expectedExcludedFiles !==
-    config.changedFiles
-  )
-    throw new Error("hosted_progress_canary_expected_coverage_inconsistent");
   if (!/^[a-z0-9][a-z0-9-]*\[bot\]$/u.test(config.expectedBotLogin))
     throw new Error("hosted_progress_canary_bot_login_invalid");
   return config;
@@ -66,7 +56,7 @@ export function readCanaryConfig(env = process.env) {
 
 export async function triggerHostedProgressCanary(config, github, nowIso) {
   assertPinned(config);
-  await assertFixture(github, config);
+  const pullHeadSha = await assertFixture(github, config);
   const installation = await github.getInstallation(config.installationId);
   if (installation.app_slug?.toLowerCase() !== config.expectedAppSlug)
     throw new Error("hosted_progress_canary_installation_app_mismatch");
@@ -74,7 +64,7 @@ export async function triggerHostedProgressCanary(config, github, nowIso) {
     config.repository,
     config.sourceRunId,
   );
-  assertSourceRun(source, config);
+  assertSourceRun(source, config, pullHeadSha);
   const workflow = await github.getFile(
     config.repository,
     config.sourceWorkflowPath,
@@ -255,60 +245,91 @@ export function createInstallationGitHub({
   privateKey,
   installationId,
   fetchImpl = globalThis.fetch,
+  createJwt = createAppJwt,
 }) {
-  const appJwt = createAppJwt(appId, privateKey);
   let token;
-  async function request(path, options = {}) {
+  let tokenRefreshAt = 0;
+  let authenticating;
+  const refreshMarginMs = 10 * 60 * 1000;
+  async function authenticate() {
+    const appJwt = createJwt(appId, privateKey);
+    const issued = await rawRequest(
+      `/app/installations/${installationId}/access_tokens`,
+      {
+        method: "POST",
+        appAuth: true,
+        appJwt,
+        body: JSON.stringify({
+          repository_ids: [pinnedTarget.repositoryId],
+          permissions: {
+            actions: "write",
+            issues: "read",
+            metadata: "read",
+            pull_requests: "read",
+            contents: "read",
+          },
+        }),
+      },
+    );
+    if (
+      issued.repositories?.length !== 1 ||
+      issued.repositories[0]?.id !== pinnedTarget.repositoryId ||
+      issued.permissions?.actions !== "write" ||
+      issued.permissions?.contents !== "read" ||
+      issued.permissions?.issues !== "read" ||
+      issued.permissions?.pull_requests !== "read"
+    )
+      throw new Error("hosted_progress_canary_token_scope_invalid");
+    const expiresAt = Date.parse(issued.expires_at);
+    if (
+      !Number.isFinite(expiresAt) ||
+      expiresAt <= Date.now() + refreshMarginMs
+    )
+      throw new Error("hosted_progress_canary_token_expiry_invalid");
+    token = issued.token;
+    tokenRefreshAt = expiresAt - refreshMarginMs;
+  }
+  async function ensureAuthenticated() {
+    if (token && Date.now() < tokenRefreshAt) return;
+    authenticating ??= authenticate().finally(() => {
+      authenticating = undefined;
+    });
+    await authenticating;
+  }
+  async function rawRequest(path, options = {}) {
     const response = await fetchImpl(`https://api.github.com${path}`, {
       ...options,
       headers: {
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        Authorization: `Bearer ${options.appAuth ? appJwt : token}`,
+        Authorization: `Bearer ${options.appAuth ? options.appJwt : token}`,
       },
     });
     if (!response.ok)
       throw new Error(`hosted_progress_canary_github_${response.status}`);
     return response.status === 204 ? null : response.json();
   }
+  async function request(path, options = {}) {
+    if (!options.appAuth) await ensureAuthenticated();
+    return rawRequest(path, options);
+  }
+  function appRequest(path, options = {}) {
+    return rawRequest(path, {
+      ...options,
+      appAuth: true,
+      appJwt: createJwt(appId, privateKey),
+    });
+  }
   return {
-    async authenticate() {
-      const issued = await request(
-        `/app/installations/${installationId}/access_tokens`,
-        {
-          method: "POST",
-          appAuth: true,
-          body: JSON.stringify({
-            repository_ids: [pinnedTarget.repositoryId],
-            permissions: {
-              actions: "write",
-              issues: "read",
-              metadata: "read",
-              pull_requests: "read",
-              contents: "read",
-            },
-          }),
-        },
-      );
-      if (
-        issued.repositories?.length !== 1 ||
-        issued.repositories[0]?.id !== pinnedTarget.repositoryId ||
-        issued.permissions?.actions !== "write" ||
-        issued.permissions?.contents !== "read" ||
-        issued.permissions?.issues !== "read" ||
-        issued.permissions?.pull_requests !== "read"
-      )
-        throw new Error("hosted_progress_canary_token_scope_invalid");
-      token = issued.token;
-    },
-    getInstallation: (id) =>
-      request(`/app/installations/${id}`, { appAuth: true }),
+    authenticate,
+    getInstallation: (id) => appRequest(`/app/installations/${id}`),
     getRepository: (repo) => request(`/repos/${repo}`),
     getPullRequest: (repo, number) => request(`/repos/${repo}/pulls/${number}`),
     getPullFiles: (repo, number) =>
       paginate(request, `/repos/${repo}/pulls/${number}/files?per_page=100`, 2),
     getWorkflowRun: (repo, id) => request(`/repos/${repo}/actions/runs/${id}`),
     getWorkflowRunAttempt: async (repo, id, attempt) => {
+      await ensureAuthenticated();
       const response = await fetchImpl(
         `https://api.github.com/repos/${repo}/actions/runs/${id}/attempts/${attempt}`,
         {
@@ -364,16 +385,21 @@ async function assertFixture(github, config, expectedHead) {
   );
   if (
     files.length !== config.changedFiles ||
-    !files.some((file) => file.filename.startsWith(config.fixturePrefix))
+    filePathsDigest(files) !== config.fixturePathsSha256
   )
     throw new Error("hosted_progress_canary_fixture_profile_mismatch");
+  return pull.head.sha;
 }
-function assertSourceRun(run, config) {
+function assertSourceRun(run, config, currentHeadSha) {
   if (
     run.id !== config.sourceRunId ||
     run.event !== "pull_request" ||
     run.status !== "completed" ||
-    (run.head_sha !== undefined && !/^[0-9a-f]{40}$/u.test(run.head_sha)) ||
+    run.conclusion !== "success" ||
+    run.head_sha !== currentHeadSha ||
+    !/^[0-9a-f]{40}$/u.test(run.head_sha) ||
+    !Number.isSafeInteger(run.run_attempt) ||
+    run.run_attempt < 1 ||
     run.path !== config.sourceWorkflowPath ||
     !run.pull_requests?.some((pull) => pull.number === config.pullRequest) ||
     !run.referenced_workflows?.some(
@@ -439,6 +465,23 @@ function createAppJwt(appId, privateKey) {
   const input = `${header}.${payload}`;
   return `${input}.${sign("RSA-SHA256", Buffer.from(input), createPrivateKey(privateKey)).toString("base64url")}`;
 }
+function filePathsDigest(files) {
+  if (
+    files.some(
+      (file) =>
+        typeof file.filename !== "string" || file.filename.includes("\n"),
+    )
+  )
+    throw new Error("hosted_progress_canary_fixture_path_invalid");
+  return createHash("sha256")
+    .update(
+      `${files
+        .map((file) => file.filename)
+        .sort()
+        .join("\n")}\n`,
+    )
+    .digest("hex");
+}
 function required(value) {
   if (!value?.trim())
     throw new Error("hosted_progress_canary_required_value_missing");
@@ -448,12 +491,6 @@ function positive(value) {
   const result = Number(value);
   if (!Number.isSafeInteger(result) || result < 1)
     throw new Error("hosted_progress_canary_positive_integer_required");
-  return result;
-}
-function nonNegative(value) {
-  const result = Number(value);
-  if (!Number.isSafeInteger(result) || result < 0)
-    throw new Error("hosted_progress_canary_non_negative_integer_required");
   return result;
 }
 function sha(value) {
