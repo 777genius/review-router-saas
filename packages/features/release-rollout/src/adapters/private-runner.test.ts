@@ -936,6 +936,34 @@ describe("Render private runner contract", () => {
       safeForCompensation: false,
     });
   });
+
+  it("revokes abandoned safety when a provider job appears late", async () => {
+    const intentId = "rri-reconciliation-test";
+    const harness = reconciliationHarness([
+      reconciledJob(intentId, "job-after-abandon"),
+    ]);
+    harness.setEffect({
+      ...dispatchingEffect,
+      state: "abandoned",
+      providerId: null,
+      safeForCompensation: true,
+      reconciliation: { result: "clean", safeForCompensation: true },
+    });
+
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({
+      result: "blocked",
+      reason: "unknown",
+      safeForCompensation: false,
+    });
+    expect(harness.events[0]).toBe("persist:job-after-abandon");
+    expect(harness.jobLedger.markTerminal).toHaveBeenCalledOnce();
+    expect(harness.effect()).toMatchObject({
+      state: "blocked",
+      safeForCompensation: false,
+    });
+  });
 });
 
 const jit: JitApiContext = {

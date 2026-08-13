@@ -761,6 +761,18 @@ export class RenderPrivateRunnerAdapter {
           expectedEpoch: intent.effect.epoch,
           reason: "duplicate",
         });
+      } else if (
+        intent.effect.state === ExternalEffectState.Abandoned &&
+        observedMatching.length > 0
+      ) {
+        blockedIntentIds.add(intent.id);
+        await reconciliationBoundary.blocked({
+          effectId: intent.id,
+          ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
+          expectedEpoch: intent.effect.epoch,
+          providerId: observedMatching[0]!.jobId,
+          reason: "unknown",
+        });
       } else if (blockedIntentIds.has(intent.id)) {
         continue;
       } else if (intent.effect.state === ExternalEffectState.Prepared) {
