@@ -1233,6 +1233,9 @@ COMMIT;
                 commitSha: rollout.expectedCommitSha,
               },
               envSha256: digest,
+              recoveryWitnessSha256:
+                facts.canonicalEnv
+                  .REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256,
               suspended: true,
               targetSwitchFenceNonce: fence.nonce,
               targetSwitchFenceVersion: fence.version,
@@ -1243,6 +1246,8 @@ COMMIT;
             renderDeployIds: ["dep-disposable"],
             targetSwitchFenceNonce: fence.nonce,
             targetSwitchFenceVersion: fence.version,
+            serviceRecoveryManifestSha256: digest,
+            targetServiceContractSha256: digest,
           },
         ),
       resumeDeployAndObserve: async () =>

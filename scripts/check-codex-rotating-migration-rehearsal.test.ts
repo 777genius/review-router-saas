@@ -42,7 +42,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses canonical migrations 000067, 000068, and 000069 in order", () => {
+  it("rehearses every canonical migration from 000060 through 000071 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,
@@ -64,6 +64,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration67Name",
       "migration68Name",
       "migration69Name",
+      "migration70Name",
+      "migration71Name",
     ]);
     expect(source).toContain(
       'const migration67Name = "000067_review_live_progress"',
@@ -73,6 +75,12 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain(
       'const migration69Name = "000069_release_rollout_ledger"',
+    );
+    expect(source).toContain(
+      'const migration70Name = "000070_runtime_generation_witness_proof"',
+    );
+    expect(source).toContain(
+      'const migration71Name = "000071_transactional_service_transition"',
     );
     expect(source).not.toContain("000067_release_rollout_ledger");
   });
