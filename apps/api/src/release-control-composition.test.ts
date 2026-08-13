@@ -948,6 +948,26 @@ describe("release authority process composition", () => {
     await app.close();
   });
 
+  it("rejects a mixed 000001/000002 byte-variant manifest", async () => {
+    const migrationManifest = authorityReadiness(
+      "reviewrouter_release_control",
+    )[0]!.migrationManifest.map((entry, index) =>
+      index === 0
+        ? {
+            ...entry,
+            checksumSha256:
+              "sha256:e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b",
+            byteVariant: "legacy_equivalent" as const,
+          }
+        : entry,
+    );
+    const app = await createReleaseControlHealthApp({ migrationManifest });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    await app.close();
+  });
+
   it("fails witness health when centralized temporal proof is absent", async () => {
     const app = await createReleaseWitnessApp({
       witnessPrisma: {

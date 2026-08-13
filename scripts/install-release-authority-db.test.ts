@@ -128,7 +128,7 @@ describe("release authority database installation", () => {
       "release_authority_catalog_fingerprint('release_authority')",
     );
   });
-  it("proves every pre-ledger catalog object against canonical and exact published legacy shadows", () => {
+  it("identifies exact two-file catalogs before later migrations can erase byte evidence", () => {
     const bundle = releaseAuthorityMigrationBundle();
     expect(bundle).toContain("release_authority_verify_canonical");
     expect(bundle).toContain("release_authority_verify_legacy");
@@ -142,6 +142,34 @@ describe("release authority database installation", () => {
     expect(bundle).toContain("pg_catalog.pg_get_indexdef");
     expect(bundle).toContain("pg_catalog.aclexplode");
     expect(bundle).toContain("pg_catalog.pg_enum");
+    expect(bundle).toContain("attribute.attacl");
+    expect(bundle).toContain("pg_catalog.pg_get_function_arguments");
+    const canonicalAudit = bundle.indexOf(
+      "building verified catalog release_authority_verify_canonical",
+    );
+    const legacyAudit = bundle.indexOf(
+      "building verified catalog release_authority_verify_legacy",
+    );
+    const auditsComplete = bundle.indexOf(
+      "DROP SCHEMA release_authority_verify_legacy CASCADE",
+    );
+    const catchup = bundle.indexOf(
+      "applying packages/platform/release-authority-db/migrations/000002_transactional_service_transition/migration.sql",
+      auditsComplete,
+    );
+    expect(canonicalAudit).toBeGreaterThan(-1);
+    expect(legacyAudit).toBeGreaterThan(canonicalAudit);
+    expect(auditsComplete).toBeGreaterThan(legacyAudit);
+    expect(catchup).toBeGreaterThan(auditsComplete);
+    expect(bundle.slice(canonicalAudit, auditsComplete)).not.toContain(
+      "CREATE TABLE release_authority_verify_canonical.service_transition",
+    );
+    expect(bundle.slice(legacyAudit, auditsComplete)).not.toContain(
+      "CREATE TABLE release_authority_verify_legacy.service_transition",
+    );
+    expect(
+      bundle.indexOf("UPDATE release_authority_catalog_verification", catchup),
+    ).toBeGreaterThan(catchup);
     expect(
       createHash("sha256")
         .update(
@@ -246,17 +274,17 @@ describe("release authority database installation", () => {
     expect(bundle.match(/ADD COLUMN effect_state/gu)).toHaveLength(3);
     expect(
       bundle.match(/CREATE TABLE release_authority\.service_transition \(/gu),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(
       bundle.match(
         /CREATE FUNCTION release_authority\.release_source_freeze_prepare/gu,
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(
       bundle.match(
         /CREATE FUNCTION release_authority\.release_source_freeze_complete/gu,
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
   });
 
   it("keeps the static migration ledger identical to the immutable file bytes", () => {
@@ -278,6 +306,7 @@ describe("release authority database installation", () => {
     const bundle = releaseAuthorityMigrationBundle();
     expect(bundle).toContain("authority_forward_present");
     expect(bundle).toContain("release authority migration history mismatch");
+    expect(bundle).toContain("position=1) IS DISTINCT FROM");
     expect(bundle).toContain("VALUES (11, '000010_recovery_effect_permits'");
   });
 

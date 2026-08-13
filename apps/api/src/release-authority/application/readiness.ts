@@ -92,6 +92,7 @@ const migrationManifestIsReady = (
   manifest: ReleaseAuthorityDatabaseReadiness["migrationManifest"],
 ): boolean =>
   manifest.length === expectedMigrationIdentities.length &&
+  manifest[0]?.byteVariant === manifest[1]?.byteVariant &&
   expectedMigrationIdentities.every(([name, checksums], index) => {
     const applied = manifest[index];
     if (
