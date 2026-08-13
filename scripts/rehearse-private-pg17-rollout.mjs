@@ -19,9 +19,10 @@ import {
   environmentKeysSha256,
   environmentSha256,
   sha256Canonical,
-  sourceRecoveryManifestSha256,
-  sourceServiceContractSha256,
-  targetServiceContractSha256,
+  fromRenderSourceRecoveryManifestV1,
+  renderSourceRecoveryManifestSha256,
+  renderSourceServiceContractSha256,
+  targetServiceConfigurationSha256,
   transitionFailure,
 } from "../packages/features/release-rollout/src/index.ts";
 import { createPrismaClient } from "../packages/platform/db/src/index.ts";
@@ -939,7 +940,7 @@ async function verifyProductionPathRehearsal(facts) {
     };
     return {
       ...value,
-      serviceContractSha256: sourceServiceContractSha256(value),
+      serviceContractSha256: renderSourceServiceContractSha256(value),
     };
   });
   const sourceManifestValue = {
@@ -947,10 +948,10 @@ async function verifyProductionPathRehearsal(facts) {
     rolloutId: rollout.rolloutId,
     services: sourceServices,
   };
-  const sourceManifest = {
+  const sourceManifest = fromRenderSourceRecoveryManifestV1({
     ...sourceManifestValue,
-    manifestSha256: sourceRecoveryManifestSha256(sourceManifestValue),
-  };
+    manifestSha256: renderSourceRecoveryManifestSha256(sourceManifestValue),
+  });
   const targetContracts = serviceRoles.map((role) => {
     const serviceId = `srv-target-${role}`;
     const environmentDelta = {
@@ -976,14 +977,17 @@ async function verifyProductionPathRehearsal(facts) {
     ];
     const value = {
       serviceId,
-      imageUrl: `ghcr.io/777genius/review-router-saas-runtime@${digest}`,
+      artifact: {
+        kind: "container_image",
+        reference: `ghcr.io/777genius/review-router-saas-runtime@${digest}`,
+      },
       environmentDelta,
       removeKeys: [],
       environmentSha256: environmentSha256(environment),
     };
     return {
       ...value,
-      serviceContractSha256: targetServiceContractSha256(value),
+      configurationSha256: targetServiceConfigurationSha256(value),
     };
   });
   const stagedServices = new Map(
@@ -992,9 +996,12 @@ async function verifyProductionPathRehearsal(facts) {
       {
         serviceId: service.serviceId,
         suspended: true,
-        serviceContractSha256: service.serviceContractSha256,
-        environmentSha256: service.sourceEnvSha256,
-        provenance: { kind: "git", commitSha: service.sourceCommitSha },
+        configurationSha256: service.configuration.sha256,
+        environmentSha256: service.sourceEnvironmentSha256,
+        provenance: {
+          kind: "source_revision",
+          revision: service.sourceRevision,
+        },
       },
     ]),
   );
@@ -1016,7 +1023,7 @@ async function verifyProductionPathRehearsal(facts) {
         contract.environmentSha256;
       return contract.environmentSha256;
     },
-    deployImage: async (serviceId, imageUrl) => {
+    deployArtifact: async (serviceId, reference) => {
       const contract = targetContracts.find(
         (item) => item.serviceId === serviceId,
       );
@@ -1024,18 +1031,22 @@ async function verifyProductionPathRehearsal(facts) {
       stagedServices.set(serviceId, {
         serviceId,
         suspended: true,
-        serviceContractSha256: contract.serviceContractSha256,
+        configurationSha256: contract.configurationSha256,
         environmentSha256: contract.environmentSha256,
-        provenance: { kind: "image", imageUrl, deployId },
+        provenance: {
+          kind: "container_image",
+          reference,
+          deploymentId: deployId,
+        },
       });
       return deployId;
     },
-    deployCommit: async () => {
+    deploySourceRevision: async () => {
       throw new Error("disposable_target_stage_commit_deploy_unexpected");
     },
-    waitForDeploy: async () => undefined,
-    reconcileCommitDeploy: async () => null,
-    quiesceDeploys: async () => undefined,
+    waitForDeployment: async () => undefined,
+    reconcileSourceDeployment: async () => null,
+    quiesceDeployments: async () => undefined,
   });
   const sqlConfiguration = disposableSqlConfiguration();
   const generated = {
@@ -1455,7 +1466,7 @@ COMMIT;
           current.suspended = false;
           return {
             serviceId: contract.serviceId,
-            deployId: current.provenance.deployId,
+            deployId: current.provenance.deploymentId,
             resumed: true,
           };
         });
@@ -1604,14 +1615,14 @@ COMMIT;
             targetDeploys: targetContracts.map((contract) => ({
               serviceId: contract.serviceId,
               deployId: stagedServices.get(contract.serviceId).provenance
-                .deployId,
-              imageDigest: contract.imageUrl.slice(
-                contract.imageUrl.indexOf("sha256:"),
+                .deploymentId,
+              imageDigest: contract.artifact.reference.slice(
+                contract.artifact.reference.indexOf("sha256:"),
               ),
             })),
             resumedTargetDeployIds: targetContracts.map(
               (contract) =>
-                stagedServices.get(contract.serviceId).provenance.deployId,
+                stagedServices.get(contract.serviceId).provenance.deploymentId,
             ),
             liveCanarySha256: digest,
             cleanups: [

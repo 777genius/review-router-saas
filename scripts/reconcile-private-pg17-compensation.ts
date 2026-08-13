@@ -13,7 +13,7 @@ import {
   RenderTransactionalServicesAdapter,
   TransactionalServiceCutover,
   type ProtectedSourceEnvironment,
-  type TargetServiceContract,
+  type TargetServiceRelease,
   type ReleaseRollout,
 } from "../packages/features/release-rollout/src/index";
 import { parseCompensationSourceWriterServiceIds } from "./reconcile-private-pg17-compensation-config";
@@ -146,7 +146,7 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
           : {}),
       },
     };
-  }) as TargetServiceContract[] | undefined;
+  }) as TargetServiceRelease[] | undefined;
   const serviceTransition = new TransactionalServiceCutover(
     ledger,
     new RenderTransactionalServicesAdapter(
