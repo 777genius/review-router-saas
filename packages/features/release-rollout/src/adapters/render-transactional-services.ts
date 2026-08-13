@@ -220,6 +220,7 @@ export class RenderTransactionalServicesAdapter
     await this.quiesceDeploys(input.serviceId);
     const candidates = (await this.api.listAllDeploys(input.serviceId)).filter(
       (deploy) =>
+        deploy.status === "live" &&
         deploy.commit?.id === input.commitSha &&
         !deploy.image &&
         typeof deploy.createdAt === "string" &&
