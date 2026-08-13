@@ -10,8 +10,8 @@ import { decomposePostgresConnection } from "./postgres-generation";
 import type { CommandExecutor } from "./process-command";
 import {
   assertExternalEffectRecord,
+  type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
-  type ExternalEffectReconciliation,
 } from "../domain/external-effect";
 
 const literal = (value: string): string => `'${value.replaceAll("'", "''")}'`;
@@ -100,7 +100,7 @@ export class PostgreSqlRolloutLedgerAdapter implements RunnerJobLedger {
     claimantId: string;
     expectedEpoch: number;
     jobId?: string;
-    reconciliation: ExternalEffectReconciliation;
+    reconciliation: ExternalEffectControlReconciliation;
     observation?: StepObservation;
   }): Promise<ExternalEffectRecord> {
     return assertExternalEffectRecord(

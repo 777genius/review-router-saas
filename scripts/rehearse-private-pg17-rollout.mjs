@@ -231,6 +231,7 @@ export async function executeDisposableRehearsal(
     );
     for (const migration of [
       "000001_release_authority",
+      "000002_external_effect_protocol",
       "000002_transactional_service_transition",
     ]) {
       execute(

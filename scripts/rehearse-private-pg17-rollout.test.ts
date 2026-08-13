@@ -41,6 +41,7 @@ describe("disposable dual-version rehearsal", () => {
       "createReleaseControlApp",
       "rr-authority-pg17-",
       '"000001_release_authority"',
+      '"000002_external_effect_protocol"',
       '"000002_transactional_service_transition"',
       "activationAuthorityProvisioningSql",
       "reviewrouter_activation_permit_installer",

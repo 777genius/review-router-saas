@@ -96,6 +96,12 @@ Missing, unavailable, stale, duplicate, or contradictory ledger responses stop
 the rollout. Do not bypass this dependency with artifacts, labels, or in-memory
 state.
 
+The dedicated authority is installed in order from
+`000001_release_authority`, `000002_external_effect_protocol`, and
+`000002_transactional_service_transition`. The disposable PG16 to PG17
+rehearsal and the dedicated authority contract must both execute that complete
+inventory before a release is eligible for production.
+
 The hosted runner controller receives the plaintext witness credential as
 `REVIEW_ROUTER_RUNNER_WITNESS_TOKEN`; the runner container never receives it.
 The controller reads the terminal job's bounded Render log window, accepts one
