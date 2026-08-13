@@ -231,11 +231,37 @@ repositories, user projects, and reused customer runners are forbidden fixtures.
 
    ```bash
    EXPECTED_SHA=$(git rev-parse origin/main)
+   RELEASE_RUN_ID=1234567890
+   RELEASE_ARTIFACT_ID=2345678901
    ROLLOUT_ID="private-pg17-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%s' "$EXPECTED_SHA" | cut -c1-8)"
    gh workflow run private-network-pg17-rollout.yml \
-     --ref main -f rollout_id="$ROLLOUT_ID" -f expected_sha="$EXPECTED_SHA"
+     --ref main \
+     -f rollout_id="$ROLLOUT_ID" \
+     -f expected_sha="$EXPECTED_SHA" \
+     -f release_run_id="$RELEASE_RUN_ID" \
+     -f release_artifact_id="$RELEASE_ARTIFACT_ID"
    gh run list --workflow private-network-pg17-rollout.yml --branch main --limit 5
    ```
+
+   Select `RELEASE_RUN_ID` from the successful, first-attempt `Release`
+   workflow run whose `head_sha` is exactly `EXPECTED_SHA`; use the immutable
+   run ID printed in that run's release summary. Select `RELEASE_ARTIFACT_ID`
+   from the same summary's `Hosted runtime identity artifact ID`, never by
+   artifact name alone. Before dispatch, verify both immutable identities:
+
+   ```bash
+   REPOSITORY=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+   test "$(gh api "repos/$REPOSITORY/actions/runs/$RELEASE_RUN_ID/attempts/1" \
+     --jq '[.path,.event,.run_attempt,.head_sha,.conclusion] | @tsv')" = \
+     ".github/workflows/release.yml	workflow_dispatch	1	$EXPECTED_SHA	success"
+   test "$(gh api "repos/$REPOSITORY/actions/artifacts/$RELEASE_ARTIFACT_ID" \
+     --jq '[.workflow_run.id,.workflow_run.head_sha,.expired] | @tsv')" = \
+     "$RELEASE_RUN_ID	$EXPECTED_SHA	false"
+   ```
+
+   The protected preflight repeats these checks, requires the artifact name to
+   be `hosted-runtime-image-v*`, verifies its exact identity payload and GitHub
+   attestation, and durably claims the rollout before any source mutation.
 
 4. `protected-release-preflight` checks exact identity and durably claims the
    rollout before mutation.
