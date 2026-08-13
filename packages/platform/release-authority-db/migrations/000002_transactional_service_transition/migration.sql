@@ -64,8 +64,8 @@ BEGIN
     OR jsonb_array_length(p_input->'targetContracts') <> 3
     OR p_input->'targetContracts' @? '$[*].environmentDelta'
     OR p_input->'sourceManifest' @? '$.services[*].environmentDelta'
-    OR p_input->'targetContracts'::text ~ 'postgres(ql)?://'
-    OR p_input->'sourceManifest'::text ~ 'postgres(ql)?://'
+    OR (p_input->'targetContracts')::text ~ 'postgres(ql)?://'
+    OR (p_input->'sourceManifest')::text ~ 'postgres(ql)?://'
   THEN RAISE EXCEPTION 'release service transition intent invalid'; END IF;
   INSERT INTO release_authority.service_transition(
     rollout_id,manifest_sha256,target_contract_sha256,service_ids,source_manifest,target_contracts)
