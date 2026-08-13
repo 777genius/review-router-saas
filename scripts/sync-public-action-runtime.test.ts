@@ -201,22 +201,16 @@ describe("public Action runtime sync", () => {
     expect(workflow).toContain('gh release upload "$VERSION"');
   });
 
-  it("publishes the runtime package through the GitHub owner-specific API", () => {
+  it("verifies the hosted runtime image through an anonymous pull", () => {
     const workflow = readFileSync(
       join(process.cwd(), ".github/workflows/release.yml"),
       "utf8",
     );
-    expect(workflow).toContain("PACKAGE_OWNER: ${{ github.repository_owner }}");
-    expect(workflow).toContain(
-      'Organization) package_scope="orgs/$PACKAGE_OWNER"',
-    );
-    expect(workflow).toContain('User) package_scope="users/$PACKAGE_OWNER"');
-    expect(workflow).toContain(
-      '"/$package_scope/packages/container/$PACKAGE_NAME"',
-    );
-    expect(workflow).not.toContain(
-      "/orgs/777genius/packages/container/review-router-saas-runtime",
-    );
+    expect(workflow).toContain("packages: write");
+    expect(workflow).toContain("docker logout ghcr.io");
+    expect(workflow).toContain('docker pull "$IMAGE_URL"');
+    expect(workflow).not.toContain("packages/container");
+    expect(workflow).not.toContain("visibility=public");
   });
 });
 
