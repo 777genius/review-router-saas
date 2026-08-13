@@ -39,7 +39,7 @@ describe("application database release-authority isolation", () => {
   it("keeps migration 000067 as an immutable no-op marker", () => {
     const migration = readFileSync(
       new URL(
-        "../packages/platform/db/prisma/migrations/000067_release_rollout_ledger/migration.sql",
+        "../packages/platform/db/prisma/migrations/000069_release_rollout_ledger/migration.sql",
         import.meta.url,
       ),
       "utf8",

@@ -15,7 +15,7 @@ This is the fail-closed release gate for the ordered combined release
 `000064_codex_oauth_versioned_secret_namespaces`, then
 `000065_codex_oauth_authority_acl_hardening`, then
 `000066_codex_oauth_rotating_cascade_authority`, then
-`000067_release_rollout_ledger`. The general release and git-flow
+`000069_release_rollout_ledger`. The general release and git-flow
 rules remain in
 [`07-environments-and-release-management.md`](./07-environments-and-release-management.md).
 Never apply only one migration as a completed production rollout.
@@ -76,13 +76,13 @@ is checked against both that policy and the files on every test run.
 | `000064_codex_oauth_versioned_secret_namespaces` | `4da4352108efd684a8bc6ddefa19353181a8a74758c32ed890527c2aec2ae666` |
 | `000065_codex_oauth_authority_acl_hardening`     | `ca8d554dd71cbdeaf0a66e007aa7ef391627c0a9d97b10a27e1113308087342c` |
 | `000066_codex_oauth_rotating_cascade_authority`  | `3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8` |
-| `000067_release_rollout_ledger`                  | `82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05` |
+| `000069_release_rollout_ledger`                  | `82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05` |
 
 ## 000067 no-op marker policy
 
 `000066_codex_oauth_rotating_cascade_authority` is immutable at checksum
 `3b9b6385fde3120793aff052ba00c1afbd09011585d73a8184d0e73de8934af8`.
-`000067_release_rollout_ledger` is the unpublished immutable no-op marker for
+`000069_release_rollout_ledger` is the unpublished immutable no-op marker for
 this release. Its exact checked-in SHA-256 is
 `82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05`.
 Before its first publication, migration preflight hashes those exact bytes and
@@ -289,7 +289,7 @@ rolling mixed-version deploy is prohibited.
    Role bootstrap and release migration share the repository-wide
    `codex-rotating-database-mutation-production` concurrency group with
    cancellation disabled, so only one database mutation can run. Apply the
-   exact ordered checked-in 000060 through 000066 batch once. A lock or
+   exact ordered checked-in 000060 through 000066 plus 000069 batch once. A lock or
    statement timeout stops the batch; inspect it and begin a separately
    recorded retry, never concurrent retries.
 6. With both switches still off, converge API, web, and worker to the same exact

@@ -24,7 +24,9 @@ const migration63Name = "000063_codex_oauth_setup_payload_claim";
 const migration64Name = "000064_codex_oauth_versioned_secret_namespaces";
 const migration65Name = "000065_codex_oauth_authority_acl_hardening";
 const migration66Name = "000066_codex_oauth_rotating_cascade_authority";
-const migration67Name = "000067_release_rollout_ledger";
+const migration67Name = "000067_review_live_progress";
+const migration68Name = "000068_validate_review_assignment_manifest";
+const migration69Name = "000069_release_rollout_ledger";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -33,7 +35,7 @@ const migration64 = join(migrationsDirectory, migration64Name, "migration.sql");
 const migration65 = join(migrationsDirectory, migration65Name, "migration.sql");
 const migration66 = join(migrationsDirectory, migration66Name, "migration.sql");
 const rotatingMigrationNames = readdirSync(migrationsDirectory)
-  .filter((name) => /^00006[0-6]_/u.test(name))
+  .filter((name) => /^0000(?:6[0-9]|[7-9][0-9])_/u.test(name))
   .sort();
 assert(
   JSON.stringify(rotatingMigrationNames) ===
@@ -46,8 +48,10 @@ assert(
       migration65Name,
       migration66Name,
       migration67Name,
+      migration68Name,
+      migration69Name,
     ]),
-  "rehearsal migration inventory must exactly match rotating migrations 000060 through 000066",
+  "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
 const baseUrl = requireLocalPostgres(
   process.env.REVIEW_ROUTER_MIGRATION_REHEARSAL_DATABASE_URL ??
@@ -235,7 +239,7 @@ function proveLateMigrationRollbackAndReplayMatrix() {
 }
 
 function proveReleaseAuthorityMarkerIsolation(url) {
-  proveMigrationRunnerHistory(url, migration67Name, true);
+  proveMigrationRunnerHistory(url, migration69Name, true);
   const forbiddenObjects = psql(url, [
     "-Atc",
     String.raw`
@@ -3212,7 +3216,7 @@ function proveMigrateDeployNoOp(url) {
   proveMigrationRunnerHistory(url, migration64Name, true);
   proveMigrationRunnerHistory(url, migration65Name, true);
   proveMigrationRunnerHistory(url, migration66Name, true);
-  proveMigrationRunnerHistory(url, migration67Name, true);
+  proveMigrationRunnerHistory(url, migration69Name, true);
 }
 
 function collectObservation(url) {

@@ -62,7 +62,7 @@ describe("disposable dual-version rehearsal", () => {
       "beginCompensation",
       "assertPromotionAllowed",
       "REVIEW_ROUTER_DATABASE_URL_FILE",
-      '"000067_release_rollout_ledger"',
+      '"000069_release_rollout_ledger"',
       "private_pg17_rehearsal_source_migration_failed:exit=",
       "[redacted-database-url]",
     ])

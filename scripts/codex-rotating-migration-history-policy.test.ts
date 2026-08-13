@@ -244,7 +244,7 @@ describe("Codex rotating immutable migration history policy", () => {
         },
       ]),
     ).toThrow(
-      "codex_rotating_000067_prepublication_history_forbidden:" +
+      "codex_rotating_000069_prepublication_history_forbidden:" +
         "use_the_forward_release_migration_once_from_the_immutable_release_caller",
     );
   });
@@ -271,7 +271,7 @@ describe("Codex rotating immutable migration history policy", () => {
         assertCodexRotatingMigrationHistoryIsPristine(
           kind === "duplicate" ? [row, row] : [row],
         ),
-      ).toThrow("codex_rotating_000067_prepublication_history_forbidden");
+      ).toThrow("codex_rotating_000069_prepublication_history_forbidden");
     },
   );
 
