@@ -67,6 +67,42 @@ class FakeGitHubRevisionSource implements GitHubReviewRevisionSourcePort {
 }
 
 describe("production run-authorization prerequisites", () => {
+  it("uses the trusted pull request hint when a workflow run is linked to multiple pull requests", async () => {
+    const source = new FakeGitHubRevisionSource();
+    source.runPullRequestNumbers = [42, 49];
+    source.pointers = [pointer(shaA, shaC), pointer(shaA, shaC)];
+    const resolver = new CanonicalGitHubReviewRevisionResolver(
+      source,
+      createReviewRunControlTestKit().digest,
+    );
+
+    await expect(resolver.resolve(resolverInput())).resolves.toMatchObject({
+      status: CanonicalReviewRevisionResolutionStatus.Resolved,
+      pullRequestNumber: 42,
+    });
+  });
+
+  it.each([
+    { name: "missing", hint: null },
+    { name: "not linked to the run", hint: 7 },
+  ])(
+    "rejects a $name hint for a workflow run linked to multiple pull requests",
+    async ({ hint }) => {
+      const source = new FakeGitHubRevisionSource();
+      source.runPullRequestNumbers = [42, 49];
+      const resolver = new CanonicalGitHubReviewRevisionResolver(
+        source,
+        createReviewRunControlTestKit().digest,
+      );
+
+      await expect(
+        resolver.resolve({ ...resolverInput(), pullRequestNumberHint: hint }),
+      ).resolves.toEqual({
+        status: CanonicalReviewRevisionResolutionStatus.PullRequestConflict,
+      });
+    },
+  );
+
   it.each([
     {
       name: "base movement with unchanged head",
