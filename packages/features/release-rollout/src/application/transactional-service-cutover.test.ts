@@ -197,7 +197,10 @@ const harness = (fail?: string, failOrdinal = 1) => {
     begin,
     readContract: vi.fn(async () => ({
       sourceManifest: source,
-      targetContracts: target.map(({ environmentDelta: _, ...item }) => item),
+      targetContracts: target.map(({ environmentDelta, ...item }) => {
+        expect(environmentDelta).toBeDefined();
+        return item;
+      }),
     })),
     append: vi.fn(
       async (value: Omit<ServiceTransitionCheckpoint, "sequence">) => {
