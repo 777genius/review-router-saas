@@ -18,6 +18,9 @@ describe("release authority database installation", () => {
       "release runner effects unsafe for compensation",
     );
     expect(migration).toContain("source_freeze_completion");
+    expect(migration).toContain(
+      "REVOKE ALL ON FUNCTION release_authority.release_source_freeze_immutable() FROM PUBLIC;",
+    );
   });
   it("applies the complete ordered migration chain exactly once in one transaction", () => {
     expect(releaseAuthorityMigrationPaths).toEqual([
@@ -34,7 +37,7 @@ describe("release authority database installation", () => {
       "e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b",
       "cd50e36c2b357fe03a81204b99f38c5c1e6b9ff94660dfecb9a2fccb782a512e",
       "5f52fdc1fcf6e37fabe9a69908d3c4e4bf82dfa6ab24c6b2ee9c4f3cda2a1099",
-      "753b1c496b47fe329ce535d54b5c34e40e8ff7ad635bc65f856dbd975bdc5917",
+      "28079c64266e1045c9db82743f82412d9630f6b97f3143fcbe7730c290c33e94",
     ]);
     const bundle = releaseAuthorityMigrationBundle();
     const first = bundle.indexOf("CREATE SCHEMA release_authority");

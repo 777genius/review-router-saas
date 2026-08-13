@@ -29,6 +29,7 @@ LANGUAGE plpgsql SET search_path = pg_catalog AS $body$
 BEGIN
   RAISE EXCEPTION 'release source freeze observations are immutable';
 END $body$;
+REVOKE ALL ON FUNCTION release_authority.release_source_freeze_immutable() FROM PUBLIC;
 CREATE TRIGGER release_source_freeze_immutable_guard
 BEFORE UPDATE OR DELETE ON release_authority.source_freeze_observation
 FOR EACH ROW EXECUTE FUNCTION release_authority.release_source_freeze_immutable();
