@@ -65,6 +65,15 @@ describe("release authority database installation", () => {
       migration.indexOf("DECLARE transition"),
     );
   });
+  it("revokes public execution of the service transition trigger helper forward-only", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000008_trigger_helper_acl/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain(
+      "REVOKE ALL ON FUNCTION release_authority.release_service_transition_immutable() FROM PUBLIC;",
+    );
+  });
   it("applies the complete ordered migration chain exactly once in one transaction", () => {
     expect(releaseAuthorityMigrationPaths).toEqual([
       "packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql",
@@ -75,6 +84,7 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000005_late_runner_effects/migration.sql",
       "packages/platform/release-authority-db/migrations/000006_runner_provider_creation_boundary/migration.sql",
       "packages/platform/release-authority-db/migrations/000007_compensation_effect_fence/migration.sql",
+      "packages/platform/release-authority-db/migrations/000008_trigger_helper_acl/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths.map((path) =>
@@ -89,6 +99,7 @@ describe("release authority database installation", () => {
       "35db45ebd364e6f8cbeafbfb0ab6ac0056fe7e51de2b5fe844b91f1207ba1cfb",
       "e49fe0f8c161fbe39953f01e299c81a752a152809c2261815a639bcf732c428a",
       "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
+      "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
     ]);
     const bundle = releaseAuthorityMigrationBundle();
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
@@ -105,6 +116,10 @@ describe("release authority database installation", () => {
     const sixth = bundle.indexOf("rolloutStateAtPersistence");
     const seventh = bundle.indexOf("runner_job_provider_creation_boundary");
     const eighth = bundle.indexOf("release_compensation_effects_are_safe");
+    const ninth = bundle.indexOf(
+      "REVOKE ALL ON FUNCTION release_authority.release_service_transition_immutable() FROM PUBLIC;",
+      eighth,
+    );
     expect(first).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(first);
     expect(third).toBeGreaterThan(second);
@@ -113,6 +128,7 @@ describe("release authority database installation", () => {
     expect(sixth).toBeGreaterThan(fifth);
     expect(seventh).toBeGreaterThan(sixth);
     expect(eighth).toBeGreaterThan(seventh);
+    expect(ninth).toBeGreaterThan(eighth);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
     expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(1);

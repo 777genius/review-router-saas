@@ -84,6 +84,9 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000006
 docker cp "$root/packages/platform/release-authority-db/migrations/000007_compensation_effect_fence/migration.sql" \
   "$name:/tmp/migration-000007.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000007.sql >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000008_trigger_helper_acl/migration.sql" \
+  "$name:/tmp/migration-000008.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000008.sql >/dev/null
 
 postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
@@ -1320,6 +1323,7 @@ if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewro
 fi
 migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "WITH migrated(proname,control_allowed) AS (VALUES
+      ('release_service_transition_immutable',false),
       ('release_runner_job_cleanup_proven',false),
       ('release_runner_effect_snapshot',false),
       ('release_runner_list_intents',true),
@@ -1354,7 +1358,7 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
         'reviewrouter_release_witness',oid,'EXECUTE'))||':'||
       bool_and(proconfig=ARRAY['search_path=pg_catalog']::text[])
     FROM functions")
-test "$migration_acl" = 14:true:true:true:true:true
+test "$migration_acl" = 15:true:true:true:true:true
 legacy_control_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT pg_catalog.has_function_privilege('reviewrouter_release_control',
       'release_authority.release_runner_persist_intent(jsonb)','EXECUTE')||':'||

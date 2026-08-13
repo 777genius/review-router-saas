@@ -41,7 +41,7 @@ export async function observeReleaseAuthorityDatabaseReadiness(
         FROM pg_catalog.pg_proc procedure
         JOIN pg_catalog.pg_namespace namespace ON namespace.oid = procedure.pronamespace
         WHERE namespace.nspname = 'release_authority'
-      ), expected_acl(role_name, allowed) AS (
+      ), expected_acl(role_name, allowed, denied) AS (
         VALUES
           ('reviewrouter_release_control', ARRAY[
             to_regprocedure('release_authority.release_rollout_claim(text,text,text,integer,text,text)'),
@@ -79,23 +79,36 @@ export async function observeReleaseAuthorityDatabaseReadiness(
             to_regprocedure('release_authority.release_source_freeze_prepare(text,text,text,integer,text,text,text,text,timestamptz,jsonb,boolean)'),
             to_regprocedure('release_authority.release_source_freeze_record(text,text,text,integer,text,text,text,text,timestamptz,jsonb)'),
             to_regprocedure('release_authority.release_source_freeze_complete(text,text,text,integer,text,text,jsonb,timestamptz)')
+          ]::oid[], ARRAY[
+            to_regprocedure('release_authority.release_service_transition_immutable()')
           ]::oid[]),
           ('reviewrouter_provider_authority', ARRAY[
             to_regprocedure('release_authority.release_provider_authority_decide(jsonb)')
+          ]::oid[], ARRAY[
+            to_regprocedure('release_authority.release_service_transition_immutable()')
           ]::oid[]),
           ('reviewrouter_release_witness', ARRAY[
             to_regprocedure('release_authority.release_runner_cleanup_observation_seed(text)'),
             to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)')
+          ]::oid[], ARRAY[
+            to_regprocedure('release_authority.release_service_transition_immutable()')
           ]::oid[])
       ), acl_posture AS (
         SELECT count(DISTINCT roles.rolname) = 3
           AND bool_and(array_position(expected_acl.allowed, NULL) IS NULL)
+          AND bool_and(array_position(expected_acl.denied, NULL) IS NULL)
           AND bool_and(pg_catalog.has_schema_privilege(
             roles.oid, 'release_authority', 'USAGE'
           ))
           AND bool_and(
             pg_catalog.has_function_privilege(roles.oid, functions.oid, 'EXECUTE')
               = (functions.oid = ANY(expected_acl.allowed))
+          )
+          AND bool_and(
+            functions.oid <> ALL(expected_acl.denied)
+              OR NOT pg_catalog.has_function_privilege(
+                roles.oid, functions.oid, 'EXECUTE'
+              )
           ) AS exact
         FROM expected_acl
         JOIN pg_catalog.pg_roles roles ON roles.rolname = expected_acl.role_name
