@@ -128,6 +128,27 @@ provenance fails.
 
 ## Database and secret boundary
 
+### Legacy rotating-OAuth ambiguity
+
+The source may legitimately contain expired-by-time `preleased`/`finalized`
+leases and `fetched` setup manifests. Do not manually rewrite or delete these
+rows before the copy. Source quiescence records two identical, ordered ID
+inventories and their digest. After migrations establish the target recovery
+epoch and `versioned-namespace-cutover:<provider>` fence, the release migration
+reconciles only rows from that stable inventory:
+
+- leases must be expired by time, older than the provider epoch, recovery-owned,
+  and have no `pending` or `remote_outcome_unknown` intent;
+- fetched manifests require the exact forced-recovery acknowledgement. They are
+  retained as `recovered` evidence with the inventory digest;
+- terminal intent rows remain immutable. Any unknown intent status fails closed;
+- the post-reconciliation raw counts for `preleased`/`finalized`, `fetched`, and
+  `pending` must all be zero. The final verifier does not weaken this gate.
+
+If either stable sample differs, a row is current-epoch or unexpired, or a live
+ambiguous intent exists, stop the rollout. Do not bypass the guard with direct
+SQL cleanup.
+
 All database tools run on the exact private runner step, after checkout and
 dependency installation. Database URLs and passwords are never placed in argv,
 artifacts, logs, workspace metadata, image metadata, or broad inherited

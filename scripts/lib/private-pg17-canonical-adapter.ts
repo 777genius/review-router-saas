@@ -10,6 +10,7 @@ import {
   executeCanonicalRoleBootstrap,
 } from "../run-codex-rotating-release-migration.mjs";
 import { secureCanonicalRun } from "../private-pg17-secure-canonical";
+import { reconcileLegacyAmbiguity } from "../reconcile-codex-rotating-legacy-ambiguity.mjs";
 
 /** Normalizes canonical script output into application-port observations. */
 export class PrivatePg17CanonicalAdapter {
@@ -29,6 +30,16 @@ export class PrivatePg17CanonicalAdapter {
     );
     if ((facts as { aclGateState?: string }).aclGateState !== "closed")
       throw new Error("private_pg17_rollout_acl_gate_not_closed");
+    const legacyReconciliation = reconcileLegacyAmbiguity(
+      {
+        databaseUrl: String(env.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL),
+        recoveryWitnessSha256: String(
+          env.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256,
+        ),
+        rolloutId: String(env.REVIEW_ROUTER_ROLLOUT_ID),
+      },
+      secureCanonicalRun,
+    );
     const connection = decomposePostgresConnection(
       String(env.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL),
     );
@@ -56,7 +67,11 @@ export class PrivatePg17CanonicalAdapter {
     return {
       step: RolloutStep.RunReleaseMigration,
       observedAt: new Date().toISOString(),
-      facts: { ...(facts as Record<string, unknown>), migrationChecksum },
+      facts: {
+        ...(facts as Record<string, unknown>),
+        legacyReconciliation,
+        migrationChecksum,
+      },
     };
   }
 

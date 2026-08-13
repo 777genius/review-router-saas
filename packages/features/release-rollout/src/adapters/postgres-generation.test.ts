@@ -98,6 +98,11 @@ describe("source quiescence", () => {
         };
       if (sql.startsWith("SELECT count(*) FROM pg_stat_activity"))
         return { stdout: "0\n" };
+      if (sql.includes("'activeLeaseIds'"))
+        return {
+          stdout:
+            '{"activeLeaseIds":["lease-1"],"fetchedSetupIds":["setup-1"],"pendingIntentIds":[],"intentStatuses":["completed","failed"]}\n',
+        };
       return { stdout: "" };
     });
     const commands: CommandExecutor = {
@@ -135,6 +140,11 @@ describe("source quiescence", () => {
     });
     expect(result.evidence.stabilizationSeries).toEqual([0, 0, 0]);
     expect(result.evidence.reconnectDeniedRoles).toHaveLength(4);
+    expect(result.evidence.legacyAmbiguity).toMatchObject({
+      stable: true,
+      activeLeaseIds: ["lease-1"],
+      fetchedSetupIds: ["setup-1"],
+    });
     expect(
       execute.mock.calls
         .find((call) => String(call[1].at(-1)).includes("REVOKE CONNECT"))?.[1]

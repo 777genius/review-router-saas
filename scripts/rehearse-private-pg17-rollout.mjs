@@ -36,6 +36,7 @@ import {
 } from "./run-codex-rotating-release-migration.mjs";
 import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
 import { createSecureCanonicalRun } from "./private-pg17-secure-canonical.ts";
+import { reconcileLegacyAmbiguity } from "./reconcile-codex-rotating-legacy-ambiguity.mjs";
 
 const imagePattern =
   /^postgres:(16\.13|17(?:\.[0-9]+)?)-bookworm@sha256:[a-f0-9]{64}$/u;
@@ -850,6 +851,7 @@ async function verifyProductionPathRehearsal(facts) {
   let cleanupStep = RolloutStep.CleanupRoleRunner;
   const ledger = facts.ledger;
   let evidence;
+  let legacyReconciliation;
   const useCases = new ReleaseRolloutUseCases({
     authority: facts.providerAuthority,
     preflight: {
@@ -1017,6 +1019,24 @@ async function verifyProductionPathRehearsal(facts) {
             "reviewrouter_worker",
             "reviewrouter_codex_effect_authority",
           ],
+          legacyAmbiguity: {
+            inventorySha256: digest,
+            activeLeaseIds: [],
+            fetchedSetupIds: [],
+            pendingIntentIds: [],
+            intentStatuses: [],
+            observations: [
+              {
+                observedAt: "2026-08-12T00:00:02.100Z",
+                inventorySha256: digest,
+              },
+              {
+                observedAt: "2026-08-12T00:00:02.300Z",
+                inventorySha256: digest,
+              },
+            ],
+            stable: true,
+          },
           complete: true,
         }),
       copy: async () =>
@@ -1051,6 +1071,16 @@ async function verifyProductionPathRehearsal(facts) {
           {
             ...facts.canonicalEnv,
             REVIEW_ROUTER_RELEASE_ACL_GATE_MODE: "closed",
+          },
+          canonicalRun,
+        );
+        legacyReconciliation = reconcileLegacyAmbiguity(
+          {
+            databaseUrl:
+              facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+            recoveryWitnessSha256:
+              facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256,
+            rolloutId: rollout.rolloutId,
           },
           canonicalRun,
         );
@@ -1115,6 +1145,7 @@ COMMIT;
           );
         return observed(RolloutStep.RunReleaseMigration, {
           ...migration,
+          legacyReconciliation,
           migrationChecksum,
         });
       },
@@ -1220,6 +1251,24 @@ COMMIT;
               "reviewrouter_worker",
               "reviewrouter_codex_effect_authority",
             ],
+            legacyAmbiguity: {
+              inventorySha256: digest,
+              activeLeaseIds: [],
+              fetchedSetupIds: [],
+              pendingIntentIds: [],
+              intentStatuses: [],
+              observations: [
+                {
+                  observedAt: "2026-08-12T00:00:02.100Z",
+                  inventorySha256: digest,
+                },
+                {
+                  observedAt: "2026-08-12T00:00:02.300Z",
+                  inventorySha256: digest,
+                },
+              ],
+              stable: true,
+            },
             complete: true,
           },
           equivalence: {
@@ -1237,6 +1286,7 @@ COMMIT;
             streamingHash: true,
             maxProcessBufferBytes: 8 * 1024 * 1024,
           },
+          legacyReconciliation,
           protectedEnvironmentPreflightSha256: current.receipts.find(
             (receipt) =>
               receipt.step === RolloutStep.VerifyProtectedEnvironment,

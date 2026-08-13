@@ -16,6 +16,7 @@ import {
 import type {
   BackupIdentity,
   EquivalenceEvidence,
+  LegacyAmbiguityEvidence,
   QuiescenceEvidence,
 } from "../domain/trusted-rollout-evidence";
 import type { CommandExecutor } from "./process-command";
@@ -133,6 +134,54 @@ export class PostgreSqlGenerationAdapter {
     } finally {
       target.cleanup();
     }
+  }
+
+  private legacyAmbiguityInventory(url: string): {
+    activeLeaseIds: string[];
+    fetchedSetupIds: string[];
+    pendingIntentIds: string[];
+    intentStatuses: string[];
+  } {
+    return JSON.parse(
+      this.psql(
+        url,
+        `SELECT json_build_object(
+          'activeLeaseIds', coalesce((SELECT json_agg("id" ORDER BY "id") FROM "CodexOAuthLease" WHERE "status" IN ('preleased','finalized')), '[]'::json),
+          'fetchedSetupIds', coalesce((SELECT json_agg("id" ORDER BY "id") FROM "CodexOAuthSetupManifest" WHERE "status" = 'fetched'), '[]'::json),
+          'pendingIntentIds', coalesce((SELECT json_agg("id" ORDER BY "id") FROM "CodexOAuthWritebackIntent" WHERE "status" = 'pending'), '[]'::json)
+          ,'intentStatuses', coalesce((SELECT json_agg(DISTINCT "status" ORDER BY "status") FROM "CodexOAuthWritebackIntent"), '[]'::json)
+        )`,
+      ),
+    );
+  }
+
+  private observeStableLegacyAmbiguity(url: string): LegacyAmbiguityEvidence {
+    const firstObservedAt = new Date().toISOString();
+    const first = this.legacyAmbiguityInventory(url);
+    this.psql(url, "SELECT pg_sleep(0.2)");
+    const secondObservedAt = new Date().toISOString();
+    const second = this.legacyAmbiguityInventory(url);
+    const firstDigest = digest(JSON.stringify(first));
+    const secondDigest = digest(JSON.stringify(second));
+    if (firstDigest !== secondDigest)
+      throw new Error("postgres_generation_legacy_ambiguity_not_stable");
+    if (Date.parse(secondObservedAt) <= Date.parse(firstObservedAt))
+      throw new Error("postgres_generation_legacy_ambiguity_clock_invalid");
+    return Object.freeze({
+      ...second,
+      inventorySha256: secondDigest,
+      observations: Object.freeze([
+        Object.freeze({
+          observedAt: firstObservedAt,
+          inventorySha256: firstDigest,
+        }),
+        Object.freeze({
+          observedAt: secondObservedAt,
+          inventorySha256: secondDigest,
+        }),
+      ] as const),
+      stable: true as const,
+    });
   }
 
   observeIdentity(
@@ -404,6 +453,7 @@ export class PostgreSqlGenerationAdapter {
       aclSha256: digest(JSON.stringify(acl)),
       stabilizationSeries: Object.freeze(stabilizationSeries),
       reconnectDeniedRoles: Object.freeze(reconnectDenied),
+      legacyAmbiguity: this.observeStableLegacyAmbiguity(input.adminUrl),
       complete: true,
     });
     return {

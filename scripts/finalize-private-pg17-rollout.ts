@@ -29,6 +29,9 @@ const body = read<{
   backup: TrustedRolloutEvidence["backup"];
   quiescence: TrustedRolloutEvidence["quiescence"];
   equivalence: TrustedRolloutEvidence["equivalence"];
+  migration: {
+    legacyReconciliation: TrustedRolloutEvidence["legacyReconciliation"];
+  };
 }>("REVIEW_ROUTER_PRIVATE_ROLLOUT_BODY_FILE");
 const preflight = read<Record<string, unknown>>(
   "REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE",
@@ -155,6 +158,7 @@ const useCases = new ReleaseRolloutUseCases({
         backup: body.backup,
         quiescence: body.quiescence,
         equivalence: body.equivalence,
+        legacyReconciliation: body.migration.legacyReconciliation,
         protectedEnvironmentPreflightSha256: preflightReceipt.observationSha256,
         receipts: current.receipts,
         activation: current.activationReceipt!,

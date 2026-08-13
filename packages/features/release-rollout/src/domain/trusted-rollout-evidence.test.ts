@@ -192,6 +192,24 @@ const create = () =>
         "reviewrouter_worker",
         "reviewrouter_codex_effect_authority",
       ],
+      legacyAmbiguity: {
+        inventorySha256: digest,
+        activeLeaseIds: ["legacy-lease"],
+        fetchedSetupIds: ["legacy-setup"],
+        pendingIntentIds: [],
+        intentStatuses: ["completed", "failed"],
+        observations: [
+          {
+            observedAt: "2026-08-12T00:00:02.000Z",
+            inventorySha256: digest,
+          },
+          {
+            observedAt: "2026-08-12T00:00:03.000Z",
+            inventorySha256: digest,
+          },
+        ],
+        stable: true,
+      },
       complete: true,
     },
     equivalence: {
@@ -216,6 +234,25 @@ const create = () =>
       equivalent: true,
       streamingHash: true,
       maxProcessBufferBytes: 8 * 1024 * 1024,
+    },
+    legacyReconciliation: {
+      version: 1,
+      acknowledgement: "all_prior_installers_and_writers_are_stopped",
+      inventory: {
+        activeLeaseIds: ["legacy-lease"],
+        fetchedSetupIds: ["legacy-setup"],
+        pendingIntentIds: [],
+        intentStatuses: ["completed", "failed"],
+      },
+      inventorySha256: digest,
+      stableSamples: 2,
+      after: {
+        activeLeaseIds: [],
+        fetchedSetupIds: [],
+        pendingIntentIds: [],
+        intentStatuses: ["completed", "failed"],
+      },
+      status: "reconciled",
     },
     protectedEnvironmentPreflightSha256: receipts.find(
       (receipt) => receipt.step === RolloutStep.VerifyProtectedEnvironment,

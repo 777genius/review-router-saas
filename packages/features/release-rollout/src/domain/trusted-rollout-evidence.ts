@@ -31,7 +31,20 @@ export interface QuiescenceEvidence {
   readonly aclSha256: string;
   readonly stabilizationSeries: readonly number[];
   readonly reconnectDeniedRoles: readonly string[];
+  readonly legacyAmbiguity: LegacyAmbiguityEvidence;
   readonly complete: true;
+}
+export interface LegacyAmbiguityEvidence {
+  readonly inventorySha256: string;
+  readonly activeLeaseIds: readonly string[];
+  readonly fetchedSetupIds: readonly string[];
+  readonly pendingIntentIds: readonly string[];
+  readonly intentStatuses: readonly string[];
+  readonly observations: readonly [
+    { readonly observedAt: string; readonly inventorySha256: string },
+    { readonly observedAt: string; readonly inventorySha256: string },
+  ];
+  readonly stable: true;
 }
 export interface EquivalenceEvidence {
   readonly tables: readonly {
@@ -66,8 +79,27 @@ export interface CleanupEvidence {
   readonly cleanupCanary: string;
   readonly observedAt: string;
 }
+export interface LegacyReconciliationEvidence {
+  readonly version: 1;
+  readonly acknowledgement: "all_prior_installers_and_writers_are_stopped";
+  readonly inventory: Readonly<{
+    activeLeaseIds: readonly string[];
+    fetchedSetupIds: readonly string[];
+    pendingIntentIds: readonly string[];
+    intentStatuses: readonly string[];
+  }>;
+  readonly inventorySha256: string;
+  readonly stableSamples: 2;
+  readonly after: Readonly<{
+    activeLeaseIds: readonly [];
+    fetchedSetupIds: readonly [];
+    pendingIntentIds: readonly [];
+    intentStatuses: readonly string[];
+  }>;
+  readonly status: "reconciled";
+}
 export interface TrustedRolloutEvidence {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 3;
   readonly rolloutId: string;
   readonly releaseCommitSha: string;
   readonly execution: ReleaseExecutionIdentity;
@@ -77,6 +109,7 @@ export interface TrustedRolloutEvidence {
   readonly backup: BackupIdentity;
   readonly quiescence: QuiescenceEvidence;
   readonly equivalence: EquivalenceEvidence;
+  readonly legacyReconciliation: LegacyReconciliationEvidence;
   readonly protectedEnvironmentPreflightSha256: string;
   readonly receipts: readonly StepReceipt[];
   readonly activation: ActivationReceipt;
@@ -103,7 +136,7 @@ const exact = (value: object, keys: readonly string[]): boolean =>
 export function assembleTrustedRolloutEvidence(
   value: Omit<TrustedRolloutEvidence, "schemaVersion" | "evidenceSha256">,
 ): TrustedRolloutEvidence {
-  const unsigned = Object.freeze({ ...value, schemaVersion: 2 as const });
+  const unsigned = Object.freeze({ ...value, schemaVersion: 3 as const });
   const evidence = Object.freeze({
     ...unsigned,
     evidenceSha256: `sha256:${sha256Canonical(unsigned)}`,
@@ -126,6 +159,7 @@ export function assertTrustedRolloutEvidence(
       "backup",
       "quiescence",
       "equivalence",
+      "legacyReconciliation",
       "protectedEnvironmentPreflightSha256",
       "receipts",
       "activation",
@@ -135,7 +169,7 @@ export function assertTrustedRolloutEvidence(
       "assembledAt",
       "evidenceSha256",
     ]) ||
-    value.schemaVersion !== 2 ||
+    value.schemaVersion !== 3 ||
     !sha.test(value.releaseCommitSha) ||
     value.execution.runAttempt !== 1 ||
     value.execution.event !== "workflow_dispatch" ||
@@ -157,6 +191,17 @@ export function assertTrustedRolloutEvidence(
     value.quiescence.stabilizationSeries.some((count) => count !== 0) ||
     value.quiescence.reconnectDeniedRoles.length !== 4 ||
     !digest.test(value.quiescence.aclSha256) ||
+    !digest.test(value.quiescence.legacyAmbiguity.inventorySha256) ||
+    value.quiescence.legacyAmbiguity.stable !== true ||
+    value.quiescence.legacyAmbiguity.observations.length !== 2 ||
+    value.quiescence.legacyAmbiguity.observations.some(
+      (item) =>
+        !timestamp(item.observedAt) ||
+        item.inventorySha256 !==
+          value.quiescence.legacyAmbiguity.inventorySha256,
+    ) ||
+    Date.parse(value.quiescence.legacyAmbiguity.observations[1].observedAt) <=
+      Date.parse(value.quiescence.legacyAmbiguity.observations[0].observedAt) ||
     value.equivalence.equivalent !== true ||
     value.equivalence.streamingHash !== true ||
     value.equivalence.maxProcessBufferBytes > 8 * 1024 * 1024 ||
@@ -171,6 +216,24 @@ export function assertTrustedRolloutEvidence(
     Object.values(value.equivalence.catalogSha256).some(
       (item) => !digest.test(item),
     ) ||
+    value.legacyReconciliation.version !== 1 ||
+    value.legacyReconciliation.acknowledgement !==
+      "all_prior_installers_and_writers_are_stopped" ||
+    value.legacyReconciliation.stableSamples !== 2 ||
+    value.legacyReconciliation.status !== "reconciled" ||
+    !digest.test(value.legacyReconciliation.inventorySha256) ||
+    value.legacyReconciliation.after.activeLeaseIds.length !== 0 ||
+    value.legacyReconciliation.after.fetchedSetupIds.length !== 0 ||
+    value.legacyReconciliation.after.pendingIntentIds.length !== 0 ||
+    canonicalJson(value.legacyReconciliation.inventory) !==
+      canonicalJson({
+        activeLeaseIds: value.quiescence.legacyAmbiguity.activeLeaseIds,
+        fetchedSetupIds: value.quiescence.legacyAmbiguity.fetchedSetupIds,
+        pendingIntentIds: value.quiescence.legacyAmbiguity.pendingIntentIds,
+        intentStatuses: value.quiescence.legacyAmbiguity.intentStatuses,
+      }) ||
+    value.legacyReconciliation.inventorySha256 !==
+      value.quiescence.legacyAmbiguity.inventorySha256 ||
     !digest.test(value.protectedEnvironmentPreflightSha256) ||
     !digest.test(value.liveCanarySha256) ||
     !timestamp(value.assembledAt) ||
