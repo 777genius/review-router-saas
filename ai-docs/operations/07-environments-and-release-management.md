@@ -181,7 +181,10 @@ Repository: `777genius/review-router-saas`.
 Before running the workflow:
 
 1. Merge the SaaS/runtime commit to `main`.
-2. Wait for the `CI` workflow to pass on the exact commit.
+2. Wait for the trusted `CI` workflow on the exact `main` commit to pass. Its
+   production gate must include both `Dedicated Release Authority PG17
+contract` and `Full private PG16 to PG17 rehearsal` as successful jobs.
+   Each job uploads its own exact-SHA evidence artifact.
 3. Confirm the matching Action tag already exists, for example:
 
 ```bash
@@ -206,7 +209,12 @@ The SaaS `Release` workflow validates:
 - the exact tag does not already exist locally or remotely
 - the version is newer than the latest existing `v1.*.*` tag
 - the matching Action tag exists
-- a successful `CI` run exists for the exact SaaS `HEAD`
+- one successful trusted `CI` run exists for the exact SaaS `HEAD`, and that
+  exact run contains successful, non-skipped `Dedicated Release Authority PG17
+contract` and `Full private PG16 to PG17 rehearsal` jobs
+- the same exact CI run owns both unexpired, digest-addressed evidence
+  artifacts; each artifact manifest binds the repository, commit, run ID, run
+  attempt, exact job name, and SHA-derived artifact name
 - when `sync_production_action_ref=true`, production Render credentials can
   dry-run the requested Action ref override
 - one `linux/amd64` hosted runtime image containing web, API, and worker builds
@@ -235,6 +243,25 @@ anywhere else.
 
 Set `sync_production_action_ref=true` only for a deliberate rollback or smoke
 override.
+
+The two PostgreSQL gates intentionally do not run for pull requests, including
+fork pull requests. They run together on the trusted push to `main`, so an
+ordinary low-risk PR does not duplicate the expensive real-PostgreSQL work.
+They may also be run manually from `main`, but both workflow-dispatch inputs
+must be enabled in the same run for that run to qualify. A successful CI run
+that skipped either job is not release evidence. The release verifier also
+fails closed for a stale commit, a job or artifact from another run, a failed
+job, a missing artifact, an expired artifact, or artifact bytes whose provider
+digest or exact manifest does not match.
+
+If the trusted push run failed for infrastructure reasons, dispatch a new CI
+run on the exact `main` commit with both PostgreSQL inputs enabled. Do not
+bypass the verifier with a generic green CI run or locally created JSON. No
+hosted or GitLab runtime image build, package publication, tag movement,
+GitHub Release, or downstream production deploy may start until the verifier
+accepts the exact run and both immutable artifacts. The `GitLab Runtime Image`
+workflow applies the same gate before GHCR login or image construction for
+both automatic `workflow_run` publication and manual dispatch.
 
 ## Post-Release Verification
 

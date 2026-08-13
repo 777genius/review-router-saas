@@ -16,6 +16,10 @@ const releaseImageVerifier = readFileSync(
   "scripts/verify-private-pg17-release-image-provenance.ts",
   "utf8",
 );
+const rolloutRunbook = readFileSync(
+  "docs/operations/private-pg17-release-rollout.md",
+  "utf8",
+);
 const dockerfile = readFileSync("deploy/private-runner/Dockerfile", "utf8");
 const bootstrap = readFileSync("deploy/private-runner/bootstrap.mjs", "utf8");
 const launcher = readFileSync(
@@ -39,9 +43,10 @@ function namedSteps(job: string): readonly Readonly<{
     .split(/^ {6}- /mu)
     .slice(1)
     .map((block) => {
-      const name = /^(?:name: ([^\n]+)|uses: ([^@\n]+)|run: ([^\n]+))/u.exec(
-        block,
-      );
+      const name =
+        /^(?:name: ([^\n]+)|uses: ([^@\n]+)|run: ([^\n]+)|id: ([^\n]+))/u.exec(
+          block,
+        );
       if (!name) throw new Error("workflow_test_step_name_missing");
       const condition = /^\s*if:\s*(.+)$/mu.exec(block)?.[1]?.trim();
       if (
@@ -54,7 +59,7 @@ function namedSteps(job: string): readonly Readonly<{
           `workflow_test_step_condition_unsupported:${condition}`,
         );
       return {
-        name: name[1] ?? name[2] ?? name[3]!,
+        name: name[1] ?? name[2] ?? name[3] ?? name[4]!,
         condition: condition ? ("always" as const) : ("success" as const),
       };
     });
@@ -78,6 +83,61 @@ function executeStepComposition(
 }
 
 describe("private-network PG17 workflow security contract", () => {
+  it("documents a valid exact release run and artifact dispatch", () => {
+    expect(rolloutRunbook).toContain('-f release_run_id="$RELEASE_RUN_ID"');
+    expect(rolloutRunbook).toContain(
+      '-f release_artifact_id="$RELEASE_ARTIFACT_ID"',
+    );
+    expect(rolloutRunbook).toContain("actions/runs/$RELEASE_RUN_ID/attempts/1");
+    expect(rolloutRunbook).toContain("actions/artifacts/$RELEASE_ARTIFACT_ID");
+    expect(rolloutRunbook).toContain(
+      ".github/workflows/release.yml\tworkflow_dispatch\t1\t$EXPECTED_SHA\tsuccess",
+    );
+    expect(rolloutRunbook).toContain("$RELEASE_RUN_ID\t$EXPECTED_SHA\tfalse");
+  });
+
+  it("scheduled and manual recovery redrive exact authority-backed compensation after cleanup", () => {
+    const recovery = jobs(controller).find((job) =>
+      job.startsWith("  recover:"),
+    )!;
+    expect(controller).toContain("github.event_name == 'schedule'");
+    expect(controller).toContain("github.event_name == 'workflow_dispatch'");
+    expect(recovery).toContain("ref: ${{ matrix.target.head_sha }}");
+    expect(recovery).toContain("run-id: ${{ matrix.target.run_id }}");
+    expect(recovery).toContain(
+      "protected-preflight-${{ steps.context.outputs.rollout_id }}-${{ matrix.target.run_id }}-1",
+    );
+    expect(recovery.indexOf("cleanup-runners")).toBeLessThan(
+      recovery.indexOf("reconcile-private-pg17-compensation.ts"),
+    );
+    expect(recovery).toContain("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN:");
+    expect(recovery).toContain("REVIEW_ROUTER_RUNNER_LEDGER_URL:");
+    expect(recovery).toContain(
+      "REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: artifacts/preflight/initial-rollout.json",
+    );
+    expect(workflow).toMatch(
+      /name: protected-preflight-\$\{\{ inputs\.rollout_id \}\}-\$\{\{ github\.run_id \}\}-1[\s\S]*?retention-days: 90/u,
+    );
+    expect(recovery).not.toContain("initialize-private-pg17-rollout.ts");
+    expect(recovery).not.toContain("workflow_dispatches");
+  });
+
+  it("does not redrive compensation when safe runner cleanup is incomplete", () => {
+    const recovery = jobs(controller).find((job) =>
+      job.startsWith("  recover:"),
+    )!;
+    const result = executeStepComposition(namedSteps(recovery), {
+      "Reconcile every known or late provider runner with bounded backoff":
+        "failure",
+    });
+
+    expect(result.executed).not.toContain(
+      "Redrive exact durable rollout compensation through authority",
+    );
+    expect(result.executed).toContain("actions/upload-artifact");
+    expect(result.conclusion).toBe("failure");
+  });
+
   it("cryptographically binds the deployed image to the exact release commit before mutation", () => {
     const preflight = jobs(workflow).find((job) =>
       job.startsWith("  protected-preflight:"),

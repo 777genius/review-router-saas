@@ -103,7 +103,7 @@ jobs:
             verified-release-image-provenance.json
             initial-rollout.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
           compression-level: 0
 
   freeze-source-writers:
