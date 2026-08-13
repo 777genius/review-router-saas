@@ -186,6 +186,46 @@ describe("production release-gate evidence", () => {
     ).rejects.toThrow("exact job did not succeed");
   });
 
+  it.each(["cancelled", "failure", "skipped"])(
+    "rejects a workflow run concluded as %s",
+    async (conclusion) => {
+      const value = fixture();
+      value.bodies.run.conclusion = conclusion;
+      await expect(
+        verifyReleaseGateRun(value.configuration, value.fetchImpl as never),
+      ).rejects.toThrow("workflow run identity or result mismatch");
+    },
+  );
+
+  it.each(["pull_request", "workflow_run", "repository_dispatch"])(
+    "rejects evidence produced by the untrusted %s event",
+    async (event) => {
+      const value = fixture();
+      value.bodies.run.event = event;
+      await expect(
+        verifyReleaseGateRun(value.configuration, value.fetchImpl as never),
+      ).rejects.toThrow("workflow run identity or result mismatch");
+    },
+  );
+
+  it("rejects branch-only evidence from outside main", async () => {
+    const value = fixture();
+    value.bodies.run.head_branch = "release-candidate";
+    await expect(
+      verifyReleaseGateRun(value.configuration, value.fetchImpl as never),
+    ).rejects.toThrow("workflow run identity or result mismatch");
+  });
+
+  it("rejects mutable refs in place of the exact source commit", async () => {
+    const value = fixture();
+    await expect(
+      verifyReleaseGateRun(
+        { ...value.configuration, commit: "refs/heads/main" },
+        value.fetchImpl as never,
+      ),
+    ).rejects.toThrow("commit must be an immutable SHA");
+  });
+
   it("rejects stale-SHA evidence", async () => {
     const value = fixture();
     value.bodies.run.head_sha = "b".repeat(40);
@@ -197,6 +237,22 @@ describe("production release-gate evidence", () => {
   it("rejects an artifact attached to the wrong workflow run", async () => {
     const value = fixture();
     value.artifacts[0]!.workflow_run.id = 999;
+    await expect(
+      verifyReleaseGateRun(value.configuration, value.fetchImpl as never),
+    ).rejects.toThrow("artifact identity is invalid");
+  });
+
+  it("rejects a rerun job from another run attempt", async () => {
+    const value = fixture();
+    value.bodies.jobs.jobs[0]!.run_attempt = 1;
+    await expect(
+      verifyReleaseGateRun(value.configuration, value.fetchImpl as never),
+    ).rejects.toThrow("exact job did not succeed");
+  });
+
+  it("rejects artifact evidence from another source SHA", async () => {
+    const value = fixture();
+    value.artifacts[1]!.workflow_run.head_sha = "b".repeat(40);
     await expect(
       verifyReleaseGateRun(value.configuration, value.fetchImpl as never),
     ).rejects.toThrow("artifact identity is invalid");
@@ -233,6 +289,15 @@ describe("production release-gate evidence", () => {
         value.fetchImpl as never,
       ),
     ).rejects.toThrow("has no successful CI run");
+  });
+
+  it("rejects generic CI success without either mandatory database job", async () => {
+    const value = fixture();
+    value.bodies.jobs.jobs = [];
+    value.bodies.jobs.total_count = 0;
+    await expect(
+      verifyReleaseGateRun(value.configuration, value.fetchImpl as never),
+    ).rejects.toThrow("exact job is missing");
   });
 });
 
