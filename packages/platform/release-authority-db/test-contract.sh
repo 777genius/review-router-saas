@@ -324,9 +324,82 @@ if docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewr
   exit 1
 fi
 
+# Compensation must fail closed when runner-effect evidence is absent or unsafe.
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
-  "SELECT release_authority.release_rollout_claim('r3', repeat('c',40), '3', 1, '102', '202');
-   SELECT release_authority.release_rollout_append_receipt('r3',repeat('c',40),'3',1,'102','202',
+  "SELECT release_authority.release_rollout_claim('r-comp-no-intent', repeat('5',40), '6', 1, '105', '205')" >/dev/null
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r-comp-no-intent',repeat('5',40),'6',1,'105','205','begin_compensation',
+    'sha256:'||repeat('0',64),'sha256:'||repeat('5',64),'105','before','before',NULL)" >/dev/null 2>&1; then
+  echo "compensation without runner intents unexpectedly succeeded" >&2
+  exit 1
+fi
+no_intent_compensation_fence=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT state||':'||activation_boundary||':'||authoritative_system_identifier||':'||source_permanently_ineligible
+   FROM release_authority.rollout WHERE rollout_id='r-comp-no-intent'")
+test "$no_intent_compensation_fence" = pre_activation:before:105:false
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-comp-unsafe', repeat('6',40), '7', 1, '106', '206')" >/dev/null
+unsafe_compensation_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (snapshot->>'state')||':'||(snapshot->'reconciliation'->>'result')||':'||(snapshot->>'safeForCompensation')
+   FROM (SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
+     'id','rri-'||repeat('5',64),'rolloutId','r-comp-unsafe','serviceId','svc-comp-unsafe',
+     'lifecycle','role','workflowJobId','70','runnerName','rr-comp-unsafe','createdAt','$now',
+     'startCommandSha256','sha256:'||repeat('5',64),
+     'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000051')) snapshot) prepared")
+test "$unsafe_compensation_intent" = prepared:pending:false
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r-comp-unsafe',repeat('6',40),'7',1,'106','206','begin_compensation',
+    'sha256:'||repeat('0',64),'sha256:'||repeat('6',64),'106','before','before',NULL)" >/dev/null 2>&1; then
+  echo "compensation with a pending runner intent unexpectedly succeeded" >&2
+  exit 1
+fi
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_acquire_dispatch_permit(jsonb_build_object(
+    'intentId','rri-'||repeat('5',64),'claimantId','rrc-00000000-0000-4000-8000-000000000051',
+    'startCommandSha256','sha256:'||repeat('5',64),'expectedEpoch',0,'leaseSeconds',120))" >/dev/null
+blocked_compensation_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (snapshot->>'state')||':'||(snapshot->'reconciliation'->>'result')||':'||(snapshot->>'safeForCompensation')
+   FROM (SELECT release_authority.release_runner_reconcile_effect(jsonb_build_object(
+     'intentId','rri-'||repeat('5',64),'claimantId','rrc-00000000-0000-4000-8000-000000000051',
+     'expectedEpoch',1,'reconciliation',jsonb_build_object(
+       'result','blocked','safeForCompensation',false,'reason','unknown'))) snapshot) blocked")
+test "$blocked_compensation_intent" = blocked:blocked:false
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r-comp-unsafe',repeat('6',40),'7',1,'106','206','begin_compensation',
+    'sha256:'||repeat('0',64),'sha256:'||repeat('6',64),'106','before','before',NULL)" >/dev/null 2>&1; then
+  echo "compensation with a blocked runner intent unexpectedly succeeded" >&2
+  exit 1
+fi
+unsafe_compensation_fence=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT state||':'||activation_boundary||':'||authoritative_system_identifier||':'||source_permanently_ineligible
+   FROM release_authority.rollout WHERE rollout_id='r-comp-unsafe'")
+test "$unsafe_compensation_fence" = pre_activation:before:106:false
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r3', repeat('c',40), '3', 1, '102', '202')" >/dev/null
+r3_compensation_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
+    'id','rri-'||repeat('0',64),'rolloutId','r3','serviceId','svc-compensation',
+    'lifecycle','cutover','workflowJobId','31','runnerName','rr-compensation','createdAt','$now',
+    'startCommandSha256','sha256:'||repeat('0',64),
+    'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000061'))->>'state'")
+test "$r3_compensation_intent" = prepared
+r3_abandoned_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (snapshot->>'state')||':'||(snapshot->>'safeForCompensation')
+   FROM (SELECT release_authority.release_runner_abandon_prepared(
+     'rri-'||repeat('0',64),'rrc-00000000-0000-4000-8000-000000000061',0) snapshot) abandoned")
+test "$r3_abandoned_intent" = abandoned:true
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt('r3',repeat('c',40),'3',1,'102','202',
     'begin_compensation','sha256:'||repeat('0',64),'sha256:'||repeat('2',64),'102','before','before',NULL)" >/dev/null
 resume_source_request='{"rolloutId":"r3","operation":"resume_source","sourceSystemIdentifier":"102","targetSystemIdentifier":"202","expectedReceiptSha256":"sha256:'$(printf '2%.0s' $(seq 1 64))'","activationBoundary":"before"}'
 docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
