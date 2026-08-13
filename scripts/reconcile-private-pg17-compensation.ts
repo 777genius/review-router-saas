@@ -249,6 +249,7 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
   });
   const result = await useCase.execute(rollout);
   process.stdout.write(`${JSON.stringify(result)}\n`);
+  if (result.outcome === "denied") process.exitCode = 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)

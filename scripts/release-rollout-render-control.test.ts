@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resolveWorkflowJobId } from "./release-rollout-render-control";
+import {
+  reconcileWithBoundedBackoff,
+  resolveWorkflowJobId,
+} from "./release-rollout-render-control";
 import { parseFreezeSourceWriterServiceIds } from "./release-rollout-render-control-config";
 import { parseCompensationSourceWriterServiceIds } from "./reconcile-private-pg17-compensation-config";
 
@@ -109,5 +112,76 @@ describe("source writer service ID workflow contract", () => {
       "[]",
     ])
       expect(() => parse(value)).toThrow(/source_writer_service_ids_/u);
+  });
+});
+
+describe("completed-controller reconciliation redrive", () => {
+  const report = (result: "clean" | "pending" | "blocked") => ({
+    result,
+    safeForCompensation: result === "clean",
+    intentCount: 1,
+    intents: [
+      {
+        id: "intent-role",
+        state:
+          result === "clean" ? ("cleaned" as const) : ("dispatching" as const),
+        safeForCompensation: result === "clean",
+      },
+    ],
+    observations: [],
+  });
+
+  it("redrives pending work with bounded exponential backoff until late completion is clean", async () => {
+    const reconcile = vi
+      .fn()
+      .mockResolvedValueOnce(report("pending"))
+      .mockResolvedValueOnce(report("pending"))
+      .mockResolvedValueOnce(report("clean"));
+    const sleep = vi.fn(async () => undefined);
+    await expect(
+      reconcileWithBoundedBackoff({
+        attempts: 4,
+        initialDelayMs: 10,
+        maximumDelayMs: 15,
+        reconcile,
+        sleep,
+      }),
+    ).resolves.toMatchObject({ result: "clean", safeForCompensation: true });
+    expect(sleep.mock.calls).toEqual([[10], [15]]);
+    expect(reconcile).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops immediately on an explicit block", async () => {
+    const reconcile = vi.fn().mockResolvedValue(report("blocked"));
+    const sleep = vi.fn(async () => undefined);
+    await expect(
+      reconcileWithBoundedBackoff({
+        attempts: 4,
+        initialDelayMs: 10,
+        maximumDelayMs: 20,
+        reconcile,
+        sleep,
+      }),
+    ).resolves.toMatchObject({ result: "blocked", safeForCompensation: false });
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("turns an exhausted pending redrive into a fail-closed timeout", async () => {
+    const reconcile = vi.fn().mockResolvedValue(report("pending"));
+    await expect(
+      reconcileWithBoundedBackoff({
+        attempts: 2,
+        initialDelayMs: 1,
+        maximumDelayMs: 1,
+        reconcile,
+        sleep: vi.fn(async () => undefined),
+      }),
+    ).resolves.toMatchObject({
+      result: "blocked",
+      reason: "timeout",
+      safeForCompensation: false,
+    });
+    expect(reconcile).toHaveBeenCalledTimes(2);
   });
 });

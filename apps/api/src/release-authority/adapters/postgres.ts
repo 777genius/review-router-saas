@@ -8,6 +8,7 @@ import type {
   StepObservation,
   TargetSwitchFence,
 } from "@reviewrouter/features-release-rollout";
+import { assertExternalEffectRecord } from "@reviewrouter/features-release-rollout";
 import type {
   IndependentCleanupWitness,
   PersistedJob,
@@ -267,16 +268,15 @@ export class RoutineReleaseControlLedgerAdapter
     ) as unknown as ProviderAuthorityDecision;
   }
 
-  async persistIntent(
+  async persistProvisioningIntent(
     input: CreateProvisioningIntent,
-  ): Promise<"created" | "existing"> {
-    const value = await firstValue(
-      this.prisma,
-      Prisma.sql`SELECT release_authority.release_runner_persist_intent(${asJsonb(input)}) AS value`,
+  ): ReturnType<RunnerOperationsLedgerPort["persistProvisioningIntent"]> {
+    return assertExternalEffectRecord(
+      (await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_runner_prepare_effect(${asJsonb(input)}) AS value`,
+      )) as never,
     );
-    if (value !== "created" && value !== "existing")
-      throw new Error("release_runner_intent_result_invalid");
-    return value;
   }
 
   async listIntents(rolloutId: string): Promise<readonly ProvisioningIntent[]> {
@@ -293,6 +293,7 @@ export class RoutineReleaseControlLedgerAdapter
           typeof (entry as ProvisioningIntent).id !== "string" ||
           typeof (entry as ProvisioningIntent).startCommandSha256 !==
             "string" ||
+          !(entry as ProvisioningIntent).effect ||
           ((entry as ProvisioningIntent).creationLeaseOwner !== null &&
             typeof (entry as ProvisioningIntent).creationLeaseOwner !==
               "string") ||
@@ -304,40 +305,46 @@ export class RoutineReleaseControlLedgerAdapter
       )
     )
       throw new Error("release_runner_intents_invalid");
+    for (const entry of value)
+      assertExternalEffectRecord((entry as ProvisioningIntent).effect);
     return value as ProvisioningIntent[];
   }
 
-  async claimProviderCreation(
-    input: Parameters<RunnerOperationsLedgerPort["claimProviderCreation"]>[0],
-  ): ReturnType<RunnerOperationsLedgerPort["claimProviderCreation"]> {
-    const value = requiredRecord(
-      await firstValue(
+  async acquireProviderDispatchPermit(
+    input: Parameters<
+      RunnerOperationsLedgerPort["acquireProviderDispatchPermit"]
+    >[0],
+  ): ReturnType<RunnerOperationsLedgerPort["acquireProviderDispatchPermit"]> {
+    return assertExternalEffectRecord(
+      (await firstValue(
         this.prisma,
-        Prisma.sql`SELECT release_authority.release_runner_claim_provider_creation(${asJsonb(input)}) AS value`,
-      ),
+        Prisma.sql`SELECT release_authority.release_runner_acquire_dispatch_permit(${asJsonb(input)}) AS value`,
+      )) as never,
     );
-    if (
-      value.result !== "acquired" &&
-      value.result !== "held" &&
-      value.result !== "discovery_grace" &&
-      value.result !== "bound"
-    )
-      throw new Error("release_runner_provider_creation_claim_invalid");
-    if (value.result === "acquired" && typeof value.leaseExpiresAt !== "string")
-      throw new Error("release_runner_provider_creation_claim_invalid");
-    return value as Awaited<
-      ReturnType<RunnerOperationsLedgerPort["claimProviderCreation"]>
-    >;
   }
 
-  async recordIntentOutcome(
-    input: Parameters<RunnerOperationsLedgerPort["recordIntentOutcome"]>[0],
-  ): Promise<void> {
-    requiredBoolean(
-      await firstValue(
+  async abandonPreparedEffect(
+    input: Parameters<RunnerOperationsLedgerPort["abandonPreparedEffect"]>[0],
+  ): ReturnType<RunnerOperationsLedgerPort["abandonPreparedEffect"]> {
+    return assertExternalEffectRecord(
+      (await firstValue(
         this.prisma,
-        Prisma.sql`SELECT release_authority.release_runner_record_intent_outcome(${asJsonb(input)}) AS value`,
-      ),
+        Prisma.sql`SELECT release_authority.release_runner_abandon_prepared(
+          ${input.intentId}, ${input.claimantId}, ${input.expectedEpoch}) AS value`,
+      )) as never,
+    );
+  }
+
+  async reconcileProvisioningEffect(
+    input: Parameters<
+      RunnerOperationsLedgerPort["reconcileProvisioningEffect"]
+    >[0],
+  ): ReturnType<RunnerOperationsLedgerPort["reconcileProvisioningEffect"]> {
+    return assertExternalEffectRecord(
+      (await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_runner_reconcile_effect(${asJsonb(input)}) AS value`,
+      )) as never,
     );
   }
 

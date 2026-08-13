@@ -1,6 +1,8 @@
 import type {
   ActivationAuthorization,
   ActivationReceipt,
+  ExternalEffectRecord,
+  ExternalEffectReconciliation,
   ProviderAuthorityDecision,
   ProviderAuthorityRequest,
   RunnerIdentity,
@@ -44,22 +46,12 @@ export type ProvisioningIntent = {
   startCommandSha256: string;
   creationLeaseOwner: string | null;
   creationLeaseExpiresAt: string | null;
+  effect: ExternalEffectRecord;
 };
 export type CreateProvisioningIntent = Omit<
   ProvisioningIntent,
-  "creationLeaseOwner" | "creationLeaseExpiresAt"
+  "creationLeaseOwner" | "creationLeaseExpiresAt" | "effect"
 > & { creationLeaseOwner: string };
-export type ProviderCreationClaim =
-  | { result: "acquired"; leaseExpiresAt: string }
-  | { result: "held" | "discovery_grace" | "bound" };
-export type ClaimProviderCreationInput = {
-  intentId: string;
-  claimantId: string;
-  startCommandSha256: string;
-  observedNoMatchAt: string;
-  leaseSeconds: number;
-  discoveryGraceSeconds: number;
-};
 export type PersistedJob = {
   rolloutId: string;
   serviceId: string;
@@ -231,22 +223,30 @@ export interface TargetActivationReceiptReaderPort {
 }
 
 export interface RunnerOperationsLedgerPort {
-  persistIntent(
+  persistProvisioningIntent(
     input: CreateProvisioningIntent,
-  ): Promise<"created" | "existing">;
+  ): Promise<ExternalEffectRecord>;
   listIntents(rolloutId: string): Promise<readonly ProvisioningIntent[]>;
-  claimProviderCreation(
-    input: ClaimProviderCreationInput,
-  ): Promise<ProviderCreationClaim>;
-  recordIntentOutcome(input: {
+  acquireProviderDispatchPermit(input: {
     intentId: string;
-    jobId: string;
-    outcome:
-      | "bound"
-      | "persistence_failed_cleaned"
-      | "persistence_failed_unknown";
+    claimantId: string;
+    startCommandSha256: string;
+    expectedEpoch: number;
+    leaseSeconds: number;
+  }): Promise<ExternalEffectRecord>;
+  abandonPreparedEffect(input: {
+    intentId: string;
+    claimantId: string;
+    expectedEpoch: number;
+  }): Promise<ExternalEffectRecord>;
+  reconcileProvisioningEffect(input: {
+    intentId: string;
+    claimantId: string;
+    expectedEpoch: number;
+    jobId?: string;
+    reconciliation: ExternalEffectReconciliation;
     observation?: StepObservation;
-  }): Promise<void>;
+  }): Promise<ExternalEffectRecord>;
   persistJob(input: PersistedJob): Promise<void>;
   listOpenJobs(rolloutId: string): Promise<readonly PersistedJob[]>;
   persistIdentity(

@@ -67,6 +67,10 @@ The service implements the endpoints consumed by
 - persist a provisioning intent/idempotency identity before Render creation,
   bind the returned provider job afterward, and retain a discoverable
   reconciliation record if that binding write fails;
+- grant the provider POST permit once only. Replays may discover, bind, clean,
+  or abandon the durable intent, but never repeat the provider POST. Once the
+  rollout enters compensation, both new intent preparation and dispatch permit
+  acquisition are forbidden;
 - store launcher cleanup observation and provider terminal state, list open
   jobs, and make cleanup/reconciliation idempotent;
 - permanently set `source_permanently_ineligible` on activation or activation
@@ -200,9 +204,17 @@ and records both claim and protected-policy receipts through application use
 cases. Later private-runner scripts resume that artifact-backed aggregate; they
 cannot recreate or claim a parallel rollout history.
 
-The always-running reconciliation job cleans every persisted orphan and asks
-the authoritative ledger to choose compensation or PG17-only forward repair.
-An unknown activation result is never treated as pre-activation.
+The always-running reconciliation job cleans every persisted orphan. The
+completed-run controller redrives durable discovery and cleanup with bounded
+exponential backoff until it emits `clean` or an explicit `blocked` result; it
+does not redrive provider creation. Every reconciliation artifact includes
+`safeForCompensation`. That value is true only when nonempty durable intent
+evidence proves every intent `cleaned` or `abandoned`. Pending discovery, a
+timeout, duplicate provider jobs, unknown/legacy state, partial cleanup, or
+missing evidence leaves it false. The compensation application gate re-reads
+those durable facts immediately before beginning or replaying compensation and
+keeps the source frozen on every unsafe result. An unknown activation result is
+never treated as pre-activation.
 
 ## Disposable rehearsal and current blockers
 

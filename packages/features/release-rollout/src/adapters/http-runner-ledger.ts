@@ -17,6 +17,11 @@ import type { ServiceTransitionCheckpoint } from "../application/transactional-s
 import type { ServiceTransitionLedger } from "../application/transactional-service-cutover";
 import type { RunnerIdentity } from "../domain/release-rollout";
 import type { CompensationCheckpoint } from "../application/ports";
+import {
+  assertExternalEffectRecord,
+  type ExternalEffectRecord,
+  type ExternalEffectReconciliation,
+} from "../domain/external-effect";
 
 export class AuthenticatedRunnerLedgerAdapter
   implements
@@ -60,14 +65,14 @@ export class AuthenticatedRunnerLedgerAdapter
   }
   async persistProvisioningIntent(
     value: CreateRunnerProvisioningIntent,
-  ): Promise<"created" | "existing"> {
+  ): Promise<ExternalEffectRecord> {
     const result = (await this.request("/v1/runner-jobs/intents", {
       method: "POST",
       body: JSON.stringify(value),
     })) as Record<string, unknown>;
-    if (result.result !== "created" && result.result !== "existing")
-      throw new Error("runner_ledger_provisioning_intent_invalid");
-    return result.result;
+    return assertExternalEffectRecord(
+      result as unknown as ExternalEffectRecord,
+    );
   }
   async listProvisioningIntents(
     rolloutId: string,
@@ -84,6 +89,7 @@ export class AuthenticatedRunnerLedgerAdapter
           typeof (entry as RunnerProvisioningIntent).id !== "string" ||
           typeof (entry as RunnerProvisioningIntent).startCommandSha256 !==
             "string" ||
+          !(entry as RunnerProvisioningIntent).effect ||
           ((entry as RunnerProvisioningIntent).creationLeaseOwner !== null &&
             typeof (entry as RunnerProvisioningIntent).creationLeaseOwner !==
               "string") ||
@@ -97,41 +103,43 @@ export class AuthenticatedRunnerLedgerAdapter
       )
     )
       throw new Error("runner_ledger_provisioning_intents_invalid");
+    for (const entry of value)
+      assertExternalEffectRecord((entry as RunnerProvisioningIntent).effect);
     return value as RunnerProvisioningIntent[];
   }
-  async claimProviderCreation(
-    input: Parameters<RunnerJobLedger["claimProviderCreation"]>[0],
-  ): ReturnType<RunnerJobLedger["claimProviderCreation"]> {
+  async acquireProviderDispatchPermit(
+    input: Parameters<RunnerJobLedger["acquireProviderDispatchPermit"]>[0],
+  ): ReturnType<RunnerJobLedger["acquireProviderDispatchPermit"]> {
     const value = (await this.request(
-      `/v1/runner-jobs/intents/${encodeURIComponent(input.intentId)}/provider-creation-claim`,
+      `/v1/runner-jobs/intents/${encodeURIComponent(input.intentId)}/dispatch-permit`,
       { method: "POST", body: JSON.stringify(input) },
     )) as Record<string, unknown>;
-    if (
-      value.result !== "acquired" &&
-      value.result !== "held" &&
-      value.result !== "discovery_grace" &&
-      value.result !== "bound"
-    )
-      throw new Error("runner_ledger_provider_creation_claim_invalid");
-    if (value.result === "acquired" && typeof value.leaseExpiresAt !== "string")
-      throw new Error("runner_ledger_provider_creation_claim_invalid");
-    return value as Awaited<
-      ReturnType<RunnerJobLedger["claimProviderCreation"]>
-    >;
+    return assertExternalEffectRecord(value as unknown as ExternalEffectRecord);
   }
-  async recordProvisioningOutcome(input: {
+  async abandonPreparedEffect(input: {
     intentId: string;
-    jobId: string;
-    outcome:
-      | "bound"
-      | "persistence_failed_cleaned"
-      | "persistence_failed_unknown";
-    observation?: StepObservation;
-  }): Promise<void> {
-    await this.request(
-      `/v1/runner-jobs/intents/${encodeURIComponent(input.intentId)}/outcome`,
+    claimantId: string;
+    expectedEpoch: number;
+  }): Promise<ExternalEffectRecord> {
+    const value = await this.request(
+      `/v1/runner-jobs/intents/${encodeURIComponent(input.intentId)}/abandon`,
       { method: "POST", body: JSON.stringify(input) },
     );
+    return assertExternalEffectRecord(value as ExternalEffectRecord);
+  }
+  async reconcileProvisioningEffect(input: {
+    intentId: string;
+    claimantId: string;
+    expectedEpoch: number;
+    jobId?: string;
+    reconciliation: ExternalEffectReconciliation;
+    observation?: StepObservation;
+  }): Promise<ExternalEffectRecord> {
+    const value = await this.request(
+      `/v1/runner-jobs/intents/${encodeURIComponent(input.intentId)}/reconciliation`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return assertExternalEffectRecord(value as ExternalEffectRecord);
   }
   async listOpenJobs(
     rolloutId: string,

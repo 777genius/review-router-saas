@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import type {
   ActivationAuthorization,
+  ExternalEffectRecord,
   ProviderAuthorityRequest,
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
@@ -37,6 +38,7 @@ class ConcurrentRepository implements CombinedLedgerPort {
   private activationJobId: string | undefined;
   private targetSwitchFenced = false;
   private readonly intents = new Map<string, Record<string, unknown>>();
+  effectCalls: string[] = [];
   registration:
     | Parameters<RunnerOperationsLedgerPort["persistRegistration"]>[0]
     | undefined;
@@ -150,25 +152,68 @@ class ConcurrentRepository implements CombinedLedgerPort {
       decidedAt: "2026-08-12T00:00:00.000Z",
     };
   }
-  async persistIntent(
-    input: Parameters<RunnerOperationsLedgerPort["persistIntent"]>[0],
-  ) {
+  async persistProvisioningIntent(
+    input: Parameters<
+      RunnerOperationsLedgerPort["persistProvisioningIntent"]
+    >[0],
+  ): Promise<ExternalEffectRecord> {
+    this.effectCalls.push("persistProvisioningIntent");
     const existing = this.intents.get(input.id);
     if (!existing) {
       this.intents.set(input.id, { ...input });
-      return "created" as const;
-    }
-    if (JSON.stringify(existing) !== JSON.stringify(input))
+    } else if (JSON.stringify(existing) !== JSON.stringify(input))
       throw new Error("intent_conflict");
-    return "existing" as const;
+    return {
+      state: "prepared",
+      ownerId: input.creationLeaseOwner,
+      epoch: 0,
+      providerId: null,
+      safeForCompensation: false,
+    };
   }
   async listIntents() {
     return [] as const;
   }
-  async claimProviderCreation(): Promise<{ result: "held" }> {
-    return { result: "held" };
+  async acquireProviderDispatchPermit(
+    input: Parameters<
+      RunnerOperationsLedgerPort["acquireProviderDispatchPermit"]
+    >[0],
+  ): Promise<ExternalEffectRecord> {
+    this.effectCalls.push("acquireProviderDispatchPermit");
+    return {
+      state: "dispatching",
+      ownerId: input.claimantId,
+      epoch: input.expectedEpoch + 1,
+      providerId: null,
+      safeForCompensation: false,
+    };
   }
-  async recordIntentOutcome() {}
+  async abandonPreparedEffect(
+    input: Parameters<RunnerOperationsLedgerPort["abandonPreparedEffect"]>[0],
+  ): Promise<ExternalEffectRecord> {
+    this.effectCalls.push("abandonPreparedEffect");
+    return {
+      state: "abandoned",
+      ownerId: input.claimantId,
+      epoch: input.expectedEpoch,
+      providerId: null,
+      safeForCompensation: true,
+    };
+  }
+  async reconcileProvisioningEffect(
+    input: Parameters<
+      RunnerOperationsLedgerPort["reconcileProvisioningEffect"]
+    >[0],
+  ): Promise<ExternalEffectRecord> {
+    this.effectCalls.push("reconcileProvisioningEffect");
+    return {
+      state: input.jobId ? "bound" : "dispatching",
+      ownerId: input.claimantId,
+      epoch: input.expectedEpoch,
+      providerId: input.jobId ?? null,
+      safeForCompensation: false,
+    };
+  }
   async persistJob() {}
   async listOpenJobs() {
     return [] as const;
@@ -316,7 +361,7 @@ describe("release rollout ledger internal API", () => {
     expect(results.filter(Boolean)).toHaveLength(1);
   });
 
-  it("returns existing only for the exact provisioning idempotency identity", async () => {
+  it("replays preparation only for the exact provisioning identity", async () => {
     const service = new RunnerOperationsService(new ConcurrentRepository());
     const intent = {
       id: `rri-${"b".repeat(64)}`,
@@ -329,11 +374,148 @@ describe("release rollout ledger internal API", () => {
       startCommandSha256: `sha256:${"b".repeat(64)}`,
       creationLeaseOwner: "rrc-00000000-0000-4000-8000-000000000001",
     };
-    expect(await service.persistIntent(intent)).toBe("created");
-    expect(await service.persistIntent(intent)).toBe("existing");
+    expect(await service.persistProvisioningIntent(intent)).toMatchObject({
+      state: "prepared",
+      epoch: 0,
+    });
+    expect(await service.persistProvisioningIntent(intent)).toMatchObject({
+      state: "prepared",
+      epoch: 0,
+    });
     await expect(
-      service.persistIntent({ ...intent, serviceId: "srv-attacker" }),
+      service.persistProvisioningIntent({
+        ...intent,
+        serviceId: "srv-attacker",
+      }),
     ).rejects.toThrow("intent_conflict");
+  });
+
+  it("serves the external-effect HTTP contract and leaves legacy routes absent", async () => {
+    const repository = new ConcurrentRepository();
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, services(repository));
+    const intentId = `rri-${"b".repeat(64)}`;
+    const claimantId = "rrc-00000000-0000-4000-8000-000000000001";
+    const headers = { authorization: `Bearer ${token}` };
+    const intent = {
+      id: intentId,
+      rolloutId: binding.rolloutId,
+      serviceId: "srv-runner",
+      lifecycle: "role",
+      workflowJobId: "456",
+      runnerName: "rr-123-role",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      startCommandSha256: `sha256:${"b".repeat(64)}`,
+      creationLeaseOwner: claimantId,
+    };
+
+    const prepared = await app.inject({
+      method: "POST",
+      url: "/v1/runner-jobs/intents",
+      headers,
+      payload: intent,
+    });
+    expect(prepared.statusCode).toBe(200);
+    expect(prepared.json()).toEqual({
+      state: "prepared",
+      ownerId: claimantId,
+      epoch: 0,
+      providerId: null,
+      safeForCompensation: false,
+    });
+    expect(prepared.json()).not.toHaveProperty("result");
+
+    const permitInput = {
+      intentId,
+      claimantId,
+      startCommandSha256: intent.startCommandSha256,
+      expectedEpoch: 0,
+      leaseSeconds: 120,
+    };
+    const permit = await app.inject({
+      method: "POST",
+      url: `/v1/runner-jobs/intents/${intentId}/dispatch-permit`,
+      headers,
+      payload: permitInput,
+    });
+    expect(permit.json()).toMatchObject({ state: "dispatching", epoch: 1 });
+
+    const reconciliation = await app.inject({
+      method: "POST",
+      url: `/v1/runner-jobs/intents/${intentId}/reconciliation`,
+      headers,
+      payload: {
+        intentId,
+        claimantId,
+        expectedEpoch: 1,
+        jobId: "job-1",
+        reconciliation: {
+          result: "pending",
+          safeForCompensation: false,
+        },
+      },
+    });
+    expect(reconciliation.json()).toMatchObject({
+      state: "bound",
+      providerId: "job-1",
+    });
+
+    const abandoned = await app.inject({
+      method: "POST",
+      url: `/v1/runner-jobs/intents/${intentId}/abandon`,
+      headers,
+      payload: { intentId, claimantId, expectedEpoch: 0 },
+    });
+    expect(abandoned.json()).toMatchObject({
+      state: "abandoned",
+      safeForCompensation: true,
+    });
+    expect(repository.effectCalls).toEqual([
+      "persistProvisioningIntent",
+      "acquireProviderDispatchPermit",
+      "reconcileProvisioningEffect",
+      "abandonPreparedEffect",
+    ]);
+
+    for (const [method, url] of [
+      ["POST", `/v1/runner-jobs/intents/${intentId}/provider-creation-claim`],
+      ["PUT", `/v1/runner-jobs/intents/${intentId}/outcome`],
+    ] as const)
+      expect(
+        (await app.inject({ method, url, headers, payload: {} })).statusCode,
+      ).toBe(404);
+
+    const callsBeforeInvalid = repository.effectCalls.length;
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/v1/runner-jobs/intents/${intentId}/dispatch-permit`,
+          headers,
+          payload: { ...permitInput, intentId: `rri-${"c".repeat(64)}` },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/v1/runner-jobs/intents/${intentId}/reconciliation`,
+          headers,
+          payload: {
+            intentId,
+            claimantId,
+            expectedEpoch: 1,
+            reconciliation: {
+              result: "clean",
+              safeForCompensation: false,
+            },
+          },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(repository.effectCalls).toHaveLength(callsBeforeInvalid);
+    await app.close();
   });
 
   it("returns the witness-gated terminal fact for the exact rollout lifecycle", async () => {

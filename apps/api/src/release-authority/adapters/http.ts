@@ -68,6 +68,63 @@ const exactKeys = (
 };
 const nonemptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 256;
+const invalidEffectRequest = (): never => {
+  throw Object.assign(new Error("release_runner_effect_request_invalid"), {
+    statusCode: 400,
+  });
+};
+const intentIdPattern = /^rri-[a-f0-9]{64}$/u;
+const claimantIdPattern =
+  /^rrc-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const commandHashPattern = /^sha256:[a-f0-9]{64}$/u;
+const effectPathBody = (
+  value: unknown,
+  intentId: string,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Record<string, unknown> => {
+  const body = record(value);
+  const keys = Object.keys(body);
+  if (
+    !intentIdPattern.test(intentId) ||
+    !required.every((key) => keys.includes(key)) ||
+    keys.some((key) => !required.includes(key) && !optional.includes(key)) ||
+    body.intentId !== intentId ||
+    !claimantIdPattern.test(String(body.claimantId)) ||
+    !Number.isSafeInteger(body.expectedEpoch) ||
+    Number(body.expectedEpoch) < 0
+  )
+    return invalidEffectRequest();
+  return body;
+};
+const prepareEffectRequest = (value: unknown): CreateProvisioningIntent => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "id",
+      "rolloutId",
+      "serviceId",
+      "lifecycle",
+      "workflowJobId",
+      "runnerName",
+      "createdAt",
+      "startCommandSha256",
+      "creationLeaseOwner",
+    ]) ||
+    !intentIdPattern.test(String(body.id)) ||
+    !nonemptyString(body.rolloutId) ||
+    !nonemptyString(body.serviceId) ||
+    (body.lifecycle !== "role" && body.lifecycle !== "cutover") ||
+    !nonemptyString(body.workflowJobId) ||
+    !nonemptyString(body.runnerName) ||
+    typeof body.createdAt !== "string" ||
+    !Number.isFinite(Date.parse(body.createdAt)) ||
+    !commandHashPattern.test(String(body.startCommandSha256)) ||
+    !claimantIdPattern.test(String(body.creationLeaseOwner))
+  )
+    return invalidEffectRequest();
+  return body as CreateProvisioningIntent;
+};
 const registrationRequest = (
   value: unknown,
 ): PersistRunnerRegistrationInput => {
@@ -299,11 +356,10 @@ export async function registerReleaseRolloutLedgerRoutes(
   app.post(
     "/v1/runner-jobs/intents",
     { preHandler: control },
-    async (request) => ({
-      result: await dependencies.runnerOperations.persistIntent(
-        record(request.body) as CreateProvisioningIntent,
+    async (request) =>
+      dependencies.runnerOperations.persistProvisioningIntent(
+        prepareEffectRequest(request.body),
       ),
-    }),
   );
   app.get<{ Querystring: { rollout_id: string } }>(
     "/v1/runner-jobs/intents",
@@ -312,24 +368,71 @@ export async function registerReleaseRolloutLedgerRoutes(
       dependencies.runnerOperations.listIntents(request.query.rollout_id),
   );
   app.post(
-    "/v1/runner-jobs/intents/:intentId/provider-creation-claim",
+    "/v1/runner-jobs/intents/:intentId/dispatch-permit",
+    { preHandler: control },
+    async (request) => {
+      const intentId = (request.params as { intentId: string }).intentId;
+      const body = effectPathBody(request.body, intentId, [
+        "intentId",
+        "claimantId",
+        "startCommandSha256",
+        "expectedEpoch",
+        "leaseSeconds",
+      ]);
+      if (
+        !commandHashPattern.test(String(body.startCommandSha256)) ||
+        !Number.isSafeInteger(body.leaseSeconds) ||
+        Number(body.leaseSeconds) < 30 ||
+        Number(body.leaseSeconds) > 300
+      )
+        return invalidEffectRequest();
+      return dependencies.runnerOperations.acquireProviderDispatchPermit(
+        body as never,
+      );
+    },
+  );
+  app.post<{ Params: { intentId: string } }>(
+    "/v1/runner-jobs/intents/:intentId/reconciliation",
+    { preHandler: control },
+    async (request) => {
+      const body = effectPathBody(
+        request.body,
+        request.params.intentId,
+        ["intentId", "claimantId", "expectedEpoch", "reconciliation"],
+        ["jobId", "observation"],
+      );
+      const reconciliation = record(body.reconciliation);
+      const result = reconciliation.result;
+      if (
+        (result !== "clean" && result !== "pending" && result !== "blocked") ||
+        reconciliation.safeForCompensation !== (result === "clean") ||
+        (result === "blocked" &&
+          !["unknown", "duplicate", "timeout", "unresolved_legacy"].includes(
+            String(reconciliation.reason),
+          )) ||
+        (body.jobId !== undefined && !nonemptyString(body.jobId)) ||
+        (body.observation !== undefined &&
+          (!body.observation ||
+            typeof body.observation !== "object" ||
+            Array.isArray(body.observation)))
+      )
+        return invalidEffectRequest();
+      return dependencies.runnerOperations.reconcileProvisioningEffect(
+        body as never,
+      );
+    },
+  );
+  app.post<{ Params: { intentId: string } }>(
+    "/v1/runner-jobs/intents/:intentId/abandon",
     { preHandler: control },
     async (request) =>
-      dependencies.runnerOperations.claimProviderCreation({
-        ...record(request.body),
-        intentId: (request.params as { intentId: string }).intentId,
-      } as never),
-  );
-  app.put<{ Params: { intentId: string } }>(
-    "/v1/runner-jobs/intents/:intentId/outcome",
-    { preHandler: control },
-    async (request, reply) => {
-      await dependencies.runnerOperations.recordIntentOutcome({
-        ...record(request.body),
-        intentId: request.params.intentId,
-      } as never);
-      return reply.code(204).send();
-    },
+      dependencies.runnerOperations.abandonPreparedEffect(
+        effectPathBody(request.body, request.params.intentId, [
+          "intentId",
+          "claimantId",
+          "expectedEpoch",
+        ]) as never,
+      ),
   );
   app.post(
     "/v1/runner-jobs",

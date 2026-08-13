@@ -108,11 +108,48 @@ const created = {
   createdAt: "2026-08-12T00:00:01.000Z",
   additive: true,
 };
+const preparedEffect = (ownerId: string) => ({
+  state: "prepared" as const,
+  ownerId,
+  epoch: 0,
+  providerId: null,
+  safeForCompensation: false,
+});
+const dispatchingEffect = {
+  state: "dispatching" as const,
+  ownerId: "rrc-00000000-0000-4000-8000-000000000000",
+  epoch: 1,
+  providerId: null,
+  safeForCompensation: false,
+};
 const ledger = () => ({
-  persistProvisioningIntent: vi.fn().mockResolvedValue("created"),
+  persistProvisioningIntent: vi
+    .fn()
+    .mockImplementation(async (value) =>
+      preparedEffect(value.creationLeaseOwner),
+    ),
   listProvisioningIntents: vi.fn().mockResolvedValue([]),
-  claimProviderCreation: vi.fn().mockResolvedValue({ result: "held" }),
-  recordProvisioningOutcome: vi.fn().mockResolvedValue(undefined),
+  acquireProviderDispatchPermit: vi.fn().mockImplementation(async (value) => ({
+    ...dispatchingEffect,
+    ownerId: value.claimantId,
+    epoch: value.expectedEpoch + 1,
+  })),
+  abandonPreparedEffect: vi.fn().mockImplementation(async (value) => ({
+    ...preparedEffect(value.claimantId),
+    state: "abandoned" as const,
+    safeForCompensation: true,
+  })),
+  reconcileProvisioningEffect: vi
+    .fn()
+    .mockImplementation(async (value) =>
+      value.reconciliation.result === "clean"
+        ? { ...dispatchingEffect, state: "cleaned", safeForCompensation: true }
+        : value.reconciliation.result === "blocked"
+          ? { ...dispatchingEffect, state: "blocked" }
+          : value.jobId
+            ? { ...dispatchingEffect, state: "bound", providerId: value.jobId }
+            : dispatchingEffect,
+    ),
   persistCreatedJob: vi.fn().mockResolvedValue(undefined),
   listOpenJobs: vi.fn().mockResolvedValue([]),
   currentRunner: vi.fn().mockRejectedValue(new Error("runner_missing")),
@@ -215,8 +252,14 @@ describe("Render private runner contract", () => {
   it("returns the current bound runner on controller replay without another provider create", async () => {
     const jobLedger = ledger();
     jobLedger.persistProvisioningIntent
-      .mockResolvedValueOnce("created")
-      .mockResolvedValueOnce("existing");
+      .mockImplementationOnce(async (value) =>
+        preparedEffect(value.creationLeaseOwner),
+      )
+      .mockResolvedValueOnce({
+        ...dispatchingEffect,
+        state: "bound",
+        providerId: created.id,
+      });
     let current: { identity: object; observation: object } | undefined;
     jobLedger.persistValidatedIdentity.mockImplementation(
       async (_jobId, identity, observation) => {
@@ -257,8 +300,10 @@ describe("Render private runner contract", () => {
   it("reconciles the deterministic provider job after create response loss", async () => {
     const jobLedger = ledger();
     jobLedger.persistProvisioningIntent
-      .mockResolvedValueOnce("created")
-      .mockResolvedValueOnce("existing");
+      .mockImplementationOnce(async (value) =>
+        preparedEffect(value.creationLeaseOwner),
+      )
+      .mockResolvedValueOnce(dispatchingEffect);
     let lostStartCommand = "";
     const firstFetch = vi
       .fn()
@@ -306,7 +351,11 @@ describe("Render private runner contract", () => {
 
   it("reuses an existing ledger-bound active job without listing or creating jobs", async () => {
     const jobLedger = ledger();
-    jobLedger.persistProvisioningIntent.mockResolvedValue("existing");
+    jobLedger.persistProvisioningIntent.mockResolvedValue({
+      ...dispatchingEffect,
+      state: "bound",
+      providerId: created.id,
+    });
     jobLedger.listOpenJobs.mockImplementation(async () => [
       {
         rolloutId: request.rolloutId,
@@ -361,7 +410,7 @@ describe("Render private runner contract", () => {
     "fails closed when an existing intent has %s reconcilable provider jobs",
     async (_case, jobs) => {
       const jobLedger = ledger();
-      jobLedger.persistProvisioningIntent.mockResolvedValue("existing");
+      jobLedger.persistProvisioningIntent.mockResolvedValue(dispatchingEffect);
       const fetchImpl = vi
         .fn()
         .mockResolvedValueOnce(json(service))
@@ -390,21 +439,30 @@ describe("Render private runner contract", () => {
       expect(
         fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"),
       ).toHaveLength(0);
+      expect(jobLedger.reconcileProvisioningEffect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reconciliation:
+            jobs.length > 1
+              ? {
+                  result: "blocked",
+                  safeForCompensation: false,
+                  reason: "duplicate",
+                }
+              : { result: "pending", safeForCompensation: false },
+        }),
+      );
     },
   );
 
-  it("lets exactly one expired-lease claimant create after provider discovery grace", async () => {
+  it("lets the owner of a redriven prepared lease dispatch exactly once", async () => {
     const jobLedger = ledger();
-    jobLedger.persistProvisioningIntent.mockResolvedValue("existing");
-    jobLedger.claimProviderCreation.mockResolvedValue({
-      result: "acquired",
-      leaseExpiresAt: "2026-08-12T00:02:00.000Z",
-    });
+    jobLedger.persistProvisioningIntent.mockImplementation(async (value) =>
+      preparedEffect(value.creationLeaseOwner),
+    );
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(json(service))
       .mockResolvedValueOnce(json(deploys))
-      .mockResolvedValueOnce(json([]))
       .mockImplementationOnce(async (_url, init) =>
         json(
           {
@@ -424,11 +482,11 @@ describe("Render private runner contract", () => {
         fetchImpl,
       ).provision(request),
     ).resolves.toMatchObject({ jobId: created.id });
-    expect(jobLedger.claimProviderCreation).toHaveBeenCalledWith(
+    expect(jobLedger.acquireProviderDispatchPermit).toHaveBeenCalledWith(
       expect.objectContaining({
         startCommandSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
         leaseSeconds: 120,
-        discoveryGraceSeconds: 120,
+        expectedEpoch: 0,
       }),
     );
     expect(
@@ -436,13 +494,14 @@ describe("Render private runner contract", () => {
     ).toHaveLength(1);
   });
 
-  it.each(["held", "discovery_grace", "bound"] as const)(
-    "does not POST when the atomic provider creation claim is %s",
-    async (claimResult) => {
+  it.each(["dispatching", "bound", "blocked"] as const)(
+    "does not POST when the atomic dispatch permit returns %s without this controller's permit",
+    async (state) => {
       const jobLedger = ledger();
-      jobLedger.persistProvisioningIntent.mockResolvedValue("existing");
-      jobLedger.claimProviderCreation.mockResolvedValue({
-        result: claimResult,
+      jobLedger.acquireProviderDispatchPermit.mockResolvedValue({
+        ...dispatchingEffect,
+        state,
+        providerId: state === "bound" ? created.id : null,
       });
       const fetchImpl = vi
         .fn()
@@ -458,9 +517,9 @@ describe("Render private runner contract", () => {
           fetchImpl,
         ).provision(request),
       ).rejects.toThrow(
-        claimResult === "bound"
-          ? "render_runner_intent_binding_raced"
-          : "render_runner_intent_reconciliation_pending",
+        state === "dispatching"
+          ? "render_runner_intent_reconciliation_pending"
+          : `render_runner_effect_${state}`,
       );
       expect(
         fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"),
@@ -518,10 +577,10 @@ describe("Render private runner contract", () => {
         fetchImpl,
       ).provision(request),
     ).rejects.toThrow("render_runner_job_persistence_failed");
-    expect(jobLedger.recordProvisioningOutcome).toHaveBeenCalledWith(
+    expect(jobLedger.reconcileProvisioningEffect).toHaveBeenCalledWith(
       expect.objectContaining({
         jobId: created.id,
-        outcome: "persistence_failed_cleaned",
+        reconciliation: { result: "clean", safeForCompensation: true },
         observation: expect.any(Object),
       }),
     );

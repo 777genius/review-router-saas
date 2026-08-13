@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createReleaseRollout, RolloutStep } from "../domain/release-rollout";
-import { ReleaseCompensationReconciliationUseCase } from "./reconcile-compensation";
+import {
+  ReleaseCompensationReconciliationUseCase,
+  reconcileCompensationSafety,
+} from "./reconcile-compensation";
 
 const rollout = createReleaseRollout({
   rolloutId: "rollout-reconcile-test",
@@ -83,6 +86,18 @@ function ports(initial: {
       observeCompensationCheckpoint: vi.fn(async () => checkpoint),
       compareAndSet,
       reconcileRollout: vi.fn().mockResolvedValue({ state: "ok" }),
+      listProvisioningIntents: vi.fn().mockResolvedValue([
+        {
+          id: "intent-role",
+          effect: {
+            state: "cleaned",
+            ownerId: "owner-role",
+            epoch: 2,
+            providerId: "job-role",
+            safeForCompensation: true,
+          },
+        },
+      ]),
     },
     compensateDatabase: vi.fn().mockResolvedValue(databaseWitness),
     provider: {
@@ -156,6 +171,100 @@ describe("release compensation reconciliation", () => {
     expect(dependencies.ledger.compareAndSet).toHaveBeenCalledWith(
       expect.objectContaining({ step: RolloutStep.CompleteCompensation }),
     );
+    expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+  });
+
+  it.each([["prepared"], ["dispatching"], ["bound"], ["blocked"]] as const)(
+    "denies compensation while an intent is %s",
+    async (state) => {
+      const dependencies = ports({
+        activationBoundary: "before",
+        state: "pre_activation",
+        lastStep: RolloutStep.FreezeProviderServices,
+        receiptCount: 3,
+      });
+      dependencies.ledger.listProvisioningIntents.mockResolvedValue([
+        {
+          id: "intent-role",
+          effect: {
+            state,
+            ownerId: "owner-role",
+            epoch: 1,
+            providerId: state === "bound" ? "job-role" : null,
+            safeForCompensation: false,
+          },
+        },
+      ]);
+      await expect(
+        new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+          rollout,
+        ),
+      ).resolves.toMatchObject({
+        outcome: "denied",
+        externalEffects: { safeForCompensation: false },
+      });
+      expect(dependencies.ledger.compareAndSet).not.toHaveBeenCalled();
+      expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+    },
+  );
+
+  it("denies missing and duplicate evidence", () => {
+    expect(reconcileCompensationSafety([])).toMatchObject({
+      result: "blocked",
+      reason: "missing_evidence",
+      safeForCompensation: false,
+    });
+    const effect = {
+      state: "abandoned" as const,
+      ownerId: "owner-role",
+      epoch: 0,
+      providerId: null,
+      safeForCompensation: true,
+    };
+    expect(
+      reconcileCompensationSafety([
+        { id: "same", effect },
+        { id: "same", effect },
+      ]),
+    ).toMatchObject({
+      result: "blocked",
+      reason: "duplicate",
+      safeForCompensation: false,
+    });
+  });
+
+  it("keeps source frozen on timeout evidence", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "compensating",
+      lastStep: RolloutStep.BeginCompensation,
+      receiptCount: 4,
+    });
+    dependencies.ledger.listProvisioningIntents.mockResolvedValue([
+      {
+        id: "intent-role",
+        effect: {
+          state: "blocked",
+          ownerId: "owner-role",
+          epoch: 1,
+          providerId: null,
+          safeForCompensation: false,
+          reconciliation: {
+            result: "blocked",
+            safeForCompensation: false,
+            reason: "timeout",
+          },
+        },
+      },
+    ]);
+    const result = await new ReleaseCompensationReconciliationUseCase(
+      dependencies,
+    ).execute(rollout);
+    expect(result).toMatchObject({
+      outcome: "denied",
+      externalEffects: { result: "blocked", reason: "timeout" },
+    });
+    expect(dependencies.authority.decide).not.toHaveBeenCalled();
     expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
   });
 });

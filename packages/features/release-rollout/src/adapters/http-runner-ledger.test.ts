@@ -123,20 +123,60 @@ describe("authenticated runner ledger reconciliation", () => {
 });
 
 describe("authenticated runner provider creation lease", () => {
-  it("posts an exact claim to the intent-scoped authority route", async () => {
+  it("prepares the durable effect before any provider dispatch", async () => {
+    const intent = {
+      id: `rri-${"a".repeat(64)}`,
+      rolloutId: "rollout-1",
+      serviceId: "service-1",
+      lifecycle: "role" as const,
+      workflowJobId: "123",
+      runnerName: "rr-runner",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      startCommandSha256: `sha256:${"b".repeat(64)}`,
+      creationLeaseOwner: "rrc-00000000-0000-4000-8000-000000000001",
+    };
+    const prepared = {
+      state: "prepared",
+      ownerId: intent.creationLeaseOwner,
+      epoch: 0,
+      providerId: null,
+      safeForCompensation: false,
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify(prepared), { status: 200 }),
+      );
+    const adapter = new AuthenticatedRunnerLedgerAdapter(
+      "https://control.example.test",
+      "control-token",
+      fetchImpl,
+    );
+    await expect(adapter.persistProvisioningIntent(intent)).resolves.toEqual(
+      prepared,
+    );
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://control.example.test/v1/runner-jobs/intents",
+      expect.objectContaining({ method: "POST", body: JSON.stringify(intent) }),
+    );
+  });
+
+  it("posts an exact one-shot dispatch permit request to the intent authority", async () => {
     const claim = {
       intentId: `rri-${"a".repeat(64)}`,
       claimantId: "rrc-00000000-0000-4000-8000-000000000001",
       startCommandSha256: `sha256:${"b".repeat(64)}`,
-      observedNoMatchAt: "2026-08-12T00:03:00.000Z",
+      expectedEpoch: 0,
       leaseSeconds: 120,
-      discoveryGraceSeconds: 120,
     };
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          result: "acquired",
-          leaseExpiresAt: "2026-08-12T00:05:00.000Z",
+          state: "dispatching",
+          ownerId: claim.claimantId,
+          epoch: 1,
+          providerId: null,
+          safeForCompensation: false,
         }),
         { status: 200 },
       ),
@@ -147,15 +187,55 @@ describe("authenticated runner provider creation lease", () => {
       fetchImpl,
     );
 
-    await expect(adapter.claimProviderCreation(claim)).resolves.toMatchObject({
-      result: "acquired",
+    await expect(
+      adapter.acquireProviderDispatchPermit(claim),
+    ).resolves.toMatchObject({
+      state: "dispatching",
+      epoch: 1,
     });
     expect(fetchImpl).toHaveBeenCalledWith(
-      `https://control.example.test/v1/runner-jobs/intents/${claim.intentId}/provider-creation-claim`,
+      `https://control.example.test/v1/runner-jobs/intents/${claim.intentId}/dispatch-permit`,
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify(claim),
       }),
+    );
+  });
+
+  it("records an explicit blocked unsafe reconciliation", async () => {
+    const input = {
+      intentId: `rri-${"a".repeat(64)}`,
+      claimantId: "rrc-00000000-0000-4000-8000-000000000001",
+      expectedEpoch: 1,
+      reconciliation: {
+        result: "blocked" as const,
+        safeForCompensation: false as const,
+        reason: "duplicate" as const,
+      },
+    };
+    const blocked = {
+      state: "blocked",
+      ownerId: input.claimantId,
+      epoch: 1,
+      providerId: null,
+      safeForCompensation: false,
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify(blocked), { status: 200 }),
+      );
+    const adapter = new AuthenticatedRunnerLedgerAdapter(
+      "https://control.example.test",
+      "control-token",
+      fetchImpl,
+    );
+    await expect(adapter.reconcileProvisioningEffect(input)).resolves.toEqual(
+      blocked,
+    );
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://control.example.test/v1/runner-jobs/intents/${input.intentId}/reconciliation`,
+      expect.objectContaining({ method: "POST", body: JSON.stringify(input) }),
     );
   });
 });
