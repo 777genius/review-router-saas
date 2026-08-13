@@ -5,10 +5,12 @@ export type CleanupObservationSeed = Readonly<{
   observedAt: string;
 }>;
 
+export type ProviderTerminalStatus = "succeeded" | "failed" | "canceled";
+
 export type NormalizedCleanupEvidence = Readonly<{
   jobId: string;
   canary: string;
-  providerStatus: "succeeded";
+  providerStatus: ProviderTerminalStatus;
   containerTerminated: true;
   logSha256: string;
   removedPaths: readonly string[];

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveWorkflowJobId } from "./release-rollout-render-control";
+import { parseFreezeSourceWriterServiceIds } from "./release-rollout-render-control-config";
+import { parseCompensationSourceWriterServiceIds } from "./reconcile-private-pg17-compensation-config";
 
 const sha = "a".repeat(40);
 const response = (jobs: object[], totalCount = jobs.length) =>
@@ -88,5 +90,24 @@ describe("private PG17 target workflow job resolution", () => {
     ).rejects.toThrow("target_job_identity_unavailable");
     expect(request).toHaveBeenCalledTimes(3);
     expect(config.sleep).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("source writer service ID workflow contract", () => {
+  it.each([
+    parseFreezeSourceWriterServiceIds,
+    parseCompensationSourceWriterServiceIds,
+  ])("fails closed on malformed, duplicate, and unsafe values", (parse) => {
+    for (const value of [
+      "srv-api123,srv-worker456",
+      '["srv-api123","srv-api123"]',
+      '["srv-worker456","srv-api123"]',
+      '["srv-api123","../../unsafe"]',
+      '["srv-api123",42]',
+      '{"serviceIds":["srv-api123"]}',
+      '[ "srv-api123" ]',
+      "[]",
+    ])
+      expect(() => parse(value)).toThrow(/source_writer_service_ids_/u);
   });
 });

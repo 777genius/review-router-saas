@@ -71,6 +71,12 @@ CREATE TABLE release_authority.runner_intent (
   "workflow_job_id" text NOT NULL CHECK ("workflow_job_id" ~ '^[1-9][0-9]*$'),
   "runner_name" text NOT NULL,
   "created_at" timestamptz(3) NOT NULL,
+  "start_command_sha256" text NOT NULL CHECK ("start_command_sha256" ~ '^sha256:[a-f0-9]{64}$'),
+  "creation_lease_owner" text,
+  "creation_lease_expires_at" timestamptz(3),
+  "first_no_match_observed_at" timestamptz(3),
+  "last_no_match_observed_at" timestamptz(3),
+  "no_match_probe_count" integer NOT NULL DEFAULT 0 CHECK ("no_match_probe_count" BETWEEN 0 AND 1000),
   "provider_job_id" text,
   "outcome" text CHECK ("outcome" IN ('bound','persistence_failed_cleaned','persistence_failed_unknown')),
   "reconciliation_observation" jsonb,
@@ -81,6 +87,9 @@ CREATE TABLE release_authority.runner_intent (
   "registration_unique_label" text,
   "registration_work_folder" text,
   UNIQUE ("rollout_id","lifecycle"),
+  CHECK (("creation_lease_owner" IS NULL) = ("creation_lease_expires_at" IS NULL)),
+  CHECK (("first_no_match_observed_at" IS NULL) = ("last_no_match_observed_at" IS NULL)),
+  CHECK (("first_no_match_observed_at" IS NULL) = ("no_match_probe_count" = 0)),
   CHECK (
     ("registration_runner_id" IS NULL AND "registration_runner_group_id" IS NULL AND
      cardinality("registration_labels") = 0 AND "registration_unique_label" IS NULL AND
@@ -217,9 +226,14 @@ BEGIN
        existing_receipt.previous_receipt_sha256 = p_expected_receipt_sha256 AND
        existing_receipt.activation_boundary = p_next_activation_boundary AND
        existing_receipt.provider_binding IS NOT DISTINCT FROM p_provider_binding AND
-       p_expected_activation_boundary = 'before' AND
-       p_next_activation_boundary = 'before' AND
-       p_authoritative_system_identifier = current_row.source_system_identifier THEN
+       ((p_expected_activation_boundary = 'before' AND
+         p_next_activation_boundary = 'before' AND
+         p_authoritative_system_identifier = current_row.source_system_identifier AND
+         current_row.activation_boundary = 'before') OR
+        (p_expected_activation_boundary = 'activated' AND
+         p_next_activation_boundary = 'activated' AND
+         p_authoritative_system_identifier = current_row.target_system_identifier AND
+         current_row.activation_boundary = 'activated')) THEN
       RETURN true;
     END IF;
     RAISE EXCEPTION 'release rollout receipt replay conflict';
@@ -249,7 +263,8 @@ BEGIN
         p_authoritative_system_identifier <> current_row.source_system_identifier)) THEN
     RAISE EXCEPTION 'release rollout compensation transition invalid';
   END IF;
-  IF p_step NOT IN ('begin_compensation','effect_compensation','complete_compensation') THEN
+  IF p_step NOT IN ('begin_compensation','effect_compensation','complete_compensation') AND
+     current_row.state = 'pre_activation' THEN
     SELECT count(*)::integer INTO completed_steps
     FROM release_authority.receipt WHERE rollout_id = p_rollout_id;
     expected_step := (ARRAY[
@@ -266,6 +281,24 @@ BEGIN
        p_authoritative_system_identifier <> current_row.source_system_identifier THEN
       RAISE EXCEPTION 'release rollout pre-activation step out of order';
     END IF;
+  ELSIF p_step NOT IN ('begin_compensation','effect_compensation','complete_compensation') AND
+        current_row.state = 'activated' THEN
+    SELECT count(*)::integer INTO completed_steps
+    FROM release_authority.receipt WHERE rollout_id = p_rollout_id
+      AND step IN ('cleanup_cutover_runner','resume_target_services',
+        'verify_live_canary','verify_trusted_rollout');
+    expected_step := (ARRAY[
+      'cleanup_cutover_runner', 'resume_target_services',
+      'verify_live_canary', 'verify_trusted_rollout'
+    ])[completed_steps + 1];
+    IF expected_step IS NULL OR p_step <> expected_step OR
+       p_expected_activation_boundary <> 'activated' OR
+       p_next_activation_boundary <> 'activated' OR
+       p_authoritative_system_identifier <> current_row.target_system_identifier THEN
+      RAISE EXCEPTION 'release rollout post-activation step out of order';
+    END IF;
+  ELSIF p_step NOT IN ('begin_compensation','effect_compensation','complete_compensation') THEN
+    RAISE EXCEPTION 'release rollout step forbidden for authority state';
   END IF;
   INSERT INTO release_authority.receipt (
     receipt_sha256, rollout_id, step, provider_binding,
@@ -624,7 +657,7 @@ BEGIN
     RETURN current_row.cleanup_provider_witness = p_witness;
   END IF;
   IF p_witness->>'jobId' <> p_job_id OR p_witness->>'canary' <> current_row.cleanup_canary OR
-     p_witness->>'providerStatus' <> 'succeeded' OR
+     coalesce(p_witness->>'providerStatus','') NOT IN ('succeeded','failed','canceled') OR
      p_witness->>'containerTerminated' <> 'true' OR
      jsonb_typeof(p_witness->'removedPaths') <> 'array' OR
      jsonb_array_length(p_witness->'removedPaths') = 0 OR
@@ -761,12 +794,18 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
 DECLARE existing release_authority.runner_intent%ROWTYPE;
 BEGIN
+  IF coalesce(p_intent->>'creationLeaseOwner','') !~ '^rrc-[0-9a-f-]{36}$'
+    OR coalesce(p_intent->>'startCommandSha256','') !~ '^sha256:[a-f0-9]{64}$'
+  THEN RAISE EXCEPTION 'release runner intent creation lease invalid'; END IF;
   INSERT INTO release_authority.runner_intent
     (intent_id, rollout_id, service_id, lifecycle, workflow_job_id,
-     runner_name, created_at)
+     runner_name, created_at, start_command_sha256, creation_lease_owner,
+     creation_lease_expires_at)
   VALUES (p_intent->>'id', p_intent->>'rolloutId', p_intent->>'serviceId',
     p_intent->>'lifecycle', p_intent->>'workflowJobId',
-    p_intent->>'runnerName', (p_intent->>'createdAt')::timestamptz)
+    p_intent->>'runnerName', (p_intent->>'createdAt')::timestamptz,
+    p_intent->>'startCommandSha256', p_intent->>'creationLeaseOwner',
+    clock_timestamp() + interval '120 seconds')
   ON CONFLICT (intent_id) DO NOTHING;
   IF FOUND THEN RETURN 'created'; END IF;
   SELECT * INTO STRICT existing FROM release_authority.runner_intent
@@ -776,6 +815,7 @@ BEGIN
     OR existing.lifecycle <> p_intent->>'lifecycle'
     OR existing.workflow_job_id <> p_intent->>'workflowJobId'
     OR existing.runner_name <> p_intent->>'runnerName'
+    OR existing.start_command_sha256 <> p_intent->>'startCommandSha256'
   THEN RAISE EXCEPTION 'release runner intent identity conflict'; END IF;
   RETURN 'existing';
 END $body$;
@@ -786,19 +826,85 @@ AS $body$
   SELECT coalesce(jsonb_agg(jsonb_build_object(
     'id', intent_id, 'rolloutId', rollout_id, 'serviceId', service_id,
     'lifecycle', lifecycle, 'workflowJobId', workflow_job_id,
-    'runnerName', runner_name, 'createdAt', to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+    'runnerName', runner_name, 'createdAt', to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'startCommandSha256', start_command_sha256,
+    'creationLeaseOwner', creation_lease_owner,
+    'creationLeaseExpiresAt', to_char(creation_lease_expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
     ORDER BY created_at), '[]'::jsonb)
   FROM release_authority.runner_intent WHERE rollout_id = p_rollout_id
 $body$;
+
+CREATE FUNCTION release_authority.release_runner_claim_provider_creation(p_input jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+AS $body$
+DECLARE
+  current_row release_authority.runner_intent%ROWTYPE;
+  now_at timestamptz(3) := clock_timestamp();
+  observed_at timestamptz(3) := (p_input->>'observedNoMatchAt')::timestamptz;
+  lease_seconds integer := (p_input->>'leaseSeconds')::integer;
+  grace_seconds integer := (p_input->>'discoveryGraceSeconds')::integer;
+  next_expiry timestamptz(3);
+BEGIN
+  IF coalesce(p_input->>'claimantId','') !~ '^rrc-[0-9a-f-]{36}$'
+    OR coalesce(p_input->>'startCommandSha256','') !~ '^sha256:[a-f0-9]{64}$'
+    OR lease_seconds NOT BETWEEN 30 AND 300
+    OR grace_seconds NOT BETWEEN 60 AND 600
+    OR observed_at < now_at - interval '2 minutes'
+    OR observed_at > now_at + interval '30 seconds'
+  THEN RAISE EXCEPTION 'release runner provider creation claim invalid'; END IF;
+
+  SELECT * INTO STRICT current_row FROM release_authority.runner_intent
+    WHERE intent_id = p_input->>'intentId' FOR UPDATE;
+  IF current_row.start_command_sha256 <> p_input->>'startCommandSha256'
+  THEN RAISE EXCEPTION 'release runner provider creation command conflict'; END IF;
+  IF current_row.provider_job_id IS NOT NULL
+  THEN RETURN jsonb_build_object('result','bound'); END IF;
+  IF current_row.creation_lease_expires_at IS NOT NULL
+    AND current_row.creation_lease_expires_at > now_at
+  THEN RETURN jsonb_build_object('result','held'); END IF;
+
+  IF current_row.first_no_match_observed_at IS NULL THEN
+    UPDATE release_authority.runner_intent SET
+      first_no_match_observed_at = now_at,
+      last_no_match_observed_at = now_at,
+      no_match_probe_count = 1
+    WHERE intent_id = current_row.intent_id;
+    RETURN jsonb_build_object('result','discovery_grace');
+  END IF;
+
+  IF now_at < current_row.first_no_match_observed_at + make_interval(secs => grace_seconds) THEN
+    UPDATE release_authority.runner_intent SET
+      last_no_match_observed_at = now_at,
+      no_match_probe_count = no_match_probe_count + 1
+    WHERE intent_id = current_row.intent_id;
+    RETURN jsonb_build_object('result','discovery_grace');
+  END IF;
+
+  next_expiry := now_at + make_interval(secs => lease_seconds);
+  UPDATE release_authority.runner_intent SET
+    creation_lease_owner = p_input->>'claimantId',
+    creation_lease_expires_at = next_expiry,
+    first_no_match_observed_at = NULL,
+    last_no_match_observed_at = NULL,
+    no_match_probe_count = 0
+  WHERE intent_id = current_row.intent_id;
+  RETURN jsonb_build_object(
+    'result','acquired',
+    'leaseExpiresAt',to_char(next_expiry AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+END $body$;
 
 CREATE FUNCTION release_authority.release_runner_record_intent_outcome(p_input jsonb) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
 BEGIN
+  -- Exact deterministic provider discovery may bind after the creator crashed;
+  -- job identity CAS, rather than stale lease ownership, authorizes reconciliation.
   UPDATE release_authority.runner_intent SET
     provider_job_id = p_input->>'jobId', outcome = p_input->>'outcome',
     reconciliation_observation = p_input->'observation',
-    reconciled_at = clock_timestamp()
+    reconciled_at = clock_timestamp(), creation_lease_owner = NULL,
+    creation_lease_expires_at = NULL, first_no_match_observed_at = NULL,
+    last_no_match_observed_at = NULL, no_match_probe_count = 0
   WHERE intent_id = p_input->>'intentId'
     AND (provider_job_id IS NULL OR provider_job_id = p_input->>'jobId');
   IF NOT FOUND THEN RAISE EXCEPTION 'release runner intent outcome cas failed'; END IF;
@@ -868,7 +974,7 @@ BEGIN
   witness := job.cleanup_provider_witness;
   IF witness IS NULL OR witness->>'jobId' <> job.job_id
     OR witness->>'canary' <> job.cleanup_canary
-    OR witness->>'providerStatus' <> 'succeeded'
+    OR coalesce(witness->>'providerStatus','') NOT IN ('succeeded','failed','canceled')
     OR witness->>'containerTerminated' <> 'true'
     OR jsonb_typeof(witness->'removedPaths') <> 'array'
     OR jsonb_array_length(witness->'removedPaths') = 0
@@ -930,7 +1036,7 @@ BEGIN
   IF job.terminal_at IS NULL OR job.cleanup_observation IS NULL
     OR witness IS NULL OR witness->>'jobId' <> job.job_id
     OR witness->>'canary' <> job.cleanup_canary
-    OR witness->>'providerStatus' <> 'succeeded'
+    OR coalesce(witness->>'providerStatus','') NOT IN ('succeeded','failed','canceled')
     OR witness->>'containerTerminated' <> 'true'
     OR jsonb_typeof(witness->'removedPaths') <> 'array'
     OR jsonb_array_length(witness->'removedPaths') = 0
@@ -1092,6 +1198,7 @@ REVOKE ALL ON FUNCTION release_authority.release_rollout_activation_state(text,t
 REVOKE ALL ON FUNCTION release_authority.release_rollout_verify_final_authority(text,text,text,integer,text,text,text,jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_rollout_finalize_activation(jsonb,jsonb,text,jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_persist_intent(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_runner_claim_provider_creation(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_list_intents(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_record_intent_outcome(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_persist_job(jsonb) FROM PUBLIC;
@@ -1121,6 +1228,7 @@ BEGIN
     GRANT EXECUTE ON FUNCTION release_authority.release_rollout_verify_final_authority(text,text,text,integer,text,text,text,jsonb) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_rollout_finalize_activation(jsonb,jsonb,text,jsonb) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_runner_persist_intent(jsonb) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_runner_claim_provider_creation(jsonb) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_runner_list_intents(text) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_runner_record_intent_outcome(jsonb) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_runner_persist_job(jsonb) TO reviewrouter_release_control;

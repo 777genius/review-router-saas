@@ -1,6 +1,7 @@
 import type { StepObservation } from "../domain/release-rollout";
 import type { RunnerIdentity } from "../domain/release-rollout";
 import type {
+  CreateRunnerProvisioningIntent,
   PersistedRunnerJob,
   RunnerProvisioningIntent,
   RunnerJobLedger,
@@ -45,7 +46,7 @@ export class PostgreSqlRolloutLedgerAdapter implements RunnerJobLedger {
       throw new Error("runner_job_identity_already_persisted");
   }
   async persistProvisioningIntent(
-    value: RunnerProvisioningIntent,
+    value: CreateRunnerProvisioningIntent,
   ): Promise<"created" | "existing"> {
     const result = this.sql(
       `INSERT INTO reviewrouter_bootstrap.release_runner_provisioning_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at) VALUES (${literal(value.id)},${literal(value.rolloutId)},${literal(value.serviceId)},${literal(value.lifecycle)},${literal(value.workflowJobId)},${literal(value.runnerName)},${literal(value.createdAt)}::timestamptz) ON CONFLICT (intent_id) DO NOTHING RETURNING intent_id`,
@@ -66,6 +67,27 @@ export class PostgreSqlRolloutLedgerAdapter implements RunnerJobLedger {
         `SELECT coalesce(json_agg(json_build_object('id',intent_id,'rolloutId',rollout_id,'serviceId',service_id,'lifecycle',lifecycle,'workflowJobId',workflow_job_id,'runnerName',runner_name,'createdAt',to_char(created_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) ORDER BY created_at),'[]'::json)::text FROM reviewrouter_bootstrap.release_runner_provisioning_intent WHERE rollout_id=${literal(rolloutId)}`,
       ),
     ) as RunnerProvisioningIntent[];
+  }
+  async claimProviderCreation(
+    input: Parameters<RunnerJobLedger["claimProviderCreation"]>[0],
+  ): ReturnType<RunnerJobLedger["claimProviderCreation"]> {
+    const value = JSON.parse(
+      this.sql(
+        `SELECT release_authority.release_runner_claim_provider_creation(${literal(JSON.stringify(input))}::jsonb)::text`,
+      ),
+    ) as Record<string, unknown>;
+    if (
+      value.result !== "acquired" &&
+      value.result !== "held" &&
+      value.result !== "discovery_grace" &&
+      value.result !== "bound"
+    )
+      throw new Error("runner_provider_creation_claim_invalid");
+    if (value.result === "acquired" && typeof value.leaseExpiresAt !== "string")
+      throw new Error("runner_provider_creation_claim_invalid");
+    return value as Awaited<
+      ReturnType<RunnerJobLedger["claimProviderCreation"]>
+    >;
   }
   async recordProvisioningOutcome(input: {
     intentId: string;

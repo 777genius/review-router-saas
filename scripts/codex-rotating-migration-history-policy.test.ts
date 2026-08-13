@@ -7,6 +7,7 @@ import {
   checkedInCodexRotatingMigrationChecksums,
   forwardUnpublishedCodexRotatingMigration,
   immutableCodexRotatingMigrationChecksums,
+  obsoleteReleaseRolloutLedgerMigrationAlias,
   unpublishedNonAtomicCodexOAuthSetupPayloadClaimChecksum,
   type CodexRotatingMigrationHistoryRow,
 } from "./codex-rotating-migration-history-policy";
@@ -99,7 +100,7 @@ describe("Codex rotating immutable migration history policy", () => {
     expect(source).not.toMatch(/reviewrouter_release_(?:control|witness)/u);
   });
 
-  it("loads the exact 000069 source digest and queries its prepublication history", () => {
+  it("loads the exact 000069 source digest and queries it plus the obsolete alias", () => {
     const expectedMigrationNames = Object.keys(
       checkedInCodexRotatingMigrationChecksums,
     );
@@ -114,12 +115,19 @@ describe("Codex rotating immutable migration history policy", () => {
       ?.map((name) => name.slice(1, -1));
 
     expect(sourceMigrationNames).toEqual(expectedMigrationNames);
-    expect(queriedMigrationNames).toEqual(expectedMigrationNames);
+    expect(queriedMigrationNames).toEqual([
+      ...expectedMigrationNames.slice(0, -1),
+      obsoleteReleaseRolloutLedgerMigrationAlias,
+      forwardUnpublishedCodexRotatingMigration.name,
+    ]);
     expect(sourceMigrationNames).toContain(
       forwardUnpublishedCodexRotatingMigration.name,
     );
     expect(queriedMigrationNames).toContain(
       forwardUnpublishedCodexRotatingMigration.name,
+    );
+    expect(queriedMigrationNames).toContain(
+      obsoleteReleaseRolloutLedgerMigrationAlias,
     );
   });
 
@@ -230,6 +238,23 @@ describe("Codex rotating immutable migration history policy", () => {
         },
       ]),
     ).toThrow("codex_rotating_000061_preexisting_history_forbidden");
+  });
+
+  it("rejects the obsolete 000067 rollout-ledger alias regardless of row state", () => {
+    expect(() =>
+      assertCodexRotatingMigrationHistoryIsPristine([
+        {
+          migration_name: obsoleteReleaseRolloutLedgerMigrationAlias,
+          checksum: "obsolete-alias-checksum",
+          finished_at: null,
+          rolled_back_at: null,
+          applied_steps_count: 0,
+        },
+      ]),
+    ).toThrow(
+      "codex_rotating_obsolete_000067_release_rollout_ledger_alias_forbidden:" +
+        "recreate_the_database_from_history_using_000069_release_rollout_ledger",
+    );
   });
 
   it("rejects any prepublication history for forward migration 000069", () => {

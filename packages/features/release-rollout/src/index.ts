@@ -1,5 +1,6 @@
 export * from "./domain/release-rollout";
 export * from "./domain/trusted-rollout-evidence";
+export * from "./domain/source-writer-service-ids";
 export * from "./application/ports";
 export * from "./application/use-cases";
 export * from "./application/reconcile-compensation";

@@ -41,6 +41,24 @@ export type ProvisioningIntent = {
   workflowJobId: string;
   runnerName: string;
   createdAt: string;
+  startCommandSha256: string;
+  creationLeaseOwner: string | null;
+  creationLeaseExpiresAt: string | null;
+};
+export type CreateProvisioningIntent = Omit<
+  ProvisioningIntent,
+  "creationLeaseOwner" | "creationLeaseExpiresAt"
+> & { creationLeaseOwner: string };
+export type ProviderCreationClaim =
+  | { result: "acquired"; leaseExpiresAt: string }
+  | { result: "held" | "discovery_grace" | "bound" };
+export type ClaimProviderCreationInput = {
+  intentId: string;
+  claimantId: string;
+  startCommandSha256: string;
+  observedNoMatchAt: string;
+  leaseSeconds: number;
+  discoveryGraceSeconds: number;
 };
 export type PersistedJob = {
   rolloutId: string;
@@ -64,7 +82,7 @@ export type PersistRunnerRegistrationInput = Readonly<{
   workflowJobId: string;
   registration: PersistedRunnerRegistration;
 }>;
-export type ProviderJobStatus = "succeeded";
+export type ProviderJobStatus = "succeeded" | "failed" | "canceled";
 export type PersistedProviderCleanupWitness = Readonly<{
   jobId: string;
   canary: string;
@@ -213,8 +231,13 @@ export interface TargetActivationReceiptReaderPort {
 }
 
 export interface RunnerOperationsLedgerPort {
-  persistIntent(input: ProvisioningIntent): Promise<"created" | "existing">;
+  persistIntent(
+    input: CreateProvisioningIntent,
+  ): Promise<"created" | "existing">;
   listIntents(rolloutId: string): Promise<readonly ProvisioningIntent[]>;
+  claimProviderCreation(
+    input: ClaimProviderCreationInput,
+  ): Promise<ProviderCreationClaim>;
   recordIntentOutcome(input: {
     intentId: string;
     jobId: string;

@@ -16,13 +16,13 @@ import {
   type TargetServiceContract,
   type ReleaseRollout,
 } from "../packages/features/release-rollout/src/index";
+import { parseCompensationSourceWriterServiceIds } from "./reconcile-private-pg17-compensation-config";
 
 const required = (name: string): string => {
   const value = process.env[name];
   if (!value) throw new Error(`private_pg17_reconcile_required:${name}`);
   return value;
 };
-
 const object = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -124,12 +124,9 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
     ),
   );
   const checkpoints = await ledger.read(rollout.rolloutId);
-  const sourceWriterServiceIds = required(
-    "REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS",
-  )
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const sourceWriterServiceIds = parseCompensationSourceWriterServiceIds(
+    required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
+  );
   if (
     sourceWriterServiceIds.length !== 3 ||
     new Set(sourceWriterServiceIds).size !== 3 ||

@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { parseCompensationSourceWriterServiceIds } from "./reconcile-private-pg17-compensation-config";
+import { parseFreezeSourceWriterServiceIds } from "./release-rollout-render-control-config";
 
 const workflow = readFileSync(
   ".github/workflows/private-network-pg17-rollout.yml",
@@ -23,6 +25,28 @@ function jobs(source: string): string[] {
 }
 
 describe("private-network PG17 workflow security contract", () => {
+  it("uses one canonical source-writer value through freeze and compensation", () => {
+    const workflowValue = '["srv-api123","srv-worker456"]';
+    const workflowEnvironment = {
+      REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: workflowValue,
+    };
+
+    expect(
+      parseFreezeSourceWriterServiceIds(
+        workflowEnvironment.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS,
+      ),
+    ).toEqual(["srv-api123", "srv-worker456"]);
+    expect(
+      parseCompensationSourceWriterServiceIds(
+        workflowEnvironment.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS,
+      ),
+    ).toEqual(["srv-api123", "srv-worker456"]);
+    expect(
+      workflow.match(
+        /REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS: \$\{\{ vars\.REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS \}\}/gu,
+      ),
+    ).toHaveLength(4);
+  });
   it("keeps database credentials exclusively on exact execution steps of runner-group jobs", () => {
     const databaseJobs = jobs(workflow).filter((block) =>
       block.includes("DATABASE_URL"),

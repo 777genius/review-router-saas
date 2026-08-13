@@ -50,6 +50,12 @@ Repository variables:
 | Release           | `REVIEW_ROUTER_RELEASE_IMAGE_DIGEST`, `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, `REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON`  |
 | Canary            | `REVIEW_ROUTER_LIVE_CANARY_URL`                                                                                                   |
 
+`REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS` has one canonical encoding in every
+phase: a compact JSON array of unique Render service IDs, for example
+`["srv-api123","srv-worker456"]`. It must contain 1-100 sorted lowercase
+`srv-` IDs with no whitespace, duplicate entries, CSV encoding, or surrounding object.
+Freeze, cutover, and compensation all fail closed on any other value.
+
 Protected environment secrets:
 
 | Environment                     | Secrets                                                                                                                                                         |

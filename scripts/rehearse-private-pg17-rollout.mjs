@@ -26,6 +26,7 @@ import {
 } from "../packages/features/release-rollout/src/index.ts";
 import { createPrismaClient } from "../packages/platform/db/src/index.ts";
 import { createReleaseControlApp } from "../apps/api/src/release-control-composition.ts";
+import { PostgresCleanupObservationAdapter } from "../apps/api/src/release-witness-adapters.ts";
 import {
   canonicalActivationSql,
   executeCanonicalReleaseMigration,
@@ -123,6 +124,7 @@ export async function executeDisposableRehearsal(
   let providerAuthorityPrisma;
   let permitInstallerPrisma;
   let targetReceiptReaderPrisma;
+  let witnessPrisma;
   const createdContainers = [];
   const docker = (...args) => execute(args);
   const sql = (container, statement) =>
@@ -205,7 +207,7 @@ export async function executeDisposableRehearsal(
     const authorityPort = publishedPort(authority);
     sql(
       authority,
-      "CREATE EXTENSION IF NOT EXISTS pgcrypto; CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'disposable-control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'disposable-provider'",
+      "CREATE EXTENSION IF NOT EXISTS pgcrypto; CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'disposable-control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'disposable-provider'; CREATE ROLE reviewrouter_release_witness LOGIN PASSWORD 'disposable-witness'",
     );
     for (const migration of [
       "000001_release_authority",
@@ -513,6 +515,7 @@ export async function executeDisposableRehearsal(
     const providerAuthorityUrl = `postgresql://reviewrouter_provider_authority:disposable-provider@127.0.0.1:${authorityPort}/reviewrouter?sslmode=disable`;
     const installerUrl = `postgresql://reviewrouter_activation_permit_installer:disposable-installer@127.0.0.1:${targetPort}/reviewrouter?sslmode=disable`;
     const receiptReaderUrl = `postgresql://reviewrouter_activation_receipt_reader:disposable-receipt-reader@127.0.0.1:${targetPort}/reviewrouter?sslmode=disable`;
+    const witnessUrl = `postgresql://reviewrouter_release_witness:disposable-witness@127.0.0.1:${authorityPort}/reviewrouter?sslmode=disable`;
     controlPrisma = createPrismaClient({
       databaseUrl: authorityUrl,
       poolMax: 2,
@@ -529,6 +532,7 @@ export async function executeDisposableRehearsal(
       databaseUrl: receiptReaderUrl,
       poolMax: 1,
     });
+    witnessPrisma = createPrismaClient({ databaseUrl: witnessUrl, poolMax: 1 });
     releaseControl = await createReleaseControlApp({
       controlPrisma,
       providerAuthorityPrisma,
@@ -552,14 +556,36 @@ export async function executeDisposableRehearsal(
         headers: init?.headers,
         payload: init?.body,
       });
-      if (response.statusCode >= 500)
+      if (response.statusCode >= 500) {
+        let code = "unknown";
+        const known = [
+          "release rollout receipt replay conflict",
+          "release rollout receipt transition invalid",
+          "release rollout compensation transition invalid",
+          "release rollout pre-activation step out of order",
+          "release runner terminal cleanup witness unproven",
+          "release runner terminal cas failed",
+        ];
+        code = known.find((value) => response.body.includes(value)) ?? code;
+        let step = "unknown";
+        try {
+          const requestBody = JSON.parse(String(init?.body ?? "{}"));
+          if (/^[a-z_]{1,80}$/u.test(String(requestBody.step ?? "")))
+            step = requestBody.step;
+        } catch {
+          step = "unparseable";
+        }
         process.stderr.write(
-          `rehearsal_control_request_failed:${init?.method ?? "GET"}:${requestUrl.pathname}:${response.statusCode}\n`,
+          `rehearsal_control_request_failed:${init?.method ?? "GET"}:${requestUrl.pathname}:${response.statusCode}:${code}:${step}\n`,
         );
-      return new globalThis.Response(response.body, {
-        status: response.statusCode,
-        headers: response.headers,
-      });
+      }
+      return new globalThis.Response(
+        response.statusCode === 204 ? null : response.body,
+        {
+          status: response.statusCode,
+          headers: response.headers,
+        },
+      );
     };
     const authorityOrigin = "https://disposable-release-authority.invalid";
     const ledger = new AuthenticatedRunnerLedgerAdapter(
@@ -592,6 +618,7 @@ export async function executeDisposableRehearsal(
       authorityOrigin,
       controlToken,
       providerAuthorityToken,
+      witnessPrisma,
       authorityContainer: authority,
       targetContainer: target,
       sql,
@@ -635,6 +662,7 @@ export async function executeDisposableRehearsal(
       providerAuthorityPrisma?.$disconnect(),
       permitInstallerPrisma?.$disconnect(),
       targetReceiptReaderPrisma?.$disconnect(),
+      witnessPrisma?.$disconnect(),
     ]);
     let cleanupError;
     for (const name of createdContainers.reverse()) {
@@ -855,6 +883,66 @@ async function verifyProductionPathRehearsal(facts) {
   let provision = roleRunner;
   let cleanupStep = RolloutStep.CleanupRoleRunner;
   const ledger = facts.ledger;
+  const witness = new PostgresCleanupObservationAdapter(facts.witnessPrisma);
+  const persistRunnerBinding = async (identity, observation, lifecycle) => {
+    const intentId = `rri-${createHash("sha256")
+      .update(`disposable-rehearsal:${lifecycle}:${identity.workflowJobId}`)
+      .digest("hex")}`;
+    const rehearsalStartCommand = `node /runner/bootstrap.mjs --intent ${intentId}`;
+    await ledger.persistProvisioningIntent({
+      id: intentId,
+      rolloutId: rollout.rolloutId,
+      serviceId: identity.baseServiceId,
+      lifecycle,
+      workflowJobId: identity.workflowJobId,
+      runnerName: identity.runnerName,
+      createdAt: observation.observedAt,
+      startCommandSha256: `sha256:${createHash("sha256")
+        .update(rehearsalStartCommand)
+        .digest("hex")}`,
+      creationLeaseOwner: `rrc-${lifecycle === "role" ? "00000000-0000-4000-8000-000000000001" : "00000000-0000-4000-8000-000000000002"}`,
+    });
+    await ledger.persistCreatedJob({
+      rolloutId: rollout.rolloutId,
+      serviceId: identity.baseServiceId,
+      jobId: identity.renderJobId,
+      observedAt: observation.observedAt,
+      cleanupCanary: identity.cleanupCanary,
+      lifecycle,
+      provisioningIntentId: intentId,
+    });
+    await ledger.persistValidatedIdentity(
+      identity.renderJobId,
+      identity,
+      observation,
+    );
+    const response = await facts.controlFetch(
+      `${facts.authorityOrigin}/v1/runner-jobs/registration`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${facts.controlToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          rolloutId: rollout.rolloutId,
+          lifecycle,
+          workflowJobId: identity.workflowJobId,
+          registration: {
+            runnerId: lifecycle === "role" ? 10 : 11,
+            runnerGroupId: identity.runnerGroupId,
+            labels: [identity.uniqueRunnerLabel],
+            uniqueLabel: identity.uniqueRunnerLabel,
+            workFolder: identity.workFolder,
+          },
+        }),
+      },
+    );
+    if (!response.ok)
+      throw new Error(
+        `private_pg17_rehearsal_registration_failed:${response.status}`,
+      );
+  };
   let evidence;
   let legacyReconciliation;
   const useCases = new ReleaseRolloutUseCases({
@@ -920,58 +1008,14 @@ async function verifyProductionPathRehearsal(facts) {
             githubWorkflowJobId: provision.workflowJobId,
           },
         );
-        const intentId = `rri-${createHash("sha256")
-          .update(
-            `${rollout.rolloutId}:${lifecycle}:${execution.runId}:${provision.workflowJobId}:${provision.baseServiceId}`,
-          )
-          .digest("hex")}`;
-        await ledger.persistProvisioningIntent({
-          id: intentId,
-          rolloutId: rollout.rolloutId,
-          serviceId: provision.baseServiceId,
-          lifecycle,
-          workflowJobId: provision.workflowJobId,
-          runnerName: provision.runnerName,
-          createdAt: observation.observedAt,
-        });
-        await ledger.persistCreatedJob({
-          rolloutId: rollout.rolloutId,
-          serviceId: provision.baseServiceId,
-          jobId: provision.renderJobId,
-          observedAt: observation.observedAt,
-          cleanupCanary: provision.cleanupCanary,
-          lifecycle,
-          provisioningIntentId: intentId,
-        });
-        await ledger.recordProvisioningOutcome({
-          intentId,
-          jobId: provision.renderJobId,
-          outcome: "bound",
-        });
-        await ledger.persistRegistration({
-          rolloutId: rollout.rolloutId,
-          lifecycle,
-          workflowJobId: provision.workflowJobId,
-          registration: {
-            runnerId: lifecycle === "role" ? 1001 : 1002,
-            runnerGroupId: provision.runnerGroupId,
-            labels: ["self-hosted", provision.uniqueRunnerLabel],
-            uniqueLabel: provision.uniqueRunnerLabel,
-            workFolder: provision.workFolder,
-          },
-        });
-        await ledger.persistValidatedIdentity(
-          provision.renderJobId,
-          provision,
-          observation,
-        );
+        await persistRunnerBinding(provision, observation, lifecycle);
         return { identity: provision, observation };
       },
       cleanup: async () => {
         const observedAt = new Date(
           Date.UTC(2026, 7, 12, 0, 0, tick++),
         ).toISOString();
-        return {
+        const observation = {
           step: cleanupStep,
           observedAt,
           facts: {
@@ -986,6 +1030,19 @@ async function verifyProductionPathRehearsal(facts) {
           },
           provider: { renderJobId: provision.renderJobId },
         };
+        await witness.persist(provision.renderJobId, {
+          jobId: provision.renderJobId,
+          canary: provision.cleanupCanary,
+          providerStatus: "succeeded",
+          containerTerminated: true,
+          logSha256: digest,
+          removedPaths: [`/runner/${provision.workFolder}`],
+          remainingPaths: [],
+          providerLogId: `log-${provision.renderJobId}`,
+          providerObservedAt: observedAt,
+        });
+        await ledger.markTerminal(provision.renderJobId, observation);
+        return observation;
       },
       reconcileOrphans: async () => [],
     },

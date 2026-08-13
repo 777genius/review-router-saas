@@ -165,6 +165,9 @@ class ConcurrentRepository implements CombinedLedgerPort {
   async listIntents() {
     return [] as const;
   }
+  async claimProviderCreation(): Promise<{ result: "held" }> {
+    return { result: "held" };
+  }
   async recordIntentOutcome() {}
   async persistJob() {}
   async listOpenJobs() {
@@ -323,6 +326,8 @@ describe("release rollout ledger internal API", () => {
       workflowJobId: "456",
       runnerName: "rr-123-role",
       createdAt: "2026-08-12T00:00:00.000Z",
+      startCommandSha256: `sha256:${"b".repeat(64)}`,
+      creationLeaseOwner: "rrc-00000000-0000-4000-8000-000000000001",
     };
     expect(await service.persistIntent(intent)).toBe("created");
     expect(await service.persistIntent(intent)).toBe("existing");

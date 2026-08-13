@@ -28,6 +28,9 @@ export const forwardUnpublishedCodexRotatingMigration = Object.freeze({
   checksum: "82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05",
 });
 
+export const obsoleteReleaseRolloutLedgerMigrationAlias =
+  "000067_release_rollout_ledger";
+
 export const checkedInCodexRotatingMigrationChecksums = Object.freeze({
   ...immutableCodexRotatingMigrationChecksums,
   [forwardUnpublishedCodexRotatingMigration.name]:
@@ -54,6 +57,17 @@ const editedBeforeRolloutMigration =
 export function assertCodexRotatingMigrationHistoryIsPristine(
   rows: readonly CodexRotatingMigrationHistoryRow[],
 ): void {
+  if (
+    rows.some(
+      (row) =>
+        row.migration_name === obsoleteReleaseRolloutLedgerMigrationAlias,
+    )
+  ) {
+    throw new Error(
+      "codex_rotating_obsolete_000067_release_rollout_ledger_alias_forbidden:" +
+        "recreate_the_database_from_history_using_000069_release_rollout_ledger",
+    );
+  }
   if (
     rows.some(
       (row) =>

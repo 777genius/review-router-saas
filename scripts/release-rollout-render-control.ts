@@ -8,6 +8,7 @@ import {
   RenderProviderFreezeAdapter,
   type RunnerIdentity,
 } from "../packages/features/release-rollout/src/index";
+import { parseFreezeSourceWriterServiceIds } from "./release-rollout-render-control-config";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -122,9 +123,9 @@ if (mode === "freeze") {
   const observation = await new RenderProviderFreezeAdapter().freezeAndObserve({
     apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
     ownerId: required("RENDER_OWNER_ID"),
-    sourceWriterServiceIds: required(
-      "REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS",
-    ).split(","),
+    sourceWriterServiceIds: parseFreezeSourceWriterServiceIds(
+      required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
+    ),
   });
   output({
     observation: Buffer.from(JSON.stringify(observation)).toString("base64url"),

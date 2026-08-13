@@ -86,9 +86,11 @@ is checked against both that policy and the files on every test run.
 this release. Its exact checked-in SHA-256 is
 `82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05`.
 Before its first publication, migration preflight hashes those exact bytes and
-rejects every existing `_prisma_migrations` row named 000069, including failed,
-rolled-back, duplicate, or apparently successful rows. Do not resolve or bless
-an early row; stop and investigate its provenance.
+rejects every existing `_prisma_migrations` row named
+`000069_release_rollout_ledger`, including failed, rolled-back, duplicate, or
+apparently successful rows. It also fails closed on the obsolete
+`000067_release_rollout_ledger` alias. Do not resolve or bless an early or
+aliased row; stop and investigate its provenance.
 
 The one immutable application release-migration caller may then register those
 pinned no-op bytes as the final member of the drained combined release.
@@ -100,8 +102,8 @@ the immutable-history set and replace the reject-any prepublication rule with
 the same allow-one-exact rule used by released migrations. Until that explicit
 handoff is checked in and tested, preflight intentionally blocks every later
 release rather than guessing that publication occurred. Any later schema
-change uses a new forward migration; never edit 000064 through 000069
-after publication.
+change uses a new forward migration; never edit migrations 000064 through
+000069 after publication.
 
 The marker creates no ledger, authority tables, functions, or roles in either
 the source or target application database. Release rollout state and the
@@ -296,7 +298,7 @@ rolling mixed-version deploy is prohibited.
    Role bootstrap and release migration share the repository-wide
    `codex-rotating-database-mutation-production` concurrency group with
    cancellation disabled, so only one database mutation can run. Apply the
-   exact ordered checked-in 000060 through 000066 batch once. A lock or
+   exact ordered checked-in 000060 through 000066 plus 000069 batch once. A lock or
    statement timeout stops the batch; inspect it and begin a separately
    recorded retry, never concurrent retries.
 6. With both switches still off, converge API, web, and worker to the same exact

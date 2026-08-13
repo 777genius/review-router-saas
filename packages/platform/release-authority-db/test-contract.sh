@@ -49,9 +49,11 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
    END \$\$;
    INSERT INTO release_authority.runner_intent(
      intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,
+     start_command_sha256,
      registration_runner_id,registration_runner_group_id,registration_labels,
      registration_unique_label,registration_work_folder)
    VALUES ('rri-'||repeat('1',64),'r1','svc','cutover','9','rr-cutover','$now',
+     'sha256:'||repeat('1',64),
      91,92,ARRAY['self-hosted','rr-cutover'],'rr-cutover','_work/rr-cutover');
    INSERT INTO release_authority.runner_job(
      job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,
@@ -75,6 +77,37 @@ test "$first" = claimed
 test "$duplicate" = duplicate
 test "$authorization" = "$replay"
 test "$state" = activation_authorized:1:true
+
+lease_intent='{"id":"rri-'$(printf 'e%.0s' $(seq 1 64))'","rolloutId":"r1","serviceId":"svc-lease","lifecycle":"role","workflowJobId":"99","runnerName":"rr-lease","createdAt":"'$now'","startCommandSha256":"sha256:'$(printf 'f%.0s' $(seq 1 64))'","creationLeaseOwner":"rrc-00000000-0000-4000-8000-000000000001"}'
+lease_created=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_intent('$lease_intent')")
+test "$lease_created" = created
+held_claim=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_claim_provider_creation(jsonb_build_object('intentId','rri-'||repeat('e',64),'claimantId','rrc-00000000-0000-4000-8000-000000000002','startCommandSha256','sha256:'||repeat('f',64),'observedNoMatchAt','$now','leaseSeconds',120,'discoveryGraceSeconds',120))->>'result'")
+test "$held_claim" = held
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "UPDATE release_authority.runner_intent SET creation_lease_expires_at=clock_timestamp()-interval '1 second' WHERE intent_id='rri-'||repeat('e',64)" >/dev/null
+grace_claim=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_claim_provider_creation(jsonb_build_object('intentId','rri-'||repeat('e',64),'claimantId','rrc-00000000-0000-4000-8000-000000000002','startCommandSha256','sha256:'||repeat('f',64),'observedNoMatchAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),'leaseSeconds',120,'discoveryGraceSeconds',120))->>'result'")
+test "$grace_claim" = discovery_grace
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "UPDATE release_authority.runner_intent SET first_no_match_observed_at=clock_timestamp()-interval '121 seconds' WHERE intent_id='rri-'||repeat('e',64)" >/dev/null
+claim_sql_prefix="SELECT release_authority.release_runner_claim_provider_creation(jsonb_build_object('intentId','rri-'||repeat('e',64),'claimantId','"
+claim_sql_suffix="','startCommandSha256','sha256:'||repeat('f',64),'observedNoMatchAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),'leaseSeconds',120,'discoveryGraceSeconds',120))->>'result'"
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc "${claim_sql_prefix}rrc-00000000-0000-4000-8000-000000000003${claim_sql_suffix}" >"/tmp/rr-lease-a-$$" &
+claim_pid_a=$!
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc "${claim_sql_prefix}rrc-00000000-0000-4000-8000-000000000004${claim_sql_suffix}" >"/tmp/rr-lease-b-$$" &
+claim_pid_b=$!
+wait "$claim_pid_a" "$claim_pid_b"
+claim_results=$(sort "/tmp/rr-lease-a-$$" "/tmp/rr-lease-b-$$" | tr '\n' ' ')
+rm "/tmp/rr-lease-a-$$" "/tmp/rr-lease-b-$$"
+test "$claim_results" = "acquired held "
+bound_without_owner=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_record_intent_outcome(jsonb_build_object('intentId','rri-'||repeat('e',64),'jobId','job-discovered','outcome','bound'))")
+test "$bound_without_owner" = t
+lease_cleared=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT (creation_lease_owner IS NULL AND creation_lease_expires_at IS NULL)::text FROM release_authority.runner_intent WHERE intent_id='rri-'||repeat('e',64)")
+test "$lease_cleared" = true
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r-order', repeat('d',40), '4', 1, '103', '203')" >/dev/null
@@ -112,6 +145,37 @@ authorization_after_finalize=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U po
 test "$finalized" = t
 test "$finalize_replay" = t
 test "$authorization_after_finalize" = "$authorization"
+
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r1',repeat('a',40),'1',1,'100','200','verify_live_canary',
+    'sha256:'||repeat('1',64),'sha256:'||repeat('2',64),'200',
+    'activated','activated',NULL)" >/dev/null 2>&1; then
+  echo "out-of-order post-activation receipt unexpectedly succeeded" >&2
+  exit 1
+fi
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "DO \$\$
+   DECLARE steps text[] := ARRAY[
+     'cleanup_cutover_runner','resume_target_services',
+     'verify_live_canary','verify_trusted_rollout'];
+   DECLARE previous_sha text := 'sha256:'||repeat('1',64);
+   DECLARE next_sha text;
+   BEGIN
+     FOR index IN 1..cardinality(steps) LOOP
+       next_sha := 'sha256:'||md5('r1-post-'||index)||md5('post-r1-'||index);
+       IF NOT release_authority.release_rollout_append_receipt(
+         'r1',repeat('a',40),'1',1,'100','200',steps[index],previous_sha,next_sha,
+         '200','activated','activated',NULL) THEN
+         RAISE EXCEPTION 'legal post-activation receipt rejected at %', steps[index];
+       END IF;
+       previous_sha := next_sha;
+     END LOOP;
+   END \$\$;" >/dev/null
+post_activation_state=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT state||':'||activation_boundary||':'||source_permanently_ineligible||':'||authoritative_system_identifier
+   FROM release_authority.rollout WHERE rollout_id='r1'")
+test "$post_activation_state" = activated:activated:true:200
 
 conflicting_finalize=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_finalize_activation(
@@ -183,8 +247,8 @@ docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrout
   "SELECT release_authority.release_provider_authority_decide('$resume_source_request')" >/dev/null
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
-  "INSERT INTO release_authority.runner_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at)
-   VALUES ('rri-'||repeat('3',64),'r3','svc','role','30','rr-test','$now');
+  "INSERT INTO release_authority.runner_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,start_command_sha256)
+   VALUES ('rri-'||repeat('3',64),'r3','svc','role','30','rr-test','$now','sha256:'||repeat('3',64));
    INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,lifecycle)
    VALUES ('job-clean','r3','rri-'||repeat('3',64),'svc','$now','canary','role');" >/dev/null
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_mark_terminal('job-clean','{\"step\":\"cleanup_role_runner\"}')" >/dev/null 2>&1; then
@@ -216,6 +280,44 @@ terminal_saved=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP
 test "$terminal_saved" = t
 terminal_fact=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_terminal_cleanup_fact('r3','role')->>'jobId'")
 test "$terminal_fact" = job-clean
+
+for provider_status in failed canceled; do
+  rollout="r-clean-$provider_status"
+  suffix=f
+  test "$provider_status" = canceled && suffix=c
+  runner_label="rr-${suffix}${suffix}"
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+    "SELECT release_authority.release_rollout_claim('$rollout',repeat('$suffix',40),'7',1,'170','270');
+     INSERT INTO release_authority.runner_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,start_command_sha256)
+     VALUES ('rri-'||repeat('$suffix',64),'$rollout','svc-$suffix','role','70','$runner_label','$now','sha256:'||repeat('$suffix',64));
+     INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,lifecycle)
+     VALUES ('job-$provider_status','$rollout','rri-'||repeat('$suffix',64),'svc-$suffix','$now','canary-$suffix','role');" >/dev/null
+  terminal_witness=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
+    "SELECT release_authority.release_runner_persist_cleanup_witness('job-$provider_status',jsonb_build_object('jobId','job-$provider_status','canary','canary-$suffix','providerStatus','$provider_status','containerTerminated',true,'logSha256','sha256:'||repeat('$suffix',64),'removedPaths',jsonb_build_array('/runner/_work/$runner_label/repo'),'remainingPaths','[]'::jsonb,'providerLogId','log-$suffix','providerObservedAt','$now'))")
+  test "$terminal_witness" = t
+  terminal_result=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+    "SELECT release_authority.release_runner_mark_terminal('job-$provider_status',jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))")
+  test "$terminal_result" = t
+done
+
+rejected_index=0
+for rejected_status in pending running unknown; do
+  rejected_index=$((rejected_index + 1))
+  rejected_rollout="r-clean-rejected-$rejected_status"
+  rejected_job="job-rejected-$rejected_status"
+  rejected_label="rr-rejected-$rejected_status"
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+    "SELECT release_authority.release_rollout_claim('$rejected_rollout',repeat('8',39)||'$rejected_index','8',1,'18$rejected_index','28$rejected_index');
+     INSERT INTO release_authority.runner_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,start_command_sha256)
+     VALUES ('rri-'||repeat('9',63)||'$rejected_index','$rejected_rollout','svc-rejected-$rejected_index','role','8$rejected_index','$rejected_label','$now','sha256:'||repeat('9',63)||'$rejected_index');
+     INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,lifecycle)
+     VALUES ('$rejected_job','$rejected_rollout','rri-'||repeat('9',63)||'$rejected_index','svc-rejected-$rejected_index','$now','canary-rejected-$rejected_index','role');" >/dev/null
+  if docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
+    "SELECT release_authority.release_runner_persist_cleanup_witness('$rejected_job',jsonb_build_object('jobId','$rejected_job','canary','canary-rejected-$rejected_index','providerStatus','$rejected_status','containerTerminated',true,'logSha256','sha256:'||repeat('9',63)||'$rejected_index','removedPaths',jsonb_build_array('/runner/_work/$rejected_label/repo'),'remainingPaths','[]'::jsonb,'providerLogId','log-rejected-$rejected_status','providerObservedAt','$now'))" >/dev/null 2>&1; then
+    echo "nonterminal provider status $rejected_status unexpectedly satisfied cleanup witness" >&2
+    exit 1
+  fi
+done
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "INSERT INTO release_authority.rollout(

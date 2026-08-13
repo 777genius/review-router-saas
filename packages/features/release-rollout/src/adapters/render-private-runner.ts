@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   RolloutStep,
   type RunnerIdentity,
@@ -39,14 +39,32 @@ export interface RunnerProvisioningIntent {
   readonly workflowJobId: string;
   readonly runnerName: string;
   readonly createdAt: string;
+  readonly startCommandSha256: string;
+  readonly creationLeaseOwner: string | null;
+  readonly creationLeaseExpiresAt: string | null;
 }
+export type CreateRunnerProvisioningIntent = Omit<
+  RunnerProvisioningIntent,
+  "creationLeaseOwner" | "creationLeaseExpiresAt"
+> & { readonly creationLeaseOwner: string };
+export type RunnerProviderCreationClaim =
+  | { readonly result: "acquired"; readonly leaseExpiresAt: string }
+  | { readonly result: "held" | "discovery_grace" | "bound" };
 export interface RunnerJobLedger {
   persistProvisioningIntent(
-    value: RunnerProvisioningIntent,
+    value: CreateRunnerProvisioningIntent,
   ): Promise<"created" | "existing">;
   listProvisioningIntents(
     rolloutId: string,
   ): Promise<readonly RunnerProvisioningIntent[]>;
+  claimProviderCreation(input: {
+    intentId: string;
+    claimantId: string;
+    startCommandSha256: string;
+    observedNoMatchAt: string;
+    leaseSeconds: number;
+    discoveryGraceSeconds: number;
+  }): Promise<RunnerProviderCreationClaim>;
   recordProvisioningOutcome(input: {
     intentId: string;
     jobId: string;
@@ -224,15 +242,6 @@ export class RenderPrivateRunnerAdapter {
         `${input.rolloutId}:${input.lifecycle}:${input.runId}:${input.workflowJobId}:${input.baseServiceId}`,
       )
       .digest("hex")}`;
-    const intentResult = await this.ledger.persistProvisioningIntent({
-      id: provisioningIntentId,
-      rolloutId: input.rolloutId,
-      serviceId: input.baseServiceId,
-      lifecycle: input.lifecycle,
-      workflowJobId: input.workflowJobId,
-      runnerName: input.runnerName,
-      createdAt: this.now().toISOString(),
-    });
     const encodedContext = Buffer.from(
       JSON.stringify({
         organization: input.organization,
@@ -258,10 +267,26 @@ export class RenderPrivateRunnerAdapter {
       }),
     ).toString("base64url");
     const startCommand = `node /runner/bootstrap.mjs --intent ${provisioningIntentId} --context ${encodedContext}`;
+    const startCommandSha256 = `sha256:${createHash("sha256").update(startCommand).digest("hex")}`;
+    const claimantId = `rrc-${randomUUID()}`;
+    const intentCreatedAt = this.now();
+    const leaseSeconds = 120;
+    const discoveryGraceSeconds = 120;
+    const intentResult = await this.ledger.persistProvisioningIntent({
+      id: provisioningIntentId,
+      rolloutId: input.rolloutId,
+      serviceId: input.baseServiceId,
+      lifecycle: input.lifecycle,
+      workflowJobId: input.workflowJobId,
+      runnerName: input.runnerName,
+      createdAt: intentCreatedAt.toISOString(),
+      startCommandSha256,
+      creationLeaseOwner: claimantId,
+    });
     let created: RenderJob;
     let bindingRequired = true;
-    const providerCreatedByThisCall = intentResult === "created";
-    if (intentResult === "created") {
+    let providerCreatedByThisCall = intentResult === "created";
+    if (providerCreatedByThisCall) {
       created = await api.createJob(input.baseServiceId, {
         startCommand,
         ...(input.planId ? { planId: input.planId } : {}),
@@ -281,11 +306,30 @@ export class RenderPrivateRunnerAdapter {
         const matching = (await api.listAllJobs(input.baseServiceId)).filter(
           (job) => job.startCommand === startCommand,
         );
-        if (matching.length === 0)
-          throw new Error("render_runner_intent_reconciliation_pending");
         if (matching.length > 1)
           throw new Error("render_runner_intent_multiple_provider_jobs");
-        created = matching[0]!;
+        if (matching.length === 1) created = matching[0]!;
+        else {
+          const claim = await this.ledger.claimProviderCreation({
+            intentId: provisioningIntentId,
+            claimantId,
+            startCommandSha256,
+            observedNoMatchAt: this.now().toISOString(),
+            leaseSeconds,
+            discoveryGraceSeconds,
+          });
+          if (claim.result !== "acquired")
+            throw new Error(
+              claim.result === "bound"
+                ? "render_runner_intent_binding_raced"
+                : "render_runner_intent_reconciliation_pending",
+            );
+          providerCreatedByThisCall = true;
+          created = await api.createJob(input.baseServiceId, {
+            startCommand,
+            ...(input.planId ? { planId: input.planId } : {}),
+          });
+        }
       }
     }
     // This durable write deliberately precedes every post-create validation.
