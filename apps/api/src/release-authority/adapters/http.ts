@@ -138,12 +138,17 @@ const sourceFreezeRequest = (
       ...(prepare ? ["beforeSuspended"] : []),
     ]) ||
     body.rolloutId !== rolloutId ||
-    !/^[a-f0-9]{40}$/u.test(String(body.expectedCommitSha)) ||
-    !/^[1-9][0-9]*$/u.test(String(body.runId)) ||
+    typeof body.expectedCommitSha !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(body.expectedCommitSha) ||
+    typeof body.runId !== "string" ||
+    !/^[1-9][0-9]*$/u.test(body.runId) ||
     body.runAttempt !== 1 ||
-    !/^[0-9]+$/u.test(String(body.sourceSystemIdentifier)) ||
-    !/^[0-9]+$/u.test(String(body.targetSystemIdentifier)) ||
-    !sourceServiceIdPattern.test(String(body.serviceId)) ||
+    typeof body.sourceSystemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(body.sourceSystemIdentifier) ||
+    typeof body.targetSystemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(body.targetSystemIdentifier) ||
+    typeof body.serviceId !== "string" ||
+    !sourceServiceIdPattern.test(body.serviceId) ||
     !nonemptyString(body.latestSuccessfulDeployId) ||
     typeof body.observedAt !== "string" ||
     !Number.isFinite(Date.parse(body.observedAt)) ||
@@ -177,11 +182,15 @@ const sourceFreezeCompletionRequest = (value: unknown, rolloutId: string) => {
       "observedAt",
     ]) ||
     body.rolloutId !== rolloutId ||
-    !/^[a-f0-9]{40}$/u.test(String(body.expectedCommitSha)) ||
-    !/^[1-9][0-9]*$/u.test(String(body.runId)) ||
+    typeof body.expectedCommitSha !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(body.expectedCommitSha) ||
+    typeof body.runId !== "string" ||
+    !/^[1-9][0-9]*$/u.test(body.runId) ||
     body.runAttempt !== 1 ||
-    !/^[0-9]+$/u.test(String(body.sourceSystemIdentifier)) ||
-    !/^[0-9]+$/u.test(String(body.targetSystemIdentifier)) ||
+    typeof body.sourceSystemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(body.sourceSystemIdentifier) ||
+    typeof body.targetSystemIdentifier !== "string" ||
+    !/^[0-9]+$/u.test(body.targetSystemIdentifier) ||
     typeof body.observedAt !== "string" ||
     !Number.isFinite(Date.parse(body.observedAt)) ||
     !Array.isArray(declared) ||

@@ -103,6 +103,34 @@ describe("Render provider writer inventory", () => {
     expect(recordMutation).not.toHaveBeenCalled();
   });
 
+  it("fails immediately when authority denies a needed suspension", async () => {
+    const running = { ...service, suspended: "not_suspended" };
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/services")) return response([{ service: running }]);
+      if (url.includes("/env-vars"))
+        return response([
+          { envVar: { key: "DATABASE_URL", value: "redacted" } },
+        ]);
+      if (url.includes("/deploys"))
+        return response([{ deploy: { id: "dep-live", status: "live" } }]);
+      return response(running);
+    });
+
+    await expect(
+      new RenderProviderFreezeAdapter(fetchImpl, sleep).freezeAndObserve({
+        apiKey: "redacted",
+        ownerId: service.ownerId,
+        sourceWriterServiceIds: [service.id],
+        prepareMutation: vi.fn(async () => false),
+      }),
+    ).rejects.toThrow("render_freeze_preparation_state_contradiction");
+    expect(sleep).not.toHaveBeenCalled();
+    expect(
+      fetchImpl.mock.calls.some(([url]) => String(url).endsWith("/suspend")),
+    ).toBe(false);
+  });
+
   it("completes a durable prior intent when crash replay finds the service suspended", async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (url.endsWith("/services")) return response([{ service }]);

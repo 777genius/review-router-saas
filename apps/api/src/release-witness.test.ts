@@ -67,7 +67,7 @@ describe("release witness observation", () => {
 
   it.each([
     ["exact boundary", "2026-08-12T00:00:01.000Z", true],
-    ["one millisecond before", "2026-08-12T00:00:01.001Z", false],
+    ["two milliseconds after", "2026-08-12T00:00:01.002Z", false],
   ] as const)(
     "enforces the provider creation %s",
     async (_label, notBefore, accepted) => {

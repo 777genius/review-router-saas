@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import {
@@ -30,11 +31,12 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       throw new Error("real_postgres_test_unconfigured");
     const ledger = new RoutineReleaseControlLedgerAdapter(control);
     const witnessLedger = new RoutineRunnerCleanupWitnessAdapter(witness);
-    const rolloutId = "r-api-postgres-contract";
-    const intentId = `rri-${"7".repeat(64)}`;
+    const unique = randomUUID().replaceAll("-", "");
+    const rolloutId = `r-api-postgres-${unique.slice(0, 16)}`;
+    const intentId = `rri-${unique.repeat(2)}`;
     const ownerId = "rrc-00000000-0000-4000-8000-000000000091";
-    const jobId = "job-api-postgres-contract";
-    const cleanupCanary = "rr-cleanup:r-api-postgres-contract:rr-api-contract";
+    const jobId = `job-api-postgres-${unique.slice(0, 16)}`;
+    const cleanupCanary = `rr-cleanup:${rolloutId}:rr-api-contract`;
     const now = new Date().toISOString();
     const binding = {
       rolloutId,

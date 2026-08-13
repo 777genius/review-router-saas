@@ -104,13 +104,15 @@ export class RenderProviderFreezeAdapter {
         : before.suspended !== "suspended";
       if (mutationRequired && before.suspended !== "suspended")
         await api.suspend(serviceId);
+      if (!mutationRequired && before.suspended !== "suspended")
+        throw new Error("render_freeze_preparation_state_contradiction");
       let after = await api.getService(serviceId);
       for (
         let poll = 0;
         after.suspended !== "suspended" && poll < 29;
         poll += 1
       ) {
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        await this.sleep(2_000);
         after = await api.getService(serviceId);
       }
       if (after.suspended !== "suspended" || after.autoDeploy !== "no")

@@ -236,6 +236,10 @@ const useCases = new ReleaseRolloutUseCases({
       if (
         decision.decision !== "allow" ||
         decision.operation !== "resume_source" ||
+        decision.activationBoundary !== "before" ||
+        decision.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
+        databaseWitness.systemIdentifier !== rollout.source.systemIdentifier ||
+        !/^sha256:[a-f0-9]{64}$/u.test(databaseWitness.aclSha256) ||
         databaseWitness.sourceWritesRestored !== true
       )
         throw new Error("private_pg17_service_recovery_authority_invalid");
@@ -273,7 +277,10 @@ const useCases = new ReleaseRolloutUseCases({
       return observation;
     },
     activate: async (rolloutId) => {
-      activation = canonical.activateTarget(process.env, rolloutId);
+      activation = canonical.activateTarget(
+        canonicalReleaseEnvironment,
+        rolloutId,
+      );
       return activation;
     },
     compensateSource: async () => {

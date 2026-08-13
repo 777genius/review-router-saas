@@ -32,13 +32,23 @@ if (!/^[a-f0-9]{40}$/u.test(expectedCommit))
   throw new Error("private_pg17_release_image_expected_sha_invalid");
 
 const api = async <T>(path: string): Promise<T> => {
-  const response = await fetch(`https://api.github.com${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`https://api.github.com${path}`, {
+      signal: AbortSignal.timeout(30_000),
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError")
+      throw new Error("private_pg17_release_image_api_timeout", {
+        cause: error,
+      });
+    throw error;
+  }
   if (!response.ok)
     throw new Error(`private_pg17_release_image_api_failed:${response.status}`);
   return (await response.json()) as T;
@@ -126,6 +136,7 @@ const verified = spawnSync(
   ],
   {
     encoding: "utf8",
+    timeout: 120_000,
     env: {
       PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
       GH_TOKEN: token,
@@ -133,6 +144,12 @@ const verified = spawnSync(
     stdio: ["ignore", "ignore", "pipe"],
   },
 );
+if (
+  verified.error instanceof Error &&
+  "code" in verified.error &&
+  verified.error.code === "ETIMEDOUT"
+)
+  throw new Error("private_pg17_release_image_attestation_timeout");
 if (verified.status !== 0)
   throw new Error("private_pg17_release_image_attestation_invalid");
 

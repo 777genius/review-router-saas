@@ -5,9 +5,37 @@ import {
   releaseAuthorityMigrationBundle,
   releaseAuthorityMigrationManifest,
   releaseAuthorityMigrationPaths,
+  postgresEnvironment,
 } from "./install-release-authority-db.mjs";
 
 describe("release authority database installation", () => {
+  it("isolates owner psql from ambient PostgreSQL configuration", () => {
+    const environment = postgresEnvironment(
+      "postgresql://owner:secret@authority.internal/reviewrouter",
+      {
+        PATH: "/custom/bin",
+        LANG: "en_US.UTF-8",
+        PGSERVICE: "attacker",
+        PGOPTIONS: "-c search_path=attacker",
+        PGSSLMODE: "disable",
+      },
+    );
+    expect(environment).toEqual({
+      PATH: "/custom/bin",
+      LANG: "en_US.UTF-8",
+      LC_ALL: "en_US.UTF-8",
+      PGCONNECT_TIMEOUT: "10",
+      PGSSLMODE: "require",
+      PGHOST: "authority.internal",
+      PGPORT: "5432",
+      PGDATABASE: "reviewrouter",
+      PGUSER: "owner",
+      PGPASSWORD: "secret",
+    });
+    expect(environment).not.toHaveProperty("PGSERVICE");
+    expect(environment).not.toHaveProperty("PGOPTIONS");
+  });
+
   it("fails the database compensation gate on unresolved freeze effects", () => {
     const migration = readFileSync(
       "packages/platform/release-authority-db/migrations/000003_partial_source_freeze/migration.sql",
@@ -128,13 +156,13 @@ describe("release authority database installation", () => {
       "eb4039b43228a07c241593d4d6dd863eceac7731d5898b0264e9bc67b3d746cf",
       "66a1cd48303f31691596ae4e64d952d0fe3543444d042b17243c1a60efb10201",
       "5f52fdc1fcf6e37fabe9a69908d3c4e4bf82dfa6ab24c6b2ee9c4f3cda2a1099",
-      "28079c64266e1045c9db82743f82412d9630f6b97f3143fcbe7730c290c33e94",
+      "02dcd03e3d86c362598537e2ac7afc1dff2d20713fa01158f65e02db621d0da5",
       "c86e2546a9e135f5b23142a2ef1eb70bc12a0b41345f29abd5d2e5b7cbcaed97",
       "35db45ebd364e6f8cbeafbfb0ab6ac0056fe7e51de2b5fe844b91f1207ba1cfb",
-      "e49fe0f8c161fbe39953f01e299c81a752a152809c2261815a639bcf732c428a",
+      "4ee3a75a1528870df6d66a24eded9fc588aed2681b82aef57335ad7bbadf1260",
       "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
       "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
-      "14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7",
+      "bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
       "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
     ]);
     const bundle = releaseAuthorityMigrationBundle();

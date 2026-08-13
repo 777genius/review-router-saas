@@ -43,11 +43,19 @@ function namedSteps(job: string): readonly Readonly<{
         block,
       );
       if (!name) throw new Error("workflow_test_step_name_missing");
+      const condition = /^\s*if:\s*(.+)$/mu.exec(block)?.[1]?.trim();
+      if (
+        condition &&
+        !/^(?:\$\{\{\s*)?always\(\)(?:\s*&&[\s\S]+)?\s*(?:\}\})?$/u.test(
+          condition,
+        )
+      )
+        throw new Error(
+          `workflow_test_step_condition_unsupported:${condition}`,
+        );
       return {
         name: name[1] ?? name[2] ?? name[3]!,
-        condition: /\n {8}if: \$\{\{ always\(\) \}\}/u.test(block)
-          ? ("always" as const)
-          : ("success" as const),
+        condition: condition ? ("always" as const) : ("success" as const),
       };
     });
 }
@@ -107,6 +115,15 @@ describe("private-network PG17 workflow security contract", () => {
       "artifact.workflow_run.head_sha !== expectedCommit",
     );
     expect(releaseImageVerifier).toContain("run.head_sha !== expectedCommit");
+    expect(releaseImageVerifier).toContain("AbortSignal.timeout(30_000)");
+    expect(releaseImageVerifier).toContain("timeout: 120_000");
+    const rolloutScript = readFileSync(
+      "scripts/run-private-pg17-rollout.ts",
+      "utf8",
+    );
+    expect(rolloutScript).toContain(
+      "canonical.activateTarget(\n        canonicalReleaseEnvironment,",
+    );
     const cutover = jobs(workflow).find((job) =>
       job.startsWith("  pg17-cutover-private:"),
     )!;

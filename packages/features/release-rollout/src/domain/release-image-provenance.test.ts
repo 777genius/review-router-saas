@@ -156,4 +156,26 @@ describe("verified release image provenance", () => {
       }),
     ).toBe(false);
   });
+
+  it.each([
+    ["null root", null],
+    ["missing identity", { ...provenance(), identity: null }],
+    [
+      "invalid timestamp",
+      {
+        ...provenance(),
+        releaseEvidence: {
+          ...provenance().releaseEvidence,
+          verifiedAt: "not-a-date",
+        },
+      },
+    ],
+  ])(
+    "normalizes malformed %s to the provenance domain error",
+    (_name, value) => {
+      expect(() => assertVerifiedReleaseImageProvenance(value)).toThrow(
+        "release_image_provenance_invalid",
+      );
+    },
+  );
 });

@@ -654,6 +654,19 @@ describe("release rollout ledger internal API", () => {
       payload,
     });
     expect(mismatched.statusCode).toBe(400);
+    for (const invalid of [
+      { ...payload, runId: 123 },
+      { ...payload, sourceSystemIdentifier: 100 },
+      { ...payload, serviceId: 123 },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/rollouts/${binding.rolloutId}/source-freeze-mutations`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: invalid,
+      });
+      expect(response.statusCode).toBe(400);
+    }
     await app.close();
   });
 

@@ -109,11 +109,14 @@ state.
 The dedicated authority's canonical migration chain is, in order:
 `000001_release_authority`, `000002_external_effect_protocol`,
 `000002_transactional_service_transition`, `000003_partial_source_freeze`,
-`000004_selective_source_recovery`, `000005_late_runner_effects`, and
+`000004_selective_source_recovery`, `000005_late_runner_effects`,
 `000006_runner_provider_creation_boundary`,
-`000007_compensation_effect_fence`, and `000008_trigger_helper_acl`. The final
-three migrations bind provider creation time, recheck late effects at every
-compensation boundary, and remove the remaining public trigger-helper grant.
+`000007_compensation_effect_fence`, `000008_trigger_helper_acl`,
+`000009_authority_history_and_forward_repairs`, and
+`000010_recovery_effect_permits`. The final five migrations bind provider
+creation time, recheck late effects at every compensation boundary, remove the
+remaining public trigger-helper grant, establish an immutable migration
+history, and fence every recovery effect with a single-use permit.
 The disposable PG16 to PG17 rehearsal and dedicated authority contract must
 execute this complete inventory before a release is eligible for production.
 

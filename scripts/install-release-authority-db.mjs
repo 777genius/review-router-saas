@@ -34,7 +34,7 @@ export const releaseAuthorityMigrationManifest = Object.freeze([
   ],
   [
     "000003_partial_source_freeze",
-    "sha256:28079c64266e1045c9db82743f82412d9630f6b97f3143fcbe7730c290c33e94",
+    "sha256:02dcd03e3d86c362598537e2ac7afc1dff2d20713fa01158f65e02db621d0da5",
   ],
   [
     "000004_selective_source_recovery",
@@ -46,7 +46,7 @@ export const releaseAuthorityMigrationManifest = Object.freeze([
   ],
   [
     "000006_runner_provider_creation_boundary",
-    "sha256:e49fe0f8c161fbe39953f01e299c81a752a152809c2261815a639bcf732c428a",
+    "sha256:4ee3a75a1528870df6d66a24eded9fc588aed2681b82aef57335ad7bbadf1260",
   ],
   [
     "000007_compensation_effect_fence",
@@ -58,7 +58,7 @@ export const releaseAuthorityMigrationManifest = Object.freeze([
   ],
   [
     "000009_authority_history_and_forward_repairs",
-    "sha256:14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7",
+    "sha256:bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
   ],
   [
     "000010_recovery_effect_permits",
@@ -173,7 +173,7 @@ export function releaseAuthorityMigrationBundle(root = process.cwd()) {
   ].join("\n");
 }
 
-const postgresEnvironment = (encoded) => {
+export const postgresEnvironment = (encoded, environment = process.env) => {
   const url = new URL(encoded);
   if (url.protocol !== "postgres:" && url.protocol !== "postgresql:")
     throw new Error("release_authority_owner_database_url_invalid");
@@ -188,15 +188,16 @@ const postgresEnvironment = (encoded) => {
         `release_authority_owner_database_url_parameter_unsupported:${key}`,
       );
   return {
-    ...process.env,
+    PATH: environment.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    LANG: environment.LANG ?? "C.UTF-8",
+    LC_ALL: environment.LC_ALL ?? environment.LANG ?? "C.UTF-8",
+    PGCONNECT_TIMEOUT: "10",
+    PGSSLMODE: url.searchParams.get("sslmode") ?? "require",
     PGHOST: url.hostname,
     PGPORT: url.port || "5432",
     PGDATABASE: database,
     PGUSER: user,
     PGPASSWORD: decodeURIComponent(url.password),
-    ...(url.searchParams.get("sslmode")
-      ? { PGSSLMODE: url.searchParams.get("sslmode") }
-      : {}),
   };
 };
 
@@ -222,10 +223,13 @@ export function installReleaseAuthorityDatabase(environment = process.env) {
       input: releaseAuthorityMigrationBundle(
         fileURLToPath(new URL("..", import.meta.url)),
       ),
-      env: postgresEnvironment(databaseUrl),
+      env: postgresEnvironment(databaseUrl, environment),
       maxBuffer: 16 * 1024 * 1024,
+      timeout: 600_000,
     },
   );
+  if (result.error?.code === "ETIMEDOUT")
+    throw new Error("release_authority_install_timeout");
   if (result.status !== 0)
     throw new Error(
       `release_authority_install_failed:exit=${result.status ?? "signal"}:${String(result.stderr ?? "").slice(0, 2_000)}`,

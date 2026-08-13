@@ -93,7 +93,7 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
   "INSERT INTO release_authority.schema_migration
      (position,migration_name,checksum_sha256,byte_variant)
    VALUES (10,'000009_authority_history_and_forward_repairs',
-     'sha256:14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7',
+     'sha256:bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25',
      'canonical')" >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000010_recovery_effect_permits/migration.sql" \
   "$name:/tmp/migration-000010.sql" >/dev/null
@@ -620,7 +620,7 @@ empty_checkpoint=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_ST
       (checkpoint->>'receiptCount')
    FROM (SELECT release_authority.release_rollout_compensation_checkpoint(
       'r-comp-no-intent','105','205') checkpoint) value")
-test "$empty_checkpoint" = before:pre_activation:sha256:$(printf '0%.0s' $(seq 1 64)):null:0
+test "$empty_checkpoint" = "before:pre_activation:sha256:$(printf '0%.0s' $(seq 1 64)):null:0"
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_append_receipt(
     'r-comp-no-intent',repeat('5',40),'6',1,'105','205','begin_compensation',
@@ -758,7 +758,7 @@ compensation_checkpoint=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_E
       (checkpoint->>'receiptCount')
    FROM (SELECT release_authority.release_rollout_compensation_checkpoint(
       'r3','102','202') checkpoint) value")
-test "$compensation_checkpoint" = before:compensating:sha256:$(printf '2%.0s' $(seq 1 64)):begin_compensation:1
+test "$compensation_checkpoint" = "before:compensating:sha256:$(printf '2%.0s' $(seq 1 64)):begin_compensation:1"
 resume_source_request='{"rolloutId":"r3","operation":"resume_source","sourceSystemIdentifier":"102","targetSystemIdentifier":"202","expectedReceiptSha256":"sha256:'$(printf '2%.0s' $(seq 1 64))'","activationBoundary":"before"}'
 docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_provider_authority -d postgres -Atc \
   "SELECT release_authority.release_provider_authority_decide('$resume_source_request')" >/dev/null
@@ -1096,7 +1096,7 @@ test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
    JOIN release_authority.runner_intent intent USING (rollout_id)
    JOIN release_authority.runner_job job USING (rollout_id)
    WHERE rollout.rollout_id='r-compensation-wins'")" \
-  = compensating:sha256:$(printf 'f%.0s' $(seq 1 64)):blocked:false:true
+  = "compensating:sha256:$(printf 'f%.0s' $(seq 1 64)):blocked:false:true"
 
 # Late identity wins the next boundary: neither an authority replay nor effect
 # or completion receipt may use the clean snapshot captured by begin.
@@ -1258,7 +1258,7 @@ test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 \
    CROSS JOIN LATERAL (SELECT release_authority.release_rollout_reconcile(
      rollout.rollout_id,'{}'::jsonb) result) reconciled
    WHERE rollout.rollout_id='r-effect-wins'")" \
-  = compensating:sha256:$(printf 'b%.0s' $(seq 1 64)):false
+  = "compensating:sha256:$(printf 'b%.0s' $(seq 1 64)):false"
 
 for provider_status in failed canceled; do
   rollout="r-clean-$provider_status"
@@ -1427,6 +1427,7 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
       ('release_runner_terminal_effect',false),
       ('release_runner_compensation_gate',false),
       ('release_source_freeze_immutable',false),
+      ('release_source_freeze_inventory_canonical',false),
       ('release_source_freeze_prepare',true),
       ('release_source_freeze_record',true),
       ('release_source_freeze_complete',true),
@@ -1457,7 +1458,7 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
         'reviewrouter_release_witness',oid,'EXECUTE'))||':'||
       bool_and(proconfig=ARRAY['search_path=pg_catalog']::text[])
     FROM functions")
-test "$migration_acl" = 22:true:true:true:true:true
+test "$migration_acl" = 23:true:true:true:true:true
 legacy_control_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT pg_catalog.has_function_privilege('reviewrouter_release_control',
       'release_authority.release_runner_persist_intent(jsonb)','EXECUTE')||':'||

@@ -12,10 +12,34 @@ FROM release_authority.runner_intent intent
 WHERE intent.intent_id = job.provisioning_intent_id
   AND job.provider_creation_not_before IS NULL;
 
+DO $preflight$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM release_authority.runner_job job
+    JOIN release_authority.runner_intent intent
+      ON intent.intent_id = job.provisioning_intent_id
+    WHERE job.provider_creation_not_before IS DISTINCT FROM intent.created_at
+      OR job.observed_at < intent.created_at
+  ) THEN
+    RAISE EXCEPTION 'release authority provider creation history invalid';
+  END IF;
+END
+$preflight$;
+
 ALTER TABLE release_authority.runner_job
-  ALTER COLUMN provider_creation_not_before SET NOT NULL,
+  ADD CONSTRAINT runner_job_provider_creation_not_before_nn
+    CHECK (provider_creation_not_before IS NOT NULL) NOT VALID,
   ADD CONSTRAINT runner_job_provider_creation_boundary
-    CHECK (observed_at >= provider_creation_not_before);
+    CHECK (observed_at >= provider_creation_not_before) NOT VALID;
+
+ALTER TABLE release_authority.runner_job
+  VALIDATE CONSTRAINT runner_job_provider_creation_not_before_nn;
+ALTER TABLE release_authority.runner_job
+  VALIDATE CONSTRAINT runner_job_provider_creation_boundary;
+ALTER TABLE release_authority.runner_job
+  ALTER COLUMN provider_creation_not_before SET NOT NULL;
+ALTER TABLE release_authority.runner_job
+  DROP CONSTRAINT runner_job_provider_creation_not_before_nn;
 
 CREATE OR REPLACE FUNCTION release_authority.release_runner_persist_job(p_job jsonb)
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog

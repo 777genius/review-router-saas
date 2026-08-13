@@ -36,7 +36,7 @@ const authorityReadiness = (
       ],
       [
         "000003_partial_source_freeze",
-        "28079c64266e1045c9db82743f82412d9630f6b97f3143fcbe7730c290c33e94",
+        "02dcd03e3d86c362598537e2ac7afc1dff2d20713fa01158f65e02db621d0da5",
       ],
       [
         "000004_selective_source_recovery",
@@ -48,7 +48,7 @@ const authorityReadiness = (
       ],
       [
         "000006_runner_provider_creation_boundary",
-        "e49fe0f8c161fbe39953f01e299c81a752a152809c2261815a639bcf732c428a",
+        "4ee3a75a1528870df6d66a24eded9fc588aed2681b82aef57335ad7bbadf1260",
       ],
       [
         "000007_compensation_effect_fence",
@@ -60,7 +60,7 @@ const authorityReadiness = (
       ],
       [
         "000009_authority_history_and_forward_repairs",
-        "14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7",
+        "bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
       ],
       [
         "000010_recovery_effect_permits",

@@ -24,6 +24,14 @@ CREATE TABLE release_authority.source_freeze_completion (
 );
 REVOKE ALL ON release_authority.source_freeze_completion FROM PUBLIC;
 
+CREATE FUNCTION release_authority.release_source_freeze_inventory_canonical(
+  p_inventory jsonb
+) RETURNS jsonb LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $body$
+  SELECT coalesce(jsonb_agg(value ORDER BY value),'[]'::jsonb)
+  FROM jsonb_array_elements_text(p_inventory) inventory(value)
+$body$;
+REVOKE ALL ON FUNCTION release_authority.release_source_freeze_inventory_canonical(jsonb) FROM PUBLIC;
+
 CREATE FUNCTION release_authority.release_source_freeze_immutable() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $body$
 BEGIN
@@ -72,12 +80,21 @@ BEGIN
     WHERE rollout_id = p_rollout_id AND service_id = p_service_id AND phase = 'suspended';
   IF FOUND THEN
     IF existing.latest_successful_deploy_id <> p_latest_successful_deploy_id
-      OR existing.declared_service_ids <> p_declared_service_ids
+      OR release_authority.release_source_freeze_inventory_canonical(
+        existing.declared_service_ids
+      ) <> release_authority.release_source_freeze_inventory_canonical(
+        p_declared_service_ids
+      )
     THEN RAISE EXCEPTION 'release source freeze replay conflict'; END IF;
     RETURN 'existing';
   END IF;
   IF EXISTS (SELECT 1 FROM release_authority.source_freeze_observation
-      WHERE rollout_id = p_rollout_id AND declared_service_ids <> p_declared_service_ids)
+      WHERE rollout_id = p_rollout_id AND
+        release_authority.release_source_freeze_inventory_canonical(
+          declared_service_ids
+        ) <> release_authority.release_source_freeze_inventory_canonical(
+          p_declared_service_ids
+        ))
   THEN RAISE EXCEPTION 'release source freeze inventory conflict'; END IF;
   IF NOT EXISTS (SELECT 1 FROM release_authority.source_freeze_observation
       WHERE rollout_id = p_rollout_id AND service_id = p_service_id AND phase = 'intent')
@@ -122,14 +139,23 @@ BEGIN
       WHERE value !~ '^srv-[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
   THEN RAISE EXCEPTION 'release source freeze inventory invalid'; END IF;
   IF EXISTS (SELECT 1 FROM release_authority.source_freeze_observation
-      WHERE rollout_id=p_rollout_id AND declared_service_ids<>p_declared_service_ids)
+      WHERE rollout_id=p_rollout_id AND
+        release_authority.release_source_freeze_inventory_canonical(
+          declared_service_ids
+        ) <> release_authority.release_source_freeze_inventory_canonical(
+          p_declared_service_ids
+        ))
   THEN RAISE EXCEPTION 'release source freeze inventory conflict'; END IF;
   SELECT * INTO existing FROM release_authority.source_freeze_observation
     WHERE rollout_id=p_rollout_id AND service_id=p_service_id AND phase IN ('intent','unchanged')
     ORDER BY observation_id LIMIT 1;
   IF FOUND THEN
     IF existing.latest_successful_deploy_id<>p_latest_successful_deploy_id
-      OR existing.declared_service_ids<>p_declared_service_ids
+      OR release_authority.release_source_freeze_inventory_canonical(
+        existing.declared_service_ids
+      ) <> release_authority.release_source_freeze_inventory_canonical(
+        p_declared_service_ids
+      )
     THEN RAISE EXCEPTION 'release source freeze replay conflict'; END IF;
     RETURN existing.phase='intent';
   END IF;
@@ -167,11 +193,22 @@ BEGIN
   THEN RAISE EXCEPTION 'release source freeze completion inventory invalid'; END IF;
   SELECT * INTO existing FROM release_authority.source_freeze_completion WHERE rollout_id=p_rollout_id;
   IF FOUND THEN
-    IF existing.declared_service_ids<>p_declared_service_ids THEN
+    IF release_authority.release_source_freeze_inventory_canonical(
+        existing.declared_service_ids
+      ) <> release_authority.release_source_freeze_inventory_canonical(
+        p_declared_service_ids
+      ) THEN
       RAISE EXCEPTION 'release source freeze completion replay conflict'; END IF;
     RETURN 'existing';
   END IF;
-  IF EXISTS (SELECT 1 FROM jsonb_array_elements_text(p_declared_service_ids) declared(service_id)
+  IF EXISTS (SELECT 1 FROM release_authority.source_freeze_observation
+      WHERE rollout_id=p_rollout_id AND
+        release_authority.release_source_freeze_inventory_canonical(
+          declared_service_ids
+        ) <> release_authority.release_source_freeze_inventory_canonical(
+          p_declared_service_ids
+        ))
+    OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(p_declared_service_ids) declared(service_id)
       WHERE NOT EXISTS (SELECT 1 FROM release_authority.source_freeze_observation observation
         WHERE observation.rollout_id=p_rollout_id AND observation.service_id=declared.service_id
           AND observation.phase IN ('unchanged','suspended')))

@@ -81,7 +81,7 @@ BEGIN
       'sha256:5f52fdc1fcf6e37fabe9a69908d3c4e4bf82dfa6ab24c6b2ee9c4f3cda2a1099',
       'canonical'),
     (4, '000003_partial_source_freeze',
-      'sha256:28079c64266e1045c9db82743f82412d9630f6b97f3143fcbe7730c290c33e94',
+      'sha256:02dcd03e3d86c362598537e2ac7afc1dff2d20713fa01158f65e02db621d0da5',
       'canonical'),
     (5, '000004_selective_source_recovery',
       'sha256:c86e2546a9e135f5b23142a2ef1eb70bc12a0b41345f29abd5d2e5b7cbcaed97',
@@ -90,7 +90,7 @@ BEGIN
       'sha256:35db45ebd364e6f8cbeafbfb0ab6ac0056fe7e51de2b5fe844b91f1207ba1cfb',
       'canonical'),
     (7, '000006_runner_provider_creation_boundary',
-      'sha256:e49fe0f8c161fbe39953f01e299c81a752a152809c2261815a639bcf732c428a',
+      'sha256:4ee3a75a1528870df6d66a24eded9fc588aed2681b82aef57335ad7bbadf1260',
       'canonical'),
     (8, '000007_compensation_effect_fence',
       'sha256:99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9',
@@ -221,7 +221,8 @@ BEGIN
   END IF;
   IF rollout_row.state <> 'pre_activation'
     THEN RAISE EXCEPTION 'release runner reconciliation frozen'; END IF;
-  IF current_row.effect_state = 'cleaned' AND result <> 'blocked'
+  IF current_row.effect_state = 'cleaned'
+    AND (result <> 'blocked' OR reason IN ('unknown','timeout'))
     THEN RETURN release_authority.release_runner_effect_snapshot(current_row); END IF;
   IF current_row.effect_state NOT IN ('dispatching','bound','cleaned','blocked')
     OR current_row.effect_epoch <> (p_input->>'expectedEpoch')::bigint

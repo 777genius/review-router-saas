@@ -932,7 +932,14 @@ describe("Render private runner contract", () => {
     ).resolves.toMatchObject({ result: "clean", safeForCompensation: true });
     expect(harness.open).toEqual([]);
     expect(harness.jobLedger.persistCreatedJob).toHaveBeenCalledOnce();
-    expect(harness.events).not.toContain("blocked:job-replay");
+    expect(harness.events).not.toContain("blocked:none");
+    expect(
+      harness.jobLedger.reconcileProvisioningEffect,
+    ).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        reconciliation: expect.objectContaining({ result: "blocked" }),
+      }),
+    );
   });
 
   it("retries transient provider-witness failure from the durable bound job", async () => {

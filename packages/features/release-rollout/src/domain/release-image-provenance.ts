@@ -56,16 +56,16 @@ const identifier = /^[A-Za-z0-9_.-]+$/u;
 const repository = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const imageRepository =
   /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?\/)?[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]*)+$/u;
-const exact = (value: object, keys: readonly string[]): boolean =>
+const exact = (value: unknown, keys: readonly string[]): boolean =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
   Object.keys(value).length === keys.length &&
   keys.every((key) => Object.hasOwn(value, key));
-const timestamp = (value: string): boolean => {
-  try {
-    return new Date(value).toISOString() === value;
-  } catch {
-    return false;
-  }
-};
+const canonicalIsoTimestamp = (value: unknown): boolean =>
+  typeof value === "string" &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(value).toISOString() === value;
 
 export function releaseImageRepository(identity: ReleaseImageIdentity): string {
   const separator = identity.imageUrl.lastIndexOf("@");
@@ -74,9 +74,8 @@ export function releaseImageRepository(identity: ReleaseImageIdentity): string {
 }
 
 export function assertReleaseImageIdentity(
-  value: ReleaseImageIdentity,
+  value: unknown,
 ): ReleaseImageIdentity {
-  const image = releaseImageRepository(value);
   if (
     !exact(value, [
       "schemaVersion",
@@ -84,28 +83,40 @@ export function assertReleaseImageIdentity(
       "commit",
       "imageUrl",
       "imageDigest",
-    ]) ||
-    value.schemaVersion !== "reviewrouter.hosted-runtime-image.v1" ||
-    !repository.test(value.repository) ||
-    !sha.test(value.commit) ||
-    !digest.test(value.imageDigest) ||
-    !imageRepository.test(image) ||
-    value.imageUrl !== `${image}@${value.imageDigest}`
+    ])
   )
     throw new Error("release_image_identity_invalid");
-  return value;
+  const identity = value as ReleaseImageIdentity;
+  const image = releaseImageRepository(identity);
+  if (
+    identity.schemaVersion !== "reviewrouter.hosted-runtime-image.v1" ||
+    !repository.test(identity.repository) ||
+    !sha.test(identity.commit) ||
+    !digest.test(identity.imageDigest) ||
+    !imageRepository.test(image) ||
+    identity.imageUrl !== `${image}@${identity.imageDigest}`
+  )
+    throw new Error("release_image_identity_invalid");
+  return identity;
 }
 
 export function assertVerifiedReleaseImageProvenance(
-  value: VerifiedReleaseImageProvenance,
+  value: unknown,
   expected?: ReleaseImageProvenanceExpectation,
 ): VerifiedReleaseImageProvenance {
-  const identity = assertReleaseImageIdentity(value.identity);
-  const claim = value.claim;
-  const verification = value.verification;
+  if (!exact(value, ["schemaVersion", "identity", "claim", "verification"]))
+    throw new Error("release_image_provenance_invalid");
+  const provenance = value as VerifiedReleaseImageProvenance;
+  let identity: ReleaseImageIdentity;
+  try {
+    identity = assertReleaseImageIdentity(provenance.identity);
+  } catch {
+    throw new Error("release_image_provenance_invalid");
+  }
+  const claim = provenance.claim;
+  const verification = provenance.verification;
   const boundImageRepository = releaseImageRepository(identity);
   if (
-    !exact(value, ["schemaVersion", "identity", "claim", "verification"]) ||
     !exact(claim, [
       "identitySha256",
       "sourceRepository",
@@ -116,7 +127,7 @@ export function assertVerifiedReleaseImageProvenance(
       "artifactName",
     ]) ||
     !exact(verification, ["policySha256", "verifiedAt"]) ||
-    value.schemaVersion !== "reviewrouter.release-image-provenance.v2" ||
+    provenance.schemaVersion !== "reviewrouter.release-image-provenance.v2" ||
     claim.identitySha256 !== `sha256:${sha256Canonical(identity)}` ||
     claim.sourceRepository !== identity.repository ||
     claim.sourceRevision !== identity.commit ||
@@ -125,7 +136,7 @@ export function assertVerifiedReleaseImageProvenance(
     !/^[1-9][0-9]*$/u.test(claim.artifactId) ||
     !identifier.test(claim.artifactName) ||
     !digest.test(verification.policySha256) ||
-    !timestamp(verification.verifiedAt) ||
+    !canonicalIsoTimestamp(verification.verifiedAt) ||
     (expected !== undefined &&
       (identity.repository !== expected.sourceRepository ||
         identity.commit !== expected.sourceRevision ||
@@ -141,7 +152,7 @@ export function assertVerifiedReleaseImageProvenance(
           claim.artifactName !== expected.artifactName)))
   )
     throw new Error("release_image_provenance_invalid");
-  return value;
+  return provenance;
 }
 
 export function sameReleaseImageProvenance(

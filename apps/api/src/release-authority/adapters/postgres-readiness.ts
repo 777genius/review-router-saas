@@ -271,7 +271,7 @@ export async function observeReleaseAuthorityDatabaseReadiness(
                 to_regprocedure('release_authority.release_rollout_receipt_immutable()')),
               ('service_transition_checkpoint', 'release_service_transition_checkpoint_immutable_guard',
                 to_regprocedure('release_authority.release_service_transition_immutable()')),
-              ('runner_intent', 'release_runner_terminal_effect_trigger',
+              ('runner_job', 'release_runner_terminal_effect_trigger',
                 to_regprocedure('release_authority.release_runner_terminal_effect()')),
               ('rollout', 'release_runner_compensation_gate_trigger',
                 definitions.compensation_gate),
