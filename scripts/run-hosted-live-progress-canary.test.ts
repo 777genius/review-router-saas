@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   assertMonotonic,
   assertRerunAttempt,
@@ -58,7 +62,7 @@ describe("hosted live-progress canary", () => {
     const github = fakeGitHub();
     github.getWorkflowRun.mockResolvedValueOnce({
       ...sourceRun(),
-      referenced_workflows: [{ ref: "d".repeat(40) }],
+      referenced_workflows: [referencedProducer("d".repeat(40))],
     });
     await expect(
       triggerHostedProgressCanary(
@@ -110,6 +114,24 @@ describe("hosted live-progress canary", () => {
     expect(github.rerunWorkflow).not.toHaveBeenCalled();
   });
 
+  it("rejects a substituted release descriptor", () => {
+    const fixture = releaseDescriptorFixture();
+    try {
+      writeFileSync(
+        fixture.path,
+        JSON.stringify({
+          ...fixture.descriptor,
+          actionRef: `777genius/review-router@${"d".repeat(40)}`,
+        }),
+      );
+      expect(() => readCanaryConfig({ ...env(), ...fixture.env })).toThrow(
+        "hosted_progress_canary_release_descriptor_digest_mismatch",
+      );
+    } finally {
+      rmSync(fixture.directory, { recursive: true, force: true });
+    }
+  });
+
   it("rejects fixture paths that no longer match the pinned large profile", async () => {
     const github = fakeGitHub();
     github.getPullFiles.mockResolvedValue(
@@ -129,6 +151,18 @@ describe("hosted live-progress canary", () => {
   it("binds the exact next attempt to source run, head, workflow and producer", () => {
     expect(() =>
       assertRerunAttempt(rerunAttempt(), receipt(), configFixture()),
+    ).not.toThrow();
+    expect(() =>
+      assertRerunAttempt(
+        {
+          ...rerunAttempt(),
+          referenced_workflows: [
+            { ...referencedProducer(), ref: "refs/tags/moving-label" },
+          ],
+        },
+        receipt(),
+        configFixture(),
+      ),
     ).not.toThrow();
     expect(() =>
       assertRerunAttempt(
@@ -296,12 +330,12 @@ describe("hosted live-progress canary", () => {
 });
 
 function env(overrides: Record<string, string> = {}) {
+  const release = releaseDescriptorFixture();
   return {
     REVIEW_ROUTER_RUN_HOSTED_PROGRESS_CANARY: "1",
     REVIEW_ROUTER_HOSTED_CANARY_INSTALLATION_ID: "10",
     REVIEW_ROUTER_HOSTED_CANARY_SOURCE_RUN_ID: "123",
-    REVIEW_ROUTER_HOSTED_CANARY_PRODUCER_SHA: producer,
-    REVIEW_ROUTER_HOSTED_CANARY_SOURCE_WORKFLOW_BLOB_SHA: workflowBlob,
+    ...release.env,
     REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_BOT_LOGIN: "review-router[bot]",
     REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_APP_SLUG: "review-router",
     REVIEW_ROUTER_HOSTED_CANARY_POLL_INTERVAL_MS: "1",
@@ -323,6 +357,7 @@ function receipt() {
     sourceRunAttempt: 1,
     producerSha: producer,
     sourceWorkflowBlobSha: workflowBlob,
+    releaseDescriptorSha256: configFixture().releaseDescriptorSha256,
     baselineCommentId: null,
     baselineCommentUpdatedAt: null,
     triggeredAt: "2026-08-13T10:00:00Z",
@@ -371,7 +406,7 @@ function sourceRun() {
     head_sha: head,
     path: ".github/workflows/reviewrouter-codex.yml",
     pull_requests: [{ number: 37 }],
-    referenced_workflows: [{ ref: producer }],
+    referenced_workflows: [referencedProducer()],
     run_attempt: 1,
   };
 }
@@ -382,7 +417,7 @@ function rerunAttempt() {
     event: "pull_request",
     head_sha: head,
     path: ".github/workflows/reviewrouter-codex.yml",
-    referenced_workflows: [{ ref: producer }],
+    referenced_workflows: [referencedProducer()],
     status: "queued",
     conclusion: null,
   };
@@ -426,6 +461,41 @@ function observation(
 function tickingClock() {
   let tick = 0;
   return () => 1000 + tick++ * 10;
+}
+
+function referencedProducer(sha = producer) {
+  return {
+    path: "777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@main",
+    sha,
+    ref: "refs/heads/main",
+  };
+}
+
+function releaseDescriptorFixture() {
+  const directory = mkdtempSync(join(tmpdir(), "rr-canary-release-"));
+  const path = join(directory, "release.json");
+  const descriptor = {
+    schemaVersion: "reviewrouter.hosted-progress-canary-release.v1",
+    actionRef: `777genius/review-router@${producer}`,
+    producerWorkflowPath:
+      "777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@main",
+    sourceWorkflowBlobSha: workflowBlob,
+  };
+  const bytes = `${JSON.stringify(descriptor)}\n`;
+  writeFileSync(path, bytes);
+  return {
+    directory,
+    path,
+    descriptor,
+    env: {
+      REVIEW_ROUTER_HOSTED_CANARY_RELEASE_DESCRIPTOR_FILE: path,
+      REVIEW_ROUTER_HOSTED_CANARY_RELEASE_DESCRIPTOR_SHA256: createHash(
+        "sha256",
+      )
+        .update(bytes)
+        .digest("hex"),
+    },
+  };
 }
 
 function fixtureFiles() {

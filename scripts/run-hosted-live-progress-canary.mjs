@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash, createPrivateKey, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 export const liveProgressMarker = "<!-- review-router-live-progress -->";
@@ -30,14 +31,15 @@ const terminalPhases = new Set([
 export function readCanaryConfig(env = process.env) {
   if (env.REVIEW_ROUTER_RUN_HOSTED_PROGRESS_CANARY !== "1")
     throw new Error("hosted_progress_canary_confirmation_required");
+  const release = readReleaseDescriptor(env);
   const config = {
     ...pinnedTarget,
     installationId: positive(env.REVIEW_ROUTER_HOSTED_CANARY_INSTALLATION_ID),
     sourceRunId: positive(env.REVIEW_ROUTER_HOSTED_CANARY_SOURCE_RUN_ID),
-    producerSha: sha(env.REVIEW_ROUTER_HOSTED_CANARY_PRODUCER_SHA),
-    sourceWorkflowBlobSha: sha(
-      env.REVIEW_ROUTER_HOSTED_CANARY_SOURCE_WORKFLOW_BLOB_SHA,
-    ),
+    producerSha: release.producerSha,
+    producerWorkflowPath: release.producerWorkflowPath,
+    sourceWorkflowBlobSha: release.sourceWorkflowBlobSha,
+    releaseDescriptorSha256: release.descriptorSha256,
     expectedBotLogin: required(
       env.REVIEW_ROUTER_HOSTED_CANARY_EXPECTED_BOT_LOGIN,
     ).toLowerCase(),
@@ -91,6 +93,7 @@ export async function triggerHostedProgressCanary(config, github, nowIso) {
     sourceRunId: source.id,
     sourceRunAttempt: source.run_attempt,
     producerSha: config.producerSha,
+    releaseDescriptorSha256: config.releaseDescriptorSha256,
     sourceWorkflowBlobSha: config.sourceWorkflowBlobSha,
     baselineCommentId: baseline[0]?.id ?? null,
     baselineCommentUpdatedAt: baseline[0]?.updated_at ?? null,
@@ -197,9 +200,7 @@ export function assertRerunAttempt(run, receipt, config) {
     run.event !== "pull_request" ||
     run.head_sha !== receipt.headSha ||
     run.path !== config.sourceWorkflowPath ||
-    !run.referenced_workflows?.some(
-      (workflow) => workflow.ref === config.producerSha,
-    )
+    !hasExactReferencedProducer(run.referenced_workflows, config)
   )
     throw new Error("hosted_progress_canary_rerun_attempt_contract_mismatch");
 }
@@ -434,9 +435,7 @@ function assertSourceRun(run, config, currentHeadSha) {
     run.run_attempt < 1 ||
     run.path !== config.sourceWorkflowPath ||
     !run.pull_requests?.some((pull) => pull.number === config.pullRequest) ||
-    !run.referenced_workflows?.some(
-      (workflow) => workflow.ref === config.producerSha,
-    )
+    !hasExactReferencedProducer(run.referenced_workflows, config)
   )
     throw new Error("hosted_progress_canary_source_run_contract_mismatch");
 }
@@ -448,6 +447,7 @@ function assertReceipt(receipt, config) {
     receipt.pullRequest !== config.pullRequest ||
     receipt.sourceRunId !== config.sourceRunId ||
     receipt.producerSha !== config.producerSha ||
+    receipt.releaseDescriptorSha256 !== config.releaseDescriptorSha256 ||
     receipt.sourceWorkflowBlobSha !== config.sourceWorkflowBlobSha ||
     !(
       receipt.baselineCommentId === null ||
@@ -496,6 +496,61 @@ function createAppJwt(appId, privateKey) {
   ).toString("base64url");
   const input = `${header}.${payload}`;
   return `${input}.${sign("RSA-SHA256", Buffer.from(input), createPrivateKey(privateKey)).toString("base64url")}`;
+}
+function readReleaseDescriptor(env) {
+  const path = required(
+    env.REVIEW_ROUTER_HOSTED_CANARY_RELEASE_DESCRIPTOR_FILE,
+  );
+  const expectedDigest = required(
+    env.REVIEW_ROUTER_HOSTED_CANARY_RELEASE_DESCRIPTOR_SHA256,
+  );
+  if (!/^[0-9a-f]{64}$/u.test(expectedDigest))
+    throw new Error("hosted_progress_canary_release_descriptor_digest_invalid");
+  const bytes = readFileSync(path);
+  if (createHash("sha256").update(bytes).digest("hex") !== expectedDigest)
+    throw new Error(
+      "hosted_progress_canary_release_descriptor_digest_mismatch",
+    );
+  let value;
+  try {
+    value = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error("hosted_progress_canary_release_descriptor_json_invalid");
+  }
+  const keys = Object.keys(value ?? {}).sort();
+  const expectedKeys = [
+    "actionRef",
+    "producerWorkflowPath",
+    "schemaVersion",
+    "sourceWorkflowBlobSha",
+  ].sort();
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index]) ||
+    value.schemaVersion !== "reviewrouter.hosted-progress-canary-release.v1" ||
+    typeof value.actionRef !== "string" ||
+    !value.actionRef.startsWith("777genius/review-router@") ||
+    typeof value.producerWorkflowPath !== "string" ||
+    !value.producerWorkflowPath.startsWith("777genius/review-router/")
+  )
+    throw new Error("hosted_progress_canary_release_descriptor_invalid");
+  return {
+    producerSha: sha(value.actionRef.split("@").at(-1)),
+    producerWorkflowPath: value.producerWorkflowPath,
+    sourceWorkflowBlobSha: sha(value.sourceWorkflowBlobSha),
+    descriptorSha256: expectedDigest,
+  };
+}
+function hasExactReferencedProducer(workflows, config) {
+  if (!Array.isArray(workflows)) return false;
+  return workflows.some(
+    (workflow) =>
+      workflow?.path === config.producerWorkflowPath &&
+      workflow?.sha === config.producerSha &&
+      (workflow.ref === undefined ||
+        workflow.ref === null ||
+        typeof workflow.ref === "string"),
+  );
 }
 function filePathsDigest(files) {
   if (
