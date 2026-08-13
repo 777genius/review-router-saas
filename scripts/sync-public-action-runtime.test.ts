@@ -214,6 +214,10 @@ describe("public Action runtime sync", () => {
     expect(workflow).toContain(
       '"/$package_scope/packages/container/$PACKAGE_NAME"',
     );
+    expect(workflow.indexOf('docker pull "$IMAGE_URL"')).toBeLessThan(
+      workflow.indexOf('owner_type="$('),
+    );
+    expect(workflow).toContain('if docker pull "$IMAGE_URL" >/dev/null 2>&1');
     expect(workflow).not.toContain(
       "/orgs/777genius/packages/container/review-router-saas-runtime",
     );
