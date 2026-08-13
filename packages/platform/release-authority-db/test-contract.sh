@@ -606,7 +606,7 @@ docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewroute
       '$now','[\"srv-zero-safe\"]'::jsonb);
    SELECT release_authority.release_rollout_append_receipt(
       'r-comp-zero-safe',repeat('4',40),'8',1,'108','208','begin_compensation',
-      'sha256:'||repeat('0',64),'sha256:'||repeat('4',64),'108','before','before',NULL)" >/dev/null
+      'sha256:'||repeat('0',64),'sha256:'||repeat('e',64),'108','before','before',NULL)" >/dev/null
 zero_intent_safe_state=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT state FROM release_authority.rollout WHERE rollout_id='r-comp-zero-safe'")
 test "$zero_intent_safe_state" = compensating
