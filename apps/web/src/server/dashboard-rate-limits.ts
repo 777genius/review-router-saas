@@ -23,6 +23,10 @@ const dashboardMutationLimits = {
     limit: freeBetaLimits.setupPrAttemptsPerRepositoryPerHour,
     windowMs: hour,
   },
+  workflowActivation: {
+    limit: 10,
+    windowMs: hour,
+  },
   reviewConfigSave: {
     limit: freeBetaLimits.reviewConfigSavesPerWorkspacePerHour,
     windowMs: hour,
@@ -68,6 +72,18 @@ export class DashboardRateLimitPolicy {
       workspaceId: input.workspaceId,
       resourceId: input.repositoryId,
       ...dashboardMutationLimits.workflowSetupPr,
+    });
+  }
+
+  async assertWorkflowActivationAllowed(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+  }): Promise<void> {
+    await this.assertOperationAllowed({
+      operation: "workflow_activation",
+      workspaceId: input.workspaceId,
+      resourceId: input.repositoryId,
+      ...dashboardMutationLimits.workflowActivation,
     });
   }
 
@@ -122,6 +138,7 @@ export class DashboardRateLimitPolicy {
     readonly operation:
       | "installation_sync"
       | "workflow_setup_pr"
+      | "workflow_activation"
       | "review_config_save"
       | "outbox_retry"
       | "org_ruleset_provisioning"

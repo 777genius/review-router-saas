@@ -1,14 +1,22 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  assertWorkspaceFeatureEntitlement,
+  PrismaEntitlementRepository,
+} from "@reviewrouter/features-entitlements";
 import { activateConfirmedCodexNamespaceAfterWorkflowMerge } from "../../../../../src/server/codex-rotating-workflow-activation";
 import { createGitHubAppInstallationOctokit } from "../../../../../src/server/dashboard-mutations";
+import { createDashboardRateLimitPolicy } from "../../../../../src/server/dashboard-rate-limits";
 import { authorizeGitHubCliRepository } from "../../../../../src/server/github-cli-repository-authorization";
 import { getPrisma } from "../../../../../src/server/prisma";
 import { resolveWorkflowPublicApiUrl } from "../../../../../src/server/workflow-public-api-url";
 
 const requestSchema = z
   .object({
-    repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+    repository: z
+      .string()
+      .max(256)
+      .regex(/^(?!\.+\/)[A-Za-z0-9_.-]+\/(?!\.+$)[A-Za-z0-9_.-]+$/),
   })
   .strict();
 
@@ -53,6 +61,20 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (repository.installation?.status !== "active") {
       throw new Error("installation_not_active");
     }
+    await assertWorkspaceFeatureEntitlement(
+      {
+        workspaceId: repository.workspaceId,
+        actor: `github-cli:${authorized.fullName.toLowerCase()}`,
+        feature: "workflow_provisioning",
+      },
+      { entitlements: new PrismaEntitlementRepository(prisma) },
+    );
+    await createDashboardRateLimitPolicy(
+      prisma,
+    ).assertWorkflowActivationAllowed({
+      workspaceId: repository.workspaceId,
+      repositoryId: repository.id,
+    });
 
     const octokit = await createGitHubAppInstallationOctokit(
       repository.installation.githubInstallationId.toString(),
@@ -99,6 +121,7 @@ function readBearerToken(request: Request): string {
 
 function safeErrorCode(error: unknown): string {
   const message = error instanceof Error ? error.message : "unknown_error";
+  if (message.startsWith("rate_limit_exceeded:")) return "rate_limited";
   const code = message.split(":", 1)[0] ?? "unknown_error";
   const allowed = new Set([
     "github_cli_token_required",
@@ -113,6 +136,8 @@ function safeErrorCode(error: unknown): string {
     "repository_not_selected",
     "repository_archived",
     "installation_not_active",
+    "entitlement_denied",
+    "rate_limited",
     "codex_rotating_not_enabled",
     "codex_rotating_workflow_namespace_not_ready",
     "codex_rotating_workflow_default_branch_mismatch",
@@ -135,11 +160,20 @@ function statusForError(code: string): number {
     return 401;
   }
   if (code === "github_cli_repository_forbidden") return 403;
+  if (code === "entitlement_denied") return 403;
+  if (code === "rate_limited") return 429;
   if (
     code === "github_cli_repository_not_found" ||
     code === "repository_not_found"
   ) {
     return 404;
+  }
+  if (
+    code === "codex_rotating_workflow_repository_invalid_response" ||
+    code === "codex_rotating_workflow_commit_invalid_response" ||
+    code === "codex_rotating_workflow_content_invalid_response"
+  ) {
+    return 502;
   }
   if (code.startsWith("codex_rotating_")) return 409;
   return 400;

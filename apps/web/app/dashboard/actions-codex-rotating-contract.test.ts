@@ -23,9 +23,10 @@ describe("dashboard rotating namespace activation contract", () => {
       ),
       "utf8",
     );
-    const activation = source.slice(
-      0,
-      source.indexOf("function readGitHubRepositoryIdentity"),
+    const activation = sliceBetween(
+      source,
+      "export async function activateConfirmedCodexNamespaceAfterWorkflowMerge",
+      "function readGitHubRepositoryIdentity",
     );
 
     expect(activation).toContain("inspectCodexRotatingWorkflowNamespace");
@@ -39,11 +40,10 @@ describe("dashboard rotating namespace activation contract", () => {
       new URL("./actions.ts", import.meta.url),
       "utf8",
     );
-    const helper = source.slice(
-      source.indexOf(
-        "async function resolveCodexRotatingProvisioningActionRef",
-      ),
-      source.indexOf("function readGitHubRepositoryIdentity"),
+    const helper = sliceBetween(
+      source,
+      "async function resolveCodexRotatingProvisioningActionRef",
+      "function readGitHubRepositoryIdentity",
     );
 
     expect(helper).toContain(
@@ -66,3 +66,11 @@ describe("dashboard rotating namespace activation contract", () => {
     expect(helper).not.toContain("resolveReviewRouterActionRef");
   });
 });
+
+function sliceBetween(source: string, startAnchor: string, endAnchor: string) {
+  const start = source.indexOf(startAnchor);
+  const end = source.indexOf(endAnchor, start + startAnchor.length);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}

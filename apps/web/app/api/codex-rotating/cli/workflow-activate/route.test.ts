@@ -2,9 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   activate: vi.fn(),
+  assertEntitlement: vi.fn(),
+  assertRateLimit: vi.fn(),
   authorize: vi.fn(),
   createOctokit: vi.fn(),
   findFirst: vi.fn(),
+}));
+
+vi.mock("@reviewrouter/features-entitlements", () => ({
+  assertWorkspaceFeatureEntitlement: mocks.assertEntitlement,
+  PrismaEntitlementRepository: class {},
 }));
 
 vi.mock("../../../../../src/server/codex-rotating-workflow-activation", () => ({
@@ -12,6 +19,11 @@ vi.mock("../../../../../src/server/codex-rotating-workflow-activation", () => ({
 }));
 vi.mock("../../../../../src/server/dashboard-mutations", () => ({
   createGitHubAppInstallationOctokit: mocks.createOctokit,
+}));
+vi.mock("../../../../../src/server/dashboard-rate-limits", () => ({
+  createDashboardRateLimitPolicy: () => ({
+    assertWorkflowActivationAllowed: mocks.assertRateLimit,
+  }),
 }));
 vi.mock(
   "../../../../../src/server/github-cli-repository-authorization",
@@ -33,21 +45,9 @@ describe("Codex rotating CLI workflow activation route", () => {
       githubRepositoryId: "1228051727",
       fullName: "777genius/review-router-saas-e2e",
     });
-    mocks.findFirst.mockResolvedValue({
-      id: "repo_1",
-      workspaceId: "workspace_1",
-      githubRepositoryId: 1228051727n,
-      owner: "777genius",
-      name: "review-router-saas-e2e",
-      fullName: "777genius/review-router-saas-e2e",
-      defaultBranch: "main",
-      selected: true,
-      archived: false,
-      installation: {
-        status: "active",
-        githubInstallationId: 130834037n,
-      },
-    });
+    mocks.findFirst.mockResolvedValue(repositoryFixture());
+    mocks.assertEntitlement.mockResolvedValue(undefined);
+    mocks.assertRateLimit.mockResolvedValue(undefined);
     mocks.createOctokit.mockResolvedValue({ request: vi.fn() });
     mocks.activate.mockResolvedValue({
       status: "activated",
@@ -65,6 +65,17 @@ describe("Codex rotating CLI workflow activation route", () => {
       repositoryFullName: "777genius/review-router-saas-e2e",
     });
     expect(mocks.createOctokit).toHaveBeenCalledWith("130834037");
+    expect(mocks.assertEntitlement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: "workspace_1",
+        feature: "workflow_provisioning",
+      }),
+      expect.any(Object),
+    );
+    expect(mocks.assertRateLimit).toHaveBeenCalledWith({
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+    });
     expect(mocks.activate).toHaveBeenCalledWith(
       expect.objectContaining({
         githubRepositoryId: "1228051727",
@@ -97,7 +108,7 @@ describe("Codex rotating CLI workflow activation route", () => {
 
   it("fails before activation when the stored repository identity differs", async () => {
     mocks.findFirst.mockResolvedValueOnce({
-      ...(await repositoryFixture()),
+      ...repositoryFixture(),
       fullName: "777genius/a-different-repository",
     });
 
@@ -109,6 +120,76 @@ describe("Codex rotating CLI workflow activation route", () => {
     });
     expect(mocks.createOctokit).not.toHaveBeenCalled();
     expect(mocks.activate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["repository_not_selected", { selected: false }],
+    ["repository_archived", { archived: true }],
+    [
+      "installation_not_active",
+      {
+        installation: { status: "suspended", githubInstallationId: 130834037n },
+      },
+    ],
+  ])("blocks %s before GitHub App access", async (error, override) => {
+    mocks.findFirst.mockResolvedValueOnce({
+      ...repositoryFixture(),
+      ...override,
+    });
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error });
+    expect(mocks.createOctokit).not.toHaveBeenCalled();
+    expect(mocks.activate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["github_cli_repository_forbidden", 403],
+    ["github_cli_repository_not_found", 404],
+  ])("maps %s without repository lookup", async (error, status) => {
+    mocks.authorize.mockRejectedValueOnce(new Error(error));
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toEqual({ error });
+    expect(mocks.findFirst).not.toHaveBeenCalled();
+    expect(mocks.createOctokit).not.toHaveBeenCalled();
+  });
+
+  it("rejects dot-only repository path segments", async () => {
+    const response = await POST(request("../.."));
+
+    expect(response.status).toBe(400);
+    expect(mocks.authorize).not.toHaveBeenCalled();
+  });
+
+  it("stops before GitHub App access when entitlement is denied", async () => {
+    mocks.assertEntitlement.mockRejectedValueOnce(
+      new Error("entitlement_denied:workflow_provisioning:paused"),
+    );
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "entitlement_denied",
+    });
+    expect(mocks.createOctokit).not.toHaveBeenCalled();
+  });
+
+  it("stops before GitHub App access when activation is rate limited", async () => {
+    mocks.assertRateLimit.mockRejectedValueOnce(
+      new Error("rate_limit_exceeded:workflow_activation"),
+    );
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toEqual({ error: "rate_limited" });
+    expect(mocks.createOctokit).not.toHaveBeenCalled();
   });
 
   it("fails closed when no rotating provider is configured", async () => {
@@ -136,7 +217,7 @@ describe("Codex rotating CLI workflow activation route", () => {
   });
 });
 
-function request(): Request {
+function request(repository = "777genius/review-router-saas-e2e"): Request {
   return new Request("https://reviewrouter.test/activate", {
     method: "POST",
     headers: {
@@ -144,12 +225,12 @@ function request(): Request {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      repository: "777genius/review-router-saas-e2e",
+      repository,
     }),
   });
 }
 
-async function repositoryFixture() {
+function repositoryFixture() {
   return {
     id: "repo_1",
     workspaceId: "workspace_1",

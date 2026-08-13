@@ -77,6 +77,20 @@ describe("DashboardRateLimitPolicy", () => {
     ]);
   });
 
+  it("uses a repository-scoped key for workflow activation", async () => {
+    const store = new InMemoryRateLimitStore();
+    const policy = new DashboardRateLimitPolicy(store, staticClock());
+
+    await policy.assertWorkflowActivationAllowed({
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+    });
+
+    expect(store.keys).toEqual([
+      "dashboard:workflow_activation:workspace_1:repo_1",
+    ]);
+  });
+
   it("uses workspace-scoped limits for review config saves", async () => {
     const store = new InMemoryRateLimitStore();
     const policy = new DashboardRateLimitPolicy(store, staticClock());

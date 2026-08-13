@@ -143,6 +143,41 @@ describe("activateConfirmedCodexNamespaceAfterWorkflowMerge", () => {
     expect(mocks.activate).not.toHaveBeenCalled();
   });
 
+  it("fails closed when GitHub reports a different default branch", async () => {
+    const { input, request } = fixture();
+    request.mockReset().mockResolvedValueOnce({
+      data: {
+        id: 1228051727,
+        full_name: "777genius/review-router-saas-e2e",
+        default_branch: "trunk",
+      },
+    });
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+    ).rejects.toThrow("codex_rotating_workflow_default_branch_mismatch");
+    expect(mocks.activate).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when decoded content does not match its blob SHA", async () => {
+    const { input, request } = fixture();
+    request
+      .mockReset()
+      .mockResolvedValueOnce(repositoryResponse())
+      .mockResolvedValueOnce(refResponse(firstHead))
+      .mockResolvedValueOnce({
+        data: {
+          ...contentResponse().data,
+          sha: "e".repeat(40),
+        },
+      });
+
+    await expect(
+      activateConfirmedCodexNamespaceAfterWorkflowMerge(input),
+    ).rejects.toThrow("codex_rotating_workflow_blob_sha_mismatch");
+    expect(mocks.activate).not.toHaveBeenCalled();
+  });
+
   it("does not call GitHub when rotating auth is not configured", async () => {
     const { input, request, findUnique } = fixture();
     findUnique.mockResolvedValueOnce(null);
