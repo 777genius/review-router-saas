@@ -1502,15 +1502,58 @@ if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   echo "expired recovery permit unexpectedly replayed" >&2
   exit 1
 fi
-docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_recovery_effect_consume(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'ownerId','recovery-worker-2','epoch',$second_epoch,'permitToken','$second_token'));
-   SELECT release_authority.release_recovery_effect_complete(jsonb_build_object(
+    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'epoch',$second_epoch,'permitToken','$second_token'))" >"$recovery_consume_a") &
+consume_pid_a=$!
+(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_recovery_effect_consume(jsonb_build_object(
     'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
-    'epoch',$second_epoch,'permitToken','$second_token','observation',
-    jsonb_build_object('sourceWritesRestored',true,'aclSha256','sha256:'||repeat('2',64))))" >/dev/null
+    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'epoch',$second_epoch,'permitToken','$second_token'))" >"$recovery_consume_b") &
+consume_pid_b=$!
+wait "$consume_pid_a" "$consume_pid_b"
+test "$(grep -h -c '"executionAuthorization": null' "$recovery_consume_a" "$recovery_consume_b" | awk '{sum += $1} END {print sum}')" = 1
+test "$(grep -h -c '"executionAuthorization": {' "$recovery_consume_a" "$recovery_consume_b" | awk '{sum += $1} END {print sum}')" = 1
+execution_receipt=$(grep -h '"executionAuthorization": {' "$recovery_consume_a" "$recovery_consume_b" |
+  sed -n 's/.*"receipt": "\([a-f0-9]*\)".*/\1/p')
+test "${#execution_receipt}" = 64
+validated_execution=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_recovery_effect_validate_execution(jsonb_build_object(
+    'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
+    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'epoch',$second_epoch,'permitToken','$second_token','executionReceipt','$execution_receipt'))")
+test "$(printf '%s' "$validated_execution" | grep -c '"executionAuthorization": {')" = 1
+# Validation is one-shot just like consumption; replay never authorizes I/O.
+validation_replay=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_recovery_effect_validate_execution(jsonb_build_object(
+    'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
+    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'epoch',$second_epoch,'permitToken','$second_token','executionReceipt','$execution_receipt'))")
+test "$(printf '%s' "$validation_replay" | grep -c '"executionAuthorization": null')" = 1
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_recovery_effect_complete(jsonb_build_object(
+    'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
+    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'epoch',$second_epoch,'permitToken','$second_token','executionReceipt','$execution_receipt','observation',
+    jsonb_build_object('sourceWritesRestored',true,'observedAt','$now',
+      'environmentDelta',jsonb_build_object('PASSWORD','secret'))))" >/dev/null 2>&1; then
+  echo "secret-bearing recovery observation unexpectedly persisted" >&2
+  exit 1
+fi
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT observation IS NULL FROM release_authority.recovery_effect
+   WHERE rollout_id='r-recovery-permit' AND effect_key='restore_database_writes'")" = t
+# Model a provider call in flight: validation committed, then a late runner job
+# linearizes before completion. The trigger and completion share the rollout
+# lock, so completion can only retain an observation as forward repair.
 docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
@@ -1518,6 +1561,13 @@ docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
     'provisioningIntentId','rri-'||repeat('3',63)||'2','serviceId','svc-recovery-permit',
     'observedAt','$now','providerCreationNotBefore','$now',
     'cleanupCanary','rr-cleanup:r-recovery-permit:rr-recovery-permit','lifecycle','role'))" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_recovery_effect_complete(jsonb_build_object(
+    'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
+    'kind','restore_database_writes','ownerId','recovery-worker-2',
+    'epoch',$second_epoch,'permitToken','$second_token','executionReceipt','$execution_receipt','observation',
+    jsonb_build_object('sourceWritesRestored',true,'observedAt','$now')))" >/dev/null
 test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT rollout.recovery_forward_only||':'||effect.state||':'||effect.epoch||':'||
       (effect.observation->>'sourceWritesRestored')
@@ -1587,7 +1637,9 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
       ('release_recovery_effect_intend',true),
       ('release_recovery_effect_claim',true),
       ('release_recovery_effect_consume',true),
+      ('release_recovery_effect_validate_execution',true),
       ('release_recovery_effect_complete',true),
+      ('release_recovery_effect_reconcile',true),
       ('release_late_job_recovery_effect_gate',false),
       ('release_recovery_checkpoint_permit_gate',false)
     ), functions AS (
@@ -1610,7 +1662,7 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
         'reviewrouter_release_witness',oid,'EXECUTE'))||':'||
       bool_and(proconfig=ARRAY['search_path=pg_catalog']::text[])
     FROM functions")
-test "$migration_acl" = 23:true:true:true:true:true
+test "$migration_acl" = 25:true:true:true:true:true
 legacy_control_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT pg_catalog.has_function_privilege('reviewrouter_release_control',
       'release_authority.release_runner_persist_intent(jsonb)','EXECUTE')||':'||

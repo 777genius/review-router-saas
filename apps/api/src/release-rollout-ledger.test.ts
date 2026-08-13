@@ -382,6 +382,155 @@ describe("release rollout ledger internal API", () => {
     await app.close();
   });
 
+  it("validates exact recovery-effect requests and rejects secret-bearing observations", async () => {
+    const dispatched: string[] = [];
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(new ConcurrentRepository()),
+      serviceTransition: {
+        intendRecoveryEffect: async () => {
+          dispatched.push("intend");
+          return {};
+        },
+        claimRecoveryEffect: async () => {
+          dispatched.push("claim");
+          return {};
+        },
+        consumeRecoveryEffectPermit: async () => {
+          dispatched.push("consume");
+          return {};
+        },
+        validateRecoveryEffectExecution: async () => {
+          dispatched.push("validate-execution");
+          return {};
+        },
+        completeRecoveryEffect: async () => {
+          dispatched.push("complete");
+          return {};
+        },
+        reconcileRecoveryEffect: async () => {
+          dispatched.push("reconcile");
+          return {};
+        },
+      } as never,
+    });
+    const headers = { authorization: `Bearer ${token}` };
+    const base = {
+      rolloutId: "rollout-1",
+      effectKey: "restore_database_writes",
+      kind: "restore_database_writes",
+    };
+    const request = (route: string, payload: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/service-transitions/rollout-1/recovery-effects/${route}`,
+        headers,
+        payload,
+      });
+    for (const [route, payload] of [
+      ["intend", { ...base, token: "secret" }],
+      [
+        "claim",
+        { ...base, ownerId: "worker-1", leaseSeconds: 60, extra: true },
+      ],
+      [
+        "consume",
+        {
+          ...base,
+          ownerId: "worker-1",
+          epoch: 1,
+          permitToken: "a".repeat(64),
+          password: "secret",
+        },
+      ],
+      [
+        "complete",
+        {
+          ...base,
+          ownerId: "worker-1",
+          epoch: 1,
+          permitToken: "a".repeat(64),
+          executionReceipt: "b".repeat(64),
+          observation: {
+            sourceWritesRestored: true,
+            observedAt: "2026-08-13T00:00:00.000Z",
+            environmentDelta: { PASSWORD: "secret" },
+          },
+        },
+      ],
+      [
+        "validate-execution",
+        {
+          ...base,
+          ownerId: "worker-1",
+          epoch: 1,
+          permitToken: "a".repeat(64),
+          executionReceipt: "b".repeat(64),
+          token: "secret",
+        },
+      ],
+      [
+        "reconcile",
+        {
+          ...base,
+          ownerId: "worker-1",
+          epoch: 1,
+          permitToken: "a".repeat(64),
+          observation: {
+            sourceWritesRestored: true,
+            observedAt: "2026-08-13T00:00:00.000Z",
+            token: "secret",
+          },
+        },
+      ],
+      [
+        "complete",
+        {
+          ...base,
+          ownerId: "worker-1",
+          epoch: 1,
+          permitToken: "a".repeat(64),
+          executionReceipt: "b".repeat(64),
+          observation: {
+            sourceWritesRestored: true,
+            observedAt: "https://user:password@example.test/token",
+          },
+        },
+      ],
+    ] as const)
+      expect((await request(route, payload)).statusCode).toBe(400);
+    expect(dispatched).toEqual([]);
+
+    expect((await request("intend", base)).statusCode).toBe(200);
+    const permit = {
+      ...base,
+      ownerId: "worker-1",
+      epoch: 1,
+      permitToken: "a".repeat(64),
+    };
+    expect(
+      (
+        await request("validate-execution", {
+          ...permit,
+          executionReceipt: "b".repeat(64),
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await request("reconcile", {
+          ...permit,
+          observation: {
+            sourceWritesRestored: true,
+            observedAt: "2026-08-13T00:00:00.000Z",
+          },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(dispatched).toEqual(["intend", "validate-execution", "reconcile"]);
+    await app.close();
+  });
+
   it("validates the exact service-transition begin contract before dispatch", async () => {
     const begun: unknown[] = [];
     const app = Fastify();

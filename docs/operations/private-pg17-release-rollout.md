@@ -194,8 +194,12 @@ trigger, schema/type/enum, owner, and ACL. Exactly one shadow must match before
 000009 may backfill history. For a matching authority database carrying the
 previously published modified 000001/000002 bytes, migration 000009 retains
 those two exact legacy checksums as `legacy_equivalent` and converges their
-behavior to the same forward state. Migration 000010 adds the single-use recovery-effect permit protocol
-after the migration ledger exists. Existing pre-ledger authorities apply 000009
+behavior to the same forward state. Migration 000010 adds the single-use
+recovery-effect permit protocol and its provider-neutral execution fence after
+the migration ledger exists. Only the consume winner receives the ephemeral
+receipt needed for one atomic execution validation; a late runner job changes
+consumed/executing effects to durable forward repair, and completion or
+checkpoint creation then fails closed. Existing pre-ledger authorities apply 000009
 then 000010, while authorities already recorded through 000009 apply only 000010. Health requires every ordered identity through 000010, the matching
 canonical/approved-legacy checksum and variant, the 000006 provider creation
 column plus validated NOT NULL/order constraint and witness time bounds, the

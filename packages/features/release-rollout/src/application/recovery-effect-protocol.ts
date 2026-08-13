@@ -1,8 +1,12 @@
 import {
   RecoveryEffectState,
-  assertRecoveryEffectRecord,
+  assertRecoveryEffectConsumptionResult,
+  assertRecoveryEffectExecutionAuthorization,
+  assertRecoveryEffectObservation,
+  assertRecoveryEffectRecordBinding,
   mayConsumeRecoveryPermit,
   type RecoveryEffectKind,
+  type RecoveryEffectConsumptionResult,
   type RecoveryEffectRecord,
 } from "../domain/recovery-effect";
 
@@ -16,19 +20,42 @@ export interface RecoveryEffectAuthorityPort {
   claimRecoveryEffect(input: {
     rolloutId: string;
     effectKey: string;
+    kind: RecoveryEffectKind;
     ownerId: string;
     leaseSeconds: number;
   }): Promise<RecoveryEffectRecord>;
   consumeRecoveryEffectPermit(input: {
     rolloutId: string;
     effectKey: string;
+    kind: RecoveryEffectKind;
     ownerId: string;
     epoch: number;
     permitToken: string;
-  }): Promise<RecoveryEffectRecord>;
+  }): Promise<RecoveryEffectConsumptionResult>;
+  validateRecoveryEffectExecution(input: {
+    rolloutId: string;
+    effectKey: string;
+    kind: RecoveryEffectKind;
+    ownerId: string;
+    epoch: number;
+    permitToken: string;
+    executionReceipt: string;
+  }): Promise<RecoveryEffectConsumptionResult>;
   completeRecoveryEffect(input: {
     rolloutId: string;
     effectKey: string;
+    kind: RecoveryEffectKind;
+    ownerId: string;
+    epoch: number;
+    permitToken: string;
+    executionReceipt: string;
+    observation: unknown;
+  }): Promise<RecoveryEffectRecord>;
+  reconcileRecoveryEffect(input: {
+    rolloutId: string;
+    effectKey: string;
+    kind: RecoveryEffectKind;
+    ownerId: string;
     epoch: number;
     permitToken: string;
     observation: unknown;
@@ -50,41 +77,62 @@ export class RecoveryEffectProtocol {
     serviceId?: string;
     ownerId: string;
     leaseSeconds?: number;
-    effect: (permit: Readonly<{ epoch: number; token: string }>) => Promise<T>;
+    effect: (
+      permit: Readonly<{
+        epoch: number;
+        token: string;
+        executionReceipt: string;
+      }>,
+    ) => Promise<T>;
     observe: (response: T) => Promise<unknown>;
     reconcileConsumed?: () => Promise<T | null>;
   }): Promise<RecoveryEffectRecord> {
-    const intended = assertRecoveryEffectRecord(
+    const intended = assertRecoveryEffectRecordBinding(
       await this.authority.intendRecoveryEffect({
         rolloutId: input.rolloutId,
         effectKey: input.effectKey,
         kind: input.kind,
         ...(input.serviceId ? { serviceId: input.serviceId } : {}),
       }),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        serviceId: input.serviceId ?? null,
+      },
     );
     if (
       intended.state === RecoveryEffectState.Completed ||
       intended.state === RecoveryEffectState.ForwardRepair
     )
       return intended;
-    if (intended.state === RecoveryEffectState.Consumed) {
+    if (
+      intended.state === RecoveryEffectState.Consumed ||
+      intended.state === RecoveryEffectState.Executing
+    ) {
       if (!input.reconcileConsumed) return intended;
       const response = await input.reconcileConsumed();
       if (response === null) return intended;
-      return this.completeFromObservation({
+      return this.reconcileFromObservation({
         rolloutId: input.rolloutId,
         effectKey: input.effectKey,
         consumed: intended,
         observation: await input.observe(response),
       });
     }
-    const claim = assertRecoveryEffectRecord(
+    const claim = assertRecoveryEffectRecordBinding(
       await this.authority.claimRecoveryEffect({
         rolloutId: input.rolloutId,
         effectKey: input.effectKey,
+        kind: input.kind,
         ownerId: input.ownerId,
         leaseSeconds: input.leaseSeconds ?? 60,
       }),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+      },
     );
     if (claim.state !== RecoveryEffectState.Claimed) return claim;
     if (
@@ -97,49 +145,124 @@ export class RecoveryEffectProtocol {
       })
     )
       throw new Error("recovery_effect_claim_invalid_or_expired");
-    const consumed = assertRecoveryEffectRecord(
+    const consumption = assertRecoveryEffectConsumptionResult(
       await this.authority.consumeRecoveryEffectPermit({
         rolloutId: input.rolloutId,
         effectKey: input.effectKey,
+        kind: input.kind,
         ownerId: input.ownerId,
         epoch: claim.epoch,
         permitToken: claim.permitToken!,
       }),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+        epoch: claim.epoch,
+        permitToken: claim.permitToken!,
+      },
     );
+    const consumed = consumption.record;
     if (consumed.state !== RecoveryEffectState.Consumed) return consumed;
-    // No authority transaction exists while this callback performs I/O.
+    // A consumed snapshot alone never authorizes I/O. Only the linearization
+    // winner receives this non-replayable response capability.
+    if (consumption.executionAuthorization === null) return consumed;
+    const validation = assertRecoveryEffectConsumptionResult(
+      await this.authority.validateRecoveryEffectExecution({
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+        epoch: consumed.epoch,
+        permitToken: consumed.permitToken!,
+        executionReceipt: consumption.executionAuthorization.receipt,
+      }),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+        epoch: consumed.epoch,
+        permitToken: consumed.permitToken!,
+      },
+    );
+    if (validation.executionAuthorization === null) return validation.record;
+    const executionAuthorization = assertRecoveryEffectExecutionAuthorization(
+      validation.executionAuthorization,
+      consumption.executionAuthorization,
+    );
+    // The authority transaction has committed immediately before provider I/O.
+    // A late job racing after this point monotonically changes the durable state
+    // to forward_repair, which the completion transaction cannot overwrite.
     const response = await input.effect({
       epoch: consumed.epoch,
       token: consumed.permitToken!,
+      executionReceipt: executionAuthorization.receipt,
     });
-    const observation = await input.observe(response);
-    return assertRecoveryEffectRecord(
+    const observation = assertRecoveryEffectObservation(
+      input.kind,
+      await input.observe(response),
+    );
+    return assertRecoveryEffectRecordBinding(
       await this.authority.completeRecoveryEffect({
         rolloutId: input.rolloutId,
         effectKey: input.effectKey,
+        kind: consumed.kind,
+        ownerId: consumed.claimOwnerId!,
         epoch: consumed.epoch,
         permitToken: consumed.permitToken!,
+        executionReceipt: executionAuthorization.receipt,
         observation,
       }),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+        epoch: consumed.epoch,
+        permitToken: consumed.permitToken!,
+      },
     );
   }
 
-  async completeFromObservation(input: {
+  async reconcileFromObservation(input: {
     rolloutId: string;
     effectKey: string;
     consumed: RecoveryEffectRecord;
     observation: unknown;
   }): Promise<RecoveryEffectRecord> {
-    const consumed = assertRecoveryEffectRecord(input.consumed);
-    if (consumed.state !== RecoveryEffectState.Consumed) return consumed;
-    return assertRecoveryEffectRecord(
-      await this.authority.completeRecoveryEffect({
+    const consumed = assertRecoveryEffectRecordBinding(input.consumed, {
+      rolloutId: input.rolloutId,
+      effectKey: input.effectKey,
+    });
+    if (
+      consumed.state !== RecoveryEffectState.Consumed &&
+      consumed.state !== RecoveryEffectState.Executing
+    )
+      return consumed;
+    const observation = assertRecoveryEffectObservation(
+      consumed.kind,
+      input.observation,
+    );
+    return assertRecoveryEffectRecordBinding(
+      await this.authority.reconcileRecoveryEffect({
         rolloutId: input.rolloutId,
         effectKey: input.effectKey,
+        kind: consumed.kind,
+        ownerId: consumed.claimOwnerId!,
         epoch: consumed.epoch,
         permitToken: consumed.permitToken!,
-        observation: input.observation,
+        observation,
       }),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: consumed.kind,
+        ownerId: consumed.claimOwnerId!,
+        epoch: consumed.epoch,
+        permitToken: consumed.permitToken!,
+      },
     );
   }
 }

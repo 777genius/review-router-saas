@@ -199,11 +199,21 @@ export class ReleaseServiceTransitionService {
       ReleaseServiceTransitionLedgerPort["consumeRecoveryEffectPermit"]
     >[0],
   ) => this.repository.consumeRecoveryEffectPermit(input);
+  validateRecoveryEffectExecution = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["validateRecoveryEffectExecution"]
+    >[0],
+  ) => this.repository.validateRecoveryEffectExecution(input);
   completeRecoveryEffect = (
     input: Parameters<
       ReleaseServiceTransitionLedgerPort["completeRecoveryEffect"]
     >[0],
   ) => this.repository.completeRecoveryEffect(input);
+  reconcileRecoveryEffect = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["reconcileRecoveryEffect"]
+    >[0],
+  ) => this.repository.reconcileRecoveryEffect(input);
 }
 
 export class ReleaseRolloutReconciliationService {

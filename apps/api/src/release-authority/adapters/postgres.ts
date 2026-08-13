@@ -591,6 +591,30 @@ export class RoutineReleaseControlLedgerAdapter
       ),
     );
   }
+  async validateRecoveryEffectExecution(
+    input: Parameters<
+      ServiceTransitionLedger["validateRecoveryEffectExecution"]
+    >[0],
+  ): ReturnType<ServiceTransitionLedger["validateRecoveryEffectExecution"]> {
+    return assertRecoveryEffectConsumptionResult(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_recovery_effect_validate_execution(${asJsonb(input)}) AS value`,
+      ),
+      input,
+    );
+  }
+  async reconcileRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["reconcileRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["reconcileRecoveryEffect"]> {
+    return assertRecoveryEffectRecordBinding(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_recovery_effect_reconcile(${asJsonb(input)}) AS value`,
+      ),
+      input,
+    );
+  }
 }
 
 export class RoutineRunnerCleanupWitnessAdapter implements RunnerCleanupWitnessPort {

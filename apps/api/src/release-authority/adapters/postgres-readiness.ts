@@ -26,6 +26,8 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           to_regprocedure('release_authority.release_recovery_effect_intend(jsonb)') AS recovery_effect_intend,
           to_regprocedure('release_authority.release_recovery_effect_claim(jsonb)') AS recovery_effect_claim,
           to_regprocedure('release_authority.release_recovery_effect_consume(jsonb)') AS recovery_effect_consume,
+          to_regprocedure('release_authority.release_recovery_effect_validate_execution(jsonb)') AS recovery_effect_validate_execution,
+          to_regprocedure('release_authority.release_recovery_effect_reconcile(jsonb)') AS recovery_effect_reconcile,
           to_regprocedure('release_authority.release_recovery_effect_complete(jsonb)') AS recovery_effect_complete
       ), definitions AS (
         SELECT facts.*,
@@ -90,7 +92,9 @@ export async function observeReleaseAuthorityDatabaseReadiness(
             to_regprocedure('release_authority.release_recovery_effect_intend(jsonb)'),
             to_regprocedure('release_authority.release_recovery_effect_claim(jsonb)'),
             to_regprocedure('release_authority.release_recovery_effect_consume(jsonb)'),
-            to_regprocedure('release_authority.release_recovery_effect_complete(jsonb)')
+            to_regprocedure('release_authority.release_recovery_effect_validate_execution(jsonb)'),
+            to_regprocedure('release_authority.release_recovery_effect_complete(jsonb)'),
+            to_regprocedure('release_authority.release_recovery_effect_reconcile(jsonb)')
           ]::oid[], ARRAY[
             to_regprocedure('release_authority.release_service_transition_immutable()')
           ]::oid[]),
@@ -188,6 +192,8 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           AND definitions.recovery_effect_intend IS NOT NULL
           AND definitions.recovery_effect_claim IS NOT NULL
           AND definitions.recovery_effect_consume IS NOT NULL
+          AND definitions.recovery_effect_validate_execution IS NOT NULL
+          AND definitions.recovery_effect_reconcile IS NOT NULL
           AND definitions.recovery_effect_complete IS NOT NULL
           AND (SELECT count(*) = 10 FROM pg_catalog.pg_class relation
             JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -295,8 +301,17 @@ export async function observeReleaseAuthorityDatabaseReadiness(
         definitions.recovery_effect_intend IS NOT NULL
           AND definitions.recovery_effect_claim IS NOT NULL
           AND definitions.recovery_effect_consume IS NOT NULL
+          AND definitions.recovery_effect_validate_execution IS NOT NULL
+          AND definitions.recovery_effect_reconcile IS NOT NULL
           AND definitions.recovery_effect_complete IS NOT NULL
           AND pg_get_functiondef(definitions.recovery_effect_consume) LIKE '%FOR UPDATE%'
+          AND pg_get_functiondef(definitions.recovery_effect_consume) LIKE '%executionAuthorization%'
+          AND pg_get_functiondef(definitions.recovery_effect_consume) LIKE '%execution_receipt%'
+          AND pg_get_functiondef(definitions.recovery_effect_validate_execution) LIKE '%state=''executing''%'
+          AND pg_get_functiondef(definitions.recovery_effect_validate_execution) LIKE '%execution_receipt_sha256%'
+          AND pg_get_functiondef(definitions.recovery_effect_complete) LIKE '%state <> ''executing''%'
+          AND pg_get_functiondef(definitions.recovery_effect_complete) LIKE '%execution_receipt_sha256%'
+          AND pg_get_functiondef(definitions.recovery_effect_reconcile) LIKE '%state=''forward_repair''%'
           AND pg_get_functiondef(definitions.recovery_effect_consume) LIKE '%release_compensation_effects_are_safe%'
           AS "recoveryEffectProtocol",
         (SELECT count(*) = 12 AND bool_and(trigger.tgenabled = 'O')
