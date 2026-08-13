@@ -73,6 +73,40 @@ const invalidEffectRequest = (): never => {
     statusCode: 400,
   });
 };
+const persistedJobRequest = (value: unknown): PersistedJob => {
+  const body = record(value);
+  const observedAt = Date.parse(String(body.observedAt));
+  const providerCreationNotBefore = Date.parse(
+    String(body.providerCreationNotBefore),
+  );
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "serviceId",
+      "jobId",
+      "observedAt",
+      "providerCreationNotBefore",
+      "cleanupCanary",
+      "lifecycle",
+      "provisioningIntentId",
+    ]) ||
+    !nonemptyString(body.rolloutId) ||
+    !nonemptyString(body.serviceId) ||
+    !nonemptyString(body.jobId) ||
+    typeof body.observedAt !== "string" ||
+    typeof body.providerCreationNotBefore !== "string" ||
+    !Number.isFinite(observedAt) ||
+    !Number.isFinite(providerCreationNotBefore) ||
+    observedAt < providerCreationNotBefore ||
+    !nonemptyString(body.cleanupCanary) ||
+    !["role", "cutover"].includes(String(body.lifecycle)) ||
+    !intentIdPattern.test(String(body.provisioningIntentId))
+  )
+    throw Object.assign(new Error("release_runner_job_request_invalid"), {
+      statusCode: 400,
+    });
+  return body as PersistedJob;
+};
 const intentIdPattern = /^rri-[a-f0-9]{64}$/u;
 const claimantIdPattern =
   /^rrc-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -565,7 +599,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     { preHandler: control },
     async (request, reply) => {
       await dependencies.runnerOperations.persistJob(
-        record(request.body) as PersistedJob,
+        persistedJobRequest(request.body),
       );
       return reply.code(204).send();
     },

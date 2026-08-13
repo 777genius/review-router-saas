@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   RolloutStep,
   type RunnerIdentity,
+  type ProviderCreationBoundary,
   type RunnerProvenance,
   type StepObservation,
 } from "../domain/release-rollout";
@@ -36,7 +37,7 @@ const activeDeploy = new Set([
   "pre_deploy_in_progress",
 ]);
 
-export interface PersistedRunnerJob {
+export interface PersistedRunnerJob extends ProviderCreationBoundary {
   readonly rolloutId: string;
   readonly serviceId: string;
   readonly jobId: string;
@@ -293,6 +294,7 @@ export class RenderPrivateRunnerAdapter {
     const startCommandSha256 = `sha256:${createHash("sha256").update(startCommand).digest("hex")}`;
     const claimantId = `rrc-${randomUUID()}`;
     const intentCreatedAt = this.now();
+    let providerCreationNotBefore = intentCreatedAt.toISOString();
     const leaseSeconds = 120;
     const prepareInput: CreateRunnerProvisioningIntent = {
       id: provisioningIntentId,
@@ -366,6 +368,12 @@ export class RenderPrivateRunnerAdapter {
               : "render_runner_intent_reconciliation_pending",
           );
         }
+        const durableIntents = (
+          await this.ledger.listProvisioningIntents(input.rolloutId)
+        ).filter((entry) => entry.id === provisioningIntentId);
+        if (durableIntents.length !== 1)
+          throw new Error("render_runner_intent_temporal_boundary_missing");
+        providerCreationNotBefore = durableIntents[0]!.createdAt;
         created = matching[0]!;
       }
     }
@@ -377,6 +385,7 @@ export class RenderPrivateRunnerAdapter {
           serviceId: input.baseServiceId,
           jobId: created.id,
           observedAt: this.now().toISOString(),
+          providerCreationNotBefore,
           cleanupCanary,
           lifecycle: input.lifecycle,
           provisioningIntentId,
@@ -651,7 +660,8 @@ export class RenderPrivateRunnerAdapter {
               rolloutId,
               serviceId: intent.serviceId,
               jobId: job.id,
-              observedAt: job.createdAt ?? intent.createdAt,
+              observedAt: this.now().toISOString(),
+              providerCreationNotBefore: intent.createdAt,
               cleanupCanary: `rr-cleanup:${rolloutId}:${intent.runnerName}`,
               lifecycle: intent.lifecycle,
               provisioningIntentId: intent.id,

@@ -67,6 +67,27 @@ describe("Render OpenAPI wrappers", () => {
     await expect(api.resume("srv-1")).resolves.toBeUndefined();
   });
 
+  it("fails closed on a malformed provider creation timestamp", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      json(
+        {
+          id: "job-1",
+          serviceId: "srv-1",
+          startCommand: "node runner",
+          status: "pending",
+          createdAt: "not-a-provider-timestamp",
+        },
+        201,
+      ),
+    );
+
+    await expect(
+      new RenderApiAdapter("redacted", fetchImpl).createJob("srv-1", {
+        startCommand: "node runner",
+      }),
+    ).rejects.toThrow("render_job_response_invalid");
+  });
+
   it("preserves every env value and verifies the complete replacement digest", async () => {
     const first = [
       {

@@ -105,6 +105,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       serviceId: "svc-api-contract",
       jobId,
       observedAt: now,
+      providerCreationNotBefore: now,
       cleanupCanary,
       lifecycle: "role",
       provisioningIntentId: intentId,
@@ -133,6 +134,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       removedPaths: ["/runner/_work/rr-api-contract/repository"],
       remainingPaths: [],
       providerLogId: "log-api-contract",
+      providerCreatedAt: now,
       providerObservedAt: now,
     });
     await ledger.markTerminal(jobId, {

@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 
+/** Authority-owned evidence captured before dispatching provider creation. */
+export type ProviderCreationBoundary = Readonly<{
+  providerCreationNotBefore: string;
+}>;
+
 export const RolloutPhase = Object.freeze({
   Planned: "planned",
   PreflightVerified: "preflight_verified",

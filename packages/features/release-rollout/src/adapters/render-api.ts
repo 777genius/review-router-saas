@@ -297,6 +297,12 @@ export class RenderApiAdapter {
       ![value.id, value.serviceId, value.startCommand, value.status].every(
         string,
       ) ||
+      (["createdAt", "updatedAt", "finishedAt"] as const).some(
+        (field) =>
+          value[field] !== undefined &&
+          (!string(value[field]) ||
+            !Number.isFinite(Date.parse(value[field] as string))),
+      ) ||
       (value.planId !== undefined &&
         value.planId !== null &&
         !string(value.planId))
@@ -321,6 +327,12 @@ export class RenderApiAdapter {
     if (
       ![value.id, value.serviceId, value.startCommand, value.status].every(
         string,
+      ) ||
+      (["createdAt", "updatedAt", "finishedAt"] as const).some(
+        (field) =>
+          value[field] !== undefined &&
+          (!string(value[field]) ||
+            !Number.isFinite(Date.parse(value[field] as string))),
       )
     )
       throw new Error("render_job_response_invalid");

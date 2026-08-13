@@ -174,6 +174,8 @@ const providerWitness = () => ({
 
 describe("Render private runner contract", () => {
   it("accepts additive documented fields, compute planId, and an attested image digest", async () => {
+    const jobLedger = ledger();
+    const requestStartedAt = new Date("2026-08-12T00:00:00.500Z");
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(json(service))
@@ -189,10 +191,11 @@ describe("Render private runner contract", () => {
       )
       .mockResolvedValueOnce(json(deploys));
     const result = await new RenderPrivateRunnerAdapter(
-      ledger(),
+      jobLedger,
       witness(),
       providerWitness(),
       fetchImpl,
+      () => requestStartedAt,
     ).provision(request);
     expect(result.identity.provenance).toEqual(request.expectedProvenance);
     expect(JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body))).toEqual({
@@ -201,6 +204,15 @@ describe("Render private runner contract", () => {
       ),
       planId: "starter-plus",
     });
+    expect(jobLedger.persistCreatedJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerCreationNotBefore: requestStartedAt.toISOString(),
+        observedAt: requestStartedAt.toISOString(),
+      }),
+    );
+    expect(jobLedger.persistProvisioningIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ createdAt: requestStartedAt.toISOString() }),
+    );
   });
 
   it("persists provider job identity immediately even when later response validation fails", async () => {
@@ -325,6 +337,15 @@ describe("Render private runner contract", () => {
     await expect(adapter.provision(request)).rejects.toThrow(
       "connection_lost_after_create",
     );
+    const durableCreatedAt = String(
+      jobLedger.persistProvisioningIntent.mock.calls[0]?.[0].createdAt,
+    );
+    jobLedger.listProvisioningIntents.mockResolvedValue([
+      {
+        id: String(jobLedger.persistProvisioningIntent.mock.calls[0]?.[0].id),
+        createdAt: durableCreatedAt,
+      } as never,
+    ]);
 
     const replayFetch = vi
       .fn()
@@ -347,6 +368,11 @@ describe("Render private runner contract", () => {
     ).provision(request);
     expect(result.jobId).toBe(created.id);
     expect(jobLedger.persistCreatedJob).toHaveBeenCalledTimes(1);
+    expect(jobLedger.persistCreatedJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerCreationNotBefore: durableCreatedAt,
+      }),
+    );
     expect(
       replayFetch.mock.calls.filter(([, init]) => init?.method === "POST"),
     ).toHaveLength(0);

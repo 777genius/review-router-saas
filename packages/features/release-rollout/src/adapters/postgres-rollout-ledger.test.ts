@@ -21,6 +21,7 @@ describe("PostgreSQL runner-effect ledger SQL contract", () => {
       serviceId: "svc-late",
       jobId: "job-late-'quoted",
       observedAt: "2026-08-13T00:00:00.000Z",
+      providerCreationNotBefore: "2026-08-12T23:59:59.000Z",
       cleanupCanary: "rr-cleanup:rollout-late:rr-late",
       lifecycle: "role" as const,
       provisioningIntentId: `rri-${"a".repeat(64)}`,

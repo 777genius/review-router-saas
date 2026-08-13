@@ -78,6 +78,9 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000004
 docker cp "$root/packages/platform/release-authority-db/migrations/000005_late_runner_effects/migration.sql" \
   "$name:/tmp/migration-000005.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000005.sql >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000006_runner_provider_creation_boundary/migration.sql" \
+  "$name:/tmp/migration-000006.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000006.sql >/dev/null
 
 postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
@@ -135,9 +138,9 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
      'sha256:'||repeat('1',64),
      91,92,ARRAY['self-hosted','rr-cutover'],'rr-cutover','_work/rr-cutover');
    INSERT INTO release_authority.runner_job(
-     job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,
+     job_id,rollout_id,provisioning_intent_id,service_id,observed_at,provider_creation_not_before,cleanup_canary,
      lifecycle,runner_identity,provision_observation)
-   VALUES ('job-cutover','r1','rri-'||repeat('1',64),'svc','$now','canary','cutover',
+   VALUES ('job-cutover','r1','rri-'||repeat('1',64),'svc','$now','$now','canary','cutover',
      '{\"workflowJobId\":\"9\"}','{\"step\":\"provision_cutover_runner\"}');" >/dev/null
 manifest_sha="sha256:$(printf 'a%.0s' $(seq 1 64))"
 target_contract_sha="sha256:$(printf 'b%.0s' $(seq 1 64))"
@@ -241,19 +244,27 @@ test "$permit_b" = dispatching:rrc-00000000-0000-4000-8000-000000000011
 docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
     'jobId','job-effect','rolloutId','r-effect','provisioningIntentId','rri-'||repeat('2',64),
-    'serviceId','svc-effect','observedAt','$now','cleanupCanary','rr-cleanup:r-effect:rr-effect',
+    'serviceId','svc-effect','observedAt','$now','providerCreationNotBefore','$now','cleanupCanary','rr-cleanup:r-effect:rr-effect',
     'lifecycle','role'))" >/dev/null
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+    'jobId','job-effect','rolloutId','r-effect','provisioningIntentId','rri-'||repeat('2',64),
+    'serviceId','svc-effect','observedAt','$now','providerCreationNotBefore','2000-01-01T00:00:00.000Z',
+    'cleanupCanary','rr-cleanup:r-effect:rr-effect','lifecycle','role'))" >/dev/null 2>&1; then
+  echo "runner job replay weakened its provider creation boundary" >&2
+  exit 1
+fi
 # A lost HTTP response may replay the identical durable job write, but a
 # conflicting identity must remain impossible.
 docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
     'jobId','job-effect','rolloutId','r-effect','provisioningIntentId','rri-'||repeat('2',64),
-    'serviceId','svc-effect','observedAt','$now','cleanupCanary','rr-cleanup:r-effect:rr-effect',
+    'serviceId','svc-effect','observedAt','$now','providerCreationNotBefore','$now','cleanupCanary','rr-cleanup:r-effect:rr-effect',
     'lifecycle','role'))" >/dev/null
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
     'jobId','job-effect','rolloutId','r-effect','provisioningIntentId','rri-'||repeat('2',64),
-    'serviceId','svc-effect','observedAt','$now','cleanupCanary','rr-cleanup:r-effect:conflict',
+    'serviceId','svc-effect','observedAt','$now','providerCreationNotBefore','$now','cleanupCanary','rr-cleanup:r-effect:conflict',
     'lifecycle','role'))" >/dev/null 2>&1; then
   echo "conflicting runner job replay unexpectedly succeeded" >&2
   exit 1
@@ -295,7 +306,7 @@ effect_witness=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP
       'containerTerminated',true,'logSha256','sha256:'||repeat('3',64),
       'removedPaths',jsonb_build_array('/runner/_work/rr-effect/repo'),
       'remainingPaths','[]'::jsonb,'providerLogId','log-effect',
-      'providerObservedAt','$now'))")
+      'providerCreatedAt','$now','providerObservedAt','$now'))")
 test "$effect_witness" = t
 effect_terminal=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
@@ -319,7 +330,7 @@ docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
     'jobId','job-effect-late','rolloutId','r-effect','provisioningIntentId','rri-'||repeat('2',64),
-    'serviceId','svc-effect','observedAt','$now','cleanupCanary','rr-cleanup:r-effect:rr-effect',
+    'serviceId','svc-effect','observedAt','$now','providerCreationNotBefore','$now','cleanupCanary','rr-cleanup:r-effect:rr-effect',
     'lifecycle','role'))" >/dev/null
 late_duplicate_effect=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
@@ -337,7 +348,7 @@ docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 \
       'containerTerminated',true,'logSha256','sha256:'||repeat('4',64),
       'removedPaths',jsonb_build_array('/runner/_work/rr-effect/late'),
       'remainingPaths','[]'::jsonb,'providerLogId','log-effect-late',
-      'providerObservedAt','$now'))" >/dev/null
+      'providerCreatedAt','$now','providerObservedAt','$now'))" >/dev/null
 docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_mark_terminal(
@@ -367,7 +378,7 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
      'startCommandSha256','sha256:'||repeat('e',64),'expectedEpoch',0,'leaseSeconds',120));
    SELECT release_authority.release_runner_persist_job(jsonb_build_object(
      'jobId','job-retryable-clean','rolloutId','r-retryable-clean',
-     'provisioningIntentId','rri-'||repeat('e',64),'serviceId','svc-retryable','observedAt','$now',
+     'provisioningIntentId','rri-'||repeat('e',64),'serviceId','svc-retryable','observedAt','$now','providerCreationNotBefore','$now',
      'cleanupCanary','rr-cleanup:r-retryable-clean:rr-retryable','lifecycle','role'));
    UPDATE release_authority.runner_intent SET effect_state='blocked',
      effect_block_reason='unknown',effect_safe_for_compensation=false
@@ -379,7 +390,7 @@ retryable_witness=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_S
       'containerTerminated',true,'logSha256','sha256:'||repeat('e',64),
       'removedPaths',jsonb_build_array('/runner/_work/rr-retryable/repo'),
       'remainingPaths','[]'::jsonb,'providerLogId','log-retryable',
-      'providerObservedAt','$now'))")
+      'providerCreatedAt','$now','providerObservedAt','$now'))")
 test "$retryable_witness" = t
 retryable_terminal=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_mark_terminal(
@@ -732,8 +743,8 @@ docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 -U reviewrout
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
   "INSERT INTO release_authority.runner_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,start_command_sha256)
    VALUES ('rri-'||repeat('3',64),'r3','svc','role','30','rr-test','$now','sha256:'||repeat('3',64));
-   INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,lifecycle)
-   VALUES ('job-clean','r3','rri-'||repeat('3',64),'svc','$now','canary','role');" >/dev/null
+   INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,provider_creation_not_before,cleanup_canary,lifecycle)
+   VALUES ('job-clean','r3','rri-'||repeat('3',64),'svc','$now','$now','canary','role');" >/dev/null
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_mark_terminal('job-clean','{\"step\":\"cleanup_role_runner\"}')" >/dev/null 2>&1; then
   echo "terminal CAS without provider cleanup witness unexpectedly succeeded" >&2
   exit 1
@@ -741,7 +752,7 @@ fi
 cleanup_seed=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
   "SELECT release_authority.release_runner_cleanup_observation_seed('job-clean') =
     jsonb_build_object('jobId','job-clean','serviceId','svc',
-      'cleanupCanary','canary','observedAt','$now')")
+      'cleanupCanary','canary','observedAt','$now','providerCreationNotBefore','$now')")
 test "$cleanup_seed" = t
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_cleanup_observation_seed('job-clean')" >/dev/null 2>&1; then
@@ -749,15 +760,20 @@ if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewro
   exit 1
 fi
 if docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
-  "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"failed\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/../secret\"],\"remainingPaths\":[],\"providerLogId\":\"log-1\",\"providerObservedAt\":\"$now\"}')" >/dev/null 2>&1; then
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"failed\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/../secret\"],\"remainingPaths\":[],\"providerLogId\":\"log-1\",\"providerCreatedAt\":\"$now\",\"providerObservedAt\":\"$now\"}')" >/dev/null 2>&1; then
   echo "unsafe cleanup witness unexpectedly succeeded" >&2
   exit 1
 fi
+if docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"succeeded\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/repo\"],\"remainingPaths\":[],\"providerLogId\":\"log-old\",\"providerCreatedAt\":\"2000-01-01T00:00:00.000Z\",\"providerObservedAt\":\"$now\"}')" >/dev/null 2>&1; then
+  echo "provider resource older than the request boundary satisfied cleanup witness" >&2
+  exit 1
+fi
 cleanup_saved=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
-  "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"succeeded\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/repo\"],\"remainingPaths\":[],\"providerLogId\":\"log-1\",\"providerObservedAt\":\"$now\"}')")
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"succeeded\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/repo\"],\"remainingPaths\":[],\"providerLogId\":\"log-1\",\"providerCreatedAt\":\"$now\",\"providerObservedAt\":\"$now\"}')")
 test "$cleanup_saved" = t
 cleanup_replayed=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
-  "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"succeeded\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/repo\"],\"remainingPaths\":[],\"providerLogId\":\"log-1\",\"providerObservedAt\":\"$now\"}')")
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"succeeded\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/repo\"],\"remainingPaths\":[],\"providerLogId\":\"log-1\",\"providerCreatedAt\":\"$now\",\"providerObservedAt\":\"$now\"}')")
 test "$cleanup_replayed" = t
 # A terminal recovery must also wait parent-first. The adversary holds rollout
 # and intent, then reaches for the job; a job-first terminal path deadlocks it.
@@ -807,7 +823,7 @@ docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewroute
      'startCommandSha256','sha256:'||repeat('b',64),'expectedEpoch',0,'leaseSeconds',120));
    SELECT release_authority.release_runner_persist_job(jsonb_build_object(
      'jobId','job-late-original','rolloutId','r-late-duplicate',
-     'provisioningIntentId','rri-'||repeat('b',64),'serviceId','svc-late','observedAt','$now',
+     'provisioningIntentId','rri-'||repeat('b',64),'serviceId','svc-late','observedAt','$now','providerCreationNotBefore','$now',
      'cleanupCanary','rr-cleanup:r-late-duplicate:rr-late-dupe','lifecycle','role'));
    SELECT release_authority.release_runner_reconcile_effect(jsonb_build_object(
      'intentId','rri-'||repeat('b',64),'claimantId','rrc-00000000-0000-4000-8000-000000000081',
@@ -823,7 +839,7 @@ for late_job in job-late-original job-late-after-clean; do
       "BEGIN;
        SELECT release_authority.release_runner_persist_job(jsonb_build_object(
          'jobId','$late_job','rolloutId','r-late-duplicate',
-         'provisioningIntentId','rri-'||repeat('b',64),'serviceId','svc-late','observedAt','$now',
+         'provisioningIntentId','rri-'||repeat('b',64),'serviceId','svc-late','observedAt','$now','providerCreationNotBefore','$now',
          'cleanupCanary','rr-cleanup:r-late-duplicate:rr-late-dupe','lifecycle','role'));
        SELECT pg_catalog.pg_advisory_xact_lock(810081);
        SELECT pg_catalog.pg_sleep(5);
@@ -856,7 +872,7 @@ for late_job in job-late-original job-late-after-clean; do
       'jobId','$late_job','canary','rr-cleanup:r-late-duplicate:rr-late-dupe',
       'providerStatus','succeeded','containerTerminated',true,'logSha256','sha256:'||repeat('b',64),
       'removedPaths',jsonb_build_array('/runner/_work/rr-late-dupe/repo'),'remainingPaths','[]'::jsonb,
-      'providerLogId','log-'||'$late_job','providerObservedAt','$now'))")
+      'providerLogId','log-'||'$late_job','providerCreatedAt','$now','providerObservedAt','$now'))")
   test "$late_witness" = t
   late_terminal=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
     "SELECT release_authority.release_runner_mark_terminal('$late_job',jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))")
@@ -894,7 +910,7 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
      'startCommandSha256','sha256:'||repeat('a',64),'expectedEpoch',0,'leaseSeconds',120));
    SELECT release_authority.release_runner_persist_job(jsonb_build_object(
      'jobId','job-activation-known','rolloutId','r-activation-fenced',
-     'provisioningIntentId','rri-'||repeat('a',64),'serviceId','svc-activation','observedAt','$now',
+     'provisioningIntentId','rri-'||repeat('a',64),'serviceId','svc-activation','observedAt','$now','providerCreationNotBefore','$now',
      'cleanupCanary','rr-cleanup:r-activation-fenced:rr-activation-fenced','lifecycle','role'));
    SELECT release_authority.release_runner_reconcile_effect(jsonb_build_object(
      'intentId','rri-'||repeat('a',64),'claimantId','rrc-00000000-0000-4000-8000-000000000086',
@@ -902,7 +918,7 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
      jsonb_build_object('result','pending','safeForCompensation',false)));
    SELECT release_authority.release_runner_persist_job(jsonb_build_object(
      'jobId','job-activation-known-duplicate','rolloutId','r-activation-fenced',
-     'provisioningIntentId','rri-'||repeat('a',64),'serviceId','svc-activation','observedAt','$now',
+     'provisioningIntentId','rri-'||repeat('a',64),'serviceId','svc-activation','observedAt','$now','providerCreationNotBefore','$now',
      'cleanupCanary','rr-cleanup:r-activation-fenced:rr-activation-fenced','lifecycle','role'))" >/dev/null
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "UPDATE release_authority.rollout SET state='activation_authorized',activation_boundary='uncertain',
@@ -930,14 +946,14 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
      'startCommandSha256','sha256:'||repeat('6',64),'expectedEpoch',0,'leaseSeconds',120));
    SELECT release_authority.release_runner_persist_job(jsonb_build_object(
      'jobId','job-activation-first','rolloutId','r-activation-wins',
-     'provisioningIntentId','rri-'||repeat('6',63)||'7','serviceId','svc-activation-wins','observedAt','$now',
+     'provisioningIntentId','rri-'||repeat('6',63)||'7','serviceId','svc-activation-wins','observedAt','$now','providerCreationNotBefore','$now',
      'cleanupCanary','rr-cleanup:r-activation-wins:rr-activation-wins','lifecycle','role'))" >/dev/null
 docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_cleanup_witness('job-activation-first',jsonb_build_object(
     'jobId','job-activation-first','canary','rr-cleanup:r-activation-wins:rr-activation-wins',
     'providerStatus','succeeded','containerTerminated',true,'logSha256','sha256:'||repeat('6',64),
     'removedPaths',jsonb_build_array('/runner/_work/rr-activation-wins/original'),'remainingPaths','[]'::jsonb,
-    'providerLogId','log-activation-first','providerObservedAt','$now'))" >/dev/null
+    'providerLogId','log-activation-first','providerCreatedAt','$now','providerObservedAt','$now'))" >/dev/null
 docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_mark_terminal('job-activation-first',
     jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))" >/dev/null
@@ -964,7 +980,7 @@ docker exec -e PGPASSWORD=control -e PGOPTIONS='-c lock_timeout=10s' "$name" psq
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
     'jobId','job-activation-late','rolloutId','r-activation-wins',
-    'provisioningIntentId','rri-'||repeat('6',63)||'7','serviceId','svc-activation-wins','observedAt','$now',
+    'provisioningIntentId','rri-'||repeat('6',63)||'7','serviceId','svc-activation-wins','observedAt','$now','providerCreationNotBefore','$now',
     'cleanupCanary','rr-cleanup:r-activation-wins:rr-activation-wins','lifecycle','role'));
    SELECT release_authority.release_runner_reconcile_effect(jsonb_build_object(
     'intentId','rri-'||repeat('6',63)||'7','claimantId','rrc-00000000-0000-4000-8000-000000000087',
@@ -976,14 +992,14 @@ docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewroute
     'jobId','job-activation-late','canary','rr-cleanup:r-activation-wins:rr-activation-wins',
     'providerStatus','succeeded','containerTerminated',true,'logSha256','sha256:'||repeat('6',64),
     'removedPaths',jsonb_build_array('/runner/_work/rr-activation-wins/late'),'remainingPaths','[]'::jsonb,
-    'providerLogId','log-activation-late','providerObservedAt','$now'))" >/dev/null
+    'providerLogId','log-activation-late','providerCreatedAt','$now','providerObservedAt','$now'))" >/dev/null
 docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_mark_terminal('job-activation-late',
     jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))" >/dev/null
 docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
     'jobId','job-activation-late','rolloutId','r-activation-wins',
-    'provisioningIntentId','rri-'||repeat('6',63)||'7','serviceId','svc-activation-wins','observedAt','$now',
+    'provisioningIntentId','rri-'||repeat('6',63)||'7','serviceId','svc-activation-wins','observedAt','$now','providerCreationNotBefore','$now',
     'cleanupCanary','rr-cleanup:r-activation-wins:rr-activation-wins','lifecycle','role'));
    SELECT release_authority.release_runner_mark_terminal('job-activation-late',
     jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))" >/dev/null
@@ -1038,7 +1054,7 @@ docker exec -e PGPASSWORD=control -e PGOPTIONS='-c lock_timeout=10s' "$name" psq
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
     'jobId','job-compensation-late','rolloutId','r-compensation-wins',
-    'provisioningIntentId','rri-'||repeat('5',63)||'8','serviceId','svc-compensation-wins','observedAt','$now',
+    'provisioningIntentId','rri-'||repeat('5',63)||'8','serviceId','svc-compensation-wins','observedAt','$now','providerCreationNotBefore','$now',
     'cleanupCanary','rr-cleanup:r-compensation-wins:rr-compensation-wins','lifecycle','role'))" >/dev/null
 wait "$compensation_winner_pid"
 docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
@@ -1046,7 +1062,7 @@ docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewroute
     'jobId','job-compensation-late','canary','rr-cleanup:r-compensation-wins:rr-compensation-wins',
     'providerStatus','succeeded','containerTerminated',true,'logSha256','sha256:'||repeat('5',64),
     'removedPaths',jsonb_build_array('/runner/_work/rr-compensation-wins/late'),'remainingPaths','[]'::jsonb,
-    'providerLogId','log-compensation-late','providerObservedAt','$now'))" >/dev/null
+    'providerLogId','log-compensation-late','providerCreatedAt','$now','providerObservedAt','$now'))" >/dev/null
 docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_mark_terminal('job-compensation-late',
     jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))" >/dev/null
@@ -1068,10 +1084,10 @@ for provider_status in failed canceled; do
     "SELECT release_authority.release_rollout_claim('$rollout',repeat('$suffix',40),'7',1,'170','270');
      INSERT INTO release_authority.runner_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,start_command_sha256)
      VALUES ('rri-'||repeat('$suffix',64),'$rollout','svc-$suffix','role','70','$runner_label','$now','sha256:'||repeat('$suffix',64));
-     INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,lifecycle)
-     VALUES ('job-$provider_status','$rollout','rri-'||repeat('$suffix',64),'svc-$suffix','$now','canary-$suffix','role');" >/dev/null
+     INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,provider_creation_not_before,cleanup_canary,lifecycle)
+     VALUES ('job-$provider_status','$rollout','rri-'||repeat('$suffix',64),'svc-$suffix','$now','$now','canary-$suffix','role');" >/dev/null
   terminal_witness=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
-    "SELECT release_authority.release_runner_persist_cleanup_witness('job-$provider_status',jsonb_build_object('jobId','job-$provider_status','canary','canary-$suffix','providerStatus','$provider_status','containerTerminated',true,'logSha256','sha256:'||repeat('$suffix',64),'removedPaths',jsonb_build_array('/runner/_work/$runner_label/repo'),'remainingPaths','[]'::jsonb,'providerLogId','log-$suffix','providerObservedAt','$now'))")
+    "SELECT release_authority.release_runner_persist_cleanup_witness('job-$provider_status',jsonb_build_object('jobId','job-$provider_status','canary','canary-$suffix','providerStatus','$provider_status','containerTerminated',true,'logSha256','sha256:'||repeat('$suffix',64),'removedPaths',jsonb_build_array('/runner/_work/$runner_label/repo'),'remainingPaths','[]'::jsonb,'providerLogId','log-$suffix','providerCreatedAt','$now','providerObservedAt','$now'))")
   test "$terminal_witness" = t
   terminal_result=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
     "SELECT release_authority.release_runner_mark_terminal('job-$provider_status',jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))")
@@ -1088,10 +1104,10 @@ for rejected_status in pending running unknown; do
     "SELECT release_authority.release_rollout_claim('$rejected_rollout',repeat('8',39)||'$rejected_index','8',1,'18$rejected_index','28$rejected_index');
      INSERT INTO release_authority.runner_intent(intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,start_command_sha256)
      VALUES ('rri-'||repeat('9',63)||'$rejected_index','$rejected_rollout','svc-rejected-$rejected_index','role','8$rejected_index','$rejected_label','$now','sha256:'||repeat('9',63)||'$rejected_index');
-     INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,cleanup_canary,lifecycle)
-     VALUES ('$rejected_job','$rejected_rollout','rri-'||repeat('9',63)||'$rejected_index','svc-rejected-$rejected_index','$now','canary-rejected-$rejected_index','role');" >/dev/null
+     INSERT INTO release_authority.runner_job(job_id,rollout_id,provisioning_intent_id,service_id,observed_at,provider_creation_not_before,cleanup_canary,lifecycle)
+     VALUES ('$rejected_job','$rejected_rollout','rri-'||repeat('9',63)||'$rejected_index','svc-rejected-$rejected_index','$now','$now','canary-rejected-$rejected_index','role');" >/dev/null
   if docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
-    "SELECT release_authority.release_runner_persist_cleanup_witness('$rejected_job',jsonb_build_object('jobId','$rejected_job','canary','canary-rejected-$rejected_index','providerStatus','$rejected_status','containerTerminated',true,'logSha256','sha256:'||repeat('9',63)||'$rejected_index','removedPaths',jsonb_build_array('/runner/_work/$rejected_label/repo'),'remainingPaths','[]'::jsonb,'providerLogId','log-rejected-$rejected_status','providerObservedAt','$now'))" >/dev/null 2>&1; then
+    "SELECT release_authority.release_runner_persist_cleanup_witness('$rejected_job',jsonb_build_object('jobId','$rejected_job','canary','canary-rejected-$rejected_index','providerStatus','$rejected_status','containerTerminated',true,'logSha256','sha256:'||repeat('9',63)||'$rejected_index','removedPaths',jsonb_build_array('/runner/_work/$rejected_label/repo'),'remainingPaths','[]'::jsonb,'providerLogId','log-rejected-$rejected_status','providerCreatedAt','$now','providerObservedAt','$now'))" >/dev/null 2>&1; then
     echo "nonterminal provider status $rejected_status unexpectedly satisfied cleanup witness" >&2
     exit 1
   fi

@@ -113,6 +113,7 @@ describe("release authority postgres JSONB bindings", () => {
       serviceId: "svc-late",
       jobId: "job-late",
       observedAt,
+      providerCreationNotBefore: observedAt,
       cleanupCanary: "rr-cleanup:rollout-late:rr-late",
       lifecycle: "role" as const,
       provisioningIntentId: `rri-${"d".repeat(64)}`,
@@ -480,6 +481,7 @@ describe("release authority postgres JSONB bindings", () => {
       serviceId: dangerous,
       jobId: "job",
       observedAt,
+      providerCreationNotBefore: observedAt,
       cleanupCanary: "canary",
       lifecycle: "role",
       provisioningIntentId: intent.id,
@@ -514,6 +516,7 @@ describe("release authority postgres JSONB bindings", () => {
       removedPaths: [`/runner/_work/rr-safe/${dangerous}`],
       remainingPaths: [],
       providerLogId: "log",
+      providerCreatedAt: observedAt,
       providerObservedAt: observedAt,
     } as const;
     await witnessAdapter.persistProviderWitness("job", witness as never);

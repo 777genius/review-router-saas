@@ -36,6 +36,19 @@ describe("release authority database installation", () => {
       "REVOKE ALL ON FUNCTION release_authority.release_runner_compensation_gate() FROM PUBLIC;",
     );
   });
+  it("installs the provider creation not-before boundary without rewriting migration history", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000006_runner_provider_creation_boundary/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain("provider_creation_not_before");
+    expect(migration).toContain(
+      "not_before IS DISTINCT FROM intent.created_at",
+    );
+    expect(migration).toContain(
+      "providerCreatedAt')::timestamptz < current_row.provider_creation_not_before",
+    );
+  });
   it("applies the complete ordered migration chain exactly once in one transaction", () => {
     expect(releaseAuthorityMigrationPaths).toEqual([
       "packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql",
@@ -44,6 +57,7 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000003_partial_source_freeze/migration.sql",
       "packages/platform/release-authority-db/migrations/000004_selective_source_recovery/migration.sql",
       "packages/platform/release-authority-db/migrations/000005_late_runner_effects/migration.sql",
+      "packages/platform/release-authority-db/migrations/000006_runner_provider_creation_boundary/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths.map((path) =>
@@ -56,6 +70,7 @@ describe("release authority database installation", () => {
       "28079c64266e1045c9db82743f82412d9630f6b97f3143fcbe7730c290c33e94",
       "c86e2546a9e135f5b23142a2ef1eb70bc12a0b41345f29abd5d2e5b7cbcaed97",
       "35db45ebd364e6f8cbeafbfb0ab6ac0056fe7e51de2b5fe844b91f1207ba1cfb",
+      "e49fe0f8c161fbe39953f01e299c81a752a152809c2261815a639bcf732c428a",
     ]);
     const bundle = releaseAuthorityMigrationBundle();
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
@@ -70,12 +85,14 @@ describe("release authority database installation", () => {
       "CREATE TRIGGER release_source_resume_rollout_ownership_guard",
     );
     const sixth = bundle.indexOf("rolloutStateAtPersistence");
+    const seventh = bundle.indexOf("runner_job_provider_creation_boundary");
     expect(first).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(first);
     expect(third).toBeGreaterThan(second);
     expect(fourth).toBeGreaterThan(third);
     expect(fifth).toBeGreaterThan(fourth);
     expect(sixth).toBeGreaterThan(fifth);
+    expect(seventh).toBeGreaterThan(sixth);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
     expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(1);

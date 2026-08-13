@@ -6,6 +6,7 @@ import type {
   RunnerProvisioningIntentRecord,
   ProviderAuthorityDecision,
   ProviderAuthorityRequest,
+  ProviderCreationBoundary,
   RunnerIdentity,
   StepObservation,
   TargetSwitchFence,
@@ -41,7 +42,7 @@ export type CreateProvisioningIntent = Omit<
   ProvisioningIntent,
   "creationLeaseOwner" | "creationLeaseExpiresAt" | "effect"
 > & { creationLeaseOwner: string };
-export type PersistedJob = {
+export type PersistedJob = ProviderCreationBoundary & {
   rolloutId: string;
   serviceId: string;
   jobId: string;
@@ -73,6 +74,7 @@ export type PersistedProviderCleanupWitness = Readonly<{
   removedPaths: readonly string[];
   remainingPaths: readonly [];
   providerLogId: string;
+  providerCreatedAt: string;
   providerObservedAt: string;
 }>;
 export type IndependentCleanupWitness = Readonly<{

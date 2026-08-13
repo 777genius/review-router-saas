@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createReleaseWitnessApp } from "./release-witness-composition";
+import { RenderCleanupObservationAdapter } from "./release-witness-adapters";
 
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -8,7 +9,8 @@ const seed = {
   jobId: "job-1",
   serviceId: "srv-1",
   cleanupCanary: "rr-cleanup:rollout-1:rr-runner",
-  observedAt: "2026-08-12T00:00:00.000Z",
+  observedAt: "2026-08-12T00:00:02.000Z",
+  providerCreationNotBefore: "2026-08-12T00:00:00.000Z",
 };
 const json = (value: unknown) =>
   new Response(JSON.stringify(value), {
@@ -46,6 +48,48 @@ const cleanupLog = (id = "log-1") => ({
 });
 
 describe("release witness observation", () => {
+  it("accepts a provider job created during the request before its durable observation", async () => {
+    const renderFetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/jobs/job-1")) return json(renderJob("succeeded"));
+      if (url.endsWith("/services/srv-1")) return json(renderService);
+      return json({ logs: [cleanupLog()] });
+    });
+
+    await expect(
+      new RenderCleanupObservationAdapter(
+        "render-read-only",
+        renderFetch,
+      ).observe(seed),
+    ).resolves.toMatchObject({
+      providerCreatedAt: "2026-08-12T00:00:01.000Z",
+    });
+  });
+
+  it.each([
+    ["exact boundary", "2026-08-12T00:00:01.000Z", true],
+    ["one millisecond before", "2026-08-12T00:00:01.001Z", false],
+  ] as const)(
+    "enforces the provider creation %s",
+    async (_label, notBefore, accepted) => {
+      const boundarySeed = { ...seed, providerCreationNotBefore: notBefore };
+      const renderFetch = vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes("/jobs/job-1")) return json(renderJob("succeeded"));
+        if (url.endsWith("/services/srv-1")) return json(renderService);
+        return json({ logs: [cleanupLog()] });
+      });
+      const observation = new RenderCleanupObservationAdapter(
+        "render-read-only",
+        renderFetch,
+      ).observe(boundarySeed);
+
+      if (accepted) await expect(observation).resolves.toBeDefined();
+      else
+        await expect(observation).rejects.toThrow(
+          "release_witness_terminal_window_invalid",
+        );
+    },
+  );
+
   it("rejects caller-supplied facts before querying Render or the database", async () => {
     const prisma = { $queryRaw: vi.fn() };
     const renderFetch = vi.fn();
@@ -126,6 +170,7 @@ describe("release witness observation", () => {
         removedPaths: ["/runner/_work/rr-runner/repository"],
         remainingPaths: [],
         providerLogId: "log-1",
+        providerCreatedAt: "2026-08-12T00:00:01.000Z",
         providerObservedAt: "2026-08-12T00:01:59.000Z",
       });
       expect(persistedEvidence).not.toHaveProperty("rolloutOutcome");
