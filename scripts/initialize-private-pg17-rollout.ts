@@ -11,6 +11,7 @@ import {
   type StepObservation,
   type VerifiedReleaseImageProvenance,
 } from "../packages/features/release-rollout/src/index";
+import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -41,6 +42,10 @@ const expectedPreflightDigest = `sha256:${createHash("sha256")
   .digest("hex")}`;
 if (observationSha256 !== expectedPreflightDigest)
   throw new Error("private_pg17_preflight_digest_mismatch");
+const trustedImagePolicy = privatePg17ReleaseImagePolicy({
+  sourceRepository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
+  sourceRevision: required("REVIEW_ROUTER_EXPECTED_SHA"),
+});
 const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
   JSON.parse(
     readFileSync(
@@ -48,10 +53,7 @@ const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
       "utf8",
     ),
   ) as VerifiedReleaseImageProvenance,
-  {
-    sourceRepository: required("GITHUB_REPOSITORY"),
-    sourceRevision: required("REVIEW_ROUTER_EXPECTED_SHA"),
-  },
+  trustedImagePolicy,
 );
 
 let rollout = createReleaseRollout({

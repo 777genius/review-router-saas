@@ -22,6 +22,7 @@ import {
   type VerifiedReleaseImageProvenance,
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
+import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -39,12 +40,13 @@ const copy = JSON.parse(
   equivalence: unknown;
 };
 let rollout = copy.rollout;
+const trustedImagePolicy = privatePg17ReleaseImagePolicy({
+  sourceRepository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
+  sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+});
 const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
   copy.releaseImageProvenance,
-  {
-    sourceRepository: required("GITHUB_REPOSITORY"),
-    sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
-  },
+  trustedImagePolicy,
 );
 const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
   JSON.parse(
@@ -53,10 +55,7 @@ const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
       "utf8",
     ),
   ) as VerifiedReleaseImageProvenance,
-  {
-    sourceRepository: required("GITHUB_REPOSITORY"),
-    sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
-  },
+  trustedImagePolicy,
 );
 if (
   !sameReleaseImageProvenance(

@@ -19,6 +19,7 @@ import {
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
 import { executePrivatePg17GenerationBinding } from "./initialize-private-pg17-generation-binding.mjs";
+import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -54,12 +55,13 @@ const initial = JSON.parse(
   releaseImageProvenance: VerifiedReleaseImageProvenance;
 };
 let rollout = initial.rollout;
+const trustedImagePolicy = privatePg17ReleaseImagePolicy({
+  sourceRepository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
+  sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+});
 const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
   initial.releaseImageProvenance,
-  {
-    sourceRepository: required("GITHUB_REPOSITORY"),
-    sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
-  },
+  trustedImagePolicy,
 );
 const canonicalReleaseEnvironment = {
   ...process.env,

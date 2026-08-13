@@ -10,6 +10,7 @@ import {
 } from "./release-rollout";
 import {
   assertVerifiedReleaseImageProvenance,
+  type TrustedReleaseImagePolicy,
   type VerifiedReleaseImageProvenance,
 } from "./release-image-provenance";
 
@@ -145,17 +146,19 @@ const exact = (value: object, keys: readonly string[]): boolean =>
 
 export function assembleTrustedRolloutEvidence(
   value: Omit<TrustedRolloutEvidence, "schemaVersion" | "evidenceSha256">,
+  trustedImagePolicy: TrustedReleaseImagePolicy,
 ): TrustedRolloutEvidence {
   const unsigned = Object.freeze({ ...value, schemaVersion: 5 as const });
   const evidence = Object.freeze({
     ...unsigned,
     evidenceSha256: `sha256:${sha256Canonical(unsigned)}`,
   });
-  return assertTrustedRolloutEvidence(evidence);
+  return assertTrustedRolloutEvidence(evidence, trustedImagePolicy);
 }
 
 export function assertTrustedRolloutEvidence(
   value: TrustedRolloutEvidence,
+  trustedImagePolicy: TrustedReleaseImagePolicy,
 ): TrustedRolloutEvidence {
   if (
     !exact(value, [
@@ -254,13 +257,15 @@ export function assertTrustedRolloutEvidence(
     !value.resumedTargetDeployIds.length
   )
     throw new Error("trusted_rollout_evidence_invariant_failed");
-  assertVerifiedReleaseImageProvenance(value.releaseImageProvenance, {
-    sourceRepository: value.execution.controlRepository,
-    sourceRevision: value.releaseCommitSha,
-    imageRepository: value.releaseImageProvenance.claim.imageRepository,
-    verificationPolicySha256:
-      value.releaseImageProvenance.verification.policySha256,
-  });
+  assertVerifiedReleaseImageProvenance(
+    value.releaseImageProvenance,
+    trustedImagePolicy,
+  );
+  if (
+    value.execution.controlRepository !== trustedImagePolicy.sourceRepository ||
+    value.releaseCommitSha !== trustedImagePolicy.sourceRevision
+  )
+    throw new Error("trusted_rollout_evidence_release_policy_mismatch");
   if (
     value.targetDeploys.length === 0 ||
     new Set(value.targetDeploys.map((deploy) => deploy.serviceId)).size !==

@@ -9,6 +9,11 @@ import {
   type ReleaseImageIdentity,
   type VerifiedReleaseImageProvenance,
 } from "../packages/features/release-rollout/src/index";
+import {
+  PRIVATE_PG17_RELEASE_IMAGE_CONFIGURATION,
+  privatePg17AttestationPolicy,
+  privatePg17ReleaseImagePolicy,
+} from "./lib/private-pg17-release-image-policy";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -21,7 +26,9 @@ const positiveId = (name: string): string => {
     throw new Error(`private_pg17_release_image_invalid:${name}`);
   return value;
 };
-const repository = required("GITHUB_REPOSITORY");
+const repository = required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY");
+if (required("GITHUB_REPOSITORY") !== repository)
+  throw new Error("private_pg17_release_image_control_repository_mismatch");
 const expectedCommit = required("REVIEW_ROUTER_EXPECTED_SHA");
 const releaseRunId = positiveId("REVIEW_ROUTER_RELEASE_RUN_ID");
 const artifactId = positiveId("REVIEW_ROUTER_RELEASE_ARTIFACT_ID");
@@ -57,30 +64,21 @@ const api = async <T>(path: string): Promise<T> => {
 const identity = assertReleaseImageIdentity(
   JSON.parse(readFileSync(identityPath, "utf8")) as ReleaseImageIdentity,
 );
-const expectedImageRepository = "ghcr.io/777genius/review-router-saas-runtime";
+const trustedPolicy = privatePg17ReleaseImagePolicy({
+  sourceRepository: repository,
+  sourceRevision: expectedCommit,
+});
 if (
   identity.repository !== repository ||
   identity.commit !== expectedCommit ||
-  releaseImageRepository(identity) !== expectedImageRepository
+  releaseImageRepository(identity) !== trustedPolicy.imageRepository
 )
   throw new Error("private_pg17_release_image_identity_mismatch");
 
-const verificationPolicy = {
-  provider: "github-actions",
+const verificationPolicy = privatePg17AttestationPolicy({
   sourceRepository: repository,
   sourceRevision: expectedCommit,
-  workflowPath: ".github/workflows/release.yml",
-  sourceRef: "refs/heads/main",
-  imageRepository: expectedImageRepository,
-  attestation: {
-    denySelfHostedRunners: true,
-    signerWorkflow: `github.com/${repository}/.github/workflows/release.yml`,
-    sourceDigest: expectedCommit,
-  },
-} as const;
-const verificationPolicySha256 = `sha256:${sha256Canonical(
-  verificationPolicy,
-)}`;
+});
 
 const artifact = await api<{
   id?: number;
@@ -112,7 +110,7 @@ if (
   run.run_attempt !== 1 ||
   run.event !== "workflow_dispatch" ||
   run.head_sha !== expectedCommit ||
-  run.path !== ".github/workflows/release.yml" ||
+  run.path !== PRIVATE_PG17_RELEASE_IMAGE_CONFIGURATION.workflowPath ||
   run.conclusion !== "success" ||
   run.repository?.full_name !== repository
 )
@@ -128,11 +126,11 @@ const verified = spawnSync(
     repository,
     "--deny-self-hosted-runners",
     "--signer-workflow",
-    `github.com/${repository}/.github/workflows/release.yml`,
+    verificationPolicy.attestation.signerWorkflow,
     "--source-digest",
     expectedCommit,
     "--source-ref",
-    "refs/heads/main",
+    verificationPolicy.sourceRef,
   ],
   {
     encoding: "utf8",
@@ -160,25 +158,17 @@ const provenance: VerifiedReleaseImageProvenance = {
     identitySha256: `sha256:${sha256Canonical(identity)}`,
     sourceRepository: repository,
     sourceRevision: expectedCommit,
-    imageRepository: expectedImageRepository,
+    imageRepository: trustedPolicy.imageRepository,
     buildRunId: releaseRunId,
     artifactId,
     artifactName: artifact.name,
   },
   verification: {
-    policySha256: verificationPolicySha256,
+    policySha256: trustedPolicy.verificationPolicySha256,
     verifiedAt: new Date().toISOString(),
   },
 };
-assertVerifiedReleaseImageProvenance(provenance, {
-  sourceRepository: repository,
-  sourceRevision: expectedCommit,
-  imageRepository: expectedImageRepository,
-  verificationPolicySha256,
-  buildRunId: releaseRunId,
-  artifactId,
-  artifactName: artifact.name,
-});
+assertVerifiedReleaseImageProvenance(provenance, trustedPolicy);
 writeFileSync(outputPath, `${JSON.stringify(provenance)}\n`, {
   encoding: "utf8",
   mode: 0o600,

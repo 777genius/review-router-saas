@@ -12,6 +12,12 @@ const commit = "a".repeat(40);
 const imageDigest = `sha256:${"b".repeat(64)}`;
 const imageRepository = "registry.example/runtime-owner/runtime-image";
 const policySha256 = `sha256:${"c".repeat(64)}`;
+const trustedPolicy = {
+  sourceRepository: repository,
+  sourceRevision: commit,
+  imageRepository,
+  verificationPolicySha256: policySha256,
+} as const;
 const identity: ReleaseImageIdentity = {
   schemaVersion: "reviewrouter.hosted-runtime-image.v1",
   repository,
@@ -40,12 +46,7 @@ const provenance = (): VerifiedReleaseImageProvenance => ({
 describe("verified release image provenance", () => {
   it("binds source repository, exact revision, image repository and digest, run, artifact, and policy", () => {
     expect(
-      assertVerifiedReleaseImageProvenance(provenance(), {
-        sourceRepository: repository,
-        sourceRevision: commit,
-        imageRepository,
-        verificationPolicySha256: policySha256,
-      }),
+      assertVerifiedReleaseImageProvenance(provenance(), trustedPolicy),
     ).toEqual(provenance());
   });
 
@@ -82,14 +83,17 @@ describe("verified release image provenance", () => {
     const value = provenance();
     const changedDigest = `sha256:${"d".repeat(64)}`;
     expect(() =>
-      assertVerifiedReleaseImageProvenance({
-        ...value,
-        identity: {
-          ...value.identity,
-          imageDigest: changedDigest,
-          imageUrl: `${imageRepository}@${changedDigest}`,
+      assertVerifiedReleaseImageProvenance(
+        {
+          ...value,
+          identity: {
+            ...value.identity,
+            imageDigest: changedDigest,
+            imageUrl: `${imageRepository}@${changedDigest}`,
+          },
         },
-      }),
+        trustedPolicy,
+      ),
     ).toThrow("release_image_provenance_invalid");
   });
 
@@ -116,34 +120,43 @@ describe("verified release image provenance", () => {
         ),
       ).toThrow("release_image_provenance_invalid");
     expect(() =>
-      assertVerifiedReleaseImageProvenance({
-        ...value,
-        verification: {
-          ...value.verification,
-          policySha256: "invalid",
+      assertVerifiedReleaseImageProvenance(
+        {
+          ...value,
+          verification: {
+            ...value.verification,
+            policySha256: "invalid",
+          },
         },
-      }),
+        trustedPolicy,
+      ),
     ).toThrow("release_image_provenance_invalid");
   });
 
   it("accepts provider-neutral OCI repository identities", () => {
     const value = provenance();
     expect(
-      assertVerifiedReleaseImageProvenance({
-        ...value,
-        identity: {
-          ...value.identity,
-          imageUrl: `registry.internal:5000/team/runtime@${imageDigest}`,
-        },
-        claim: {
-          ...value.claim,
-          imageRepository: "registry.internal:5000/team/runtime",
-          identitySha256: `sha256:${sha256Canonical({
+      assertVerifiedReleaseImageProvenance(
+        {
+          ...value,
+          identity: {
             ...value.identity,
             imageUrl: `registry.internal:5000/team/runtime@${imageDigest}`,
-          })}`,
+          },
+          claim: {
+            ...value.claim,
+            imageRepository: "registry.internal:5000/team/runtime",
+            identitySha256: `sha256:${sha256Canonical({
+              ...value.identity,
+              imageUrl: `registry.internal:5000/team/runtime@${imageDigest}`,
+            })}`,
+          },
         },
-      }).claim.imageRepository,
+        {
+          ...trustedPolicy,
+          imageRepository: "registry.internal:5000/team/runtime",
+        },
+      ).claim.imageRepository,
     ).toBe("registry.internal:5000/team/runtime");
   });
 
@@ -173,9 +186,41 @@ describe("verified release image provenance", () => {
   ])(
     "normalizes malformed %s to the provenance domain error",
     (_name, value) => {
-      expect(() => assertVerifiedReleaseImageProvenance(value)).toThrow(
-        "release_image_provenance_invalid",
-      );
+      expect(() =>
+        assertVerifiedReleaseImageProvenance(value, trustedPolicy),
+      ).toThrow("release_image_provenance_invalid");
     },
   );
+
+  it("fails closed without an external trusted policy", () => {
+    expect(() =>
+      assertVerifiedReleaseImageProvenance(provenance(), undefined as never),
+    ).toThrow("release_image_provenance_invalid");
+  });
+
+  it("rejects self-consistent evidence that substitutes its own repository and policy", () => {
+    const substitutedRepository = "attacker/repository";
+    const substitutedPolicy = `sha256:${"f".repeat(64)}`;
+    const substitutedIdentity = {
+      ...identity,
+      repository: substitutedRepository,
+    };
+    const selfAttested = {
+      ...provenance(),
+      identity: substitutedIdentity,
+      claim: {
+        ...provenance().claim,
+        identitySha256: `sha256:${sha256Canonical(substitutedIdentity)}`,
+        sourceRepository: substitutedRepository,
+      },
+      verification: {
+        ...provenance().verification,
+        policySha256: substitutedPolicy,
+      },
+    };
+
+    expect(() =>
+      assertVerifiedReleaseImageProvenance(selfAttested, trustedPolicy),
+    ).toThrow("release_image_provenance_invalid");
+  });
 });

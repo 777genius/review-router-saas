@@ -4,6 +4,12 @@ import {
   assertTrustedRolloutEvidence,
   type TrustedRolloutEvidence,
 } from "../packages/features/release-rollout/src/index";
+import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
+const required = (name: string): string => {
+  const value = process.env[name];
+  if (!value) throw new Error(`private_pg17_evidence_policy_missing:${name}`);
+  return value;
+};
 const path = process.env.REVIEW_ROUTER_FINALIZED_ROLLOUT_FILE;
 if (!path) throw new Error("private_pg17_finalized_rollout_file_required");
 const finalized = JSON.parse(readFileSync(path, "utf8")) as {
@@ -17,5 +23,11 @@ if (
   finalized.phase !== "rollout_verified"
 )
   throw new Error("private_pg17_finalized_rollout_incomplete");
-assertTrustedRolloutEvidence(finalized.evidence);
+assertTrustedRolloutEvidence(
+  finalized.evidence,
+  privatePg17ReleaseImagePolicy({
+    sourceRepository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
+    sourceRevision: required("REVIEW_ROUTER_EXPECTED_SHA"),
+  }),
+);
 process.stdout.write(`${JSON.stringify(finalized.evidence)}\n`);
