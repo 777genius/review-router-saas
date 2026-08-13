@@ -305,7 +305,13 @@ describe("authenticated service transition ledger", () => {
       fetchImpl,
     );
 
-    const { sequence: _sequence, ...input } = checkpoint;
+    const input = {
+      rolloutId: checkpoint.rolloutId,
+      manifestSha256: checkpoint.manifestSha256,
+      targetContractSha256: checkpoint.targetContractSha256,
+      serviceId: checkpoint.serviceId,
+      step: checkpoint.step,
+    };
     await expect(adapter.append(input)).resolves.toEqual(checkpoint);
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://control.example.test/v1/service-transitions/rollout-1/checkpoints",
