@@ -900,9 +900,9 @@ async function verifyProductionPathRehearsal(facts) {
         observed(RolloutStep.CompleteCompensation, { resumed: true }),
     },
     runner: {
-      provision: async () => ({
-        identity: provision,
-        observation: observed(
+      provision: async () => {
+        const lifecycle = provision === roleRunner ? "role" : "cutover";
+        const observation = observed(
           provision === roleRunner
             ? RolloutStep.ProvisionRoleRunner
             : RolloutStep.ProvisionCutoverRunner,
@@ -912,8 +912,54 @@ async function verifyProductionPathRehearsal(facts) {
             renderDeployId: provision.provenance.deployId,
             githubWorkflowJobId: provision.workflowJobId,
           },
-        ),
-      }),
+        );
+        const intentId = `rri-${createHash("sha256")
+          .update(
+            `${rollout.rolloutId}:${lifecycle}:${execution.runId}:${provision.workflowJobId}:${provision.baseServiceId}`,
+          )
+          .digest("hex")}`;
+        await ledger.persistProvisioningIntent({
+          id: intentId,
+          rolloutId: rollout.rolloutId,
+          serviceId: provision.baseServiceId,
+          lifecycle,
+          workflowJobId: provision.workflowJobId,
+          runnerName: provision.runnerName,
+          createdAt: observation.observedAt,
+        });
+        await ledger.persistCreatedJob({
+          rolloutId: rollout.rolloutId,
+          serviceId: provision.baseServiceId,
+          jobId: provision.renderJobId,
+          observedAt: observation.observedAt,
+          cleanupCanary: provision.cleanupCanary,
+          lifecycle,
+          provisioningIntentId: intentId,
+        });
+        await ledger.recordProvisioningOutcome({
+          intentId,
+          jobId: provision.renderJobId,
+          outcome: "bound",
+        });
+        await ledger.persistRegistration({
+          rolloutId: rollout.rolloutId,
+          lifecycle,
+          workflowJobId: provision.workflowJobId,
+          registration: {
+            runnerId: lifecycle === "role" ? 1001 : 1002,
+            runnerGroupId: provision.runnerGroupId,
+            labels: ["self-hosted", provision.uniqueRunnerLabel],
+            uniqueLabel: provision.uniqueRunnerLabel,
+            workFolder: provision.workFolder,
+          },
+        });
+        await ledger.persistValidatedIdentity(
+          provision.renderJobId,
+          provision,
+          observation,
+        );
+        return { identity: provision, observation };
+      },
       cleanup: async () => {
         const observedAt = new Date(
           Date.UTC(2026, 7, 12, 0, 0, tick++),

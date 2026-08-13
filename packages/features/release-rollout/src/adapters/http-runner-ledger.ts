@@ -119,6 +119,23 @@ export class AuthenticatedRunnerLedgerAdapter
       { method: "PUT", body: JSON.stringify({ identity, observation }) },
     );
   }
+  async persistRegistration(input: {
+    rolloutId: string;
+    lifecycle: "role" | "cutover";
+    workflowJobId: string;
+    registration: {
+      runnerId: number;
+      runnerGroupId: number;
+      labels: readonly string[];
+      uniqueLabel: string;
+      workFolder: string;
+    };
+  }): Promise<void> {
+    await this.request("/v1/runner-jobs/registration", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
   async currentRunner(
     rolloutId: string,
     lifecycle: "role" | "cutover",
