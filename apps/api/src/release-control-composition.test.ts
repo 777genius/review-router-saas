@@ -21,6 +21,10 @@ const authorityReadiness = (
     systemIdentifier: "authority-system",
     postgresMajor: 17,
     schemaVersion: 10,
+    catalogFingerprint: "sha256:canonical-catalog",
+    expectedCatalogFingerprint: "sha256:canonical-catalog",
+    catalogVerifier: "complete_catalog_v1",
+    catalogExact: true,
     migrationManifest: [
       [
         "000001_release_authority",
@@ -97,6 +101,10 @@ const installerReadiness = [
     systemIdentifier: "target-system",
     postgresMajor: 17,
     schemaVersion: 0,
+    catalogFingerprint: "sha256:empty-catalog",
+    expectedCatalogFingerprint: "",
+    catalogVerifier: "",
+    catalogExact: false,
     migrationManifest: [],
     controlRoutine: false,
     providerRoutine: false,
@@ -123,6 +131,10 @@ const readerReadiness = [
     systemIdentifier: "target-system",
     postgresMajor: 17,
     schemaVersion: 0,
+    catalogFingerprint: "sha256:empty-catalog",
+    expectedCatalogFingerprint: "",
+    catalogVerifier: "",
+    catalogExact: false,
     migrationManifest: [],
     controlRoutine: false,
     providerRoutine: false,
@@ -890,6 +902,7 @@ describe("release authority process composition", () => {
   );
 
   it.each([
+    "catalogExact",
     "selectiveRecoveryProtocol",
     "lateRunnerEffectProtocol",
     "recoveryEffectProtocol",

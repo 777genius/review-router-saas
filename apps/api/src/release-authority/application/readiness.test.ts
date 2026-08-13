@@ -1,0 +1,135 @@
+import { describe, expect, it } from "vitest";
+import {
+  releaseAuthoritySchemaIsReady,
+  type ReleaseAuthorityDatabaseReadiness,
+} from "./readiness";
+import {
+  releaseAuthorityCatalogVerifier,
+  releaseAuthorityMigrationContract,
+} from "../domain/readiness-contract.mjs";
+
+const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
+  roleName: "reviewrouter_release_control",
+  systemIdentifier: "1",
+  postgresMajor: 17,
+  schemaVersion: 10,
+  migrationManifest: releaseAuthorityMigrationContract.map(
+    ([migrationName, checksumSha256], index) => {
+      if (!migrationName || !checksumSha256)
+        throw new Error("release_authority_test_contract_invalid");
+      return {
+        position: index + 1,
+        migrationName,
+        checksumSha256,
+        byteVariant: "canonical" as const,
+      };
+    },
+  ),
+  catalogFingerprint: "sha256:catalog",
+  expectedCatalogFingerprint: "sha256:catalog",
+  catalogVerifier: releaseAuthorityCatalogVerifier,
+  catalogExact: true,
+  controlRoutine: true,
+  providerRoutine: true,
+  installerRoutine: false,
+  readerRoutine: false,
+  externalEffectProtocol: true,
+  sourceFreezeProtocol: true,
+  selectiveRecoveryProtocol: true,
+  lateRunnerEffectProtocol: true,
+  recoveryEffectProtocol: true,
+  compensationCheckpointDefinition: true,
+  runnerProviderBoundary: true,
+  cleanupWitnessTemporalSemantics: true,
+  requiredTriggers: true,
+  authorityOwnershipExact: true,
+  authorityAclExact: true,
+  publicAuthorityRevoked: true,
+  authorityTablesRevoked: true,
+});
+
+describe("release authority exact readiness contract", () => {
+  it("accepts the canonical contract", () => {
+    expect(releaseAuthoritySchemaIsReady(canonical())).toBe(true);
+  });
+
+  it.each([
+    "catalogExact",
+    "authorityOwnershipExact",
+    "authorityAclExact",
+    "requiredTriggers",
+  ] as const)("fails closed when %s is false", (field) => {
+    expect(
+      releaseAuthoritySchemaIsReady({ ...canonical(), [field]: false }),
+    ).toBe(false);
+  });
+
+  it("rejects fingerprint and verifier mismatch", () => {
+    expect(
+      releaseAuthoritySchemaIsReady({
+        ...canonical(),
+        expectedCatalogFingerprint: "sha256:other",
+      }),
+    ).toBe(false);
+    expect(
+      releaseAuthoritySchemaIsReady({
+        ...canonical(),
+        catalogVerifier: "important_objects_v0",
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts only the complete canonical or documented paired legacy history", () => {
+    const legacy = canonical().migrationManifest.map((entry, index) =>
+      index === 0
+        ? {
+            ...entry,
+            checksumSha256:
+              "sha256:e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b",
+            byteVariant: "legacy_equivalent" as const,
+          }
+        : index === 1
+          ? {
+              ...entry,
+              checksumSha256:
+                "sha256:cd50e36c2b357fe03a81204b99f38c5c1e6b9ff94660dfecb9a2fccb782a512e",
+              byteVariant: "legacy_equivalent" as const,
+            }
+          : entry,
+    );
+    expect(
+      releaseAuthoritySchemaIsReady({
+        ...canonical(),
+        migrationManifest: legacy,
+      }),
+    ).toBe(true);
+    expect(
+      releaseAuthoritySchemaIsReady({
+        ...canonical(),
+        migrationManifest: legacy.slice(0, -1),
+      }),
+    ).toBe(false);
+    expect(
+      releaseAuthoritySchemaIsReady({
+        ...canonical(),
+        migrationManifest: legacy.map((entry, index) =>
+          index === 1 ? { ...entry, byteVariant: "canonical" as const } : entry,
+        ),
+      }),
+    ).toBe(false);
+    expect(
+      releaseAuthoritySchemaIsReady({
+        ...canonical(),
+        migrationManifest: canonical().migrationManifest.map((entry, index) =>
+          index === 2
+            ? {
+                ...entry,
+                checksumSha256: undefined as unknown as string,
+                byteVariant: "legacy_equivalent" as const,
+              }
+            : entry,
+        ),
+      }),
+    ).toBe(false);
+  });
+});

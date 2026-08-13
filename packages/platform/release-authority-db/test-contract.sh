@@ -264,6 +264,7 @@ postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
 REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_TEST_URL="postgresql://reviewrouter_release_witness:witness@127.0.0.1:$postgres_port/postgres" \
 REVIEW_ROUTER_RELEASE_AUTHORITY_ADMIN_TEST_URL="postgresql://postgres:test@127.0.0.1:$postgres_port/postgres" \
+REVIEW_ROUTER_RELEASE_AUTHORITY_LEGACY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/rr_supported_legacy" \
   pnpm exec vitest --configLoader runner run \
     apps/api/src/release-authority/adapters/postgres.real.test.ts \
     apps/api/src/release-authority/adapters/postgres-readiness.real.test.ts
