@@ -461,9 +461,10 @@ export class AuthenticatedRunnerLedgerAdapter
   async append(
     checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,
   ): Promise<ServiceTransitionCheckpoint> {
+    const { rolloutId, ...body } = checkpoint;
     const value = (await this.request(
-      `/v1/service-transitions/${encodeURIComponent(checkpoint.rolloutId)}/checkpoints`,
-      { method: "POST", body: JSON.stringify(checkpoint) },
+      `/v1/service-transitions/${encodeURIComponent(rolloutId)}/checkpoints`,
+      { method: "POST", body: JSON.stringify(body) },
     )) as Record<string, unknown>;
     if (!value.checkpoint || typeof value.checkpoint !== "object")
       throw new Error("runner_ledger_service_transition_checkpoint_invalid");

@@ -7,6 +7,11 @@ import {
 
 describe("release authority routine error boundary", () => {
   it.each([
+    "provider authority binding denied",
+    "provider authority receipt denied",
+    "provider authority state denied",
+    "provider authority replay conflict",
+    "provider authority runner effects changed during compensation",
     "release service transition intent conflict",
     "release service transition recovery intent missing",
     "release service transition checkpoint conflict",
@@ -29,6 +34,29 @@ describe("release authority routine error boundary", () => {
     },
   );
 
+  it("recognizes the exact PostgreSQL error envelope emitted by Prisma", () => {
+    expect(() =>
+      normalizeReleaseAuthorityRoutineError({
+        code: "P2010",
+        meta: {
+          code: "P0001",
+          message:
+            "ERROR: provider authority state denied\nCONTEXT: PL/pgSQL function release_provider_authority_decide(jsonb)",
+        },
+      }),
+    ).toThrow(ReleaseAuthorityAdapterConflictError);
+  });
+
+  it("recognizes the Prisma 7 raw-query envelope without meta.code", () => {
+    expect(() =>
+      normalizeReleaseAuthorityRoutineError({
+        code: "P2010",
+        message:
+          "\nInvalid `prisma.$queryRaw()` invocation:\n\n\nRaw query failed. Code: `P0001`. Message: `provider authority state denied`",
+      }),
+    ).toThrow(ReleaseAuthorityAdapterConflictError);
+  });
+
   it("maps a missing durable routine row to 409 by SQLSTATE", () => {
     expect(() =>
       normalizeReleaseAuthorityRoutineError({ code: "P0002" }),
@@ -39,6 +67,9 @@ describe("release authority routine error boundary", () => {
     "release service transition intent invalid",
     "release service transition outcome invalid",
     "prefix release service transition checkpoint conflict suffix",
+    "ERROR: prefix provider authority state denied",
+    "ERROR: provider authority state denied suffix",
+    "Raw query failed. Code: `P0001`. Message: `provider authority state denied` suffix",
     "sensitive database implementation detail",
   ])("sanitizes non-conflict database failures as 500: %s", (message) => {
     const cause = { code: "P2010", meta: { code: "P0001", message } };

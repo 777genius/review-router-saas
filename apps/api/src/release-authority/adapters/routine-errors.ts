@@ -3,7 +3,11 @@ const conflictMessages = new Set([
   "release authority activation identity conflict",
   "release authority activation replay conflict",
   "release authority activation receipt conflict",
+  "provider authority binding denied",
+  "provider authority receipt denied",
+  "provider authority state denied",
   "provider authority replay conflict",
+  "provider authority runner effects changed during compensation",
   "release runner intent identity conflict",
   "release runner duplicate effects unsafe for activation",
   "release source freeze binding invalid",
@@ -54,11 +58,21 @@ export const normalizeReleaseAuthorityRoutineError = (
           meta?: { code?: unknown; message?: unknown };
         })
       : undefined;
-  const databaseCode = value?.meta?.code ?? value?.code;
   const detail = String(value?.meta?.message ?? value?.message ?? "");
+  const prismaFailure =
+    value?.code === "P2010"
+      ? /(?:^|\n)Raw query failed\. Code: `(P\d{4})`\. Message: `([^`\r\n]+)`$/u.exec(
+          detail,
+        )
+      : null;
+  const postgresFailure = /^ERROR: ([^\r\n]+)(?:\r?\nCONTEXT:[\s\S]*)?$/u.exec(
+    detail,
+  );
+  const databaseCode = value?.meta?.code ?? prismaFailure?.[1] ?? value?.code;
+  const routineMessage = prismaFailure?.[2] ?? postgresFailure?.[1] ?? detail;
   if (
     databaseCode === "P0002" ||
-    (databaseCode === "P0001" && conflictMessages.has(detail))
+    (databaseCode === "P0001" && conflictMessages.has(routineMessage))
   )
     throw new ReleaseAuthorityAdapterConflictError();
   throw new ReleaseAuthorityAdapterUnexpectedError(error);

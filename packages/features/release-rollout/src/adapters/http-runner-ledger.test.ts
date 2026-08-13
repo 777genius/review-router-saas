@@ -284,6 +284,44 @@ describe("authenticated runner ledger reconciliation", () => {
   );
 });
 
+describe("authenticated service transition ledger", () => {
+  it("keeps rollout identity in the path instead of duplicating it in the body", async () => {
+    const checkpoint = {
+      rolloutId: "rollout-1",
+      manifestSha256: `sha256:${"a".repeat(64)}`,
+      targetContractSha256: `sha256:${"b".repeat(64)}`,
+      serviceId: "srv-a",
+      sequence: 1,
+      step: "target_config_intent" as const,
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ checkpoint }), { status: 200 }),
+      );
+    const adapter = new AuthenticatedRunnerLedgerAdapter(
+      "https://control.example.test",
+      "control-token",
+      fetchImpl,
+    );
+
+    const { sequence: _sequence, ...input } = checkpoint;
+    await expect(adapter.append(input)).resolves.toEqual(checkpoint);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://control.example.test/v1/service-transitions/rollout-1/checkpoints",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          manifestSha256: checkpoint.manifestSha256,
+          targetContractSha256: checkpoint.targetContractSha256,
+          serviceId: checkpoint.serviceId,
+          step: checkpoint.step,
+        }),
+      }),
+    );
+  });
+});
+
 describe("authenticated runner provider creation lease", () => {
   it("lists prepared, dispatching, bound, and cleaned intents through the canonical contract", async () => {
     const ownerId = "rrc-00000000-0000-4000-8000-000000000001";
