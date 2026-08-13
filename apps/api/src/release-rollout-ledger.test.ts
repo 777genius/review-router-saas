@@ -294,6 +294,39 @@ const services = (repository: CombinedLedgerPort) => ({
 });
 
 describe("release rollout ledger internal API", () => {
+  it("rejects malformed service-transition completion input with HTTP 400", async () => {
+    const completed: unknown[] = [];
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(new ConcurrentRepository()),
+      serviceTransition: {
+        complete: async (input: unknown) => completed.push(input),
+      } as never,
+    });
+    const request = (payload: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/service-transitions/rollout-1/complete",
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+
+    expect((await request({})).statusCode).toBe(400);
+    expect((await request({ outcome: "invalid" })).statusCode).toBe(400);
+    expect(
+      (await request({ outcome: "source_recovered", extra: true })).statusCode,
+    ).toBe(400);
+    expect(completed).toEqual([]);
+
+    expect((await request({ outcome: "source_recovered" })).statusCode).toBe(
+      204,
+    );
+    expect(completed).toEqual([
+      { rolloutId: "rollout-1", outcome: "source_recovered" },
+    ]);
+    await app.close();
+  });
+
   it("authenticates internal callers and keeps claim idempotent", async () => {
     const app = Fastify();
     await registerReleaseRolloutLedgerRoutes(app, {

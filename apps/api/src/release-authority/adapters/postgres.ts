@@ -50,6 +50,14 @@ const conflictMessages = new Set([
   "release source freeze inventory conflict",
   "release source freeze completion binding invalid",
   "release source freeze completion replay conflict",
+  "release source resume lacks rollout suspension evidence",
+  "release target service transition incomplete",
+  "release source recovery manifest mismatch",
+  "release source service recovery incomplete",
+]);
+
+const malformedRequestMessages = new Set([
+  "release service transition outcome invalid",
 ]);
 
 const normalizeRoutineError = (error: unknown): never => {
@@ -69,6 +77,13 @@ const normalizeRoutineError = (error: unknown): never => {
   )
     throw Object.assign(new Error("release_authority_conflict"), {
       statusCode: 409,
+    });
+  if (
+    databaseCode === "P0001" &&
+    [...malformedRequestMessages].some((message) => detail.includes(message))
+  )
+    throw Object.assign(new Error("release_authority_request_invalid"), {
+      statusCode: 400,
     });
   throw error;
 };

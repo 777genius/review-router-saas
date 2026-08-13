@@ -194,6 +194,24 @@ const sourceFreezeCompletionRequest = (value: unknown, rolloutId: string) => {
     );
   return body;
 };
+const serviceTransitionCompletionRequest = (
+  value: unknown,
+  rolloutId: string,
+): {
+  rolloutId: string;
+  outcome: "target_staged" | "source_recovered";
+} => {
+  const body = record(value);
+  if (
+    !exactKeys(body, ["outcome"]) ||
+    (body.outcome !== "target_staged" && body.outcome !== "source_recovered")
+  )
+    throw Object.assign(
+      new Error("release_service_transition_request_invalid"),
+      { statusCode: 400 },
+    );
+  return { rolloutId, outcome: body.outcome };
+};
 const effectPathBody = (
   value: unknown,
   intentId: string,
@@ -346,10 +364,12 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/service-transitions/:rolloutId/complete",
     { preHandler: control },
     async (request, reply) => {
-      await serviceTransition().complete({
-        ...record(request.body),
-        rolloutId: request.params.rolloutId,
-      } as never);
+      await serviceTransition().complete(
+        serviceTransitionCompletionRequest(
+          request.body,
+          request.params.rolloutId,
+        ),
+      );
       return reply.code(204).send();
     },
   );

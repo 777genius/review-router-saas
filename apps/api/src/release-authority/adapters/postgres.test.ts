@@ -331,6 +331,57 @@ describe("release authority postgres JSONB bindings", () => {
     ).rejects.toBe(conflict);
   });
 
+  it.each([
+    "release source resume lacks rollout suspension evidence",
+    "release target service transition incomplete",
+    "release source recovery manifest mismatch",
+    "release source service recovery incomplete",
+  ])(
+    "maps selective-recovery precondition conflict to HTTP 409: %s",
+    async (message) => {
+      const conflict = Object.assign(new Error("raw query failed"), {
+        code: "P2010",
+        meta: { code: "P0001", message },
+      });
+      const prisma = {
+        $queryRaw: async () => {
+          throw conflict;
+        },
+      } as unknown as PrismaClient;
+      const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+      await expect(
+        adapter.complete({ rolloutId: "rollout", outcome: "source_recovered" }),
+      ).rejects.toMatchObject({
+        message: "release_authority_conflict",
+        statusCode: 409,
+      });
+    },
+  );
+
+  it("maps malformed service-transition input to HTTP 400", async () => {
+    const malformed = Object.assign(new Error("raw query failed"), {
+      code: "P2010",
+      meta: {
+        code: "P0001",
+        message: "release service transition outcome invalid",
+      },
+    });
+    const prisma = {
+      $queryRaw: async () => {
+        throw malformed;
+      },
+    } as unknown as PrismaClient;
+    const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+    await expect(
+      adapter.complete({ rolloutId: "rollout", outcome: "invalid" as never }),
+    ).rejects.toMatchObject({
+      message: "release_authority_request_invalid",
+      statusCode: 400,
+    });
+  });
+
   it("binds serialized JSON text and casts every routine JSON argument", async () => {
     const recorder = new QueryRecorder();
     const prisma = recorder as unknown as PrismaClient;

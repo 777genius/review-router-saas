@@ -106,11 +106,16 @@ Missing, unavailable, stale, duplicate, or contradictory ledger responses stop
 the rollout. Do not bypass this dependency with artifacts, labels, or in-memory
 state.
 
-The dedicated authority is installed in order from
-`000001_release_authority`, `000002_external_effect_protocol`, and
-`000002_transactional_service_transition`. The disposable PG16 to PG17
-rehearsal and the dedicated authority contract must both execute that complete
-inventory before a release is eligible for production.
+The dedicated authority's canonical migration chain is, in order:
+`000001_release_authority`, `000002_external_effect_protocol`,
+`000002_transactional_service_transition`, `000003_partial_source_freeze`,
+`000004_selective_source_recovery`, `000005_late_runner_effects`, and
+`000006_runner_provider_creation_boundary`,
+`000007_compensation_effect_fence`, and `000008_trigger_helper_acl`. The final
+three migrations bind provider creation time, recheck late effects at every
+compensation boundary, and remove the remaining public trigger-helper grant.
+The disposable PG16 to PG17 rehearsal and dedicated authority contract must
+execute this complete inventory before a release is eligible for production.
 
 The hosted runner controller receives the plaintext witness credential as
 `REVIEW_ROUTER_RUNNER_WITNESS_TOKEN`; the runner container never receives it.
@@ -255,7 +260,7 @@ lifecycles, and no remaining Docker resources.
 
 External prerequisites are intentionally blockers, not defaults: dedicated
 control repository, exact restricted runner group, protected environments,
-three Render credentials, root-owned App key secret file, immutable runner
+four Render credentials, root-owned App key secret file, immutable runner
 service provenance, authenticated backup/export witness, and the durable ledger
 API backed by the installed PostgreSQL schema. Until each is independently
 observed, this implementation is not dispatchable and production remains
