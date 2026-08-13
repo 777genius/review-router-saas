@@ -171,6 +171,29 @@ export async function observeReleaseAuthorityDatabaseReadiness(
             (SELECT * FROM expected_schema_acl EXCEPT SELECT * FROM actual_schema_acl)
           )
           AND NOT EXISTS (SELECT 1 FROM unexpected_relation_acl)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_roles candidate
+            JOIN pg_catalog.pg_namespace authority_namespace
+              ON authority_namespace.nspname = 'release_authority'
+            WHERE candidate.oid <> authority_namespace.nspowner
+              AND (
+                candidate.rolcanlogin
+                OR candidate.rolname IN (SELECT role_name FROM expected_acl)
+              )
+              AND (
+                candidate.rolsuper
+                OR pg_catalog.pg_has_role(
+                  candidate.oid, authority_namespace.nspowner, 'MEMBER'
+                )
+                OR pg_catalog.pg_has_role(
+                  candidate.oid, authority_namespace.nspowner, 'USAGE'
+                )
+                OR pg_catalog.pg_has_role(
+                  candidate.oid, authority_namespace.nspowner, 'SET'
+                )
+              )
+          )
           AS exact
       )
       SELECT current_user AS "roleName",

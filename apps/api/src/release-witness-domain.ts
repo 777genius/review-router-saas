@@ -33,6 +33,11 @@ export interface RenderCleanupObservationPort {
   observe(seed: CleanupObservationSeed): Promise<NormalizedCleanupEvidence>;
 }
 
+/** Application-facing authority fence; infrastructure owns how readiness is observed. */
+export interface ReleaseAuthorityMutationReadinessPort {
+  assertReady(): Promise<void>;
+}
+
 const instant = (value: string): number => {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed))

@@ -18,6 +18,9 @@ realDescribe("release authority exact catalog readiness", () => {
     await admin.$executeRawUnsafe(
       "CREATE ROLE reviewrouter_unexpected_acl_probe NOLOGIN",
     );
+    await admin.$executeRawUnsafe(
+      "CREATE ROLE reviewrouter_owner_membership_probe NOLOGIN",
+    );
   });
 
   afterAll(async () => {
@@ -30,6 +33,12 @@ realDescribe("release authority exact catalog readiness", () => {
       );
       await admin.$executeRawUnsafe(
         "DROP ROLE IF EXISTS reviewrouter_unexpected_acl_probe",
+      );
+      await admin.$executeRawUnsafe(
+        "DROP OWNED BY reviewrouter_owner_membership_probe",
+      );
+      await admin.$executeRawUnsafe(
+        "DROP ROLE IF EXISTS reviewrouter_owner_membership_probe",
       );
     }
     await Promise.all(
@@ -115,5 +124,48 @@ realDescribe("release authority exact catalog readiness", () => {
     await admin.$executeRawUnsafe(
       "ALTER TYPE release_authority.aggregate_state OWNER TO postgres",
     );
+  });
+
+  it("rejects direct and inherited effective membership in the authority owner role", async () => {
+    if (!admin) throw new Error("real_postgres_test_unconfigured");
+    const owners = await admin.$queryRawUnsafe<{ owner: string }[]>(
+      "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname='release_authority'",
+    );
+    const owner = owners[0]?.owner;
+    if (!owner || !/^[A-Za-z_][A-Za-z0-9_$]*$/u.test(owner))
+      throw new Error("real_postgres_authority_owner_invalid");
+    const quotedOwner = `"${owner.replaceAll('"', '""')}"`;
+
+    await admin.$executeRawUnsafe(
+      `GRANT ${quotedOwner} TO reviewrouter_release_control`,
+    );
+    try {
+      await expect(readiness()).resolves.toMatchObject({
+        authorityAclExact: false,
+      });
+    } finally {
+      await admin.$executeRawUnsafe(
+        `REVOKE ${quotedOwner} FROM reviewrouter_release_control`,
+      );
+    }
+
+    await admin.$executeRawUnsafe(
+      `GRANT ${quotedOwner} TO reviewrouter_owner_membership_probe`,
+    );
+    await admin.$executeRawUnsafe(
+      "GRANT reviewrouter_owner_membership_probe TO reviewrouter_release_control",
+    );
+    try {
+      await expect(readiness()).resolves.toMatchObject({
+        authorityAclExact: false,
+      });
+    } finally {
+      await admin.$executeRawUnsafe(
+        "REVOKE reviewrouter_owner_membership_probe FROM reviewrouter_release_control",
+      );
+      await admin.$executeRawUnsafe(
+        `REVOKE ${quotedOwner} FROM reviewrouter_owner_membership_probe`,
+      );
+    }
   });
 });

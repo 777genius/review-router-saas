@@ -31,6 +31,7 @@ import {
   codexRotatingPrimaryKeys as exactPrimaryKeys,
   codexRotatingProviderRuntimeUpdateColumns,
 } from "./codex-rotating-production-writer-schema.mjs";
+import { assertCompleteAdmittedRecoveryEvidence } from "./capture-codex-rotating-production-writer.mjs";
 
 /**
  * Runtime validators below are the trust boundary for observation data. Their
@@ -441,23 +442,18 @@ function verifyDatabase(db, descriptor, need, options) {
         db.databaseGenerationBinding.recoveryWitnessSha256,
     "database recovery witness is not stored against this database generation",
   );
-  need(
-    hasExactKeys(db?.admittedRecoveryEvidence, [
-      "databaseIncarnations",
-      "witnessFingerprints",
-    ]) &&
-      Array.isArray(db.admittedRecoveryEvidence.witnessFingerprints) &&
-      Array.isArray(db.admittedRecoveryEvidence.databaseIncarnations) &&
-      db.admittedRecoveryEvidence.witnessFingerprints.length > 0 &&
-      db.admittedRecoveryEvidence.databaseIncarnations.length > 0 &&
-      db.admittedRecoveryEvidence.witnessFingerprints.every(
-        (value) => value === db.recoveryWitnessSha256,
-      ) &&
-      db.admittedRecoveryEvidence.databaseIncarnations.every(
-        (value) => value === db.databaseIdentity.systemIdentifier,
-      ),
-    "admitted recovery evidence is not bound to this database generation",
-  );
+  try {
+    assertCompleteAdmittedRecoveryEvidence(
+      db?.admittedRecoveryEvidence,
+      db?.recoveryWitnessSha256,
+      db?.databaseIdentity?.systemIdentifier,
+    );
+  } catch {
+    need(
+      false,
+      "admitted recovery evidence is incomplete or not source-bound to this database generation",
+    );
+  }
   need(
     hasExactKeys(db?.callerIdentity, [
       "commit",
@@ -1880,15 +1876,10 @@ function verifyProviderCapture(
 }
 
 function verifyDeployments(observation, descriptor, need, options) {
-  const raw = verifyProviderCapture(
-    observation,
-    descriptor,
-    "Render",
-    need,
-    options,
-  );
+  verifyProviderCapture(observation, descriptor, "Render", need, options);
+  const rawResponses = observation?.rawResponses ?? [];
   need(
-    observation?.observationVersion === 2 &&
+    observation?.observationVersion === 3 &&
       observation?.source === "render-api" &&
       hasExactKeys(observation, [
         "observationVersion",
@@ -1919,8 +1910,23 @@ function verifyDeployments(observation, descriptor, need, options) {
   );
   need(
     observation?.database?.ownerId === observation?.captureIdentity?.ownerId &&
-      raw.includes(observation?.database?.id ?? "__missing_database__") &&
-      raw.includes(observation?.database?.ownerId ?? "__missing_owner__"),
+      rawResponses.some(
+        (response) =>
+          response?.url ===
+            `https://api.render.com/v1/owners/${encodeURIComponent(observation?.captureIdentity?.ownerId ?? "")}` &&
+          response?.body?.id === observation?.captureIdentity?.ownerId &&
+          response?.body?.name === observation?.captureIdentity?.ownerName,
+      ) &&
+      rawResponses.some(
+        (response) =>
+          response?.url ===
+            `https://api.render.com/v1/postgres/${encodeURIComponent(observation?.database?.id ?? "")}` &&
+          response?.body?.id === observation?.database?.id &&
+          response?.body?.name === observation?.database?.name &&
+          String(response?.body?.version) === observation?.database?.version &&
+          (response?.body?.ownerId ?? response?.body?.owner?.id) ===
+            observation?.database?.ownerId,
+      ),
     "Render database is not bound to the authenticated owner and raw API facts",
   );
   need(
@@ -1946,10 +1952,39 @@ function verifyDeployments(observation, descriptor, need, options) {
           "serviceMigrationCallerEnabled",
           "observedAt",
         ]) &&
-        raw.includes(entry.serviceId) &&
-        raw.includes(entry.deployId) &&
-        raw.includes(entry.commit) &&
-        raw.includes(entry.imageDigest),
+        rawResponses.some((response) => {
+          const preDeployCommand =
+            response?.body?.serviceDetails?.envSpecificDetails
+              ?.preDeployCommand;
+          return (
+            response?.url ===
+              `https://api.render.com/v1/services/${encodeURIComponent(entry.serviceId)}` &&
+            response?.body?.id === entry.serviceId &&
+            response?.body?.name === entry.name &&
+            typeof preDeployCommand === "string" &&
+            (preDeployCommand || null) === entry.preDeployCommand &&
+            (preDeployCommand !== "") === entry.serviceMigrationCallerEnabled
+          );
+        }) &&
+        rawResponses.some(
+          (response) =>
+            response?.url ===
+              `https://api.render.com/v1/services/${encodeURIComponent(entry.serviceId)}/deploys/${encodeURIComponent(entry.deployId)}` &&
+            response?.body?.id === entry.deployId &&
+            (response?.body?.commit?.id ?? response?.body?.commitId) ===
+              entry.commit &&
+            (response?.body?.image?.digest ?? response?.body?.imageDigest) ===
+              entry.imageDigest &&
+            response?.body?.status === entry.status &&
+            (response?.body?.updatedAt ?? response?.body?.createdAt) ===
+              entry.observedAt,
+        ) &&
+        rawResponses.some(
+          (response) =>
+            response?.url ===
+              `https://api.render.com/v1/services/${encodeURIComponent(entry.serviceId)}/env-vars/REVIEW_ROUTER_CODEX_ROTATING_MUTATION_ADMISSION` &&
+            response?.body?.value === entry.rotatingMutationAdmission,
+        ),
     ),
     "Render deployment facts are not derivable from immutable raw API responses",
   );
@@ -1963,18 +1998,78 @@ function verifyDeployments(observation, descriptor, need, options) {
     "Render deployment service names, roles, or immutable IDs are invalid",
   );
   need(
+    new Set(services.map((entry) => entry.serviceId)).size === 3,
+    "Render deployment service identities are not unique",
+  );
+  need(
     hasExactKeys(observation?.runtimeWitness, [
-      "serviceId",
       "key",
+      "observations",
       "sha256",
-      "sourceResponseSha256",
     ]) &&
       /^[a-f0-9]{64}$/u.test(observation?.runtimeWitness?.sha256 ?? "") &&
       observation.runtimeWitness.key ===
         "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS" &&
-      raw.includes(observation.runtimeWitness.serviceId) &&
-      raw.includes(observation.runtimeWitness.sourceResponseSha256),
-    "Render runtime witness observation is absent or not source-bound",
+      Array.isArray(observation.runtimeWitness.observations) &&
+      observation.runtimeWitness.observations.length === 8 &&
+      equalSorted(
+        observation.runtimeWitness.observations.map(
+          (entry) => `${entry.phase}:${entry.role}`,
+        ),
+        [
+          "after:api",
+          "after:web",
+          "after:witness",
+          "after:worker",
+          "before:api",
+          "before:web",
+          "before:witness",
+          "before:worker",
+        ],
+      ) &&
+      ["api", "web", "worker", "witness"].every(
+        (role) =>
+          new Set(
+            observation.runtimeWitness.observations
+              .filter((entry) => entry.role === role)
+              .map((entry) => entry.serviceId),
+          ).size === 1,
+      ) &&
+      observation.runtimeWitness.observations.every(
+        (entry) =>
+          hasExactKeys(entry, [
+            "phase",
+            "role",
+            "serviceId",
+            "sourceResponseSha256",
+          ]) &&
+          ["before", "after"].includes(entry.phase) &&
+          typeof entry.serviceId === "string" &&
+          entry.serviceId.length > 0 &&
+          /^[a-f0-9]{64}$/u.test(entry.sourceResponseSha256 ?? "") &&
+          observation.rawResponses.some(
+            (response) =>
+              response?.url ===
+                `https://api.render.com/v1/services/${encodeURIComponent(entry.serviceId)}/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS` &&
+              response?.bodySha256 === entry.sourceResponseSha256 &&
+              hasExactKeys(response?.body, [
+                "key",
+                "observationPhase",
+                "valueSha256",
+              ]) &&
+              response.body.key === "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS" &&
+              response.body.observationPhase === entry.phase &&
+              response.body.valueSha256 === observation.runtimeWitness.sha256,
+          ) &&
+          (entry.role === "witness"
+            ? !services.some((service) => service.serviceId === entry.serviceId)
+            : services.some(
+                (service) =>
+                  service.role === entry.role &&
+                  service.serviceId === entry.serviceId,
+              )),
+      ),
+    "Render runtime witness observation is absent, mixed, or not source-bound",
   );
   const commits = new Set(services.map((entry) => entry.commit));
   const images = new Set(services.map((entry) => entry.imageDigest));

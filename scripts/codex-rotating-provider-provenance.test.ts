@@ -51,6 +51,10 @@ describe("source-bound provider provenance", () => {
         version: "17.6",
         ownerId: "own-1",
       },
+      "/v1/services/srv-witness/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS":
+        {
+          value: "independent-secret",
+        },
       "/v1/services/srv-migration": {
         id: "srv-migration",
         name: "reviewrouter-release-migration",
@@ -74,9 +78,6 @@ describe("source-bound provider provenance", () => {
           finishedAt: "2026-08-10T00:00:00Z",
         },
       ],
-      "/v1/services/srv-api/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS": {
-        value: "independent-secret",
-      },
     };
     for (const role of ["api", "web", "worker"]) {
       values[`/v1/services/srv-${role}`] = {
@@ -96,6 +97,9 @@ describe("source-bound provider provenance", () => {
       values[
         `/v1/services/srv-${role}/env-vars/REVIEW_ROUTER_CODEX_ROTATING_MUTATION_ADMISSION`
       ] = { value: "off" };
+      values[
+        `/v1/services/srv-${role}/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS`
+      ] = { value: "independent-secret" };
     }
     const fetchImpl = vi.fn(async (input: string | URL) =>
       response(values[new URL(input).pathname]),
@@ -110,7 +114,7 @@ describe("source-bound provider provenance", () => {
           deployId: "dep-migration",
           jobId: "job-migration",
         },
-        witnessServiceId: "srv-api",
+        witnessServiceId: "srv-witness",
         services: ["api", "web", "worker"].map((role) => ({
           role,
           serviceId: `srv-${role}`,
@@ -120,12 +124,21 @@ describe("source-bound provider provenance", () => {
       fetchImpl as typeof fetch,
     );
     expect(observation).toMatchObject({
-      observationVersion: 2,
+      observationVersion: 3,
       captureIdentity: { ownerId: "own-1", authenticated: true },
       database: { id: "dpg-db", ownerId: "own-1" },
       runtimeWitness: {
         key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
         sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        observations: expect.arrayContaining([
+          expect.objectContaining({
+            role: "witness",
+            serviceId: "srv-witness",
+          }),
+          expect.objectContaining({ role: "api", serviceId: "srv-api" }),
+          expect.objectContaining({ role: "web", serviceId: "srv-web" }),
+          expect.objectContaining({ role: "worker", serviceId: "srv-worker" }),
+        ]),
       },
       services: expect.arrayContaining([
         expect.objectContaining({
@@ -135,7 +148,93 @@ describe("source-bound provider provenance", () => {
       ]),
     });
     expect(observation.rawResponses.length).toBeGreaterThan(8);
+    expect(observation.runtimeWitness.observations).toHaveLength(8);
+    expect(
+      new Set(
+        observation.runtimeWitness.observations.map(
+          (entry: any) => `${entry.phase}:${entry.role}`,
+        ),
+      ),
+    ).toEqual(
+      new Set(
+        ["before", "after"].flatMap((phase) =>
+          ["api", "web", "worker", "witness"].map((role) => `${phase}:${role}`),
+        ),
+      ),
+    );
     expect(JSON.stringify(observation)).not.toContain("independent-secret");
+
+    values[
+      "/v1/services/srv-worker/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS"
+    ] = { value: "substituted-secret" };
+    await expect(
+      captureRenderProvenance(
+        {
+          token: "render-token",
+          ownerId: "own-1",
+          databaseId: "dpg-db",
+          witnessServiceId: "srv-witness",
+          services: ["api", "web", "worker"].map((role) => ({
+            role,
+            serviceId: `srv-${role}`,
+            deployId: `dep-${role}`,
+          })),
+        },
+        fetchImpl as typeof fetch,
+      ),
+    ).rejects.toThrow("runtime witnesses do not converge");
+    values[
+      "/v1/services/srv-worker/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS"
+    ] = { value: "independent-secret" };
+
+    let apiWitnessCaptures = 0;
+    const mixedFetch = vi.fn(async (input: string | URL) => {
+      const path = new URL(input).pathname;
+      if (
+        path ===
+          "/v1/services/srv-api/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS" &&
+        ++apiWitnessCaptures === 2
+      )
+        return response({ value: "late-substitution" });
+      return response(values[path]);
+    });
+    await expect(
+      captureRenderProvenance(
+        {
+          token: "render-token",
+          ownerId: "own-1",
+          databaseId: "dpg-db",
+          witnessServiceId: "srv-witness",
+          services: ["api", "web", "worker"].map((role) => ({
+            role,
+            serviceId: `srv-${role}`,
+            deployId: `dep-${role}`,
+          })),
+        },
+        mixedFetch as typeof fetch,
+      ),
+    ).rejects.toThrow("runtime witnesses do not converge");
+
+    values["/v1/services/srv-api"] = {
+      ...values["/v1/services/srv-api"],
+      id: "srv-substituted",
+    };
+    await expect(
+      captureRenderProvenance(
+        {
+          token: "render-token",
+          ownerId: "own-1",
+          databaseId: "dpg-db",
+          witnessServiceId: "srv-witness",
+          services: ["api", "web", "worker"].map((role) => ({
+            role,
+            serviceId: `srv-${role}`,
+            deployId: `dep-${role}`,
+          })),
+        },
+        fetchImpl as typeof fetch,
+      ),
+    ).rejects.toThrow("service or deploy identity was substituted");
 
     values["/v1/services/srv-api"] = {
       id: "srv-api",
@@ -154,7 +253,7 @@ describe("source-bound provider provenance", () => {
           deployId: "dep-migration",
           jobId: "job-migration",
         },
-        witnessServiceId: "srv-api",
+        witnessServiceId: "srv-witness",
         services: ["api", "web", "worker"].map((role) => ({
           role,
           serviceId: `srv-${role}`,
