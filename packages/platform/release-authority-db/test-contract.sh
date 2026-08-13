@@ -62,8 +62,11 @@ atomic_residue=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_a
                  'release_runner_compensation_gate'))::text||':'||
           (SELECT count(*) FROM pg_catalog.pg_trigger
              WHERE tgname IN ('release_runner_terminal_effect_trigger',
-               'release_runner_compensation_gate_trigger'))::text")
-test "$atomic_residue" = 0:0:0
+               'release_runner_compensation_gate_trigger'))::text||':'||
+          (SELECT count(*) FROM pg_catalog.pg_indexes
+             WHERE schemaname='release_authority'
+               AND indexname='runner_job_rollout_id_lifecycle_idx')::text")
+test "$atomic_residue" = 0:0:0:0
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000002.sql >/dev/null
 
@@ -236,12 +239,12 @@ effect_witness=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP
       'removedPaths',jsonb_build_array('/runner/_work/rr-effect/repo'),
       'remainingPaths','[]'::jsonb,'providerLogId','log-effect',
       'providerObservedAt','$now'))")
-test "$effect_witness" = true
+test "$effect_witness" = t
 effect_terminal=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_mark_terminal(
     'job-effect',jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))")
-test "$effect_terminal" = true
+test "$effect_terminal" = t
 clean_effect=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT effect_state||':'||effect_safe_for_compensation
    FROM release_authority.runner_intent WHERE intent_id='rri-'||repeat('2',64)")
@@ -327,19 +330,19 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
        THEN RAISE EXCEPTION 'duplicate effect was not blocked unsafe'; END IF;
 
      PERFORM release_authority.release_rollout_claim('r-timeout',repeat('d',40),'84',1,'184','284');
-     base := jsonb_build_object('id','rri-'||repeat('8',64),'rolloutId','r-timeout',
+     base := jsonb_build_object('id','rri-'||repeat('d',64),'rolloutId','r-timeout',
        'serviceId','svc-timeout','lifecycle','role','workflowJobId','841','runnerName','rr-timeout',
        'createdAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
        'startCommandSha256','sha256:'||repeat('a',64),
        'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000041');
      PERFORM release_authority.release_runner_prepare_effect(base);
      PERFORM release_authority.release_runner_acquire_dispatch_permit(jsonb_build_object(
-       'intentId','rri-'||repeat('8',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
+       'intentId','rri-'||repeat('d',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
        'startCommandSha256','sha256:'||repeat('a',64),'expectedEpoch',0,'leaseSeconds',120));
      UPDATE release_authority.runner_intent SET effect_discovery_deadline=clock_timestamp()-interval '1 second'
-       WHERE intent_id='rri-'||repeat('8',64);
+       WHERE intent_id='rri-'||repeat('d',64);
      snapshot := release_authority.release_runner_reconcile_effect(jsonb_build_object(
-       'intentId','rri-'||repeat('8',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
+       'intentId','rri-'||repeat('d',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
        'expectedEpoch',1,'reconciliation',jsonb_build_object('result','pending','safeForCompensation',false)));
      IF snapshot->>'state' <> 'blocked' OR (snapshot->>'safeForCompensation')::boolean
        THEN RAISE EXCEPTION 'discovery timeout was not blocked unsafe'; END IF;
@@ -587,8 +590,99 @@ cleanup_replayed=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_ST
 test "$cleanup_replayed" = t
 terminal_saved=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_mark_terminal('job-clean','{\"step\":\"cleanup_role_runner\",\"observedAt\":\"$now\"}')")
 test "$terminal_saved" = t
+terminal_replayed=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_mark_terminal('job-clean','{\"step\":\"cleanup_role_runner\",\"observedAt\":\"$now\"}')")
+test "$terminal_replayed" = t
 terminal_fact=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_terminal_cleanup_fact('r3','role')->>'jobId'")
 test "$terminal_fact" = job-clean
+
+# A provider identity discovered after the original effect was independently
+# witnessed and cleaned must be retained before cleanup and must permanently
+# revoke the pre-activation compensation gate.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-late-duplicate',repeat('b',40),'81',1,'181','281')" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
+     'id','rri-'||repeat('b',64),'rolloutId','r-late-duplicate','serviceId','svc-late',
+     'lifecycle','role','workflowJobId','810','runnerName','rr-late-dupe','createdAt','$now',
+     'startCommandSha256','sha256:'||repeat('b',64),
+     'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000081'));
+   SELECT release_authority.release_runner_acquire_dispatch_permit(jsonb_build_object(
+     'intentId','rri-'||repeat('b',64),'claimantId','rrc-00000000-0000-4000-8000-000000000081',
+     'startCommandSha256','sha256:'||repeat('b',64),'expectedEpoch',0,'leaseSeconds',120));
+   SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+     'jobId','job-late-original','rolloutId','r-late-duplicate',
+     'provisioningIntentId','rri-'||repeat('b',64),'serviceId','svc-late','observedAt','$now',
+     'cleanupCanary','rr-cleanup:r-late-duplicate:rr-late-dupe','lifecycle','role'));
+   SELECT release_authority.release_runner_reconcile_effect(jsonb_build_object(
+     'intentId','rri-'||repeat('b',64),'claimantId','rrc-00000000-0000-4000-8000-000000000081',
+     'expectedEpoch',1,'jobId','job-late-original','reconciliation',
+     jsonb_build_object('result','pending','safeForCompensation',false)))" >/dev/null
+for late_job in job-late-original job-late-after-clean; do
+  if test "$late_job" = job-late-after-clean; then
+    # Hold the persisting transaction open after the identity and unsafe state
+    # are written. A concurrent compensation command must wait for the rollout
+    # lock, observe the committed duplicate fence, and reject.
+    docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+      -U reviewrouter_release_control -d postgres -Atc \
+      "BEGIN;
+       SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+         'jobId','$late_job','rolloutId','r-late-duplicate',
+         'provisioningIntentId','rri-'||repeat('b',64),'serviceId','svc-late','observedAt','$now',
+         'cleanupCanary','rr-cleanup:r-late-duplicate:rr-late-dupe','lifecycle','role'));
+       SELECT pg_catalog.pg_advisory_xact_lock(810081);
+       SELECT pg_catalog.pg_sleep(5);
+       COMMIT" >/dev/null &
+    late_persist_pid=$!
+    late_persist_ready=false
+    for _ in $(seq 1 100); do
+      if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+          WHERE locktype='advisory' AND objid=810081 AND granted)")" = t; then
+        late_persist_ready=true
+        break
+      fi
+      sleep 0.05
+    done
+    test "$late_persist_ready" = true
+    if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+      -U reviewrouter_release_control -d postgres -Atc \
+      "SELECT release_authority.release_rollout_append_receipt(
+        'r-late-duplicate',repeat('b',40),'81',1,'181','281','begin_compensation',
+        'sha256:'||repeat('0',64),'sha256:'||repeat('b',64),'181','before','before',NULL)" \
+      >/dev/null 2>&1; then
+      echo "concurrent compensation raced a late duplicate persistence" >&2
+      exit 1
+    fi
+    wait "$late_persist_pid"
+  fi
+  late_witness=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
+    "SELECT release_authority.release_runner_persist_cleanup_witness('$late_job',jsonb_build_object(
+      'jobId','$late_job','canary','rr-cleanup:r-late-duplicate:rr-late-dupe',
+      'providerStatus','succeeded','containerTerminated',true,'logSha256','sha256:'||repeat('b',64),
+      'removedPaths',jsonb_build_array('/runner/_work/rr-late-dupe/repo'),'remainingPaths','[]'::jsonb,
+      'providerLogId','log-'||'$late_job','providerObservedAt','$now'))")
+  test "$late_witness" = t
+  late_terminal=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+    "SELECT release_authority.release_runner_mark_terminal('$late_job',jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))")
+  test "$late_terminal" = t
+done
+late_duplicate_state=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (snapshot->'effect'->>'state')||':'||(snapshot->'effect'->>'safeForCompensation')
+   FROM (SELECT release_authority.release_runner_list_intents('r-late-duplicate')->0 AS snapshot) state")
+test "$late_duplicate_state" = blocked:false
+late_duplicate_count=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT count(*) FROM release_authority.runner_job WHERE rollout_id='r-late-duplicate'")
+test "$late_duplicate_count" = 2
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r-late-duplicate',repeat('b',40),'81',1,'181','281','begin_compensation',
+    'sha256:'||repeat('0',64),'sha256:'||repeat('b',64),'181','before','before',NULL)" >/dev/null 2>&1; then
+  echo "compensation after a durably cleaned late duplicate unexpectedly succeeded" >&2
+  exit 1
+fi
+late_terminal_replayed=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_mark_terminal('job-late-after-clean',jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))")
+test "$late_terminal_replayed" = t
 
 for provider_status in failed canceled; do
   rollout="r-clean-$provider_status"

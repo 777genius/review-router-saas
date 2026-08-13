@@ -94,7 +94,7 @@ export interface RunnerJobLedger {
     rolloutId: string,
     lifecycle: "role" | "cutover",
   ): Promise<{ identity: RunnerIdentity; observation: StepObservation }>;
-  cleanupObservation(jobId: string): Promise<StepObservation>;
+  cleanupObservation?(jobId: string): Promise<StepObservation>;
   markTerminal(jobId: string, observation: StepObservation): Promise<void>;
   persistValidatedIdentity(
     jobId: string,
@@ -380,19 +380,18 @@ export class RenderPrivateRunnerAdapter {
         created = matching[0]!;
       }
     }
-    const persistedCreatedJob: PersistedRunnerJob = {
-      rolloutId: input.rolloutId,
-      serviceId: input.baseServiceId,
-      jobId: created.id,
-      observedAt: created.createdAt ?? this.now().toISOString(),
-      cleanupCanary,
-      lifecycle: input.lifecycle,
-      provisioningIntentId,
-    };
     // This durable write deliberately precedes every post-create validation.
     try {
       if (bindingRequired)
-        await this.ledger.persistCreatedJob(persistedCreatedJob);
+        await this.ledger.persistCreatedJob({
+          rolloutId: input.rolloutId,
+          serviceId: input.baseServiceId,
+          jobId: created.id,
+          observedAt: this.now().toISOString(),
+          cleanupCanary,
+          lifecycle: input.lifecycle,
+          provisioningIntentId,
+        });
       bindingRequired = false;
       effect = (
         await reconciliationBoundary.discover({
@@ -422,28 +421,17 @@ export class RenderPrivateRunnerAdapter {
           timedOut: false,
         });
       } else {
-        // The first write may have committed while its response was lost.
-        // Replaying the exact job identity is idempotent and gives the
-        // independent witness a durable seed before cleanup is terminalized.
-        await this.ledger.persistCreatedJob(persistedCreatedJob);
-        await reconciliationBoundary.discover({
+        // Cleanup observation is itself a privileged provider-side effect.  A
+        // job that the ledger could not persist must first be made durably
+        // unsafe and left for reconciliation; witnessing it here would erase
+        // the only retryable path between provider creation and durable bind.
+        await reconciliationBoundary.blocked({
           effectId: provisioningIntentId,
           ownerId: claimantId,
           expectedEpoch: effect.epoch,
-          matchingProviderIds: [created.id],
-          timedOut: false,
+          providerId: created.id,
+          reason: "unknown",
         });
-        // Keep the durable effect bound on transient provider or witness
-        // failures so the always-running reconciler can retry without a POST.
-        const observation = await this.observeCleanup({
-          api,
-          baseServiceId: input.baseServiceId,
-          jobId: created.id,
-          cleanupCanary,
-          lifecycle: input.lifecycle,
-          timeoutPolls: 30,
-        });
-        await this.ledger.markTerminal(created.id, observation);
         throw new Error("render_runner_job_persistence_failed", {
           cause: error,
         });
@@ -691,14 +679,13 @@ export class RenderPrivateRunnerAdapter {
         cursor = page.nextCursor ?? undefined;
       } while (cursor);
     }
-    const durableDiscovered: PersistedRunnerJob[] = [];
     let duplicateObserved = false;
     let persistenceBlocked = false;
-    const blockedIntentIds = new Set<string>();
 
     // Persist every newly discovered provider identity before binding,
-    // blocking, or invoking either cleanup witness. Duplicate jobs remain
-    // independently witnessable even though only one provider id can be bound.
+    // blocking, or invoking either cleanup witness.  In particular, duplicate
+    // jobs are all retained in the open-job ledger instead of being filtered
+    // out merely because only one provider id can be bound to an intent.
     for (const entry of discovered) {
       const intent = intents.find(
         (value) => value.id === entry.provisioningIntentId,
@@ -706,89 +693,50 @@ export class RenderPrivateRunnerAdapter {
       if (!intent) continue;
       try {
         await this.ledger.persistCreatedJob(entry);
-        durableDiscovered.push(entry);
       } catch {
         persistenceBlocked = true;
-        const observedIds = new Set(
-          [...open, ...discovered]
-            .filter((candidate) => candidate.provisioningIntentId === intent.id)
-            .map((candidate) => candidate.jobId),
-        );
-        const duplicate =
-          observedIds.size > 1 ||
-          (intent.effect.providerId !== null &&
-            intent.effect.providerId !== entry.jobId);
-        duplicateObserved ||= duplicate;
-        blockedIntentIds.add(intent.id);
+        duplicateObserved ||=
+          intent.effect.providerId !== null &&
+          intent.effect.providerId !== entry.jobId;
         await reconciliationBoundary.blocked({
           effectId: intent.id,
           ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
           expectedEpoch: intent.effect.epoch,
           providerId: entry.jobId,
-          reason: duplicate ? "duplicate" : "unknown",
+          reason: duplicateObserved ? "duplicate" : "unknown",
         });
       }
     }
+    // Persistence is idempotent and discovery also sees already-terminal
+    // provider jobs.  Refresh the authority's open set so a replay never
+    // repeats cleanup merely because the provider still lists that identity.
+    const refreshedOpen = await this.ledger.listOpenJobs(rolloutId);
+    const refreshedOpenIds = new Set(refreshedOpen.map(({ jobId }) => jobId));
+    const durableDiscovered = discovered.filter(({ jobId }) =>
+      refreshedOpenIds.has(jobId),
+    );
 
     for (const intent of intents) {
-      const unique = (entries: readonly PersistedRunnerJob[]) =>
-        entries.filter(
-          (entry, index, all) =>
-            all.findIndex((candidate) => candidate.jobId === entry.jobId) ===
+      const matching = [...refreshedOpen, ...durableDiscovered].filter(
+        (entry, index, all) =>
+          entry.provisioningIntentId === intent.id &&
+          all.findIndex((candidate) => candidate.jobId === entry.jobId) ===
             index,
-        );
-      const observedMatching = unique(
-        [...open, ...discovered].filter(
-          (entry) => entry.provisioningIntentId === intent.id,
-        ),
       );
-      const matching = unique(
-        [...open, ...durableDiscovered].filter(
-          (entry) => entry.provisioningIntentId === intent.id,
-        ),
-      );
-      const providerMismatch =
-        intent.effect.providerId !== null &&
-        observedMatching.some(
-          (entry) => entry.jobId !== intent.effect.providerId,
-        );
-      if (observedMatching.length > 1 || providerMismatch) {
+      if (matching.length > 1) {
         duplicateObserved = true;
-        blockedIntentIds.add(intent.id);
         await reconciliationBoundary.blocked({
           effectId: intent.id,
           ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
           expectedEpoch: intent.effect.epoch,
           reason: "duplicate",
         });
-      } else if (
-        intent.effect.state === ExternalEffectState.Abandoned &&
-        observedMatching.length > 0
-      ) {
-        blockedIntentIds.add(intent.id);
-        await reconciliationBoundary.blocked({
-          effectId: intent.id,
-          ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
-          expectedEpoch: intent.effect.epoch,
-          providerId: observedMatching[0]!.jobId,
-          reason: "unknown",
-        });
-      } else if (blockedIntentIds.has(intent.id)) {
-        continue;
       } else if (intent.effect.state === ExternalEffectState.Prepared) {
         if (matching.length === 0)
           await this.ledger.abandonPreparedEffect({
             intentId: intent.id,
             claimantId: intent.effect.ownerId!,
             expectedEpoch: intent.effect.epoch,
-          });
-        else
-          await reconciliationBoundary.blocked({
-            effectId: intent.id,
-            ownerId: intent.effect.ownerId!,
-            expectedEpoch: intent.effect.epoch,
-            providerId: matching[0]!.jobId,
-            reason: "unknown",
           });
       } else if (
         matching.length === 0 &&
@@ -814,22 +762,11 @@ export class RenderPrivateRunnerAdapter {
         });
       }
     }
-    const durableJobs = [...open, ...durableDiscovered].filter(
+    const durableJobs = [...refreshedOpen, ...durableDiscovered].filter(
       (entry, index, all) =>
         all.findIndex((candidate) => candidate.jobId === entry.jobId) === index,
     );
     for (const entry of durableJobs) {
-      try {
-        // Scheduled recovery also rediscovers jobs that an earlier attempt
-        // already witness-gated to terminal. The terminal transition is one
-        // database transaction, so this durable observation is sufficient to
-        // make cleanup replay idempotent without granting control-plane code a
-        // second path to declare the external effect safe.
-        observations.push(await this.ledger.cleanupObservation(entry.jobId));
-        continue;
-      } catch {
-        // No terminal observation exists yet; collect both cleanup witnesses.
-      }
       let observation: StepObservation;
       try {
         observation = await this.observeCleanup({
@@ -840,12 +777,16 @@ export class RenderPrivateRunnerAdapter {
           lifecycle: entry.lifecycle,
         });
       } catch {
-        // Bound effects stay pending across transient provider/witness errors.
-        // Bounded backoff turns exhaustion into a blocked artifact while the
-        // durable unsafe state continues to deny compensation.
+        // Provider and witness reads are transient boundaries. Keep the durable
+        // effect pending so the bounded caller retries; exhaustion still emits
+        // a blocked recovery artifact without inventing permanent DB evidence.
         continue;
       }
       observations.push(observation);
+      // The authority terminalizes the job and projects effect safety in one
+      // transaction.  Do not follow a successful terminal CAS with a separate
+      // clean reconciliation: that command is both redundant and forbidden by
+      // the authority's independently witnessed cleanup boundary.
       await this.ledger.markTerminal(entry.jobId, observation);
     }
     const finalIntents = await this.ledger.listProvisioningIntents(rolloutId);

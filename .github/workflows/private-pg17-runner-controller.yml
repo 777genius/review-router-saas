@@ -12,6 +12,10 @@ on:
         description: Exact private PG17 rollout workflow run to recover (blank scans retained runs)
         required: false
         type: string
+      sweep_checkpoint:
+        description: Internal restart checkpoint for a bounded retained-run sweep
+        required: false
+        type: string
 
 permissions:
   actions: read
@@ -28,6 +32,8 @@ jobs:
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.runs.outputs.matrix }}
+      complete: ${{ steps.runs.outputs.complete }}
+      checkpoint: ${{ steps.runs.outputs.checkpoint }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -37,8 +43,9 @@ jobs:
         env:
           GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
           REVIEW_ROUTER_TARGET_RUN_ID: ${{ inputs.target_run_id }}
+          REVIEW_ROUTER_RECOVERY_SWEEP_CHECKPOINT: ${{ inputs.sweep_checkpoint }}
           REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH: .github/workflows/private-network-pg17-rollout.yml
-          REVIEW_ROUTER_RECOVERY_MAXIMUM_PAGES: 10
+          REVIEW_ROUTER_RECOVERY_MAXIMUM_PAGES: 2
         run: node --import tsx scripts/discover-private-pg17-recovery-runs.ts
 
   recover:
@@ -86,6 +93,29 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           compression-level: 0
+
+  continue-recovery-sweep:
+    needs: [recovery-context, recover]
+    if: >-
+      always() &&
+      needs.recovery-context.result == 'success' &&
+      (needs.recover.result == 'success' || needs.recover.result == 'skipped') &&
+      needs.recovery-context.outputs.complete == 'false'
+    permissions:
+      actions: write
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
+      - name: Dispatch the exact next bounded sweep window with bounded backoff
+        env:
+          GITHUB_CONTROL_WRITE_TOKEN: ${{ github.token }}
+          REVIEW_ROUTER_RECOVERY_SWEEP_CHECKPOINT: ${{ needs.recovery-context.outputs.checkpoint }}
+        run: node --import tsx scripts/dispatch-private-pg17-recovery-continuation.ts
 
   provision:
     if: >-

@@ -2,12 +2,6 @@
 -- one atomic prepared -> dispatching transition; dispatching is never lease-redriven.
 BEGIN;
 
--- Provider reconciliation must retain every job created for an intent. The
--- original lifecycle uniqueness rule made a second provider job impossible to
--- witness and clean, precisely when duplicate evidence is most safety-critical.
-ALTER TABLE release_authority.runner_job
-  DROP CONSTRAINT runner_job_rollout_id_lifecycle_key;
-
 ALTER TABLE release_authority.runner_intent
   ADD COLUMN effect_state text NOT NULL DEFAULT 'blocked',
   ADD COLUMN effect_epoch bigint NOT NULL DEFAULT 0,
@@ -17,6 +11,14 @@ ALTER TABLE release_authority.runner_intent
   ADD COLUMN effect_discovery_deadline timestamptz(3),
   ADD COLUMN effect_safe_for_compensation boolean NOT NULL DEFAULT false,
   ADD COLUMN effect_block_reason text;
+
+-- An intent normally has one provider job, but provider creation has an
+-- unavoidably non-transactional edge.  Reconciliation must be able to retain
+-- every identity returned by deterministic discovery, including duplicates.
+ALTER TABLE release_authority.runner_job
+  DROP CONSTRAINT runner_job_rollout_id_lifecycle_key;
+CREATE INDEX runner_job_rollout_id_lifecycle_idx
+  ON release_authority.runner_job (rollout_id, lifecycle);
 
 ALTER TABLE release_authority.runner_intent
   ADD CONSTRAINT runner_intent_effect_state_check CHECK
@@ -226,33 +228,64 @@ CREATE OR REPLACE FUNCTION release_authority.release_runner_persist_job(p_job js
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
 DECLARE intent release_authority.runner_intent%ROWTYPE;
-DECLARE persisted release_authority.runner_job%ROWTYPE;
+DECLARE rollout release_authority.rollout%ROWTYPE;
+DECLARE existing release_authority.runner_job%ROWTYPE;
+DECLARE duplicate_job boolean;
 BEGIN
+  -- Use the same rollout-first lock order as release_rollout_append_step.  A
+  -- late identity is therefore persisted and revokes the compensation gate
+  -- before begin_compensation can inspect the intent, or loses to an already
+  -- committed compensation transition and is rejected without cleanup.
+  SELECT * INTO STRICT rollout FROM release_authority.rollout
+    WHERE rollout_id = p_job->>'rolloutId' FOR UPDATE;
   SELECT * INTO STRICT intent FROM release_authority.runner_intent
     WHERE intent_id = p_job->>'provisioningIntentId' FOR UPDATE;
-  IF intent.rollout_id <> p_job->>'rolloutId'
+  IF rollout.state <> 'pre_activation'
+    OR intent.rollout_id <> rollout.rollout_id
     OR intent.service_id <> p_job->>'serviceId'
     OR intent.lifecycle <> p_job->>'lifecycle'
     OR coalesce(p_job->>'jobId','') = ''
     OR coalesce(p_job->>'cleanupCanary','') <>
       'rr-cleanup:'||intent.rollout_id||':'||intent.runner_name
+    OR intent.effect_state NOT IN ('dispatching','bound','cleaned','abandoned','blocked')
   THEN RAISE EXCEPTION 'release runner effect job persistence invalid'; END IF;
+
+  SELECT * INTO existing FROM release_authority.runner_job
+    WHERE job_id = p_job->>'jobId';
+  IF FOUND THEN
+    IF existing.rollout_id <> intent.rollout_id
+      OR existing.provisioning_intent_id <> intent.intent_id
+      OR existing.service_id <> intent.service_id
+      OR existing.observed_at <> (p_job->>'observedAt')::timestamptz(3)
+      OR existing.lifecycle <> intent.lifecycle
+      OR existing.cleanup_canary <> p_job->>'cleanupCanary'
+    THEN RAISE EXCEPTION 'release runner effect job identity conflict'; END IF;
+    RETURN true;
+  END IF;
+
+  duplicate_job := intent.provider_job_id IS NOT NULL
+      AND intent.provider_job_id <> p_job->>'jobId'
+    OR EXISTS (
+      SELECT 1 FROM release_authority.runner_job job
+      WHERE job.provisioning_intent_id = intent.intent_id
+        AND job.job_id <> p_job->>'jobId'
+    );
   INSERT INTO release_authority.runner_job
     (job_id, rollout_id, provisioning_intent_id, service_id, observed_at,
      cleanup_canary, lifecycle)
   VALUES (p_job->>'jobId', p_job->>'rolloutId', p_job->>'provisioningIntentId',
     p_job->>'serviceId', (p_job->>'observedAt')::timestamptz,
-    p_job->>'cleanupCanary', p_job->>'lifecycle')
-  ON CONFLICT (job_id) DO NOTHING;
-  SELECT * INTO STRICT persisted FROM release_authority.runner_job
-    WHERE job_id = p_job->>'jobId';
-  IF persisted.rollout_id <> p_job->>'rolloutId'
-    OR persisted.provisioning_intent_id <> p_job->>'provisioningIntentId'
-    OR persisted.service_id <> p_job->>'serviceId'
-    OR persisted.observed_at <> (p_job->>'observedAt')::timestamptz(3)
-    OR persisted.cleanup_canary <> p_job->>'cleanupCanary'
-    OR persisted.lifecycle <> p_job->>'lifecycle'
-  THEN RAISE EXCEPTION 'release runner effect job identity conflict'; END IF;
+    p_job->>'cleanupCanary', p_job->>'lifecycle');
+  IF duplicate_job OR intent.effect_state = 'abandoned' THEN
+    UPDATE release_authority.runner_intent SET effect_state = 'blocked',
+      effect_safe_for_compensation = false,
+      effect_block_reason = CASE WHEN duplicate_job THEN 'duplicate' ELSE 'unknown' END,
+      reconciliation_observation = jsonb_build_object(
+        'reason', CASE WHEN duplicate_job THEN 'duplicate' ELSE 'unknown' END,
+        'lateProviderJobId', p_job->>'jobId'),
+      reconciled_at = clock_timestamp()
+    WHERE intent_id = intent.intent_id;
+  END IF;
   RETURN true;
 END $body$;
 REVOKE ALL ON FUNCTION release_authority.release_runner_persist_job(jsonb) FROM PUBLIC;
@@ -261,20 +294,28 @@ CREATE FUNCTION release_authority.release_runner_reconcile_effect(p_input jsonb)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
 DECLARE current_row release_authority.runner_intent%ROWTYPE;
+DECLARE rollout_row release_authority.rollout%ROWTYPE;
+DECLARE intent_rollout_id text;
 DECLARE result text := p_input->'reconciliation'->>'result';
 DECLARE reason text := p_input->'reconciliation'->>'reason';
 BEGIN
   IF result IS NULL OR result NOT IN ('pending','blocked')
     OR p_input->'reconciliation'->>'safeForCompensation' IS DISTINCT FROM 'false'
   THEN RAISE EXCEPTION 'release runner reconciliation safety invalid'; END IF;
+  SELECT rollout_id INTO STRICT intent_rollout_id
+    FROM release_authority.runner_intent WHERE intent_id = p_input->>'intentId';
+  SELECT * INTO STRICT rollout_row FROM release_authority.rollout
+    WHERE rollout_id = intent_rollout_id FOR UPDATE;
   SELECT * INTO STRICT current_row FROM release_authority.runner_intent
     WHERE intent_id = p_input->>'intentId' FOR UPDATE;
-  IF current_row.effect_state = 'blocked'
+  IF rollout_row.state <> 'pre_activation'
+    THEN RAISE EXCEPTION 'release runner reconciliation frozen'; END IF;
+  IF current_row.effect_state IN ('abandoned','blocked')
     THEN RETURN release_authority.release_runner_effect_snapshot(current_row); END IF;
-  IF current_row.effect_state NOT IN ('prepared','dispatching','bound','cleaned','abandoned')
+  IF current_row.effect_state = 'cleaned' AND result <> 'blocked'
+    THEN RETURN release_authority.release_runner_effect_snapshot(current_row); END IF;
+  IF current_row.effect_state NOT IN ('dispatching','bound','cleaned')
     OR current_row.effect_epoch <> (p_input->>'expectedEpoch')::bigint
-    OR (current_row.effect_state = 'prepared' AND result <> 'blocked')
-    OR (current_row.effect_state IN ('cleaned','abandoned') AND result <> 'blocked')
   THEN RAISE EXCEPTION 'release runner reconciliation fence conflict'; END IF;
 
   IF result = 'blocked' THEN
@@ -282,7 +323,9 @@ BEGIN
       THEN RAISE EXCEPTION 'release runner reconciliation reason invalid'; END IF;
     UPDATE release_authority.runner_intent SET effect_state = 'blocked',
       effect_safe_for_compensation = false, effect_block_reason = reason,
-      reconciliation_observation = p_input->'observation', reconciled_at = clock_timestamp()
+      reconciliation_observation = coalesce(p_input->'observation',
+        jsonb_build_object('reason',reason,'lateProviderJobId',p_input->>'jobId')),
+      reconciled_at = clock_timestamp()
     WHERE intent_id = current_row.intent_id RETURNING * INTO current_row;
   ELSIF result = 'pending' AND nullif(p_input->>'jobId','') IS NOT NULL THEN
     IF NOT EXISTS (
@@ -349,6 +392,37 @@ REVOKE ALL ON FUNCTION release_authority.release_runner_terminal_effect() FROM P
 CREATE TRIGGER release_runner_terminal_effect_trigger
 AFTER UPDATE OF terminal_at ON release_authority.runner_job
 FOR EACH ROW EXECUTE FUNCTION release_authority.release_runner_terminal_effect();
+
+-- Terminalization is a recovery command.  A lost HTTP response must be safely
+-- replayable without repeating provider cleanup or weakening witness checks.
+CREATE OR REPLACE FUNCTION release_authority.release_runner_mark_terminal(
+  p_job_id text, p_observation jsonb
+) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+AS $body$
+DECLARE job release_authority.runner_job%ROWTYPE; witness jsonb;
+BEGIN
+  SELECT * INTO job FROM release_authority.runner_job
+    WHERE job_id = p_job_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'release runner terminal job missing'; END IF;
+  witness := job.cleanup_provider_witness;
+  IF witness IS NULL OR witness->>'jobId' <> job.job_id
+    OR witness->>'canary' <> job.cleanup_canary
+    OR coalesce(witness->>'providerStatus','') NOT IN ('succeeded','failed','canceled')
+    OR witness->>'containerTerminated' <> 'true'
+    OR jsonb_typeof(witness->'removedPaths') <> 'array'
+    OR jsonb_array_length(witness->'removedPaths') = 0
+    OR jsonb_typeof(witness->'remainingPaths') <> 'array'
+    OR jsonb_array_length(witness->'remainingPaths') <> 0
+  THEN RAISE EXCEPTION 'release runner terminal cleanup witness unproven'; END IF;
+  IF job.terminal_at IS NOT NULL THEN RETURN true; END IF;
+  UPDATE release_authority.runner_job SET terminal_at = clock_timestamp(),
+    cleanup_observation = p_observation
+  WHERE job_id = p_job_id AND terminal_at IS NULL
+    AND cleanup_provider_witness = witness;
+  IF NOT FOUND THEN RAISE EXCEPTION 'release runner terminal cas failed'; END IF;
+  RETURN true;
+END $body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_mark_terminal(text,jsonb) FROM PUBLIC;
 
 CREATE FUNCTION release_authority.release_runner_compensation_gate() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $body$

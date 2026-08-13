@@ -524,7 +524,7 @@ describe("release rollout ledger internal API", () => {
             intentId,
             claimantId,
             expectedEpoch: 1,
-            jobId: "job-1",
+            jobId: "job-clean",
             reconciliation: {
               result: "clean",
               safeForCompensation: true,
