@@ -1189,20 +1189,21 @@ test "$effect_winner_ready" = true
 docker exec -e PGPASSWORD=control -e PGOPTIONS='-c lock_timeout=10s' "$name" \
   psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
-    'jobId','job-effect-late','rolloutId','r-effect-wins',
+    'jobId','job-effect-wins-late','rolloutId','r-effect-wins',
     'provisioningIntentId','rri-'||repeat('4',63)||'9','serviceId','svc-effect-wins','observedAt','$now',
+    'providerCreationNotBefore','$now',
     'cleanupCanary','rr-cleanup:r-effect-wins:rr-effect-wins','lifecycle','role'))" >/dev/null
 wait "$effect_winner_pid"
 docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_witness -d postgres -Atc \
-  "SELECT release_authority.release_runner_persist_cleanup_witness('job-effect-late',jsonb_build_object(
-    'jobId','job-effect-late','canary','rr-cleanup:r-effect-wins:rr-effect-wins',
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-effect-wins-late',jsonb_build_object(
+    'jobId','job-effect-wins-late','canary','rr-cleanup:r-effect-wins:rr-effect-wins',
     'providerStatus','succeeded','containerTerminated',true,'logSha256','sha256:'||repeat('4',64),
     'removedPaths',jsonb_build_array('/runner/_work/rr-effect-wins/late'),'remainingPaths','[]'::jsonb,
-    'providerLogId','log-effect-late','providerObservedAt','$now'))" >/dev/null
+    'providerLogId','log-effect-wins-late','providerCreatedAt','$now','providerObservedAt','$now'))" >/dev/null
 docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
-  "SELECT release_authority.release_runner_mark_terminal('job-effect-late',
+  "SELECT release_authority.release_runner_mark_terminal('job-effect-wins-late',
     jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))" >/dev/null
 if docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_provider_authority -d postgres -Atc \
@@ -1232,8 +1233,8 @@ if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   echo "effect-first late runner crossed complete_compensation" >&2
   exit 1
 fi
-test "$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
-  -U reviewrouter_release_control -d postgres -Atc \
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 \
+  -U postgres -d postgres -Atc \
   "SELECT rollout.state||':'||rollout.last_receipt_sha256||':'||
      (reconciled.result->>'sourceEligible')
    FROM release_authority.rollout rollout
