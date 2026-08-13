@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { validateRehearsalConfiguration } from "./rehearse-private-pg17-rollout.mjs";
+import {
+  createRehearsalRunnerJobBinding,
+  validateRehearsalConfiguration,
+} from "./rehearse-private-pg17-rollout.mjs";
 
 const digest = "d".repeat(64);
 describe("disposable dual-version rehearsal", () => {
@@ -27,6 +30,31 @@ describe("disposable dual-version rehearsal", () => {
     expect(() => validateRehearsalConfiguration({})).toThrow(
       "private_pg17_rehearsal_explicit_opt_in_required",
     );
+  });
+  it("binds the persisted runner job to the authority-owned pre-dispatch time", () => {
+    const providerCreationNotBefore = "2026-08-12T00:00:00.000Z";
+    expect(
+      createRehearsalRunnerJobBinding({
+        identity: {
+          baseServiceId: "srv-disposable",
+          renderJobId: "job-role",
+          cleanupCanary: "rr-cleanup:disposable-rehearsal:rr-role",
+        },
+        observation: { observedAt: "2026-08-12T00:00:01.000Z" },
+        lifecycle: "role",
+        provisioningIntentId: `rri-${"a".repeat(64)}`,
+        providerCreationNotBefore,
+      }),
+    ).toEqual({
+      rolloutId: "disposable-rehearsal",
+      serviceId: "srv-disposable",
+      jobId: "job-role",
+      observedAt: "2026-08-12T00:00:01.000Z",
+      providerCreationNotBefore,
+      cleanupCanary: "rr-cleanup:disposable-rehearsal:rr-role",
+      lifecycle: "role",
+      provisioningIntentId: `rri-${"a".repeat(64)}`,
+    });
   });
   it("routes rehearsal state through production use cases, SQL generators, and evidence verifier", () => {
     const source = readFileSync(

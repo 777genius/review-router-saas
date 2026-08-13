@@ -61,6 +61,25 @@ export function validateRehearsalConfiguration(env) {
   return Object.freeze({ sourceImage, targetImage });
 }
 
+export function createRehearsalRunnerJobBinding({
+  identity,
+  observation,
+  lifecycle,
+  provisioningIntentId,
+  providerCreationNotBefore,
+}) {
+  return Object.freeze({
+    rolloutId: "disposable-rehearsal",
+    serviceId: identity.baseServiceId,
+    jobId: identity.renderJobId,
+    observedAt: observation.observedAt,
+    providerCreationNotBefore,
+    cleanupCanary: identity.cleanupCanary,
+    lifecycle,
+    provisioningIntentId,
+  });
+}
+
 function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
@@ -1039,6 +1058,7 @@ async function verifyProductionPathRehearsal(facts) {
   let cleanupStep = RolloutStep.CleanupRoleRunner;
   const ledger = facts.ledger;
   const witness = new PostgresCleanupObservationAdapter(facts.witnessPrisma);
+  const providerCreationBoundaries = new Map();
   const persistRunnerBinding = async (identity, observation, lifecycle) => {
     const intentId = `rri-${createHash("sha256")
       .update(`disposable-rehearsal:${lifecycle}:${identity.workflowJobId}`)
@@ -1048,6 +1068,7 @@ async function verifyProductionPathRehearsal(facts) {
       .update(rehearsalStartCommand)
       .digest("hex")}`;
     const creationLeaseOwner = `rrc-${lifecycle === "role" ? "00000000-0000-4000-8000-000000000001" : "00000000-0000-4000-8000-000000000002"}`;
+    const providerCreationNotBefore = observation.observedAt;
     await ledger.persistProvisioningIntent({
       id: intentId,
       rolloutId: rollout.rolloutId,
@@ -1055,7 +1076,7 @@ async function verifyProductionPathRehearsal(facts) {
       lifecycle,
       workflowJobId: identity.workflowJobId,
       runnerName: identity.runnerName,
-      createdAt: observation.observedAt,
+      createdAt: providerCreationNotBefore,
       startCommandSha256,
       creationLeaseOwner,
     });
@@ -1066,15 +1087,19 @@ async function verifyProductionPathRehearsal(facts) {
       expectedEpoch: 0,
       leaseSeconds: 120,
     });
-    await ledger.persistCreatedJob({
-      rolloutId: rollout.rolloutId,
-      serviceId: identity.baseServiceId,
-      jobId: identity.renderJobId,
-      observedAt: observation.observedAt,
-      cleanupCanary: identity.cleanupCanary,
-      lifecycle,
-      provisioningIntentId: intentId,
-    });
+    await ledger.persistCreatedJob(
+      createRehearsalRunnerJobBinding({
+        identity,
+        observation,
+        lifecycle,
+        provisioningIntentId: intentId,
+        providerCreationNotBefore,
+      }),
+    );
+    providerCreationBoundaries.set(
+      identity.renderJobId,
+      providerCreationNotBefore,
+    );
     await ledger.persistValidatedIdentity(
       identity.renderJobId,
       identity,
@@ -1177,6 +1202,11 @@ async function verifyProductionPathRehearsal(facts) {
         return { identity: provision, observation };
       },
       cleanup: async () => {
+        const providerCreatedAt = providerCreationBoundaries.get(
+          provision.renderJobId,
+        );
+        if (!providerCreatedAt)
+          throw new Error("private_pg17_rehearsal_provider_boundary_missing");
         const observedAt = new Date(
           Date.UTC(2026, 7, 12, 0, 0, tick++),
         ).toISOString();
@@ -1204,6 +1234,7 @@ async function verifyProductionPathRehearsal(facts) {
           removedPaths: [`/runner/${provision.workFolder}`],
           remainingPaths: [],
           providerLogId: `log-${provision.renderJobId}`,
+          providerCreatedAt,
           providerObservedAt: observedAt,
         });
         await ledger.markTerminal(provision.renderJobId, observation);

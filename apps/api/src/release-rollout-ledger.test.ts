@@ -51,6 +51,9 @@ class ConcurrentRepository implements CombinedLedgerPort {
   registration:
     | Parameters<RunnerOperationsLedgerPort["persistRegistration"]>[0]
     | undefined;
+  persistedJob:
+    | Parameters<RunnerOperationsLedgerPort["persistJob"]>[0]
+    | undefined;
 
   async claim(input: typeof binding) {
     if (!this.claimed) {
@@ -224,7 +227,11 @@ class ConcurrentRepository implements CombinedLedgerPort {
       safeForCompensation: false,
     };
   }
-  async persistJob() {}
+  async persistJob(
+    input: Parameters<RunnerOperationsLedgerPort["persistJob"]>[0],
+  ) {
+    this.persistedJob = input;
+  }
   async listOpenJobs() {
     return [] as const;
   }
@@ -294,6 +301,52 @@ const services = (repository: CombinedLedgerPort) => ({
 });
 
 describe("release rollout ledger internal API", () => {
+  it("requires the authority-owned provider creation boundary on runner jobs", async () => {
+    const repository = new ConcurrentRepository();
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(repository),
+    });
+    const payload = {
+      rolloutId: binding.rolloutId,
+      serviceId: "srv-disposable",
+      jobId: "job-role",
+      observedAt: "2026-08-12T00:00:01.000Z",
+      providerCreationNotBefore: "2026-08-12T00:00:00.000Z",
+      cleanupCanary: "rr-cleanup:rollout-ledger-test:rr-role",
+      lifecycle: "role",
+      provisioningIntentId: `rri-${"a".repeat(64)}`,
+    };
+    const headers = { authorization: `Bearer ${token}` };
+
+    const stalePayload: Partial<typeof payload> = { ...payload };
+    delete stalePayload.providerCreationNotBefore;
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v1/runner-jobs",
+          headers,
+          payload: stalePayload,
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(repository.persistedJob).toBeUndefined();
+
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v1/runner-jobs",
+          headers,
+          payload,
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(repository.persistedJob).toEqual(payload);
+    await app.close();
+  });
+
   it("rejects malformed service-transition completion input with HTTP 400", async () => {
     const completed: unknown[] = [];
     const app = Fastify();
