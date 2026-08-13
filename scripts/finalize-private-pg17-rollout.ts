@@ -47,8 +47,8 @@ const body = read<{
 const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
   body.releaseImageProvenance,
   {
-    repository: required("GITHUB_REPOSITORY"),
-    commit: body.rollout.expectedCommitSha,
+    sourceRepository: required("GITHUB_REPOSITORY"),
+    sourceRevision: body.rollout.expectedCommitSha,
   },
 );
 const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
@@ -56,8 +56,8 @@ const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
     "REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE",
   ),
   {
-    repository: required("GITHUB_REPOSITORY"),
-    commit: body.rollout.expectedCommitSha,
+    sourceRepository: required("GITHUB_REPOSITORY"),
+    sourceRevision: body.rollout.expectedCommitSha,
   },
 );
 if (

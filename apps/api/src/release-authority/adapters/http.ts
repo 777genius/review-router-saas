@@ -18,6 +18,10 @@ import type {
   ReleaseServiceTransitionService,
   RunnerOperationsService,
 } from "../application/services.js";
+import {
+  serviceTransitionAppendRequest,
+  serviceTransitionBeginRequest,
+} from "./service-transition-http-validation.js";
 export type ReleaseRolloutLedgerRouteDependencies = {
   authority: ReleaseAuthorityService;
   runnerOperations: RunnerOperationsService;
@@ -336,17 +340,18 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/service-transitions",
     { preHandler: control },
     async (request) => ({
-      result: await serviceTransition().begin(record(request.body) as never),
+      result: await serviceTransition().begin(
+        serviceTransitionBeginRequest(request.body),
+      ),
     }),
   );
   app.post<{ Params: { rolloutId: string } }>(
     "/v1/service-transitions/:rolloutId/checkpoints",
     { preHandler: control },
     async (request) => ({
-      checkpoint: await serviceTransition().append({
-        ...record(request.body),
-        rolloutId: request.params.rolloutId,
-      } as never),
+      checkpoint: await serviceTransition().append(
+        serviceTransitionAppendRequest(request.body, request.params.rolloutId),
+      ),
     }),
   );
   app.post<{ Params: { rolloutId: string } }>(

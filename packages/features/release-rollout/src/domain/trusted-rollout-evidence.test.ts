@@ -162,22 +162,26 @@ const releaseImageIdentity = {
   imageUrl: `ghcr.io/777genius/review-router-saas-runtime@${digest}`,
   imageDigest: digest,
 };
+const imageRepository = "ghcr.io/777genius/review-router-saas-runtime";
+const provenancePolicySha256 = `sha256:${"e".repeat(64)}`;
 const create = () =>
   assembleTrustedRolloutEvidence({
     rolloutId: base.rolloutId,
     releaseCommitSha: base.expectedCommitSha,
     releaseImageProvenance: {
-      schemaVersion: "reviewrouter.release-image-provenance.v1",
+      schemaVersion: "reviewrouter.release-image-provenance.v2",
       identity: releaseImageIdentity,
-      identitySha256: `sha256:${sha256Canonical(releaseImageIdentity)}`,
-      releaseEvidence: {
-        kind: "github-artifact-attestation",
-        repository: base.execution.controlRepository,
-        workflowPath: ".github/workflows/release.yml",
-        workflowRunId: "321",
+      claim: {
+        identitySha256: `sha256:${sha256Canonical(releaseImageIdentity)}`,
+        sourceRepository: base.execution.controlRepository,
+        sourceRevision: base.expectedCommitSha,
+        imageRepository,
+        buildRunId: "321",
         artifactId: "654",
         artifactName: "hosted-runtime-image-v1.2.3",
-        sourceRef: "refs/heads/main",
+      },
+      verification: {
+        policySha256: provenancePolicySha256,
         verifiedAt: "2026-08-12T00:00:00.000Z",
       },
     },
@@ -336,6 +340,14 @@ describe("trusted post-cleanup evidence", () => {
         ],
       }),
     ).toThrow("trusted_rollout_evidence_target_image_invalid");
+  });
+  it("rejects legacy schema 4 evidence instead of implicitly upgrading v1 provenance", () => {
+    expect(() =>
+      assertTrustedRolloutEvidence({
+        ...create(),
+        schemaVersion: 4,
+      } as unknown as TrustedRolloutEvidence),
+    ).toThrow("trusted_rollout_evidence_invariant_failed");
   });
   it.each([
     [

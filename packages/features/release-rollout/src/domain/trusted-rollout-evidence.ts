@@ -103,7 +103,7 @@ export interface LegacyReconciliationEvidence {
   readonly status: "reconciled";
 }
 export interface TrustedRolloutEvidence {
-  readonly schemaVersion: 4;
+  readonly schemaVersion: 5;
   readonly rolloutId: string;
   readonly releaseCommitSha: string;
   readonly releaseImageProvenance: VerifiedReleaseImageProvenance;
@@ -146,7 +146,7 @@ const exact = (value: object, keys: readonly string[]): boolean =>
 export function assembleTrustedRolloutEvidence(
   value: Omit<TrustedRolloutEvidence, "schemaVersion" | "evidenceSha256">,
 ): TrustedRolloutEvidence {
-  const unsigned = Object.freeze({ ...value, schemaVersion: 4 as const });
+  const unsigned = Object.freeze({ ...value, schemaVersion: 5 as const });
   const evidence = Object.freeze({
     ...unsigned,
     evidenceSha256: `sha256:${sha256Canonical(unsigned)}`,
@@ -181,7 +181,7 @@ export function assertTrustedRolloutEvidence(
       "assembledAt",
       "evidenceSha256",
     ]) ||
-    value.schemaVersion !== 4 ||
+    value.schemaVersion !== 5 ||
     !sha.test(value.releaseCommitSha) ||
     value.execution.runAttempt !== 1 ||
     value.execution.event !== "workflow_dispatch" ||
@@ -255,8 +255,11 @@ export function assertTrustedRolloutEvidence(
   )
     throw new Error("trusted_rollout_evidence_invariant_failed");
   assertVerifiedReleaseImageProvenance(value.releaseImageProvenance, {
-    repository: value.execution.controlRepository,
-    commit: value.releaseCommitSha,
+    sourceRepository: value.execution.controlRepository,
+    sourceRevision: value.releaseCommitSha,
+    imageRepository: value.releaseImageProvenance.claim.imageRepository,
+    verificationPolicySha256:
+      value.releaseImageProvenance.verification.policySha256,
   });
   if (
     value.targetDeploys.length === 0 ||

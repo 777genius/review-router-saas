@@ -8,18 +8,44 @@ export interface ReleaseImageIdentity {
   readonly imageDigest: string;
 }
 
+export interface ReleaseImageProvenancePolicy {
+  readonly sourceRepository: string;
+  readonly sourceRevision: string;
+  readonly imageRepository: string;
+  readonly verificationPolicySha256: string;
+  readonly buildRunId?: string;
+  readonly artifactId?: string;
+  readonly artifactName?: string;
+}
+
+export type ReleaseImageProvenanceExpectation = Readonly<
+  Pick<ReleaseImageProvenancePolicy, "sourceRepository" | "sourceRevision"> &
+    Partial<
+      Pick<
+        ReleaseImageProvenancePolicy,
+        | "imageRepository"
+        | "verificationPolicySha256"
+        | "buildRunId"
+        | "artifactId"
+        | "artifactName"
+      >
+    >
+>;
+
 export interface VerifiedReleaseImageProvenance {
-  readonly schemaVersion: "reviewrouter.release-image-provenance.v1";
+  readonly schemaVersion: "reviewrouter.release-image-provenance.v2";
   readonly identity: ReleaseImageIdentity;
-  readonly identitySha256: string;
-  readonly releaseEvidence: {
-    readonly kind: "github-artifact-attestation";
-    readonly repository: string;
-    readonly workflowPath: ".github/workflows/release.yml";
-    readonly workflowRunId: string;
+  readonly claim: {
+    readonly identitySha256: string;
+    readonly sourceRepository: string;
+    readonly sourceRevision: string;
+    readonly imageRepository: string;
+    readonly buildRunId: string;
     readonly artifactId: string;
     readonly artifactName: string;
-    readonly sourceRef: "refs/heads/main";
+  };
+  readonly verification: {
+    readonly policySha256: string;
     readonly verifiedAt: string;
   };
 }
@@ -28,13 +54,29 @@ const sha = /^[a-f0-9]{40}$/u;
 const digest = /^sha256:[a-f0-9]{64}$/u;
 const identifier = /^[A-Za-z0-9_.-]+$/u;
 const repository = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+const imageRepository =
+  /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?\/)?[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]*)+$/u;
 const exact = (value: object, keys: readonly string[]): boolean =>
   Object.keys(value).length === keys.length &&
   keys.every((key) => Object.hasOwn(value, key));
+const timestamp = (value: string): boolean => {
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
+};
+
+export function releaseImageRepository(identity: ReleaseImageIdentity): string {
+  const separator = identity.imageUrl.lastIndexOf("@");
+  if (separator <= 0) throw new Error("release_image_identity_invalid");
+  return identity.imageUrl.slice(0, separator);
+}
 
 export function assertReleaseImageIdentity(
   value: ReleaseImageIdentity,
 ): ReleaseImageIdentity {
+  const image = releaseImageRepository(value);
   if (
     !exact(value, [
       "schemaVersion",
@@ -47,8 +89,8 @@ export function assertReleaseImageIdentity(
     !repository.test(value.repository) ||
     !sha.test(value.commit) ||
     !digest.test(value.imageDigest) ||
-    value.imageUrl !==
-      `ghcr.io/777genius/review-router-saas-runtime@${value.imageDigest}`
+    !imageRepository.test(image) ||
+    value.imageUrl !== `${image}@${value.imageDigest}`
   )
     throw new Error("release_image_identity_invalid");
   return value;
@@ -56,41 +98,47 @@ export function assertReleaseImageIdentity(
 
 export function assertVerifiedReleaseImageProvenance(
   value: VerifiedReleaseImageProvenance,
-  expected?: Readonly<{ repository: string; commit: string }>,
+  expected?: ReleaseImageProvenanceExpectation,
 ): VerifiedReleaseImageProvenance {
   const identity = assertReleaseImageIdentity(value.identity);
-  const evidence = value.releaseEvidence;
+  const claim = value.claim;
+  const verification = value.verification;
+  const boundImageRepository = releaseImageRepository(identity);
   if (
-    !exact(value, [
-      "schemaVersion",
-      "identity",
+    !exact(value, ["schemaVersion", "identity", "claim", "verification"]) ||
+    !exact(claim, [
       "identitySha256",
-      "releaseEvidence",
-    ]) ||
-    !exact(evidence, [
-      "kind",
-      "repository",
-      "workflowPath",
-      "workflowRunId",
+      "sourceRepository",
+      "sourceRevision",
+      "imageRepository",
+      "buildRunId",
       "artifactId",
       "artifactName",
-      "sourceRef",
-      "verifiedAt",
     ]) ||
-    value.schemaVersion !== "reviewrouter.release-image-provenance.v1" ||
-    value.identitySha256 !== `sha256:${sha256Canonical(identity)}` ||
-    evidence.kind !== "github-artifact-attestation" ||
-    evidence.repository !== identity.repository ||
-    evidence.workflowPath !== ".github/workflows/release.yml" ||
-    evidence.sourceRef !== "refs/heads/main" ||
-    !/^[1-9][0-9]*$/u.test(evidence.workflowRunId) ||
-    !/^[1-9][0-9]*$/u.test(evidence.artifactId) ||
-    !identifier.test(evidence.artifactName) ||
-    !evidence.artifactName.startsWith("hosted-runtime-image-v") ||
-    new Date(evidence.verifiedAt).toISOString() !== evidence.verifiedAt ||
+    !exact(verification, ["policySha256", "verifiedAt"]) ||
+    value.schemaVersion !== "reviewrouter.release-image-provenance.v2" ||
+    claim.identitySha256 !== `sha256:${sha256Canonical(identity)}` ||
+    claim.sourceRepository !== identity.repository ||
+    claim.sourceRevision !== identity.commit ||
+    claim.imageRepository !== boundImageRepository ||
+    !/^[1-9][0-9]*$/u.test(claim.buildRunId) ||
+    !/^[1-9][0-9]*$/u.test(claim.artifactId) ||
+    !identifier.test(claim.artifactName) ||
+    !digest.test(verification.policySha256) ||
+    !timestamp(verification.verifiedAt) ||
     (expected !== undefined &&
-      (identity.repository !== expected.repository ||
-        identity.commit !== expected.commit))
+      (identity.repository !== expected.sourceRepository ||
+        identity.commit !== expected.sourceRevision ||
+        (expected.imageRepository !== undefined &&
+          boundImageRepository !== expected.imageRepository) ||
+        (expected.verificationPolicySha256 !== undefined &&
+          verification.policySha256 !== expected.verificationPolicySha256) ||
+        (expected.buildRunId !== undefined &&
+          claim.buildRunId !== expected.buildRunId) ||
+        (expected.artifactId !== undefined &&
+          claim.artifactId !== expected.artifactId) ||
+        (expected.artifactName !== undefined &&
+          claim.artifactName !== expected.artifactName)))
   )
     throw new Error("release_image_provenance_invalid");
   return value;

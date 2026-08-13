@@ -95,6 +95,15 @@ identity and verifies repository, release workflow/ref/run, exact commit, OCI
 digest, and immutable URL before rollout claim or the first mutation. The same
 verified identity is embedded in final trusted evidence.
 
+The GitHub workflow, ref, GHCR repository, and artifact-attestation rules are
+infrastructure policy owned by the preflight verifier. The domain record stores
+the provider-neutral v2 claim: source repository/revision, OCI image repository
+and digest, build run, artifact identity, identity hash, and the hash of the
+verification policy. Trusted rollout evidence schema 5 is the explicit wire
+migration from schema 4/v1 provenance; schema 4 artifacts remain historical
+records and must not be submitted to the schema 5 verifier or upgraded without
+rerunning the current preflight verification.
+
 ## Provision once
 
 1. Create a fresh dedicated PostgreSQL 17 authority DB and the distinct

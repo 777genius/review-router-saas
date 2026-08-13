@@ -1501,17 +1501,19 @@ COMMIT;
                 facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST,
             };
             return {
-              schemaVersion: "reviewrouter.release-image-provenance.v1",
+              schemaVersion: "reviewrouter.release-image-provenance.v2",
               identity,
-              identitySha256: `sha256:${sha256Canonical(identity)}`,
-              releaseEvidence: {
-                kind: "github-artifact-attestation",
-                repository: current.execution.controlRepository,
-                workflowPath: ".github/workflows/release.yml",
-                workflowRunId: "1",
+              claim: {
+                identitySha256: `sha256:${sha256Canonical(identity)}`,
+                sourceRepository: current.execution.controlRepository,
+                sourceRevision: current.expectedCommitSha,
+                imageRepository: "ghcr.io/777genius/review-router-saas-runtime",
+                buildRunId: "1",
                 artifactId: "1",
                 artifactName: "hosted-runtime-image-v0.0.0-rehearsal",
-                sourceRef: "refs/heads/main",
+              },
+              verification: {
+                policySha256: `sha256:${"e".repeat(64)}`,
                 verifiedAt: "2026-08-12T00:00:00.000Z",
               },
             };

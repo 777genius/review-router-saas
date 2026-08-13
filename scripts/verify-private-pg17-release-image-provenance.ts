@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import {
   assertReleaseImageIdentity,
   assertVerifiedReleaseImageProvenance,
+  releaseImageRepository,
   sha256Canonical,
   type ReleaseImageIdentity,
   type VerifiedReleaseImageProvenance,
@@ -46,8 +47,30 @@ const api = async <T>(path: string): Promise<T> => {
 const identity = assertReleaseImageIdentity(
   JSON.parse(readFileSync(identityPath, "utf8")) as ReleaseImageIdentity,
 );
-if (identity.repository !== repository || identity.commit !== expectedCommit)
+const expectedImageRepository = "ghcr.io/777genius/review-router-saas-runtime";
+if (
+  identity.repository !== repository ||
+  identity.commit !== expectedCommit ||
+  releaseImageRepository(identity) !== expectedImageRepository
+)
   throw new Error("private_pg17_release_image_identity_mismatch");
+
+const verificationPolicy = {
+  provider: "github-actions",
+  sourceRepository: repository,
+  sourceRevision: expectedCommit,
+  workflowPath: ".github/workflows/release.yml",
+  sourceRef: "refs/heads/main",
+  imageRepository: expectedImageRepository,
+  attestation: {
+    denySelfHostedRunners: true,
+    signerWorkflow: `github.com/${repository}/.github/workflows/release.yml`,
+    sourceDigest: expectedCommit,
+  },
+} as const;
+const verificationPolicySha256 = `sha256:${sha256Canonical(
+  verificationPolicy,
+)}`;
 
 const artifact = await api<{
   id?: number;
@@ -114,23 +137,30 @@ if (verified.status !== 0)
   throw new Error("private_pg17_release_image_attestation_invalid");
 
 const provenance: VerifiedReleaseImageProvenance = {
-  schemaVersion: "reviewrouter.release-image-provenance.v1",
+  schemaVersion: "reviewrouter.release-image-provenance.v2",
   identity,
-  identitySha256: `sha256:${sha256Canonical(identity)}`,
-  releaseEvidence: {
-    kind: "github-artifact-attestation",
-    repository,
-    workflowPath: ".github/workflows/release.yml",
-    workflowRunId: releaseRunId,
+  claim: {
+    identitySha256: `sha256:${sha256Canonical(identity)}`,
+    sourceRepository: repository,
+    sourceRevision: expectedCommit,
+    imageRepository: expectedImageRepository,
+    buildRunId: releaseRunId,
     artifactId,
     artifactName: artifact.name,
-    sourceRef: "refs/heads/main",
+  },
+  verification: {
+    policySha256: verificationPolicySha256,
     verifiedAt: new Date().toISOString(),
   },
 };
 assertVerifiedReleaseImageProvenance(provenance, {
-  repository,
-  commit: expectedCommit,
+  sourceRepository: repository,
+  sourceRevision: expectedCommit,
+  imageRepository: expectedImageRepository,
+  verificationPolicySha256,
+  buildRunId: releaseRunId,
+  artifactId,
+  artifactName: artifact.name,
 });
 writeFileSync(outputPath, `${JSON.stringify(provenance)}\n`, {
   encoding: "utf8",

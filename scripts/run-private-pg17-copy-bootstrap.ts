@@ -57,8 +57,8 @@ let rollout = initial.rollout;
 const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
   initial.releaseImageProvenance,
   {
-    repository: required("GITHUB_REPOSITORY"),
-    commit: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+    sourceRepository: required("GITHUB_REPOSITORY"),
+    sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
   },
 );
 const canonicalReleaseEnvironment = {

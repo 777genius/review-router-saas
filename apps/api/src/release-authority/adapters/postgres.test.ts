@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
+  ReleaseAuthorityAdapterUnexpectedError,
   RoutineReleaseControlLedgerAdapter,
   RoutineRunnerCleanupWitnessAdapter,
 } from "./postgres";
@@ -90,7 +91,7 @@ class QueryRecorder {
 
 const expectJsonbBinding = (query: Prisma.Sql, expected: unknown): void => {
   const serialized = JSON.stringify(expected);
-  const indexes = query.values.flatMap((value, index) =>
+  const indexes = query.values.flatMap((value: unknown, index: number) =>
     value === serialized ? [index] : [],
   );
   expect(indexes.length).toBeGreaterThan(0);
@@ -328,7 +329,7 @@ describe("release authority postgres JSONB bindings", () => {
         sourceSystemIdentifier: "100",
         targetSystemIdentifier: "200",
       }),
-    ).rejects.toBe(conflict);
+    ).rejects.toBeInstanceOf(ReleaseAuthorityAdapterUnexpectedError);
   });
 
   it.each([
@@ -359,7 +360,7 @@ describe("release authority postgres JSONB bindings", () => {
     },
   );
 
-  it("maps malformed service-transition input to HTTP 400", async () => {
+  it("does not expose malformed transition routine failures as client errors", async () => {
     const malformed = Object.assign(new Error("raw query failed"), {
       code: "P2010",
       meta: {
@@ -377,8 +378,77 @@ describe("release authority postgres JSONB bindings", () => {
     await expect(
       adapter.complete({ rolloutId: "rollout", outcome: "invalid" as never }),
     ).rejects.toMatchObject({
-      message: "release_authority_request_invalid",
-      statusCode: 400,
+      message: "release_authority_adapter_failure",
+      statusCode: 500,
+      cause: malformed,
+    });
+  });
+
+  it.each([
+    "release service transition intent conflict",
+    "release service transition recovery intent missing",
+    "release service transition checkpoint conflict",
+    "release service transition checkpoint replay conflict",
+    "release service transition checkpoint out of order",
+    "release service transition source verification incomplete",
+    "release service transition source acl not restored",
+    "release source recovery runner effects unsafe",
+  ])(
+    "maps exact durable transition conflicts to HTTP 409: %s",
+    async (message) => {
+      const conflict = Object.assign(new Error("raw query failed"), {
+        code: "P2010",
+        meta: { code: "P0001", message },
+      });
+      const prisma = {
+        $queryRaw: async () => {
+          throw conflict;
+        },
+      } as unknown as PrismaClient;
+      const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+      await expect(
+        adapter.append({
+          rolloutId: "rollout",
+          manifestSha256: zeroReceipt,
+          targetContractSha256: nextReceipt,
+          serviceId: "srv-api",
+          step: "suspended",
+        }),
+      ).rejects.toMatchObject({
+        message: "release_authority_conflict",
+        statusCode: 409,
+      });
+    },
+  );
+
+  it("uses exact conflict classification and sanitizes near matches", async () => {
+    const databaseFailure = Object.assign(new Error("raw query failed"), {
+      code: "P2010",
+      meta: {
+        code: "P0001",
+        message: "prefix release service transition checkpoint conflict suffix",
+      },
+    });
+    const prisma = {
+      $queryRaw: async () => {
+        throw databaseFailure;
+      },
+    } as unknown as PrismaClient;
+    const adapter = new RoutineReleaseControlLedgerAdapter(prisma);
+
+    await expect(
+      adapter.append({
+        rolloutId: "rollout",
+        manifestSha256: zeroReceipt,
+        targetContractSha256: nextReceipt,
+        serviceId: "srv-api",
+        step: "suspended",
+      }),
+    ).rejects.toMatchObject({
+      message: "release_authority_adapter_failure",
+      statusCode: 500,
+      cause: databaseFailure,
     });
   });
 

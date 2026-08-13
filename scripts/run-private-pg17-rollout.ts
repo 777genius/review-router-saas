@@ -42,8 +42,8 @@ let rollout = copy.rollout;
 const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
   copy.releaseImageProvenance,
   {
-    repository: required("GITHUB_REPOSITORY"),
-    commit: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+    sourceRepository: required("GITHUB_REPOSITORY"),
+    sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
   },
 );
 const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
@@ -54,8 +54,8 @@ const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
     ),
   ) as VerifiedReleaseImageProvenance,
   {
-    repository: required("GITHUB_REPOSITORY"),
-    commit: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+    sourceRepository: required("GITHUB_REPOSITORY"),
+    sourceRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
   },
 );
 if (

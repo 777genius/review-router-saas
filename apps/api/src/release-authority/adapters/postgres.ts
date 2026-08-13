@@ -35,59 +35,18 @@ import type {
   ServiceTransitionCheckpoint,
   ServiceTransitionLedger,
 } from "@reviewrouter/features-release-rollout";
+import {
+  normalizeReleaseAuthorityRoutineError,
+  ReleaseAuthorityAdapterConflictError,
+  ReleaseAuthorityAdapterUnexpectedError,
+} from "./routine-errors.js";
+
+export {
+  ReleaseAuthorityAdapterConflictError,
+  ReleaseAuthorityAdapterUnexpectedError,
+};
 
 type JsonRow = { value: unknown };
-
-const conflictMessages = new Set([
-  "release rollout claim identity conflict",
-  "release authority activation identity conflict",
-  "release authority activation replay conflict",
-  "release authority activation receipt conflict",
-  "provider authority replay conflict",
-  "release runner intent identity conflict",
-  "release runner duplicate effects unsafe for activation",
-  "release source freeze binding invalid",
-  "release source freeze replay conflict",
-  "release source freeze inventory conflict",
-  "release source freeze completion binding invalid",
-  "release source freeze completion replay conflict",
-  "release source resume lacks rollout suspension evidence",
-  "release target service transition incomplete",
-  "release source recovery manifest mismatch",
-  "release source service recovery incomplete",
-]);
-
-const malformedRequestMessages = new Set([
-  "release service transition outcome invalid",
-]);
-
-const normalizeRoutineError = (error: unknown): never => {
-  const value =
-    error && typeof error === "object"
-      ? (error as {
-          code?: unknown;
-          message?: unknown;
-          meta?: { code?: unknown; message?: unknown };
-        })
-      : undefined;
-  const databaseCode = value?.meta?.code ?? value?.code;
-  const detail = String(value?.meta?.message ?? value?.message ?? "");
-  if (
-    databaseCode === "P0001" &&
-    [...conflictMessages].some((message) => detail.includes(message))
-  )
-    throw Object.assign(new Error("release_authority_conflict"), {
-      statusCode: 409,
-    });
-  if (
-    databaseCode === "P0001" &&
-    [...malformedRequestMessages].some((message) => detail.includes(message))
-  )
-    throw Object.assign(new Error("release_authority_request_invalid"), {
-      statusCode: 400,
-    });
-  throw error;
-};
 
 const firstValue = async (
   prisma: PrismaClient,
@@ -97,7 +56,7 @@ const firstValue = async (
   try {
     rows = await prisma.$queryRaw<JsonRow[]>(query);
   } catch (error) {
-    normalizeRoutineError(error);
+    normalizeReleaseAuthorityRoutineError(error);
   }
   if (!rows || rows.length !== 1)
     throw new Error("release_control_routine_result_missing");
