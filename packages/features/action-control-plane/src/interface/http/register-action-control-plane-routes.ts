@@ -1085,6 +1085,15 @@ function sendActionErrorCode(
 
 function statusCodeForActionError(message: string): number {
   if (
+    message.includes("codex_rotating_new_work_admission_closed") ||
+    message.includes("codex_rotating_new_work_cohort_required")
+  ) {
+    return 503;
+  }
+  if (message.includes("codex_rotating_new_work_repository_not_approved")) {
+    return 403;
+  }
+  if (
     message.includes("conflict_review_runtime_disabled") ||
     message.includes("conflict_review_posting_session_unavailable") ||
     message.includes("conflict_review_posting_token_unavailable") ||
@@ -1186,6 +1195,15 @@ function statusCodeForActionError(message: string): number {
 }
 
 function safeActionErrorCode(message: string): string {
+  if (message.includes("codex_rotating_new_work_admission_closed")) {
+    return "codex_rotating_new_work_admission_closed";
+  }
+  if (message.includes("codex_rotating_new_work_cohort_required")) {
+    return "codex_rotating_new_work_cohort_required";
+  }
+  if (message.includes("codex_rotating_new_work_repository_not_approved")) {
+    return "codex_rotating_new_work_repository_not_approved";
+  }
   if (message.includes("repository_not_registered")) {
     return "repository_not_registered";
   }
@@ -1331,6 +1349,12 @@ function safeActionErrorMessage(code: string): string {
       return "ReviewRouter App comment identity is temporarily unavailable.";
     case "codex_rotating_oauth_unavailable":
       return "Codex OAuth rotating writeback is temporarily unavailable.";
+    case "codex_rotating_new_work_admission_closed":
+      return "Codex OAuth new review admission is temporarily closed.";
+    case "codex_rotating_new_work_cohort_required":
+      return "Codex OAuth new review admission has no approved repository cohort.";
+    case "codex_rotating_new_work_repository_not_approved":
+      return "This repository is not approved for Codex OAuth new review admission.";
     case "workflow_source_temporarily_unavailable":
       return "Managed workflow verification is temporarily unavailable. Retry with a fresh OIDC token.";
     case "review_request_not_ready":
@@ -1407,6 +1431,8 @@ function isRetryableActionError(code: string): boolean {
     code === "action_control_plane_disabled" ||
     code === "comment_token_unavailable" ||
     code === "codex_rotating_oauth_unavailable" ||
+    code === "codex_rotating_new_work_admission_closed" ||
+    code === "codex_rotating_new_work_cohort_required" ||
     code === "workflow_source_temporarily_unavailable" ||
     code === "review_execution_checkpoint_unavailable" ||
     code === "codex_rotating_lease_conflict" ||

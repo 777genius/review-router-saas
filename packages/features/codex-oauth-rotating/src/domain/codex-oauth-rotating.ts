@@ -1333,8 +1333,11 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   const clientTriggered = isClientTriggeredT0WorkflowSchemaVersion(
     source.workflowSchemaVersion,
   );
+  const trustedDefaultBranchTriggered =
+    source.workflowSchemaVersion ===
+    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4;
   const versionedSecretName = workflow.match(
-    /^name: ReviewRouter Codex OAuth \[namespace=[^;\]]+;epoch=[^;\]]+;secret=([A-Z0-9_]+)\]$/m,
+    /^name: ReviewRouter Codex OAuth \[namespace=[^;\]]+;epoch=[^;\]]+;secret=([A-Za-z0-9_]+)\]$/m,
   )?.[1];
   const expectedSecretName =
     source.workflowSchemaVersion ===
@@ -1431,7 +1434,9 @@ function scanCodexRotatingT0AdvisoryWorkflow(
       errors.push("t0_review_provider_concurrency_required");
     }
     if (
-      !reviewJob.includes("github.event_name == 'pull_request'") ||
+      !reviewJob.includes(
+        `github.event_name == '${trustedDefaultBranchTriggered ? "pull_request_target" : "pull_request"}'`,
+      ) ||
       !reviewJob.includes(
         "github.event.pull_request.head.repo.full_name == github.repository",
       ) ||
@@ -1448,14 +1453,26 @@ function scanCodexRotatingT0AdvisoryWorkflow(
     ) {
       errors.push("t0_review_client_trigger_binding_required");
     }
+    const expectedTrigger = trustedDefaultBranchTriggered
+      ? "pull_request_target"
+      : "pull_request";
+    const forbiddenTrigger = trustedDefaultBranchTriggered
+      ? "pull_request"
+      : "pull_request_target";
     if (
-      !/^ {2}pull_request:/m.test(workflow) ||
-      /^ {2}(?:workflow_dispatch|pull_request_target):/m.test(workflow) ||
+      !new RegExp(`^ {2}${expectedTrigger}:`, "m").test(workflow) ||
+      new RegExp(`^ {2}(?:workflow_dispatch|${forbiddenTrigger}):`, "m").test(
+        workflow,
+      ) ||
       !workflow.includes(
         "run-name: ${{ format('ReviewRouter review PR {0} at {1}'",
       )
     ) {
-      errors.push("t0_pull_request_ingress_required");
+      errors.push(
+        trustedDefaultBranchTriggered
+          ? "t0_pull_request_target_ingress_required"
+          : "t0_pull_request_ingress_required",
+      );
     }
   } else {
     if (/^ {4}concurrency:/m.test(reviewJob)) {
@@ -1871,13 +1888,19 @@ function renderCanonicalCodexRotatingClientTriggeredT0Workflow(
   const workflowName = input.activeSecretNamespace
     ? `ReviewRouter Codex OAuth [${serializeVersionedProviderSecretNamespaceMetadata(input.activeSecretNamespace)}]`
     : "ReviewRouter Codex OAuth";
+  const trustedDefaultBranchTriggered =
+    input.workflowSchemaVersion ===
+    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4;
+  const reviewEventName = trustedDefaultBranchTriggered
+    ? "pull_request_target"
+    : "pull_request";
 
   return `name: ${workflowName}
 
 run-name: \${{ format('ReviewRouter review PR {0} at {1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
 
 on:
-  pull_request:
+  ${reviewEventName}:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]${
       refreshScheduleCron
         ? `
@@ -1891,7 +1914,7 @@ permissions: {}
 jobs:
   codex-review:
     name: codex-review
-    if: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' && (github.event.pull_request.draft == false || vars.${codexRotatingReviewDraftsVariableName} == 'true') }}
+    if: \${{ github.event_name == '${reviewEventName}' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' && (github.event.pull_request.draft == false || vars.${codexRotatingReviewDraftsVariableName} == 'true') }}
     concurrency:
       group: ${concurrencyGroup}
       cancel-in-progress: false

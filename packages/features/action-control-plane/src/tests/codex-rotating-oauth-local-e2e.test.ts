@@ -760,6 +760,111 @@ describe("Codex rotating OAuth local E2E", () => {
     await app.close();
   });
 
+  it.each([
+    {
+      internalCode: "codex_rotating_new_work_admission_closed",
+      statusCode: 503,
+      retryable: true,
+      message: "Codex OAuth new review admission is temporarily closed.",
+    },
+    {
+      internalCode: "codex_rotating_new_work_cohort_required",
+      statusCode: 503,
+      retryable: true,
+      message:
+        "Codex OAuth new review admission has no approved repository cohort.",
+    },
+    {
+      internalCode: "codex_rotating_new_work_repository_not_approved",
+      statusCode: 403,
+      retryable: false,
+      message:
+        "This repository is not approved for Codex OAuth new review admission.",
+    },
+  ])(
+    "reports $internalCode without masking the admission gate",
+    async ({ internalCode, statusCode, retryable, message }) => {
+      const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
+        {
+          providerInstanceId,
+          repositoryFullName: repository.fullName,
+          githubRepositoryId: repository.githubRepositoryId,
+          actionRef,
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+          workflowSchemaVersion: 1,
+        },
+      ]);
+      const dependencies = {
+        oidcVerifier: {
+          verify: vi.fn().mockResolvedValue(
+            githubOidcClaims({
+              runId: `admission-${statusCode}`,
+              jti: `jti-${internalCode}`,
+              now: firstRunAt,
+            }),
+          ),
+        },
+        repositories: {
+          findSelectedRepositoryByGithubId: vi
+            .fn()
+            .mockResolvedValue(repository),
+          findRuntimeReviewConfiguration: vi.fn(),
+          recordHealthReport: vi.fn(),
+        },
+        codexRotatingOAuth,
+        codexRotatingWorkflowSourceVerifier: {
+          verifyWorkflowSource: vi.fn().mockResolvedValue({
+            binding: {
+              providerInstanceId,
+              repositoryFullName: repository.fullName,
+              githubRepositoryId: repository.githubRepositoryId,
+              actionRef,
+              workflowPath: ".github/workflows/reviewrouter-codex.yml",
+              workflowSchemaVersion: 1,
+            },
+          }),
+        },
+        codexRotatingNewWorkAdmission: {
+          assertAdmitted: vi.fn(() => {
+            throw new Error(internalCode);
+          }),
+        },
+        replayNonces: { tryConsumeNonce: vi.fn().mockResolvedValue(true) },
+        ...buildTokenFakes(codexRotatingOAuth),
+        codexRotatingWritebackHmacKey: "writeback-key",
+        clock: { now: vi.fn(() => firstRunAt) },
+        sessions: {},
+        ledgerKeys: {},
+        compatibility: {},
+      };
+      const app = Fastify({ logger: false });
+      await registerActionControlPlaneRoutes(
+        app,
+        dependencies as unknown as Parameters<
+          typeof registerActionControlPlaneRoutes
+        >[1],
+      );
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/action/v1/codex-oauth/prelease",
+        payload: {
+          oidcToken: "oidc-jwt",
+          audience: "reviewrouter",
+          providerInstanceId,
+          workflowSchemaVersion: 1,
+        },
+      });
+      expect(response.statusCode).toBe(statusCode);
+      expect(response.json()).toEqual({
+        error: { code: internalCode, message, retryable },
+      });
+      expect(dependencies.replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+
+      await app.close();
+    },
+  );
+
   it("reports missing managed review admission without masking it as an invalid action request", async () => {
     const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
       {
