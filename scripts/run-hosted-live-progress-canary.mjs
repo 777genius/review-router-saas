@@ -13,7 +13,7 @@ const pinnedTarget = Object.freeze({
   changedFiles: 108,
   branch: "test/context-gateway-v103-batches-20260811",
   fixturePathsSha256:
-    "b66509de865391f460c874fc02f65b5e527aa4d08521e1f1c6d5b57f8087b69b",
+    "7c079f131db644556b0f311713bf47af3866ad33f0dc617559bc872d51c612ad",
   expectedReviewUnits: 72,
   expectedReviewedFiles: 108,
   expectedExcludedFiles: 0,
