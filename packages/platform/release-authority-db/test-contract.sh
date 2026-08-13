@@ -191,8 +191,32 @@ prepared_listing=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_ST
 test "$prepared_listing" = prepared:rrc-00000000-0000-4000-8000-000000000011:true
 permit_input_a='{"intentId":"rri-'$(printf '2%.0s' $(seq 1 64))'","claimantId":"rrc-00000000-0000-4000-8000-000000000011","startCommandSha256":"sha256:'$(printf '3%.0s' $(seq 1 64))'","expectedEpoch":0,"leaseSeconds":120}'
 permit_input_b='{"intentId":"rri-'$(printf '2%.0s' $(seq 1 64))'","claimantId":"rrc-00000000-0000-4000-8000-000000000012","startCommandSha256":"sha256:'$(printf '3%.0s' $(seq 1 64))'","expectedEpoch":0,"leaseSeconds":120}'
-permit_a=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+# Hold the parent lock, then reach for the child. A routine that takes the
+# intent first deadlocks this adversary; rollout-first waits without retaining
+# a conflicting child lock and completes on PostgreSQL 17.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -Atc \
+  "BEGIN;
+   SELECT 1 FROM release_authority.rollout WHERE rollout_id='r-effect' FOR UPDATE;
+   SELECT pg_catalog.pg_advisory_xact_lock(810001);
+   SELECT pg_catalog.pg_sleep(2);
+   SELECT 1 FROM release_authority.runner_intent
+     WHERE intent_id='rri-'||repeat('2',64) FOR UPDATE;
+   COMMIT" >/dev/null &
+acquire_order_pid=$!
+acquire_order_ready=false
+for _ in $(seq 1 100); do
+  if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+      WHERE locktype='advisory' AND objid=810001 AND granted)")" = t; then
+    acquire_order_ready=true
+    break
+  fi
+  sleep 0.05
+done
+test "$acquire_order_ready" = true
+permit_a=$(docker exec -e PGPASSWORD=control -e PGOPTIONS='-c lock_timeout=10s' "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT (release_authority.release_runner_acquire_dispatch_permit('$permit_input_a')->>'state')||':'||(release_authority.release_runner_acquire_dispatch_permit('$permit_input_a')->>'ownerId')")
+wait "$acquire_order_pid"
 test "$permit_a" = dispatching:rrc-00000000-0000-4000-8000-000000000011
 dispatching_listing=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT (intent->>'state')||':'||(listed->>'creationLeaseOwner')||':'||
@@ -320,6 +344,43 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   exit 1
 fi
 
+# A terminal fact independently written through the witness credential repairs
+# historical transient blocks, but only when there is one durable identity.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-retryable-clean',repeat('4',40),'85',1,'185','285');
+   SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
+     'id','rri-'||repeat('e',64),'rolloutId','r-retryable-clean','serviceId','svc-retryable',
+     'lifecycle','role','workflowJobId','851','runnerName','rr-retryable','createdAt','$now',
+     'startCommandSha256','sha256:'||repeat('e',64),
+     'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000085'));
+   SELECT release_authority.release_runner_acquire_dispatch_permit(jsonb_build_object(
+     'intentId','rri-'||repeat('e',64),'claimantId','rrc-00000000-0000-4000-8000-000000000085',
+     'startCommandSha256','sha256:'||repeat('e',64),'expectedEpoch',0,'leaseSeconds',120));
+   SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+     'jobId','job-retryable-clean','rolloutId','r-retryable-clean',
+     'provisioningIntentId','rri-'||repeat('e',64),'serviceId','svc-retryable','observedAt','$now',
+     'cleanupCanary','rr-cleanup:r-retryable-clean:rr-retryable','lifecycle','role'));
+   UPDATE release_authority.runner_intent SET effect_state='blocked',
+     effect_block_reason='unknown',effect_safe_for_compensation=false
+   WHERE intent_id='rri-'||repeat('e',64)" >/dev/null
+retryable_witness=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_cleanup_witness(
+    'job-retryable-clean',jsonb_build_object('jobId','job-retryable-clean',
+      'canary','rr-cleanup:r-retryable-clean:rr-retryable','providerStatus','succeeded',
+      'containerTerminated',true,'logSha256','sha256:'||repeat('e',64),
+      'removedPaths',jsonb_build_array('/runner/_work/rr-retryable/repo'),
+      'remainingPaths','[]'::jsonb,'providerLogId','log-retryable',
+      'providerObservedAt','$now'))")
+test "$retryable_witness" = t
+retryable_terminal=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_mark_terminal(
+    'job-retryable-clean',jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))")
+test "$retryable_terminal" = t
+retryable_repaired=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT effect_state||':'||effect_safe_for_compensation
+   FROM release_authority.runner_intent WHERE intent_id='rri-'||repeat('e',64)")
+test "$retryable_repaired" = cleaned:true
+
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "DO \$\$
    DECLARE base jsonb; snapshot jsonb;
@@ -374,8 +435,8 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
      snapshot := release_authority.release_runner_reconcile_effect(jsonb_build_object(
        'intentId','rri-'||repeat('d',64),'claimantId','rrc-00000000-0000-4000-8000-000000000041',
        'expectedEpoch',1,'reconciliation',jsonb_build_object('result','pending','safeForCompensation',false)));
-     IF snapshot->>'state' <> 'blocked' OR (snapshot->>'safeForCompensation')::boolean
-       THEN RAISE EXCEPTION 'discovery timeout was not blocked unsafe'; END IF;
+     IF snapshot->>'state' <> 'dispatching' OR (snapshot->>'safeForCompensation')::boolean
+       THEN RAISE EXCEPTION 'discovery timeout was not retryable and unsafe'; END IF;
    END \$\$;" >/dev/null
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
@@ -559,7 +620,7 @@ blocked_compensation_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v 
      'intentId','rri-'||repeat('5',64),'claimantId','rrc-00000000-0000-4000-8000-000000000051',
      'expectedEpoch',1,'reconciliation',jsonb_build_object(
        'result','blocked','safeForCompensation',false,'reason','unknown'))) snapshot) blocked")
-test "$blocked_compensation_intent" = blocked:blocked:false
+test "$blocked_compensation_intent" = dispatching:pending:false
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_append_receipt(
     'r-comp-unsafe',repeat('6',40),'7',1,'106','206','begin_compensation',
@@ -582,6 +643,18 @@ r3_compensation_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ER
     'startCommandSha256','sha256:'||repeat('0',64),
     'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000061'))->>'state'")
 test "$r3_compensation_intent" = prepared
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_abandon_prepared(
+    'rri-'||repeat('0',64),'rrc-00000000-0000-4000-8000-000000000061',0)" \
+  >/dev/null 2>&1; then
+  echo "unexpired prepared lease was abandoned" >&2
+  exit 1
+fi
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "UPDATE release_authority.runner_intent
+   SET effect_lease_expires_at=clock_timestamp()-interval '1 second'
+   WHERE intent_id='rri-'||repeat('0',64)" >/dev/null
 r3_abandoned_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT (snapshot->>'state')||':'||(snapshot->>'safeForCompensation')
@@ -632,7 +705,32 @@ test "$cleanup_saved" = t
 cleanup_replayed=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
   "SELECT release_authority.release_runner_persist_cleanup_witness('job-clean','{\"jobId\":\"job-clean\",\"canary\":\"canary\",\"providerStatus\":\"succeeded\",\"containerTerminated\":true,\"logSha256\":\"sha256:$(printf '4%.0s' $(seq 1 64))\",\"removedPaths\":[\"/runner/_work/rr-safe/repo\"],\"remainingPaths\":[],\"providerLogId\":\"log-1\",\"providerObservedAt\":\"$now\"}')")
 test "$cleanup_replayed" = t
-terminal_saved=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_mark_terminal('job-clean','{\"step\":\"cleanup_role_runner\",\"observedAt\":\"$now\"}')")
+# A terminal recovery must also wait parent-first. The adversary holds rollout
+# and intent, then reaches for the job; a job-first terminal path deadlocks it.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -Atc \
+  "BEGIN;
+   SELECT 1 FROM release_authority.rollout WHERE rollout_id='r3' FOR UPDATE;
+   SELECT 1 FROM release_authority.runner_intent
+     WHERE intent_id='rri-'||repeat('3',64) FOR UPDATE;
+   SELECT pg_catalog.pg_advisory_xact_lock(810002);
+   SELECT pg_catalog.pg_sleep(2);
+   SELECT 1 FROM release_authority.runner_job WHERE job_id='job-clean' FOR UPDATE;
+   COMMIT" >/dev/null &
+terminal_order_pid=$!
+terminal_order_ready=false
+for _ in $(seq 1 100); do
+  if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+      WHERE locktype='advisory' AND objid=810002 AND granted)")" = t; then
+    terminal_order_ready=true
+    break
+  fi
+  sleep 0.05
+done
+test "$terminal_order_ready" = true
+terminal_saved=$(docker exec -e PGPASSWORD=control -e PGOPTIONS='-c lock_timeout=10s' "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_mark_terminal('job-clean','{\"step\":\"cleanup_role_runner\",\"observedAt\":\"$now\"}')")
+wait "$terminal_order_pid"
 test "$terminal_saved" = t
 terminal_replayed=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc   "SELECT release_authority.release_runner_mark_terminal('job-clean','{\"step\":\"cleanup_role_runner\",\"observedAt\":\"$now\"}')")
 test "$terminal_replayed" = t

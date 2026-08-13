@@ -194,16 +194,23 @@ RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
 DECLARE current_row release_authority.runner_intent%ROWTYPE;
 DECLARE rollout_row release_authority.rollout%ROWTYPE;
+DECLARE intent_rollout_id text;
 BEGIN
   IF coalesce(p_input->>'claimantId','') !~ '^rrc-[0-9a-f-]{36}$'
     OR coalesce(p_input->>'startCommandSha256','') !~ '^sha256:[a-f0-9]{64}$'
     OR (p_input->>'expectedEpoch')::bigint < 0
     OR (p_input->>'leaseSeconds')::integer NOT BETWEEN 30 AND 300
   THEN RAISE EXCEPTION 'release runner dispatch permit invalid'; END IF;
+  -- Resolve the parent without taking a row lock, then serialize every effect
+  -- mutation in the single rollout -> intent order used by compensation.
+  SELECT rollout_id INTO STRICT intent_rollout_id
+    FROM release_authority.runner_intent WHERE intent_id = p_input->>'intentId';
+  SELECT * INTO STRICT rollout_row FROM release_authority.rollout
+    WHERE rollout_id = intent_rollout_id FOR UPDATE;
   SELECT * INTO STRICT current_row FROM release_authority.runner_intent
     WHERE intent_id = p_input->>'intentId' FOR UPDATE;
-  SELECT * INTO STRICT rollout_row FROM release_authority.rollout
-    WHERE rollout_id = current_row.rollout_id FOR UPDATE;
+  IF current_row.rollout_id <> rollout_row.rollout_id
+    THEN RAISE EXCEPTION 'release runner dispatch rollout conflict'; END IF;
   IF rollout_row.state <> 'pre_activation'
     THEN RAISE EXCEPTION 'release runner dispatch frozen'; END IF;
   IF current_row.start_command_sha256 <> p_input->>'startCommandSha256'
@@ -310,23 +317,47 @@ BEGIN
     WHERE intent_id = p_input->>'intentId' FOR UPDATE;
   IF rollout_row.state <> 'pre_activation'
     THEN RAISE EXCEPTION 'release runner reconciliation frozen'; END IF;
-  IF current_row.effect_state IN ('abandoned','blocked')
+  IF current_row.effect_state = 'abandoned'
+    OR (current_row.effect_state = 'blocked'
+      AND current_row.effect_block_reason IN ('duplicate','unresolved_legacy'))
     THEN RETURN release_authority.release_runner_effect_snapshot(current_row); END IF;
   IF current_row.effect_state = 'cleaned' AND result <> 'blocked'
     THEN RETURN release_authority.release_runner_effect_snapshot(current_row); END IF;
-  IF current_row.effect_state NOT IN ('dispatching','bound','cleaned')
+  IF current_row.effect_state NOT IN ('dispatching','bound','cleaned','blocked')
     OR current_row.effect_epoch <> (p_input->>'expectedEpoch')::bigint
   THEN RAISE EXCEPTION 'release runner reconciliation fence conflict'; END IF;
+  IF current_row.effect_state = 'blocked'
+    AND current_row.effect_block_reason IN ('unknown','timeout') THEN
+    UPDATE release_authority.runner_intent SET
+      effect_state = CASE WHEN provider_job_id IS NULL
+        THEN 'dispatching' ELSE 'bound' END,
+      effect_safe_for_compensation = false, effect_block_reason = NULL
+    WHERE intent_id = current_row.intent_id RETURNING * INTO current_row;
+  END IF;
 
   IF result = 'blocked' THEN
     IF reason IS NULL OR reason NOT IN ('unknown','duplicate','timeout','unresolved_legacy')
       THEN RAISE EXCEPTION 'release runner reconciliation reason invalid'; END IF;
-    UPDATE release_authority.runner_intent SET effect_state = 'blocked',
-      effect_safe_for_compensation = false, effect_block_reason = reason,
-      reconciliation_observation = coalesce(p_input->'observation',
-        jsonb_build_object('reason',reason,'lateProviderJobId',p_input->>'jobId')),
-      reconciled_at = clock_timestamp()
-    WHERE intent_id = current_row.intent_id RETURNING * INTO current_row;
+    IF reason IN ('duplicate','unresolved_legacy') THEN
+      UPDATE release_authority.runner_intent SET effect_state = 'blocked',
+        effect_safe_for_compensation = false, effect_block_reason = reason,
+        reconciliation_observation = coalesce(p_input->'observation',
+          jsonb_build_object('reason',reason,'lateProviderJobId',p_input->>'jobId')),
+        reconciled_at = clock_timestamp()
+      WHERE intent_id = current_row.intent_id RETURNING * INTO current_row;
+    ELSE
+      -- Provider, persistence, and cleanup timeouts are observations, not
+      -- terminal decisions.  Restore old transiently-blocked rows to the
+      -- retryable phase while keeping compensation fail-closed.
+      UPDATE release_authority.runner_intent SET
+        effect_state = CASE WHEN provider_job_id IS NULL
+          THEN 'dispatching' ELSE 'bound' END,
+        effect_safe_for_compensation = false, effect_block_reason = NULL,
+        reconciliation_observation = coalesce(p_input->'observation',
+          jsonb_build_object('reason',reason,'lateProviderJobId',p_input->>'jobId')),
+        reconciled_at = clock_timestamp()
+      WHERE intent_id = current_row.intent_id RETURNING * INTO current_row;
+    END IF;
   ELSIF result = 'pending' AND nullif(p_input->>'jobId','') IS NOT NULL THEN
     IF NOT EXISTS (
       SELECT 1 FROM release_authority.runner_job
@@ -343,12 +374,10 @@ BEGIN
       AND (provider_job_id IS NULL OR provider_job_id = p_input->>'jobId')
     RETURNING * INTO current_row;
     IF NOT FOUND THEN RAISE EXCEPTION 'release runner reconciliation provider conflict'; END IF;
-  ELSIF result = 'pending' AND current_row.effect_state = 'dispatching'
-    AND clock_timestamp() > current_row.effect_discovery_deadline THEN
-    UPDATE release_authority.runner_intent SET effect_state = 'blocked',
-      effect_block_reason = 'timeout', effect_safe_for_compensation = false,
-      reconciled_at = clock_timestamp()
-    WHERE intent_id = current_row.intent_id RETURNING * INTO current_row;
+  ELSIF result = 'pending' THEN
+    -- Absence is never authority to retry the POST or to make recovery
+    -- immutable.  Leave dispatching/bound unsafe and retryable.
+    NULL;
   ELSIF result <> 'pending' THEN
     RAISE EXCEPTION 'release runner reconciliation result invalid';
   END IF;
@@ -361,13 +390,26 @@ CREATE FUNCTION release_authority.release_runner_abandon_prepared(
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
 DECLARE current_row release_authority.runner_intent%ROWTYPE;
+DECLARE rollout_row release_authority.rollout%ROWTYPE;
+DECLARE intent_rollout_id text;
 BEGIN
+  SELECT rollout_id INTO intent_rollout_id
+    FROM release_authority.runner_intent WHERE intent_id = p_intent_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'release runner prepared abandon conflict'; END IF;
+  SELECT * INTO STRICT rollout_row FROM release_authority.rollout
+    WHERE rollout_id = intent_rollout_id FOR UPDATE;
+  SELECT * INTO STRICT current_row FROM release_authority.runner_intent
+    WHERE intent_id = p_intent_id FOR UPDATE;
+  IF current_row.rollout_id <> rollout_row.rollout_id
+    OR rollout_row.state <> 'pre_activation'
+    OR current_row.effect_state <> 'prepared'
+    OR current_row.effect_owner <> p_owner
+    OR current_row.effect_epoch <> p_expected_epoch
+    OR current_row.effect_lease_expires_at > clock_timestamp()
+  THEN RAISE EXCEPTION 'release runner prepared abandon conflict'; END IF;
   UPDATE release_authority.runner_intent SET effect_state = 'abandoned',
     effect_safe_for_compensation = true, effect_lease_expires_at = NULL
-  WHERE intent_id = p_intent_id AND effect_state = 'prepared'
-    AND effect_owner = p_owner AND effect_epoch = p_expected_epoch
-  RETURNING * INTO current_row;
-  IF NOT FOUND THEN RAISE EXCEPTION 'release runner prepared abandon conflict'; END IF;
+  WHERE intent_id = current_row.intent_id RETURNING * INTO current_row;
   RETURN release_authority.release_runner_effect_snapshot(current_row);
 END $body$;
 REVOKE ALL ON FUNCTION release_authority.release_runner_abandon_prepared(
@@ -380,11 +422,6 @@ BEGIN
     IF NOT release_authority.release_runner_job_cleanup_proven(NEW) THEN
       RAISE EXCEPTION 'release runner terminal cleanup witness unproven';
     END IF;
-    UPDATE release_authority.runner_intent SET effect_state = 'cleaned',
-      effect_safe_for_compensation = true, effect_block_reason = NULL,
-      reconciled_at = clock_timestamp()
-    WHERE intent_id = NEW.provisioning_intent_id
-      AND effect_state IN ('dispatching','bound');
   END IF;
   RETURN NEW;
 END $body$;
@@ -399,11 +436,31 @@ CREATE OR REPLACE FUNCTION release_authority.release_runner_mark_terminal(
   p_job_id text, p_observation jsonb
 ) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
-DECLARE job release_authority.runner_job%ROWTYPE; witness jsonb;
+DECLARE job release_authority.runner_job%ROWTYPE;
+DECLARE intent release_authority.runner_intent%ROWTYPE;
+DECLARE rollout release_authority.rollout%ROWTYPE;
+DECLARE witness jsonb;
+DECLARE job_rollout_id text;
+DECLARE job_intent_id text;
 BEGIN
+  -- Read identifiers without locking, then take the canonical rollout ->
+  -- intent -> job order.  The trigger only validates the witnessed transition;
+  -- projection happens here while the parent locks are already held.
+  SELECT rollout_id, provisioning_intent_id
+    INTO job_rollout_id, job_intent_id
+    FROM release_authority.runner_job WHERE job_id = p_job_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'release runner terminal job missing'; END IF;
+  SELECT * INTO STRICT rollout FROM release_authority.rollout
+    WHERE rollout_id = job_rollout_id FOR UPDATE;
+  SELECT * INTO STRICT intent FROM release_authority.runner_intent
+    WHERE intent_id = job_intent_id FOR UPDATE;
   SELECT * INTO job FROM release_authority.runner_job
     WHERE job_id = p_job_id FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'release runner terminal job missing'; END IF;
+  IF job.rollout_id <> rollout.rollout_id
+    OR job.provisioning_intent_id <> intent.intent_id
+    OR intent.rollout_id <> rollout.rollout_id
+  THEN RAISE EXCEPTION 'release runner terminal identity conflict'; END IF;
   witness := job.cleanup_provider_witness;
   IF witness IS NULL OR witness->>'jobId' <> job.job_id
     OR witness->>'canary' <> job.cleanup_canary
@@ -414,12 +471,27 @@ BEGIN
     OR jsonb_typeof(witness->'remainingPaths') <> 'array'
     OR jsonb_array_length(witness->'remainingPaths') <> 0
   THEN RAISE EXCEPTION 'release runner terminal cleanup witness unproven'; END IF;
-  IF job.terminal_at IS NOT NULL THEN RETURN true; END IF;
-  UPDATE release_authority.runner_job SET terminal_at = clock_timestamp(),
-    cleanup_observation = p_observation
-  WHERE job_id = p_job_id AND terminal_at IS NULL
-    AND cleanup_provider_witness = witness;
-  IF NOT FOUND THEN RAISE EXCEPTION 'release runner terminal cas failed'; END IF;
+  IF job.terminal_at IS NULL THEN
+    UPDATE release_authority.runner_job SET terminal_at = clock_timestamp(),
+      cleanup_observation = p_observation
+    WHERE job_id = p_job_id AND terminal_at IS NULL
+      AND cleanup_provider_witness = witness;
+    IF NOT FOUND THEN RAISE EXCEPTION 'release runner terminal cas failed'; END IF;
+  END IF;
+  -- Independent terminal proof repairs retryable dispatch/bind and historical
+  -- transient blocks.  Duplicate and unresolved legacy effects, or any intent
+  -- with another durable provider identity, remain permanently fail-closed.
+  UPDATE release_authority.runner_intent SET effect_state = 'cleaned',
+    effect_safe_for_compensation = true, effect_block_reason = NULL,
+    reconciled_at = clock_timestamp()
+  WHERE intent_id = intent.intent_id
+    AND (effect_state IN ('dispatching','bound') OR
+      (effect_state = 'blocked' AND effect_block_reason IN ('unknown','timeout')))
+    AND NOT EXISTS (
+      SELECT 1 FROM release_authority.runner_job other
+      WHERE other.provisioning_intent_id = intent.intent_id
+        AND other.job_id <> job.job_id
+    );
   RETURN true;
 END $body$;
 REVOKE ALL ON FUNCTION release_authority.release_runner_mark_terminal(text,jsonb) FROM PUBLIC;

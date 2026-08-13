@@ -410,17 +410,9 @@ export class RenderPrivateRunnerAdapter {
           timedOut: false,
         });
       } else {
-        // Cleanup observation is itself a privileged provider-side effect.  A
-        // job that the ledger could not persist must first be made durably
-        // unsafe and left for reconciliation; witnessing it here would erase
-        // the only retryable path between provider creation and durable bind.
-        await reconciliationBoundary.blocked({
-          effectId: provisioningIntentId,
-          ownerId: claimantId,
-          expectedEpoch: effect.epoch,
-          providerId: created.id,
-          reason: "unknown",
-        });
+        // The durable dispatching fence is already compensation-unsafe and can
+        // never authorize another POST.  Leave transient persistence failure
+        // retryable so discovery can retain and clean the provider identity.
         throw new Error("render_runner_job_persistence_failed", {
           cause: error,
         });
@@ -669,7 +661,6 @@ export class RenderPrivateRunnerAdapter {
       } while (cursor);
     }
     let duplicateObserved = false;
-    let persistenceBlocked = false;
 
     // Persist every newly discovered provider identity before binding,
     // blocking, or invoking either cleanup witness.  In particular, duplicate
@@ -683,17 +674,9 @@ export class RenderPrivateRunnerAdapter {
       try {
         await this.ledger.persistCreatedJob(entry);
       } catch {
-        persistenceBlocked = true;
         duplicateObserved ||=
           intent.effect.providerId !== null &&
           intent.effect.providerId !== entry.jobId;
-        await reconciliationBoundary.blocked({
-          effectId: intent.id,
-          ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
-          expectedEpoch: intent.effect.epoch,
-          providerId: entry.jobId,
-          reason: duplicateObserved ? "duplicate" : "unknown",
-        });
       }
     }
     // Persistence is idempotent and discovery also sees already-terminal
@@ -706,13 +689,19 @@ export class RenderPrivateRunnerAdapter {
     );
 
     for (const intent of intents) {
+      const observedProviderIds = new Set([
+        ...[...refreshedOpen, ...discovered]
+          .filter((entry) => entry.provisioningIntentId === intent.id)
+          .map((entry) => entry.jobId),
+        ...(intent.effect.providerId ? [intent.effect.providerId] : []),
+      ]);
       const matching = [...refreshedOpen, ...durableDiscovered].filter(
         (entry, index, all) =>
           entry.provisioningIntentId === intent.id &&
           all.findIndex((candidate) => candidate.jobId === entry.jobId) ===
             index,
       );
-      if (matching.length > 1) {
+      if (observedProviderIds.size > 1) {
         duplicateObserved = true;
         await reconciliationBoundary.blocked({
           effectId: intent.id,
@@ -721,7 +710,12 @@ export class RenderPrivateRunnerAdapter {
           reason: "duplicate",
         });
       } else if (intent.effect.state === ExternalEffectState.Prepared) {
-        if (matching.length === 0)
+        const expiresAt = intent.creationLeaseExpiresAt;
+        if (
+          matching.length === 0 &&
+          expiresAt !== null &&
+          Date.parse(expiresAt) <= this.now().getTime()
+        )
           await this.ledger.abandonPreparedEffect({
             intentId: intent.id,
             claimantId: intent.effect.ownerId!,
@@ -779,22 +773,19 @@ export class RenderPrivateRunnerAdapter {
       await this.ledger.markTerminal(entry.jobId, observation);
     }
     const finalIntents = await this.ledger.listProvisioningIntents(rolloutId);
-    const safety =
-      duplicateObserved || persistenceBlocked
-        ? {
-            result: "blocked" as const,
-            safeForCompensation: false,
-            reason: (duplicateObserved ? "duplicate" : "unknown") as
-              | "duplicate"
-              | "unknown",
-            intentCount: finalIntents.length,
-            intents: finalIntents.map(({ id, effect }) => ({
-              id,
-              state: effect.state,
-              safeForCompensation: effect.safeForCompensation,
-            })),
-          }
-        : reconcileCompensationSafety(finalIntents);
+    const safety = duplicateObserved
+      ? {
+          result: "blocked" as const,
+          safeForCompensation: false,
+          reason: "duplicate" as const,
+          intentCount: finalIntents.length,
+          intents: finalIntents.map(({ id, effect }) => ({
+            id,
+            state: effect.state,
+            safeForCompensation: effect.safeForCompensation,
+          })),
+        }
+      : reconcileCompensationSafety(finalIntents);
     return { ...safety, observations };
   }
 }

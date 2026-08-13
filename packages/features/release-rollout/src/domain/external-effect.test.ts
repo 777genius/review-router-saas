@@ -111,7 +111,6 @@ describe("external effect domain invariants", () => {
       { matchingProviderIds: ["job-a", "job-b"], timedOut: false },
       "duplicate",
     ],
-    ["cleanup timeout", { matchingProviderIds: [], timedOut: true }, "timeout"],
     [
       "legacy unresolved",
       { matchingProviderIds: [], timedOut: false, legacyUnresolved: true },
@@ -125,12 +124,15 @@ describe("external effect domain invariants", () => {
     });
   });
 
-  it("keeps an unresolved discovery pending and unsafe", () => {
-    expect(
-      classifyExternalEffectDiscovery({
-        matchingProviderIds: [],
-        timedOut: false,
-      }),
-    ).toEqual({ result: "pending", safeForCompensation: false });
-  });
+  it.each([false, true])(
+    "keeps an unresolved discovery pending and unsafe after timedOut=%s",
+    (timedOut) => {
+      expect(
+        classifyExternalEffectDiscovery({
+          matchingProviderIds: [],
+          timedOut,
+        }),
+      ).toEqual({ result: "pending", safeForCompensation: false });
+    },
+  );
 });

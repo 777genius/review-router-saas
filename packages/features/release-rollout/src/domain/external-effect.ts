@@ -161,11 +161,7 @@ export function classifyExternalEffectDiscovery(input: {
       safeForCompensation: false,
       reason: "duplicate",
     };
-  if (input.matchingProviderIds.length === 0 && input.timedOut)
-    return {
-      result: "blocked",
-      safeForCompensation: false,
-      reason: "timeout",
-    };
+  // Provider absence and timeouts are not terminal evidence. Dispatch remains
+  // unsafe and may be discovered again, but can never authorize another POST.
   return { result: "pending", safeForCompensation: false };
 }

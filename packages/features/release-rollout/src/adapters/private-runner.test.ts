@@ -530,7 +530,7 @@ describe("Render private runner contract", () => {
     },
   );
 
-  it("durably blocks without invoking cleanup witnesses when created-job persistence fails", async () => {
+  it("leaves created-job persistence failure retryable without invoking cleanup witnesses", async () => {
     const jobLedger = ledger();
     jobLedger.persistCreatedJob.mockRejectedValue(new Error("write_lost"));
     const cleanup = witness();
@@ -582,16 +582,7 @@ describe("Render private runner contract", () => {
         fetchImpl,
       ).provision(request),
     ).rejects.toThrow("render_runner_job_persistence_failed");
-    expect(jobLedger.reconcileProvisioningEffect).toHaveBeenCalledWith(
-      expect.objectContaining({
-        jobId: created.id,
-        reconciliation: {
-          result: "blocked",
-          safeForCompensation: false,
-          reason: "unknown",
-        },
-      }),
-    );
+    expect(jobLedger.reconcileProvisioningEffect).not.toHaveBeenCalled();
     expect(provider.observe).not.toHaveBeenCalled();
     expect(cleanup.observe).not.toHaveBeenCalled();
     expect(fetchImpl).toHaveBeenCalledTimes(3);
@@ -720,6 +711,7 @@ describe("Render private runner contract", () => {
       ...dispatchingEffect,
       reconciliation: { result: "pending", safeForCompensation: false },
     };
+    let leaseExpiresAt: string | null = null;
     const intent = () => ({
       id: intentId,
       rolloutId: request.rolloutId,
@@ -730,7 +722,7 @@ describe("Render private runner contract", () => {
       createdAt: "2026-08-12T00:00:00.000Z",
       startCommandSha256: `sha256:${"d".repeat(64)}`,
       creationLeaseOwner: dispatchingEffect.ownerId,
-      creationLeaseExpiresAt: null,
+      creationLeaseExpiresAt: leaseExpiresAt,
       effect,
     });
     const jobLedger = ledger();
@@ -824,6 +816,9 @@ describe("Render private runner contract", () => {
       setEffect: (value: Record<string, unknown>) => {
         effect = value;
       },
+      setLeaseExpiresAt: (value: string | null) => {
+        leaseExpiresAt = value;
+      },
       jobLedger,
       cleanup,
       provider,
@@ -895,7 +890,7 @@ describe("Render private runner contract", () => {
     expect(harness.open).toEqual([]);
   });
 
-  it("replays durable cleanup without a provider POST and leaves no stranded open job", async () => {
+  it("retries transient witness failure without a provider POST or immutable block", async () => {
     const intentId = "rri-reconciliation-test";
     const harness = reconciliationHarness([
       reconciledJob(intentId, "job-replay"),
@@ -911,6 +906,84 @@ describe("Render private runner contract", () => {
     ).resolves.toMatchObject({ result: "clean", safeForCompensation: true });
     expect(harness.open).toEqual([]);
     expect(harness.jobLedger.persistCreatedJob).toHaveBeenCalledOnce();
+    expect(harness.events).not.toContain("blocked:job-replay");
+  });
+
+  it("retries transient provider-witness failure from the durable bound job", async () => {
+    const intentId = "rri-reconciliation-test";
+    const harness = reconciliationHarness([
+      reconciledJob(intentId, "job-provider-witness-replay"),
+    ]);
+    harness.provider.observe.mockRejectedValueOnce(
+      new Error("provider_witness_unavailable"),
+    );
+
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({ result: "pending", safeForCompensation: false });
+    expect(harness.open).toHaveLength(1);
+    expect(harness.jobLedger.markTerminal).not.toHaveBeenCalled();
+    expect(
+      harness.jobLedger.reconcileProvisioningEffect,
+    ).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        reconciliation: expect.objectContaining({ result: "blocked" }),
+      }),
+    );
+
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({ result: "clean", safeForCompensation: true });
+    expect(harness.open).toEqual([]);
+  });
+
+  it("retries a transient provider discovery failure without changing effect authority", async () => {
+    const intentId = "rri-reconciliation-test";
+    const harness = reconciliationHarness([
+      reconciledJob(intentId, "job-provider-retry"),
+    ]);
+    harness.fetchImpl.mockRejectedValueOnce(new Error("render_unavailable"));
+
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).rejects.toThrow("render_unavailable");
+    expect(harness.effect()).toMatchObject({ state: "dispatching" });
+    expect(
+      harness.jobLedger.reconcileProvisioningEffect,
+    ).not.toHaveBeenCalled();
+
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({ result: "clean", safeForCompensation: true });
+    expect(
+      harness.fetchImpl.mock.calls.filter(
+        ([, init]) => init?.method === "POST",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("does not abandon a prepared effect until its lease has expired", async () => {
+    const harness = reconciliationHarness([]);
+    harness.setEffect({
+      ...preparedEffect("rrc-00000000-0000-4000-8000-000000000000"),
+    });
+    harness.setLeaseExpiresAt("2026-08-12T00:02:00.000Z");
+    const adapter = new RenderPrivateRunnerAdapter(
+      harness.jobLedger,
+      harness.cleanup,
+      harness.provider,
+      harness.fetchImpl,
+      () => new Date("2026-08-12T00:01:00.000Z"),
+    );
+
+    await expect(
+      adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({ result: "pending", safeForCompensation: false });
+    expect(harness.jobLedger.abandonPreparedEffect).not.toHaveBeenCalled();
+
+    harness.setLeaseExpiresAt("2026-08-12T00:00:00.000Z");
+    await adapter.reconcileOrphans(request.rolloutId, request.apiKey);
+    expect(harness.jobLedger.abandonPreparedEffect).toHaveBeenCalledOnce();
   });
 
   it("durably blocks a job appearing after clean before witnessing it", async () => {
@@ -1002,6 +1075,41 @@ describe("Render private runner contract", () => {
       harness.events.indexOf("provider-witness:job-after-abandon"),
     );
     expect(harness.open).toEqual([]);
+  });
+
+  it("fails closed on a known duplicate even when late identity persistence is transiently unavailable", async () => {
+    const intentId = "rri-reconciliation-test";
+    const late = reconciledJob(intentId, "job-late-unpersisted");
+    const harness = reconciliationHarness([late]);
+    harness.setEffect({
+      ...dispatchingEffect,
+      state: "cleaned",
+      providerId: "job-original-cleaned",
+      safeForCompensation: true,
+      reconciliation: { result: "clean", safeForCompensation: true },
+    });
+    harness.jobLedger.persistCreatedJob.mockRejectedValueOnce(
+      new Error("ledger_temporarily_unavailable"),
+    );
+
+    await expect(
+      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
+    ).resolves.toMatchObject({
+      result: "blocked",
+      reason: "duplicate",
+      safeForCompensation: false,
+    });
+    expect(harness.jobLedger.reconcileProvisioningEffect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reconciliation: {
+          result: "blocked",
+          reason: "duplicate",
+          safeForCompensation: false,
+        },
+      }),
+    );
+    expect(harness.provider.observe).not.toHaveBeenCalled();
+    expect(harness.cleanup.observe).not.toHaveBeenCalled();
   });
 });
 
