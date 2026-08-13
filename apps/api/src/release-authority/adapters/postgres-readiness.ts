@@ -9,19 +9,31 @@ export async function observeReleaseAuthorityDatabaseReadiness(
     Prisma.sql`
       WITH facts AS (
         SELECT
+          to_regprocedure('release_authority.release_service_transition_append(jsonb)') AS recovery_append,
           to_regprocedure('release_authority.release_service_transition_complete(jsonb)') AS recovery_complete,
           to_regprocedure('release_authority.release_source_resume_is_rollout_owned()') AS recovery_guard,
           to_regprocedure('release_authority.release_runner_persist_job(jsonb)') AS persist_job,
           to_regprocedure('release_authority.release_runner_reconcile_effect(jsonb)') AS reconcile_effect,
           to_regprocedure('release_authority.release_runner_compensation_gate()') AS compensation_gate,
+          to_regprocedure('release_authority.release_compensation_effects_are_safe(text)') AS compensation_effects_safe,
+          to_regprocedure('release_authority.release_compensation_receipt_effect_gate()') AS compensation_receipt_gate,
+          to_regprocedure('release_authority.release_compensation_source_recovery_gate()') AS compensation_recovery_gate,
+          to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') AS provider_decide,
+          to_regprocedure('release_authority.release_rollout_reconcile(text,jsonb)') AS rollout_reconcile,
           to_regprocedure('release_authority.release_rollout_compensation_checkpoint(text,text,text)') AS compensation_checkpoint
       ), definitions AS (
         SELECT facts.*,
+          coalesce(pg_get_functiondef(recovery_append), '') AS recovery_append_definition,
           coalesce(pg_get_functiondef(recovery_complete), '') AS recovery_complete_definition,
           coalesce(pg_get_functiondef(recovery_guard), '') AS recovery_guard_definition,
           coalesce(pg_get_functiondef(persist_job), '') AS persist_job_definition,
           coalesce(pg_get_functiondef(reconcile_effect), '') AS reconcile_effect_definition,
           coalesce(pg_get_functiondef(compensation_gate), '') AS compensation_gate_definition,
+          coalesce(pg_get_functiondef(compensation_effects_safe), '') AS compensation_effects_safe_definition,
+          coalesce(pg_get_functiondef(compensation_receipt_gate), '') AS compensation_receipt_gate_definition,
+          coalesce(pg_get_functiondef(compensation_recovery_gate), '') AS compensation_recovery_gate_definition,
+          coalesce(pg_get_functiondef(provider_decide), '') AS provider_decide_definition,
+          coalesce(pg_get_functiondef(rollout_reconcile), '') AS rollout_reconcile_definition,
           coalesce(pg_get_functiondef(compensation_checkpoint), '') AS compensation_checkpoint_definition
         FROM facts
       ), authority_functions AS (
@@ -92,11 +104,17 @@ export async function observeReleaseAuthorityDatabaseReadiness(
       SELECT current_user AS "roleName",
         (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
         current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
-        CASE WHEN definitions.recovery_guard IS NOT NULL
+        CASE WHEN definitions.recovery_append IS NOT NULL
+          AND definitions.recovery_guard IS NOT NULL
           AND definitions.recovery_complete IS NOT NULL
           AND definitions.persist_job IS NOT NULL
           AND definitions.reconcile_effect IS NOT NULL
           AND definitions.compensation_gate IS NOT NULL
+          AND definitions.compensation_effects_safe IS NOT NULL
+          AND definitions.compensation_receipt_gate IS NOT NULL
+          AND definitions.compensation_recovery_gate IS NOT NULL
+          AND definitions.provider_decide IS NOT NULL
+          AND definitions.rollout_reconcile IS NOT NULL
           AND definitions.compensation_checkpoint IS NOT NULL
           AND (SELECT count(*) = 9 FROM pg_catalog.pg_class relation
             JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -120,7 +138,7 @@ export async function observeReleaseAuthorityDatabaseReadiness(
                 'effect_discovery_deadline','effect_safe_for_compensation',
                 'effect_block_reason'
               ))
-          THEN 5 ELSE 0 END AS "schemaVersion",
+          THEN 6 ELSE 0 END AS "schemaVersion",
         to_regprocedure('release_authority.release_rollout_claim(text,text,text,integer,text,text)') IS NOT NULL AS "controlRoutine",
         to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') IS NOT NULL AS "providerRoutine",
         to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL AS "installerRoutine",
@@ -148,6 +166,16 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           AND definitions.reconcile_effect_definition LIKE '%unresolved_legacy%'
           AND definitions.compensation_gate_definition LIKE '%release runner duplicate effects unsafe for activation%'
           AND definitions.compensation_gate_definition LIKE '%release runner effects unsafe for compensation%'
+          AND definitions.compensation_gate_definition LIKE '%release_compensation_effects_are_safe%'
+          AND definitions.compensation_effects_safe_definition LIKE '%effect_safe_for_compensation%'
+          AND definitions.compensation_effects_safe_definition LIKE '%count(*) > 1%'
+          AND definitions.compensation_receipt_gate_definition LIKE '%effect_compensation%complete_compensation%'
+          AND definitions.compensation_recovery_gate_definition LIKE '%restore_config_intent%source_resumed%'
+          AND definitions.recovery_append_definition LIKE '%release_compensation_effects_are_safe%'
+          AND definitions.recovery_append_definition LIKE '%rollout_row.state <> ''compensating''%'
+          AND definitions.provider_decide_definition LIKE '%provider authority runner effects changed during compensation%'
+          AND definitions.rollout_reconcile_definition LIKE '%release_compensation_effects_are_safe%'
+          AND definitions.rollout_reconcile_definition LIKE '%sourceEligible%false%'
           AS "lateRunnerEffectProtocol",
         definitions.compensation_checkpoint_definition LIKE '%freeze_inventory_complete%'
           AND definitions.compensation_checkpoint_definition LIKE '%source_freeze_completion%'
@@ -159,7 +187,7 @@ export async function observeReleaseAuthorityDatabaseReadiness(
             FROM pg_catalog.pg_proc procedure
             WHERE procedure.oid = definitions.compensation_checkpoint)
           AS "compensationCheckpointDefinition",
-        (SELECT count(*) = 8 AND bool_and(trigger.tgenabled = 'O')
+        (SELECT count(*) = 10 AND bool_and(trigger.tgenabled = 'O')
           FROM pg_catalog.pg_trigger trigger
           JOIN pg_catalog.pg_class relation ON relation.oid = trigger.tgrelid
           JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -181,7 +209,11 @@ export async function observeReleaseAuthorityDatabaseReadiness(
               ('source_freeze_completion', 'release_source_freeze_completion_immutable_guard',
                 to_regprocedure('release_authority.release_source_freeze_immutable()')),
               ('service_transition_checkpoint', 'release_source_resume_rollout_ownership_guard',
-                definitions.recovery_guard)
+                definitions.recovery_guard),
+              ('receipt', 'release_compensation_receipt_effect_gate_trigger',
+                definitions.compensation_receipt_gate),
+              ('service_transition_checkpoint', 'release_compensation_source_recovery_gate_trigger',
+                definitions.compensation_recovery_gate)
             )
         ) AND EXISTS (
           SELECT 1 FROM pg_catalog.pg_trigger trigger

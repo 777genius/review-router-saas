@@ -12,6 +12,7 @@ export const releaseAuthorityMigrationPaths = Object.freeze([
   "packages/platform/release-authority-db/migrations/000004_selective_source_recovery/migration.sql",
   "packages/platform/release-authority-db/migrations/000005_late_runner_effects/migration.sql",
   "packages/platform/release-authority-db/migrations/000006_runner_provider_creation_boundary/migration.sql",
+  "packages/platform/release-authority-db/migrations/000007_compensation_effect_fence/migration.sql",
 ]);
 
 const migrationBody = (source, path) => {

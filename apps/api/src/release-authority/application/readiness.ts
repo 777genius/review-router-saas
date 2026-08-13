@@ -28,7 +28,7 @@ export type ReleaseControlDatabaseSet = Readonly<{
 const authoritySchemaReady = (
   readiness: ReleaseAuthorityDatabaseReadiness,
 ): boolean =>
-  readiness.schemaVersion === 5 &&
+  readiness.schemaVersion === 6 &&
   readiness.controlRoutine &&
   readiness.providerRoutine &&
   readiness.externalEffectProtocol &&

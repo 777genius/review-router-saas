@@ -81,6 +81,9 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000005
 docker cp "$root/packages/platform/release-authority-db/migrations/000006_runner_provider_creation_boundary/migration.sql" \
   "$name:/tmp/migration-000006.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000006.sql >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000007_compensation_effect_fence/migration.sql" \
+  "$name:/tmp/migration-000007.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000007.sql >/dev/null
 
 postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
@@ -1074,6 +1077,167 @@ test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
    JOIN release_authority.runner_job job USING (rollout_id)
    WHERE rollout.rollout_id='r-compensation-wins'")" \
   = compensating:sha256:$(printf 'f%.0s' $(seq 1 64)):blocked:false:true
+
+# Late identity wins the next boundary: neither an authority replay nor effect
+# or completion receipt may use the clean snapshot captured by begin.
+if docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_provider_authority -d postgres -Atc \
+  "SELECT release_authority.release_provider_authority_decide(jsonb_build_object(
+    'rolloutId','r-compensation-wins','operation','resume_source',
+    'sourceSystemIdentifier','188','targetSystemIdentifier','288',
+    'expectedReceiptSha256','sha256:'||repeat('f',64),'activationBoundary','before'))" \
+  >/dev/null 2>&1; then
+  echo "late runner effect reused source recovery authority" >&2
+  exit 1
+fi
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r-compensation-wins',repeat('5',40),'88',1,'188','288','effect_compensation',
+    'sha256:'||repeat('f',64),'sha256:'||repeat('e',64),'188','before','before',NULL)" \
+  >/dev/null 2>&1; then
+  echo "late runner effect crossed effect_compensation" >&2
+  exit 1
+fi
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r-compensation-wins',repeat('5',40),'88',1,'188','288','complete_compensation',
+    'sha256:'||repeat('f',64),'sha256:'||repeat('d',64),'188','before','before',NULL)" \
+  >/dev/null 2>&1; then
+  echo "late runner effect crossed complete_compensation" >&2
+  exit 1
+fi
+test "$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (result->>'state')||':'||(result->>'sourceEligible')
+   FROM (SELECT release_authority.release_rollout_reconcile(
+     'r-compensation-wins','{}'::jsonb) result) reconciled")" \
+  = pre_activation_recovery_required:false
+
+# Opposite ordering: effect_compensation owns the rollout lock first. The late
+# identity waits, is then persisted as unsafe, and fences completion and source
+# eligibility without deadlocking the rollout -> intent -> job order.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-effect-wins',repeat('4',40),'89',1,'189','289');
+   SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
+     'id','rri-'||repeat('4',63)||'9','rolloutId','r-effect-wins','serviceId','svc-effect-wins',
+     'lifecycle','role','workflowJobId','891','runnerName','rr-effect-wins','createdAt','$now',
+     'startCommandSha256','sha256:'||repeat('4',64),
+     'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000089'));
+   UPDATE release_authority.runner_intent SET effect_lease_expires_at=clock_timestamp()-interval '1 second'
+     WHERE intent_id='rri-'||repeat('4',63)||'9';
+   SELECT release_authority.release_runner_abandon_prepared(
+     'rri-'||repeat('4',63)||'9','rrc-00000000-0000-4000-8000-000000000089',0);
+   INSERT INTO release_authority.source_freeze_observation(
+     rollout_id,service_id,phase,latest_successful_deploy_id,observed_at,declared_service_ids)
+   VALUES ('r-effect-wins','srv-effect','suspended','dep-effect','$now','[\"srv-effect\"]'::jsonb)" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_service_transition_begin(jsonb_build_object(
+    'rolloutId','r-effect-wins','manifestSha256','sha256:'||repeat('4',64),
+    'targetContractSha256','sha256:'||repeat('3',64),
+    'serviceIds',jsonb_build_array('srv-effect','srv-effect-b','srv-effect-c'),
+    'sourceManifest',jsonb_build_object('manifestSha256','sha256:'||repeat('4',64),'services','[]'::jsonb),
+    'targetContracts',jsonb_build_array(jsonb_build_object('serviceId','srv-effect'),
+      jsonb_build_object('serviceId','srv-effect-b'),jsonb_build_object('serviceId','srv-effect-c'))))" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r-effect-wins',repeat('4',40),'89',1,'189','289','begin_compensation',
+    'sha256:'||repeat('0',64),'sha256:'||repeat('a',64),'189','before','before',NULL)" >/dev/null
+recovery_intent_first=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_service_transition_append(jsonb_build_object(
+    'rolloutId','r-effect-wins','manifestSha256','sha256:'||repeat('4',64),
+    'targetContractSha256','sha256:'||repeat('3',64),'serviceId','srv-effect',
+    'step','restore_config_intent'))->>'sequence'")
+test "$recovery_intent_first" = 2
+recovery_intent_replay=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_service_transition_append(jsonb_build_object(
+    'rolloutId','r-effect-wins','manifestSha256','sha256:'||repeat('4',64),
+    'targetContractSha256','sha256:'||repeat('3',64),'serviceId','srv-effect',
+    'step','restore_config_intent'))->>'sequence'")
+test "$recovery_intent_replay" = 2
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -Atc \
+  "BEGIN;
+   SELECT release_authority.release_rollout_append_receipt(
+     'r-effect-wins',repeat('4',40),'89',1,'189','289','effect_compensation',
+     'sha256:'||repeat('a',64),'sha256:'||repeat('b',64),'189','before','before',NULL);
+   SELECT release_authority.release_provider_authority_decide(jsonb_build_object(
+     'rolloutId','r-effect-wins','operation','resume_source',
+     'sourceSystemIdentifier','189','targetSystemIdentifier','289',
+     'expectedReceiptSha256','sha256:'||repeat('b',64),'activationBoundary','before'));
+   SELECT pg_catalog.pg_advisory_xact_lock(810089);
+   SELECT pg_catalog.pg_sleep(3);
+   COMMIT" >/dev/null &
+effect_winner_pid=$!
+effect_winner_ready=false
+for _ in $(seq 1 100); do
+  if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks WHERE locktype='advisory' AND objid=810089 AND granted)")" = t; then
+    effect_winner_ready=true
+    break
+  fi
+  sleep 0.05
+done
+test "$effect_winner_ready" = true
+docker exec -e PGPASSWORD=control -e PGOPTIONS='-c lock_timeout=10s' "$name" \
+  psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+    'jobId','job-effect-late','rolloutId','r-effect-wins',
+    'provisioningIntentId','rri-'||repeat('4',63)||'9','serviceId','svc-effect-wins','observedAt','$now',
+    'cleanupCanary','rr-cleanup:r-effect-wins:rr-effect-wins','lifecycle','role'))" >/dev/null
+wait "$effect_winner_pid"
+docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_witness -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-effect-late',jsonb_build_object(
+    'jobId','job-effect-late','canary','rr-cleanup:r-effect-wins:rr-effect-wins',
+    'providerStatus','succeeded','containerTerminated',true,'logSha256','sha256:'||repeat('4',64),
+    'removedPaths',jsonb_build_array('/runner/_work/rr-effect-wins/late'),'remainingPaths','[]'::jsonb,
+    'providerLogId','log-effect-late','providerObservedAt','$now'))" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_mark_terminal('job-effect-late',
+    jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))" >/dev/null
+if docker exec -e PGPASSWORD=provider "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_provider_authority -d postgres -Atc \
+  "SELECT release_authority.release_provider_authority_decide(jsonb_build_object(
+    'rolloutId','r-effect-wins','operation','resume_source',
+    'sourceSystemIdentifier','189','targetSystemIdentifier','289',
+    'expectedReceiptSha256','sha256:'||repeat('b',64),'activationBoundary','before'))" \
+  >/dev/null 2>&1; then
+  echo "effect-first late runner reused source recovery authority" >&2
+  exit 1
+fi
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_service_transition_append(jsonb_build_object(
+    'rolloutId','r-effect-wins','manifestSha256','sha256:'||repeat('4',64),
+    'targetContractSha256','sha256:'||repeat('3',64),'serviceId','srv-effect',
+    'step','restore_config_intent'))" >/dev/null 2>&1; then
+  echo "late runner effect reused a source recovery intent" >&2
+  exit 1
+fi
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r-effect-wins',repeat('4',40),'89',1,'189','289','complete_compensation',
+    'sha256:'||repeat('b',64),'sha256:'||repeat('c',64),'189','before','before',NULL)" \
+  >/dev/null 2>&1; then
+  echo "effect-first late runner crossed complete_compensation" >&2
+  exit 1
+fi
+test "$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT rollout.state||':'||rollout.last_receipt_sha256||':'||
+     (reconciled.result->>'sourceEligible')
+   FROM release_authority.rollout rollout
+   CROSS JOIN LATERAL (SELECT release_authority.release_rollout_reconcile(
+     rollout.rollout_id,'{}'::jsonb) result) reconciled
+   WHERE rollout.rollout_id='r-effect-wins'")" \
+  = compensating:sha256:$(printf 'b%.0s' $(seq 1 64)):false
 
 for provider_status in failed canceled; do
   rollout="r-clean-$provider_status"

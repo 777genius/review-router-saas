@@ -98,6 +98,12 @@ describe("disposable dual-version rehearsal", () => {
     expect(
       installer.match(/000005_late_runner_effects\/migration\.sql/gu),
     ).toHaveLength(1);
+    expect(installer.indexOf("000005_late_runner_effects")).toBeLessThan(
+      installer.indexOf("000007_compensation_effect_fence"),
+    );
+    expect(
+      installer.match(/000007_compensation_effect_fence\/migration\.sql/gu),
+    ).toHaveLength(1);
     expect(source).not.toContain(
       "GRANT SELECT ON reviewrouter_activation.activation_receipt TO reviewrouter_role_bootstrap",
     );

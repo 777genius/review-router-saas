@@ -478,4 +478,96 @@ describe("release compensation reconciliation", () => {
     expect(dependencies.authority.decide).not.toHaveBeenCalled();
     expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
   });
+
+  it("denies a late unsafe identity after begin before any recovery effect", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastStep: RolloutStep.FreezeProviderServices,
+      receiptCount: 3,
+    });
+    const safe = await dependencies.ledger.listProvisioningIntents();
+    dependencies.ledger.listProvisioningIntents
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValue([
+        {
+          id: "intent-role",
+          effect: {
+            state: "blocked",
+            ownerId: "owner-role",
+            epoch: 2,
+            providerId: "job-late",
+            safeForCompensation: false,
+            reconciliation: {
+              result: "blocked",
+              safeForCompensation: false,
+              reason: "duplicate",
+            },
+          },
+        },
+      ]);
+
+    await expect(
+      new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+        rollout,
+      ),
+    ).resolves.toMatchObject({
+      outcome: "denied",
+      externalEffects: { reason: "duplicate", safeForCompensation: false },
+    });
+    expect(dependencies.ledger.compareAndSet).toHaveBeenCalledTimes(1);
+    expect(dependencies.authority.decide).not.toHaveBeenCalled();
+    expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+    expect(dependencies.provider.compensateAndObserve).not.toHaveBeenCalled();
+  });
+
+  it("does not complete when a late unsafe identity follows the recovery effect", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "compensating",
+      lastStep: RolloutStep.BeginCompensation,
+      receiptCount: 4,
+    });
+    const safe = await dependencies.ledger.listProvisioningIntents();
+    const blocked = [
+      {
+        id: "intent-role",
+        effect: {
+          state: "blocked",
+          ownerId: "owner-role",
+          epoch: 2,
+          providerId: "job-late",
+          safeForCompensation: false,
+          reconciliation: {
+            result: "blocked" as const,
+            safeForCompensation: false,
+            reason: "duplicate" as const,
+          },
+        },
+      },
+    ];
+    dependencies.ledger.listProvisioningIntents
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValueOnce(safe)
+      .mockResolvedValue(blocked);
+
+    await expect(
+      new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+        rollout,
+      ),
+    ).resolves.toMatchObject({
+      outcome: "denied",
+      externalEffects: { reason: "duplicate", safeForCompensation: false },
+    });
+    expect(dependencies.compensateDatabase).toHaveBeenCalledTimes(1);
+    expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledTimes(1);
+    expect(dependencies.ledger.compareAndSet).toHaveBeenCalledTimes(1);
+    expect(dependencies.ledger.compareAndSet).toHaveBeenCalledWith(
+      expect.objectContaining({ step: RolloutStep.EffectCompensation }),
+    );
+    expect(dependencies.ledger.reconcileRollout).not.toHaveBeenCalled();
+  });
 });

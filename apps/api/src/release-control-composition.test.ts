@@ -17,7 +17,7 @@ const authorityReadiness = (
     roleName,
     systemIdentifier: "authority-system",
     postgresMajor: 17,
-    schemaVersion: 5,
+    schemaVersion: 6,
     controlRoutine: true,
     providerRoutine: true,
     installerRoutine: false,
