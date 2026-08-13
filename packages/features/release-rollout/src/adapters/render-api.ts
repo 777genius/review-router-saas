@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { EnvironmentMutationOutcome } from "../application/transactional-service-cutover";
+import type { EnvironmentMutationOutcome } from "../application/service-transition-ports";
 
 export interface RenderFetch {
   (input: string, init?: RequestInit): Promise<Response>;
