@@ -1500,19 +1500,19 @@ COMMIT;
               "reviewrouter_codex_effect_authority",
             ],
             legacyAmbiguity: {
-              inventorySha256: digest,
-              activeLeaseIds: [],
-              fetchedSetupIds: [],
-              pendingIntentIds: [],
-              intentStatuses: [],
+              inventorySha256: legacyReconciliation.inventorySha256,
+              activeLeaseIds: legacyReconciliation.inventory.activeLeaseIds,
+              fetchedSetupIds: legacyReconciliation.inventory.fetchedSetupIds,
+              pendingIntentIds: legacyReconciliation.inventory.pendingIntentIds,
+              intentStatuses: legacyReconciliation.inventory.intentStatuses,
               observations: [
                 {
                   observedAt: "2026-08-12T00:00:02.100Z",
-                  inventorySha256: digest,
+                  inventorySha256: legacyReconciliation.inventorySha256,
                 },
                 {
                   observedAt: "2026-08-12T00:00:02.300Z",
-                  inventorySha256: digest,
+                  inventorySha256: legacyReconciliation.inventorySha256,
                 },
               ],
               stable: true,
