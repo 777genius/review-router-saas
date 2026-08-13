@@ -80,7 +80,7 @@ const expectedMigrationIdentities = [
   ],
   [
     "000009_authority_history_and_forward_repairs",
-    ["sha256:bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25"],
+    ["sha256:f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4"],
   ],
   [
     "000010_recovery_effect_permits",

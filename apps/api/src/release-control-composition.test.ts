@@ -60,7 +60,7 @@ const authorityReadiness = (
       ],
       [
         "000009_authority_history_and_forward_repairs",
-        "bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
+        "f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4",
       ],
       [
         "000010_recovery_effect_permits",
@@ -144,6 +144,16 @@ const readerReadiness = [
   },
 ];
 const witnessReadiness = authorityReadiness("reviewrouter_release_witness");
+type QueryOperation = (query: { text?: string }) => unknown;
+const readinessQuery = (
+  value: readonly unknown[],
+  operation: QueryOperation = () => undefined,
+) =>
+  vi.fn((query: { text?: string }) =>
+    String(query?.text).includes("WITH facts AS")
+      ? Promise.resolve(value)
+      : operation(query),
+  );
 
 const createReleaseControlHealthApp = (
   controlOverrides: Record<string, unknown> = {},
@@ -306,9 +316,17 @@ describe("release authority process composition", () => {
       permitNonce: authorization.nonce,
       targetDeployIds: authorization.targetDeployIds,
     };
-    const authorityQuery = vi.fn().mockResolvedValue([{ value: true }]);
-    const installerQuery = vi.fn();
-    const readerQuery = vi.fn().mockResolvedValue([
+    const authorityOperation = vi.fn().mockResolvedValue([{ value: true }]);
+    const authorityQuery = readinessQuery(
+      authorityReadiness("reviewrouter_release_control"),
+      authorityOperation,
+    );
+    const installerOperation = vi.fn();
+    const installerQuery = readinessQuery(
+      installerReadiness,
+      installerOperation,
+    );
+    const readerOperation = vi.fn().mockResolvedValue([
       {
         value: {
           canonicalPrivilegesSha256: receipt.canonicalPrivilegesSha256,
@@ -324,9 +342,14 @@ describe("release authority process composition", () => {
         },
       },
     ]);
+    const readerQuery = readinessQuery(readerReadiness, readerOperation);
     const app = await createReleaseControlApp({
       controlPrisma: { $queryRaw: authorityQuery } as never,
-      providerAuthorityPrisma: {} as never,
+      providerAuthorityPrisma: {
+        $queryRaw: readinessQuery(
+          authorityReadiness("reviewrouter_provider_authority"),
+        ),
+      } as never,
       permitInstallerPrisma: { $queryRaw: installerQuery } as never,
       targetReceiptReaderPrisma: { $queryRaw: readerQuery } as never,
       credentials: {
@@ -350,16 +373,16 @@ describe("release authority process composition", () => {
     expect(
       (await finalize({ ...receipt, transactionId: "forged" })).statusCode,
     ).toBe(500);
-    expect(authorityQuery).not.toHaveBeenCalled();
+    expect(authorityOperation).not.toHaveBeenCalled();
 
     expect((await finalize(receipt)).json()).toEqual({ changed: true });
-    expect(readerQuery).toHaveBeenCalledTimes(2);
-    expect(authorityQuery).toHaveBeenCalledOnce();
-    expect(installerQuery).not.toHaveBeenCalled();
-    expect(String(readerQuery.mock.calls[0]?.[0].text)).toContain(
+    expect(readerOperation).toHaveBeenCalledTimes(2);
+    expect(authorityOperation).toHaveBeenCalledOnce();
+    expect(installerOperation).not.toHaveBeenCalled();
+    expect(String(readerOperation.mock.calls[0]?.[0].text)).toContain(
       "read_activation_receipt",
     );
-    expect(String(authorityQuery.mock.calls[0]?.[0].text)).toContain(
+    expect(String(authorityOperation.mock.calls[0]?.[0].text)).toContain(
       "release_rollout_finalize_activation",
     );
     await app.close();
@@ -379,18 +402,32 @@ describe("release authority process composition", () => {
       targetDeployIds: ["deploy-1"],
       authorizedAt: "2026-08-12T00:00:00.000Z",
     };
-    const authorityQuery = vi
+    const authorityOperation = vi
       .fn()
       .mockResolvedValue([{ value: authorization }]);
-    const installerQuery = vi
+    const installerOperation = vi
       .fn()
       .mockRejectedValueOnce(new Error("target_database_timeout"))
       .mockResolvedValueOnce([{ result: false }]);
+    const authorityQuery = readinessQuery(
+      authorityReadiness("reviewrouter_release_control"),
+      authorityOperation,
+    );
+    const installerQuery = readinessQuery(
+      installerReadiness,
+      installerOperation,
+    );
     const app = await createReleaseControlApp({
       controlPrisma: { $queryRaw: authorityQuery } as never,
-      providerAuthorityPrisma: {} as never,
+      providerAuthorityPrisma: {
+        $queryRaw: readinessQuery(
+          authorityReadiness("reviewrouter_provider_authority"),
+        ),
+      } as never,
       permitInstallerPrisma: { $queryRaw: installerQuery } as never,
-      targetReceiptReaderPrisma: {} as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: readinessQuery(readerReadiness),
+      } as never,
       credentials: {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
@@ -421,8 +458,8 @@ describe("release authority process composition", () => {
     const retry = await authorize();
     expect(retry.statusCode).toBe(200);
     expect(retry.json()).toEqual({ authorization });
-    expect(authorityQuery).toHaveBeenCalledTimes(2);
-    expect(installerQuery).toHaveBeenCalledTimes(2);
+    expect(authorityOperation).toHaveBeenCalledTimes(2);
+    expect(installerOperation).toHaveBeenCalledTimes(2);
     await app.close();
   });
 
@@ -512,8 +549,12 @@ describe("release authority process composition", () => {
   });
 
   it("routes provider decisions only through the provider authority login", async () => {
-    const controlQuery = vi.fn();
-    const providerQuery = vi.fn().mockResolvedValue([
+    const controlOperation = vi.fn();
+    const controlQuery = readinessQuery(
+      authorityReadiness("reviewrouter_release_control"),
+      controlOperation,
+    );
+    const providerOperation = vi.fn().mockResolvedValue([
       {
         value: {
           rolloutId: "rollout-provider",
@@ -528,11 +569,19 @@ describe("release authority process composition", () => {
         },
       },
     ]);
+    const providerQuery = readinessQuery(
+      authorityReadiness("reviewrouter_provider_authority"),
+      providerOperation,
+    );
     const app = await createReleaseControlApp({
       controlPrisma: { $queryRaw: controlQuery } as never,
       providerAuthorityPrisma: { $queryRaw: providerQuery } as never,
-      permitInstallerPrisma: {} as never,
-      targetReceiptReaderPrisma: {} as never,
+      permitInstallerPrisma: {
+        $queryRaw: readinessQuery(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: readinessQuery(readerReadiness),
+      } as never,
       credentials: {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
@@ -553,9 +602,9 @@ describe("release authority process composition", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(providerQuery).toHaveBeenCalledOnce();
-    expect(controlQuery).not.toHaveBeenCalled();
-    const query = providerQuery.mock.calls[0]?.[0] as {
+    expect(providerOperation).toHaveBeenCalledOnce();
+    expect(controlOperation).not.toHaveBeenCalled();
+    const query = providerOperation.mock.calls[0]?.[0] as {
       values?: readonly unknown[];
     };
     expect(query.values).toContainEqual(
@@ -572,18 +621,30 @@ describe("release authority process composition", () => {
   });
 
   it("maps durable provider policy conflicts to a redacted 409", async () => {
-    const providerQuery = vi.fn().mockRejectedValue(
+    const providerOperation = vi.fn().mockRejectedValue(
       Object.assign(new Error("prisma query failed"), {
         code: "P2010",
         message:
           "\nInvalid `prisma.$queryRaw()` invocation:\n\n\nRaw query failed. Code: `P0001`. Message: `provider authority state denied`",
       }),
     );
+    const providerQuery = readinessQuery(
+      authorityReadiness("reviewrouter_provider_authority"),
+      providerOperation,
+    );
     const app = await createReleaseControlApp({
-      controlPrisma: {} as never,
+      controlPrisma: {
+        $queryRaw: readinessQuery(
+          authorityReadiness("reviewrouter_release_control"),
+        ),
+      } as never,
       providerAuthorityPrisma: { $queryRaw: providerQuery } as never,
-      permitInstallerPrisma: {} as never,
-      targetReceiptReaderPrisma: {} as never,
+      permitInstallerPrisma: {
+        $queryRaw: readinessQuery(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: readinessQuery(readerReadiness),
+      } as never,
       credentials: {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
@@ -664,6 +725,54 @@ describe("release authority process composition", () => {
       reason: "database_unavailable",
     });
     expect(response.body).not.toContain("secret database detail");
+    await app.close();
+  });
+
+  it("withholds mutation authority when exact ACL readiness is degraded", async () => {
+    const mutation = vi.fn().mockResolvedValue([{ value: true }]);
+    const app = await createReleaseControlApp({
+      controlPrisma: {
+        $queryRaw: readinessQuery(
+          [
+            {
+              ...authorityReadiness("reviewrouter_release_control")[0],
+              authorityAclExact: false,
+            },
+          ],
+          mutation,
+        ),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: readinessQuery(
+          authorityReadiness("reviewrouter_provider_authority"),
+        ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: readinessQuery(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: readinessQuery(readerReadiness),
+      } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/rollouts/claim",
+      headers: { authorization: "Bearer control" },
+      payload: {
+        rolloutId: "rollout-degraded",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+      },
+    });
+    expect(response.statusCode).toBe(500);
+    expect(mutation).not.toHaveBeenCalled();
     await app.close();
   });
 

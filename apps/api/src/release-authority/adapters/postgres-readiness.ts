@@ -107,26 +107,67 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           ]::oid[], ARRAY[
             to_regprocedure('release_authority.release_service_transition_immutable()')
           ]::oid[])
-      ), acl_posture AS (
-        SELECT count(DISTINCT roles.rolname) = 3
-          AND bool_and(array_position(expected_acl.allowed, NULL) IS NULL)
-          AND bool_and(array_position(expected_acl.denied, NULL) IS NULL)
-          AND bool_and(pg_catalog.has_schema_privilege(
-            roles.oid, 'release_authority', 'USAGE'
-          ))
-          AND bool_and(
-            pg_catalog.has_function_privilege(roles.oid, functions.oid, 'EXECUTE')
-              = (functions.oid = ANY(expected_acl.allowed))
-          )
-          AND bool_and(
-            functions.oid <> ALL(expected_acl.denied)
-              OR NOT pg_catalog.has_function_privilege(
-                roles.oid, functions.oid, 'EXECUTE'
-              )
-          ) AS exact
+      ), expected_function_acl AS (
+        SELECT roles.oid AS grantee, allowed_function.object_oid,
+          'EXECUTE'::text AS privilege_type, false AS is_grantable
         FROM expected_acl
-        JOIN pg_catalog.pg_roles roles ON roles.rolname = expected_acl.role_name
-        CROSS JOIN authority_functions functions
+        JOIN pg_catalog.pg_roles roles ON roles.rolname=expected_acl.role_name
+        CROSS JOIN LATERAL unnest(expected_acl.allowed)
+          AS allowed_function(object_oid)
+      ), actual_function_acl AS (
+        SELECT acl.grantee, procedure.oid AS object_oid,
+          acl.privilege_type, acl.is_grantable
+        FROM pg_catalog.pg_proc procedure
+        JOIN pg_catalog.pg_namespace namespace ON namespace.oid=procedure.pronamespace
+        CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
+          procedure.proacl,pg_catalog.acldefault('f',procedure.proowner)
+        )) acl
+        WHERE namespace.nspname='release_authority'
+          AND acl.grantee <> procedure.proowner
+      ), expected_schema_acl AS (
+        SELECT roles.oid AS grantee, 'USAGE'::text AS privilege_type,
+          false AS is_grantable
+        FROM expected_acl
+        JOIN pg_catalog.pg_roles roles ON roles.rolname=expected_acl.role_name
+      ), actual_schema_acl AS (
+        SELECT acl.grantee,acl.privilege_type,acl.is_grantable
+        FROM pg_catalog.pg_namespace namespace
+        CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
+          namespace.nspacl,pg_catalog.acldefault('n',namespace.nspowner)
+        )) acl
+        WHERE namespace.nspname='release_authority'
+          AND acl.grantee <> namespace.nspowner
+      ), unexpected_relation_acl AS (
+        SELECT 1
+        FROM pg_catalog.pg_class relation
+        JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace
+        CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
+          relation.relacl,pg_catalog.acldefault(
+            CASE WHEN relation.relkind='S' THEN 'S'::"char" ELSE 'r'::"char" END,
+            relation.relowner
+          )
+        )) acl
+        WHERE namespace.nspname='release_authority'
+          AND relation.relkind IN ('r','p','v','m','S','f')
+          AND acl.grantee <> relation.relowner
+      ), acl_posture AS (
+        SELECT
+          (SELECT count(*)=3 AND bool_and(array_position(allowed,NULL) IS NULL)
+             AND bool_and(array_position(denied,NULL) IS NULL) FROM expected_acl)
+          AND (SELECT count(*)=3 FROM expected_acl
+            JOIN pg_catalog.pg_roles roles ON roles.rolname=expected_acl.role_name)
+          AND NOT EXISTS (
+            (SELECT * FROM actual_function_acl EXCEPT SELECT * FROM expected_function_acl)
+            UNION ALL
+            (SELECT * FROM expected_function_acl EXCEPT SELECT * FROM actual_function_acl)
+          )
+          AND NOT EXISTS (
+            (SELECT * FROM actual_schema_acl EXCEPT SELECT * FROM expected_schema_acl)
+            UNION ALL
+            (SELECT * FROM expected_schema_acl EXCEPT SELECT * FROM actual_schema_acl)
+          )
+          AND NOT EXISTS (SELECT 1 FROM unexpected_relation_acl)
+          AS exact
       )
       SELECT current_user AS "roleName",
         (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
@@ -324,12 +365,17 @@ export async function observeReleaseAuthorityDatabaseReadiness(
             JOIN pg_catalog.pg_namespace namespace
               ON namespace.oid = relation.relnamespace
             WHERE namespace.nspname = 'release_authority'
-              AND relation.relkind IN ('r','p','v','m','S')
             UNION ALL
             SELECT namespace.nspowner, procedure.proowner
             FROM pg_catalog.pg_proc procedure
             JOIN pg_catalog.pg_namespace namespace
               ON namespace.oid = procedure.pronamespace
+            WHERE namespace.nspname = 'release_authority'
+            UNION ALL
+            SELECT namespace.nspowner, type_record.typowner
+            FROM pg_catalog.pg_type type_record
+            JOIN pg_catalog.pg_namespace namespace
+              ON namespace.oid = type_record.typnamespace
             WHERE namespace.nspname = 'release_authority'
           ) ownership
         ) AS "authorityOwnershipExact",
@@ -346,49 +392,11 @@ export async function observeReleaseAuthorityDatabaseReadiness(
             namespace.nspacl, pg_catalog.acldefault('n', namespace.nspowner)
           )) acl
           WHERE namespace.nspname = 'release_authority'
-            AND acl.grantee = 0 AND acl.privilege_type = 'USAGE'
+            AND acl.grantee = 0 AND acl.privilege_type IN ('USAGE','CREATE')
         )
           AS "publicAuthorityRevoked",
         NOT EXISTS (
-          SELECT 1 FROM pg_catalog.pg_class relation
-          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-          JOIN pg_catalog.pg_roles roles ON roles.rolname IN (
-            'reviewrouter_release_control', 'reviewrouter_provider_authority',
-            'reviewrouter_release_witness'
-          )
-          WHERE namespace.nspname = 'release_authority'
-            AND relation.relkind IN ('r','p','v','m','S')
-            AND (
-              (relation.relkind = 'S' AND (
-                pg_catalog.has_sequence_privilege(roles.oid, relation.oid, 'USAGE')
-                OR pg_catalog.has_sequence_privilege(roles.oid, relation.oid, 'SELECT')
-                OR pg_catalog.has_sequence_privilege(roles.oid, relation.oid, 'UPDATE')
-              ))
-              OR (relation.relkind <> 'S' AND (
-                pg_catalog.has_table_privilege(roles.oid, relation.oid, 'SELECT')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'INSERT')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'UPDATE')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'DELETE')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'TRUNCATE')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'REFERENCES')
-                OR pg_catalog.has_table_privilege(roles.oid, relation.oid, 'TRIGGER')
-              ))
-            )
-        ) AND NOT EXISTS (
-          SELECT 1 FROM pg_catalog.pg_class relation
-          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-          CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
-            relation.relacl, pg_catalog.acldefault(
-              CASE WHEN relation.relkind = 'S' THEN 'S'::"char" ELSE 'r'::"char" END,
-              relation.relowner
-            )
-          )) acl
-          WHERE namespace.nspname = 'release_authority'
-            AND relation.relkind IN ('r','p','v','m','S')
-            AND acl.grantee = 0
-            AND acl.privilege_type IN (
-              'SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','USAGE'
-            )
+          SELECT 1 FROM unexpected_relation_acl
         ) AS "authorityTablesRevoked"
       FROM definitions CROSS JOIN acl_posture
     `,

@@ -185,11 +185,16 @@ retryability, terminal-projection, and receipt-link repairs live only in 000009.
 
 Migration 000009 creates the owner-only `release_authority.schema_migration`
 ledger and a least-privilege manifest routine. Fresh installs record the
-canonical checksum of every file. For an authority database already carrying
-the previously published modified 000001/000002 bytes, migration 000009 retains
-those two exact legacy checksums as
-`legacy_equivalent`, and 000009 converges their behavior to the same forward
-state. Migration 000010 adds the single-use recovery-effect permit protocol
+canonical checksum of every file. A pre-ledger catalog is never identified by
+a few columns or surviving routine fragments. In the install transaction the
+installer builds canonical and exact-published-legacy shadow catalogs from the
+immutable source bytes and compares a deterministic representation of every
+relation, column/default, constraint, index, sequence, routine body/property,
+trigger, schema/type/enum, owner, and ACL. Exactly one shadow must match before
+000009 may backfill history. For a matching authority database carrying the
+previously published modified 000001/000002 bytes, migration 000009 retains
+those two exact legacy checksums as `legacy_equivalent` and converges their
+behavior to the same forward state. Migration 000010 adds the single-use recovery-effect permit protocol
 after the migration ledger exists. Existing pre-ledger authorities apply 000009
 then 000010, while authorities already recorded through 000009 apply only 000010. Health requires every ordered identity through 000010, the matching
 canonical/approved-legacy checksum and variant, the 000006 provider creation
@@ -197,6 +202,17 @@ column plus validated NOT NULL/order constraint and witness time bounds, the
 000007 compensation fences, the 000008 helper revocation, common ownership,
 exact role grants, and no PUBLIC authority privileges. A missing, reordered,
 unknown, or partially applied entry is release-blocking.
+
+An absent-ledger catalog that matches neither shadow, or matches ambiguously,
+stops before history or forward repairs are written. Preserve the failed
+transaction output and take a schema-only dump plus catalog/ACL/owner evidence.
+Do not insert `schema_migration` rows, edit a checksum, or invoke 000009 by
+itself. Recovery requires an audited object-by-object comparison against the
+immutable 000001-000008 sources, an approved forward repair that explains every
+difference, and then a rerun of `pnpm release-authority:install`. If exact
+provenance cannot be established, provision a fresh authority database and
+reconcile through the normal rollout recovery procedure; never bless the
+ambiguous catalog.
 
 CI must pass on the protected candidate SHA. Live E2E requires a newly created
 disposable repository/project, source/target PG17 DBs, runner services, and
