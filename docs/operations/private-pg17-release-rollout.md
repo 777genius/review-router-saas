@@ -295,7 +295,9 @@ Inspect and verify without printing environments or secrets:
 gh run view RUN_ID --json status,conclusion,headSha,event,jobs
 gh run view RUN_ID --log-failed
 gh run download RUN_ID --name "trusted-private-pg17-${ROLLOUT_ID}-RUN_ID-1"
-pnpm release-rollout:evidence:verify \
+REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY="$REPOSITORY" \
+  REVIEW_ROUTER_EXPECTED_SHA="$EXPECTED_SHA" \
+  pnpm release-rollout:evidence:verify \
   "trusted-private-pg17-${ROLLOUT_ID}-RUN_ID-1/trusted-rollout-evidence.json"
 ```
 

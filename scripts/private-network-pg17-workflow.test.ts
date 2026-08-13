@@ -16,6 +16,15 @@ const releaseImageVerifier = readFileSync(
   "scripts/verify-private-pg17-release-image-provenance.ts",
   "utf8",
 );
+const releaseImagePolicyConsumers = [
+  "scripts/verify-private-pg17-release-image-provenance.ts",
+  "scripts/initialize-private-pg17-rollout.ts",
+  "scripts/run-private-pg17-copy-bootstrap.ts",
+  "scripts/run-private-pg17-rollout.ts",
+  "scripts/finalize-private-pg17-rollout.ts",
+  "scripts/assemble-private-pg17-trusted-evidence.ts",
+  "scripts/verify-private-pg17-trusted-evidence.ts",
+].map((path) => readFileSync(path, "utf8"));
 const rolloutRunbook = readFileSync(
   "docs/operations/private-pg17-release-rollout.md",
   "utf8",
@@ -194,6 +203,23 @@ describe("private-network PG17 workflow security contract", () => {
       expect(job).toContain("verified-release-image-provenance.json");
       expect(job).toContain("REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE:");
     }
+  });
+  it("loads one external trusted image policy in every production verifier", () => {
+    for (const consumer of releaseImagePolicyConsumers) {
+      expect(consumer).toContain("privatePg17ReleaseImagePolicy");
+      expect(consumer).not.toContain(
+        "releaseImageProvenance.claim.imageRepository",
+      );
+      expect(consumer).not.toContain(
+        "releaseImageProvenance.verification.policySha256",
+      );
+    }
+    expect(releaseImageVerifier).toContain(
+      'required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY")',
+    );
+    expect(releaseImageVerifier).toContain(
+      'required("GITHUB_REPOSITORY") !== repository',
+    );
   });
   it("uses one canonical source-writer value through freeze and compensation", () => {
     const workflowValue = '["srv-api123","srv-worker456"]';

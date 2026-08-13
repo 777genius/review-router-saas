@@ -8,29 +8,18 @@ export interface ReleaseImageIdentity {
   readonly imageDigest: string;
 }
 
-export interface ReleaseImageProvenancePolicy {
+export interface TrustedReleaseImagePolicy {
   readonly sourceRepository: string;
   readonly sourceRevision: string;
   readonly imageRepository: string;
   readonly verificationPolicySha256: string;
+}
+
+export interface ReleaseImageProvenanceExpectation extends TrustedReleaseImagePolicy {
   readonly buildRunId?: string;
   readonly artifactId?: string;
   readonly artifactName?: string;
 }
-
-export type ReleaseImageProvenanceExpectation = Readonly<
-  Pick<ReleaseImageProvenancePolicy, "sourceRepository" | "sourceRevision"> &
-    Partial<
-      Pick<
-        ReleaseImageProvenancePolicy,
-        | "imageRepository"
-        | "verificationPolicySha256"
-        | "buildRunId"
-        | "artifactId"
-        | "artifactName"
-      >
-    >
->;
 
 export interface VerifiedReleaseImageProvenance {
   readonly schemaVersion: "reviewrouter.release-image-provenance.v2";
@@ -102,7 +91,7 @@ export function assertReleaseImageIdentity(
 
 export function assertVerifiedReleaseImageProvenance(
   value: unknown,
-  expected?: ReleaseImageProvenanceExpectation,
+  expected: ReleaseImageProvenanceExpectation,
 ): VerifiedReleaseImageProvenance {
   if (!exact(value, ["schemaVersion", "identity", "claim", "verification"]))
     throw new Error("release_image_provenance_invalid");
@@ -117,6 +106,12 @@ export function assertVerifiedReleaseImageProvenance(
   const verification = provenance.verification;
   const boundImageRepository = releaseImageRepository(identity);
   if (
+    typeof expected !== "object" ||
+    expected === null ||
+    !repository.test(expected.sourceRepository) ||
+    !sha.test(expected.sourceRevision) ||
+    !imageRepository.test(expected.imageRepository) ||
+    !digest.test(expected.verificationPolicySha256) ||
     !exact(claim, [
       "identitySha256",
       "sourceRepository",
@@ -137,19 +132,16 @@ export function assertVerifiedReleaseImageProvenance(
     !identifier.test(claim.artifactName) ||
     !digest.test(verification.policySha256) ||
     !canonicalIsoTimestamp(verification.verifiedAt) ||
-    (expected !== undefined &&
-      (identity.repository !== expected.sourceRepository ||
-        identity.commit !== expected.sourceRevision ||
-        (expected.imageRepository !== undefined &&
-          boundImageRepository !== expected.imageRepository) ||
-        (expected.verificationPolicySha256 !== undefined &&
-          verification.policySha256 !== expected.verificationPolicySha256) ||
-        (expected.buildRunId !== undefined &&
-          claim.buildRunId !== expected.buildRunId) ||
-        (expected.artifactId !== undefined &&
-          claim.artifactId !== expected.artifactId) ||
-        (expected.artifactName !== undefined &&
-          claim.artifactName !== expected.artifactName)))
+    identity.repository !== expected.sourceRepository ||
+    identity.commit !== expected.sourceRevision ||
+    boundImageRepository !== expected.imageRepository ||
+    verification.policySha256 !== expected.verificationPolicySha256 ||
+    (expected.buildRunId !== undefined &&
+      claim.buildRunId !== expected.buildRunId) ||
+    (expected.artifactId !== undefined &&
+      claim.artifactId !== expected.artifactId) ||
+    (expected.artifactName !== undefined &&
+      claim.artifactName !== expected.artifactName)
   )
     throw new Error("release_image_provenance_invalid");
   return provenance;

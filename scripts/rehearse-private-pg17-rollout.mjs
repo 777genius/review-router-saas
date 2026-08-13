@@ -1488,150 +1488,161 @@ COMMIT;
             Date.parse(current.activationReceipt.observedAt),
           ) + 1_000,
         ).toISOString();
-        evidence = assembleTrustedRolloutEvidence({
-          rolloutId: current.rolloutId,
-          releaseCommitSha: current.expectedCommitSha,
-          releaseImageProvenance: (() => {
-            const identity = {
-              schemaVersion: "reviewrouter.hosted-runtime-image.v1",
-              repository: current.execution.controlRepository,
-              commit: current.expectedCommitSha,
-              imageUrl: `ghcr.io/777genius/review-router-saas-runtime@${facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST}`,
-              imageDigest:
-                facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST,
-            };
-            return {
-              schemaVersion: "reviewrouter.release-image-provenance.v2",
-              identity,
-              claim: {
-                identitySha256: `sha256:${sha256Canonical(identity)}`,
-                sourceRepository: current.execution.controlRepository,
-                sourceRevision: current.expectedCommitSha,
-                imageRepository: "ghcr.io/777genius/review-router-saas-runtime",
-                buildRunId: "1",
-                artifactId: "1",
-                artifactName: "hosted-runtime-image-v0.0.0-rehearsal",
-              },
-              verification: {
-                policySha256: `sha256:${"e".repeat(64)}`,
-                verifiedAt: "2026-08-12T00:00:00.000Z",
-              },
-            };
-          })(),
-          execution: current.execution,
-          runners: [roleRunner, cutoverRunner],
-          source: current.source,
-          target: current.target,
-          backup: {
-            renderResourceId: current.source.renderResourceId,
-            internalHostname: current.source.internalHostname,
-            databaseName: current.source.databaseName,
-            systemIdentifier: current.source.systemIdentifier,
-            lsn: "0/1",
-            capturedAt: "2026-08-12T00:00:02.000Z",
-            recoveryWindowStartsAt: "2026-08-11T00:00:00.000Z",
-            recoveryWindowEndsAt: "2026-08-13T00:00:00.000Z",
-            dumpSha256: facts.dumpSha256,
-            externalWitnessSha256: digest,
-            recoveryStatus: "AVAILABLE",
-          },
-          quiescence: {
-            writerServices: [
-              {
-                serviceId: "source-writer",
-                suspended: true,
-                observedAt: "2026-08-12T00:00:01.000Z",
-              },
-            ],
-            aclSha256: digest,
-            stabilizationSeries: [0, 0, 0],
-            reconnectDeniedRoles: [
-              "reviewrouter_api",
-              "reviewrouter_web",
-              "reviewrouter_worker",
-              "reviewrouter_codex_effect_authority",
-            ],
-            legacyAmbiguity: {
-              inventorySha256: legacyReconciliation.inventorySha256,
-              activeLeaseIds: legacyReconciliation.inventory.activeLeaseIds,
-              fetchedSetupIds: legacyReconciliation.inventory.fetchedSetupIds,
-              pendingIntentIds: legacyReconciliation.inventory.pendingIntentIds,
-              intentStatuses: legacyReconciliation.inventory.intentStatuses,
-              observations: [
-                {
-                  observedAt: "2026-08-12T00:00:02.100Z",
-                  inventorySha256: legacyReconciliation.inventorySha256,
+        const trustedImagePolicy = {
+          sourceRepository: current.execution.controlRepository,
+          sourceRevision: current.expectedCommitSha,
+          imageRepository: "ghcr.io/777genius/review-router-saas-runtime",
+          verificationPolicySha256: `sha256:${"e".repeat(64)}`,
+        };
+        evidence = assembleTrustedRolloutEvidence(
+          {
+            rolloutId: current.rolloutId,
+            releaseCommitSha: current.expectedCommitSha,
+            releaseImageProvenance: (() => {
+              const identity = {
+                schemaVersion: "reviewrouter.hosted-runtime-image.v1",
+                repository: current.execution.controlRepository,
+                commit: current.expectedCommitSha,
+                imageUrl: `ghcr.io/777genius/review-router-saas-runtime@${facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST}`,
+                imageDigest:
+                  facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST,
+              };
+              return {
+                schemaVersion: "reviewrouter.release-image-provenance.v2",
+                identity,
+                claim: {
+                  identitySha256: `sha256:${sha256Canonical(identity)}`,
+                  sourceRepository: current.execution.controlRepository,
+                  sourceRevision: current.expectedCommitSha,
+                  imageRepository: trustedImagePolicy.imageRepository,
+                  buildRunId: "1",
+                  artifactId: "1",
+                  artifactName: "hosted-runtime-image-v0.0.0-rehearsal",
                 },
+                verification: {
+                  policySha256: trustedImagePolicy.verificationPolicySha256,
+                  verifiedAt: "2026-08-12T00:00:00.000Z",
+                },
+              };
+            })(),
+            execution: current.execution,
+            runners: [roleRunner, cutoverRunner],
+            source: current.source,
+            target: current.target,
+            backup: {
+              renderResourceId: current.source.renderResourceId,
+              internalHostname: current.source.internalHostname,
+              databaseName: current.source.databaseName,
+              systemIdentifier: current.source.systemIdentifier,
+              lsn: "0/1",
+              capturedAt: "2026-08-12T00:00:02.000Z",
+              recoveryWindowStartsAt: "2026-08-11T00:00:00.000Z",
+              recoveryWindowEndsAt: "2026-08-13T00:00:00.000Z",
+              dumpSha256: facts.dumpSha256,
+              externalWitnessSha256: digest,
+              recoveryStatus: "AVAILABLE",
+            },
+            quiescence: {
+              writerServices: [
                 {
-                  observedAt: "2026-08-12T00:00:02.300Z",
-                  inventorySha256: legacyReconciliation.inventorySha256,
+                  serviceId: "source-writer",
+                  suspended: true,
+                  observedAt: "2026-08-12T00:00:01.000Z",
                 },
               ],
-              stable: true,
+              aclSha256: digest,
+              stabilizationSeries: [0, 0, 0],
+              reconnectDeniedRoles: [
+                "reviewrouter_api",
+                "reviewrouter_web",
+                "reviewrouter_worker",
+                "reviewrouter_codex_effect_authority",
+              ],
+              legacyAmbiguity: {
+                inventorySha256: legacyReconciliation.inventorySha256,
+                activeLeaseIds: legacyReconciliation.inventory.activeLeaseIds,
+                fetchedSetupIds: legacyReconciliation.inventory.fetchedSetupIds,
+                pendingIntentIds:
+                  legacyReconciliation.inventory.pendingIntentIds,
+                intentStatuses: legacyReconciliation.inventory.intentStatuses,
+                observations: [
+                  {
+                    observedAt: "2026-08-12T00:00:02.100Z",
+                    inventorySha256: legacyReconciliation.inventorySha256,
+                  },
+                  {
+                    observedAt: "2026-08-12T00:00:02.300Z",
+                    inventorySha256: legacyReconciliation.inventorySha256,
+                  },
+                ],
+                stable: true,
+              },
+              complete: true,
             },
-            complete: true,
-          },
-          equivalence: {
-            tables: [
+            equivalence: {
+              tables: [
+                {
+                  table: "public.rehearsal_items",
+                  sourceRows: 3,
+                  targetRows: 3,
+                  sourceSha256: digest,
+                  targetSha256: digest,
+                },
+              ],
+              catalogSha256,
+              equivalent: true,
+              streamingHash: true,
+              maxProcessBufferBytes: 8 * 1024 * 1024,
+            },
+            legacyReconciliation,
+            protectedEnvironmentPreflightSha256: current.receipts.find(
+              (receipt) =>
+                receipt.step === RolloutStep.VerifyProtectedEnvironment,
+            ).observationSha256,
+            receipts: current.receipts,
+            activation: current.activationReceipt,
+            targetDeploys: targetContracts.map((contract) => ({
+              serviceId: contract.serviceId,
+              deployId: stagedServices.get(contract.serviceId).provenance
+                .deployId,
+              imageDigest: contract.imageUrl.slice(
+                contract.imageUrl.indexOf("sha256:"),
+              ),
+            })),
+            resumedTargetDeployIds: targetContracts.map(
+              (contract) =>
+                stagedServices.get(contract.serviceId).provenance.deployId,
+            ),
+            liveCanarySha256: digest,
+            cleanups: [
               {
-                table: "public.rehearsal_items",
-                sourceRows: 3,
-                targetRows: 3,
-                sourceSha256: digest,
-                targetSha256: digest,
+                renderJobId: roleRunner.renderJobId,
+                providerStatus: "succeeded",
+                listenerStopped: true,
+                workspaceRemoved: true,
+                credentialProcessGone: true,
+                cleanupCanary: roleRunner.cleanupCanary,
+                observedAt: current.receipts.find(
+                  (receipt) => receipt.step === RolloutStep.CleanupRoleRunner,
+                ).observedAt,
+              },
+              {
+                renderJobId: cutoverRunner.renderJobId,
+                providerStatus: "succeeded",
+                listenerStopped: true,
+                workspaceRemoved: true,
+                credentialProcessGone: true,
+                cleanupCanary: cutoverRunner.cleanupCanary,
+                observedAt: current.receipts.find(
+                  (receipt) =>
+                    receipt.step === RolloutStep.CleanupCutoverRunner,
+                ).observedAt,
               },
             ],
-            catalogSha256,
-            equivalent: true,
-            streamingHash: true,
-            maxProcessBufferBytes: 8 * 1024 * 1024,
+            assembledAt,
           },
-          legacyReconciliation,
-          protectedEnvironmentPreflightSha256: current.receipts.find(
-            (receipt) =>
-              receipt.step === RolloutStep.VerifyProtectedEnvironment,
-          ).observationSha256,
-          receipts: current.receipts,
-          activation: current.activationReceipt,
-          targetDeploys: targetContracts.map((contract) => ({
-            serviceId: contract.serviceId,
-            deployId: stagedServices.get(contract.serviceId).provenance
-              .deployId,
-            imageDigest: contract.imageUrl.slice(
-              contract.imageUrl.indexOf("sha256:"),
-            ),
-          })),
-          resumedTargetDeployIds: targetContracts.map(
-            (contract) =>
-              stagedServices.get(contract.serviceId).provenance.deployId,
-          ),
-          liveCanarySha256: digest,
-          cleanups: [
-            {
-              renderJobId: roleRunner.renderJobId,
-              providerStatus: "succeeded",
-              listenerStopped: true,
-              workspaceRemoved: true,
-              credentialProcessGone: true,
-              cleanupCanary: roleRunner.cleanupCanary,
-              observedAt: current.receipts.find(
-                (receipt) => receipt.step === RolloutStep.CleanupRoleRunner,
-              ).observedAt,
-            },
-            {
-              renderJobId: cutoverRunner.renderJobId,
-              providerStatus: "succeeded",
-              listenerStopped: true,
-              workspaceRemoved: true,
-              credentialProcessGone: true,
-              cleanupCanary: cutoverRunner.cleanupCanary,
-              observedAt: current.receipts.find(
-                (receipt) => receipt.step === RolloutStep.CleanupCutoverRunner,
-              ).observedAt,
-            },
-          ],
-          assembledAt,
-        });
+          trustedImagePolicy,
+        );
         return observed(RolloutStep.VerifyTrustedRollout, {
           evidenceSha256: evidence.evidenceSha256,
         });

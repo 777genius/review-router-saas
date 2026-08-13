@@ -164,162 +164,173 @@ const releaseImageIdentity = {
 };
 const imageRepository = "ghcr.io/777genius/review-router-saas-runtime";
 const provenancePolicySha256 = `sha256:${"e".repeat(64)}`;
+const trustedImagePolicy = {
+  sourceRepository: base.execution.controlRepository,
+  sourceRevision: base.expectedCommitSha,
+  imageRepository,
+  verificationPolicySha256: provenancePolicySha256,
+} as const;
 const create = () =>
-  assembleTrustedRolloutEvidence({
-    rolloutId: base.rolloutId,
-    releaseCommitSha: base.expectedCommitSha,
-    releaseImageProvenance: {
-      schemaVersion: "reviewrouter.release-image-provenance.v2",
-      identity: releaseImageIdentity,
-      claim: {
-        identitySha256: `sha256:${sha256Canonical(releaseImageIdentity)}`,
-        sourceRepository: base.execution.controlRepository,
-        sourceRevision: base.expectedCommitSha,
-        imageRepository,
-        buildRunId: "321",
-        artifactId: "654",
-        artifactName: "hosted-runtime-image-v1.2.3",
+  assembleTrustedRolloutEvidence(
+    {
+      rolloutId: base.rolloutId,
+      releaseCommitSha: base.expectedCommitSha,
+      releaseImageProvenance: {
+        schemaVersion: "reviewrouter.release-image-provenance.v2",
+        identity: releaseImageIdentity,
+        claim: {
+          identitySha256: `sha256:${sha256Canonical(releaseImageIdentity)}`,
+          sourceRepository: base.execution.controlRepository,
+          sourceRevision: base.expectedCommitSha,
+          imageRepository,
+          buildRunId: "321",
+          artifactId: "654",
+          artifactName: "hosted-runtime-image-v1.2.3",
+        },
+        verification: {
+          policySha256: provenancePolicySha256,
+          verifiedAt: "2026-08-12T00:00:00.000Z",
+        },
       },
-      verification: {
-        policySha256: provenancePolicySha256,
-        verifiedAt: "2026-08-12T00:00:00.000Z",
-      },
-    },
-    targetDeploys: [
-      {
-        serviceId: "srv-api",
-        deployId: "dep-release",
-        imageDigest: digest,
-      },
-    ],
-    execution: base.execution,
-    runners: [runner("job-role", "role"), runner("job-cutover", "cutover")],
-    source: base.source,
-    target: base.target,
-    backup: {
-      renderResourceId: base.source.renderResourceId,
-      internalHostname: base.source.internalHostname,
-      databaseName: base.source.databaseName,
-      systemIdentifier: base.source.systemIdentifier,
-      lsn: "0/16B6C50",
-      capturedAt: "2026-08-12T00:00:20.000Z",
-      recoveryWindowStartsAt: "2026-08-11T00:00:00.000Z",
-      recoveryWindowEndsAt: "2026-08-13T00:00:00.000Z",
-      dumpSha256: digest,
-      externalWitnessSha256: digest,
-      recoveryStatus: "AVAILABLE",
-    },
-    quiescence: {
-      writerServices: [
+      targetDeploys: [
         {
           serviceId: "srv-api",
-          suspended: true,
-          observedAt: "2026-08-12T00:00:01.000Z",
+          deployId: "dep-release",
+          imageDigest: digest,
         },
       ],
-      aclSha256: digest,
-      stabilizationSeries: [0, 0, 0],
-      reconnectDeniedRoles: [
-        "reviewrouter_api",
-        "reviewrouter_web",
-        "reviewrouter_worker",
-        "reviewrouter_codex_effect_authority",
-      ],
-      legacyAmbiguity: {
-        inventorySha256: digest,
-        activeLeaseIds: ["legacy-lease"],
-        fetchedSetupIds: ["legacy-setup"],
-        pendingIntentIds: [],
-        intentStatuses: ["completed", "failed"],
-        observations: [
+      execution: base.execution,
+      runners: [runner("job-role", "role"), runner("job-cutover", "cutover")],
+      source: base.source,
+      target: base.target,
+      backup: {
+        renderResourceId: base.source.renderResourceId,
+        internalHostname: base.source.internalHostname,
+        databaseName: base.source.databaseName,
+        systemIdentifier: base.source.systemIdentifier,
+        lsn: "0/16B6C50",
+        capturedAt: "2026-08-12T00:00:20.000Z",
+        recoveryWindowStartsAt: "2026-08-11T00:00:00.000Z",
+        recoveryWindowEndsAt: "2026-08-13T00:00:00.000Z",
+        dumpSha256: digest,
+        externalWitnessSha256: digest,
+        recoveryStatus: "AVAILABLE",
+      },
+      quiescence: {
+        writerServices: [
           {
-            observedAt: "2026-08-12T00:00:02.000Z",
-            inventorySha256: digest,
-          },
-          {
-            observedAt: "2026-08-12T00:00:03.000Z",
-            inventorySha256: digest,
+            serviceId: "srv-api",
+            suspended: true,
+            observedAt: "2026-08-12T00:00:01.000Z",
           },
         ],
-        stable: true,
+        aclSha256: digest,
+        stabilizationSeries: [0, 0, 0],
+        reconnectDeniedRoles: [
+          "reviewrouter_api",
+          "reviewrouter_web",
+          "reviewrouter_worker",
+          "reviewrouter_codex_effect_authority",
+        ],
+        legacyAmbiguity: {
+          inventorySha256: digest,
+          activeLeaseIds: ["legacy-lease"],
+          fetchedSetupIds: ["legacy-setup"],
+          pendingIntentIds: [],
+          intentStatuses: ["completed", "failed"],
+          observations: [
+            {
+              observedAt: "2026-08-12T00:00:02.000Z",
+              inventorySha256: digest,
+            },
+            {
+              observedAt: "2026-08-12T00:00:03.000Z",
+              inventorySha256: digest,
+            },
+          ],
+          stable: true,
+        },
+        complete: true,
       },
-      complete: true,
-    },
-    equivalence: {
-      tables: [
+      equivalence: {
+        tables: [
+          {
+            table: "public.items",
+            sourceRows: 3,
+            targetRows: 3,
+            sourceSha256: digest,
+            targetSha256: digest,
+          },
+        ],
+        catalogSha256: {
+          sequences: digest,
+          columnsDefaults: digest,
+          constraintsIndexesTriggers: digest,
+          policiesRls: digest,
+          functionsViewsSchemas: digest,
+          aclOwnershipDefaults: digest,
+          migrationHistory: digest,
+        },
+        equivalent: true,
+        streamingHash: true,
+        maxProcessBufferBytes: 8 * 1024 * 1024,
+      },
+      legacyReconciliation: {
+        version: 1,
+        acknowledgement: "all_prior_installers_and_writers_are_stopped",
+        inventory: {
+          activeLeaseIds: ["legacy-lease"],
+          fetchedSetupIds: ["legacy-setup"],
+          pendingIntentIds: [],
+          intentStatuses: ["completed", "failed"],
+        },
+        inventorySha256: digest,
+        stableSamples: 2,
+        after: {
+          activeLeaseIds: [],
+          fetchedSetupIds: [],
+          pendingIntentIds: [],
+          intentStatuses: ["completed", "failed"],
+        },
+        status: "reconciled",
+      },
+      protectedEnvironmentPreflightSha256: receipts.find(
+        (receipt) => receipt.step === RolloutStep.VerifyProtectedEnvironment,
+      )!.observationSha256,
+      receipts,
+      activation,
+      resumedTargetDeployIds: ["dep-release"],
+      liveCanarySha256: digest,
+      cleanups: [
         {
-          table: "public.items",
-          sourceRows: 3,
-          targetRows: 3,
-          sourceSha256: digest,
-          targetSha256: digest,
+          renderJobId: "job-role",
+          providerStatus: "succeeded",
+          listenerStopped: true,
+          workspaceRemoved: true,
+          credentialProcessGone: true,
+          cleanupCanary: "rr-cleanup:rollout-evidence:rr-role",
+          observedAt: "2026-08-12T00:02:00.000Z",
+        },
+        {
+          renderJobId: "job-cutover",
+          providerStatus: "succeeded",
+          listenerStopped: true,
+          workspaceRemoved: true,
+          credentialProcessGone: true,
+          cleanupCanary: "rr-cleanup:rollout-evidence:rr-cutover",
+          observedAt: "2026-08-12T00:03:00.000Z",
         },
       ],
-      catalogSha256: {
-        sequences: digest,
-        columnsDefaults: digest,
-        constraintsIndexesTriggers: digest,
-        policiesRls: digest,
-        functionsViewsSchemas: digest,
-        aclOwnershipDefaults: digest,
-        migrationHistory: digest,
-      },
-      equivalent: true,
-      streamingHash: true,
-      maxProcessBufferBytes: 8 * 1024 * 1024,
+      assembledAt: "2026-08-12T00:04:00.000Z",
     },
-    legacyReconciliation: {
-      version: 1,
-      acknowledgement: "all_prior_installers_and_writers_are_stopped",
-      inventory: {
-        activeLeaseIds: ["legacy-lease"],
-        fetchedSetupIds: ["legacy-setup"],
-        pendingIntentIds: [],
-        intentStatuses: ["completed", "failed"],
-      },
-      inventorySha256: digest,
-      stableSamples: 2,
-      after: {
-        activeLeaseIds: [],
-        fetchedSetupIds: [],
-        pendingIntentIds: [],
-        intentStatuses: ["completed", "failed"],
-      },
-      status: "reconciled",
-    },
-    protectedEnvironmentPreflightSha256: receipts.find(
-      (receipt) => receipt.step === RolloutStep.VerifyProtectedEnvironment,
-    )!.observationSha256,
-    receipts,
-    activation,
-    resumedTargetDeployIds: ["dep-release"],
-    liveCanarySha256: digest,
-    cleanups: [
-      {
-        renderJobId: "job-role",
-        providerStatus: "succeeded",
-        listenerStopped: true,
-        workspaceRemoved: true,
-        credentialProcessGone: true,
-        cleanupCanary: "rr-cleanup:rollout-evidence:rr-role",
-        observedAt: "2026-08-12T00:02:00.000Z",
-      },
-      {
-        renderJobId: "job-cutover",
-        providerStatus: "succeeded",
-        listenerStopped: true,
-        workspaceRemoved: true,
-        credentialProcessGone: true,
-        cleanupCanary: "rr-cleanup:rollout-evidence:rr-cutover",
-        observedAt: "2026-08-12T00:03:00.000Z",
-      },
-    ],
-    assembledAt: "2026-08-12T00:04:00.000Z",
-  });
+    trustedImagePolicy,
+  );
 
 describe("trusted post-cleanup evidence", () => {
   it("verifies the two runner lifecycles, receipt chain, activation, service resume, and canary", () => {
-    expect(assertTrustedRolloutEvidence(create())).toEqual(create());
+    expect(assertTrustedRolloutEvidence(create(), trustedImagePolicy)).toEqual(
+      create(),
+    );
   });
   it("rejects a target deploy whose image is not the attested release image", () => {
     const {
@@ -330,23 +341,29 @@ describe("trusted post-cleanup evidence", () => {
     void _schemaVersion;
     void _hash;
     expect(() =>
-      assembleTrustedRolloutEvidence({
-        ...unsigned,
-        targetDeploys: [
-          {
-            ...unsigned.targetDeploys[0]!,
-            imageDigest: `sha256:${"f".repeat(64)}`,
-          },
-        ],
-      }),
+      assembleTrustedRolloutEvidence(
+        {
+          ...unsigned,
+          targetDeploys: [
+            {
+              ...unsigned.targetDeploys[0]!,
+              imageDigest: `sha256:${"f".repeat(64)}`,
+            },
+          ],
+        },
+        trustedImagePolicy,
+      ),
     ).toThrow("trusted_rollout_evidence_target_image_invalid");
   });
   it("rejects legacy schema 4 evidence instead of implicitly upgrading v1 provenance", () => {
     expect(() =>
-      assertTrustedRolloutEvidence({
-        ...create(),
-        schemaVersion: 4,
-      } as unknown as TrustedRolloutEvidence),
+      assertTrustedRolloutEvidence(
+        {
+          ...create(),
+          schemaVersion: 4,
+        } as unknown as TrustedRolloutEvidence,
+        trustedImagePolicy,
+      ),
     ).toThrow("trusted_rollout_evidence_invariant_failed");
   });
   it.each([
@@ -402,7 +419,10 @@ describe("trusted post-cleanup evidence", () => {
     ],
   ])("rejects %s", (_name, mutate) =>
     expect(() =>
-      assertTrustedRolloutEvidence(mutate(create()) as TrustedRolloutEvidence),
+      assertTrustedRolloutEvidence(
+        mutate(create()) as TrustedRolloutEvidence,
+        trustedImagePolicy,
+      ),
     ).toThrow(),
   );
 });

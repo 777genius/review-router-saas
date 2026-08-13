@@ -18,6 +18,7 @@ import {
   sameReleaseImageProvenance,
   type VerifiedReleaseImageProvenance,
 } from "../packages/features/release-rollout/src/index";
+import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -44,21 +45,19 @@ const body = read<{
     legacyReconciliation: TrustedRolloutEvidence["legacyReconciliation"];
   };
 }>("REVIEW_ROUTER_PRIVATE_ROLLOUT_BODY_FILE");
+const trustedImagePolicy = privatePg17ReleaseImagePolicy({
+  sourceRepository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
+  sourceRevision: required("REVIEW_ROUTER_EXPECTED_SHA"),
+});
 const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
   body.releaseImageProvenance,
-  {
-    sourceRepository: required("GITHUB_REPOSITORY"),
-    sourceRevision: body.rollout.expectedCommitSha,
-  },
+  trustedImagePolicy,
 );
 const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
   read<VerifiedReleaseImageProvenance>(
     "REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE",
   ),
-  {
-    sourceRepository: required("GITHUB_REPOSITORY"),
-    sourceRevision: body.rollout.expectedCommitSha,
-  },
+  trustedImagePolicy,
 );
 if (
   !sameReleaseImageProvenance(
@@ -198,30 +197,34 @@ const useCases = new ReleaseRolloutUseCases({
   },
   evidence: {
     assembleAndVerify: async (current) => {
-      evidence = assembleTrustedRolloutEvidence({
-        rolloutId: current.rolloutId,
-        releaseCommitSha: current.expectedCommitSha,
-        releaseImageProvenance,
-        targetDeploys,
-        execution: current.execution,
-        runners: body.runners,
-        source: current.source,
-        target: current.target,
-        backup: body.backup,
-        quiescence: body.quiescence,
-        equivalence: body.equivalence,
-        legacyReconciliation: body.migration.legacyReconciliation,
-        protectedEnvironmentPreflightSha256: preflightReceipt.observationSha256,
-        receipts: current.receipts,
-        activation: current.activationReceipt!,
-        resumedTargetDeployIds: resumed.facts.map((item) => item.deployId),
-        liveCanarySha256: `sha256:${sha256Canonical(canary.facts)}`,
-        cleanups: [
-          cleanupEvidence(roleCleanupWitness, body.runners[0]),
-          cleanupEvidence(cutoverCleanupWitness, body.runners[1]),
-        ],
-        assembledAt: new Date().toISOString(),
-      });
+      evidence = assembleTrustedRolloutEvidence(
+        {
+          rolloutId: current.rolloutId,
+          releaseCommitSha: current.expectedCommitSha,
+          releaseImageProvenance,
+          targetDeploys,
+          execution: current.execution,
+          runners: body.runners,
+          source: current.source,
+          target: current.target,
+          backup: body.backup,
+          quiescence: body.quiescence,
+          equivalence: body.equivalence,
+          legacyReconciliation: body.migration.legacyReconciliation,
+          protectedEnvironmentPreflightSha256:
+            preflightReceipt.observationSha256,
+          receipts: current.receipts,
+          activation: current.activationReceipt!,
+          resumedTargetDeployIds: resumed.facts.map((item) => item.deployId),
+          liveCanarySha256: `sha256:${sha256Canonical(canary.facts)}`,
+          cleanups: [
+            cleanupEvidence(roleCleanupWitness, body.runners[0]),
+            cleanupEvidence(cutoverCleanupWitness, body.runners[1]),
+          ],
+          assembledAt: new Date().toISOString(),
+        },
+        trustedImagePolicy,
+      );
       return {
         step: RolloutStep.VerifyTrustedRollout,
         observedAt: new Date().toISOString(),
