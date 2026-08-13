@@ -194,6 +194,7 @@ describe("canonical exclusive release migration caller", () => {
     ]);
     const provisioning = roleProvisioningSql(configuration);
     const grants = runtimeGrantSql(configuration);
+    const activationAuthority = activationAuthorityProvisioningSql();
     const observationSql = canonicalRoleTopologyObservationSql();
     const createdRoleIdentities = [
       ...provisioning.matchAll(/CREATE ROLE ([a-z_]+) ([^;]+);/gu),
@@ -335,6 +336,27 @@ describe("canonical exclusive release migration caller", () => {
     expect(grants).toContain("PUBLIC retained database CONNECT");
     expect(grants).toContain(
       'GRANT EXECUTE ON FUNCTION public."codex_oauth_sign_database_authority"(text) TO reviewrouter_codex_effect_authority',
+    );
+    expect(grants).toContain(
+      "GRANT EXECUTE ON FUNCTION public.reviewrouter_record_runtime_generation_witness_proof(TEXT, TEXT, TEXT, TEXT) TO reviewrouter_web, reviewrouter_api, reviewrouter_worker",
+    );
+    expect(grants).toContain(
+      "GRANT EXECUTE ON FUNCTION public.reviewrouter_read_runtime_generation_witness_proofs(TEXT, TEXT) TO reviewrouter_api",
+    );
+    expect(grants).toContain(
+      "GRANT EXECUTE ON FUNCTION public.reviewrouter_runtime_generation_write_read_canary(TEXT, TEXT) TO reviewrouter_api",
+    );
+    expect(activationAuthority).toContain(
+      "WHEN proname='reviewrouter_record_runtime_generation_witness_proof' THEN",
+    );
+    expect(activationAuthority).toContain(
+      "role_kind IN ('api','web','worker')",
+    );
+    expect(activationAuthority).toContain(
+      "WHEN role_kind='api' AND proname='reviewrouter_read_runtime_generation_witness_proofs' THEN",
+    );
+    expect(activationAuthority).toContain(
+      "WHEN role_kind='api' AND proname='reviewrouter_runtime_generation_write_read_canary' THEN",
     );
     expect(grants).toContain(
       "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM reviewrouter_codex_effect_authority",

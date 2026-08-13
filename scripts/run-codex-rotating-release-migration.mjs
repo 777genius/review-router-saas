@@ -577,6 +577,13 @@ BEGIN
        OR EXISTS (SELECT 1 FROM function_facts WHERE can_execute IS DISTINCT FROM CASE
          WHEN role_kind='effect-authority' THEN proname='codex_oauth_sign_database_authority'
            AND argument_types='text'
+         WHEN proname='reviewrouter_record_runtime_generation_witness_proof' THEN
+           role_kind IN ('api','web','worker')
+           AND argument_types='text, text, text, text'
+         WHEN role_kind='api' AND proname='reviewrouter_read_runtime_generation_witness_proofs' THEN
+           argument_types='text, text'
+         WHEN role_kind='api' AND proname='reviewrouter_runtime_generation_write_read_canary' THEN
+           argument_types='text, text'
          WHEN proname='codex_oauth_database_authority_challenge' THEN argument_types='text, text, integer'
          WHEN proname='codex_oauth_consume_database_authority' THEN argument_types='text, text, integer'
          WHEN role_kind='api' AND proname='codex_oauth_authorize_runtime_confirmation' THEN argument_types='text, text, integer, text'
