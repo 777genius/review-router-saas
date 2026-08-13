@@ -174,41 +174,39 @@ describe("release compensation reconciliation", () => {
     expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["prepared"],
-    ["dispatching"],
-    ["bound"],
-    ["blocked"],
-  ] as const)("denies compensation while an intent is %s", async (state) => {
-    const dependencies = ports({
-      activationBoundary: "before",
-      state: "pre_activation",
-      lastStep: RolloutStep.FreezeProviderServices,
-      receiptCount: 3,
-    });
-    dependencies.ledger.listProvisioningIntents.mockResolvedValue([
-      {
-        id: "intent-role",
-        effect: {
-          state,
-          ownerId: "owner-role",
-          epoch: 1,
-          providerId: state === "bound" ? "job-role" : null,
-          safeForCompensation: false,
+  it.each([["prepared"], ["dispatching"], ["bound"], ["blocked"]] as const)(
+    "denies compensation while an intent is %s",
+    async (state) => {
+      const dependencies = ports({
+        activationBoundary: "before",
+        state: "pre_activation",
+        lastStep: RolloutStep.FreezeProviderServices,
+        receiptCount: 3,
+      });
+      dependencies.ledger.listProvisioningIntents.mockResolvedValue([
+        {
+          id: "intent-role",
+          effect: {
+            state,
+            ownerId: "owner-role",
+            epoch: 1,
+            providerId: state === "bound" ? "job-role" : null,
+            safeForCompensation: false,
+          },
         },
-      },
-    ]);
-    await expect(
-      new ReleaseCompensationReconciliationUseCase(dependencies).execute(
-        rollout,
-      ),
-    ).resolves.toMatchObject({
-      outcome: "denied",
-      externalEffects: { safeForCompensation: false },
-    });
-    expect(dependencies.ledger.compareAndSet).not.toHaveBeenCalled();
-    expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
-  });
+      ]);
+      await expect(
+        new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+          rollout,
+        ),
+      ).resolves.toMatchObject({
+        outcome: "denied",
+        externalEffects: { safeForCompensation: false },
+      });
+      expect(dependencies.ledger.compareAndSet).not.toHaveBeenCalled();
+      expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
+    },
+  );
 
   it("denies missing and duplicate evidence", () => {
     expect(reconcileCompensationSafety([])).toMatchObject({
