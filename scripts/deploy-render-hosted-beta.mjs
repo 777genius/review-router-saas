@@ -612,9 +612,7 @@ export class RenderClient {
 export function serviceDetails({ type, startCommand, healthCheckPath }) {
   const details = {
     envSpecificDetails: {
-      buildCommand:
-        "pnpm --version && pnpm install --frozen-lockfile && pnpm db:generate && pnpm build",
-      startCommand,
+      dockerCommand: startCommand,
     },
     maxShutdownDelaySeconds: type === "background_worker" ? 120 : 60,
     plan: "starter",
@@ -622,7 +620,7 @@ export function serviceDetails({ type, startCommand, healthCheckPath }) {
     // Runtime services must represent per-service migration callers as null.
     preDeployCommand: null,
     region: "frankfurt",
-    runtime: "node",
+    runtime: "image",
   };
   if (type === "web_service") details.healthCheckPath = healthCheckPath;
   return details;
@@ -861,16 +859,68 @@ export async function ensureService(client, spec, common) {
   console.log(`creating service ${spec.name}`);
   const created = await client.request("POST", "/services", {
     autoDeployTrigger: "off",
-    branch: common.branch,
+    image: { imagePath: common.imageUrl },
     name: spec.name,
     environmentId: common.environmentId,
     ownerId: common.ownerId,
     projectId: common.projectId,
-    repo: common.repo,
     serviceDetails: serviceDetails(spec),
     type: spec.type,
   });
   return created.service ?? created;
+}
+
+function observedRuntimeImage(service) {
+  const value = service.service ?? service;
+  const details = value.serviceDetails ?? {};
+  return {
+    runtime:
+      details.runtime ??
+      details.env ??
+      details.envSpecificDetails?.runtime ??
+      null,
+    imagePath:
+      value.image?.imagePath ??
+      value.image?.url ??
+      value.imagePath ??
+      details.image?.imagePath ??
+      details.image?.url ??
+      details.imagePath ??
+      null,
+  };
+}
+
+export async function convergeImmutableRuntimeImage(
+  client,
+  service,
+  spec,
+  imageUrl,
+) {
+  if (
+    !/^ghcr\.io\/777genius\/review-router-saas-runtime@sha256:[a-f0-9]{64}$/u.test(
+      imageUrl,
+    )
+  ) {
+    throw new Error(
+      "hosted runtime image must use the canonical GHCR repository and exact digest",
+    );
+  }
+  await client.request("PATCH", `/services/${service.id}`, {
+    autoDeployTrigger: "off",
+    image: { imagePath: imageUrl },
+    serviceDetails: {
+      envSpecificDetails: { dockerCommand: spec.startCommand },
+      preDeployCommand: "",
+    },
+  });
+  const observed = await client.request("GET", `/services/${service.id}`);
+  const facts = observedRuntimeImage(observed);
+  if (facts.runtime !== "image" || facts.imagePath !== imageUrl) {
+    throw new Error(
+      `Render service ${service.name} did not converge on the immutable image source`,
+    );
+  }
+  return facts;
 }
 
 export async function verifyResourceScope(
@@ -1420,13 +1470,10 @@ function resolvedDeployFacts(deploy) {
   return {
     id: value.id ?? null,
     status: value.status ?? null,
-    commit:
-      value.commit?.id ??
-      value.commitId ??
-      value.commit?.sha ??
-      value.sha ??
-      null,
+    artifactId: value.artifactId ?? null,
+    imageRef: value.image?.ref ?? null,
     imageDigest:
+      value.image?.sha ??
       value.image?.digest ??
       value.imageDigest ??
       value.build?.imageDigest ??
@@ -1438,7 +1485,7 @@ export async function triggerAndVerifyDeploy(
   client,
   service,
   {
-    commit,
+    imageUrl,
     imageDigest,
     poll = async () => new Promise((resolve) => setTimeout(resolve, 10_000)),
     maxAttempts = 180,
@@ -1450,7 +1497,7 @@ export async function triggerAndVerifyDeploy(
     `/services/${service.id}/deploys`,
     {
       clearCache: "do_not_clear",
-      commitId: commit,
+      imageUrl,
     },
   );
   const createdId = resolvedDeployFacts(created).id;
@@ -1474,9 +1521,9 @@ export async function triggerAndVerifyDeploy(
       );
     }
     if (facts.status === "live") {
-      if (facts.commit !== commit) {
+      if (facts.imageRef !== imageUrl) {
         throw new Error(
-          `Render service ${service.name} resolved commit mismatch`,
+          `Render service ${service.name} resolved image reference mismatch`,
         );
       }
       if (facts.imageDigest !== imageDigest) {
@@ -1514,8 +1561,6 @@ export async function main() {
     );
   }
   const scope = { ownerId, projectId, environmentId };
-  const repo = requiredEnv("RENDER_REPO", env);
-  const branch = env.RENDER_BRANCH ?? "main";
   const commit = requiredEnv("REVIEW_ROUTER_RENDER_COMMIT_SHA", env);
   const imageDigest = requiredEnv("REVIEW_ROUTER_RENDER_IMAGE_DIGEST", env);
   if (!/^[a-f0-9]{40}$/u.test(commit))
@@ -1526,6 +1571,7 @@ export async function main() {
     throw new Error(
       "REVIEW_ROUTER_RENDER_IMAGE_DIGEST must be an exact sha256 digest",
     );
+  const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@${imageDigest}`;
   const webUrl = env.REVIEW_ROUTER_WEB_URL ?? "https://reviewrouter.site";
   const apiUrl = env.REVIEW_ROUTER_API_URL ?? "https://api.reviewrouter.site";
   assertHostedDeployEnv({ apiUrl, env, envFile, webUrl });
@@ -1582,15 +1628,14 @@ export async function main() {
   const common = {
     allowCreate: phase === "prepare",
     apiUrl,
-    branch,
     databaseUrls,
     env,
     installerDescriptor,
+    imageUrl,
     environmentId,
     ownerId,
     projectId,
     privateKey,
-    repo,
     webUrl,
   };
   const serviceSpecs = [
@@ -1668,10 +1713,15 @@ export async function main() {
   // Scope is fetched again immediately before each complete secret-bearing PUT.
   for (const { service, spec } of services)
     await syncService(client, service, spec, common);
+  for (const { service, spec } of services)
+    await convergeImmutableRuntimeImage(client, service, spec, imageUrl);
   const resolvedDeploys = [];
   for (const { service } of services)
     resolvedDeploys.push(
-      await triggerAndVerifyDeploy(client, service, { commit, imageDigest }),
+      await triggerAndVerifyDeploy(client, service, {
+        imageDigest,
+        imageUrl,
+      }),
     );
 
   console.log(

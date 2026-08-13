@@ -18,6 +18,7 @@ import {
   assertMigrationEvidencePayload,
   assertSelectedDatabaseIdentity,
   buildServiceEnv,
+  convergeImmutableRuntimeImage,
   disableAndVerifyPreDeployCommand,
   ensureDatabase,
   ensureService,
@@ -592,6 +593,45 @@ describe("Render hosted deploy hardening", () => {
       ),
     ).resolves.toBe(scoped);
     expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it("creates new runtime services from the exact immutable image", async () => {
+    const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`;
+    const request = vi.fn().mockResolvedValue({
+      service: { id: "srv-1", name: "reviewrouter-api" },
+    });
+    await expect(
+      ensureService(
+        { list: vi.fn().mockResolvedValue([]), request } as never,
+        {
+          healthCheckPath: "/health",
+          name: "reviewrouter-api",
+          role: "api",
+          startCommand: "pnpm api:start",
+          type: "web_service",
+        },
+        {
+          allowCreate: true,
+          environmentId: "production",
+          imageUrl,
+          ownerId: "owner-1",
+          projectId: "project-1",
+        } as never,
+      ),
+    ).resolves.toMatchObject({ id: "srv-1" });
+    expect(request).toHaveBeenCalledWith("POST", "/services", {
+      autoDeployTrigger: "off",
+      environmentId: "production",
+      image: { imagePath: imageUrl },
+      name: "reviewrouter-api",
+      ownerId: "owner-1",
+      projectId: "project-1",
+      serviceDetails: expect.objectContaining({
+        envSpecificDetails: { dockerCommand: "pnpm api:start" },
+        runtime: "image",
+      }),
+      type: "web_service",
+    });
   });
 
   it("refuses to skip prepare by creating resources during runtime-deploy", async () => {
@@ -1355,38 +1395,37 @@ describe("Render hosted deploy hardening", () => {
 
   it.each([
     [
-      "commit",
-      "a".repeat(40),
+      "reference",
+      `ghcr.io/777genius/review-router-saas-runtime@sha256:${"d".repeat(64)}`,
       `sha256:${"c".repeat(64)}`,
-      "resolved commit mismatch",
+      "resolved image reference mismatch",
     ],
     [
-      "image",
-      "b".repeat(40),
+      "digest",
+      `ghcr.io/777genius/review-router-saas-runtime@sha256:${"c".repeat(64)}`,
       `sha256:${"d".repeat(64)}`,
       "resolved image digest mismatch",
     ],
   ])(
     "aborts on resolved %s mismatch",
-    async (_kind, observedCommit, observedImage, message) => {
-      const expectedCommit = "b".repeat(40);
+    async (_kind, observedRef, observedImage, message) => {
       const expectedImage = `sha256:${"c".repeat(64)}`;
+      const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@${expectedImage}`;
       const request = vi
         .fn()
         .mockResolvedValueOnce({ id: "dep-1" })
         .mockResolvedValueOnce({
           id: "dep-1",
           status: "live",
-          commitId: observedCommit,
-          imageDigest: observedImage,
+          image: { ref: observedRef, sha: observedImage },
         });
       await expect(
         triggerAndVerifyDeploy(
           { request } as never,
           { id: "srv-1", name: "api" },
           {
-            commit: expectedCommit,
             imageDigest: expectedImage,
+            imageUrl,
             maxAttempts: 1,
           },
         ),
@@ -1395,8 +1434,8 @@ describe("Render hosted deploy hardening", () => {
   );
 
   it("waits for the resolved deploy identifier and exact immutable facts", async () => {
-    const commit = "a".repeat(40);
     const imageDigest = `sha256:${"b".repeat(64)}`;
+    const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@${imageDigest}`;
     const request = vi
       .fn()
       .mockResolvedValueOnce({ deploy: { id: "dep-1" } })
@@ -1404,17 +1443,28 @@ describe("Render hosted deploy hardening", () => {
       .mockResolvedValueOnce({
         id: "dep-1",
         status: "live",
-        commitId: commit,
-        imageDigest,
+        artifactId: "art-1",
+        image: { ref: imageUrl, sha: imageDigest },
       });
     const poll = vi.fn(async () => undefined);
     await expect(
       triggerAndVerifyDeploy(
         { request } as never,
         { id: "srv-1", name: "api" },
-        { commit, imageDigest, poll, maxAttempts: 2 },
+        { imageDigest, imageUrl, poll, maxAttempts: 2 },
       ),
-    ).resolves.toMatchObject({ id: "dep-1", commit, imageDigest });
+    ).resolves.toMatchObject({
+      artifactId: "art-1",
+      id: "dep-1",
+      imageDigest,
+      imageRef: imageUrl,
+    });
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      "POST",
+      "/services/srv-1/deploys",
+      { clearCache: "do_not_clear", imageUrl },
+    );
     expect(poll).toHaveBeenCalledOnce();
   });
 
@@ -1424,8 +1474,8 @@ describe("Render hosted deploy hardening", () => {
         { request: vi.fn().mockResolvedValue({}) } as never,
         { id: "srv-1", name: "api" },
         {
-          commit: "a".repeat(40),
           imageDigest: `sha256:${"b".repeat(64)}`,
+          imageUrl: `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`,
         },
       ),
     ).rejects.toThrow("did not return a deploy id");
@@ -1441,8 +1491,8 @@ describe("Render hosted deploy hardening", () => {
         { request: terminal } as never,
         { id: "srv-1", name: "api" },
         {
-          commit: "a".repeat(40),
           imageDigest: `sha256:${"b".repeat(64)}`,
+          imageUrl: `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`,
           maxAttempts: 1,
         },
       ),
@@ -1457,12 +1507,50 @@ describe("Render hosted deploy hardening", () => {
         { request: unresolved } as never,
         { id: "srv-1", name: "api" },
         {
-          commit: "a".repeat(40),
           imageDigest: `sha256:${"b".repeat(64)}`,
+          imageUrl: `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`,
           poll: async () => undefined,
           maxAttempts: 1,
         },
       ),
     ).rejects.toThrow("deploy did not resolve");
+  });
+
+  it("converges an existing service to the exact image-backed runtime", async () => {
+    const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        image: { imagePath: imageUrl },
+        serviceDetails: { runtime: "image" },
+      });
+    await expect(
+      convergeImmutableRuntimeImage(
+        { request } as never,
+        { id: "srv-1", name: "api" },
+        { startCommand: "pnpm api:start" },
+        imageUrl,
+      ),
+    ).resolves.toEqual({ runtime: "image", imagePath: imageUrl });
+    expect(request).toHaveBeenNthCalledWith(1, "PATCH", "/services/srv-1", {
+      autoDeployTrigger: "off",
+      image: { imagePath: imageUrl },
+      serviceDetails: {
+        envSpecificDetails: { dockerCommand: "pnpm api:start" },
+        preDeployCommand: "",
+      },
+    });
+  });
+
+  it("refuses a mutable or non-canonical runtime image", async () => {
+    await expect(
+      convergeImmutableRuntimeImage(
+        { request: vi.fn() } as never,
+        { id: "srv-1", name: "api" },
+        { startCommand: "pnpm api:start" },
+        "ghcr.io/777genius/review-router-saas-runtime:latest",
+      ),
+    ).rejects.toThrow("canonical GHCR repository and exact digest");
   });
 });

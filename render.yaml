@@ -55,12 +55,14 @@ services:
 
   - type: web
     name: reviewrouter-web
-    runtime: node
+    runtime: image
     plan: starter
     region: frankfurt
-    branch: main
-    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
-    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 pnpm web:start
+    image:
+      # Release tooling replaces this example with an exact @sha256 digest.
+      # Mutable tags are forbidden for production runtime deployment.
+      url: ghcr.io/777genius/review-router-saas-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    dockerCommand: pnpm web:start
     healthCheckPath: /
     # Runtime deploys are explicit and follow the exclusive migration evidence gate.
     autoDeployTrigger: off
@@ -81,12 +83,12 @@ services:
 
   - type: web
     name: reviewrouter-api
-    runtime: node
+    runtime: image
     plan: starter
     region: frankfurt
-    branch: main
-    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
-    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 HOST=0.0.0.0 pnpm api:start
+    image:
+      url: ghcr.io/777genius/review-router-saas-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    dockerCommand: pnpm api:start
     healthCheckPath: /health
     # Runtime deploys are explicit and follow the exclusive migration evidence gate.
     autoDeployTrigger: off
@@ -126,12 +128,12 @@ services:
 
   - type: worker
     name: reviewrouter-worker
-    runtime: node
+    runtime: image
     plan: starter
     region: frankfurt
-    branch: main
-    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
-    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 pnpm worker:start
+    image:
+      url: ghcr.io/777genius/review-router-saas-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    dockerCommand: pnpm worker:start
     # Runtime deploys are explicit and follow the exclusive migration evidence gate.
     autoDeployTrigger: off
     maxShutdownDelaySeconds: 120

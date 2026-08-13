@@ -46,11 +46,11 @@ resources can be created or re-synced from the CLI without printing secrets:
 export RENDER_OWNER_ID=tea-d11m6c0dl3ps73cuh2gg
 export RENDER_PROJECT_ID=prj-<exact-project-id>
 export RENDER_ENVIRONMENT_ID=evm-d7s67t0g4nts73d4l40g
-export RENDER_REPO=https://github.com/777genius/review-router-saas
 export REVIEW_ROUTER_WEB_URL=https://reviewrouter.site
 export REVIEW_ROUTER_API_URL=https://api.reviewrouter.site
 export REVIEW_ROUTER_RENDER_COMMIT_SHA=<exact-40-character-release-sha>
-export REVIEW_ROUTER_RENDER_IMAGE_DIGEST=sha256:<exact-64-character-image-digest>
+# Copy this only from hosted-runtime-image-<version>.json produced by Release.
+export REVIEW_ROUTER_RENDER_IMAGE_DIGEST=sha256:<exact-64-character-OCI-manifest-digest>
 export REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_FILE=/secure/path/reviewrouter-codex-rotating-installer-descriptor.json
 export REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256=<exact-release-summary-descriptor-sha256>
 export REVIEW_ROUTER_RENDER_PHASE=prepare
@@ -61,7 +61,8 @@ The prepare phase creates or reuses `reviewrouter-db`, `reviewrouter-web`,
 `reviewrouter-api`, and `reviewrouter-worker` only inside the exact owner,
 project, and environment identity. Environment linking and its follow-up read
 are fatal gates. Prepare disables commit auto-deploy and service migration
-hooks, but writes no runtime secrets and triggers no runtime deploy.
+hooks, but writes no runtime secrets and triggers no runtime deploy. Newly
+created runtime services are image-backed from their first deploy.
 It reads `.env.production` by default. Public URL scheme and loopback checks
 cannot be overridden; the staging override applies only to local-looking file
 and App-slug heuristics. The helper intentionally does not log secret values.
@@ -156,10 +157,20 @@ digest through
 `REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_DESCRIPTOR_SHA256`. The helper ignores
 direct tuple overrides, derives all three service values from the verified
 descriptor, and re-reads the digest-pinned bytes after Render scope checks and
-immediately before every secret-bearing environment PUT. It then GET-verifies
+immediately before every secret-bearing environment PUT. The exact digest must
+come from the `hosted-runtime-image-<version>` Release artifact. The Release
+workflow builds one `linux/amd64` OCI image containing web, API, and worker,
+publishes it to GHCR, resolves the registry manifest digest, and records the
+inseparable commit/image URL/digest tuple. Mutable tags are never accepted by
+the deploy helper.
+
+The helper then GET-verifies
 the complete environment, including the exact installer tuple and stable token
-encryption key, and requires each explicit deploy to reach Render `live` with
-the evidence-bound commit and image digest. Any mismatch is fatal and no
+encryption key. Immediately before deployment it changes each existing runtime
+service source to the canonical `ghcr.io/777genius/review-router-saas-runtime`
+image at that exact digest and verifies Render reports `runtime: image` and the
+same source. Each explicit deploy uses `imageUrl` and must reach Render `live`
+with the exact provider-reported `image.ref` and resolved `image.sha`. Any mismatch is fatal and no
 cutover flag is enabled.
 
 For GitLab support, `reviewrouter-api` also needs API-side integration values:
@@ -389,8 +400,9 @@ REVIEW_ROUTER_RENDER_PHASE=runtime-deploy pnpm deploy:render:hosted-beta
 
 The helper revalidates every resource scope and the digest-pinned release
 descriptor immediately before each complete secret-bearing environment PUT,
-GET-verifies exact environment convergence/readiness, then explicitly deploys
-web, API, and worker at the evidence-bound commit/image. Missing or mismatched
+GET-verifies exact environment convergence/readiness, converges all three
+service IDs to the digest-pinned image source, then explicitly deploys web,
+API, and worker using that exact image URL. Missing or mismatched
 evidence, descriptor bytes, environment values, or live deploy identity is
 fatal.
 
