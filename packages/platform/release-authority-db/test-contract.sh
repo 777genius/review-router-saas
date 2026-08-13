@@ -187,12 +187,12 @@ effect_witness=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP
       'removedPaths',jsonb_build_array('/runner/_work/rr-effect/repo'),
       'remainingPaths','[]'::jsonb,'providerLogId','log-effect',
       'providerObservedAt','$now'))")
-test "$effect_witness" = true
+test "$effect_witness" = t
 effect_terminal=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_mark_terminal(
     'job-effect',jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))")
-test "$effect_terminal" = true
+test "$effect_terminal" = t
 clean_effect=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT effect_state||':'||effect_safe_for_compensation
    FROM release_authority.runner_intent WHERE intent_id='rri-'||repeat('2',64)")
