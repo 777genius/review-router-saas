@@ -26,6 +26,16 @@ The protected `main` workflow is dispatch-only and rejects run attempts other
 than one. `production-release-preflight` must require at least one reviewer,
 prevent self-review, and allow protected branches only. Preflight reads and
 hashes the observed GitHub policy; a variable claiming the policy is not proof.
+Every dispatch also supplies the immutable release workflow run ID and hosted
+runtime identity artifact ID. Before rollout claim or any provider/database
+mutation, preflight downloads that exact artifact, verifies its GitHub artifact
+attestation was issued by this repository's protected release workflow on
+`refs/heads/main`, and requires the release run, artifact metadata, identity
+repository, identity commit, OCI digest, and immutable image URL all to bind the
+exact `expected_sha`. A stale digest variable is not an input and cannot select
+the deployed image. Missing, expired, foreign, stale, or contradictory release
+evidence fails closed. The verified binding is carried through every phase and
+included in the final trusted rollout evidence.
 The `workflow_job` controller observes the numeric queued job ID, exact name,
 run/attempt, SHA, actor, workflow path/ref, event, organization, and repository
 before it creates a JIT runner.

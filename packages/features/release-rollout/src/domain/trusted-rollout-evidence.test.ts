@@ -155,10 +155,39 @@ const receipts = steps.map((step, index) => {
 const activation = receipts.find(
   (receipt) => receipt.step === RolloutStep.ActivateTargetGeneration,
 )! as ActivationReceipt;
+const releaseImageIdentity = {
+  schemaVersion: "reviewrouter.hosted-runtime-image.v1" as const,
+  repository: base.execution.controlRepository,
+  commit: base.expectedCommitSha,
+  imageUrl: `ghcr.io/777genius/review-router-saas-runtime@${digest}`,
+  imageDigest: digest,
+};
 const create = () =>
   assembleTrustedRolloutEvidence({
     rolloutId: base.rolloutId,
     releaseCommitSha: base.expectedCommitSha,
+    releaseImageProvenance: {
+      schemaVersion: "reviewrouter.release-image-provenance.v1",
+      identity: releaseImageIdentity,
+      identitySha256: `sha256:${sha256Canonical(releaseImageIdentity)}`,
+      releaseEvidence: {
+        kind: "github-artifact-attestation",
+        repository: base.execution.controlRepository,
+        workflowPath: ".github/workflows/release.yml",
+        workflowRunId: "321",
+        artifactId: "654",
+        artifactName: "hosted-runtime-image-v1.2.3",
+        sourceRef: "refs/heads/main",
+        verifiedAt: "2026-08-12T00:00:00.000Z",
+      },
+    },
+    targetDeploys: [
+      {
+        serviceId: "srv-api",
+        deployId: "dep-release",
+        imageDigest: digest,
+      },
+    ],
     execution: base.execution,
     runners: [runner("job-role", "role"), runner("job-cutover", "cutover")],
     source: base.source,
@@ -287,6 +316,26 @@ const create = () =>
 describe("trusted post-cleanup evidence", () => {
   it("verifies the two runner lifecycles, receipt chain, activation, service resume, and canary", () => {
     expect(assertTrustedRolloutEvidence(create())).toEqual(create());
+  });
+  it("rejects a target deploy whose image is not the attested release image", () => {
+    const {
+      schemaVersion: _schemaVersion,
+      evidenceSha256: _hash,
+      ...unsigned
+    } = create();
+    void _schemaVersion;
+    void _hash;
+    expect(() =>
+      assembleTrustedRolloutEvidence({
+        ...unsigned,
+        targetDeploys: [
+          {
+            ...unsigned.targetDeploys[0]!,
+            imageDigest: `sha256:${"f".repeat(64)}`,
+          },
+        ],
+      }),
+    ).toThrow("trusted_rollout_evidence_target_image_invalid");
   });
   it.each([
     [

@@ -1460,6 +1460,31 @@ COMMIT;
         evidence = assembleTrustedRolloutEvidence({
           rolloutId: current.rolloutId,
           releaseCommitSha: current.expectedCommitSha,
+          releaseImageProvenance: (() => {
+            const identity = {
+              schemaVersion: "reviewrouter.hosted-runtime-image.v1",
+              repository: current.execution.controlRepository,
+              commit: current.expectedCommitSha,
+              imageUrl: `ghcr.io/777genius/review-router-saas-runtime@${facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST}`,
+              imageDigest:
+                facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST,
+            };
+            return {
+              schemaVersion: "reviewrouter.release-image-provenance.v1",
+              identity,
+              identitySha256: `sha256:${sha256Canonical(identity)}`,
+              releaseEvidence: {
+                kind: "github-artifact-attestation",
+                repository: current.execution.controlRepository,
+                workflowPath: ".github/workflows/release.yml",
+                workflowRunId: "1",
+                artifactId: "1",
+                artifactName: "hosted-runtime-image-v0.0.0-rehearsal",
+                sourceRef: "refs/heads/main",
+                verifiedAt: "2026-08-12T00:00:00.000Z",
+              },
+            };
+          })(),
           execution: current.execution,
           runners: [roleRunner, cutoverRunner],
           source: current.source,
@@ -1535,6 +1560,14 @@ COMMIT;
           ).observationSha256,
           receipts: current.receipts,
           activation: current.activationReceipt,
+          targetDeploys: targetContracts.map((contract) => ({
+            serviceId: contract.serviceId,
+            deployId: stagedServices.get(contract.serviceId).provenance
+              .deployId,
+            imageDigest: contract.imageUrl.slice(
+              contract.imageUrl.indexOf("sha256:"),
+            ),
+          })),
           resumedTargetDeployIds: targetContracts.map(
             (contract) =>
               stagedServices.get(contract.serviceId).provenance.deployId,

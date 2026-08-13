@@ -54,7 +54,7 @@ Repository variables:
 | Runners           | `REVIEW_ROUTER_RUNNER_GROUP_ID`, `REVIEW_ROUTER_RUNNER_GROUP_NAME`, `REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID`                        |
 | Provider          | `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS`, `RENDER_OWNER_ID`                                                                      |
 | Generations       | source/target `RENDER_DATABASE_ID`, `INTERNAL_HOSTNAME`, `DATABASE_NAME`, `DATABASE_SYSTEM_IDENTIFIER`, `RECOVERY_WITNESS_SHA256` |
-| Release           | `REVIEW_ROUTER_RELEASE_IMAGE_DIGEST`, `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, `REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON`  |
+| Release           | `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, `REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON`                                        |
 | Canary            | `REVIEW_ROUTER_LIVE_CANARY_URL`                                                                                                   |
 
 `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS` has one canonical encoding in every
@@ -84,6 +84,16 @@ Server-only service values:
 Actions receives the three scoped plaintext tokens; services store only their
 SHA-256 values. Logs and artifacts may contain IDs/digests, never URLs, tokens,
 passwords, backup material, or raw recovery witnesses.
+
+The release workflow emits `hosted-runtime-image-<version>` and signs the
+identity file with GitHub artifact attestation. Record its successful workflow
+run ID and artifact ID from the release summary. Supply those immutable IDs as
+`release_run_id` and `release_artifact_id` with the exact `expected_sha` when
+dispatching the PG17 workflow. Do not configure or pass a release-image digest
+variable: preflight derives the only accepted image digest from the attested
+identity and verifies repository, release workflow/ref/run, exact commit, OCI
+digest, and immutable URL before rollout claim or the first mutation. The same
+verified identity is embedded in final trusted evidence.
 
 ## Provision once
 

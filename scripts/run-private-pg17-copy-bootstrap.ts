@@ -14,6 +14,8 @@ import {
   type RunnerIdentity,
   type StepObservation,
   type WriterSuspensionObservation,
+  assertVerifiedReleaseImageProvenance,
+  type VerifiedReleaseImageProvenance,
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
 import { executePrivatePg17GenerationBinding } from "./initialize-private-pg17-generation-binding.mjs";
@@ -45,11 +47,26 @@ const target: DatabaseGenerationIdentity = {
     "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256",
   ),
 };
-let rollout = (
-  JSON.parse(
-    readFileSync(required("REVIEW_ROUTER_INITIAL_ROLLOUT_FILE"), "utf8"),
-  ) as { rollout: ReleaseRollout }
-).rollout;
+const initial = JSON.parse(
+  readFileSync(required("REVIEW_ROUTER_INITIAL_ROLLOUT_FILE"), "utf8"),
+) as {
+  rollout: ReleaseRollout;
+  releaseImageProvenance: VerifiedReleaseImageProvenance;
+};
+let rollout = initial.rollout;
+const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
+  initial.releaseImageProvenance,
+  {
+    repository: required("GITHUB_REPOSITORY"),
+    commit: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+  },
+);
+const canonicalReleaseEnvironment = {
+  ...process.env,
+  REVIEW_ROUTER_RELEASE_COMMIT_SHA: releaseImageProvenance.identity.commit,
+  REVIEW_ROUTER_RELEASE_IMAGE_DIGEST:
+    releaseImageProvenance.identity.imageDigest,
+};
 if (
   rollout.phase !== "preflight_verified" ||
   rollout.rolloutId !== required("REVIEW_ROUTER_ROLLOUT_ID") ||
@@ -174,7 +191,9 @@ const useCases = new ReleaseRolloutUseCases({
         process.env,
         commands,
       );
-      roleBootstrap = canonical.bootstrapTargetRoles(process.env);
+      roleBootstrap = canonical.bootstrapTargetRoles(
+        canonicalReleaseEnvironment,
+      );
       return roleBootstrap;
     },
     runReleaseMigration: unavailable,
@@ -222,5 +241,5 @@ try {
   });
 }
 process.stdout.write(
-  `${JSON.stringify({ rollout, roleBootstrapRunner: runner, backup: backupResult!.backup, quiescence: quiescence!.evidence, equivalence: equivalence!.evidence, generationBinding: generationBinding!.facts, roleBootstrap: roleBootstrap!.facts })}\n`,
+  `${JSON.stringify({ rollout, releaseImageProvenance, roleBootstrapRunner: runner, backup: backupResult!.backup, quiescence: quiescence!.evidence, equivalence: equivalence!.evidence, generationBinding: generationBinding!.facts, roleBootstrap: roleBootstrap!.facts })}\n`,
 );

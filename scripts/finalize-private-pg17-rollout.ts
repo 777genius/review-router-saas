@@ -14,6 +14,9 @@ import {
   type StepObservation,
   type TargetServiceExpectation,
   type TrustedRolloutEvidence,
+  assertVerifiedReleaseImageProvenance,
+  sameReleaseImageProvenance,
+  type VerifiedReleaseImageProvenance,
 } from "../packages/features/release-rollout/src/index";
 
 const required = (name: string): string => {
@@ -25,14 +28,58 @@ const read = <T>(name: string): T =>
   JSON.parse(readFileSync(required(name), "utf8")) as T;
 const body = read<{
   rollout: ReleaseRollout;
+  releaseImageProvenance: VerifiedReleaseImageProvenance;
   runners: [RunnerIdentity, RunnerIdentity];
   backup: TrustedRolloutEvidence["backup"];
   quiescence: TrustedRolloutEvidence["quiescence"];
   equivalence: TrustedRolloutEvidence["equivalence"];
+  staged: StepObservation<
+    readonly {
+      serviceId: string;
+      deployId: string;
+      provenance: { kind: "image"; imageSha: string };
+    }[]
+  >;
   migration: {
     legacyReconciliation: TrustedRolloutEvidence["legacyReconciliation"];
   };
 }>("REVIEW_ROUTER_PRIVATE_ROLLOUT_BODY_FILE");
+const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
+  body.releaseImageProvenance,
+  {
+    repository: required("GITHUB_REPOSITORY"),
+    commit: body.rollout.expectedCommitSha,
+  },
+);
+const preflightReleaseImageProvenance = assertVerifiedReleaseImageProvenance(
+  read<VerifiedReleaseImageProvenance>(
+    "REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE",
+  ),
+  {
+    repository: required("GITHUB_REPOSITORY"),
+    commit: body.rollout.expectedCommitSha,
+  },
+);
+if (
+  !sameReleaseImageProvenance(
+    releaseImageProvenance,
+    preflightReleaseImageProvenance,
+  )
+)
+  throw new Error("private_pg17_release_image_provenance_transplanted");
+const targetDeploys = body.staged.facts.map((deploy) => ({
+  serviceId: deploy.serviceId,
+  deployId: deploy.deployId,
+  imageDigest: deploy.provenance.imageSha,
+}));
+if (
+  targetDeploys.length === 0 ||
+  targetDeploys.some(
+    (deploy) =>
+      deploy.imageDigest !== releaseImageProvenance.identity.imageDigest,
+  )
+)
+  throw new Error("private_pg17_staged_release_image_mismatch");
 const preflight = read<Record<string, unknown>>(
   "REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE",
 );
@@ -124,7 +171,7 @@ const useCases = new ReleaseRolloutUseCases({
   services: {
     stageTarget: unavailable,
     resumeDeployAndObserve: async (decision) => {
-      resumed = await render.resumeDeployAndObserve({
+      resumed = (await render.resumeDeployAndObserve({
         apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
         services: expectations,
         rolloutId: rollout.rolloutId,
@@ -132,7 +179,7 @@ const useCases = new ReleaseRolloutUseCases({
         targetSystemIdentifier: rollout.target.systemIdentifier,
         expectedReceiptSha256: rollout.receipts.at(-1)!.receiptSha256,
         decision,
-      });
+      })) as typeof resumed;
       return resumed;
     },
     verifyLiveCanary: async () => {
@@ -154,6 +201,8 @@ const useCases = new ReleaseRolloutUseCases({
       evidence = assembleTrustedRolloutEvidence({
         rolloutId: current.rolloutId,
         releaseCommitSha: current.expectedCommitSha,
+        releaseImageProvenance,
+        targetDeploys,
         execution: current.execution,
         runners: body.runners,
         source: current.source,

@@ -20,7 +20,9 @@ on:
 
 permissions:
   actions: read
+  attestations: write
   contents: write
+  id-token: write
   packages: write
 
 concurrency:
@@ -331,6 +333,7 @@ jobs:
           docker pull "$IMAGE_URL" >/dev/null
 
       - name: Upload immutable hosted runtime identity
+        id: runtime_identity_artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: hosted-runtime-image-${{ steps.release.outputs.version }}
@@ -338,6 +341,11 @@ jobs:
           if-no-files-found: error
           retention-days: 90
           compression-level: 0
+
+      - name: Attest immutable hosted runtime identity
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: hosted-runtime-image.json
 
       - name: Preflight production Action ref override sync
         if: ${{ inputs.sync_production_action_ref }}
@@ -424,6 +432,7 @@ jobs:
           INSTALLER_SHA256: ${{ steps.installer.outputs.sha256 }}
           INSTALLER_DESCRIPTOR_SHA256: ${{ steps.installer.outputs.descriptor_sha256 }}
           RUNTIME_IMAGE_URL: ${{ steps.runtime_identity.outputs.url }}
+          RUNTIME_IDENTITY_ARTIFACT_ID: ${{ steps.runtime_identity_artifact.outputs.artifact-id }}
         run: |
           {
             echo "Released $VERSION"
@@ -437,6 +446,7 @@ jobs:
             echo "- Rotating installer SHA-256: $INSTALLER_SHA256"
             echo "- Rotating installer descriptor SHA-256: $INSTALLER_DESCRIPTOR_SHA256"
             echo "- Hosted runtime OCI image: $RUNTIME_IMAGE_URL"
+            echo "- Hosted runtime identity artifact ID: $RUNTIME_IDENTITY_ARTIFACT_ID"
             echo "- Production Action ref override sync: $SYNC_PRODUCTION_ACTION_REF"
             if [[ "$SYNC_PRODUCTION_ACTION_REF" == "true" ]]; then
               echo "- Override Action ref: $ACTION_REF"

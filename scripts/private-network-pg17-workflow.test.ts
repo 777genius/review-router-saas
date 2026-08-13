@@ -11,6 +11,11 @@ const controller = readFileSync(
   ".github/workflows/private-pg17-runner-controller.yml",
   "utf8",
 );
+const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
+const releaseImageVerifier = readFileSync(
+  "scripts/verify-private-pg17-release-image-provenance.ts",
+  "utf8",
+);
 const dockerfile = readFileSync("deploy/private-runner/Dockerfile", "utf8");
 const bootstrap = readFileSync("deploy/private-runner/bootstrap.mjs", "utf8");
 const launcher = readFileSync(
@@ -65,6 +70,54 @@ function executeStepComposition(
 }
 
 describe("private-network PG17 workflow security contract", () => {
+  it("cryptographically binds the deployed image to the exact release commit before mutation", () => {
+    const preflight = jobs(workflow).find((job) =>
+      job.startsWith("  protected-preflight:"),
+    )!;
+    expect(workflow).toContain("release_run_id:");
+    expect(workflow).toContain("release_artifact_id:");
+    expect(preflight).toContain(
+      "artifact-ids: ${{ inputs.release_artifact_id }}",
+    );
+    expect(preflight).toContain("run-id: ${{ inputs.release_run_id }}");
+    expect(preflight).toContain(
+      "verify-private-pg17-release-image-provenance.ts",
+    );
+    expect(preflight.indexOf("Verify release image identity")).toBeLessThan(
+      preflight.indexOf("Durably claim rollout"),
+    );
+    expect(workflow.indexOf("protected-preflight:")).toBeLessThan(
+      workflow.indexOf("freeze-source-writers:"),
+    );
+    expect(workflow).not.toContain("vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST");
+    expect(workflow).toContain("attestations: read");
+    expect(releaseWorkflow).toContain("attestations: write");
+    expect(releaseWorkflow).toContain("id-token: write");
+    expect(releaseWorkflow).toContain("actions/attest-build-provenance@");
+    expect(releaseWorkflow).toContain(
+      "subject-path: hosted-runtime-image.json",
+    );
+    expect(releaseImageVerifier).toContain('"--source-digest"');
+    expect(releaseImageVerifier).toContain('"--source-ref"');
+    expect(releaseImageVerifier).toContain('"--signer-workflow"');
+    expect(releaseImageVerifier).toContain(
+      "identity.commit !== expectedCommit",
+    );
+    expect(releaseImageVerifier).toContain(
+      "artifact.workflow_run.head_sha !== expectedCommit",
+    );
+    expect(releaseImageVerifier).toContain("run.head_sha !== expectedCommit");
+    const cutover = jobs(workflow).find((job) =>
+      job.startsWith("  pg17-cutover-private:"),
+    )!;
+    const finalize = jobs(workflow).find((job) =>
+      job.startsWith("  finalize-trusted-rollout:"),
+    )!;
+    for (const job of [cutover, finalize]) {
+      expect(job).toContain("verified-release-image-provenance.json");
+      expect(job).toContain("REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE:");
+    }
+  });
   it("uses one canonical source-writer value through freeze and compensation", () => {
     const workflowValue = '["srv-api123","srv-worker456"]';
     const workflowEnvironment = {

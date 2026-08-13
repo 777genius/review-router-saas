@@ -4,10 +4,12 @@ import { readFileSync, writeFileSync } from "node:fs";
 import {
   AuthenticatedRunnerLedgerAdapter,
   createReleaseRollout,
+  assertVerifiedReleaseImageProvenance,
   ReleaseRolloutUseCases,
   RolloutStep,
   type DatabaseGenerationIdentity,
   type StepObservation,
+  type VerifiedReleaseImageProvenance,
 } from "../packages/features/release-rollout/src/index";
 
 const required = (name: string): string => {
@@ -39,6 +41,18 @@ const expectedPreflightDigest = `sha256:${createHash("sha256")
   .digest("hex")}`;
 if (observationSha256 !== expectedPreflightDigest)
   throw new Error("private_pg17_preflight_digest_mismatch");
+const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
+  JSON.parse(
+    readFileSync(
+      required("REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE"),
+      "utf8",
+    ),
+  ) as VerifiedReleaseImageProvenance,
+  {
+    repository: required("GITHUB_REPOSITORY"),
+    commit: required("REVIEW_ROUTER_EXPECTED_SHA"),
+  },
+);
 
 let rollout = createReleaseRollout({
   rolloutId: required("REVIEW_ROUTER_ROLLOUT_ID"),
@@ -103,6 +117,6 @@ rollout = await useCases.claimRollout(rollout);
 rollout = await useCases.verifyProtectedEnvironment(rollout);
 writeFileSync(
   required("REVIEW_ROUTER_INITIAL_ROLLOUT_FILE"),
-  `${JSON.stringify({ rollout })}\n`,
+  `${JSON.stringify({ rollout, releaseImageProvenance })}\n`,
   { encoding: "utf8", mode: 0o600 },
 );
