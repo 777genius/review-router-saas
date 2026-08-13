@@ -190,39 +190,24 @@ const useCases = new ReleaseRolloutUseCases({
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: unavailable,
-    compensateAndObserve: async ({ decision, databaseWitness }) => {
+    compensateAndObserve: async ({
+      decision,
+      databaseWitness,
+      sourceWriterServiceIds,
+    }) => {
       if (
         decision.decision !== "allow" ||
         decision.operation !== "resume_source" ||
         databaseWitness.sourceWritesRestored !== true
       )
         throw new Error("private_pg17_service_recovery_authority_invalid");
-      await transactionalServices.finalizeAuthorizedSourceRecovery({
+      return await transactionalServices.finalizeAuthorizedSourceRecovery({
         source: sourceRecoveryManifest,
         protectedEnvironment: protectedSourceEnvironment,
         target: targetServiceContracts,
+        sourceWriterServiceIds,
         restoreSourceWritesAndVerify: async () => undefined,
       });
-      const restored = await ledger.read(rollout.rolloutId);
-      return {
-        serviceIds: sourceRecoveryManifest.services.map(
-          (item) => item.serviceId,
-        ),
-        deployIds: sourceRecoveryManifest.services.map((service) => {
-          const deployId = [...restored]
-            .reverse()
-            .find(
-              (item) =>
-                item.serviceId === service.serviceId &&
-                item.step === "source_verified",
-            )?.deployId;
-          if (!deployId)
-            throw new Error("private_pg17_source_deploy_checkpoint_missing");
-          return deployId;
-        }),
-        observedAt: new Date().toISOString(),
-        resumed: true,
-      };
     },
   },
   runner: {

@@ -243,6 +243,8 @@ export interface StepObservation<T = unknown> {
     readonly renderDeployId?: string;
     readonly renderDeployIds?: readonly string[];
     readonly renderServiceIds?: readonly string[];
+    /** Services with rollout-owned suspension evidence, not the full inventory. */
+    readonly renderMutatedServiceIds?: readonly string[];
     readonly githubWorkflowJobId?: string;
     readonly targetSwitchFenceNonce?: string;
     readonly targetSwitchFenceVersion?: number;
@@ -556,7 +558,18 @@ function assertStepFacts(
                 record(item, "source_writer_suspension_observation_invalid")
                   .latestSuccessfulDeployId,
             ),
-          )
+          ) ||
+        !Array.isArray(observation.provider?.renderMutatedServiceIds) ||
+        observation.provider.renderMutatedServiceIds.some(
+          (serviceId) =>
+            !services.some(
+              (item) =>
+                record(item, "source_writer_suspension_observation_invalid")
+                  .serviceId === serviceId,
+            ),
+        ) ||
+        new Set(observation.provider.renderMutatedServiceIds).size !==
+          observation.provider.renderMutatedServiceIds.length
       )
         throw new Error("source_writer_suspension_observation_invalid");
       break;

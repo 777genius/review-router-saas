@@ -12,6 +12,8 @@ export interface ProviderControlPort {
   compensateAndObserve(input: {
     decision: ProviderAuthorityDecision;
     databaseWitness: DatabaseAclWitness;
+    /** Exact authority-ledger IDs whose suspension was caused by this rollout. */
+    sourceWriterServiceIds: readonly string[];
   }): Promise<ProviderStateWitness>;
 }
 

@@ -53,17 +53,7 @@ type CompensationPorts = {
     >;
   };
   compensateDatabase(): Promise<DatabaseAclWitness>;
-  provider: {
-    compensateAndObserve(input: {
-      decision: Parameters<
-        ProviderControlPort["compensateAndObserve"]
-      >[0]["decision"];
-      databaseWitness: DatabaseAclWitness;
-      sourceWriterServiceIds: readonly string[];
-    }): Promise<
-      Awaited<ReturnType<ProviderControlPort["compensateAndObserve"]>>
-    >;
-  };
+  provider: Pick<ProviderControlPort, "compensateAndObserve">;
 };
 
 export type CompensationSafetyReconciliation = Readonly<{

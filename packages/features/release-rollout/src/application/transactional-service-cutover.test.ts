@@ -424,4 +424,89 @@ describe("transactional same-service cutover", () => {
       test.cutover.recover({ source, protectedEnvironment, target }),
     ).rejects.toThrow("environment_ambiguous");
   });
+
+  it.each([
+    ["partial", ["srv-web", "srv-worker"]],
+    ["complete", ["srv-web", "srv-api", "srv-worker"]],
+  ] as const)(
+    "resumes only the %s durable freeze mutation set",
+    async (_status, durableServiceIds) => {
+      const test = harness();
+      await test.cutover.stage({ source, protectedEnvironment, target });
+      await test.cutover.recover({ source, protectedEnvironment, target });
+
+      const witness = await test.cutover.finalizeAuthorizedSourceRecovery({
+        source,
+        protectedEnvironment,
+        target,
+        sourceWriterServiceIds: [...durableServiceIds],
+        restoreSourceWritesAndVerify: vi.fn(async () => undefined),
+      });
+
+      expect(
+        test.provider.resume.mock.calls.map(([serviceId]) => serviceId),
+      ).toEqual([...durableServiceIds]);
+      expect(witness.serviceIds).toEqual([...durableServiceIds]);
+      expect(witness.deployIds).toHaveLength(durableServiceIds.length);
+    },
+  );
+
+  it("keeps a pre-suspended unchanged service suspended", async () => {
+    const test = harness();
+    await test.cutover.stage({ source, protectedEnvironment, target });
+    await test.cutover.recover({ source, protectedEnvironment, target });
+
+    await test.cutover.finalizeAuthorizedSourceRecovery({
+      source,
+      protectedEnvironment,
+      target,
+      sourceWriterServiceIds: ["srv-web", "srv-worker"],
+      restoreSourceWritesAndVerify: vi.fn(async () => undefined),
+    });
+
+    expect(test.provider.resume).not.toHaveBeenCalledWith("srv-api");
+    await expect(test.provider.observe("srv-api")).resolves.toMatchObject({
+      suspended: true,
+    });
+  });
+
+  it("retries a resume failure from durable checkpoints", async () => {
+    const test = harness("resume");
+    await test.cutover.stage({ source, protectedEnvironment, target });
+    await test.cutover.recover({ source, protectedEnvironment, target });
+    const input = {
+      source,
+      protectedEnvironment,
+      target,
+      sourceWriterServiceIds: ["srv-web", "srv-worker"],
+      restoreSourceWritesAndVerify: vi.fn(async () => undefined),
+    };
+
+    await expect(
+      test.cutover.finalizeAuthorizedSourceRecovery(input),
+    ).rejects.toThrow("crash:resume");
+    await expect(
+      test.cutover.finalizeAuthorizedSourceRecovery(input),
+    ).resolves.toMatchObject({
+      serviceIds: ["srv-web", "srv-worker"],
+      resumed: true,
+    });
+  });
+
+  it("rejects durable freeze evidence outside the recovery manifest", async () => {
+    const test = harness();
+    await test.cutover.stage({ source, protectedEnvironment, target });
+    await test.cutover.recover({ source, protectedEnvironment, target });
+
+    await expect(
+      test.cutover.finalizeAuthorizedSourceRecovery({
+        source,
+        protectedEnvironment,
+        target,
+        sourceWriterServiceIds: ["srv-foreign"],
+        restoreSourceWritesAndVerify: vi.fn(async () => undefined),
+      }),
+    ).rejects.toThrow("recovery_scope_mismatch");
+    expect(test.provider.resume).not.toHaveBeenCalled();
+  });
 });

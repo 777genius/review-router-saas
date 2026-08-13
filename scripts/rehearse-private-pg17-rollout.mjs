@@ -1153,6 +1153,7 @@ async function verifyProductionPathRehearsal(facts) {
           {
             renderServiceIds: ["source-writer"],
             renderDeployIds: ["dep-source"],
+            renderMutatedServiceIds: ["source-writer"],
           },
         ),
       compensateAndObserve: async () =>

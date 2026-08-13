@@ -9,6 +9,7 @@ export const releaseAuthorityMigrationPaths = Object.freeze([
   "packages/platform/release-authority-db/migrations/000002_external_effect_protocol/migration.sql",
   "packages/platform/release-authority-db/migrations/000002_transactional_service_transition/migration.sql",
   "packages/platform/release-authority-db/migrations/000003_partial_source_freeze/migration.sql",
+  "packages/platform/release-authority-db/migrations/000004_selective_source_recovery/migration.sql",
 ]);
 
 const migrationBody = (source, path) => {

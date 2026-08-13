@@ -153,6 +153,7 @@ const observe = (step: (typeof steps)[number], index: number) => {
         provider: {
           renderServiceIds: ["srv-writer"],
           renderDeployIds: ["dep-writer"],
+          renderMutatedServiceIds: ["srv-writer"],
         },
       };
     case RolloutStep.ProvisionRoleRunner:

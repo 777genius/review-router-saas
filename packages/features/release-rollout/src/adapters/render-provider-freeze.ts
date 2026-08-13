@@ -80,6 +80,7 @@ export class RenderProviderFreezeAdapter {
       .update(JSON.stringify(credentialBearing))
       .digest("hex")}`;
     const observations = [];
+    const durablyRecordedMutationIds: string[] = [];
     for (const serviceId of input.sourceWriterServiceIds) {
       const before = await api.getService(serviceId);
       if (before.ownerId !== input.ownerId || before.autoDeploy !== "no")
@@ -120,8 +121,10 @@ export class RenderProviderFreezeAdapter {
         observedAt: new Date().toISOString(),
         latestSuccessfulDeployId,
       };
-      if (mutationRequired && input.recordMutation)
+      if (mutationRequired && input.recordMutation) {
         await input.recordMutation(serviceObservation);
+        durablyRecordedMutationIds.push(serviceId);
+      }
       observations.push(serviceObservation);
     }
     return Object.freeze({
@@ -140,6 +143,7 @@ export class RenderProviderFreezeAdapter {
         renderDeployIds: Object.freeze(
           observations.map((item) => item.latestSuccessfulDeployId),
         ),
+        renderMutatedServiceIds: Object.freeze(durablyRecordedMutationIds),
       },
     });
   }

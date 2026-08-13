@@ -28,6 +28,7 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000002_external_effect_protocol/migration.sql",
       "packages/platform/release-authority-db/migrations/000002_transactional_service_transition/migration.sql",
       "packages/platform/release-authority-db/migrations/000003_partial_source_freeze/migration.sql",
+      "packages/platform/release-authority-db/migrations/000004_selective_source_recovery/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths.map((path) =>
@@ -38,6 +39,7 @@ describe("release authority database installation", () => {
       "cd50e36c2b357fe03a81204b99f38c5c1e6b9ff94660dfecb9a2fccb782a512e",
       "5f52fdc1fcf6e37fabe9a69908d3c4e4bf82dfa6ab24c6b2ee9c4f3cda2a1099",
       "28079c64266e1045c9db82743f82412d9630f6b97f3143fcbe7730c290c33e94",
+      "910fa23aa55c056aba3bcce460c3b9eeb95cd7cb0d263b35600e667c5e332a72",
     ]);
     const bundle = releaseAuthorityMigrationBundle();
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
@@ -48,10 +50,14 @@ describe("release authority database installation", () => {
     const fourth = bundle.indexOf(
       "CREATE TABLE release_authority.source_freeze_observation",
     );
+    const fifth = bundle.indexOf(
+      "CREATE TRIGGER release_source_resume_rollout_ownership_guard",
+    );
     expect(first).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(first);
     expect(third).toBeGreaterThan(second);
     expect(fourth).toBeGreaterThan(third);
+    expect(fifth).toBeGreaterThan(fourth);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
     expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(1);
@@ -69,5 +75,18 @@ describe("release authority database installation", () => {
         /CREATE FUNCTION release_authority\.release_source_freeze_complete/gu,
       ),
     ).toHaveLength(1);
+  });
+
+  it("requires rollout-owned suspension evidence for every source resume", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000004_selective_source_recovery/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain(
+      "release source resume lacks rollout suspension evidence",
+    );
+    expect(migration).toContain("release source recovery manifest mismatch");
+    expect(migration).toContain("freeze.phase = 'suspended'");
+    expect(migration).toContain("checkpoint.step='source_resumed'");
   });
 });

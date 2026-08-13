@@ -320,6 +320,39 @@ describe("release compensation reconciliation", () => {
     },
   );
 
+  it("never forwards a pre-suspended unchanged service to the provider", async () => {
+    const dependencies = ports({
+      activationBoundary: "before",
+      state: "pre_activation",
+      lastStep: RolloutStep.VerifyProtectedEnvironment,
+      receiptCount: 2,
+      sourceFreeze: {
+        status: "complete",
+        serviceIds: ["srv-mutated-a", "srv-mutated-b"],
+        services: ["srv-mutated-a", "srv-mutated-b"].map((serviceId) => ({
+          serviceId,
+          latestSuccessfulDeployId: `dep-${serviceId}`,
+          observedAt: "2026-08-13T00:00:00.000Z",
+        })),
+      },
+    });
+    dependencies.ledger.listProvisioningIntents.mockResolvedValue([]);
+
+    await new ReleaseCompensationReconciliationUseCase(dependencies).execute(
+      rollout,
+    );
+
+    expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceWriterServiceIds: ["srv-mutated-a", "srv-mutated-b"],
+      }),
+    );
+    expect(
+      dependencies.provider.compensateAndObserve.mock.calls[0]?.[0]
+        .sourceWriterServiceIds,
+    ).not.toContain("srv-pre-suspended");
+  });
+
   it.each(["unknown"] as const)(
     "denies zero intents when freeze evidence is %s",
     async (status) => {

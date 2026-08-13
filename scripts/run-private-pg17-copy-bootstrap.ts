@@ -17,7 +17,6 @@ import {
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
 import { executePrivatePg17GenerationBinding } from "./initialize-private-pg17-generation-binding.mjs";
-import { parseSourceWriterServiceIds } from "./lib/source-writer-service-ids";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -100,12 +99,14 @@ const useCases = new ReleaseRolloutUseCases({
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: async () => freezeObservation,
-    compensateAndObserve: async ({ decision, databaseWitness }) =>
+    compensateAndObserve: async ({
+      decision,
+      databaseWitness,
+      sourceWriterServiceIds,
+    }) =>
       await provider.compensateAndObserve({
         apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
-        sourceWriterServiceIds: parseSourceWriterServiceIds(
-          required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
-        ),
+        sourceWriterServiceIds,
         sourceSystemIdentifier: source.systemIdentifier,
         decision,
         databaseWitness,

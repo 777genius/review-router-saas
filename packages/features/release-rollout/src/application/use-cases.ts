@@ -20,6 +20,7 @@ import type {
   TrustedEvidencePort,
 } from "./ports";
 import { ProviderAuthorityOperation } from "./ports";
+import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
 
 export class ReleaseRolloutUseCases {
   constructor(
@@ -469,13 +470,32 @@ export class ReleaseRolloutUseCases {
       ProviderAuthorityOperation.ResumeSource,
       "before",
     );
+    const sourceWriterServiceIds = [...r.receipts]
+      .reverse()
+      .find((receipt) => receipt.step === RolloutStep.FreezeProviderServices)
+      ?.provider?.renderMutatedServiceIds;
+    if (!sourceWriterServiceIds)
+      throw new Error("rollout_source_freeze_mutation_evidence_missing");
+    if (
+      sourceWriterServiceIds.length > 0 &&
+      !sourceWriterServiceIdsAreValid(sourceWriterServiceIds)
+    )
+      throw new Error("rollout_source_freeze_mutation_evidence_invalid");
     const databaseWitness = await this.ports.database.compensateSource(
       r.source,
     );
-    const providerWitness = await this.ports.provider.compensateAndObserve({
-      decision,
-      databaseWitness,
-    });
+    const providerWitness = sourceWriterServiceIds.length
+      ? await this.ports.provider.compensateAndObserve({
+          decision,
+          databaseWitness,
+          sourceWriterServiceIds,
+        })
+      : {
+          serviceIds: Object.freeze([]),
+          deployIds: Object.freeze([]),
+          observedAt: new Date().toISOString(),
+          resumed: true as const,
+        };
     compensating = await this.accept(
       compensating,
       {

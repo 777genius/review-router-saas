@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import type { ProviderStateWitness } from "./ports";
+import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
 
 const sha256 = (value: unknown): string =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
@@ -642,8 +644,10 @@ export class TransactionalServiceCutover {
     source: SourceRecoveryManifest;
     protectedEnvironment: ProtectedSourceEnvironment;
     target: readonly TargetServiceContract[];
+    /** Exact authority-ledger IDs durably observed suspended by this rollout. */
+    sourceWriterServiceIds: readonly string[];
     restoreSourceWritesAndVerify: () => Promise<void>;
-  }): Promise<void> {
+  }): Promise<ProviderStateWitness> {
     const targetContractSha256 = validateServiceTransitionContracts(
       input.source,
       input.protectedEnvironment,
@@ -654,6 +658,16 @@ export class TransactionalServiceCutover {
       manifestSha256: input.source.manifestSha256,
       targetContractSha256,
     };
+    if (
+      !sourceWriterServiceIdsAreValid(input.sourceWriterServiceIds) ||
+      input.sourceWriterServiceIds.some(
+        (serviceId) =>
+          !input.source.services.some(
+            (service) => service.serviceId === serviceId,
+          ),
+      )
+    )
+      throw new Error("service_transition_recovery_scope_mismatch");
     const checkpoints = await this.ledger.read(input.source.rolloutId);
     for (const service of input.source.services) {
       if (
@@ -671,7 +685,11 @@ export class TransactionalServiceCutover {
       input.source.services[0]!.serviceId,
       "source_acl_restored",
     );
-    for (const service of input.source.services) {
+    const deployIds: string[] = [];
+    for (const serviceId of input.sourceWriterServiceIds) {
+      const service = input.source.services.find(
+        (candidate) => candidate.serviceId === serviceId,
+      )!;
       await this.provider.resume(service.serviceId);
       const observed = await this.provider.observe(service.serviceId);
       if (
@@ -683,10 +701,26 @@ export class TransactionalServiceCutover {
       )
         throw new Error("service_transition_source_resume_unproven");
       await this.checkpoint(common, service.serviceId, "source_resumed");
+      const deployId = [...checkpoints]
+        .reverse()
+        .find(
+          (item) =>
+            item.serviceId === service.serviceId &&
+            item.step === "source_verified",
+        )?.deployId;
+      if (!deployId)
+        throw new Error("service_transition_source_deploy_checkpoint_missing");
+      deployIds.push(deployId);
     }
     await this.ledger.complete({
       rolloutId: input.source.rolloutId,
       outcome: "source_recovered",
+    });
+    return Object.freeze({
+      serviceIds: Object.freeze([...input.sourceWriterServiceIds]),
+      deployIds: Object.freeze(deployIds),
+      observedAt: new Date().toISOString(),
+      resumed: true as const,
     });
   }
 

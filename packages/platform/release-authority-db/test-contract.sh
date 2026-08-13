@@ -72,6 +72,9 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000002
 docker cp "$root/packages/platform/release-authority-db/migrations/000003_partial_source_freeze/migration.sql" \
   "$name:/tmp/migration-000003.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000003.sql >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000004_selective_source_recovery/migration.sql" \
+  "$name:/tmp/migration-000004.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000004.sql >/dev/null
 
 postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \

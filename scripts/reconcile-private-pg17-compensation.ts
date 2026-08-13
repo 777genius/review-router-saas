@@ -158,11 +158,6 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
   const sourceWriterServiceIds = parseCompensationSourceWriterServiceIds(
     required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
   );
-  const compensationServiceIds = (evidence: readonly string[]) => {
-    if (!evidence.every((id) => sourceWriterServiceIds.includes(id)))
-      throw new Error("private_pg17_freeze_evidence_inventory_mismatch");
-    return evidence;
-  };
   if (
     sourceWriterServiceIds.length !== 3 ||
     new Set(sourceWriterServiceIds).size !== 3 ||
@@ -219,43 +214,21 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
           databaseWitness.sourceWritesRestored !== true
         )
           throw new Error("private_pg17_service_recovery_authority_invalid");
-        const provenFreezeServiceIds = compensationServiceIds(
-          durableFreezeServiceIds,
-        );
         if (checkpoints.length === 0)
           return frozenSource.compensateAndObserve({
             apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
-            sourceWriterServiceIds: provenFreezeServiceIds,
+            sourceWriterServiceIds: durableFreezeServiceIds,
             sourceSystemIdentifier: rollout.source.systemIdentifier,
             decision,
             databaseWitness,
           });
-        await serviceTransition.finalizeAuthorizedSourceRecovery({
+        return await serviceTransition.finalizeAuthorizedSourceRecovery({
           source: sourceRecoveryManifest!,
           protectedEnvironment: protectedSourceEnvironment,
           target: targetServiceContracts!,
+          sourceWriterServiceIds: durableFreezeServiceIds,
           restoreSourceWritesAndVerify: async () => undefined,
         });
-        const restored = await ledger.read(rollout.rolloutId);
-        return {
-          serviceIds: sourceRecoveryManifest!.services.map(
-            (item) => item.serviceId,
-          ),
-          deployIds: sourceRecoveryManifest!.services.map((service) => {
-            const deployId = [...restored]
-              .reverse()
-              .find(
-                (item) =>
-                  item.serviceId === service.serviceId &&
-                  item.step === "source_verified",
-              )?.deployId;
-            if (!deployId)
-              throw new Error("private_pg17_source_deploy_checkpoint_missing");
-            return deployId;
-          }),
-          observedAt: new Date().toISOString(),
-          resumed: true,
-        };
       },
     },
   });
