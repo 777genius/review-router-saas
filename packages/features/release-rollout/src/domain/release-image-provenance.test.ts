@@ -164,8 +164,8 @@ describe("verified release image provenance", () => {
       "invalid timestamp",
       {
         ...provenance(),
-        releaseEvidence: {
-          ...provenance().releaseEvidence,
+        verification: {
+          ...provenance().verification,
           verifiedAt: "not-a-date",
         },
       },

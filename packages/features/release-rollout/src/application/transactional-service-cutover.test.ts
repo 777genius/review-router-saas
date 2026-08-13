@@ -549,6 +549,32 @@ describe("transactional same-service cutover", () => {
     });
   });
 
+  it("rejects a missing verified deploy ID before restoring writes or resuming services", async () => {
+    const test = harness();
+    await test.cutover.stage({ source, protectedEnvironment, target });
+    await test.cutover.recover({ source, protectedEnvironment, target });
+    const index = test.checkpoints.findIndex(
+      (item) =>
+        item.serviceId === "srv-worker" && item.step === "source_verified",
+    );
+    const withoutDeployId = { ...test.checkpoints[index]! };
+    delete withoutDeployId.deployId;
+    test.checkpoints[index] = withoutDeployId;
+    const restoreSourceWritesAndVerify = vi.fn(async () => undefined);
+
+    await expect(
+      test.cutover.finalizeAuthorizedSourceRecovery({
+        source,
+        protectedEnvironment,
+        target,
+        sourceWriterServiceIds: ["srv-web", "srv-worker"],
+        restoreSourceWritesAndVerify,
+      }),
+    ).rejects.toThrow("service_transition_source_deploy_checkpoint_missing");
+    expect(restoreSourceWritesAndVerify).not.toHaveBeenCalled();
+    expect(test.provider.resume).not.toHaveBeenCalled();
+  });
+
   it("reconciles an ambiguous consumed resume without replay", async () => {
     const test = harness("resume");
     await test.cutover.stage({ source, protectedEnvironment, target });

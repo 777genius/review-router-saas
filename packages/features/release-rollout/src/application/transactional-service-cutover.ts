@@ -735,16 +735,23 @@ export class TransactionalServiceCutover {
     )
       throw new Error("service_transition_recovery_scope_mismatch");
     const checkpoints = await this.ledger.read(input.source.rolloutId);
+    const verifiedDeployIds = new Map<string, string>();
     for (const service of input.source.services) {
-      if (
-        !checkpoints.some(
+      const verified = [...checkpoints]
+        .reverse()
+        .find(
           (item) =>
             item.serviceId === service.serviceId &&
             item.step === "source_verified",
-        )
-      )
+        );
+      if (!verified)
         throw new Error("service_transition_source_restore_checkpoint_missing");
+      if (verified.deployId)
+        verifiedDeployIds.set(service.serviceId, verified.deployId);
     }
+    for (const serviceId of input.sourceWriterServiceIds)
+      if (!verifiedDeployIds.has(serviceId))
+        throw new Error("service_transition_source_deploy_checkpoint_missing");
     await this.requireCompletedRecoveryEffect(
       await this.recoveryEffects.execute({
         rolloutId: input.source.rolloutId,
@@ -803,16 +810,7 @@ export class TransactionalServiceCutover {
       )
         throw new Error("service_transition_source_resume_unproven");
       await this.checkpoint(common, service.serviceId, "source_resumed");
-      const deployId = [...checkpoints]
-        .reverse()
-        .find(
-          (item) =>
-            item.serviceId === service.serviceId &&
-            item.step === "source_verified",
-        )?.deployId;
-      if (!deployId)
-        throw new Error("service_transition_source_deploy_checkpoint_missing");
-      deployIds.push(deployId);
+      deployIds.push(verifiedDeployIds.get(service.serviceId)!);
     }
     await this.ledger.complete({
       rolloutId: input.source.rolloutId,
