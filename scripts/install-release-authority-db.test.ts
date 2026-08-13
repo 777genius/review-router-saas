@@ -74,6 +74,27 @@ describe("release authority database installation", () => {
       "REVOKE ALL ON FUNCTION release_authority.release_service_transition_immutable() FROM PUBLIC;",
     );
   });
+  it("moves published-file repairs into 000009 and records canonical or legacy byte identity", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000009_authority_history_and_forward_repairs/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain(
+      "CREATE TABLE release_authority.schema_migration",
+    );
+    expect(migration).toContain("legacy_equivalent");
+    expect(migration).toContain(
+      "sha256:eb4039b43228a07c241593d4d6dd863eceac7731d5898b0264e9bc67b3d746cf",
+    );
+    expect(migration).toContain(
+      "sha256:e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b",
+    );
+    expect(migration).toContain(
+      "receipt_sha256=current_row.last_receipt_sha256",
+    );
+    expect(migration).toContain("intent_rollout_id");
+    expect(migration).toContain("release_schema_migration_manifest");
+  });
   it("applies the complete ordered migration chain exactly once in one transaction", () => {
     expect(releaseAuthorityMigrationPaths).toEqual([
       "packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql",
@@ -85,14 +106,15 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000006_runner_provider_creation_boundary/migration.sql",
       "packages/platform/release-authority-db/migrations/000007_compensation_effect_fence/migration.sql",
       "packages/platform/release-authority-db/migrations/000008_trigger_helper_acl/migration.sql",
+      "packages/platform/release-authority-db/migrations/000009_authority_history_and_forward_repairs/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths.map((path) =>
         createHash("sha256").update(readFileSync(path)).digest("hex"),
       ),
     ).toEqual([
-      "e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b",
-      "cd50e36c2b357fe03a81204b99f38c5c1e6b9ff94660dfecb9a2fccb782a512e",
+      "eb4039b43228a07c241593d4d6dd863eceac7731d5898b0264e9bc67b3d746cf",
+      "66a1cd48303f31691596ae4e64d952d0fe3543444d042b17243c1a60efb10201",
       "5f52fdc1fcf6e37fabe9a69908d3c4e4bf82dfa6ab24c6b2ee9c4f3cda2a1099",
       "28079c64266e1045c9db82743f82412d9630f6b97f3143fcbe7730c290c33e94",
       "c86e2546a9e135f5b23142a2ef1eb70bc12a0b41345f29abd5d2e5b7cbcaed97",
@@ -100,6 +122,7 @@ describe("release authority database installation", () => {
       "e49fe0f8c161fbe39953f01e299c81a752a152809c2261815a639bcf732c428a",
       "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
       "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
+      "14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7",
     ]);
     const bundle = releaseAuthorityMigrationBundle();
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
@@ -120,6 +143,10 @@ describe("release authority database installation", () => {
       "REVOKE ALL ON FUNCTION release_authority.release_service_transition_immutable() FROM PUBLIC;",
       eighth,
     );
+    const tenth = bundle.indexOf(
+      "CREATE TABLE release_authority.schema_migration",
+      ninth,
+    );
     expect(first).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(first);
     expect(third).toBeGreaterThan(second);
@@ -129,6 +156,7 @@ describe("release authority database installation", () => {
     expect(seventh).toBeGreaterThan(sixth);
     expect(eighth).toBeGreaterThan(seventh);
     expect(ninth).toBeGreaterThan(eighth);
+    expect(tenth).toBeGreaterThan(ninth);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
     expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(1);

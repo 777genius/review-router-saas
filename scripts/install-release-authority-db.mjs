@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
@@ -14,6 +15,7 @@ export const releaseAuthorityMigrationPaths = Object.freeze([
   "packages/platform/release-authority-db/migrations/000006_runner_provider_creation_boundary/migration.sql",
   "packages/platform/release-authority-db/migrations/000007_compensation_effect_fence/migration.sql",
   "packages/platform/release-authority-db/migrations/000008_trigger_helper_acl/migration.sql",
+  "packages/platform/release-authority-db/migrations/000009_authority_history_and_forward_repairs/migration.sql",
 ]);
 
 const migrationBody = (source, path) => {
@@ -31,13 +33,33 @@ export function releaseAuthorityMigrationBundle(root = process.cwd()) {
     path,
     source: readFileSync(resolve(root, path), "utf8"),
   }));
+  const forwardMigration = migrations.at(-1);
+  if (!forwardMigration) throw new Error("release_authority_migrations_empty");
+  const forwardChecksum = createHash("sha256")
+    .update(forwardMigration.source)
+    .digest("hex");
+  const historicalMigrations = migrations.slice(0, -1);
   return [
     "\\set ON_ERROR_STOP on",
+    "SELECT (to_regnamespace('release_authority') IS NULL) AS authority_schema_absent,",
+    "  (to_regclass('release_authority.schema_migration') IS NOT NULL) AS authority_history_present \\gset",
     "BEGIN;",
-    ...migrations.flatMap(({ path, source }) => [
+    "\\if :authority_schema_absent",
+    ...historicalMigrations.flatMap(({ path, source }) => [
       `\\echo applying ${path}`,
       migrationBody(source, path),
     ]),
+    "\\endif",
+    "\\if :authority_history_present",
+    "\\echo release authority migration history already present",
+    "\\else",
+    `\\echo applying ${forwardMigration.path}`,
+    migrationBody(forwardMigration.source, forwardMigration.path),
+    `INSERT INTO release_authority.schema_migration
+      (position, migration_name, checksum_sha256, byte_variant)
+     VALUES (10, '000009_authority_history_and_forward_repairs',
+       'sha256:${forwardChecksum}', 'canonical');`,
+    "\\endif",
     "COMMIT;",
     "",
   ].join("\n");

@@ -18,10 +18,6 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
 docker cp "$root/packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql" \
   "$name:/tmp/migration.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration.sql >/dev/null
-docker cp "$root/packages/platform/release-authority-db/migrations/000002_transactional_service_transition/migration.sql" \
-  "$name:/tmp/service-transition.sql" >/dev/null
-docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/service-transition.sql >/dev/null
-
 # Seed an unresolved v1 effect before the forward migration; it must fail closed.
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r-legacy', repeat('9',40), '90', 1, '190', '290');
@@ -69,6 +65,9 @@ atomic_residue=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_a
 test "$atomic_residue" = 0:0:0:0
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000002.sql >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000002_transactional_service_transition/migration.sql" \
+  "$name:/tmp/service-transition.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/service-transition.sql >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000003_partial_source_freeze/migration.sql" \
   "$name:/tmp/migration-000003.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000003.sql >/dev/null
@@ -87,6 +86,15 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000007
 docker cp "$root/packages/platform/release-authority-db/migrations/000008_trigger_helper_acl/migration.sql" \
   "$name:/tmp/migration-000008.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000008.sql >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000009_authority_history_and_forward_repairs/migration.sql" \
+  "$name:/tmp/migration-000009.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000009.sql >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "INSERT INTO release_authority.schema_migration
+     (position,migration_name,checksum_sha256,byte_variant)
+   VALUES (10,'000009_authority_history_and_forward_repairs',
+     'sha256:14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7',
+     'canonical')" >/dev/null
 
 postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \

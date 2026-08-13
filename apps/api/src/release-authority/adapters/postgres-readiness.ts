@@ -21,6 +21,8 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') AS provider_decide,
           to_regprocedure('release_authority.release_rollout_reconcile(text,jsonb)') AS rollout_reconcile,
           to_regprocedure('release_authority.release_rollout_compensation_checkpoint(text,text,text)') AS compensation_checkpoint
+          ,to_regprocedure('release_authority.release_schema_migration_manifest()') AS migration_manifest
+          ,to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)') AS persist_cleanup_witness
       ), definitions AS (
         SELECT facts.*,
           coalesce(pg_get_functiondef(recovery_append), '') AS recovery_append_definition,
@@ -35,6 +37,7 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           coalesce(pg_get_functiondef(provider_decide), '') AS provider_decide_definition,
           coalesce(pg_get_functiondef(rollout_reconcile), '') AS rollout_reconcile_definition,
           coalesce(pg_get_functiondef(compensation_checkpoint), '') AS compensation_checkpoint_definition
+          ,coalesce(pg_get_functiondef(persist_cleanup_witness), '') AS persist_cleanup_witness_definition
         FROM facts
       ), authority_functions AS (
         SELECT procedure.oid
@@ -79,17 +82,20 @@ export async function observeReleaseAuthorityDatabaseReadiness(
             to_regprocedure('release_authority.release_source_freeze_prepare(text,text,text,integer,text,text,text,text,timestamptz,jsonb,boolean)'),
             to_regprocedure('release_authority.release_source_freeze_record(text,text,text,integer,text,text,text,text,timestamptz,jsonb)'),
             to_regprocedure('release_authority.release_source_freeze_complete(text,text,text,integer,text,text,jsonb,timestamptz)')
+            ,to_regprocedure('release_authority.release_schema_migration_manifest()')
           ]::oid[], ARRAY[
             to_regprocedure('release_authority.release_service_transition_immutable()')
           ]::oid[]),
           ('reviewrouter_provider_authority', ARRAY[
             to_regprocedure('release_authority.release_provider_authority_decide(jsonb)')
+            ,to_regprocedure('release_authority.release_schema_migration_manifest()')
           ]::oid[], ARRAY[
             to_regprocedure('release_authority.release_service_transition_immutable()')
           ]::oid[]),
           ('reviewrouter_release_witness', ARRAY[
             to_regprocedure('release_authority.release_runner_cleanup_observation_seed(text)'),
             to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)')
+            ,to_regprocedure('release_authority.release_schema_migration_manifest()')
           ]::oid[], ARRAY[
             to_regprocedure('release_authority.release_service_transition_immutable()')
           ]::oid[])
@@ -129,6 +135,7 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           AND definitions.provider_decide IS NOT NULL
           AND definitions.rollout_reconcile IS NOT NULL
           AND definitions.compensation_checkpoint IS NOT NULL
+          AND definitions.migration_manifest IS NOT NULL
           AND (SELECT count(*) = 9 FROM pg_catalog.pg_class relation
             JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
             WHERE namespace.nspname = 'release_authority'
@@ -151,7 +158,8 @@ export async function observeReleaseAuthorityDatabaseReadiness(
                 'effect_discovery_deadline','effect_safe_for_compensation',
                 'effect_block_reason'
               ))
-          THEN 6 ELSE 0 END AS "schemaVersion",
+          THEN 9 ELSE 0 END AS "schemaVersion",
+        '[]'::jsonb AS "migrationManifest",
         to_regprocedure('release_authority.release_rollout_claim(text,text,text,integer,text,text)') IS NOT NULL AS "controlRoutine",
         to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') IS NOT NULL AS "providerRoutine",
         to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL AS "installerRoutine",
@@ -200,6 +208,37 @@ export async function observeReleaseAuthorityDatabaseReadiness(
             FROM pg_catalog.pg_proc procedure
             WHERE procedure.oid = definitions.compensation_checkpoint)
           AS "compensationCheckpointDefinition",
+        EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_attribute attribute
+          JOIN pg_catalog.pg_class relation ON relation.oid = attribute.attrelid
+          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+          WHERE namespace.nspname = 'release_authority'
+            AND relation.relname = 'runner_job'
+            AND attribute.attname = 'provider_creation_not_before'
+            AND attribute.attnotnull
+            AND NOT attribute.attisdropped
+        ) AND EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_constraint constraint_record
+          JOIN pg_catalog.pg_class relation ON relation.oid = constraint_record.conrelid
+          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+          WHERE namespace.nspname = 'release_authority'
+            AND relation.relname = 'runner_job'
+            AND constraint_record.conname = 'runner_job_provider_creation_boundary'
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND pg_catalog.pg_get_constraintdef(constraint_record.oid)
+              LIKE '%observed_at >= provider_creation_not_before%'
+        ) AS "runnerProviderBoundary",
+        definitions.persist_cleanup_witness IS NOT NULL
+          AND definitions.persist_cleanup_witness_definition
+            LIKE '%providerCreatedAt%provider_creation_not_before%'
+          AND definitions.persist_cleanup_witness_definition
+            LIKE '%providerObservedAt%providerCreatedAt%'
+          AND definitions.persist_cleanup_witness_definition
+            LIKE '%providerObservedAt%clock_timestamp()%5 minutes%'
+          AS "cleanupWitnessTemporalSemantics",
         (SELECT count(*) = 10 AND bool_and(trigger.tgenabled = 'O')
           FROM pg_catalog.pg_trigger trigger
           JOIN pg_catalog.pg_class relation ON relation.oid = trigger.tgrelid
@@ -250,6 +289,27 @@ export async function observeReleaseAuthorityDatabaseReadiness(
             AND pg_get_triggerdef(trigger.oid) LIKE '%BEFORE UPDATE OF state%FOR EACH ROW%'
         ) AS "requiredTriggers",
         coalesce(acl_posture.exact, false) AS "authorityAclExact",
+        (SELECT count(*) > 1 AND bool_and(object_owner = schema_owner)
+          FROM (
+            SELECT namespace.nspowner AS schema_owner,
+              namespace.nspowner AS object_owner
+            FROM pg_catalog.pg_namespace namespace
+            WHERE namespace.nspname = 'release_authority'
+            UNION ALL
+            SELECT namespace.nspowner, relation.relowner
+            FROM pg_catalog.pg_class relation
+            JOIN pg_catalog.pg_namespace namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = 'release_authority'
+              AND relation.relkind IN ('r','p','v','m','S')
+            UNION ALL
+            SELECT namespace.nspowner, procedure.proowner
+            FROM pg_catalog.pg_proc procedure
+            JOIN pg_catalog.pg_namespace namespace
+              ON namespace.oid = procedure.pronamespace
+            WHERE namespace.nspname = 'release_authority'
+          ) ownership
+        ) AS "authorityOwnershipExact",
         NOT EXISTS (
           SELECT 1 FROM authority_functions functions
           CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(
@@ -312,5 +372,23 @@ export async function observeReleaseAuthorityDatabaseReadiness(
   );
   if (rows.length !== 1 || !rows[0])
     throw new Error("release_control_database_identity_unavailable");
-  return rows[0];
+  const readiness = rows[0];
+  if (
+    readiness.schemaVersion === 9 &&
+    readiness.migrationManifest.length === 0
+  ) {
+    const manifestRows = await prisma.$queryRaw<
+      Pick<ReleaseAuthorityDatabaseReadiness, "migrationManifest">[]
+    >(Prisma.sql`
+      SELECT release_authority.release_schema_migration_manifest()
+        AS "migrationManifest"
+    `);
+    if (manifestRows.length !== 1 || !manifestRows[0])
+      throw new Error("release_control_database_migration_history_unavailable");
+    return {
+      ...readiness,
+      migrationManifest: manifestRows[0].migrationManifest,
+    };
+  }
+  return readiness;
 }

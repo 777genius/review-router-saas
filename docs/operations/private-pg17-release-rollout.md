@@ -163,6 +163,28 @@ Replace both image placeholders with the immutable digest pins approved in CI;
 the check intentionally fails when opt-in or either pin is absent.
 The rehearsal uses the same complete ordered one-transaction authority migration
 bundle as installation, including selective recovery and late-effect handling.
+The authority installer proves the append-only chain in this exact order:
+`000001_release_authority`, `000002_external_effect_protocol`,
+`000002_transactional_service_transition`, `000003_partial_source_freeze`,
+`000004_selective_source_recovery`, `000005_late_runner_effects`,
+`000006_runner_provider_creation_boundary`,
+`000007_compensation_effect_fence`, `000008_trigger_helper_acl`, and
+`000009_authority_history_and_forward_repairs`. Migrations 000001 and 000002
+are the immutable bytes published on `origin/main`; their later lock-order,
+retryability, terminal-projection, and receipt-link repairs live only in 000009.
+
+Migration 000009 creates the owner-only `release_authority.schema_migration`
+ledger and a least-privilege manifest routine. Fresh installs record the
+canonical checksum of every file. An authority database already carrying the
+previously published modified 000001/000002 bytes is upgraded by applying only
+000009; those two exact legacy checksums are retained as
+`legacy_equivalent`, and 000009 converges their behavior to the same forward
+state. Health requires every ordered identity through 000009, the matching
+canonical/approved-legacy checksum and variant, the 000006 provider creation
+column plus validated NOT NULL/order constraint and witness time bounds, the
+000007 compensation fences, the 000008 helper revocation, common ownership,
+exact role grants, and no PUBLIC authority privileges. A missing, reordered,
+unknown, or partially applied entry is release-blocking.
 
 CI must pass on the protected candidate SHA. Live E2E requires a newly created
 disposable repository/project, source/target PG17 DBs, runner services, and

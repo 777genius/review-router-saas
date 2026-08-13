@@ -11,13 +11,63 @@ const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 
 const authorityReadiness = (
-  roleName: "reviewrouter_release_control" | "reviewrouter_provider_authority",
+  roleName:
+    | "reviewrouter_release_control"
+    | "reviewrouter_provider_authority"
+    | "reviewrouter_release_witness",
 ) => [
   {
     roleName,
     systemIdentifier: "authority-system",
     postgresMajor: 17,
-    schemaVersion: 6,
+    schemaVersion: 9,
+    migrationManifest: [
+      [
+        "000001_release_authority",
+        "eb4039b43228a07c241593d4d6dd863eceac7731d5898b0264e9bc67b3d746cf",
+      ],
+      [
+        "000002_external_effect_protocol",
+        "66a1cd48303f31691596ae4e64d952d0fe3543444d042b17243c1a60efb10201",
+      ],
+      [
+        "000002_transactional_service_transition",
+        "5f52fdc1fcf6e37fabe9a69908d3c4e4bf82dfa6ab24c6b2ee9c4f3cda2a1099",
+      ],
+      [
+        "000003_partial_source_freeze",
+        "28079c64266e1045c9db82743f82412d9630f6b97f3143fcbe7730c290c33e94",
+      ],
+      [
+        "000004_selective_source_recovery",
+        "c86e2546a9e135f5b23142a2ef1eb70bc12a0b41345f29abd5d2e5b7cbcaed97",
+      ],
+      [
+        "000005_late_runner_effects",
+        "35db45ebd364e6f8cbeafbfb0ab6ac0056fe7e51de2b5fe844b91f1207ba1cfb",
+      ],
+      [
+        "000006_runner_provider_creation_boundary",
+        "e49fe0f8c161fbe39953f01e299c81a752a152809c2261815a639bcf732c428a",
+      ],
+      [
+        "000007_compensation_effect_fence",
+        "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
+      ],
+      [
+        "000008_trigger_helper_acl",
+        "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
+      ],
+      [
+        "000009_authority_history_and_forward_repairs",
+        "14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7",
+      ],
+    ].map(([migrationName, checksum], index) => ({
+      position: index + 1,
+      migrationName,
+      checksumSha256: `sha256:${checksum}`,
+      byteVariant: "canonical",
+    })),
     controlRoutine: true,
     providerRoutine: true,
     installerRoutine: false,
@@ -27,7 +77,10 @@ const authorityReadiness = (
     selectiveRecoveryProtocol: true,
     lateRunnerEffectProtocol: true,
     compensationCheckpointDefinition: true,
+    runnerProviderBoundary: true,
+    cleanupWitnessTemporalSemantics: true,
     requiredTriggers: true,
+    authorityOwnershipExact: true,
     authorityAclExact: true,
     publicAuthorityRevoked: true,
     authorityTablesRevoked: true,
@@ -39,6 +92,7 @@ const installerReadiness = [
     systemIdentifier: "target-system",
     postgresMajor: 17,
     schemaVersion: 0,
+    migrationManifest: [],
     controlRoutine: false,
     providerRoutine: false,
     installerRoutine: true,
@@ -48,7 +102,10 @@ const installerReadiness = [
     selectiveRecoveryProtocol: false,
     lateRunnerEffectProtocol: false,
     compensationCheckpointDefinition: false,
+    runnerProviderBoundary: false,
+    cleanupWitnessTemporalSemantics: false,
     requiredTriggers: false,
+    authorityOwnershipExact: false,
     authorityAclExact: false,
     publicAuthorityRevoked: false,
     authorityTablesRevoked: false,
@@ -60,6 +117,7 @@ const readerReadiness = [
     systemIdentifier: "target-system",
     postgresMajor: 17,
     schemaVersion: 0,
+    migrationManifest: [],
     controlRoutine: false,
     providerRoutine: false,
     installerRoutine: false,
@@ -69,21 +127,16 @@ const readerReadiness = [
     selectiveRecoveryProtocol: false,
     lateRunnerEffectProtocol: false,
     compensationCheckpointDefinition: false,
+    runnerProviderBoundary: false,
+    cleanupWitnessTemporalSemantics: false,
     requiredTriggers: false,
+    authorityOwnershipExact: false,
     authorityAclExact: false,
     publicAuthorityRevoked: false,
     authorityTablesRevoked: false,
   },
 ];
-const witnessReadiness = [
-  {
-    roleName: "reviewrouter_release_witness",
-    postgresMajor: 17,
-    seedRoutine: true,
-    persistRoutine: true,
-    externalEffectRoutine: true,
-  },
-];
+const witnessReadiness = authorityReadiness("reviewrouter_release_witness");
 
 const createReleaseControlHealthApp = (
   controlOverrides: Record<string, unknown> = {},
@@ -675,6 +728,7 @@ describe("release authority process composition", () => {
 
   it.each([
     "authorityAclExact",
+    "authorityOwnershipExact",
     "publicAuthorityRevoked",
     "authorityTablesRevoked",
   ] as const)(
@@ -718,6 +772,8 @@ describe("release authority process composition", () => {
     "selectiveRecoveryProtocol",
     "lateRunnerEffectProtocol",
     "compensationCheckpointDefinition",
+    "runnerProviderBoundary",
+    "cleanupWitnessTemporalSemantics",
     "requiredTriggers",
   ] as const)(
     "fails health when the required %s proof is absent",
@@ -730,14 +786,55 @@ describe("release authority process composition", () => {
     },
   );
 
-  it("fails witness health when its required 000002 effect routine is absent", async () => {
+  it("fails health when ordered migration identity evidence is incomplete", async () => {
+    const manifest = authorityReadiness(
+      "reviewrouter_release_control",
+    )[0]!.migrationManifest.slice(0, -1);
+    const app = await createReleaseControlHealthApp({
+      migrationManifest: manifest,
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    await app.close();
+  });
+
+  it("accepts the exact previously published 000001/000002 byte variants after 000009", async () => {
+    const migrationManifest = authorityReadiness(
+      "reviewrouter_release_control",
+    )[0]!.migrationManifest.map((entry, index) =>
+      index === 0
+        ? {
+            ...entry,
+            checksumSha256:
+              "sha256:e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b",
+            byteVariant: "legacy_equivalent",
+          }
+        : index === 1
+          ? {
+              ...entry,
+              checksumSha256:
+                "sha256:cd50e36c2b357fe03a81204b99f38c5c1e6b9ff94660dfecb9a2fccb782a512e",
+              byteVariant: "legacy_equivalent",
+            }
+          : entry,
+    );
+    const app = await createReleaseControlHealthApp({ migrationManifest });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(200);
+    await app.close();
+  });
+
+  it("fails witness health when centralized temporal proof is absent", async () => {
     const app = await createReleaseWitnessApp({
       witnessPrisma: {
-        $queryRaw: vi
-          .fn()
-          .mockResolvedValue([
-            { ...witnessReadiness[0], externalEffectRoutine: false },
-          ]),
+        $queryRaw: vi.fn().mockResolvedValue([
+          {
+            ...witnessReadiness[0],
+            cleanupWitnessTemporalSemantics: false,
+          },
+        ]),
       } as never,
       triggerTokenSha256: digest("witness"),
       renderReadToken: "read-only",
