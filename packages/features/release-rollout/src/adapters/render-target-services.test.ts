@@ -56,76 +56,57 @@ const deploy = (id: string, status: string) => [
     cursor: null,
   },
 ];
-const env = (value: string) => [
-  { envVar: { key: "DATABASE_URL", value }, cursor: null },
-  { envVar: { key: "UNCHANGED", value: "yes" }, cursor: null },
-];
-
 describe("Render target switch and live canary", () => {
-  it("replaces the complete environment and deploys the exact immutable build", async () => {
+  it("patches environment keys and deploys the exact immutable build", async () => {
     const targetUrl =
       "postgresql://reviewrouter_api:secret@target.internal/reviewrouter?sslmode=require";
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(json(service))
-      .mockResolvedValueOnce(json(deploy("dep-old", "live")))
-      .mockResolvedValueOnce(
-        json(
-          env("postgresql://reviewrouter_api:old@source.internal/reviewrouter"),
-        ),
-      )
-      .mockResolvedValueOnce(json({}, 200))
-      .mockResolvedValueOnce(
-        json([
-          ...env(targetUrl),
-          {
-            envVar: {
-              key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
-              value: recoveryWitness,
-            },
+    const environment: Record<string, string> = {
+      DATABASE_URL:
+        "postgresql://reviewrouter_api:old@source.internal/reviewrouter",
+      UNCHANGED: "yes",
+    };
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith("/env-vars") && init?.method === "POST") {
+        const created = JSON.parse(String(init.body)) as {
+          key: string;
+          value: string;
+        };
+        environment[created.key] = created.value;
+        return json({}, 201);
+      }
+      if (pathname.endsWith("/env-vars"))
+        return json(
+          Object.entries(environment).map(([key, value]) => ({
+            envVar: { key, value },
             cursor: null,
-          },
-          {
-            envVar: {
-              key: "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
-              value: recoveryWitnessSha256,
-            },
-            cursor: null,
-          },
-          {
-            envVar: {
-              key: "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
-              value: expected.provenance.commitSha,
-            },
-            cursor: null,
-          },
-          {
-            envVar: {
-              key: "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
-              value: fence.rolloutId,
-            },
-            cursor: null,
-          },
-          {
-            envVar: {
-              key: "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
-              value: fence.fencedAt,
-            },
-            cursor: null,
-          },
-        ]),
-      )
-      .mockResolvedValueOnce(
-        json(
+          })),
+        );
+      if (pathname.includes("/env-vars/") && init?.method === "PUT") {
+        const key = decodeURIComponent(pathname.split("/").at(-1)!);
+        environment[key] = JSON.parse(String(init.body)).value as string;
+        return json({}, 200);
+      }
+      if (pathname.endsWith("/deploys") && init?.method === "POST")
+        return json(
           {
             id: "dep-new",
             status: "queued",
             commit: { id: expected.provenance.commitSha },
           },
           201,
-        ),
-      )
-      .mockResolvedValueOnce(json(deploy("dep-new", "live")));
+        );
+      if (pathname.endsWith("/deploys"))
+        return json(
+          deploy(
+            fetchImpl.mock.calls.some(([, call]) => call?.method === "POST")
+              ? "dep-new"
+              : "dep-old",
+            "live",
+          ),
+        );
+      return json(service);
+    });
     const observation = await new RenderTargetServicesAdapter(
       fetchImpl,
       async () => undefined,
@@ -150,24 +131,18 @@ describe("Render target switch and live canary", () => {
         databaseSystemIdentifier: "200",
       }),
     ]);
-    const replacement = fetchImpl.mock.calls.find(
+    const replacements = fetchImpl.mock.calls.filter(
       ([url, init]) =>
-        String(url).endsWith("/env-vars") && init?.method === "PUT",
+        String(url).includes("/env-vars") &&
+        (init?.method === "PUT" || init?.method === "POST"),
     );
-    expect(JSON.parse(String(replacement?.[1]?.body))).toEqual(
-      expect.arrayContaining([
-        { key: "DATABASE_URL", value: targetUrl },
-        { key: "UNCHANGED", value: "yes" },
-        {
-          key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
-          value: recoveryWitness,
-        },
-        {
-          key: "REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256",
-          value: recoveryWitnessSha256,
-        },
-      ]),
-    );
+    expect(replacements).toHaveLength(6);
+    expect(environment).toMatchObject({
+      DATABASE_URL: targetUrl,
+      UNCHANGED: "yes",
+      REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: recoveryWitness,
+      REVIEW_ROUTER_EXPECTED_RECOVERY_WITNESS_SHA256: recoveryWitnessSha256,
+    });
   });
 
   it("rejects a target hostname hidden in a source URL password", async () => {

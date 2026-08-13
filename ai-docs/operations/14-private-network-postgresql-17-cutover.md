@@ -137,14 +137,32 @@ Use four independent credentials:
 - `RENDER_RUNNER_CONTROL_API_KEY`: one-off runner creation and terminal polling;
 - `RENDER_PROVENANCE_READ_API_KEY`: read-only service/deploy/recovery/env facts;
 - `RENDER_SERVICE_SUSPENSION_API_KEY`: source/target suspend and resume only.
-- `RENDER_TARGET_SWITCH_API_KEY`: complete target environment replacement and
+- `RENDER_TARGET_SWITCH_API_KEY`: key-scoped target environment mutation and
   immutable deploy creation/polling only.
 
 Adapters accept additive documented fields while requiring their security
-subset. Service/deploy/job/env list cursor wrappers, suspend/resume HTTP 202,
-and full environment replacement follow Render OpenAPI. Full replacement first
-reads every page, preserves every key, writes the complete set, re-reads every
-page, and compares complete key/value digests without logging values.
+subset. Service/deploy/job/env list cursor wrappers and suspend/resume HTTP 202
+follow Render OpenAPI. Environment deltas use only Render's single-key
+`POST /services/{serviceId}/env-vars`,
+`PUT /services/{serviceId}/env-vars/{key}`, and
+`DELETE /services/{serviceId}/env-vars/{key}` operations. The adapter reads a
+complete snapshot before every key mutation and after every acknowledged
+mutation. A changed snapshot produces a provider-neutral conflict; a lost or
+5xx mutation response produces an ambiguous result even when a later read has
+the desired value. Application policy must stop on either result. Completed
+operations can be replayed only when the complete environment digest equals the
+contract's expected-after digest.
+
+Render does not document an ETag, version precondition, or multi-key atomic
+environment transaction for these endpoints. Therefore this is not CAS and a
+multi-key delta can be partially applied before a later conflict. Key-scoped
+operations guarantee that a stale client never submits or overwrites unrelated
+keys, so an unrelated credential rotation is preserved and detected by the
+complete post-write digest. A concurrent write to the same targeted key can
+still be ordered immediately before the Render write and be superseded; service
+suspension does not fence console/API configuration writers. Keep the rollout
+stopped on conflict or ambiguity and reconcile from a fresh protected manifest.
+No environment value or response body is logged or returned in an outcome.
 
 There is no backups-by-ID call. Render contributes only
 `GET /postgres/{id}/recovery`. A separately authenticated export witness binds

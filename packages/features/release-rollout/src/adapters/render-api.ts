@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { EnvironmentMutationOutcome } from "../application/transactional-service-cutover";
 
 export interface RenderFetch {
   (input: string, init?: RequestInit): Promise<Response>;
@@ -46,7 +47,6 @@ export interface RenderLog {
   readonly message: string;
   readonly timestamp: string;
 }
-
 const origin = "https://api.render.com/v1";
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -491,126 +491,133 @@ export class RenderApiAdapter {
     return Object.freeze(all);
   }
 
-  async replaceEnvPreservingAll(
-    serviceId: string,
-    replacements: Readonly<Record<string, string>>,
-  ): Promise<{ beforeSha256: string; afterSha256: string }> {
-    const all: Array<{ key: string; value: string }> = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.getEnv(serviceId, cursor);
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    const merged = new Map(all.map(({ key, value }) => [key, value]));
-    for (const [key, value] of Object.entries(replacements))
-      merged.set(key, value);
-    const canonical = [...merged]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, value]) => ({ key, value }));
-    const digest = (v: unknown) =>
-      `sha256:${createHash("sha256").update(JSON.stringify(v)).digest("hex")}`;
-    const beforeSha256 = digest(
-      [...all].sort((a, b) => a.key.localeCompare(b.key)),
-    );
-    const response = await this.fetchImpl(
-      `${origin}/services/${encodeURIComponent(serviceId)}/env-vars`,
-      {
-        method: "PUT",
-        headers: headers(this.token, true),
-        body: JSON.stringify(canonical),
-      },
-    );
-    if (response.status !== 200)
-      throw new Error(`render_api_env_replace_failed:${response.status}`);
-    const verified: Array<{ key: string; value: string }> = [];
-    cursor = undefined;
-    do {
-      const page = await this.getEnv(serviceId, cursor);
-      verified.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    const afterSha256 = digest(
-      verified.sort((a, b) => a.key.localeCompare(b.key)),
-    );
-    const expectedSha256 = digest(canonical);
-    if (afterSha256 !== expectedSha256)
-      throw new Error("render_api_env_replace_verification_failed");
-    return { beforeSha256, afterSha256 };
-  }
-
-  async replaceEnvExact(
-    serviceId: string,
-    values: readonly { readonly key: string; readonly value: string }[],
-  ): Promise<{ beforeSha256: string; afterSha256: string }> {
-    const canonical = canonicalEnv(values);
-    const before = canonicalEnv(await this.listAllEnv(serviceId));
-    const response = await this.fetchImpl(
-      `${origin}/services/${encodeURIComponent(serviceId)}/env-vars`,
-      {
-        method: "PUT",
-        headers: headers(this.token, true),
-        body: JSON.stringify(canonical),
-      },
-    );
-    if (response.status !== 200)
-      throw new Error(`render_api_env_replace_failed:${response.status}`);
-    const verified = canonicalEnv(await this.listAllEnv(serviceId));
-    const afterSha256 = digest(verified);
-    if (afterSha256 !== digest(canonical))
-      throw new Error("render_api_env_replace_verification_failed");
-    return { beforeSha256: digest(before), afterSha256 };
-  }
-
   async patchEnvPreservingAll(input: {
     serviceId: string;
     set: Readonly<Record<string, string>>;
     remove: readonly string[];
     expectedBeforeSha256?: string;
-  }): Promise<{
-    beforeSha256: string;
-    afterSha256: string;
-    keysSha256: string;
-  }> {
+    expectedAfterSha256?: string;
+  }): Promise<EnvironmentMutationOutcome> {
     const before = canonicalEnv(await this.listAllEnv(input.serviceId));
     const beforeSha256 = digest(before);
+    const removed = new Set(input.remove);
     if (
-      input.expectedBeforeSha256 !== undefined &&
-      beforeSha256 !== input.expectedBeforeSha256
+      removed.size !== input.remove.length ||
+      input.remove.some(
+        (key) =>
+          !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) ||
+          Object.hasOwn(input.set, key),
+      )
     )
-      throw new Error("render_api_env_concurrent_mutation_detected");
+      throw new Error("render_api_env_contract_invalid");
     const merged = new Map(before.map(({ key, value }) => [key, value]));
-    for (const key of input.remove) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key))
-        throw new Error("render_api_env_contract_invalid");
-      merged.delete(key);
-    }
+    for (const key of removed) merged.delete(key);
     for (const [key, value] of Object.entries(input.set))
       merged.set(key, value);
     const after = canonicalEnv(
       [...merged].map(([key, value]) => ({ key, value })),
     );
-    const secondBefore = canonicalEnv(await this.listAllEnv(input.serviceId));
-    if (digest(secondBefore) !== beforeSha256)
-      throw new Error("render_api_env_concurrent_mutation_detected");
-    const response = await this.fetchImpl(
-      `${origin}/services/${encodeURIComponent(input.serviceId)}/env-vars`,
-      {
-        method: "PUT",
-        headers: headers(this.token, true),
-        body: JSON.stringify(after),
-      },
-    );
-    if (response.status !== 200)
-      throw new Error(`render_api_env_replace_failed:${response.status}`);
-    const verified = canonicalEnv(await this.listAllEnv(input.serviceId));
-    if (digest(verified) !== digest(after))
-      throw new Error("render_api_env_replace_verification_failed");
-    return {
-      beforeSha256,
-      afterSha256: digest(after),
-      keysSha256: digest(after.map(({ key }) => key)),
-    };
+    const afterSha256 = digest(after);
+    if (
+      beforeSha256 === input.expectedAfterSha256 &&
+      afterSha256 === beforeSha256
+    )
+      return appliedEnvironment(before, beforeSha256, true);
+    if (
+      input.expectedBeforeSha256 !== undefined &&
+      beforeSha256 !== input.expectedBeforeSha256
+    )
+      return { status: "conflict", observedEnvironmentSha256: beforeSha256 };
+    if (
+      input.expectedAfterSha256 !== undefined &&
+      afterSha256 !== input.expectedAfterSha256
+    )
+      throw new Error("render_api_env_contract_invalid");
+
+    let expected = before;
+    const operations = [
+      ...[...removed].sort().map((key) => ({ key, value: undefined })),
+      ...Object.entries(input.set)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => ({ key, value })),
+    ];
+    for (const operation of operations) {
+      const observed = canonicalEnv(await this.listAllEnv(input.serviceId));
+      if (digest(observed) !== digest(expected))
+        return {
+          status: "conflict",
+          observedEnvironmentSha256: digest(observed),
+        };
+      const next = new Map(expected.map(({ key, value }) => [key, value]));
+      const existed = next.has(operation.key);
+      if (operation.value === undefined) next.delete(operation.key);
+      else next.set(operation.key, operation.value);
+      expected = canonicalEnv(
+        [...next].map(([key, value]) => ({ key, value })),
+      );
+      let response: Response;
+      try {
+        response = await this.fetchImpl(
+          operation.value !== undefined && !existed
+            ? `${origin}/services/${encodeURIComponent(input.serviceId)}/env-vars`
+            : `${origin}/services/${encodeURIComponent(input.serviceId)}/env-vars/${encodeURIComponent(operation.key)}`,
+          operation.value === undefined
+            ? { method: "DELETE", headers: headers(this.token) }
+            : {
+                method: existed ? "PUT" : "POST",
+                headers: headers(this.token, true),
+                body: JSON.stringify({
+                  ...(!existed ? { key: operation.key } : {}),
+                  value: operation.value,
+                }),
+              },
+        );
+      } catch {
+        return this.observeAmbiguousEnvironment(input.serviceId);
+      }
+      if (response.status === 409 || response.status === 412) {
+        const conflict = canonicalEnv(await this.listAllEnv(input.serviceId));
+        return {
+          status: "conflict",
+          observedEnvironmentSha256: digest(conflict),
+        };
+      }
+      const expectedStatus =
+        operation.value === undefined ? 204 : existed ? 200 : 201;
+      if (response.status !== expectedStatus) {
+        if (response.status >= 500)
+          return this.observeAmbiguousEnvironment(input.serviceId);
+        throw new Error(
+          `render_api_env_key_mutation_failed:${response.status}`,
+        );
+      }
+      let verified: readonly { key: string; value: string }[];
+      try {
+        verified = canonicalEnv(await this.listAllEnv(input.serviceId));
+      } catch {
+        return { status: "ambiguous" };
+      }
+      if (digest(verified) !== digest(expected))
+        return {
+          status: "conflict",
+          observedEnvironmentSha256: digest(verified),
+        };
+    }
+    return appliedEnvironment(expected, beforeSha256, false);
+  }
+
+  private async observeAmbiguousEnvironment(
+    serviceId: string,
+  ): Promise<EnvironmentMutationOutcome> {
+    try {
+      const observed = canonicalEnv(await this.listAllEnv(serviceId));
+      return {
+        status: "ambiguous",
+        observedEnvironmentSha256: digest(observed),
+      };
+    } catch {
+      return { status: "ambiguous" };
+    }
   }
 
   async planEnvPatch(input: {
@@ -670,3 +677,15 @@ const canonicalEnv = (
 
 const digest = (value: unknown): string =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+
+const appliedEnvironment = (
+  environment: readonly { readonly key: string; readonly value: string }[],
+  previousEnvironmentSha256: string,
+  replayed: boolean,
+): EnvironmentMutationOutcome => ({
+  status: "applied",
+  previousEnvironmentSha256,
+  environmentSha256: digest(environment),
+  environmentKeysSha256: digest(environment.map(({ key }) => key)),
+  replayed,
+});

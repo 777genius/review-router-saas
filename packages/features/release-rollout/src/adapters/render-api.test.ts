@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { RenderApiAdapter } from "./render-api";
 const json = (value: unknown, status = 200) =>
@@ -5,6 +6,23 @@ const json = (value: unknown, status = 200) =>
     status,
     headers: { "content-type": "application/json" },
   });
+const envResponse = (environment: Readonly<Record<string, string>>) =>
+  json(
+    Object.entries(environment).map(([key, value]) => ({
+      envVar: { key, value },
+      cursor: null,
+    })),
+  );
+const environmentSha256 = (environment: Readonly<Record<string, string>>) =>
+  `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify(
+        Object.entries(environment)
+          .map(([key, value]) => ({ key, value }))
+          .sort((left, right) => left.key.localeCompare(right.key)),
+      ),
+    )
+    .digest("hex")}`;
 
 describe("Render OpenAPI wrappers", () => {
   it("accepts additive service/deploy/job fields and cursor wrappers", async () => {
@@ -88,58 +106,190 @@ describe("Render OpenAPI wrappers", () => {
     ).rejects.toThrow("render_job_response_invalid");
   });
 
-  it("preserves every env value and verifies the complete replacement digest", async () => {
-    const first = [
-      {
-        envVar: { key: "SECRET_UNCHANGED", value: "never-log-this" },
-        cursor: null,
-      },
-      { envVar: { key: "DATABASE_HOST", value: "old.internal" }, cursor: null },
-    ];
-    const after = [
-      {
-        envVar: { key: "DATABASE_HOST", value: "target.internal" },
-        cursor: null,
-      },
-      {
-        envVar: { key: "SECRET_UNCHANGED", value: "never-log-this" },
-        cursor: null,
-      },
-    ];
+  it("reports a conflict when the environment mutates before the key write", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce(json(first))
-      .mockResolvedValueOnce(json({}, 200))
-      .mockResolvedValueOnce(json(after));
-    const result = await new RenderApiAdapter(
+      .mockResolvedValueOnce(envResponse({ DATABASE_URL: "source" }))
+      .mockResolvedValueOnce(envResponse({ DATABASE_URL: "concurrent" }));
+    const outcome = await new RenderApiAdapter(
       "redacted",
       fetchImpl,
-    ).replaceEnvPreservingAll("srv-1", { DATABASE_HOST: "target.internal" });
-    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toEqual([
-      { key: "DATABASE_HOST", value: "target.internal" },
-      { key: "SECRET_UNCHANGED", value: "never-log-this" },
-    ]);
-    expect(result.beforeSha256).not.toBe(result.afterSha256);
+    ).patchEnvPreservingAll({
+      serviceId: "srv-1",
+      set: { DATABASE_URL: "target" },
+      remove: [],
+    });
+    expect(outcome).toEqual({
+      status: "conflict",
+      observedEnvironmentSha256: environmentSha256({
+        DATABASE_URL: "concurrent",
+      }),
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("aborts a delta PUT when the second pre-write snapshot changed", async () => {
-    const initial = [
-      { envVar: { key: "DATABASE_URL", value: "source" }, cursor: null },
-    ];
-    const changed = [
-      { envVar: { key: "DATABASE_URL", value: "concurrent" }, cursor: null },
-    ];
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(json(initial))
-      .mockResolvedValueOnce(json(changed));
+  it("reports a targeted mutation that races during the key write", async () => {
+    let reads = 0;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") return json({}, 200);
+      reads += 1;
+      return envResponse({
+        DATABASE_URL: reads < 3 ? "source" : "operator-rotation",
+      });
+    });
+    const outcome = await new RenderApiAdapter(
+      "redacted",
+      fetchImpl,
+    ).patchEnvPreservingAll({
+      serviceId: "srv-1",
+      set: { DATABASE_URL: "target" },
+      remove: [],
+    });
+    expect(outcome.status).toBe("conflict");
+  });
+
+  it("never reverts an unrelated credential rotation during a key write", async () => {
+    const state = { DATABASE_URL: "source", API_TOKEN: "old-secret" };
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        state.DATABASE_URL = JSON.parse(String(init.body)).value as string;
+        state.API_TOKEN = "rotated-secret";
+        return json({}, 200);
+      }
+      return envResponse(state);
+    });
+    const outcome = await new RenderApiAdapter(
+      "redacted",
+      fetchImpl,
+    ).patchEnvPreservingAll({
+      serviceId: "srv-1",
+      set: { DATABASE_URL: "target" },
+      remove: [],
+    });
+    expect(outcome.status).toBe("conflict");
+    expect(state).toEqual({
+      DATABASE_URL: "target",
+      API_TOKEN: "rotated-secret",
+    });
+    expect(String(fetchImpl.mock.calls[2]?.[1]?.body)).not.toContain(
+      "rotated-secret",
+    );
+  });
+
+  it("reconciles a completed retry as a replay without another write", async () => {
+    const desired = { DATABASE_URL: "target", API_TOKEN: "preserved" };
+    const fetchImpl = vi.fn(async () => envResponse(desired));
+    const outcome = await new RenderApiAdapter(
+      "redacted",
+      fetchImpl,
+    ).patchEnvPreservingAll({
+      serviceId: "srv-1",
+      set: { DATABASE_URL: "target" },
+      remove: [],
+      expectedBeforeSha256: environmentSha256({
+        DATABASE_URL: "source",
+        API_TOKEN: "preserved",
+      }),
+      expectedAfterSha256: environmentSha256(desired),
+    });
+    expect(outcome).toEqual(
+      expect.objectContaining({
+        status: "applied",
+        environmentSha256: environmentSha256(desired),
+        replayed: true,
+      }),
+    );
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("returns an ambiguous outcome when the provider response is lost", async () => {
+    const state = { DATABASE_URL: "source" };
+    let loseResponse = true;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        state.DATABASE_URL = "target";
+        if (loseResponse) {
+          loseResponse = false;
+          throw new Error("connection reset after request body was sent");
+        }
+        return json({}, 200);
+      }
+      return envResponse(state);
+    });
+    const expectedBeforeSha256 = environmentSha256({ DATABASE_URL: "source" });
+    const expectedAfterSha256 = environmentSha256({ DATABASE_URL: "target" });
+    const api = new RenderApiAdapter("redacted", fetchImpl);
+    const outcome = await api.patchEnvPreservingAll({
+      serviceId: "srv-1",
+      set: { DATABASE_URL: "target" },
+      remove: [],
+      expectedBeforeSha256,
+      expectedAfterSha256,
+    });
+    expect(outcome).toEqual({
+      status: "ambiguous",
+      observedEnvironmentSha256: environmentSha256({ DATABASE_URL: "target" }),
+    });
+    expect(JSON.stringify(outcome)).not.toContain("target");
     await expect(
-      new RenderApiAdapter("redacted", fetchImpl).patchEnvPreservingAll({
+      api.patchEnvPreservingAll({
         serviceId: "srv-1",
         set: { DATABASE_URL: "target" },
         remove: [],
+        expectedBeforeSha256,
+        expectedAfterSha256,
       }),
-    ).rejects.toThrow("concurrent_mutation");
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    ).resolves.toEqual(
+      expect.objectContaining({ status: "applied", replayed: true }),
+    );
+  });
+
+  it("canonically applies key-scoped deletes and puts", async () => {
+    const state: Record<string, string> = {
+      DELETE_ME: "obsolete",
+      PRESERVED: "secret",
+    };
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      const key = decodeURIComponent(new URL(url).pathname.split("/").at(-1)!);
+      if (init?.method === "DELETE") {
+        delete state[key];
+        return new Response(null, { status: 204 });
+      }
+      if (init?.method === "PUT") {
+        state[key] = JSON.parse(String(init.body)).value as string;
+        return json({}, 200);
+      }
+      if (init?.method === "POST") {
+        const created = JSON.parse(String(init.body)) as {
+          key: string;
+          value: string;
+        };
+        state[created.key] = created.value;
+        return json({}, 201);
+      }
+      return envResponse(state);
+    });
+    const desired = { ADDED: "value", PRESERVED: "secret" };
+    const outcome = await new RenderApiAdapter(
+      "redacted",
+      fetchImpl,
+    ).patchEnvPreservingAll({
+      serviceId: "srv-1",
+      set: { ADDED: "value" },
+      remove: ["DELETE_ME"],
+      expectedBeforeSha256: environmentSha256(state),
+      expectedAfterSha256: environmentSha256(desired),
+    });
+    expect(outcome).toEqual(
+      expect.objectContaining({
+        status: "applied",
+        environmentSha256: environmentSha256(desired),
+        replayed: false,
+      }),
+    );
+    expect(state).toEqual(desired);
+    expect(
+      fetchImpl.mock.calls.some(([, init]) => init?.method === "POST"),
+    ).toBe(true);
   });
 });
