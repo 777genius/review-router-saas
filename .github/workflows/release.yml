@@ -392,20 +392,55 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
-          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "GitHub Release $VERSION already exists; leaving it unchanged"
-          else
+          set -euo pipefail
+
+          installer_path="${{ steps.installer.outputs.path }}"
+          installer_name="$(basename "$installer_path")"
+          runtime_path="hosted-runtime-image.json"
+
+          if ! gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$VERSION" \
+              "$installer_path" "$runtime_path" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "ReviewRouter SaaS Runtime $VERSION" \
               --generate-notes \
-              --latest
+              --draft
           fi
-          gh release upload "$VERSION" \
-            "${{ steps.installer.outputs.path }}" hosted-runtime-image.json \
+
+          release_json="$(gh release view "$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
-            --clobber
+            --json isDraft,assets)"
+          release_is_draft="$(jq -r '.isDraft' <<<"$release_json")"
+          release_assets="$(jq -r '.assets[].name' <<<"$release_json")"
+
+          if ! grep -Fxq "$installer_name" <<<"$release_assets" || \
+             ! grep -Fxq "$runtime_path" <<<"$release_assets"; then
+            if [[ "$release_is_draft" != "true" ]]; then
+              echo "::error::Published immutable release $VERSION is missing required assets"
+              exit 1
+            fi
+            gh release upload "$VERSION" \
+              "$installer_path" "$runtime_path" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+            release_assets="$(gh release view "$VERSION" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq '.assets[].name')"
+          fi
+
+          grep -Fxq "$installer_name" <<<"$release_assets"
+          grep -Fxq "$runtime_path" <<<"$release_assets"
+
+          if [[ "$release_is_draft" == "true" ]]; then
+            gh release edit "$VERSION" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft=false \
+              --latest
+          else
+            echo "GitHub Release $VERSION already exists with both required assets"
+          fi
 
       - name: Summary
         shell: bash
