@@ -37,7 +37,7 @@ describe("target generation pre-binding", () => {
     systemIdentifier: "200",
     majorVersion: 17,
     recoveryWitnessSha256: "b".repeat(64),
-  };
+  } as const;
 
   it.each([
     null,
