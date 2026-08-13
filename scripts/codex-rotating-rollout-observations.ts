@@ -36,6 +36,27 @@ type GenerationBoundMigrationReceipt = Readonly<{
   claimedAt: string;
 }>;
 
+type AdmittedRecoveryEvidenceSource = Readonly<{
+  totalRows: number;
+  witnessPresentRows: number;
+  incarnationPresentRows: number;
+  witnessFingerprints: readonly string[];
+  databaseIncarnations: readonly string[];
+}> &
+  (
+    | Readonly<{
+        source: "CodexOAuthSetupPayloadClaim" | "CodexOAuthWritebackIntent";
+        incarnationRequired: true;
+      }>
+    | Readonly<{
+        source:
+          | "CodexOAuthSecretNamespace"
+          | "CodexOAuthSetupManifest"
+          | "CodexOAuthSetupRecoveryRequest";
+        incarnationRequired: false;
+      }>
+  );
+
 type PriorTrustedMigrationReceipt = Readonly<{
   receiptVersion: 3;
   artifactDigest: Sha256Digest;
@@ -67,6 +88,9 @@ export type ProductionWriterObservation = Readonly<{
       | PriorTrustedMigrationReceipt
       | GenerationBoundMigrationReceipt
     )[];
+  }>;
+  admittedRecoveryEvidence: Readonly<{
+    sources: readonly AdmittedRecoveryEvidenceSource[];
   }>;
   callerIdentity: Readonly<{
     id: "release-migration";

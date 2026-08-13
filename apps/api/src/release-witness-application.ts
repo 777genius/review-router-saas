@@ -1,6 +1,7 @@
 import type {
   CleanupEvidencePort,
   CleanupObservationSeedPort,
+  ReleaseAuthorityMutationReadinessPort,
   RenderCleanupObservationPort,
 } from "./release-witness-domain.js";
 
@@ -9,6 +10,7 @@ export class ObserveRunnerCleanup {
     private readonly seeds: CleanupObservationSeedPort,
     private readonly render: RenderCleanupObservationPort,
     private readonly evidence: CleanupEvidencePort,
+    private readonly readiness: ReleaseAuthorityMutationReadinessPort,
   ) {}
 
   async execute(jobId: string): Promise<void> {
@@ -16,10 +18,14 @@ export class ObserveRunnerCleanup {
       throw Object.assign(new Error("release_witness_job_identity_invalid"), {
         statusCode: 400,
       });
+    await this.readiness.assertReady();
     const seed = await this.seeds.load(jobId);
     if (seed.jobId !== jobId)
       throw new Error("release_witness_seed_identity_mismatch");
     const evidence = await this.render.observe(seed);
+    // Re-observe immediately before the mutation so degradation during the
+    // provider read cannot be bypassed by a request admitted while healthy.
+    await this.readiness.assertReady();
     await this.evidence.persist(jobId, evidence);
   }
 }

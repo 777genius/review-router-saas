@@ -83,6 +83,17 @@ export async function captureRenderProvenance(
       "exactly three Render runtime service identities are required",
     );
   }
+  if (
+    new Set(services.map((service) => service?.role)).size !== 3 ||
+    !["api", "web", "worker"].every((role) =>
+      services.some((service) => service?.role === role),
+    ) ||
+    new Set(services.map((service) => service?.serviceId)).size !== 3
+  ) {
+    throw new Error(
+      "Render runtime service identities must be exact and unique",
+    );
+  }
   const headers = {
     Accept: "application/json",
     Authorization: `Bearer ${token}`,
@@ -97,12 +108,53 @@ export async function captureRenderProvenance(
     `v1/postgres/${encodeURIComponent(databaseId)}`,
     "Render database capture failed",
   );
-  const witnessEnv = await request(
-    `v1/services/${encodeURIComponent(required(configuration.witnessServiceId, "Render witness service ID is required"))}/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS`,
-    "Render runtime witness capture failed",
+  const witnessServiceId = required(
+    configuration.witnessServiceId,
+    "Render witness service ID is required",
   );
   const serviceFacts = [];
   const serviceRaw = [];
+  const runtimeWitnessObservations = [];
+  const runtimeWitnessValues = new Set();
+  const runtimes = [
+    { role: "witness", serviceId: witnessServiceId },
+    ...services,
+  ];
+  const captureRuntimeWitnessSweep = async (phase) => {
+    for (const runtime of runtimes) {
+      const witnessEnv = await request(
+        `v1/services/${encodeURIComponent(required(runtime.serviceId, "Render runtime service ID is required"))}/env-vars/REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS`,
+        "Render runtime witness capture failed",
+      );
+      const witnessValue = required(
+        witnessEnv.value?.value,
+        "Render runtime witness is empty",
+      );
+      const witnessSha256 = sha256(Buffer.from(witnessValue));
+      runtimeWitnessValues.add(witnessSha256);
+      const witnessRaw = {
+        ...witnessEnv.raw,
+        body: {
+          key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+          observationPhase: phase,
+          valueSha256: witnessSha256,
+        },
+      };
+      witnessRaw.bodySha256 = sha256(
+        Buffer.from(canonicalProviderJson(witnessRaw.body)),
+      );
+      serviceRaw.push(witnessRaw);
+      runtimeWitnessObservations.push({
+        phase,
+        role: runtime.role,
+        serviceId: runtime.serviceId,
+        sourceResponseSha256: witnessRaw.bodySha256,
+      });
+    }
+    if (runtimeWitnessValues.size !== 1)
+      throw new Error("Render runtime witnesses do not converge");
+  };
+  await captureRuntimeWitnessSweep("before");
   for (const expected of services) {
     const service = await request(
       `v1/services/${encodeURIComponent(required(expected.serviceId, "Render runtime service ID is required"))}`,
@@ -116,6 +168,14 @@ export async function captureRenderProvenance(
       `v1/services/${encodeURIComponent(expected.serviceId)}/env-vars/REVIEW_ROUTER_CODEX_ROTATING_MUTATION_ADMISSION`,
       "Render mutation-admission capture failed",
     );
+    if (
+      service.value?.id !== expected.serviceId ||
+      deploy.value?.id !== expected.deployId
+    ) {
+      throw new Error(
+        "Render runtime service or deploy identity was substituted",
+      );
+    }
     serviceRaw.push(service.raw, deploy.raw, admission.raw);
     const observedPreDeployCommand =
       service.value.serviceDetails?.envSpecificDetails?.preDeployCommand;
@@ -139,23 +199,12 @@ export async function captureRenderProvenance(
       observedAt: deploy.value.updatedAt ?? deploy.value.createdAt,
     });
   }
-  const witnessValue = witnessEnv.value?.value;
-  required(witnessValue, "Render runtime witness is empty");
-  const witnessSha256 = sha256(Buffer.from(witnessValue));
-  const witnessRaw = {
-    ...witnessEnv.raw,
-    body: {
-      key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
-      valueSha256: witnessSha256,
-    },
-  };
-  witnessRaw.bodySha256 = sha256(
-    Buffer.from(canonicalProviderJson(witnessRaw.body)),
-  );
-  const rawResponses = [identity.raw, database.raw, witnessRaw, ...serviceRaw];
+  await captureRuntimeWitnessSweep("after");
+  const witnessSha256 = [...runtimeWitnessValues][0];
+  const rawResponses = [identity.raw, database.raw, ...serviceRaw];
   const observedAt = new Date().toISOString();
   return {
-    observationVersion: 2,
+    observationVersion: 3,
     source: "render-api",
     captureIdentity: {
       ownerId: identity.value.id,
@@ -176,10 +225,9 @@ export async function captureRenderProvenance(
     },
     services: serviceFacts,
     runtimeWitness: {
-      serviceId: configuration.witnessServiceId,
       key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
       sha256: witnessSha256,
-      sourceResponseSha256: witnessRaw.bodySha256,
+      observations: runtimeWitnessObservations,
     },
   };
 }
