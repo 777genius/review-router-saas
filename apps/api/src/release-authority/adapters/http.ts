@@ -15,12 +15,14 @@ import type {
   ProviderAuthorityDecisionService,
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
+  ReleaseServiceTransitionService,
   RunnerOperationsService,
 } from "../application/services.js";
 export type ReleaseRolloutLedgerRouteDependencies = {
   authority: ReleaseAuthorityService;
   runnerOperations: RunnerOperationsService;
   reconciliation: ReleaseRolloutReconciliationService;
+  serviceTransition?: ReleaseServiceTransitionService;
   providerAuthority?: ProviderAuthorityDecisionService;
   providerAuthorityTokenSha256?: string;
   controlTokenSha256: string;
@@ -131,6 +133,49 @@ export async function registerReleaseRolloutLedgerRoutes(
 ): Promise<void> {
   const control = async (request: FastifyRequest) =>
     authorize(request, dependencies.controlTokenSha256);
+  const serviceTransition = (): ReleaseServiceTransitionService => {
+    if (!dependencies.serviceTransition)
+      throw Object.assign(new Error("release_service_transition_unavailable"), {
+        statusCode: 503,
+      });
+    return dependencies.serviceTransition;
+  };
+  app.post(
+    "/v1/service-transitions",
+    { preHandler: control },
+    async (request) => ({
+      result: await serviceTransition().begin(
+        record(request.body) as never,
+      ),
+    }),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/checkpoints",
+    { preHandler: control },
+    async (request) => ({
+      checkpoint: await serviceTransition().append({
+        ...record(request.body),
+        rolloutId: request.params.rolloutId,
+      } as never),
+    }),
+  );
+  app.get<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/checkpoints",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().read(request.params.rolloutId),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/complete",
+    { preHandler: control },
+    async (request, reply) => {
+      await serviceTransition().complete({
+        ...record(request.body),
+        rolloutId: request.params.rolloutId,
+      } as never);
+      return reply.code(204).send();
+    },
+  );
   app.post("/v1/rollouts/claim", { preHandler: control }, async (request) => ({
     result: await dependencies.authority.claim(
       record(request.body) as RolloutBinding,

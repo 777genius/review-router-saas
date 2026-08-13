@@ -23,7 +23,9 @@ import type {
   RunnerCleanupWitnessPort,
   RunnerOperationsLedgerPort,
   WitnessGatedTerminalCleanupFact,
+  ReleaseServiceTransitionLedgerPort,
 } from "../domain/model.js";
+import type { ServiceTransitionCheckpoint } from "@reviewrouter/features-release-rollout";
 
 type JsonRow = { value: unknown };
 
@@ -91,7 +93,8 @@ export class RoutineReleaseControlLedgerAdapter
   implements
     ReleaseAuthorityLedgerPort,
     RunnerOperationsLedgerPort,
-    ReleaseRolloutReconciliationPort
+    ReleaseRolloutReconciliationPort,
+    ReleaseServiceTransitionLedgerPort
 {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -410,6 +413,56 @@ export class RoutineReleaseControlLedgerAdapter
         this.prisma,
         Prisma.sql`SELECT release_authority.release_rollout_reconcile(
           ${input.rolloutId}, ${asJsonb(input.targetObservation)}) AS value`,
+      ),
+    );
+  }
+
+  async begin(input: {
+    rolloutId: string;
+    manifestSha256: string;
+    targetContractSha256: string;
+    serviceIds: readonly string[];
+  }): Promise<"created" | "existing"> {
+    const value = await firstValue(
+      this.prisma,
+      Prisma.sql`SELECT release_authority.release_service_transition_begin(${asJsonb(input)}) AS value`,
+    );
+    if (value !== "created" && value !== "existing")
+      throw new Error("release_service_transition_begin_invalid");
+    return value;
+  }
+
+  async append(
+    checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,
+  ): Promise<ServiceTransitionCheckpoint> {
+    return requiredRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_service_transition_append(${asJsonb(checkpoint)}) AS value`,
+      ),
+    ) as unknown as ServiceTransitionCheckpoint;
+  }
+
+  async read(
+    rolloutId: string,
+  ): Promise<readonly ServiceTransitionCheckpoint[]> {
+    const value = await firstValue(
+      this.prisma,
+      Prisma.sql`SELECT release_authority.release_service_transition_read(${rolloutId}) AS value`,
+    );
+    if (!Array.isArray(value))
+      throw new Error("release_service_transition_read_invalid");
+    return value as ServiceTransitionCheckpoint[];
+  }
+
+  async complete(input: {
+    rolloutId: string;
+    outcome: "target_staged" | "source_recovered";
+  }): Promise<void> {
+    requiredBoolean(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_service_transition_complete(${asJsonb(input)}) AS value`,
       ),
     );
   }

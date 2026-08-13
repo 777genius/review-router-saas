@@ -16,6 +16,9 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
 docker cp "$root/packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql" \
   "$name:/tmp/migration.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration.sql >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000002_transactional_service_transition/migration.sql" \
+  "$name:/tmp/service-transition.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/service-transition.sql >/dev/null
 
 first=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r1', repeat('a',40), '1', 1, '100', '200')")

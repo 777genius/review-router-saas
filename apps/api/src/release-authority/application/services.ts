@@ -9,6 +9,7 @@ import type {
   RunnerCleanupWitnessPort,
   TargetActivationReceiptReaderPort,
   RunnerOperationsLedgerPort,
+  ReleaseServiceTransitionLedgerPort,
 } from "../domain/model.js";
 import type {
   RunnerIdentity,
@@ -142,6 +143,20 @@ export class RunnerCleanupWitnessService {
     jobId: string,
     witness: PersistedProviderCleanupWitness,
   ) => this.repository.persistProviderWitness(jobId, witness);
+}
+
+export class ReleaseServiceTransitionService {
+  constructor(private readonly repository: ReleaseServiceTransitionLedgerPort) {}
+  begin = (
+    input: Parameters<ReleaseServiceTransitionLedgerPort["begin"]>[0],
+  ) => this.repository.begin(input);
+  append = (
+    input: Parameters<ReleaseServiceTransitionLedgerPort["append"]>[0],
+  ) => this.repository.append(input);
+  read = (rolloutId: string) => this.repository.read(rolloutId);
+  complete = (
+    input: Parameters<ReleaseServiceTransitionLedgerPort["complete"]>[0],
+  ) => this.repository.complete(input);
 }
 
 export class ReleaseRolloutReconciliationService {

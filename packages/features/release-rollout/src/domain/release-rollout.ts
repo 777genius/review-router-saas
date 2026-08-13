@@ -246,6 +246,8 @@ export interface StepObservation<T = unknown> {
     readonly githubWorkflowJobId?: string;
     readonly targetSwitchFenceNonce?: string;
     readonly targetSwitchFenceVersion?: number;
+    readonly serviceRecoveryManifestSha256?: string;
+    readonly targetServiceContractSha256?: string;
   };
 }
 
@@ -753,7 +755,13 @@ function assertStepFacts(
               (item) =>
                 record(item, "target_stage_observation_invalid").deployId,
             ),
-          )
+          ) ||
+        !digestPattern.test(
+          String(observation.provider?.serviceRecoveryManifestSha256),
+        ) ||
+        !digestPattern.test(
+          String(observation.provider?.targetServiceContractSha256),
+        )
       )
         throw new Error("target_stage_observation_invalid");
       break;

@@ -390,6 +390,8 @@ BEGIN
     RAISE EXCEPTION 'release authority activation receipt conflict';
   END IF;
   IF current_row.activation_boundary <> 'before' OR
+     to_regprocedure('release_authority.release_service_transition_activation_gate(text,jsonb)') IS NULL OR
+     NOT release_authority.release_service_transition_activation_gate(p_rollout_id,p_target_deploy_ids) OR
      current_row.authoritative_system_identifier <> current_row.source_system_identifier OR
      current_row.source_permanently_ineligible OR
      EXISTS (

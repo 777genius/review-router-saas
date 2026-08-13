@@ -207,27 +207,32 @@ export async function executeDisposableRehearsal(
       authority,
       "CREATE EXTENSION IF NOT EXISTS pgcrypto; CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'disposable-control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'disposable-provider'",
     );
-    execute(
-      [
-        "exec",
-        "--interactive",
-        authority,
-        "psql",
-        "-U",
-        "postgres",
-        "-d",
-        "reviewrouter",
-      ],
-      {
-        input: readFileSync(
-          join(
-            process.cwd(),
-            "packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql",
+    for (const migration of [
+      "000001_release_authority",
+      "000002_transactional_service_transition",
+    ]) {
+      execute(
+        [
+          "exec",
+          "--interactive",
+          authority,
+          "psql",
+          "-U",
+          "postgres",
+          "-d",
+          "reviewrouter",
+        ],
+        {
+          input: readFileSync(
+            join(
+              process.cwd(),
+              `packages/platform/release-authority-db/migrations/${migration}/migration.sql`,
+            ),
+            "utf8",
           ),
-          "utf8",
-        ),
-      },
-    );
+        },
+      );
+    }
     const preReleasePrisma = join(directory, "pre-release-prisma");
     cpSync(
       join(process.cwd(), "packages/platform/db/prisma"),

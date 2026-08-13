@@ -9,6 +9,7 @@ import {
   RoutineReleaseControlLedgerAdapter,
   RoutineTargetActivationReceiptReaderAdapter,
   RunnerOperationsService,
+  ReleaseServiceTransitionService,
   type ActivationPermitInstallerPort,
   type ReleaseControlRouteDependencies,
 } from "./release-rollout-ledger.js";
@@ -111,6 +112,7 @@ export function composeReleaseControlDependencies(
       adapter,
       targetReceiptReader,
     ),
+    serviceTransition: new ReleaseServiceTransitionService(adapter),
     ...credentials,
   };
 }

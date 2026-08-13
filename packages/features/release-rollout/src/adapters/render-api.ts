@@ -10,9 +10,16 @@ export interface CursorPage<T> {
 export interface RenderService {
   readonly id: string;
   readonly ownerId: string;
+  readonly name?: string;
   readonly type: string;
+  readonly repo?: string;
+  readonly branch?: string;
+  readonly rootDir?: string;
   readonly suspended: "suspended" | "not_suspended";
   readonly autoDeploy: "yes" | "no";
+  readonly autoDeployTrigger?: "commit" | "checksPass";
+  readonly imagePath?: string;
+  readonly image?: { readonly imagePath: string };
   readonly serviceDetails: Record<string, unknown>;
 }
 export interface RenderDeploy {
@@ -204,6 +211,13 @@ export class RenderApiAdapter {
   }
 
   async createDeploy(serviceId: string): Promise<RenderDeploy> {
+    return this.createPinnedDeploy(serviceId);
+  }
+
+  async createPinnedDeploy(
+    serviceId: string,
+    commitId?: string,
+  ): Promise<RenderDeploy> {
     const value = requireSubset(
       await body(
         await this.fetchImpl(
@@ -211,7 +225,10 @@ export class RenderApiAdapter {
           {
             method: "POST",
             headers: headers(this.token, true),
-            body: JSON.stringify({ clearCache: "do_not_clear" }),
+            body: JSON.stringify({
+              clearCache: "do_not_clear",
+              ...(commitId ? { commitId } : {}),
+            }),
           },
         ),
         "deploy_create",
@@ -482,4 +499,62 @@ export class RenderApiAdapter {
       throw new Error("render_api_env_replace_verification_failed");
     return { beforeSha256, afterSha256 };
   }
+
+  async replaceEnvExact(
+    serviceId: string,
+    values: readonly { readonly key: string; readonly value: string }[],
+  ): Promise<{ beforeSha256: string; afterSha256: string }> {
+    const canonical = canonicalEnv(values);
+    const before = canonicalEnv(await this.listAllEnv(serviceId));
+    const response = await this.fetchImpl(
+      `${origin}/services/${encodeURIComponent(serviceId)}/env-vars`,
+      {
+        method: "PUT",
+        headers: headers(this.token, true),
+        body: JSON.stringify(canonical),
+      },
+    );
+    if (response.status !== 200)
+      throw new Error(`render_api_env_replace_failed:${response.status}`);
+    const verified = canonicalEnv(await this.listAllEnv(serviceId));
+    const afterSha256 = digest(verified);
+    if (afterSha256 !== digest(canonical))
+      throw new Error("render_api_env_replace_verification_failed");
+    return { beforeSha256: digest(before), afterSha256 };
+  }
+
+  async patchService(
+    serviceId: string,
+    value: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    const response = await this.fetchImpl(
+      `${origin}/services/${encodeURIComponent(serviceId)}`,
+      {
+        method: "PATCH",
+        headers: headers(this.token, true),
+        body: JSON.stringify(value),
+      },
+    );
+    if (response.status !== 200)
+      throw new Error(`render_api_service_patch_failed:${response.status}`);
+  }
 }
+
+const canonicalEnv = (
+  values: readonly { readonly key: string; readonly value: string }[],
+): readonly { readonly key: string; readonly value: string }[] => {
+  const keys = new Set<string>();
+  for (const value of values) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(value.key) || keys.has(value.key))
+      throw new Error("render_api_env_contract_invalid");
+    keys.add(value.key);
+  }
+  return Object.freeze(
+    [...values]
+      .map(({ key, value }) => ({ key, value }))
+      .sort((a, b) => a.key.localeCompare(b.key)),
+  );
+};
+
+const digest = (value: unknown): string =>
+  `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;

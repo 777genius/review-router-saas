@@ -7,6 +7,10 @@ import type {
   StepObservation,
   TargetSwitchFence,
 } from "@reviewrouter/features-release-rollout";
+import type {
+  ServiceTransitionCheckpoint,
+  ServiceTransitionLedger,
+} from "@reviewrouter/features-release-rollout";
 
 export const ReleaseAuthorityState = Object.freeze({
   PreActivation: "pre_activation",
@@ -160,6 +164,19 @@ export interface ReleaseAuthorityLedgerPort {
   decideProviderOperation(
     input: ProviderAuthorityRequest,
   ): Promise<ProviderAuthorityDecision>;
+}
+
+export interface ReleaseServiceTransitionLedgerPort
+  extends ServiceTransitionLedger {
+  begin(input: {
+    rolloutId: string;
+    manifestSha256: string;
+    targetContractSha256: string;
+    serviceIds: readonly string[];
+  }): Promise<"created" | "existing">;
+  append(
+    checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,
+  ): Promise<ServiceTransitionCheckpoint>;
 }
 
 export interface ActivationPermitInstallerPort {

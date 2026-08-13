@@ -12,6 +12,7 @@ import type {
   StepObservation,
   TargetSwitchFence,
 } from "../domain/release-rollout";
+import type { ServiceTransitionCheckpoint } from "../application/transactional-service-cutover";
 import type { RunnerIdentity } from "../domain/release-rollout";
 import type { CompensationCheckpoint } from "../application/ports";
 
@@ -375,6 +376,50 @@ export class AuthenticatedRunnerLedgerAdapter
     )
       throw new Error("runner_ledger_compensation_checkpoint_invalid");
     return value as unknown as CompensationCheckpoint;
+  }
+  async begin(input: {
+    rolloutId: string;
+    manifestSha256: string;
+    targetContractSha256: string;
+    serviceIds: readonly string[];
+  }): Promise<"created" | "existing"> {
+    const value = (await this.request("/v1/service-transitions", {
+      method: "POST",
+      body: JSON.stringify(input),
+    })) as Record<string, unknown>;
+    if (value.result !== "created" && value.result !== "existing")
+      throw new Error("runner_ledger_service_transition_begin_invalid");
+    return value.result;
+  }
+  async append(
+    checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,
+  ): Promise<ServiceTransitionCheckpoint> {
+    const value = (await this.request(
+      `/v1/service-transitions/${encodeURIComponent(checkpoint.rolloutId)}/checkpoints`,
+      { method: "POST", body: JSON.stringify(checkpoint) },
+    )) as Record<string, unknown>;
+    if (!value.checkpoint || typeof value.checkpoint !== "object")
+      throw new Error("runner_ledger_service_transition_checkpoint_invalid");
+    return value.checkpoint as ServiceTransitionCheckpoint;
+  }
+  async read(
+    rolloutId: string,
+  ): Promise<readonly ServiceTransitionCheckpoint[]> {
+    const value = await this.request(
+      `/v1/service-transitions/${encodeURIComponent(rolloutId)}/checkpoints`,
+    );
+    if (!Array.isArray(value))
+      throw new Error("runner_ledger_service_transition_read_invalid");
+    return value as ServiceTransitionCheckpoint[];
+  }
+  async complete(input: {
+    rolloutId: string;
+    outcome: "target_staged" | "source_recovered";
+  }): Promise<void> {
+    await this.request(
+      `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/complete`,
+      { method: "POST", body: JSON.stringify({ outcome: input.outcome }) },
+    );
   }
   async verifyFinalAuthority(input: {
     rolloutId: string;

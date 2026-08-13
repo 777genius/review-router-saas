@@ -6,13 +6,15 @@ import {
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
   ReleaseRolloutUseCases,
-  RenderTargetServicesAdapter,
-  RenderProviderFreezeAdapter,
+  RenderTransactionalServicesAdapter,
+  TransactionalServiceCutover,
   RolloutPhase,
   type ReleaseRollout,
   type RunnerIdentity,
   type StepObservation,
-  type TargetServiceExpectation,
+  type SourceRecoveryManifest,
+  type ProtectedSourceEnvironment,
+  type TargetServiceContract,
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
 
@@ -51,8 +53,23 @@ const cutoverProvision = currentRunner.observation;
 const roleCleanup = await ledger.cleanupObservation(
   copy.roleBootstrapRunner.renderJobId,
 );
-const targetAdapter = new RenderTargetServicesAdapter();
-const sourceProvider = new RenderProviderFreezeAdapter();
+const sourceRecoveryManifest = JSON.parse(
+  required("REVIEW_ROUTER_SOURCE_RECOVERY_MANIFEST_JSON"),
+) as SourceRecoveryManifest;
+const protectedSourceEnvironment = JSON.parse(
+  required("REVIEW_ROUTER_PROTECTED_SOURCE_ENV_JSON"),
+) as ProtectedSourceEnvironment;
+const targetServiceContracts = JSON.parse(
+  required("REVIEW_ROUTER_TARGET_SERVICE_CONTRACTS_JSON"),
+) as TargetServiceContract[];
+if (sourceRecoveryManifest.rolloutId !== rollout.rolloutId)
+  throw new Error("private_pg17_source_recovery_manifest_rollout_mismatch");
+const transactionalServices = new TransactionalServiceCutover(
+  ledger,
+  new RenderTransactionalServicesAdapter(
+    required("RENDER_TARGET_SWITCH_API_KEY"),
+  ),
+);
 const generation = new PostgreSqlGenerationAdapter(
   new RedactedProcessCommandAdapter(),
 );
@@ -69,15 +86,33 @@ const useCases = new ReleaseRolloutUseCases({
   provider: {
     freezeAndObserve: unavailable,
     compensateAndObserve: async ({ decision, databaseWitness }) =>
-      await sourceProvider.compensateAndObserve({
-        apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
-        sourceWriterServiceIds: JSON.parse(
-          required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
-        ) as string[],
-        sourceSystemIdentifier: rollout.source.systemIdentifier,
-        decision,
-        databaseWitness,
-      }),
+      {
+        if (
+          decision.decision !== "allow" ||
+          decision.operation !== "resume_source" ||
+          databaseWitness.sourceWritesRestored !== true
+        )
+          throw new Error("private_pg17_service_recovery_authority_invalid");
+        await transactionalServices.finalizeAuthorizedSourceRecovery({
+          source: sourceRecoveryManifest,
+          protectedEnvironment: protectedSourceEnvironment,
+          target: targetServiceContracts,
+          restoreSourceWritesAndVerify: async () => undefined,
+        });
+        const restored = await ledger.read(rollout.rolloutId);
+        return {
+          serviceIds: sourceRecoveryManifest.services.map((item) => item.serviceId),
+          deployIds: sourceRecoveryManifest.services.map((service) => {
+            const deployId = [...restored].reverse().find(
+              (item) => item.serviceId === service.serviceId && item.step === "source_verified",
+            )?.deployId;
+            if (!deployId) throw new Error("private_pg17_source_deploy_checkpoint_missing");
+            return deployId;
+          }),
+          observedAt: new Date().toISOString(),
+          resumed: true,
+        };
+      },
   },
   runner: {
     provision: async () => ({
@@ -105,37 +140,66 @@ const useCases = new ReleaseRolloutUseCases({
       activation = canonical.activateTarget(process.env, rolloutId);
       return activation;
     },
-    compensateSource: async () =>
-      generation.compensateSource({
+    compensateSource: async () => {
+      if ((await ledger.read(rollout.rolloutId)).length > 0)
+        await transactionalServices.recover({
+          source: sourceRecoveryManifest,
+          protectedEnvironment: protectedSourceEnvironment,
+          target: targetServiceContracts,
+        });
+      return generation.compensateSource({
         adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
         source: rollout.source,
         reconnectUrls: JSON.parse(
           required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
         ) as Record<string, string>,
-      }),
+      });
+    },
   },
   services: {
     stageTarget: async (fence, decision) => {
-      staged = await targetAdapter.stage({
-        apiKey: required("RENDER_TARGET_SWITCH_API_KEY"),
-        targetInternalHostname: rollout.target.internalHostname,
-        targetSystemIdentifier: rollout.target.systemIdentifier,
-        targetDatabaseUrls: JSON.parse(
-          required("REVIEW_ROUTER_TARGET_DATABASE_URLS_JSON"),
-        ) as Record<string, string>,
-        releaseCommitSha: rollout.expectedCommitSha,
-        targetRecoveryWitness: required(
-          "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS",
-        ),
-        targetRecoveryWitnessSha256: required(
-          "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256",
-        ),
-        services: JSON.parse(
-          required("REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON"),
-        ) as TargetServiceExpectation[],
-        fence,
-        decision,
+      if (
+        decision.decision !== "allow" ||
+        decision.operation !== "deploy_target" ||
+        decision.rolloutId !== fence.rolloutId ||
+        decision.sourceSystemIdentifier !== fence.sourceSystemIdentifier ||
+        decision.targetSystemIdentifier !== fence.targetSystemIdentifier ||
+        decision.expectedReceiptSha256 !== fence.previousReceiptSha256 ||
+        decision.activationBoundary !== "before"
+      )
+        throw new Error("private_pg17_target_stage_authority_denied");
+      const deployIds = await transactionalServices.stage({
+        source: sourceRecoveryManifest,
+        protectedEnvironment: protectedSourceEnvironment,
+        target: targetServiceContracts,
       });
+      staged = {
+        step: "stage_target_services" as never,
+        observedAt: new Date().toISOString(),
+        facts: deployIds.map((deployId, index) => ({
+          serviceId: targetServiceContracts[index]!.serviceId,
+          deployId,
+          provenance: { kind: "image", imageSha: targetServiceContracts[index]!.imageUrl.slice(targetServiceContracts[index]!.imageUrl.indexOf("sha256:")) },
+          envSha256: targetServiceContracts[index]!.environmentSha256,
+          recoveryWitnessSha256: required(
+            "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256",
+          ),
+          suspended: true,
+        })),
+        provider: {
+          renderServiceIds: targetServiceContracts.map((item) => item.serviceId),
+          renderDeployIds: deployIds,
+          serviceRecoveryManifestSha256: sourceRecoveryManifest.manifestSha256,
+          targetServiceContractSha256: await (async () => {
+            const checkpoints = await ledger.read(rollout.rolloutId);
+            const hash = checkpoints.at(-1)?.targetContractSha256;
+            if (!hash) throw new Error("private_pg17_target_contract_checkpoint_missing");
+            return hash;
+          })(),
+          targetSwitchFenceNonce: fence.nonce,
+          targetSwitchFenceVersion: fence.version,
+        },
+      };
       return staged;
     },
     resumeDeployAndObserve: unavailable,

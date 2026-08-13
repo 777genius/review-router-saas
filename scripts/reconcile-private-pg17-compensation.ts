@@ -9,7 +9,11 @@ import {
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
   ReleaseCompensationReconciliationUseCase,
-  RenderProviderFreezeAdapter,
+  RenderTransactionalServicesAdapter,
+  TransactionalServiceCutover,
+  type SourceRecoveryManifest,
+  type ProtectedSourceEnvironment,
+  type TargetServiceContract,
   type ReleaseRollout,
 } from "../packages/features/release-rollout/src/index";
 
@@ -84,32 +88,76 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
   const database = new PostgreSqlGenerationAdapter(
     new RedactedProcessCommandAdapter(),
   );
-  const provider = new RenderProviderFreezeAdapter();
+  const sourceRecoveryManifest = JSON.parse(
+    required("REVIEW_ROUTER_SOURCE_RECOVERY_MANIFEST_JSON"),
+  ) as SourceRecoveryManifest;
+  const protectedSourceEnvironment = JSON.parse(
+    required("REVIEW_ROUTER_PROTECTED_SOURCE_ENV_JSON"),
+  ) as ProtectedSourceEnvironment;
+  const targetServiceContracts = JSON.parse(
+    required("REVIEW_ROUTER_TARGET_SERVICE_CONTRACTS_JSON"),
+  ) as TargetServiceContract[];
+  const serviceTransition = new TransactionalServiceCutover(
+    ledger,
+    new RenderTransactionalServicesAdapter(
+      required("RENDER_TARGET_SWITCH_API_KEY"),
+    ),
+  );
+  const checkpoints = await ledger.read(rollout.rolloutId);
+  let sourceServicesRestored = false;
   const useCase = new ReleaseCompensationReconciliationUseCase({
     authority,
     ledger,
     compensateDatabase: async () =>
-      database.compensateSource({
+      {
+        if (checkpoints.length > 0 && !sourceServicesRestored) {
+          await serviceTransition.recover({
+            source: sourceRecoveryManifest,
+            protectedEnvironment: protectedSourceEnvironment,
+            target: targetServiceContracts,
+          });
+          sourceServicesRestored = true;
+        }
+        return database.compensateSource({
         adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
         source: rollout.source,
         reconnectUrls: JSON.parse(
           required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
         ) as Record<string, string>,
-      }),
+        });
+      },
     provider: {
-      compensateAndObserve: async ({ decision, databaseWitness }) =>
-        provider.compensateAndObserve({
-          apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
-          sourceWriterServiceIds: JSON.parse(
-            required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
-          ) as string[],
-          sourceSystemIdentifier: rollout.source.systemIdentifier,
-          decision,
-          databaseWitness,
-        }),
+      compensateAndObserve: async ({ decision, databaseWitness }) => {
+        if (
+          decision.decision !== "allow" ||
+          decision.operation !== "resume_source" ||
+          databaseWitness.sourceWritesRestored !== true
+        )
+          throw new Error("private_pg17_service_recovery_authority_invalid");
+        await serviceTransition.finalizeAuthorizedSourceRecovery({
+          source: sourceRecoveryManifest,
+          protectedEnvironment: protectedSourceEnvironment,
+          target: targetServiceContracts,
+          restoreSourceWritesAndVerify: async () => undefined,
+        });
+        const restored = await ledger.read(rollout.rolloutId);
+        return {
+          serviceIds: sourceRecoveryManifest.services.map((item) => item.serviceId),
+          deployIds: sourceRecoveryManifest.services.map((service) => {
+            const deployId = [...restored]
+              .reverse()
+              .find((item) => item.serviceId === service.serviceId && item.step === "source_verified")?.deployId;
+            if (!deployId) throw new Error("private_pg17_source_deploy_checkpoint_missing");
+            return deployId;
+          }),
+          observedAt: new Date().toISOString(),
+          resumed: true,
+        };
+      },
     },
   });
-  process.stdout.write(`${JSON.stringify(await useCase.execute(rollout))}\n`);
+  const result = await useCase.execute(rollout);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
