@@ -114,8 +114,13 @@ SELECT pg_temp.release_authority_acl_fingerprint(
 `))' > /tmp/release-authority-acl-regression-$$.sql
 docker cp "/tmp/release-authority-acl-regression-$$.sql" \
   "$name:/tmp/release-authority-acl-regression.sql" >/dev/null
-test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -At \
-  -f /tmp/release-authority-acl-regression.sql)" = $'t\nt\nt'
+acl_regression=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -qAt \
+  -f /tmp/release-authority-acl-regression.sql)
+if test "$acl_regression" != $'t\nt\nt'; then
+  printf 'authority ACL serializer regression mismatch: expected %q, got %q\n' \
+    $'t\nt\nt' "$acl_regression" >&2
+  exit 1
+fi
 
 for database in rr_modified_schema rr_modified_routine rr_disabled_trigger rr_owner_mismatch rr_acl_mismatch; do
   docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
