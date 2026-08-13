@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  releaseAuthorityCatalogFingerprintSql,
   releaseAuthorityMigrationBundle,
   releaseAuthorityMigrationManifest,
   releaseAuthorityMigrationPaths,
@@ -188,6 +189,45 @@ describe("release authority database installation", () => {
         )
         .digest("hex"),
     ).toBe("cd50e36c2b357fe03a81204b99f38c5c1e6b9ff94660dfecb9a2fccb782a512e");
+  });
+  it("serializes ACL rows canonically without passing empty arrays to aclexplode", () => {
+    const aclHelper = releaseAuthorityCatalogFingerprintSql.slice(
+      releaseAuthorityCatalogFingerprintSql.indexOf(
+        "CREATE FUNCTION pg_temp.release_authority_acl_fingerprint",
+      ),
+      releaseAuthorityCatalogFingerprintSql.indexOf(
+        "CREATE FUNCTION pg_temp.release_authority_catalog_fingerprint",
+      ),
+    );
+    expect(aclHelper).toContain("jsonb_agg(jsonb_build_object(");
+    expect(aclHelper).toContain("'grantor'");
+    expect(aclHelper).toContain("'grantee'");
+    expect(aclHelper).toContain("'privilege_type'");
+    expect(aclHelper).toContain("'is_grantable'");
+    expect(aclHelper).toContain("WHEN acl.grantee=0 THEN 'PUBLIC'");
+    expect(aclHelper).toContain(
+      "acl.privilege_type,acl.is_grantable),'[]'::jsonb",
+    );
+    expect(aclHelper).toContain("pg_catalog.cardinality(p_acl)>0");
+    expect(aclHelper).toContain("ELSE NULL::aclitem[]");
+    expect(aclHelper).not.toContain("jsonb_build_array");
+    expect(releaseAuthorityCatalogFingerprintSql).not.toContain(
+      "'{}'::aclitem[]",
+    );
+    expect(
+      releaseAuthorityCatalogFingerprintSql.match(
+        /pg_temp\.release_authority_acl_fingerprint\(/gu,
+      ),
+    ).toHaveLength(6);
+    expect(releaseAuthorityCatalogFingerprintSql).toContain(
+      "coalesce(nspacl,pg_catalog.acldefault('n',nspowner))",
+    );
+    expect(releaseAuthorityCatalogFingerprintSql).toContain(
+      "coalesce(procedure.proacl,pg_catalog.acldefault('f',procedure.proowner))",
+    );
+    expect(releaseAuthorityCatalogFingerprintSql).toContain(
+      "coalesce(type_record.typacl,pg_catalog.acldefault('T',type_record.typowner))",
+    );
   });
   it("installs single-use rollout-first recovery effect permits", () => {
     const migration = readFileSync(
