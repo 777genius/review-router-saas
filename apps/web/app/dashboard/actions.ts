@@ -2649,14 +2649,6 @@ function readGitHubRepositoryIdentity(data: unknown): {
   };
 }
 
-function readGitHubCommitSha(data: unknown): string {
-  const sha = (data as { object?: { sha?: unknown } } | null)?.object?.sha;
-  if (typeof sha !== "string" || !/^[a-f0-9]{40}$/i.test(sha)) {
-    throw new Error("codex_rotating_workflow_commit_invalid_response");
-  }
-  return sha.toLowerCase();
-}
-
 function readGitHubWorkflowBlob(data: unknown): {
   readonly source: string;
   readonly blobSha: string;
