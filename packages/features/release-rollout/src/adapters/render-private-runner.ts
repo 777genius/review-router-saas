@@ -653,35 +653,6 @@ export class RenderPrivateRunnerAdapter {
     const reconciliationBoundary = this.reconciliationBoundary();
     const observations: StepObservation[] = [];
 
-    // markTerminal durably stores the cleanup observation before the effect is
-    // made safe.  Finish that two-write sequence after a controller crash
-    // without calling either provider witness a second time.
-    for (const intent of intents) {
-      if (
-        intent.effect.state !== ExternalEffectState.Bound ||
-        !intent.effect.providerId ||
-        !this.ledger.cleanupObservation ||
-        open.some((entry) => entry.jobId === intent.effect.providerId)
-      )
-        continue;
-      let observation: StepObservation;
-      try {
-        observation = await this.ledger.cleanupObservation(
-          intent.effect.providerId,
-        );
-      } catch {
-        continue;
-      }
-      await reconciliationBoundary.cleaned({
-        effectId: intent.id,
-        ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
-        expectedEpoch: intent.effect.epoch,
-        providerId: intent.effect.providerId,
-        cleanupProven: true,
-        evidence: observation,
-      });
-      observations.push(observation);
-    }
     const knownJobIds = new Set([
       ...open.map((entry) => entry.jobId),
       ...intents.flatMap((intent) =>
@@ -715,7 +686,6 @@ export class RenderPrivateRunnerAdapter {
         cursor = page.nextCursor ?? undefined;
       } while (cursor);
     }
-    const durableDiscovered: PersistedRunnerJob[] = [];
     let duplicateObserved = false;
     let persistenceBlocked = false;
 
@@ -730,7 +700,6 @@ export class RenderPrivateRunnerAdapter {
       if (!intent) continue;
       try {
         await this.ledger.persistCreatedJob(entry);
-        durableDiscovered.push(entry);
       } catch {
         persistenceBlocked = true;
         duplicateObserved ||=
@@ -745,9 +714,17 @@ export class RenderPrivateRunnerAdapter {
         });
       }
     }
+    // Persistence is idempotent and discovery also sees already-terminal
+    // provider jobs.  Refresh the authority's open set so a replay never
+    // repeats cleanup merely because the provider still lists that identity.
+    const refreshedOpen = await this.ledger.listOpenJobs(rolloutId);
+    const refreshedOpenIds = new Set(refreshedOpen.map(({ jobId }) => jobId));
+    const durableDiscovered = discovered.filter(({ jobId }) =>
+      refreshedOpenIds.has(jobId),
+    );
 
     for (const intent of intents) {
-      const matching = [...open, ...durableDiscovered].filter(
+      const matching = [...refreshedOpen, ...durableDiscovered].filter(
         (entry, index, all) =>
           entry.provisioningIntentId === intent.id &&
           all.findIndex((candidate) => candidate.jobId === entry.jobId) ===
@@ -792,7 +769,7 @@ export class RenderPrivateRunnerAdapter {
         });
       }
     }
-    const durableJobs = [...open, ...durableDiscovered].filter(
+    const durableJobs = [...refreshedOpen, ...durableDiscovered].filter(
       (entry, index, all) =>
         all.findIndex((candidate) => candidate.jobId === entry.jobId) === index,
     );
@@ -821,16 +798,11 @@ export class RenderPrivateRunnerAdapter {
         continue;
       }
       observations.push(observation);
+      // The authority terminalizes the job and projects effect safety in one
+      // transaction.  Do not follow a successful terminal CAS with a separate
+      // clean reconciliation: that command is both redundant and forbidden by
+      // the authority's independently witnessed cleanup boundary.
       await this.ledger.markTerminal(entry.jobId, observation);
-      if (intent)
-        await reconciliationBoundary.cleaned({
-          effectId: entry.provisioningIntentId,
-          ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
-          expectedEpoch: intent.effect.epoch,
-          providerId: entry.jobId,
-          cleanupProven: true,
-          evidence: observation,
-        });
     }
     const finalIntents = await this.ledger.listProvisioningIntents(rolloutId);
     const safety =
