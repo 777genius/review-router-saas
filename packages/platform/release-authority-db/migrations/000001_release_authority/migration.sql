@@ -217,9 +217,14 @@ BEGIN
        existing_receipt.previous_receipt_sha256 = p_expected_receipt_sha256 AND
        existing_receipt.activation_boundary = p_next_activation_boundary AND
        existing_receipt.provider_binding IS NOT DISTINCT FROM p_provider_binding AND
-       p_expected_activation_boundary = 'before' AND
-       p_next_activation_boundary = 'before' AND
-       p_authoritative_system_identifier = current_row.source_system_identifier THEN
+       ((p_expected_activation_boundary = 'before' AND
+         p_next_activation_boundary = 'before' AND
+         p_authoritative_system_identifier = current_row.source_system_identifier AND
+         current_row.activation_boundary = 'before') OR
+        (p_expected_activation_boundary = 'activated' AND
+         p_next_activation_boundary = 'activated' AND
+         p_authoritative_system_identifier = current_row.target_system_identifier AND
+         current_row.activation_boundary = 'activated')) THEN
       RETURN true;
     END IF;
     RAISE EXCEPTION 'release rollout receipt replay conflict';
@@ -249,7 +254,8 @@ BEGIN
         p_authoritative_system_identifier <> current_row.source_system_identifier)) THEN
     RAISE EXCEPTION 'release rollout compensation transition invalid';
   END IF;
-  IF p_step NOT IN ('begin_compensation','effect_compensation','complete_compensation') THEN
+  IF p_step NOT IN ('begin_compensation','effect_compensation','complete_compensation') AND
+     current_row.state = 'pre_activation' THEN
     SELECT count(*)::integer INTO completed_steps
     FROM release_authority.receipt WHERE rollout_id = p_rollout_id;
     expected_step := (ARRAY[
@@ -266,6 +272,24 @@ BEGIN
        p_authoritative_system_identifier <> current_row.source_system_identifier THEN
       RAISE EXCEPTION 'release rollout pre-activation step out of order';
     END IF;
+  ELSIF p_step NOT IN ('begin_compensation','effect_compensation','complete_compensation') AND
+        current_row.state = 'activated' THEN
+    SELECT count(*)::integer INTO completed_steps
+    FROM release_authority.receipt WHERE rollout_id = p_rollout_id
+      AND step IN ('cleanup_cutover_runner','resume_target_services',
+        'verify_live_canary','verify_trusted_rollout');
+    expected_step := (ARRAY[
+      'cleanup_cutover_runner', 'resume_target_services',
+      'verify_live_canary', 'verify_trusted_rollout'
+    ])[completed_steps + 1];
+    IF expected_step IS NULL OR p_step <> expected_step OR
+       p_expected_activation_boundary <> 'activated' OR
+       p_next_activation_boundary <> 'activated' OR
+       p_authoritative_system_identifier <> current_row.target_system_identifier THEN
+      RAISE EXCEPTION 'release rollout post-activation step out of order';
+    END IF;
+  ELSIF p_step NOT IN ('begin_compensation','effect_compensation','complete_compensation') THEN
+    RAISE EXCEPTION 'release rollout step forbidden for authority state';
   END IF;
   INSERT INTO release_authority.receipt (
     receipt_sha256, rollout_id, step, provider_binding,

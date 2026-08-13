@@ -110,6 +110,37 @@ test "$finalized" = t
 test "$finalize_replay" = t
 test "$authorization_after_finalize" = "$authorization"
 
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r1',repeat('a',40),'1',1,'100','200','verify_live_canary',
+    'sha256:'||repeat('1',64),'sha256:'||repeat('2',64),'200',
+    'activated','activated',NULL)" >/dev/null 2>&1; then
+  echo "out-of-order post-activation receipt unexpectedly succeeded" >&2
+  exit 1
+fi
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "DO \$\$
+   DECLARE steps text[] := ARRAY[
+     'cleanup_cutover_runner','resume_target_services',
+     'verify_live_canary','verify_trusted_rollout'];
+   DECLARE previous_sha text := 'sha256:'||repeat('1',64);
+   DECLARE next_sha text;
+   BEGIN
+     FOR index IN 1..cardinality(steps) LOOP
+       next_sha := 'sha256:'||md5('r1-post-'||index)||md5('post-r1-'||index);
+       IF NOT release_authority.release_rollout_append_receipt(
+         'r1',repeat('a',40),'1',1,'100','200',steps[index],previous_sha,next_sha,
+         '200','activated','activated',NULL) THEN
+         RAISE EXCEPTION 'legal post-activation receipt rejected at %', steps[index];
+       END IF;
+       previous_sha := next_sha;
+     END LOOP;
+   END \$\$;" >/dev/null
+post_activation_state=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT state||':'||activation_boundary||':'||source_permanently_ineligible||':'||authoritative_system_identifier
+   FROM release_authority.rollout WHERE rollout_id='r1'")
+test "$post_activation_state" = activated:activated:true:200
+
 conflicting_finalize=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_finalize_activation(
     jsonb_build_object('rolloutId','r1','expectedCommitSha',expected_commit_sha,
