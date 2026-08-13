@@ -202,11 +202,9 @@ jobs:
           REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER }}
           REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256 }}
           REVIEW_ROUTER_TARGET_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS }}
+          REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS }}
           REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
           REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: ${{ vars.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST }}
-          REVIEW_ROUTER_SOURCE_RECOVERY_MANIFEST_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_RECOVERY_MANIFEST_JSON }}
-          REVIEW_ROUTER_PROTECTED_SOURCE_ENV_JSON: ${{ secrets.REVIEW_ROUTER_PROTECTED_SOURCE_ENV_JSON }}
-          REVIEW_ROUTER_TARGET_SERVICE_CONTRACTS_JSON: ${{ secrets.REVIEW_ROUTER_TARGET_SERVICE_CONTRACTS_JSON }}
         run: node --import tsx scripts/run-private-pg17-rollout.ts > private-rollout-body.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -288,7 +286,7 @@ jobs:
       ]
     environment: production-runner-control
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
@@ -316,7 +314,6 @@ jobs:
           REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON }}
           REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: artifacts/preflight/initial-rollout.json
           RENDER_TARGET_SWITCH_API_KEY: ${{ secrets.RENDER_TARGET_SWITCH_API_KEY }}
-          REVIEW_ROUTER_SOURCE_RECOVERY_MANIFEST_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_RECOVERY_MANIFEST_JSON }}
-          REVIEW_ROUTER_PROTECTED_SOURCE_ENV_JSON: ${{ secrets.REVIEW_ROUTER_PROTECTED_SOURCE_ENV_JSON }}
-          REVIEW_ROUTER_TARGET_SERVICE_CONTRACTS_JSON: ${{ secrets.REVIEW_ROUTER_TARGET_SERVICE_CONTRACTS_JSON }}
+          REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS }}
+          REVIEW_ROUTER_TARGET_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS }}
         run: node --import tsx scripts/reconcile-private-pg17-compensation.ts > compensation-reconciliation.json

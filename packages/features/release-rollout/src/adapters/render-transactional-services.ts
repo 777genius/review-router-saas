@@ -1,10 +1,14 @@
 import {
+  environmentKeysSha256,
   environmentSha256,
+  sourceRecoveryManifestSha256,
   sourceServiceContractSha256,
   targetServiceContractSha256,
   type ObservedRenderService,
   type RenderServiceContract,
   type TargetServiceContract,
+  type ProtectedSourceEnvironment,
+  type SourceRecoveryManifest,
   type TransactionalRenderProvider,
 } from "../application/transactional-service-cutover";
 import { RenderApiAdapter, type RenderFetch } from "./render-api";
@@ -20,10 +24,18 @@ const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+const latestLive = <T extends { status: string; createdAt?: string; id: string }>(
+  deploys: readonly T[],
+): T => {
+  const live = deploys
+    .filter((item) => item.status === "live" && item.createdAt && Number.isFinite(Date.parse(item.createdAt)))
+    .sort((a, b) => Date.parse(b.createdAt!) - Date.parse(a.createdAt!) || b.id.localeCompare(a.id));
+  if (!live[0] || (live[1] && live[1].createdAt === live[0].createdAt))
+    throw new Error("service_transition_current_live_deploy_ambiguous");
+  return live[0];
+};
 
-export class RenderTransactionalServicesAdapter
-  implements TransactionalRenderProvider
-{
+export class RenderTransactionalServicesAdapter implements TransactionalRenderProvider {
   private readonly api: RenderApiAdapter;
   constructor(
     apiKey: string,
@@ -43,8 +55,7 @@ export class RenderTransactionalServicesAdapter
     ]);
     if (deploys.some((item) => active.has(item.status)))
       throw new Error("service_transition_active_deploy_present");
-    const live = deploys.find((item) => item.status === "live");
-    if (!live) throw new Error("service_transition_live_deploy_missing");
+    const live = latestLive(deploys);
     const details = record(service.serviceDetails);
     const specific = record(details.envSpecificDetails);
     const runtime = details.runtime ?? specific.runtime;
@@ -78,10 +89,13 @@ export class RenderTransactionalServicesAdapter
       throw new Error("service_transition_provider_contract_incomplete");
     if (
       runtime === "node" &&
-      (![service.repo, service.branch].every((item) => typeof item === "string") ||
+      (![service.repo, service.branch].every(
+        (item) => typeof item === "string",
+      ) ||
         typeof specific.buildCommand !== "string" ||
         typeof specific.startCommand !== "string" ||
-        typeof (specific.preDeployCommand ?? details.preDeployCommand) !== "string")
+        typeof (specific.preDeployCommand ?? details.preDeployCommand) !==
+          "string")
     )
       throw new Error("service_transition_native_contract_incomplete");
     const serviceContractSha256 =
@@ -92,7 +106,10 @@ export class RenderTransactionalServicesAdapter
             environmentSha256: environmentSha256(environment),
           })
         : sourceServiceContractSha256({
-            ...(sourceContract as Omit<RenderServiceContract, "serviceContractSha256">),
+            ...(sourceContract as Omit<
+              RenderServiceContract,
+              "serviceContractSha256"
+            >),
             sourceCommitSha: live.commit?.id ?? "",
             databaseEnvKey: "DATABASE_URL",
             databaseRole: "provider-observed-separately",
@@ -128,15 +145,16 @@ export class RenderTransactionalServicesAdapter
 
   async configureTarget(contract: TargetServiceContract): Promise<void> {
     await this.api.patchService(contract.serviceId, {
-      autoDeploy: "no",
+      autoDeployTrigger: "off",
       image: { imagePath: contract.imageUrl },
       serviceDetails: { runtime: "image", preDeployCommand: "" },
     });
+    await this.waitForContract(contract.serviceId, contract.serviceContractSha256);
   }
 
   async configureSource(contract: RenderServiceContract): Promise<void> {
     await this.api.patchService(contract.serviceId, {
-      autoDeploy: "no",
+      autoDeployTrigger: "off",
       repo: contract.repository,
       branch: contract.branch,
       rootDir: contract.rootDir,
@@ -153,13 +171,130 @@ export class RenderTransactionalServicesAdapter
         maxShutdownDelaySeconds: contract.maxShutdownDelaySeconds,
       },
     });
+    await this.waitForContract(contract.serviceId, contract.serviceContractSha256);
   }
 
   async replaceEnvironment(
     serviceId: string,
-    values: readonly { readonly key: string; readonly value: string }[],
+    input: {
+      set: Readonly<Record<string, string>>;
+      remove: readonly string[];
+      expectedBeforeSha256?: string;
+    },
   ): Promise<string> {
-    return (await this.api.replaceEnvExact(serviceId, values)).afterSha256;
+    return (await this.api.patchEnvPreservingAll({ serviceId, ...input }))
+      .afterSha256;
+  }
+
+  async planEnvironmentDelta(input: {
+    serviceId: string;
+    set: Readonly<Record<string, string>>;
+    remove: readonly string[];
+    expectedBeforeSha256: string;
+  }): Promise<{ environmentSha256: string; environmentKeysSha256: string }> {
+    const value = await this.api.planEnvPatch(input);
+    return {
+      environmentSha256: value.environmentSha256,
+      environmentKeysSha256: value.keysSha256,
+    };
+  }
+
+  async captureSourceManifest(input: {
+    rolloutId: string;
+    services: readonly Readonly<{
+      serviceId: string;
+      databaseEnvKey: string;
+      databaseRole: string;
+    }>[];
+    protectedEnvironment: ProtectedSourceEnvironment;
+  }): Promise<SourceRecoveryManifest> {
+    if (input.services.length !== 3)
+      throw new Error("service_transition_scope_invalid");
+    const services: RenderServiceContract[] = [];
+    for (const expected of input.services) {
+      if (expected.databaseEnvKey !== "DATABASE_URL")
+        throw new Error("service_transition_database_env_key_invalid");
+      const [service, environment, deploys] = await Promise.all([
+        this.api.getService(expected.serviceId),
+        this.api.listAllEnv(expected.serviceId),
+        this.api.listAllDeploys(expected.serviceId),
+      ]);
+      const live = latestLive(deploys);
+      const env = new Map(environment.map(({ key, value }) => [key, value]));
+      const protectedValues = input.protectedEnvironment[expected.serviceId];
+      if (
+        service.id !== expected.serviceId ||
+        service.suspended !== "suspended" ||
+        service.autoDeploy !== "no" ||
+        deploys.some((item) => active.has(item.status)) ||
+        !live?.commit?.id ||
+        live.image ||
+        !["web_service", "background_worker"].includes(service.type) ||
+        !protectedValues ||
+        env.get("DATABASE_URL") !== protectedValues.DATABASE_URL ||
+        env.get("REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS") !==
+          protectedValues.REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS ||
+        [
+          "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
+          "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
+          "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+        ].some((key) => env.has(key))
+      )
+        throw new Error("service_transition_source_capture_mismatch");
+      const details = record(service.serviceDetails);
+      const specific = record(details.envSpecificDetails);
+      if (
+        (details.runtime ?? specific.runtime) !== "node" ||
+        typeof service.repo !== "string" ||
+        typeof service.branch !== "string" ||
+        typeof specific.buildCommand !== "string" ||
+        typeof specific.startCommand !== "string" ||
+        typeof (specific.preDeployCommand ?? details.preDeployCommand) !==
+          "string" ||
+        typeof details.region !== "string" ||
+        typeof details.plan !== "string" ||
+        typeof details.maxShutdownDelaySeconds !== "number"
+      )
+        throw new Error("service_transition_source_capture_incomplete");
+      const value = {
+        serviceId: service.id,
+        ownerId: service.ownerId,
+        type: service.type as RenderServiceContract["type"],
+        runtime: "node" as const,
+        repository: service.repo,
+        branch: service.branch,
+        rootDir: service.rootDir ?? "",
+        sourceCommitSha: live.commit.id,
+        buildCommand: specific.buildCommand,
+        startCommand: specific.startCommand,
+        preDeployCommand: (specific.preDeployCommand ??
+          details.preDeployCommand) as string,
+        healthCheckPath: (specific.healthCheckPath ??
+          details.healthCheckPath ??
+          null) as string | null,
+        region: details.region,
+        plan: details.plan,
+        maxShutdownDelaySeconds: details.maxShutdownDelaySeconds,
+        autoDeploy: "no" as const,
+        databaseEnvKey: expected.databaseEnvKey,
+        databaseRole: expected.databaseRole,
+        sourceEnvSha256: environmentSha256(environment),
+        sourceEnvKeysSha256: environmentKeysSha256(environment),
+      };
+      services.push({
+        ...value,
+        serviceContractSha256: sourceServiceContractSha256(value),
+      });
+    }
+    const manifest = {
+      schemaVersion: "reviewrouter.render-source-recovery.v1" as const,
+      rolloutId: input.rolloutId,
+      services: Object.freeze(services),
+    };
+    return {
+      ...manifest,
+      manifestSha256: sourceRecoveryManifestSha256(manifest),
+    };
   }
 
   async deployImage(serviceId: string, imageUrl: string): Promise<string> {
@@ -250,5 +385,17 @@ export class RenderTransactionalServicesAdapter
       await this.sleep(2_000);
     }
     throw new Error("service_transition_suspension_unproven");
+  }
+
+  private async waitForContract(serviceId: string, expected: string): Promise<void> {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      try {
+        if ((await this.observe(serviceId)).serviceContractSha256 === expected) return;
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== "service_transition_active_deploy_present") throw error;
+      }
+      await this.sleep(2_000);
+    }
+    throw new Error("service_transition_configuration_unproven");
   }
 }

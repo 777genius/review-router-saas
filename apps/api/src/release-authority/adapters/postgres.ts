@@ -25,7 +25,10 @@ import type {
   WitnessGatedTerminalCleanupFact,
   ReleaseServiceTransitionLedgerPort,
 } from "../domain/model.js";
-import type { ServiceTransitionCheckpoint } from "@reviewrouter/features-release-rollout";
+import type {
+  ServiceTransitionCheckpoint,
+  ServiceTransitionLedger,
+} from "@reviewrouter/features-release-rollout";
 
 type JsonRow = { value: unknown };
 
@@ -417,12 +420,9 @@ export class RoutineReleaseControlLedgerAdapter
     );
   }
 
-  async begin(input: {
-    rolloutId: string;
-    manifestSha256: string;
-    targetContractSha256: string;
-    serviceIds: readonly string[];
-  }): Promise<"created" | "existing"> {
+  async begin(
+    input: Parameters<ServiceTransitionLedger["begin"]>[0],
+  ): Promise<"created" | "existing"> {
     const value = await firstValue(
       this.prisma,
       Prisma.sql`SELECT release_authority.release_service_transition_begin(${asJsonb(input)}) AS value`,
@@ -430,6 +430,19 @@ export class RoutineReleaseControlLedgerAdapter
     if (value !== "created" && value !== "existing")
       throw new Error("release_service_transition_begin_invalid");
     return value;
+  }
+  async readContract(
+    rolloutId: string,
+  ): Promise<Awaited<ReturnType<ServiceTransitionLedger["readContract"]>>> {
+    const value = await firstValue(
+      this.prisma,
+      Prisma.sql`SELECT release_authority.release_service_transition_contract(${rolloutId}) AS value`,
+    );
+    return value === null
+      ? null
+      : (requiredRecord(value) as Awaited<
+          ReturnType<ServiceTransitionLedger["readContract"]>
+        >);
   }
 
   async append(

@@ -100,4 +100,25 @@ describe("Render OpenAPI wrappers", () => {
     ]);
     expect(result.beforeSha256).not.toBe(result.afterSha256);
   });
+
+  it("aborts a delta PUT when the second pre-write snapshot changed", async () => {
+    const initial = [
+      { envVar: { key: "DATABASE_URL", value: "source" }, cursor: null },
+    ];
+    const changed = [
+      { envVar: { key: "DATABASE_URL", value: "concurrent" }, cursor: null },
+    ];
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(json(initial))
+      .mockResolvedValueOnce(json(changed));
+    await expect(
+      new RenderApiAdapter("redacted", fetchImpl).patchEnvPreservingAll({
+        serviceId: "srv-1",
+        set: { DATABASE_URL: "target" },
+        remove: [],
+      }),
+    ).rejects.toThrow("concurrent_mutation");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });

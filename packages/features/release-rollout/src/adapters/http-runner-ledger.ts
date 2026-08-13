@@ -13,6 +13,7 @@ import type {
   TargetSwitchFence,
 } from "../domain/release-rollout";
 import type { ServiceTransitionCheckpoint } from "../application/transactional-service-cutover";
+import type { ServiceTransitionLedger } from "../application/transactional-service-cutover";
 import type { RunnerIdentity } from "../domain/release-rollout";
 import type { CompensationCheckpoint } from "../application/ports";
 
@@ -377,12 +378,9 @@ export class AuthenticatedRunnerLedgerAdapter
       throw new Error("runner_ledger_compensation_checkpoint_invalid");
     return value as unknown as CompensationCheckpoint;
   }
-  async begin(input: {
-    rolloutId: string;
-    manifestSha256: string;
-    targetContractSha256: string;
-    serviceIds: readonly string[];
-  }): Promise<"created" | "existing"> {
+  async begin(
+    input: Parameters<ServiceTransitionLedger["begin"]>[0],
+  ): Promise<"created" | "existing"> {
     const value = (await this.request("/v1/service-transitions", {
       method: "POST",
       body: JSON.stringify(input),
@@ -390,6 +388,13 @@ export class AuthenticatedRunnerLedgerAdapter
     if (value.result !== "created" && value.result !== "existing")
       throw new Error("runner_ledger_service_transition_begin_invalid");
     return value.result;
+  }
+  async readContract(
+    rolloutId: string,
+  ): Promise<Awaited<ReturnType<ServiceTransitionLedger["readContract"]>>> {
+    return (await this.request(
+      `/v1/service-transitions/${encodeURIComponent(rolloutId)}/contract`,
+    )) as Awaited<ReturnType<ServiceTransitionLedger["readContract"]>>;
   }
   async append(
     checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,

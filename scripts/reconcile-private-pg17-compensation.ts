@@ -9,9 +9,9 @@ import {
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
   ReleaseCompensationReconciliationUseCase,
+  RenderProviderFreezeAdapter,
   RenderTransactionalServicesAdapter,
   TransactionalServiceCutover,
-  type SourceRecoveryManifest,
   type ProtectedSourceEnvironment,
   type TargetServiceContract,
   type ReleaseRollout,
@@ -88,15 +88,35 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
   const database = new PostgreSqlGenerationAdapter(
     new RedactedProcessCommandAdapter(),
   );
-  const sourceRecoveryManifest = JSON.parse(
-    required("REVIEW_ROUTER_SOURCE_RECOVERY_MANIFEST_JSON"),
-  ) as SourceRecoveryManifest;
-  const protectedSourceEnvironment = JSON.parse(
-    required("REVIEW_ROUTER_PROTECTED_SOURCE_ENV_JSON"),
-  ) as ProtectedSourceEnvironment;
-  const targetServiceContracts = JSON.parse(
-    required("REVIEW_ROUTER_TARGET_SERVICE_CONTRACTS_JSON"),
-  ) as TargetServiceContract[];
+  const durableContract = await ledger.readContract(rollout.rolloutId);
+  const sourceRecoveryManifest = durableContract?.sourceManifest;
+  const persistedTargets = durableContract?.targetContracts;
+  const sourceUrls = JSON.parse(
+    required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
+  ) as Record<string, string>;
+  const sourceWitness = required("REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS");
+  const protectedSourceEnvironment = sourceRecoveryManifest
+    ? (Object.fromEntries(
+        sourceRecoveryManifest.services.map((service) => [
+          service.serviceId,
+          {
+            DATABASE_URL: sourceUrls[service.databaseRole] ?? "",
+            REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: sourceWitness,
+          },
+        ]),
+      ) as ProtectedSourceEnvironment)
+    : {};
+  const placeholderDelta = {
+    DATABASE_URL: "durable-hash-only",
+    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "durable-hash-only",
+    REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: "durable-hash-only",
+    REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: "durable-hash-only",
+    REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: "durable-hash-only",
+  };
+  const targetServiceContracts = persistedTargets?.map((item) => ({
+    ...item,
+    environmentDelta: placeholderDelta,
+  })) as TargetServiceContract[] | undefined;
   const serviceTransition = new TransactionalServiceCutover(
     ledger,
     new RenderTransactionalServicesAdapter(
@@ -104,28 +124,56 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
     ),
   );
   const checkpoints = await ledger.read(rollout.rolloutId);
+  const sourceWriterServiceIds = required(
+    "REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS",
+  )
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (
+    sourceWriterServiceIds.length !== 3 ||
+    new Set(sourceWriterServiceIds).size !== 3 ||
+    (sourceRecoveryManifest &&
+      [...sourceWriterServiceIds].sort().join("\0") !==
+        sourceRecoveryManifest.services
+          .map((item) => item.serviceId)
+          .sort()
+          .join("\0"))
+  )
+    throw new Error("private_pg17_reconcile_service_scope_invalid");
+  if ((checkpoints.length === 0) !== (durableContract === null))
+    throw new Error("private_pg17_reconcile_transition_state_inconsistent");
+  const frozenSource = new RenderProviderFreezeAdapter();
+  if (
+    checkpoints.length > 0 &&
+    (!sourceRecoveryManifest ||
+      !targetServiceContracts ||
+      sourceRecoveryManifest.services.some(
+        (service) => !sourceUrls[service.databaseRole],
+      ))
+  )
+    throw new Error("private_pg17_reconcile_transition_contract_missing");
   let sourceServicesRestored = false;
   const useCase = new ReleaseCompensationReconciliationUseCase({
     authority,
     ledger,
-    compensateDatabase: async () =>
-      {
-        if (checkpoints.length > 0 && !sourceServicesRestored) {
-          await serviceTransition.recover({
-            source: sourceRecoveryManifest,
-            protectedEnvironment: protectedSourceEnvironment,
-            target: targetServiceContracts,
-          });
-          sourceServicesRestored = true;
-        }
-        return database.compensateSource({
+    compensateDatabase: async () => {
+      if (checkpoints.length > 0 && !sourceServicesRestored) {
+        await serviceTransition.recover({
+          source: sourceRecoveryManifest!,
+          protectedEnvironment: protectedSourceEnvironment,
+          target: targetServiceContracts!,
+        });
+        sourceServicesRestored = true;
+      }
+      return database.compensateSource({
         adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
         source: rollout.source,
         reconnectUrls: JSON.parse(
           required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
         ) as Record<string, string>,
-        });
-      },
+      });
+    },
     provider: {
       compensateAndObserve: async ({ decision, databaseWitness }) => {
         if (
@@ -134,20 +182,35 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
           databaseWitness.sourceWritesRestored !== true
         )
           throw new Error("private_pg17_service_recovery_authority_invalid");
+        if (checkpoints.length === 0)
+          return frozenSource.compensateAndObserve({
+            apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
+            sourceWriterServiceIds,
+            sourceSystemIdentifier: rollout.source.systemIdentifier,
+            decision,
+            databaseWitness,
+          });
         await serviceTransition.finalizeAuthorizedSourceRecovery({
-          source: sourceRecoveryManifest,
+          source: sourceRecoveryManifest!,
           protectedEnvironment: protectedSourceEnvironment,
-          target: targetServiceContracts,
+          target: targetServiceContracts!,
           restoreSourceWritesAndVerify: async () => undefined,
         });
         const restored = await ledger.read(rollout.rolloutId);
         return {
-          serviceIds: sourceRecoveryManifest.services.map((item) => item.serviceId),
-          deployIds: sourceRecoveryManifest.services.map((service) => {
+          serviceIds: sourceRecoveryManifest!.services.map(
+            (item) => item.serviceId,
+          ),
+          deployIds: sourceRecoveryManifest!.services.map((service) => {
             const deployId = [...restored]
               .reverse()
-              .find((item) => item.serviceId === service.serviceId && item.step === "source_verified")?.deployId;
-            if (!deployId) throw new Error("private_pg17_source_deploy_checkpoint_missing");
+              .find(
+                (item) =>
+                  item.serviceId === service.serviceId &&
+                  item.step === "source_verified",
+              )?.deployId;
+            if (!deployId)
+              throw new Error("private_pg17_source_deploy_checkpoint_missing");
             return deployId;
           }),
           observedAt: new Date().toISOString(),

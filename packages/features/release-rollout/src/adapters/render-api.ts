@@ -550,6 +550,79 @@ export class RenderApiAdapter {
     return { beforeSha256: digest(before), afterSha256 };
   }
 
+  async patchEnvPreservingAll(input: {
+    serviceId: string;
+    set: Readonly<Record<string, string>>;
+    remove: readonly string[];
+    expectedBeforeSha256?: string;
+  }): Promise<{
+    beforeSha256: string;
+    afterSha256: string;
+    keysSha256: string;
+  }> {
+    const before = canonicalEnv(await this.listAllEnv(input.serviceId));
+    const beforeSha256 = digest(before);
+    if (
+      input.expectedBeforeSha256 !== undefined &&
+      beforeSha256 !== input.expectedBeforeSha256
+    )
+      throw new Error("render_api_env_concurrent_mutation_detected");
+    const merged = new Map(before.map(({ key, value }) => [key, value]));
+    for (const key of input.remove) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key))
+        throw new Error("render_api_env_contract_invalid");
+      merged.delete(key);
+    }
+    for (const [key, value] of Object.entries(input.set))
+      merged.set(key, value);
+    const after = canonicalEnv(
+      [...merged].map(([key, value]) => ({ key, value })),
+    );
+    const secondBefore = canonicalEnv(await this.listAllEnv(input.serviceId));
+    if (digest(secondBefore) !== beforeSha256)
+      throw new Error("render_api_env_concurrent_mutation_detected");
+    const response = await this.fetchImpl(
+      `${origin}/services/${encodeURIComponent(input.serviceId)}/env-vars`,
+      {
+        method: "PUT",
+        headers: headers(this.token, true),
+        body: JSON.stringify(after),
+      },
+    );
+    if (response.status !== 200)
+      throw new Error(`render_api_env_replace_failed:${response.status}`);
+    const verified = canonicalEnv(await this.listAllEnv(input.serviceId));
+    if (digest(verified) !== digest(after))
+      throw new Error("render_api_env_replace_verification_failed");
+    return {
+      beforeSha256,
+      afterSha256: digest(after),
+      keysSha256: digest(after.map(({ key }) => key)),
+    };
+  }
+
+  async planEnvPatch(input: {
+    serviceId: string;
+    set: Readonly<Record<string, string>>;
+    remove: readonly string[];
+    expectedBeforeSha256: string;
+  }): Promise<{ environmentSha256: string; keysSha256: string }> {
+    const before = canonicalEnv(await this.listAllEnv(input.serviceId));
+    if (digest(before) !== input.expectedBeforeSha256)
+      throw new Error("render_api_env_concurrent_mutation_detected");
+    const merged = new Map(before.map(({ key, value }) => [key, value]));
+    for (const key of input.remove) merged.delete(key);
+    for (const [key, value] of Object.entries(input.set))
+      merged.set(key, value);
+    const after = canonicalEnv(
+      [...merged].map(([key, value]) => ({ key, value })),
+    );
+    return {
+      environmentSha256: digest(after),
+      keysSha256: digest(after.map(({ key }) => key)),
+    };
+  }
+
   async patchService(
     serviceId: string,
     value: Readonly<Record<string, unknown>>,

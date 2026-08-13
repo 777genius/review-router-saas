@@ -124,7 +124,15 @@ describe("private-network PG17 workflow security contract", () => {
     expect(reconcile).toContain("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN:");
     expect(reconcile).toContain("RENDER_SERVICE_SUSPENSION_API_KEY:");
     expect(reconcile).toContain("RENDER_TARGET_SWITCH_API_KEY:");
-    expect(reconcile).toContain("REVIEW_ROUTER_SOURCE_RECOVERY_MANIFEST_JSON:");
+    expect(reconcile).toContain("REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS:");
+    expect(reconcile).not.toContain(
+      "REVIEW_ROUTER_SOURCE_RECOVERY_MANIFEST_JSON:",
+    );
+    expect(workflow).not.toContain("REVIEW_ROUTER_PROTECTED_SOURCE_ENV_JSON:");
+    expect(workflow).not.toContain(
+      "REVIEW_ROUTER_TARGET_SERVICE_CONTRACTS_JSON:",
+    );
+    expect(reconcile).toContain("timeout-minutes: 30");
   });
 
   it("keeps installer and external authority credentials out of every workflow job", () => {

@@ -166,14 +166,7 @@ export interface ReleaseAuthorityLedgerPort {
   ): Promise<ProviderAuthorityDecision>;
 }
 
-export interface ReleaseServiceTransitionLedgerPort
-  extends ServiceTransitionLedger {
-  begin(input: {
-    rolloutId: string;
-    manifestSha256: string;
-    targetContractSha256: string;
-    serviceIds: readonly string[];
-  }): Promise<"created" | "existing">;
+export interface ReleaseServiceTransitionLedgerPort extends ServiceTransitionLedger {
   append(
     checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,
   ): Promise<ServiceTransitionCheckpoint>;

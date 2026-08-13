@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   environmentSha256,
+  environmentKeysSha256,
   TransactionalServiceCutover,
   validateServiceTransitionContracts,
   sourceServiceContractSha256,
@@ -24,37 +25,48 @@ const sourceEnvs = ["web", "api", "worker"].map((role) => ({
   serviceId: `srv-${role}`,
   values: [
     { key: "DATABASE_URL", value: `postgres://source/${role}` },
-    { key: "SECRET", value: `never-log-${role}` },
+    {
+      key: "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+      value: `never-log-${role}`,
+    },
+    { key: "UNKNOWN_SECRET", value: `preserve-byte-for-byte-${role}` },
   ],
 }));
-const services = ["web", "api", "worker"].map((role) =>
-  {
-    const value = {
-      serviceId: `srv-${role}`,
-      ownerId: "tea-owner",
-      type: role === "worker" ? ("background_worker" as const) : ("web_service" as const),
-      runtime: "node" as const,
-      repository: "https://github.com/777genius/review-router-saas",
-      branch: "main",
-      rootDir: "",
-      sourceCommitSha: "a".repeat(40),
-      buildCommand: "pnpm build",
-      startCommand: `pnpm ${role}:start`,
-      preDeployCommand: "",
-      healthCheckPath: role === "worker" ? null : "/health",
-      region: "frankfurt",
-      plan: "starter",
-      maxShutdownDelaySeconds: role === "worker" ? 120 : 60,
-      autoDeploy: "no" as const,
-      databaseEnvKey: "DATABASE_URL",
-      databaseRole: `reviewrouter_${role}`,
-      sourceEnvSha256: environmentSha256(
-        sourceEnvs.find((item) => item.serviceId === `srv-${role}`)!.values,
-      ),
-    };
-    return { ...value, serviceContractSha256: sourceServiceContractSha256(value) };
-  },
-) as SourceRecoveryManifest["services"];
+const services = ["web", "api", "worker"].map((role) => {
+  const value = {
+    serviceId: `srv-${role}`,
+    ownerId: "tea-owner",
+    type:
+      role === "worker"
+        ? ("background_worker" as const)
+        : ("web_service" as const),
+    runtime: "node" as const,
+    repository: "https://github.com/777genius/review-router-saas",
+    branch: "main",
+    rootDir: "",
+    sourceCommitSha: "a".repeat(40),
+    buildCommand: "pnpm build",
+    startCommand: `pnpm ${role}:start`,
+    preDeployCommand: "",
+    healthCheckPath: role === "worker" ? null : "/health",
+    region: "frankfurt",
+    plan: "starter",
+    maxShutdownDelaySeconds: role === "worker" ? 120 : 60,
+    autoDeploy: "no" as const,
+    databaseEnvKey: "DATABASE_URL",
+    databaseRole: `reviewrouter_${role}`,
+    sourceEnvSha256: environmentSha256(
+      sourceEnvs.find((item) => item.serviceId === `srv-${role}`)!.values,
+    ),
+    sourceEnvKeysSha256: environmentKeysSha256(
+      sourceEnvs.find((item) => item.serviceId === `srv-${role}`)!.values,
+    ),
+  };
+  return {
+    ...value,
+    serviceContractSha256: sourceServiceContractSha256(value),
+  };
+}) as SourceRecoveryManifest["services"];
 const manifestBase = {
   schemaVersion: "reviewrouter.render-source-recovery.v1" as const,
   rolloutId: "rollout-1",
@@ -65,20 +77,37 @@ const source = withHash(
   "manifestSha256",
 ) as SourceRecoveryManifest;
 const protectedEnvironment: ProtectedSourceEnvironment = {
-  manifestSha256: source.manifestSha256,
-  services: sourceEnvs,
+  ...Object.fromEntries(
+    sourceEnvs.map(({ serviceId, values }) => [
+      serviceId,
+      {
+        DATABASE_URL: values.find(({ key }) => key === "DATABASE_URL")!.value,
+        REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: values.find(
+          ({ key }) => key === "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS",
+        )!.value,
+      },
+    ]),
+  ),
 };
 const target = ["web", "api", "worker"].map((role) => {
+  const environmentDelta = {
+    DATABASE_URL: `postgres://target/${role}`,
+    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: `target-witness-${role}`,
+    REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: "a".repeat(40),
+    REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: "rollout-1",
+    REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: "2026-08-13T00:00:00.000Z",
+  };
   const environment = [
-    { key: "DATABASE_URL", value: `postgres://target/${role}` },
-    { key: "SECRET", value: `never-log-${role}` },
+    ...Object.entries(environmentDelta).map(([key, value]) => ({ key, value })),
+    { key: "UNKNOWN_SECRET", value: `preserve-byte-for-byte-${role}` },
   ];
   const value = {
-      serviceId: `srv-${role}`,
-      imageUrl: `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`,
-      environment,
-      environmentSha256: environmentSha256(environment),
-    };
+    serviceId: `srv-${role}`,
+    imageUrl: `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`,
+    environmentDelta,
+    removeKeys: [],
+    environmentSha256: environmentSha256(environment),
+  };
   return {
     ...value,
     serviceContractSha256: targetServiceContractSha256(value),
@@ -102,6 +131,12 @@ const harness = (fail?: string, failOrdinal = 1) => {
       },
     ]),
   );
+  const currentEnv = new Map(
+    sourceEnvs.map(({ serviceId, values }) => [
+      serviceId,
+      new Map(values.map(({ key, value }) => [key, value])),
+    ]),
+  );
   let crashed = false;
   let boundaryOrdinal = 0;
   const crash = (name: string) => {
@@ -113,12 +148,18 @@ const harness = (fail?: string, failOrdinal = 1) => {
   };
   const ledger = {
     begin: vi.fn(async () => "created" as const),
-    append: vi.fn(async (value: Omit<ServiceTransitionCheckpoint, "sequence">) => {
-      crash(`checkpoint:${value.step}`);
-      const result = { ...value, sequence: checkpoints.length + 1 };
-      checkpoints.push(result);
-      return result;
-    }),
+    readContract: vi.fn(async () => ({
+      sourceManifest: source,
+      targetContracts: target.map(({ environmentDelta: _, ...item }) => item),
+    })),
+    append: vi.fn(
+      async (value: Omit<ServiceTransitionCheckpoint, "sequence">) => {
+        crash(`checkpoint:${value.step}`);
+        const result = { ...value, sequence: checkpoints.length + 1 };
+        checkpoints.push(result);
+        return result;
+      },
+    ),
     read: vi.fn(async () => checkpoints),
     complete: vi.fn(async () => undefined),
   };
@@ -141,12 +182,33 @@ const harness = (fail?: string, failOrdinal = 1) => {
       current.get(contract.serviceId)!.serviceContractSha256 =
         contract.serviceContractSha256;
     }),
-    replaceEnvironment: vi.fn(async (id: string, values: typeof sourceEnvs[number]["values"]) => {
-      const value = environmentSha256(values);
-      current.get(id)!.environmentSha256 = value;
-      crash("replaceEnvironment");
-      return value;
-    }),
+    replaceEnvironment: vi.fn(
+      async (
+        id: string,
+        input: {
+          set: Record<string, string>;
+          remove: readonly string[];
+          expectedBeforeSha256?: string;
+        },
+      ) => {
+        const env = currentEnv.get(id)!;
+        if (
+          input.expectedBeforeSha256 &&
+          current.get(id)!.environmentSha256 !== input.expectedBeforeSha256
+        )
+          throw new Error("concurrent");
+        input.remove.forEach((key) => env.delete(key));
+        Object.entries(input.set).forEach(([key, value]) =>
+          env.set(key, value),
+        );
+        const value = environmentSha256(
+          [...env].map(([key, value]) => ({ key, value })),
+        );
+        current.get(id)!.environmentSha256 = value;
+        crash("replaceEnvironment");
+        return value;
+      },
+    ),
     deployImage: vi.fn(async (id: string, imageUrl: string) => {
       current.get(id)!.provenance = {
         kind: "image" as const,
@@ -163,6 +225,11 @@ const harness = (fail?: string, failOrdinal = 1) => {
     waitForDeploy: vi.fn(async () => crash("waitForDeploy")),
     reconcileCommitDeploy: vi.fn(async () => null),
     quiesceDeploys: vi.fn(async () => undefined),
+    captureSourceManifest: vi.fn(async () => source),
+    planEnvironmentDelta: vi.fn(async () => ({
+      environmentSha256: target[0]!.environmentSha256,
+      environmentKeysSha256: "sha256:" + "0".repeat(64),
+    })),
   };
   return {
     cutover: new TransactionalServiceCutover(ledger, provider),
@@ -196,13 +263,16 @@ describe("transactional same-service cutover", () => {
         "checkpoint:target_deployed",
       ].map((boundary) => [boundary, ordinal] as const),
     ),
-  )("restores every source service after %s boundary failure on service %i", async (boundary, ordinal) => {
-    const test = harness(boundary, ordinal);
-    await expect(
-      test.cutover.stage({ source, protectedEnvironment, target }),
-    ).rejects.toThrow();
-    expect(test.provider.configureSource).toHaveBeenCalledTimes(3);
-  });
+  )(
+    "restores every source service after %s boundary failure on service %i",
+    async (boundary, ordinal) => {
+      const test = harness(boundary, ordinal);
+      await expect(
+        test.cutover.stage({ source, protectedEnvironment, target }),
+      ).rejects.toThrow();
+      expect(test.provider.configureSource).toHaveBeenCalledTimes(3);
+    },
+  );
 
   it("reconciles after runner death from durable checkpoints", async () => {
     const test = harness();
@@ -233,10 +303,11 @@ describe("transactional same-service cutover", () => {
       ),
     ).toThrow("manifest_invalid");
     expect(() =>
-      validateServiceTransitionContracts(source, {
-        ...protectedEnvironment,
-        services: protectedEnvironment.services.slice(0, 2),
-      }, target),
+      validateServiceTransitionContracts(
+        source,
+        Object.fromEntries(Object.entries(protectedEnvironment).slice(0, 2)),
+        target,
+      ),
     ).toThrow();
     const test = harness();
     test.checkpoints.push({
@@ -257,5 +328,31 @@ describe("transactional same-service cutover", () => {
     await test.cutover.stage({ source, protectedEnvironment, target });
     expect(JSON.stringify(test.checkpoints)).not.toContain("never-log");
     expect(JSON.stringify(test.checkpoints)).not.toContain("postgres://");
+  });
+
+  it("fails closed when recovery sees neither exact source nor exact target env", async () => {
+    const test = harness();
+    test.checkpoints.push({
+      rolloutId: source.rolloutId,
+      manifestSha256: source.manifestSha256,
+      targetContractSha256: validateServiceTransitionContracts(
+        source,
+        protectedEnvironment,
+        target,
+      ),
+      serviceId: "srv-web",
+      sequence: 1,
+      step: "recovery_intent",
+    });
+    test.provider.observe.mockResolvedValueOnce({
+      serviceId: "srv-worker",
+      suspended: true,
+      serviceContractSha256: services[2]!.serviceContractSha256,
+      environmentSha256: `sha256:${"d".repeat(64)}`,
+      provenance: { kind: "git", commitSha: "a".repeat(40) },
+    });
+    await expect(
+      test.cutover.recover({ source, protectedEnvironment, target }),
+    ).rejects.toThrow("environment_ambiguous");
   });
 });

@@ -8,6 +8,8 @@ CREATE TABLE release_authority.service_transition (
   manifest_sha256 text NOT NULL CHECK (manifest_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   target_contract_sha256 text NOT NULL CHECK (target_contract_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   service_ids text[] NOT NULL CHECK (cardinality(service_ids) = 3),
+  source_manifest jsonb NOT NULL,
+  target_contracts jsonb NOT NULL,
   outcome text CHECK (outcome IN ('target_staged','source_recovered')),
   created_at timestamptz(3) NOT NULL DEFAULT clock_timestamp(),
   completed_at timestamptz(3),
@@ -56,11 +58,20 @@ BEGIN
     OR (SELECT count(DISTINCT value) FROM jsonb_array_elements_text(p_input->'serviceIds')) <> 3
     OR coalesce(p_input->>'manifestSha256','') !~ '^sha256:[a-f0-9]{64}$'
     OR coalesce(p_input->>'targetContractSha256','') !~ '^sha256:[a-f0-9]{64}$'
+    OR jsonb_typeof(p_input->'sourceManifest') <> 'object'
+    OR p_input->'sourceManifest'->>'manifestSha256' <> p_input->>'manifestSha256'
+    OR jsonb_typeof(p_input->'targetContracts') <> 'array'
+    OR jsonb_array_length(p_input->'targetContracts') <> 3
+    OR p_input->'targetContracts' @? '$[*].environmentDelta'
+    OR p_input->'sourceManifest' @? '$.services[*].environmentDelta'
+    OR p_input->'targetContracts'::text ~ 'postgres(ql)?://'
+    OR p_input->'sourceManifest'::text ~ 'postgres(ql)?://'
   THEN RAISE EXCEPTION 'release service transition intent invalid'; END IF;
   INSERT INTO release_authority.service_transition(
-    rollout_id,manifest_sha256,target_contract_sha256,service_ids)
+    rollout_id,manifest_sha256,target_contract_sha256,service_ids,source_manifest,target_contracts)
   VALUES (p_input->>'rolloutId',p_input->>'manifestSha256',p_input->>'targetContractSha256',
-    ARRAY(SELECT value FROM jsonb_array_elements_text(p_input->'serviceIds')))
+    ARRAY(SELECT value FROM jsonb_array_elements_text(p_input->'serviceIds')),
+    p_input->'sourceManifest',p_input->'targetContracts')
   ON CONFLICT (rollout_id) DO NOTHING;
   IF FOUND THEN RETURN 'created'; END IF;
   SELECT * INTO STRICT current_row FROM release_authority.service_transition
@@ -68,9 +79,19 @@ BEGIN
   IF current_row.manifest_sha256 <> p_input->>'manifestSha256'
     OR current_row.target_contract_sha256 <> p_input->>'targetContractSha256'
     OR current_row.service_ids <> ARRAY(SELECT value FROM jsonb_array_elements_text(p_input->'serviceIds'))
+    OR current_row.source_manifest <> p_input->'sourceManifest'
+    OR current_row.target_contracts <> p_input->'targetContracts'
   THEN RAISE EXCEPTION 'release service transition intent conflict'; END IF;
   RETURN 'existing';
 END $body$;
+
+CREATE FUNCTION release_authority.release_service_transition_contract(p_rollout_id text) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER STABLE SET search_path = pg_catalog AS $body$
+  SELECT CASE WHEN transition.rollout_id IS NULL THEN NULL ELSE jsonb_build_object(
+    'sourceManifest',transition.source_manifest,'targetContracts',transition.target_contracts)
+  END
+  FROM release_authority.service_transition transition WHERE transition.rollout_id=p_rollout_id
+$body$;
 
 CREATE FUNCTION release_authority.release_service_transition_append(p_input jsonb) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $body$
@@ -220,6 +241,7 @@ REVOKE ALL ON TABLE release_authority.service_transition_checkpoint FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_service_transition_begin(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_service_transition_append(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_service_transition_read(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_service_transition_contract(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_service_transition_complete(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_service_transition_activation_gate(text,jsonb) FROM PUBLIC;
 
@@ -229,6 +251,7 @@ BEGIN
     GRANT EXECUTE ON FUNCTION release_authority.release_service_transition_begin(jsonb) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_service_transition_append(jsonb) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_service_transition_read(text) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_service_transition_contract(text) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_service_transition_complete(jsonb) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_service_transition_activation_gate(text,jsonb) TO reviewrouter_release_control;
   END IF;

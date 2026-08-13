@@ -146,14 +146,16 @@ export class RunnerCleanupWitnessService {
 }
 
 export class ReleaseServiceTransitionService {
-  constructor(private readonly repository: ReleaseServiceTransitionLedgerPort) {}
-  begin = (
-    input: Parameters<ReleaseServiceTransitionLedgerPort["begin"]>[0],
-  ) => this.repository.begin(input);
+  constructor(
+    private readonly repository: ReleaseServiceTransitionLedgerPort,
+  ) {}
+  begin = (input: Parameters<ReleaseServiceTransitionLedgerPort["begin"]>[0]) =>
+    this.repository.begin(input);
   append = (
     input: Parameters<ReleaseServiceTransitionLedgerPort["append"]>[0],
   ) => this.repository.append(input);
   read = (rolloutId: string) => this.repository.read(rolloutId);
+  readContract = (rolloutId: string) => this.repository.readContract(rolloutId);
   complete = (
     input: Parameters<ReleaseServiceTransitionLedgerPort["complete"]>[0],
   ) => this.repository.complete(input);

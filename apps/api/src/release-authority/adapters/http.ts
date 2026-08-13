@@ -144,9 +144,7 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/service-transitions",
     { preHandler: control },
     async (request) => ({
-      result: await serviceTransition().begin(
-        record(request.body) as never,
-      ),
+      result: await serviceTransition().begin(record(request.body) as never),
     }),
   );
   app.post<{ Params: { rolloutId: string } }>(
@@ -160,10 +158,15 @@ export async function registerReleaseRolloutLedgerRoutes(
     }),
   );
   app.get<{ Params: { rolloutId: string } }>(
-    "/v1/service-transitions/:rolloutId/checkpoints",
+    "/v1/service-transitions/:rolloutId/contract",
     { preHandler: control },
     async (request) =>
-      serviceTransition().read(request.params.rolloutId),
+      serviceTransition().readContract(request.params.rolloutId),
+  );
+  app.get<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/checkpoints",
+    { preHandler: control },
+    async (request) => serviceTransition().read(request.params.rolloutId),
   );
   app.post<{ Params: { rolloutId: string } }>(
     "/v1/service-transitions/:rolloutId/complete",
