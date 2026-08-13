@@ -24,6 +24,46 @@ function jobs(source: string): string[] {
     .map((block) => `  ${block}`);
 }
 
+type StepConclusion = "success" | "failure";
+
+function namedSteps(job: string): readonly Readonly<{
+  name: string;
+  condition: "always" | "success";
+}>[] {
+  return job
+    .split(/^ {6}- /mu)
+    .slice(1)
+    .map((block) => {
+      const name = /^(?:name: ([^\n]+)|uses: ([^@\n]+)|run: ([^\n]+))/u.exec(
+        block,
+      );
+      if (!name) throw new Error("workflow_test_step_name_missing");
+      return {
+        name: name[1] ?? name[2] ?? name[3]!,
+        condition: /\n {8}if: \$\{\{ always\(\) \}\}/u.test(block)
+          ? ("always" as const)
+          : ("success" as const),
+      };
+    });
+}
+
+function executeStepComposition(
+  steps: ReturnType<typeof namedSteps>,
+  conclusions: Readonly<Record<string, StepConclusion>>,
+) {
+  let jobFailed = false;
+  const executed: string[] = [];
+  for (const step of steps) {
+    if (step.condition === "success" && jobFailed) continue;
+    executed.push(step.name);
+    if (conclusions[step.name] === "failure") jobFailed = true;
+  }
+  return {
+    conclusion: jobFailed ? ("failure" as const) : ("success" as const),
+    executed,
+  };
+}
+
 describe("private-network PG17 workflow security contract", () => {
   it("uses one canonical source-writer value through freeze and compensation", () => {
     const workflowValue = '["srv-api123","srv-worker456"]';
@@ -209,6 +249,37 @@ describe("private-network PG17 workflow security contract", () => {
       reconcile.indexOf("reconcile-private-pg17-compensation.ts"),
     );
     expect(reconcile).toContain("compensation-gate-");
+  });
+
+  it("evaluates durable compensation after runner cleanup fails without erasing the failure", () => {
+    const reconcile = jobs(workflow).find((block) =>
+      block.startsWith("  always-reconcile:"),
+    )!;
+    const result = executeStepComposition(namedSteps(reconcile), {
+      "Idempotently reconcile persisted jobs and rollout boundary": "failure",
+    });
+
+    expect(result.executed).toContain("actions/upload-artifact");
+    expect(result.executed).toContain("actions/download-artifact");
+    expect(result.executed).toContain(
+      "Complete safe pre-activation compensation, then reconcile",
+    );
+    expect(result.conclusion).toBe("failure");
+  });
+
+  it("propagates compensation failure after successful runner cleanup", () => {
+    const reconcile = jobs(workflow).find((block) =>
+      block.startsWith("  always-reconcile:"),
+    )!;
+    const result = executeStepComposition(namedSteps(reconcile), {
+      "Idempotently reconcile persisted jobs and rollout boundary": "success",
+      "Complete safe pre-activation compensation, then reconcile": "failure",
+    });
+
+    expect(result.executed).toContain(
+      "Complete safe pre-activation compensation, then reconcile",
+    );
+    expect(result.conclusion).toBe("failure");
   });
 
   it("keeps installer and external authority credentials out of every workflow job", () => {

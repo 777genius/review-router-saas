@@ -276,6 +276,17 @@ describe("release compensation reconciliation", () => {
     expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledWith(
       expect.objectContaining({ sourceWriterServiceIds: ["srv-source"] }),
     );
+    expect(
+      dependencies.ledger.observeCompensationCheckpoint.mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      dependencies.ledger.listProvisioningIntents.mock.invocationCallOrder[0]!,
+    );
+    expect(
+      dependencies.ledger.listProvisioningIntents.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      dependencies.provider.compensateAndObserve.mock.invocationCallOrder[0]!,
+    );
   });
 
   it.each([
