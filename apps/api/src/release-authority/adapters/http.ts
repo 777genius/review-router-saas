@@ -404,8 +404,8 @@ export async function registerReleaseRolloutLedgerRoutes(
       const reconciliation = record(body.reconciliation);
       const result = reconciliation.result;
       if (
-        (result !== "clean" && result !== "pending" && result !== "blocked") ||
-        reconciliation.safeForCompensation !== (result === "clean") ||
+        (result !== "pending" && result !== "blocked") ||
+        reconciliation.safeForCompensation !== false ||
         (result === "blocked" &&
           !["unknown", "duplicate", "timeout", "unresolved_legacy"].includes(
             String(reconciliation.reason),

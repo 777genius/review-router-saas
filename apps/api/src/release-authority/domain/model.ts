@@ -1,8 +1,8 @@
 import type {
   ActivationAuthorization,
   ActivationReceipt,
+  ExternalEffectControlReconciliation,
   ExternalEffectRecord,
-  ExternalEffectReconciliation,
   ProviderAuthorityDecision,
   ProviderAuthorityRequest,
   RunnerIdentity,
@@ -244,7 +244,7 @@ export interface RunnerOperationsLedgerPort {
     claimantId: string;
     expectedEpoch: number;
     jobId?: string;
-    reconciliation: ExternalEffectReconciliation;
+    reconciliation: ExternalEffectControlReconciliation;
     observation?: StepObservation;
   }): Promise<ExternalEffectRecord>;
   persistJob(input: PersistedJob): Promise<void>;

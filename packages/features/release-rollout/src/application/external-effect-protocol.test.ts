@@ -171,34 +171,10 @@ describe("external effect reconciliation application boundary", () => {
     });
   });
 
-  it("requires cleanup proof before recording a clean safe outcome", async () => {
-    const reconcile = vi.fn().mockResolvedValue({
-      state: "cleaned",
-      ownerId: "controller-a",
-      epoch: 1,
-      providerId: "job-a",
-      safeForCompensation: true,
+  it("does not expose a control-plane clean transition", () => {
+    const useCase = new ExternalEffectReconciliationUseCase({
+      reconcile: vi.fn(),
     });
-    const useCase = new ExternalEffectReconciliationUseCase({ reconcile });
-    await expect(
-      useCase.cleaned({
-        effectId: "e",
-        ownerId: "controller-a",
-        expectedEpoch: 1,
-        providerId: "job-a",
-        cleanupProven: false,
-        evidence: {},
-      } as never),
-    ).rejects.toThrow("external_effect_cleanup_proof_required");
-    await expect(
-      useCase.cleaned({
-        effectId: "e",
-        ownerId: "controller-a",
-        expectedEpoch: 1,
-        providerId: "job-a",
-        cleanupProven: true,
-        evidence: { witness: "verified" },
-      }),
-    ).resolves.toMatchObject({ state: "cleaned", safeForCompensation: true });
+    expect(useCase).not.toHaveProperty("cleaned");
   });
 });

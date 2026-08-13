@@ -142,13 +142,11 @@ const ledger = () => ({
   reconcileProvisioningEffect: vi
     .fn()
     .mockImplementation(async (value) =>
-      value.reconciliation.result === "clean"
-        ? { ...dispatchingEffect, state: "cleaned", safeForCompensation: true }
-        : value.reconciliation.result === "blocked"
-          ? { ...dispatchingEffect, state: "blocked" }
-          : value.jobId
-            ? { ...dispatchingEffect, state: "bound", providerId: value.jobId }
-            : dispatchingEffect,
+      value.reconciliation.result === "blocked"
+        ? { ...dispatchingEffect, state: "blocked" }
+        : value.jobId
+          ? { ...dispatchingEffect, state: "bound", providerId: value.jobId }
+          : dispatchingEffect,
     ),
   persistCreatedJob: vi.fn().mockResolvedValue(undefined),
   listOpenJobs: vi.fn().mockResolvedValue([]),
@@ -527,9 +525,11 @@ describe("Render private runner contract", () => {
     },
   );
 
-  it("directly proves cleanup and records reconciliation when created-job persistence fails", async () => {
+  it("replays job persistence, then requires witness-gated terminal cleanup after a lost write response", async () => {
     const jobLedger = ledger();
-    jobLedger.persistCreatedJob.mockRejectedValue(new Error("write_lost"));
+    jobLedger.persistCreatedJob
+      .mockRejectedValueOnce(new Error("write_response_lost"))
+      .mockResolvedValueOnce(undefined);
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(json(service))
@@ -577,11 +577,17 @@ describe("Render private runner contract", () => {
         fetchImpl,
       ).provision(request),
     ).rejects.toThrow("render_runner_job_persistence_failed");
-    expect(jobLedger.reconcileProvisioningEffect).toHaveBeenCalledWith(
+    expect(jobLedger.persistCreatedJob).toHaveBeenCalledTimes(2);
+    expect(jobLedger.persistCreatedJob.mock.calls[0]).toEqual(
+      jobLedger.persistCreatedJob.mock.calls[1],
+    );
+    expect(jobLedger.markTerminal).toHaveBeenCalledWith(
+      created.id,
+      expect.objectContaining({ step: "cleanup_role_runner" }),
+    );
+    expect(jobLedger.reconcileProvisioningEffect).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        jobId: created.id,
-        reconciliation: { result: "clean", safeForCompensation: true },
-        observation: expect.any(Object),
+        reconciliation: expect.objectContaining({ result: "clean" }),
       }),
     );
   });

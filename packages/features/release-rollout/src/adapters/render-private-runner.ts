@@ -7,8 +7,8 @@ import {
 } from "../domain/release-rollout";
 import {
   ExternalEffectState,
+  type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
-  type ExternalEffectReconciliation,
 } from "../domain/external-effect";
 import {
   ExternalEffectDispatchUseCase,
@@ -85,7 +85,7 @@ export interface RunnerJobLedger {
     claimantId: string;
     expectedEpoch: number;
     jobId?: string;
-    reconciliation: ExternalEffectReconciliation;
+    reconciliation: ExternalEffectControlReconciliation;
     observation?: StepObservation;
   }): Promise<ExternalEffectRecord>;
   persistCreatedJob(value: PersistedRunnerJob): Promise<void>;
@@ -213,13 +213,6 @@ function sameValue(a: unknown, b: unknown): boolean {
     return value;
   };
   return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
-}
-
-function cleanupBlockReason(error: unknown): "timeout" | "unknown" {
-  return error instanceof Error &&
-    error.message === "render_runner_cleanup_terminal_timeout"
-    ? "timeout"
-    : "unknown";
 }
 
 export class RenderPrivateRunnerAdapter {
@@ -386,18 +379,19 @@ export class RenderPrivateRunnerAdapter {
         created = matching[0]!;
       }
     }
+    const persistedCreatedJob: PersistedRunnerJob = {
+      rolloutId: input.rolloutId,
+      serviceId: input.baseServiceId,
+      jobId: created.id,
+      observedAt: created.createdAt ?? this.now().toISOString(),
+      cleanupCanary,
+      lifecycle: input.lifecycle,
+      provisioningIntentId,
+    };
     // This durable write deliberately precedes every post-create validation.
     try {
       if (bindingRequired)
-        await this.ledger.persistCreatedJob({
-          rolloutId: input.rolloutId,
-          serviceId: input.baseServiceId,
-          jobId: created.id,
-          observedAt: this.now().toISOString(),
-          cleanupCanary,
-          lifecycle: input.lifecycle,
-          provisioningIntentId,
-        });
+        await this.ledger.persistCreatedJob(persistedCreatedJob);
       bindingRequired = false;
       effect = (
         await reconciliationBoundary.discover({
@@ -427,39 +421,28 @@ export class RenderPrivateRunnerAdapter {
           timedOut: false,
         });
       } else {
-        let observation: StepObservation | undefined;
-        let blockReason: "timeout" | "unknown" = "unknown";
-        try {
-          observation = await this.observeCleanup({
-            api,
-            baseServiceId: input.baseServiceId,
-            jobId: created.id,
-            cleanupCanary,
-            lifecycle: input.lifecycle,
-            timeoutPolls: 30,
-          });
-        } catch (cleanupError) {
-          blockReason = cleanupBlockReason(cleanupError);
-          throw cleanupError;
-        } finally {
-          if (observation)
-            await reconciliationBoundary.cleaned({
-              effectId: provisioningIntentId,
-              ownerId: claimantId,
-              expectedEpoch: effect.epoch,
-              providerId: created.id,
-              cleanupProven: true,
-              evidence: observation,
-            });
-          else
-            await reconciliationBoundary.blocked({
-              effectId: provisioningIntentId,
-              ownerId: claimantId,
-              expectedEpoch: effect.epoch,
-              providerId: created.id,
-              reason: blockReason,
-            });
-        }
+        // The first write may have committed while its response was lost.
+        // Replaying the exact job identity is idempotent and gives the
+        // independent witness a durable seed before cleanup is terminalized.
+        await this.ledger.persistCreatedJob(persistedCreatedJob);
+        await reconciliationBoundary.discover({
+          effectId: provisioningIntentId,
+          ownerId: claimantId,
+          expectedEpoch: effect.epoch,
+          matchingProviderIds: [created.id],
+          timedOut: false,
+        });
+        // Keep the durable effect bound on transient provider or witness
+        // failures so the always-running reconciler can retry without a POST.
+        const observation = await this.observeCleanup({
+          api,
+          baseServiceId: input.baseServiceId,
+          jobId: created.id,
+          cleanupCanary,
+          lifecycle: input.lifecycle,
+          timeoutPolls: 30,
+        });
+        await this.ledger.markTerminal(created.id, observation);
         throw new Error("render_runner_job_persistence_failed", {
           cause: error,
         });
@@ -718,11 +701,20 @@ export class RenderPrivateRunnerAdapter {
           reason: "duplicate",
         });
       } else if (intent.effect.state === ExternalEffectState.Prepared) {
-        await this.ledger.abandonPreparedEffect({
-          intentId: intent.id,
-          claimantId: intent.effect.ownerId!,
-          expectedEpoch: intent.effect.epoch,
-        });
+        if (matching.length === 0)
+          await this.ledger.abandonPreparedEffect({
+            intentId: intent.id,
+            claimantId: intent.effect.ownerId!,
+            expectedEpoch: intent.effect.epoch,
+          });
+        else
+          await reconciliationBoundary.blocked({
+            effectId: intent.id,
+            ownerId: intent.effect.ownerId!,
+            expectedEpoch: intent.effect.epoch,
+            providerId: matching[0]!.jobId,
+            reason: "unknown",
+          });
       } else if (
         matching.length === 0 &&
         intent.effect.state === ExternalEffectState.Dispatching
@@ -734,15 +726,33 @@ export class RenderPrivateRunnerAdapter {
           matchingProviderIds: [],
           timedOut: false,
         });
-      } else if (!open.some((entry) => entry.jobId === matching[0]?.jobId)) {
-        cleanableDiscovered.push(...matching);
+      } else if (
+        matching.length === 1 &&
+        !open.some((entry) => entry.jobId === matching[0]!.jobId)
+      ) {
+        if (intent.effect.state !== ExternalEffectState.Dispatching) {
+          await reconciliationBoundary.blocked({
+            effectId: intent.id,
+            ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
+            expectedEpoch: intent.effect.epoch,
+            providerId: matching[0]!.jobId,
+            reason: "unknown",
+          });
+          continue;
+        }
+        await this.ledger.persistCreatedJob(matching[0]!);
+        await reconciliationBoundary.discover({
+          effectId: intent.id,
+          ownerId: intent.effect.ownerId!,
+          expectedEpoch: intent.effect.epoch,
+          matchingProviderIds: [matching[0]!.jobId],
+          timedOut: false,
+        });
+        cleanableDiscovered.push(matching[0]!);
       }
     }
     const observations: StepObservation[] = [];
     for (const entry of [...open, ...cleanableDiscovered]) {
-      const intent = intents.find(
-        (value) => value.id === entry.provisioningIntentId,
-      );
       let observation: StepObservation;
       try {
         observation = await this.observeCleanup({
@@ -752,29 +762,14 @@ export class RenderPrivateRunnerAdapter {
           cleanupCanary: entry.cleanupCanary,
           lifecycle: entry.lifecycle,
         });
-      } catch (error) {
-        if (intent)
-          await reconciliationBoundary.blocked({
-            effectId: intent.id,
-            ownerId: intent.effect.ownerId ?? `rrc-${randomUUID()}`,
-            expectedEpoch: intent.effect.epoch,
-            providerId: entry.jobId,
-            reason: cleanupBlockReason(error),
-          });
+      } catch {
+        // Bound effects stay pending across transient provider/witness errors.
+        // Bounded backoff turns exhaustion into a blocked artifact while the
+        // durable unsafe state continues to deny compensation.
         continue;
       }
       observations.push(observation);
-      if (open.some((known) => known.jobId === entry.jobId))
-        await this.ledger.markTerminal(entry.jobId, observation);
-      else
-        await reconciliationBoundary.cleaned({
-          effectId: entry.provisioningIntentId,
-          ownerId: intent?.effect.ownerId ?? `rrc-${randomUUID()}`,
-          expectedEpoch: intent?.effect.epoch ?? 0,
-          providerId: entry.jobId,
-          cleanupProven: true,
-          evidence: observation,
-        });
+      await this.ledger.markTerminal(entry.jobId, observation);
     }
     const finalIntents = await this.ledger.listProvisioningIntents(rolloutId);
     const safety = duplicateObserved

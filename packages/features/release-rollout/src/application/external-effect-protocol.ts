@@ -3,6 +3,7 @@ import {
   assertExternalEffectRecord,
   classifyExternalEffectDiscovery,
   mayDispatchProviderPost,
+  type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
   type ExternalEffectReconciliation,
 } from "../domain/external-effect";
@@ -22,7 +23,7 @@ export interface ExternalEffectReconciliationAuthorityPort {
     ownerId: string;
     expectedEpoch: number;
     providerId?: string;
-    reconciliation: ExternalEffectReconciliation;
+    reconciliation: ExternalEffectControlReconciliation;
     evidence?: unknown;
   }): Promise<ExternalEffectRecord>;
 }
@@ -96,28 +97,6 @@ export class ExternalEffectReconciliationUseCase {
       }),
     );
     return { record, reconciliation };
-  }
-
-  async cleaned(input: {
-    effectId: string;
-    ownerId: string;
-    expectedEpoch: number;
-    providerId: string;
-    cleanupProven: true;
-    evidence: unknown;
-  }): Promise<ExternalEffectRecord> {
-    if (!input.providerId || input.cleanupProven !== true || !input.evidence)
-      throw new Error("external_effect_cleanup_proof_required");
-    return assertExternalEffectRecord(
-      await this.authority.reconcile({
-        effectId: input.effectId,
-        ownerId: input.ownerId,
-        expectedEpoch: input.expectedEpoch,
-        providerId: input.providerId,
-        reconciliation: { result: "clean", safeForCompensation: true },
-        evidence: input.evidence,
-      }),
-    );
   }
 
   async blocked(input: {

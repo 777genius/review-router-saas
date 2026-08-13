@@ -514,6 +514,25 @@ describe("release rollout ledger internal API", () => {
         })
       ).statusCode,
     ).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/v1/runner-jobs/intents/${intentId}/reconciliation`,
+          headers,
+          payload: {
+            intentId,
+            claimantId,
+            expectedEpoch: 1,
+            jobId: "job-1",
+            reconciliation: {
+              result: "clean",
+              safeForCompensation: true,
+            },
+          },
+        })
+      ).statusCode,
+    ).toBe(400);
     expect(repository.effectCalls).toHaveLength(callsBeforeInvalid);
     await app.close();
   });

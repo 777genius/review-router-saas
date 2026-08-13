@@ -220,6 +220,7 @@ CREATE OR REPLACE FUNCTION release_authority.release_runner_persist_job(p_job js
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $body$
 DECLARE intent release_authority.runner_intent%ROWTYPE;
+DECLARE persisted release_authority.runner_job%ROWTYPE;
 BEGIN
   SELECT * INTO STRICT intent FROM release_authority.runner_intent
     WHERE intent_id = p_job->>'provisioningIntentId' FOR UPDATE;
@@ -236,7 +237,17 @@ BEGIN
      cleanup_canary, lifecycle)
   VALUES (p_job->>'jobId', p_job->>'rolloutId', p_job->>'provisioningIntentId',
     p_job->>'serviceId', (p_job->>'observedAt')::timestamptz,
-    p_job->>'cleanupCanary', p_job->>'lifecycle');
+    p_job->>'cleanupCanary', p_job->>'lifecycle')
+  ON CONFLICT (job_id) DO NOTHING;
+  SELECT * INTO STRICT persisted FROM release_authority.runner_job
+    WHERE job_id = p_job->>'jobId';
+  IF persisted.rollout_id <> p_job->>'rolloutId'
+    OR persisted.provisioning_intent_id <> p_job->>'provisioningIntentId'
+    OR persisted.service_id <> p_job->>'serviceId'
+    OR persisted.observed_at <> (p_job->>'observedAt')::timestamptz(3)
+    OR persisted.cleanup_canary <> p_job->>'cleanupCanary'
+    OR persisted.lifecycle <> p_job->>'lifecycle'
+  THEN RAISE EXCEPTION 'release runner effect job identity conflict'; END IF;
   RETURN true;
 END $body$;
 REVOKE ALL ON FUNCTION release_authority.release_runner_persist_job(jsonb) FROM PUBLIC;
@@ -255,8 +266,9 @@ BEGIN
     WHERE intent_id = p_input->>'intentId' FOR UPDATE;
   IF current_row.effect_state IN ('cleaned','abandoned','blocked')
     THEN RETURN release_authority.release_runner_effect_snapshot(current_row); END IF;
-  IF current_row.effect_state NOT IN ('dispatching','bound')
+  IF current_row.effect_state NOT IN ('prepared','dispatching','bound')
     OR current_row.effect_epoch <> (p_input->>'expectedEpoch')::bigint
+    OR (current_row.effect_state = 'prepared' AND result <> 'blocked')
   THEN RAISE EXCEPTION 'release runner reconciliation fence conflict'; END IF;
 
   IF result = 'blocked' THEN

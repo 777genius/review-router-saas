@@ -29,6 +29,10 @@ export type ExternalEffectReconciliation =
         | "timeout"
         | "unresolved_legacy";
     };
+export type ExternalEffectControlReconciliation = Exclude<
+  ExternalEffectReconciliation,
+  { readonly result: "clean" }
+>;
 
 export function assertExternalEffectRecord(
   value: ExternalEffectRecord,
@@ -81,7 +85,7 @@ export function classifyExternalEffectDiscovery(input: {
   readonly matchingProviderIds: readonly string[];
   readonly timedOut: boolean;
   readonly legacyUnresolved?: boolean;
-}): ExternalEffectReconciliation {
+}): ExternalEffectControlReconciliation {
   if (input.legacyUnresolved)
     return {
       result: "blocked",

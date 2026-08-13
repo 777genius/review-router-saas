@@ -189,6 +189,21 @@ docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewroute
     'jobId','job-effect','rolloutId','r-effect','provisioningIntentId','rri-'||repeat('2',64),
     'serviceId','svc-effect','observedAt','$now','cleanupCanary','rr-cleanup:r-effect:rr-effect',
     'lifecycle','role'))" >/dev/null
+# A lost HTTP response may replay the identical durable job write, but a
+# conflicting identity must remain impossible.
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+    'jobId','job-effect','rolloutId','r-effect','provisioningIntentId','rri-'||repeat('2',64),
+    'serviceId','svc-effect','observedAt','$now','cleanupCanary','rr-cleanup:r-effect:rr-effect',
+    'lifecycle','role'))" >/dev/null
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+    'jobId','job-effect','rolloutId','r-effect','provisioningIntentId','rri-'||repeat('2',64),
+    'serviceId','svc-effect','observedAt','$now','cleanupCanary','rr-cleanup:r-effect:conflict',
+    'lifecycle','role'))" >/dev/null 2>&1; then
+  echo "conflicting runner job replay unexpectedly succeeded" >&2
+  exit 1
+fi
 bound_effect=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_reconcile_effect(
     '{\"intentId\":\"rri-$(printf '2%.0s' $(seq 1 64))\",\"claimantId\":\"rrc-00000000-0000-4000-8000-000000000099\",\"expectedEpoch\":1,\"jobId\":\"job-effect\",\"reconciliation\":{\"result\":\"pending\",\"safeForCompensation\":false}}')->>'state'")

@@ -19,8 +19,8 @@ import type { RunnerIdentity } from "../domain/release-rollout";
 import type { CompensationCheckpoint } from "../application/ports";
 import {
   assertExternalEffectRecord,
+  type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
-  type ExternalEffectReconciliation,
 } from "../domain/external-effect";
 
 export class AuthenticatedRunnerLedgerAdapter
@@ -132,7 +132,7 @@ export class AuthenticatedRunnerLedgerAdapter
     claimantId: string;
     expectedEpoch: number;
     jobId?: string;
-    reconciliation: ExternalEffectReconciliation;
+    reconciliation: ExternalEffectControlReconciliation;
     observation?: StepObservation;
   }): Promise<ExternalEffectRecord> {
     const value = await this.request(
