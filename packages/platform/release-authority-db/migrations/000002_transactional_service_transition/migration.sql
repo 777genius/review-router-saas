@@ -30,6 +30,7 @@ CREATE TABLE release_authority.service_transition_checkpoint (
   deploy_id text,
   observed_contract_sha256 text CHECK (observed_contract_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   observed_env_sha256 text CHECK (observed_env_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  intent_at timestamptz(3),
   recorded_at timestamptz(3) NOT NULL DEFAULT clock_timestamp(),
   PRIMARY KEY (rollout_id, sequence)
 );
@@ -92,6 +93,7 @@ BEGIN
     IF existing.deploy_id IS NOT DISTINCT FROM p_input->>'deployId'
       AND existing.observed_contract_sha256 IS NOT DISTINCT FROM p_input->>'observedContractSha256'
       AND existing.observed_env_sha256 IS NOT DISTINCT FROM p_input->>'observedEnvSha256'
+      AND existing.intent_at IS NOT DISTINCT FROM (p_input->>'intentAt')::timestamptz
     THEN RETURN p_input || jsonb_build_object('sequence',existing.sequence); END IF;
     RAISE EXCEPTION 'release service transition checkpoint replay conflict';
   END IF;
@@ -141,10 +143,10 @@ BEGIN
     WHERE rollout_id=transition.rollout_id;
   INSERT INTO release_authority.service_transition_checkpoint(
     rollout_id,sequence,service_id,step,manifest_sha256,target_contract_sha256,
-    deploy_id,observed_contract_sha256,observed_env_sha256)
+    deploy_id,observed_contract_sha256,observed_env_sha256,intent_at)
   VALUES (transition.rollout_id,next_sequence,p_input->>'serviceId',p_input->>'step',
     transition.manifest_sha256,transition.target_contract_sha256,p_input->>'deployId',
-    p_input->>'observedContractSha256',p_input->>'observedEnvSha256');
+    p_input->>'observedContractSha256',p_input->>'observedEnvSha256',p_input->>'intentAt');
   RETURN p_input || jsonb_build_object('sequence',next_sequence);
 END $body$;
 
@@ -154,7 +156,8 @@ LANGUAGE sql SECURITY DEFINER STABLE SET search_path = pg_catalog AS $body$
     'rolloutId',rollout_id,'manifestSha256',manifest_sha256,
     'targetContractSha256',target_contract_sha256,'serviceId',service_id,
     'sequence',sequence,'step',step,'deployId',deploy_id,
-    'observedContractSha256',observed_contract_sha256,'observedEnvSha256',observed_env_sha256)
+    'observedContractSha256',observed_contract_sha256,'observedEnvSha256',observed_env_sha256,
+    'intentAt',CASE WHEN intent_at IS NULL THEN NULL ELSE to_char(intent_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END)
     ORDER BY sequence),'[]'::jsonb)
   FROM release_authority.service_transition_checkpoint WHERE rollout_id=p_rollout_id
 $body$;

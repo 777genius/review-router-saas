@@ -25,10 +25,6 @@ export class RenderTransactionalServicesAdapter
   implements TransactionalRenderProvider
 {
   private readonly api: RenderApiAdapter;
-  private readonly expectedDeploys = new Map<
-    string,
-    { kind: "image"; imageUrl: string } | { kind: "git"; commitSha: string }
-  >();
   constructor(
     apiKey: string,
     fetchImpl: RenderFetch = fetch,
@@ -170,22 +166,24 @@ export class RenderTransactionalServicesAdapter
     if (!imageUrl.includes("@sha256:"))
       throw new Error("service_transition_image_digest_invalid");
     const deploy = await this.api.createPinnedDeploy(serviceId);
-    this.expectedDeploys.set(deploy.id, { kind: "image", imageUrl });
     return deploy.id;
   }
 
   async deployCommit(serviceId: string, commitSha: string): Promise<string> {
     const deploy = await this.api.createPinnedDeploy(serviceId, commitSha);
-    this.expectedDeploys.set(deploy.id, { kind: "git", commitSha });
     return deploy.id;
   }
 
-  async waitForDeploy(serviceId: string, deployId: string): Promise<void> {
+  async waitForDeploy(
+    serviceId: string,
+    deployId: string,
+    expected:
+      | { kind: "image"; imageUrl: string }
+      | { kind: "git"; commitSha: string },
+  ): Promise<void> {
     for (let attempt = 0; attempt < 90; attempt += 1) {
       const selected = await this.api.getDeploy(serviceId, deployId);
       if (selected.status === "live") {
-        const expected = this.expectedDeploys.get(deployId);
-        if (!expected) throw new Error("service_transition_deploy_expectation_missing");
         if (expected.kind === "git") {
           if (selected.commit?.id !== expected.commitSha || selected.image)
             throw new Error("service_transition_deploy_provenance_mismatch");
@@ -209,6 +207,36 @@ export class RenderTransactionalServicesAdapter
       await this.sleep(2_000);
     }
     throw new Error("service_transition_deploy_timeout");
+  }
+
+  async reconcileCommitDeploy(input: {
+    serviceId: string;
+    commitSha: string;
+    intentAt: string;
+  }): Promise<string | null> {
+    const intentTime = Date.parse(input.intentAt);
+    if (!Number.isFinite(intentTime))
+      throw new Error("service_transition_deploy_intent_time_invalid");
+    await this.quiesceDeploys(input.serviceId);
+    const candidates = (await this.api.listAllDeploys(input.serviceId)).filter(
+      (deploy) =>
+        deploy.commit?.id === input.commitSha &&
+        !deploy.image &&
+        typeof deploy.createdAt === "string" &&
+        Date.parse(deploy.createdAt) >= intentTime - 1_000,
+    );
+    if (candidates.length > 1)
+      throw new Error("service_transition_deploy_reconciliation_ambiguous");
+    return candidates[0]?.id ?? null;
+  }
+
+  async quiesceDeploys(serviceId: string): Promise<void> {
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      const deploys = await this.api.listAllDeploys(serviceId);
+      if (!deploys.some((deploy) => active.has(deploy.status))) return;
+      await this.sleep(2_000);
+    }
+    throw new Error("service_transition_active_deploy_timeout");
   }
 
   private async waitForSuspension(

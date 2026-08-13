@@ -81,6 +81,7 @@ export type ServiceTransitionCheckpoint = Readonly<{
   deployId?: string;
   observedContractSha256?: string;
   observedEnvSha256?: string;
+  intentAt?: string;
 }>;
 
 export interface ServiceTransitionLedger {
@@ -122,7 +123,19 @@ export interface TransactionalRenderProvider {
   ): Promise<string>;
   deployImage(serviceId: string, imageUrl: string): Promise<string>;
   deployCommit(serviceId: string, commitSha: string): Promise<string>;
-  waitForDeploy(serviceId: string, deployId: string): Promise<void>;
+  waitForDeploy(
+    serviceId: string,
+    deployId: string,
+    expected:
+      | { kind: "image"; imageUrl: string }
+      | { kind: "git"; commitSha: string },
+  ): Promise<void>;
+  reconcileCommitDeploy(input: {
+    serviceId: string;
+    commitSha: string;
+    intentAt: string;
+  }): Promise<string | null>;
+  quiesceDeploys(serviceId: string): Promise<void>;
 }
 
 const canonicalEnv = (
@@ -309,7 +322,10 @@ export class TransactionalServiceCutover {
           contract.serviceId,
           contract.imageUrl,
         );
-        await this.provider.waitForDeploy(contract.serviceId, deployId);
+        await this.provider.waitForDeploy(contract.serviceId, deployId, {
+          kind: "image",
+          imageUrl: contract.imageUrl,
+        });
         await this.checkpoint(common, contract.serviceId, "target_deployed", {
           deployId,
         });
@@ -376,6 +392,7 @@ export class TransactionalServiceCutover {
       if (!sourceEnv)
         throw new Error("service_transition_source_environment_missing");
       await this.provider.suspend(contract.serviceId);
+      await this.provider.quiesceDeploys(contract.serviceId);
       const beforeRestore = await this.provider.observe(contract.serviceId);
       if (!beforeRestore.suspended)
         throw new Error("service_transition_recovery_quiescence_unproven");
@@ -392,7 +409,17 @@ export class TransactionalServiceCutover {
       await this.checkpoint(common, contract.serviceId, "source_env_restored", {
         observedEnvSha256: envHash,
       });
-      await this.checkpoint(common, contract.serviceId, "restore_deploy_intent");
+      const restoreIntentAt = new Date().toISOString();
+      await this.checkpoint(common, contract.serviceId, "restore_deploy_intent", {
+        intentAt: restoreIntentAt,
+      });
+      const persistedIntentAt = [...checkpoints]
+        .reverse()
+        .find(
+          (item) =>
+            item.serviceId === contract.serviceId &&
+            item.step === "restore_deploy_intent",
+        )?.intentAt;
       const persistedDeploy = [...checkpoints]
         .reverse()
         .find(
@@ -402,11 +429,16 @@ export class TransactionalServiceCutover {
         )?.deployId;
       const deployId =
         persistedDeploy ??
-        (await this.provider.deployCommit(
-          contract.serviceId,
-          contract.sourceCommitSha,
-        ));
-      await this.provider.waitForDeploy(contract.serviceId, deployId);
+        (await this.provider.reconcileCommitDeploy({
+          serviceId: contract.serviceId,
+          commitSha: contract.sourceCommitSha,
+          intentAt: persistedIntentAt ?? restoreIntentAt,
+        })) ??
+        (await this.provider.deployCommit(contract.serviceId, contract.sourceCommitSha));
+      await this.provider.waitForDeploy(contract.serviceId, deployId, {
+        kind: "git",
+        commitSha: contract.sourceCommitSha,
+      });
       await this.checkpoint(common, contract.serviceId, "source_deployed", {
         deployId,
       });

@@ -161,6 +161,8 @@ const harness = (fail?: string, failOrdinal = 1) => {
       return `restore-${id}`;
     }),
     waitForDeploy: vi.fn(async () => crash("waitForDeploy")),
+    reconcileCommitDeploy: vi.fn(async () => null),
+    quiesceDeploys: vi.fn(async () => undefined),
   };
   return {
     cutover: new TransactionalServiceCutover(ledger, provider),
