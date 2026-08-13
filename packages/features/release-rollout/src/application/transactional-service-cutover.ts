@@ -409,10 +409,6 @@ export class TransactionalServiceCutover {
       await this.checkpoint(common, contract.serviceId, "source_env_restored", {
         observedEnvSha256: envHash,
       });
-      const restoreIntentAt = new Date().toISOString();
-      await this.checkpoint(common, contract.serviceId, "restore_deploy_intent", {
-        intentAt: restoreIntentAt,
-      });
       const persistedIntentAt = [...checkpoints]
         .reverse()
         .find(
@@ -420,6 +416,14 @@ export class TransactionalServiceCutover {
             item.serviceId === contract.serviceId &&
             item.step === "restore_deploy_intent",
         )?.intentAt;
+      const restoreIntentAt = persistedIntentAt ?? new Date().toISOString();
+      if (!persistedIntentAt)
+        await this.checkpoint(
+          common,
+          contract.serviceId,
+          "restore_deploy_intent",
+          { intentAt: restoreIntentAt },
+        );
       const persistedDeploy = [...checkpoints]
         .reverse()
         .find(
