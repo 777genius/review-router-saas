@@ -5,10 +5,10 @@ CREATE FUNCTION release_authority.release_source_resume_is_rollout_owned()
 RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $body$
 BEGIN
   IF NEW.step = 'source_resumed' AND NOT EXISTS (
-    SELECT 1 FROM release_authority.source_freeze_observation freeze
-    WHERE freeze.rollout_id = NEW.rollout_id
-      AND freeze.service_id = NEW.service_id
-      AND freeze.phase = 'suspended'
+    SELECT 1 FROM release_authority.source_freeze_observation freeze_observation
+    WHERE freeze_observation.rollout_id = NEW.rollout_id
+      AND freeze_observation.service_id = NEW.service_id
+      AND freeze_observation.phase = 'suspended'
   ) THEN
     RAISE EXCEPTION 'release source resume lacks rollout suspension evidence';
   END IF;
@@ -37,10 +37,10 @@ BEGIN
         AND checkpoint.service_id=service_id AND checkpoint.step='target_verified'))
   THEN RAISE EXCEPTION 'release target service transition incomplete'; END IF;
   IF p_input->>'outcome'='source_recovered' THEN
-    SELECT freeze.declared_service_ids INTO declared_service_ids
-      FROM release_authority.source_freeze_observation freeze
-      WHERE freeze.rollout_id=transition.rollout_id
-      ORDER BY freeze.observation_id LIMIT 1;
+    SELECT freeze_observation.declared_service_ids INTO declared_service_ids
+      FROM release_authority.source_freeze_observation freeze_observation
+      WHERE freeze_observation.rollout_id=transition.rollout_id
+      ORDER BY freeze_observation.observation_id LIMIT 1;
     IF declared_service_ids IS NULL
       OR (SELECT array_agg(value ORDER BY value) FROM jsonb_array_elements_text(declared_service_ids))
         <> (SELECT array_agg(value ORDER BY value) FROM unnest(transition.service_ids) value)
@@ -51,16 +51,16 @@ BEGIN
         WHERE NOT EXISTS (SELECT 1 FROM release_authority.service_transition_checkpoint checkpoint
           WHERE checkpoint.rollout_id=transition.rollout_id
             AND checkpoint.service_id=service_id AND checkpoint.step='source_verified'))
-      OR EXISTS (SELECT 1 FROM release_authority.source_freeze_observation freeze
-        WHERE freeze.rollout_id=transition.rollout_id AND freeze.phase='suspended'
+      OR EXISTS (SELECT 1 FROM release_authority.source_freeze_observation freeze_observation
+        WHERE freeze_observation.rollout_id=transition.rollout_id AND freeze_observation.phase='suspended'
           AND NOT EXISTS (SELECT 1 FROM release_authority.service_transition_checkpoint checkpoint
             WHERE checkpoint.rollout_id=transition.rollout_id
-              AND checkpoint.service_id=freeze.service_id AND checkpoint.step='source_resumed'))
+              AND checkpoint.service_id=freeze_observation.service_id AND checkpoint.step='source_resumed'))
       OR EXISTS (SELECT 1 FROM release_authority.service_transition_checkpoint checkpoint
         WHERE checkpoint.rollout_id=transition.rollout_id AND checkpoint.step='source_resumed'
-          AND NOT EXISTS (SELECT 1 FROM release_authority.source_freeze_observation freeze
-            WHERE freeze.rollout_id=transition.rollout_id
-              AND freeze.service_id=checkpoint.service_id AND freeze.phase='suspended'))
+          AND NOT EXISTS (SELECT 1 FROM release_authority.source_freeze_observation freeze_observation
+            WHERE freeze_observation.rollout_id=transition.rollout_id
+              AND freeze_observation.service_id=checkpoint.service_id AND freeze_observation.phase='suspended'))
     THEN RAISE EXCEPTION 'release source service recovery incomplete'; END IF;
   END IF;
   UPDATE release_authority.service_transition SET outcome=p_input->>'outcome',completed_at=clock_timestamp()
