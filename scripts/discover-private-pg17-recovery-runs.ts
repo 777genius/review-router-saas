@@ -10,18 +10,27 @@ const required = (name: string): string => {
 const maximumPages = Number(
   process.env.REVIEW_ROUTER_RECOVERY_MAXIMUM_PAGES ?? "2",
 );
-const runs = await discoverPrivatePg17RecoveryRuns({
+const discovery = await discoverPrivatePg17RecoveryRuns({
   repository: required("GITHUB_REPOSITORY"),
   workflowPath: required("REVIEW_ROUTER_RELEASE_CONTROL_WORKFLOW_PATH"),
   token: required("GITHUB_CONTROL_READ_TOKEN"),
   maximumPages,
+  ...(process.env.REVIEW_ROUTER_RECOVERY_SWEEP_CHECKPOINT
+    ? { checkpoint: process.env.REVIEW_ROUTER_RECOVERY_SWEEP_CHECKPOINT }
+    : {}),
   ...(process.env.REVIEW_ROUTER_TARGET_RUN_ID
     ? { targetRunId: process.env.REVIEW_ROUTER_TARGET_RUN_ID }
     : {}),
 });
-if (process.env.REVIEW_ROUTER_TARGET_RUN_ID && runs.length !== 1)
+if (process.env.REVIEW_ROUTER_TARGET_RUN_ID && discovery.runs.length !== 1)
   throw new Error("private_pg17_recovery_target_not_eligible");
-appendFileSync(required("GITHUB_OUTPUT"), `matrix=${JSON.stringify(runs)}\n`, {
-  encoding: "utf8",
-  mode: 0o600,
-});
+appendFileSync(
+  required("GITHUB_OUTPUT"),
+  [
+    `matrix=${JSON.stringify(discovery.runs)}`,
+    `complete=${String(discovery.complete)}`,
+    `checkpoint=${discovery.checkpoint ? JSON.stringify(discovery.checkpoint) : ""}`,
+    "",
+  ].join("\n"),
+  { encoding: "utf8", mode: 0o600 },
+);

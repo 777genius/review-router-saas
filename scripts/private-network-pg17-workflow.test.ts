@@ -114,6 +114,16 @@ describe("private-network PG17 workflow security contract", () => {
     expect(controller).toContain("target_run_id:");
     expect(controller).toContain("recovery-context:");
     expect(controller).toContain("discover-private-pg17-recovery-runs.ts");
+    expect(controller).toContain("sweep_checkpoint:");
+    expect(controller).toContain("continue-recovery-sweep:");
+    expect(controller).toContain(
+      "dispatch-private-pg17-recovery-continuation.ts",
+    );
+    expect(controller).toContain(
+      "needs.recovery-context.outputs.complete == 'false'",
+    );
+    expect(controller).toContain("actions: write");
+    expect(controller).toContain("REVIEW_ROUTER_RECOVERY_MAXIMUM_PAGES: 2");
     expect(controller).toContain("max-parallel: 2");
     expect(controller).toContain(
       "Reconcile every known or late provider runner with bounded backoff",
