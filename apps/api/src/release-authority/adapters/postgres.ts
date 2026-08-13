@@ -10,8 +10,10 @@ import type {
 } from "@reviewrouter/features-release-rollout";
 import {
   assertExternalEffectRecord,
+  assertRecoveryEffectConsumptionResult,
   assertRunnerProvisioningIntentRecord,
   assertRecoveryEffectRecord,
+  assertRecoveryEffectRecordBinding,
 } from "@reviewrouter/features-release-rollout";
 import type {
   IndependentCleanupWitness,
@@ -574,11 +576,12 @@ export class RoutineReleaseControlLedgerAdapter
       ServiceTransitionLedger["consumeRecoveryEffectPermit"]
     >[0],
   ): ReturnType<ServiceTransitionLedger["consumeRecoveryEffectPermit"]> {
-    return assertRecoveryEffectRecord(
+    return assertRecoveryEffectConsumptionResult(
       await firstValue(
         this.prisma,
         Prisma.sql`SELECT release_authority.release_recovery_effect_consume(${asJsonb(input)}) AS value`,
       ),
+      input,
     );
   }
   async completeRecoveryEffect(

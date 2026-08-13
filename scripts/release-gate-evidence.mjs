@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, URLSearchParams } from "node:url";
 import { readExactZipEntries } from "./lib/github-actions-trusted-evidence.mjs";
 
 export const releaseGateContract = Object.freeze({

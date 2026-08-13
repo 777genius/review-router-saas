@@ -103,34 +103,66 @@ describe("disposable dual-version rehearsal", () => {
       "scripts/install-release-authority-db.mjs",
       "utf8",
     );
-    expect(installer.indexOf("000001_release_authority")).toBeLessThan(
-      installer.indexOf("000002_external_effect_protocol"),
+    const canonicalMigrationList = installer.slice(
+      installer.indexOf("export const releaseAuthorityMigrationPaths"),
+      installer.indexOf("export const releaseAuthorityMigrationManifest"),
+    );
+    const legacyCatalogList = installer.slice(
+      installer.indexOf("const legacyCatalogPaths"),
+      installer.indexOf("const legacyCatalogChecksums"),
     );
     expect(
-      installer.match(/000001_release_authority\/migration\.sql/gu),
-    ).toHaveLength(1);
-    expect(
-      installer.match(/000002_external_effect_protocol\/migration\.sql/gu),
-    ).toHaveLength(1);
-    expect(installer.indexOf("000002_external_effect_protocol")).toBeLessThan(
-      installer.indexOf("000002_transactional_service_transition"),
+      canonicalMigrationList.indexOf("000001_release_authority"),
+    ).toBeLessThan(
+      canonicalMigrationList.indexOf("000002_external_effect_protocol"),
     );
     expect(
-      installer.match(
+      canonicalMigrationList.match(
+        /000001_release_authority\/migration\.sql/gu,
+      ),
+    ).toHaveLength(1);
+    expect(
+      canonicalMigrationList.match(
+        /000002_external_effect_protocol\/migration\.sql/gu,
+      ),
+    ).toHaveLength(1);
+    expect(
+      legacyCatalogList.match(/000001_release_authority\/migration\.sql/gu),
+    ).toHaveLength(1);
+    expect(
+      legacyCatalogList.match(
+        /000002_external_effect_protocol\/migration\.sql/gu,
+      ),
+    ).toHaveLength(1);
+    expect(
+      canonicalMigrationList.indexOf("000002_external_effect_protocol"),
+    ).toBeLessThan(
+      canonicalMigrationList.indexOf("000002_transactional_service_transition"),
+    );
+    expect(
+      canonicalMigrationList.match(
         /000002_transactional_service_transition\/migration\.sql/gu,
       ),
     ).toHaveLength(1);
-    expect(installer.indexOf("000003_partial_source_freeze")).toBeLessThan(
-      installer.indexOf("000005_late_runner_effects"),
+    expect(
+      canonicalMigrationList.indexOf("000003_partial_source_freeze"),
+    ).toBeLessThan(
+      canonicalMigrationList.indexOf("000005_late_runner_effects"),
     );
     expect(
-      installer.match(/000005_late_runner_effects\/migration\.sql/gu),
+      canonicalMigrationList.match(
+        /000005_late_runner_effects\/migration\.sql/gu,
+      ),
     ).toHaveLength(1);
-    expect(installer.indexOf("000005_late_runner_effects")).toBeLessThan(
-      installer.indexOf("000007_compensation_effect_fence"),
+    expect(
+      canonicalMigrationList.indexOf("000005_late_runner_effects"),
+    ).toBeLessThan(
+      canonicalMigrationList.indexOf("000007_compensation_effect_fence"),
     );
     expect(
-      installer.match(/000007_compensation_effect_fence\/migration\.sql/gu),
+      canonicalMigrationList.match(
+        /000007_compensation_effect_fence\/migration\.sql/gu,
+      ),
     ).toHaveLength(1);
     expect(source).not.toContain(
       "GRANT SELECT ON reviewrouter_activation.activation_receipt TO reviewrouter_role_bootstrap",
