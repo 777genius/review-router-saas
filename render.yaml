@@ -48,7 +48,7 @@ services:
         value: 10000
       - key: REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_DATABASE_URL
         sync: false
-      - key: REVIEW_ROUTER_RELEASE_WITNESS_TRIGGER_TOKEN_SHA256
+      - key: REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256
         sync: false
       - key: REVIEW_ROUTER_RELEASE_WITNESS_RENDER_READ_TOKEN
         sync: false

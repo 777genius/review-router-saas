@@ -1,12 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from "node:crypto";
-import {
-  cpSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -41,6 +35,7 @@ import {
   roleProvisioningSql,
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
+import { releaseAuthorityMigrationBundle } from "./install-release-authority-db.mjs";
 import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
 import { createSecureCanonicalRun } from "./private-pg17-secure-canonical.ts";
 import { reconcileLegacyAmbiguity } from "./reconcile-codex-rotating-legacy-ambiguity.mjs";
@@ -229,33 +224,21 @@ export async function executeDisposableRehearsal(
       authority,
       "CREATE EXTENSION IF NOT EXISTS pgcrypto; CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'disposable-control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'disposable-provider'; CREATE ROLE reviewrouter_release_witness LOGIN PASSWORD 'disposable-witness'",
     );
-    for (const migration of [
-      "000001_release_authority",
-      "000002_external_effect_protocol",
-      "000002_transactional_service_transition",
-    ]) {
-      execute(
-        [
-          "exec",
-          "--interactive",
-          authority,
-          "psql",
-          "-U",
-          "postgres",
-          "-d",
-          "reviewrouter",
-        ],
-        {
-          input: readFileSync(
-            join(
-              process.cwd(),
-              `packages/platform/release-authority-db/migrations/${migration}/migration.sql`,
-            ),
-            "utf8",
-          ),
-        },
-      );
-    }
+    execute(
+      [
+        "exec",
+        "--interactive",
+        authority,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "reviewrouter",
+      ],
+      {
+        input: releaseAuthorityMigrationBundle(process.cwd()),
+      },
+    );
     const preReleasePrisma = join(directory, "pre-release-prisma");
     cpSync(
       join(process.cwd(), "packages/platform/db/prisma"),

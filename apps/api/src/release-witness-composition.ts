@@ -13,6 +13,7 @@ type WitnessDatabaseReadiness = Readonly<{
   postgresMajor: number;
   seedRoutine: boolean;
   persistRoutine: boolean;
+  externalEffectRoutine: boolean;
 }>;
 
 export async function createReleaseWitnessApp(input: {
@@ -41,14 +42,16 @@ export async function createReleaseWitnessApp(input: {
         SELECT current_user AS "roleName",
           current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
           to_regprocedure('release_authority.release_runner_cleanup_observation_seed(text)') IS NOT NULL AS "seedRoutine",
-          to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)') IS NOT NULL AS "persistRoutine"
+          to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)') IS NOT NULL AS "persistRoutine",
+          to_regprocedure('release_authority.release_runner_effect_snapshot(release_authority.runner_intent)') IS NOT NULL AS "externalEffectRoutine"
       `);
       if (
         rows.length !== 1 ||
         rows[0]?.roleName !== "reviewrouter_release_witness" ||
         rows[0].postgresMajor !== 17 ||
         !rows[0].seedRoutine ||
-        !rows[0].persistRoutine
+        !rows[0].persistRoutine ||
+        !rows[0].externalEffectRoutine
       )
         throw new Error("release_witness_database_identity_invalid");
       return { status: "ok", service: "release-witness" };

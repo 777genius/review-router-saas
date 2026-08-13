@@ -40,9 +40,7 @@ describe("disposable dual-version rehearsal", () => {
       "HttpProviderAuthorityDecisionAdapter",
       "createReleaseControlApp",
       "rr-authority-pg17-",
-      '"000001_release_authority"',
-      '"000002_external_effect_protocol"',
-      '"000002_transactional_service_transition"',
+      "releaseAuthorityMigrationBundle",
       "activationAuthorityProvisioningSql",
       "reviewrouter_activation_permit_installer",
       "reviewrouter_activation_receipt_reader",
@@ -73,6 +71,19 @@ describe("disposable dual-version rehearsal", () => {
       "redactedErrorChain",
     ])
       expect(source).toContain(required);
+    const installer = readFileSync(
+      "scripts/install-release-authority-db.mjs",
+      "utf8",
+    );
+    expect(installer.indexOf("000001_release_authority")).toBeLessThan(
+      installer.indexOf("000002_external_effect_protocol"),
+    );
+    expect(
+      installer.match(/000001_release_authority\/migration\.sql/gu),
+    ).toHaveLength(1);
+    expect(
+      installer.match(/000002_external_effect_protocol\/migration\.sql/gu),
+    ).toHaveLength(1);
     expect(source).not.toContain(
       "GRANT SELECT ON reviewrouter_activation.activation_receipt TO reviewrouter_role_bootstrap",
     );

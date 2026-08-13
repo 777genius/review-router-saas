@@ -32,9 +32,16 @@ are fixed by
 | Release migration  | `REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL`                     | Migrate and invoke activation; cannot install permits |
 | Runtime roles      | API/web/worker/effect-authority URLs                               | Normal least-privilege runtime work                   |
 
-Control, provider authority, and witness must use distinct tokens/database roles. Control and witness must be healthy and
+Control, provider authority, and witness must use exactly three distinct HTTP
+bearer credentials and distinct database roles. Their plaintext secret names
+are `REVIEW_ROUTER_RELEASE_CONTROL_TOKEN`,
+`REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN`, and
+`REVIEW_ROUTER_RELEASE_WITNESS_TOKEN`. Control and witness must be healthy and
 resolve from `REVIEW_ROUTER_RELEASE_CONTROL_URL` and
-`REVIEW_ROUTER_RELEASE_WITNESS_URL` to different services.
+`REVIEW_ROUTER_RELEASE_WITNESS_URL` to different services. Do not provision
+`REVIEW_ROUTER_RUNNER_LEDGER_*` or `REVIEW_ROUTER_RUNNER_WITNESS_*` repository
+values; those are adapter-local environment names populated from the canonical
+release service values by the workflows.
 
 ## Configuration matrix
 
@@ -58,35 +65,49 @@ Freeze, cutover, and compensation all fail closed on any other value.
 
 Protected environment secrets:
 
-| Environment                     | Secrets                                                                                                                                                         |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `production-release-preflight`  | release-control token                                                                                                                                           |
-| `production-runner-control`     | release-control token; suspension and/or runner-control key per job                                                                                             |
-| `production-role-bootstrap`     | release-control token, provenance key, source compensation/copy URL, reconnect URLs, role-bootstrap/release-migration URLs, target runtime URLs, backup witness |
-| `production-runner-ledger-read` | release-control token                                                                                                                                           |
-| `production`                    | release-control token, target-switch key, release-migration and target runtime URLs                                                                             |
-| `production-service-switch`     | release-control token, suspension key, live-canary token                                                                                                        |
+| Environment                     | Secrets                                                                                                                                                                                 |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `production-release-preflight`  | release-control token                                                                                                                                                                   |
+| `production-runner-control`     | release-control, provider-authority, and release-witness tokens; suspension and/or runner-control key per job                                                                           |
+| `production-role-bootstrap`     | release-control and provider-authority tokens, provenance key, source compensation/copy URL, reconnect URLs, role-bootstrap/release-migration URLs, target runtime URLs, backup witness |
+| `production-runner-ledger-read` | release-control token                                                                                                                                                                   |
+| `production`                    | release-control and provider-authority tokens, target-switch key, release-migration and target runtime URLs                                                                             |
+| `production-service-switch`     | release-control and provider-authority tokens, suspension key, live-canary token                                                                                                        |
 
 Server-only service values:
 
-| Service | Values                                                                                                                       |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Control | authority control DB URL, provider-authority DB URL, distinct control/provider token SHA-256 values, permit-installer DB URL |
-| Witness | authority witness DB URL, witness token SHA-256                                                                              |
+| Service | Values                                                                                                                                                                                                      |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Control | authority control DB URL, provider-authority DB URL, distinct `REVIEW_ROUTER_RELEASE_CONTROL_TOKEN_SHA256` and `REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256`, permit-installer and receipt-reader DB URLs |
+| Witness | authority witness DB URL, `REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256`, Render read token                                                                                                                   |
 
-Actions receives the plaintext control token; services store its SHA-256. Logs
-and artifacts may contain IDs/digests, never URLs, tokens, passwords, backup
-material, or raw recovery witnesses.
+Actions receives the three scoped plaintext tokens; services store only their
+SHA-256 values. Logs and artifacts may contain IDs/digests, never URLs, tokens,
+passwords, backup material, or raw recovery witnesses.
 
 ## Provision once
 
-1. Create a dedicated PostgreSQL 17 authority DB, distinct
-   `reviewrouter_release_control`, `reviewrouter_provider_authority`, and `reviewrouter_release_witness` logins,
-   and apply
-   `packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql`
-   as owner. Retain this DB across cutovers.
+1. Create a fresh dedicated PostgreSQL 17 authority DB and the distinct
+   `reviewrouter_release_control`, `reviewrouter_provider_authority`, and
+   `reviewrouter_release_witness` logins. Put the owner connection URL in a
+   mode-0600 credential file, then invoke the one-shot installer exactly once:
+
+   ```bash
+   export REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_DATABASE_URL_FILE=/approved/secret/path/release-authority-owner-url
+   pnpm release-authority:install
+   ```
+
+   The installer applies `000001_release_authority` followed by
+   `000002_external_effect_protocol`, each exactly once in one transaction. It
+   is fresh-install-only: never run it against an existing authority catalog or
+   substitute application Prisma migration tooling. Retain this DB across
+   cutovers.
+
 2. Deploy control and witness from the same immutable release and verify their
-   `/health` service identities.
+   `/health` service identities. Healthy control must observe the 000002
+   `release_runner_prepare_effect`, `release_runner_acquire_dispatch_permit`,
+   `release_runner_reconcile_effect`, and `release_runner_abandon_prepared`
+   routines; healthy witness must observe the 000002 effect snapshot routine.
 3. Pre-provision target roles and the `reviewrouter_activation` guard. Role
    bootstrap must prove the guard has no membership edges, installer has only
    its function, and release migration cannot install permits.
@@ -108,6 +129,7 @@ export REVIEW_ROUTER_REHEARSAL_PG16_IMAGE='postgres:16.13-bookworm@sha256:<appro
 export REVIEW_ROUTER_REHEARSAL_PG17_IMAGE='postgres:17.<minor>-bookworm@sha256:<approved-64-hex-digest>'
 pnpm release-rollout:rehearsal --check-only
 pnpm exec vitest run \
+  scripts/install-release-authority-db.test.ts \
   scripts/private-network-pg17-workflow.test.ts \
   scripts/rehearse-private-pg17-rollout.test.ts \
   scripts/private-pg17-activation.test.ts \
@@ -124,6 +146,8 @@ pnpm release-rollout:rehearsal
 
 Replace both image placeholders with the immutable digest pins approved in CI;
 the check intentionally fails when opt-in or either pin is absent.
+The rehearsal uses the same ordered one-transaction authority migration bundle
+as installation: 000001 once, then 000002 once.
 
 CI must pass on the protected candidate SHA. Live E2E requires a newly created
 disposable repository/project, source/target PG17 DBs, runner services, and
@@ -160,6 +184,9 @@ repositories, user projects, and reused customer runners are forbidden fixtures.
    services under provider authority, obtains durable fence/authorization,
    asks the control server to install the permit, and invokes transactional
    activation. Installer/guard credentials never reach the runner.
+   A transport retry of the byte-identical activation request is idempotent and
+   returns the already-written identical receipt. A changed tuple is a conflict;
+   operators must never manufacture or manually replay either request.
 9. `await-cutover-runner-cleanup` proves destruction and work-path removal.
 10. `finalize-target-and-trusted-evidence` resumes only authorized target
     deploys, runs the live write/read canary, verifies final authority, and

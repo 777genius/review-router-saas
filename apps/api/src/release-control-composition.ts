@@ -29,6 +29,10 @@ type DatabaseReadiness = Readonly<{
   providerRoutine: boolean;
   installerRoutine: boolean;
   readerRoutine: boolean;
+  prepareEffectRoutine: boolean;
+  dispatchPermitRoutine: boolean;
+  reconcileEffectRoutine: boolean;
+  abandonPreparedRoutine: boolean;
 }>;
 
 async function observeDatabaseReadiness(
@@ -41,7 +45,11 @@ async function observeDatabaseReadiness(
       to_regprocedure('release_authority.release_rollout_claim(text,text,text,integer,text,text)') IS NOT NULL AS "controlRoutine",
       to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') IS NOT NULL AS "providerRoutine",
       to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL AS "installerRoutine",
-      to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NOT NULL AS "readerRoutine"
+      to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NOT NULL AS "readerRoutine",
+      to_regprocedure('release_authority.release_runner_prepare_effect(jsonb)') IS NOT NULL AS "prepareEffectRoutine",
+      to_regprocedure('release_authority.release_runner_acquire_dispatch_permit(jsonb)') IS NOT NULL AS "dispatchPermitRoutine",
+      to_regprocedure('release_authority.release_runner_reconcile_effect(jsonb)') IS NOT NULL AS "reconcileEffectRoutine",
+      to_regprocedure('release_authority.release_runner_abandon_prepared(text,text,bigint)') IS NOT NULL AS "abandonPreparedRoutine"
   `);
   if (rows.length !== 1 || !rows[0])
     throw new Error("release_control_database_identity_unavailable");
@@ -153,6 +161,10 @@ export async function createReleaseControlApp(input: {
         installer.postgresMajor !== 17 ||
         reader.postgresMajor !== 17 ||
         !control.controlRoutine ||
+        !control.prepareEffectRoutine ||
+        !control.dispatchPermitRoutine ||
+        !control.reconcileEffectRoutine ||
+        !control.abandonPreparedRoutine ||
         !provider.providerRoutine ||
         !installer.installerRoutine ||
         !reader.readerRoutine

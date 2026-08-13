@@ -21,6 +21,10 @@ const authorityReadiness = (
     providerRoutine: true,
     installerRoutine: false,
     readerRoutine: false,
+    prepareEffectRoutine: true,
+    dispatchPermitRoutine: true,
+    reconcileEffectRoutine: true,
+    abandonPreparedRoutine: true,
   },
 ];
 const installerReadiness = [
@@ -32,6 +36,10 @@ const installerReadiness = [
     providerRoutine: false,
     installerRoutine: true,
     readerRoutine: true,
+    prepareEffectRoutine: false,
+    dispatchPermitRoutine: false,
+    reconcileEffectRoutine: false,
+    abandonPreparedRoutine: false,
   },
 ];
 const readerReadiness = [
@@ -43,6 +51,10 @@ const readerReadiness = [
     providerRoutine: false,
     installerRoutine: false,
     readerRoutine: true,
+    prepareEffectRoutine: false,
+    dispatchPermitRoutine: false,
+    reconcileEffectRoutine: false,
+    abandonPreparedRoutine: false,
   },
 ];
 const witnessReadiness = [
@@ -51,6 +63,7 @@ const witnessReadiness = [
     postgresMajor: 17,
     seedRoutine: true,
     persistRoutine: true,
+    externalEffectRoutine: true,
   },
 ];
 
@@ -537,6 +550,58 @@ describe("release authority process composition", () => {
       reason: "database_unavailable",
     });
     expect(response.body).not.toContain("secret database detail");
+    await app.close();
+  });
+
+  it("fails health when the required 000002 external-effect routines are absent", async () => {
+    const app = await createReleaseControlApp({
+      controlPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue([
+          {
+            ...authorityReadiness("reviewrouter_release_control")[0],
+            dispatchPermitRoutine: false,
+          },
+        ]),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_provider_authority"),
+          ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+      } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    await app.close();
+  });
+
+  it("fails witness health when its required 000002 effect routine is absent", async () => {
+    const app = await createReleaseWitnessApp({
+      witnessPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue([
+            { ...witnessReadiness[0], externalEffectRoutine: false },
+          ]),
+      } as never,
+      triggerTokenSha256: digest("witness"),
+      renderReadToken: "read-only",
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
     await app.close();
   });
 

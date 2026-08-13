@@ -102,11 +102,9 @@ describe("private-network PG17 workflow security contract", () => {
     expect(controller).toContain("runner-cleanup-reconciliation.json");
     expect(workflow).not.toContain("outputs.label");
     expect(controller).toContain(
-      "REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_WITNESS_URL }}",
+      "REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RELEASE_WITNESS_URL }}",
     );
-    expect(controller).not.toContain(
-      "REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RUNNER_LEDGER_URL }}",
-    );
+    expect(controller).not.toContain("vars.REVIEW_ROUTER_RUNNER_WITNESS_URL");
   });
 
   it("provides durable scheduled and exact manual late-job recovery", () => {
@@ -221,6 +219,9 @@ describe("private-network PG17 workflow security contract", () => {
       "secrets.REVIEW_ROUTER_COMPENSATION_SOURCE_DATABASE_URL",
     );
     expect(workflow).not.toContain("secrets.REVIEW_ROUTER_RUNNER_LEDGER_TOKEN");
+    expect(`${workflow}\n${controller}`).not.toContain(
+      "secrets.REVIEW_ROUTER_RUNNER_WITNESS_TOKEN",
+    );
     expect(workflow).not.toContain("secrets.REVIEW_ROUTER_SOURCE_DATABASE_URL");
     for (const jobName of ["role-bootstrap-private", "pg17-cutover-private"]) {
       const job = jobs(workflow).find((block) =>
@@ -230,6 +231,67 @@ describe("private-network PG17 workflow security contract", () => {
       expect(job).toContain("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON:");
       expect(job).toContain("RENDER_SERVICE_SUSPENSION_API_KEY:");
       expect(job).toContain("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS:");
+    }
+  });
+
+  it("uses one canonical three-credential release service contract", () => {
+    const combined = `${workflow}\n${controller}`;
+    const credentials = new Set(
+      [
+        ...combined.matchAll(
+          /secrets\.(REVIEW_ROUTER_(?:RELEASE_CONTROL|PROVIDER_AUTHORITY|RELEASE_WITNESS)_TOKEN)\b/gu,
+        ),
+      ].map((match) => match[1]),
+    );
+    expect([...credentials].sort()).toEqual([
+      "REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN",
+      "REVIEW_ROUTER_RELEASE_CONTROL_TOKEN",
+      "REVIEW_ROUTER_RELEASE_WITNESS_TOKEN",
+    ]);
+    expect(combined).not.toMatch(
+      /(?:vars|secrets)\.REVIEW_ROUTER_RUNNER_(?:LEDGER|WITNESS)_(?:URL|TOKEN)/u,
+    );
+    expect(combined).toContain(
+      "REVIEW_ROUTER_RUNNER_LEDGER_URL: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_URL }}",
+    );
+    expect(combined).toContain(
+      "REVIEW_ROUTER_RUNNER_WITNESS_URL: ${{ vars.REVIEW_ROUTER_RELEASE_WITNESS_URL }}",
+    );
+
+    const blueprint = readFileSync("render.yaml", "utf8");
+    for (const hash of [
+      "REVIEW_ROUTER_RELEASE_CONTROL_TOKEN_SHA256",
+      "REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256",
+      "REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256",
+    ])
+      expect(blueprint.match(new RegExp(`key: ${hash}`, "gu"))).toHaveLength(1);
+    expect(blueprint).not.toContain(
+      "REVIEW_ROUTER_RELEASE_WITNESS_TRIGGER_TOKEN_SHA256",
+    );
+    const witnessServer = readFileSync(
+      "apps/api/src/release-witness-server.ts",
+      "utf8",
+    );
+    expect(witnessServer).toContain(
+      'required("REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256")',
+    );
+    expect(witnessServer).not.toContain("WITNESS_TRIGGER_TOKEN_SHA256");
+
+    const architecture = readFileSync(
+      "docs/adr/ADR-private-pg17-release-authority.md",
+      "utf8",
+    );
+    const runbook = readFileSync(
+      "docs/operations/private-pg17-release-rollout.md",
+      "utf8",
+    );
+    for (const document of [architecture, runbook]) {
+      expect(document).toContain("REVIEW_ROUTER_RELEASE_CONTROL_TOKEN_SHA256");
+      expect(document).toContain(
+        "REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256",
+      );
+      expect(document).toContain("REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256");
+      expect(document).not.toContain("WITNESS_TRIGGER_TOKEN_SHA256");
     }
   });
 
