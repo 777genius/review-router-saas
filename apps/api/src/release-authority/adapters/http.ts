@@ -77,6 +77,89 @@ const intentIdPattern = /^rri-[a-f0-9]{64}$/u;
 const claimantIdPattern =
   /^rrc-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const commandHashPattern = /^sha256:[a-f0-9]{64}$/u;
+const sourceServiceIdPattern = /^srv-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+const sourceFreezeRequest = (
+  value: unknown,
+  rolloutId: string,
+  prepare = false,
+) => {
+  const body = record(value);
+  const declared = body.declaredServiceIds;
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "expectedCommitSha",
+      "runId",
+      "runAttempt",
+      "sourceSystemIdentifier",
+      "targetSystemIdentifier",
+      "serviceId",
+      "latestSuccessfulDeployId",
+      "observedAt",
+      "declaredServiceIds",
+      ...(prepare ? ["beforeSuspended"] : []),
+    ]) ||
+    body.rolloutId !== rolloutId ||
+    !/^[a-f0-9]{40}$/u.test(String(body.expectedCommitSha)) ||
+    !/^[1-9][0-9]*$/u.test(String(body.runId)) ||
+    body.runAttempt !== 1 ||
+    !/^[0-9]+$/u.test(String(body.sourceSystemIdentifier)) ||
+    !/^[0-9]+$/u.test(String(body.targetSystemIdentifier)) ||
+    !sourceServiceIdPattern.test(String(body.serviceId)) ||
+    !nonemptyString(body.latestSuccessfulDeployId) ||
+    typeof body.observedAt !== "string" ||
+    !Number.isFinite(Date.parse(body.observedAt)) ||
+    !Array.isArray(declared) ||
+    declared.length < 1 ||
+    declared.length > 100 ||
+    declared.some(
+      (id) => typeof id !== "string" || !sourceServiceIdPattern.test(id),
+    ) ||
+    new Set(declared).size !== declared.length ||
+    !declared.includes(body.serviceId) ||
+    (prepare && typeof body.beforeSuspended !== "boolean")
+  )
+    throw Object.assign(new Error("release_source_freeze_request_invalid"), {
+      statusCode: 400,
+    });
+  return body;
+};
+const sourceFreezeCompletionRequest = (value: unknown, rolloutId: string) => {
+  const body = record(value);
+  const declared = body.declaredServiceIds;
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "expectedCommitSha",
+      "runId",
+      "runAttempt",
+      "sourceSystemIdentifier",
+      "targetSystemIdentifier",
+      "declaredServiceIds",
+      "observedAt",
+    ]) ||
+    body.rolloutId !== rolloutId ||
+    !/^[a-f0-9]{40}$/u.test(String(body.expectedCommitSha)) ||
+    !/^[1-9][0-9]*$/u.test(String(body.runId)) ||
+    body.runAttempt !== 1 ||
+    !/^[0-9]+$/u.test(String(body.sourceSystemIdentifier)) ||
+    !/^[0-9]+$/u.test(String(body.targetSystemIdentifier)) ||
+    typeof body.observedAt !== "string" ||
+    !Number.isFinite(Date.parse(body.observedAt)) ||
+    !Array.isArray(declared) ||
+    declared.length < 1 ||
+    declared.length > 100 ||
+    declared.some(
+      (id) => typeof id !== "string" || !sourceServiceIdPattern.test(id),
+    ) ||
+    new Set(declared).size !== declared.length
+  )
+    throw Object.assign(
+      new Error("release_source_freeze_completion_request_invalid"),
+      { statusCode: 400 },
+    );
+  return body;
+};
 const effectPathBody = (
   value: unknown,
   intentId: string,
@@ -242,6 +325,39 @@ export async function registerReleaseRolloutLedgerRoutes(
     ),
   }));
   app.post<{ Params: { rolloutId: string } }>(
+    "/v1/rollouts/:rolloutId/source-freeze-completion",
+    { preHandler: control },
+    async (request) => {
+      const validated = sourceFreezeCompletionRequest(
+        request.body,
+        request.params.rolloutId,
+      );
+      return {
+        result: await dependencies.authority.completeSourceFreeze({
+          rolloutId: request.params.rolloutId,
+          expectedCommitSha: validated.expectedCommitSha,
+          runId: validated.runId,
+          runAttempt: validated.runAttempt,
+          sourceSystemIdentifier: validated.sourceSystemIdentifier,
+          targetSystemIdentifier: validated.targetSystemIdentifier,
+          declaredServiceIds: validated.declaredServiceIds,
+          observedAt: validated.observedAt,
+        } as never),
+      };
+    },
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/rollouts/:rolloutId/source-freeze-preparations",
+    { preHandler: control },
+    async (request) => ({
+      mutationRequired:
+        await dependencies.authority.prepareSourceFreezeMutation({
+          ...sourceFreezeRequest(request.body, request.params.rolloutId, true),
+          rolloutId: request.params.rolloutId,
+        } as never),
+    }),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
     "/v1/rollouts/:rolloutId/cas",
     { preHandler: control },
     async (request) => ({
@@ -308,6 +424,16 @@ export async function registerReleaseRolloutLedgerRoutes(
         sourceSystemIdentifier: request.query.source_system_identifier,
         targetSystemIdentifier: request.query.target_system_identifier,
       }),
+    }),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/rollouts/:rolloutId/source-freeze-mutations",
+    { preHandler: control },
+    async (request) => ({
+      result: await dependencies.authority.recordSourceFreezeMutation({
+        ...sourceFreezeRequest(request.body, request.params.rolloutId),
+        rolloutId: request.params.rolloutId,
+      } as never),
     }),
   );
   app.get<{

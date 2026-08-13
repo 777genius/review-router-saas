@@ -98,7 +98,8 @@ passwords, backup material, or raw recovery witnesses.
    ```
 
    The installer applies `000001_release_authority` followed by
-   `000002_external_effect_protocol`, each exactly once in one transaction. It
+   `000002_external_effect_protocol` and
+   `000003_partial_source_freeze`, each exactly once in one transaction. It
    is fresh-install-only: never run it against an existing authority catalog or
    substitute application Prisma migration tooling. Retain this DB across
    cutovers.
@@ -108,6 +109,8 @@ passwords, backup material, or raw recovery witnesses.
    `release_runner_prepare_effect`, `release_runner_acquire_dispatch_permit`,
    `release_runner_reconcile_effect`, and `release_runner_abandon_prepared`
    routines; healthy witness must observe the 000002 effect snapshot routine.
+   Healthy control must also expose the 000003 source-freeze prepare, record,
+   complete, and compensation-checkpoint routines before rollout use.
 3. Pre-provision target roles and the `reviewrouter_activation` guard. Role
    bootstrap must prove the guard has no membership edges, installer has only
    its function, and release migration cannot install permits.
@@ -147,7 +150,7 @@ pnpm release-rollout:rehearsal
 Replace both image placeholders with the immutable digest pins approved in CI;
 the check intentionally fails when opt-in or either pin is absent.
 The rehearsal uses the same ordered one-transaction authority migration bundle
-as installation: 000001 once, then 000002 once.
+as installation: 000001 once, then 000002 once, then 000003 once.
 
 CI must pass on the protected candidate SHA. Live E2E requires a newly created
 disposable repository/project, source/target PG17 DBs, runner services, and

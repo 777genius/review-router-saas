@@ -69,6 +69,9 @@ atomic_residue=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_a
 test "$atomic_residue" = 0:0:0:0
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000002.sql >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000003_partial_source_freeze/migration.sql" \
+  "$name:/tmp/migration-000003.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000003.sql >/dev/null
 
 postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
@@ -590,6 +593,44 @@ no_intent_compensation_fence=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U po
    FROM release_authority.rollout WHERE rollout_id='r-comp-no-intent'")
 test "$no_intent_compensation_fence" = pre_activation:before:105:false
 
+# Zero runner intents are safe only when the provider mutation intent and its
+# completed suspension observation are both durable.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-comp-zero-safe', repeat('4',40), '8', 1, '108', '208')" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_source_freeze_prepare(
+      'r-comp-zero-safe',repeat('4',40),'8',1,'108','208','srv-zero-safe','dep-zero-safe',
+      '$now','[\"srv-zero-safe\"]'::jsonb,false);
+   SELECT release_authority.release_source_freeze_record(
+      'r-comp-zero-safe',repeat('4',40),'8',1,'108','208','srv-zero-safe','dep-zero-safe',
+      '$now','[\"srv-zero-safe\"]'::jsonb);
+   SELECT release_authority.release_rollout_append_receipt(
+      'r-comp-zero-safe',repeat('4',40),'8',1,'108','208','begin_compensation',
+      'sha256:'||repeat('0',64),'sha256:'||repeat('4',64),'108','before','before',NULL)" >/dev/null
+zero_intent_safe_state=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT state FROM release_authority.rollout WHERE rollout_id='r-comp-zero-safe'")
+test "$zero_intent_safe_state" = compensating
+
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-comp-freeze-unknown', repeat('3',40), '9', 1, '109', '209')" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_source_freeze_prepare(
+      'r-comp-freeze-unknown',repeat('3',40),'9',1,'109','209','srv-first','dep-first',
+      '$now','[\"srv-first\",\"srv-second\"]'::jsonb,false);
+   SELECT release_authority.release_source_freeze_record(
+      'r-comp-freeze-unknown',repeat('3',40),'9',1,'109','209','srv-first','dep-first',
+      '$now','[\"srv-first\",\"srv-second\"]'::jsonb);
+   SELECT release_authority.release_source_freeze_prepare(
+      'r-comp-freeze-unknown',repeat('3',40),'9',1,'109','209','srv-second','dep-second',
+      '$now','[\"srv-first\",\"srv-second\"]'::jsonb,false)" >/dev/null
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_append_receipt(
+    'r-comp-freeze-unknown',repeat('3',40),'9',1,'109','209','begin_compensation',
+    'sha256:'||repeat('0',64),'sha256:'||repeat('3',64),'109','before','before',NULL)" >/dev/null 2>&1; then
+  echo "compensation with an unresolved source freeze effect unexpectedly succeeded" >&2
+  exit 1
+fi
+
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r-comp-unsafe', repeat('6',40), '7', 1, '106', '206')" >/dev/null
 unsafe_compensation_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
@@ -635,6 +676,13 @@ test "$unsafe_compensation_fence" = pre_activation:before:106:false
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r3', repeat('c',40), '3', 1, '102', '202')" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_source_freeze_prepare(
+      'r3',repeat('c',40),'3',1,'102','202','srv-compensation','dep-compensation',
+      '$now','[\"srv-compensation\"]'::jsonb,false);
+   SELECT release_authority.release_source_freeze_record(
+      'r3',repeat('c',40),'3',1,'102','202','srv-compensation','dep-compensation',
+      '$now','[\"srv-compensation\"]'::jsonb)" >/dev/null
 r3_compensation_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
@@ -916,7 +964,11 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
       ('release_runner_reconcile_effect',true),
       ('release_runner_abandon_prepared',true),
       ('release_runner_terminal_effect',false),
-      ('release_runner_compensation_gate',false)
+      ('release_runner_compensation_gate',false),
+      ('release_source_freeze_immutable',false),
+      ('release_source_freeze_prepare',true),
+      ('release_source_freeze_record',true),
+      ('release_source_freeze_complete',true)
     ), functions AS (
       SELECT p.oid,p.proname,m.control_allowed,p.proacl,p.proowner,p.proconfig
       FROM migrated m
@@ -937,7 +989,7 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
         'reviewrouter_release_witness',oid,'EXECUTE'))||':'||
       bool_and(proconfig=ARRAY['search_path=pg_catalog']::text[])
     FROM functions")
-test "$migration_acl" = 10:true:true:true:true:true
+test "$migration_acl" = 14:true:true:true:true:true
 legacy_control_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT pg_catalog.has_function_privilege('reviewrouter_release_control',
       'release_authority.release_runner_persist_intent(jsonb)','EXECUTE')||':'||

@@ -389,6 +389,9 @@ export class AuthenticatedRunnerLedgerAdapter
     const value = (await this.request(
       `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/compensation-checkpoint?source_system_identifier=${encodeURIComponent(input.sourceSystemIdentifier)}&target_system_identifier=${encodeURIComponent(input.targetSystemIdentifier)}`,
     )) as Record<string, unknown>;
+    const freeze = value.sourceFreeze as Record<string, unknown> | undefined;
+    const freezeServices = freeze?.services;
+    const freezeServiceIds = freeze?.serviceIds;
     if (
       !["before", "uncertain", "activated"].includes(
         String(value.activationBoundary),
@@ -405,7 +408,32 @@ export class AuthenticatedRunnerLedgerAdapter
       !/^sha256:[a-f0-9]{64}$/u.test(String(value.lastReceiptSha256)) ||
       (value.lastStep !== null && typeof value.lastStep !== "string") ||
       !Number.isSafeInteger(value.receiptCount) ||
-      Number(value.receiptCount) < 0
+      Number(value.receiptCount) < 0 ||
+      !freeze ||
+      !["none", "partial", "complete", "unknown"].includes(
+        String(freeze.status),
+      ) ||
+      !Array.isArray(freezeServices) ||
+      !Array.isArray(freezeServiceIds) ||
+      freezeServices.length !== freezeServiceIds.length ||
+      new Set(freezeServiceIds).size !== freezeServiceIds.length ||
+      freezeServices.some((service, index) => {
+        if (!service || typeof service !== "object" || Array.isArray(service))
+          return true;
+        const item = service as Record<string, unknown>;
+        return (
+          item.serviceId !== freezeServiceIds[index] ||
+          !/^srv-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(
+            String(item.serviceId),
+          ) ||
+          typeof item.latestSuccessfulDeployId !== "string" ||
+          !item.latestSuccessfulDeployId ||
+          typeof item.observedAt !== "string" ||
+          !Number.isFinite(Date.parse(item.observedAt))
+        );
+      }) ||
+      (freeze.status === "partial" || freeze.status === "complete") !==
+        freezeServiceIds.length > 0
     )
       throw new Error("runner_ledger_compensation_checkpoint_invalid");
     return value as unknown as CompensationCheckpoint;
@@ -457,6 +485,65 @@ export class AuthenticatedRunnerLedgerAdapter
       `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/complete`,
       { method: "POST", body: JSON.stringify({ outcome: input.outcome }) },
     );
+  }
+  async recordSourceFreezeMutation(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    serviceId: string;
+    latestSuccessfulDeployId: string;
+    observedAt: string;
+    declaredServiceIds: readonly string[];
+  }): Promise<"recorded" | "existing"> {
+    const value = (await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/source-freeze-mutations`,
+      { method: "POST", body: JSON.stringify(input) },
+    )) as Record<string, unknown>;
+    if (value.result !== "recorded" && value.result !== "existing")
+      throw new Error("runner_ledger_source_freeze_record_invalid");
+    return value.result;
+  }
+  async prepareSourceFreezeMutation(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    serviceId: string;
+    latestSuccessfulDeployId: string;
+    observedAt: string;
+    declaredServiceIds: readonly string[];
+    beforeSuspended: boolean;
+  }): Promise<boolean> {
+    const value = (await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/source-freeze-preparations`,
+      { method: "POST", body: JSON.stringify(input) },
+    )) as Record<string, unknown>;
+    if (typeof value.mutationRequired !== "boolean")
+      throw new Error("runner_ledger_source_freeze_prepare_invalid");
+    return value.mutationRequired;
+  }
+  async completeSourceFreeze(input: {
+    rolloutId: string;
+    expectedCommitSha: string;
+    runId: string;
+    runAttempt: number;
+    sourceSystemIdentifier: string;
+    targetSystemIdentifier: string;
+    declaredServiceIds: readonly string[];
+    observedAt: string;
+  }): Promise<"recorded" | "existing"> {
+    const value = (await this.request(
+      `/v1/rollouts/${encodeURIComponent(input.rolloutId)}/source-freeze-completion`,
+      { method: "POST", body: JSON.stringify(input) },
+    )) as Record<string, unknown>;
+    if (value.result !== "recorded" && value.result !== "existing")
+      throw new Error("runner_ledger_source_freeze_complete_invalid");
+    return value.result;
   }
   async verifyFinalAuthority(input: {
     rolloutId: string;

@@ -100,9 +100,39 @@ export type ReleaseCompensationCheckpoint = Readonly<{
   lastReceiptSha256: string;
   lastStep: string | null;
   receiptCount: number;
+  sourceFreeze: Readonly<{
+    status: "none" | "partial" | "complete" | "unknown";
+    serviceIds: readonly string[];
+    services: readonly Readonly<{
+      serviceId: string;
+      latestSuccessfulDeployId: string;
+      observedAt: string;
+    }>[];
+  }>;
 }>;
+export type RecordSourceFreezeMutation = RolloutBinding & {
+  serviceId: string;
+  latestSuccessfulDeployId: string;
+  observedAt: string;
+  declaredServiceIds: readonly string[];
+};
+export type PrepareSourceFreezeMutation = RecordSourceFreezeMutation & {
+  beforeSuspended: boolean;
+};
 
 export interface ReleaseAuthorityLedgerPort {
+  completeSourceFreeze(
+    input: RolloutBinding & {
+      declaredServiceIds: readonly string[];
+      observedAt: string;
+    },
+  ): Promise<"recorded" | "existing">;
+  prepareSourceFreezeMutation(
+    input: PrepareSourceFreezeMutation,
+  ): Promise<boolean>;
+  recordSourceFreezeMutation(
+    input: RecordSourceFreezeMutation,
+  ): Promise<"recorded" | "existing">;
   claim(input: RolloutBinding): Promise<"claimed" | "duplicate">;
   compareAndSet(
     input: RolloutBinding & {

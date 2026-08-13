@@ -17,6 +17,7 @@ import {
   type ProviderAuthorityDecisionPort,
   type ProviderControlPort,
 } from "./ports";
+import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
 
 type CompensationPorts = {
   authority: ProviderAuthorityDecisionPort;
@@ -52,7 +53,17 @@ type CompensationPorts = {
     >;
   };
   compensateDatabase(): Promise<DatabaseAclWitness>;
-  provider: Pick<ProviderControlPort, "compensateAndObserve">;
+  provider: {
+    compensateAndObserve(input: {
+      decision: Parameters<
+        ProviderControlPort["compensateAndObserve"]
+      >[0]["decision"];
+      databaseWitness: DatabaseAclWitness;
+      sourceWriterServiceIds: readonly string[];
+    }): Promise<
+      Awaited<ReturnType<ProviderControlPort["compensateAndObserve"]>>
+    >;
+  };
 };
 
 export type CompensationSafetyReconciliation = Readonly<{
@@ -141,11 +152,51 @@ export function reconcileCompensationSafety(
   };
 }
 
+function freezeMutationIsProven(checkpoint: CompensationCheckpoint): boolean {
+  const freeze = checkpoint.sourceFreeze;
+  return (
+    (freeze.status === "partial" || freeze.status === "complete") &&
+    sourceWriterServiceIdsAreValid(freeze.serviceIds) &&
+    freeze.services.length === freeze.serviceIds.length &&
+    freeze.services.every(
+      (service, index) =>
+        service.serviceId === freeze.serviceIds[index] &&
+        service.latestSuccessfulDeployId.length > 0 &&
+        Number.isFinite(Date.parse(service.observedAt)),
+    )
+  );
+}
+
+function missingFreezeEvidence(
+  intentCount: number,
+): CompensationSafetyReconciliation {
+  return {
+    result: "blocked",
+    safeForCompensation: false,
+    reason: "missing_evidence",
+    intentCount,
+    intents: [],
+  };
+}
+
+function zeroIntentCompensationSafety(
+  checkpoint: CompensationCheckpoint,
+): CompensationSafetyReconciliation {
+  if (freezeMutationIsProven(checkpoint))
+    return {
+      result: "clean",
+      safeForCompensation: true,
+      intentCount: 0,
+      intents: [],
+    };
+  return missingFreezeEvidence(0);
+}
+
 export class ReleaseCompensationReconciliationUseCase {
   constructor(private readonly ports: CompensationPorts) {}
 
   async execute(rollout: ReleaseRollout): Promise<{
-    outcome: "compensated" | "forward_only" | "denied";
+    outcome: "compensated" | "forward_only" | "denied" | "no_op";
     externalEffects?: CompensationSafetyReconciliation;
     reconciliation: unknown;
   }> {
@@ -158,13 +209,30 @@ export class ReleaseCompensationReconciliationUseCase {
         ),
       };
 
-    const externalEffects = reconcileCompensationSafety(
-      await this.ports.ledger.listProvisioningIntents(rollout.rolloutId),
+    const intents = await this.ports.ledger.listProvisioningIntents(
+      rollout.rolloutId,
     );
-    if (!externalEffects.safeForCompensation)
+    if (intents.length === 0 && checkpoint.sourceFreeze.status === "none")
+      return {
+        outcome: "no_op",
+        externalEffects: {
+          result: "clean",
+          safeForCompensation: true,
+          intentCount: 0,
+          intents: [],
+        },
+        reconciliation: { state: "pre_activation_no_source_mutation" },
+      };
+    const externalEffects = intents.length
+      ? reconcileCompensationSafety(intents)
+      : zeroIntentCompensationSafety(checkpoint);
+    const compensationSafety = freezeMutationIsProven(checkpoint)
+      ? externalEffects
+      : missingFreezeEvidence(intents.length);
+    if (!compensationSafety.safeForCompensation)
       return {
         outcome: "denied",
-        externalEffects,
+        externalEffects: compensationSafety,
         reconciliation: null,
       };
 
@@ -175,6 +243,8 @@ export class ReleaseCompensationReconciliationUseCase {
         facts: {
           activationBoundary: "before",
           sourceSystemIdentifier: rollout.source.systemIdentifier,
+          sourceFreeze: checkpoint.sourceFreeze,
+          externalEffects,
         },
       });
 
@@ -206,6 +276,7 @@ export class ReleaseCompensationReconciliationUseCase {
       const providerWitness = await this.ports.provider.compensateAndObserve({
         decision,
         databaseWitness,
+        sourceWriterServiceIds: checkpoint.sourceFreeze.serviceIds,
       });
       checkpoint = await this.append(rollout, checkpoint, {
         step: RolloutStep.EffectCompensation,

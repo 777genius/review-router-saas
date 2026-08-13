@@ -88,6 +88,91 @@ describe("authenticated runner ledger activation authorization", () => {
 });
 
 describe("authenticated runner ledger reconciliation", () => {
+  it("persists authority-bound source freeze mutation evidence", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ result: "recorded" }), { status: 200 }),
+      );
+    const adapter = new AuthenticatedRunnerLedgerAdapter(
+      "https://control.example.test",
+      "control-token",
+      fetchImpl,
+    );
+    await expect(
+      adapter.recordSourceFreezeMutation({
+        rolloutId: "rollout-1",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        serviceId: "srv-a",
+        latestSuccessfulDeployId: "dep-a",
+        observedAt: "2026-08-13T00:00:00.000Z",
+        declaredServiceIds: ["srv-a", "srv-b"],
+      }),
+    ).resolves.toBe("recorded");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://control.example.test/v1/rollouts/rollout-1/source-freeze-mutations",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("durably prepares a source freeze effect before provider suspension", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ mutationRequired: true }), {
+          status: 200,
+        }),
+      );
+    const adapter = new AuthenticatedRunnerLedgerAdapter(
+      "https://control.example.test",
+      "control-token",
+      fetchImpl,
+    );
+    await expect(
+      adapter.prepareSourceFreezeMutation({
+        rolloutId: "rollout-1",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        serviceId: "srv-a",
+        latestSuccessfulDeployId: "dep-a",
+        observedAt: "2026-08-13T00:00:00.000Z",
+        declaredServiceIds: ["srv-a"],
+        beforeSuspended: false,
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it("records a durable completed freeze inventory", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ result: "recorded" }), { status: 200 }),
+      );
+    const adapter = new AuthenticatedRunnerLedgerAdapter(
+      "https://control.example.test",
+      "control-token",
+      fetchImpl,
+    );
+    await expect(
+      adapter.completeSourceFreeze({
+        rolloutId: "rollout-1",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        declaredServiceIds: ["srv-a"],
+        observedAt: "2026-08-13T00:00:00.000Z",
+      }),
+    ).resolves.toBe("recorded");
+  });
   it.each([
     ["activated", "activated_forward_only"],
     ["forward_repair_required", "activation_uncertain_forward_only"],

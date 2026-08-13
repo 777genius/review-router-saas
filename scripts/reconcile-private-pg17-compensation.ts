@@ -158,6 +158,11 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
   const sourceWriterServiceIds = parseCompensationSourceWriterServiceIds(
     required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
   );
+  const compensationServiceIds = (evidence: readonly string[]) => {
+    if (!evidence.every((id) => sourceWriterServiceIds.includes(id)))
+      throw new Error("private_pg17_freeze_evidence_inventory_mismatch");
+    return evidence;
+  };
   if (
     sourceWriterServiceIds.length !== 3 ||
     new Set(sourceWriterServiceIds).size !== 3 ||
@@ -203,17 +208,24 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
       });
     },
     provider: {
-      compensateAndObserve: async ({ decision, databaseWitness }) => {
+      compensateAndObserve: async ({
+        decision,
+        databaseWitness,
+        sourceWriterServiceIds: durableFreezeServiceIds,
+      }) => {
         if (
           decision.decision !== "allow" ||
           decision.operation !== "resume_source" ||
           databaseWitness.sourceWritesRestored !== true
         )
           throw new Error("private_pg17_service_recovery_authority_invalid");
+        const provenFreezeServiceIds = compensationServiceIds(
+          durableFreezeServiceIds,
+        );
         if (checkpoints.length === 0)
           return frozenSource.compensateAndObserve({
             apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
-            sourceWriterServiceIds,
+            sourceWriterServiceIds: provenFreezeServiceIds,
             sourceSystemIdentifier: rollout.source.systemIdentifier,
             decision,
             databaseWitness,

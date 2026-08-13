@@ -168,7 +168,10 @@ allowlisted environment; errors expose only a step/command code.
 
 The source sequence is mandatory:
 
-1. suspend every source writer and re-observe every service suspended;
+1. inspect every source writer sequentially, durably prepare an authority
+   mutation intent before each required suspend call, re-observe it suspended,
+   persist an immutable completion observation, and finally persist the
+   complete inspected inventory;
 2. revoke `CONNECT` from PUBLIC and runtime roles and commit it;
 3. terminate existing sessions;
 4. observe at least three bounded zero-session samples;
@@ -176,9 +179,16 @@ The source sequence is mandatory:
    before revocation, then require the exact database CONNECT
    permission-denied class from that same credential/system.
 
-`writersSuspended` is never synthesized. A definite failure before activation
-enters compensation: source ACL/environment is restored and source writers are
-resumed and re-observed. An accepted or uncertain activation permanently bans
+`writersSuspended` is never synthesized. If freeze stops part-way, the durable
+intent/completion observations—not the adapter process—name the exact mutated
+subset. An unresolved intent is an unknown provider effect and denies
+compensation. A definite
+failure before activation enters compensation only after the database gate
+proves that subset and runner external effects are safe; source ACL/environment
+is restored and exactly that subset is resumed and re-observed. Zero runner
+intents are safe only with partial/complete mutation evidence. A completed
+freeze receipt proving no source mutation is a no-op; absent evidence is
+unknown and remains denied. An accepted or uncertain activation permanently bans
 PG16 promotion and allows only PG17 forward repair/PITR.
 
 Equivalence is restricted to `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, streams
@@ -214,8 +224,9 @@ The always-running reconciliation job cleans every persisted orphan. The
 completed-run controller redrives durable discovery and cleanup with bounded
 exponential backoff until it emits `clean` or an explicit `blocked` result; it
 does not redrive provider creation. Every reconciliation artifact includes
-`safeForCompensation`. That value is true only when nonempty durable intent
-evidence proves every intent `cleaned` or `abandoned`. Pending discovery, a
+`safeForCompensation`. That value is true when durable intent evidence proves
+every existing intent `cleaned` or `abandoned`; zero intents are accepted only
+when authority-owned freeze evidence proves a source mutation. Pending discovery, a
 timeout, duplicate provider jobs, unknown/legacy state, partial cleanup, or
 missing evidence leaves it false. The compensation application gate re-reads
 those durable facts immediately before beginning or replaying compensation and

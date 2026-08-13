@@ -51,6 +51,17 @@ export interface CompensationCheckpoint {
   readonly lastReceiptSha256: string;
   readonly lastStep: string | null;
   readonly receiptCount: number;
+  readonly sourceFreeze: SourceFreezeEvidence;
+}
+export interface SourceFreezeServiceEvidence {
+  readonly serviceId: string;
+  readonly latestSuccessfulDeployId: string;
+  readonly observedAt: string;
+}
+export interface SourceFreezeEvidence {
+  readonly status: "none" | "partial" | "complete" | "unknown";
+  readonly serviceIds: readonly string[];
+  readonly services: readonly SourceFreezeServiceEvidence[];
 }
 export interface DatabaseAclWitness {
   readonly systemIdentifier: string;

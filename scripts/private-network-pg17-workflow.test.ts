@@ -47,6 +47,19 @@ describe("private-network PG17 workflow security contract", () => {
       ),
     ).toHaveLength(4);
   });
+  it("binds freeze mutations to the durably claimed rollout", () => {
+    const freeze = jobs(workflow).find((job) =>
+      job.startsWith("  freeze-source-writers:"),
+    );
+    expect(freeze).toBeDefined();
+    expect(freeze).toContain("actions/download-artifact@");
+    expect(freeze).toContain(
+      "REVIEW_ROUTER_INITIAL_ROLLOUT_FILE: preflight/initial-rollout.json",
+    );
+    expect(freeze).toContain(
+      "REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}",
+    );
+  });
   it("keeps database credentials exclusively on exact execution steps of runner-group jobs", () => {
     const databaseJobs = jobs(workflow).filter((block) =>
       block.includes("DATABASE_URL"),

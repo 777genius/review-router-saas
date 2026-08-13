@@ -65,6 +65,26 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       },
     ]);
 
+    await expect(
+      ledger.prepareSourceFreezeMutation({
+        ...binding,
+        serviceId: "srv-source",
+        latestSuccessfulDeployId: "dep-source",
+        observedAt: now,
+        declaredServiceIds: ["srv-source", "srv-other"],
+        beforeSuspended: false,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      ledger.recordSourceFreezeMutation({
+        ...binding,
+        serviceId: "srv-source",
+        latestSuccessfulDeployId: "dep-source",
+        observedAt: now,
+        declaredServiceIds: ["srv-source", "srv-other"],
+      }),
+    ).resolves.toBe("recorded");
+
     await ledger.acquireProviderDispatchPermit({
       intentId,
       claimantId: ownerId,
@@ -151,6 +171,17 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       lastReceiptSha256: nextReceiptSha256,
       lastStep: "begin_compensation",
       receiptCount: 1,
+      sourceFreeze: {
+        status: "partial",
+        serviceIds: ["srv-source"],
+        services: [
+          {
+            serviceId: "srv-source",
+            latestSuccessfulDeployId: "dep-source",
+            observedAt: now,
+          },
+        ],
+      },
     });
   });
 });

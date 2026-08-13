@@ -44,6 +44,11 @@ const conflictMessages = new Set([
   "release authority activation receipt conflict",
   "provider authority replay conflict",
   "release runner intent identity conflict",
+  "release source freeze binding invalid",
+  "release source freeze replay conflict",
+  "release source freeze inventory conflict",
+  "release source freeze completion binding invalid",
+  "release source freeze completion replay conflict",
 ]);
 
 const normalizeRoutineError = (error: unknown): never => {
@@ -117,6 +122,59 @@ export class RoutineReleaseControlLedgerAdapter
     if (value !== "claimed" && value !== "duplicate")
       throw new Error("release_rollout_claim_result_invalid");
     return value;
+  }
+
+  async recordSourceFreezeMutation(
+    input: Parameters<
+      ReleaseAuthorityLedgerPort["recordSourceFreezeMutation"]
+    >[0],
+  ): Promise<"recorded" | "existing"> {
+    const value = await firstValue(
+      this.prisma,
+      Prisma.sql`SELECT release_authority.release_source_freeze_record(
+        ${input.rolloutId}, ${input.expectedCommitSha}, ${input.runId},
+        ${input.runAttempt}, ${input.sourceSystemIdentifier},
+        ${input.targetSystemIdentifier}, ${input.serviceId},
+        ${input.latestSuccessfulDeployId}, ${input.observedAt},
+        ${asJsonb(input.declaredServiceIds)}) AS value`,
+    );
+    if (value !== "recorded" && value !== "existing")
+      throw new Error("release_source_freeze_record_result_invalid");
+    return value;
+  }
+
+  async completeSourceFreeze(
+    input: Parameters<ReleaseAuthorityLedgerPort["completeSourceFreeze"]>[0],
+  ): Promise<"recorded" | "existing"> {
+    const value = await firstValue(
+      this.prisma,
+      Prisma.sql`SELECT release_authority.release_source_freeze_complete(
+        ${input.rolloutId}, ${input.expectedCommitSha}, ${input.runId},
+        ${input.runAttempt}, ${input.sourceSystemIdentifier},
+        ${input.targetSystemIdentifier}, ${asJsonb(input.declaredServiceIds)},
+        ${input.observedAt}) AS value`,
+    );
+    if (value !== "recorded" && value !== "existing")
+      throw new Error("release_source_freeze_complete_result_invalid");
+    return value;
+  }
+
+  async prepareSourceFreezeMutation(
+    input: Parameters<
+      ReleaseAuthorityLedgerPort["prepareSourceFreezeMutation"]
+    >[0],
+  ): Promise<boolean> {
+    return requiredBoolean(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_source_freeze_prepare(
+          ${input.rolloutId}, ${input.expectedCommitSha}, ${input.runId},
+          ${input.runAttempt}, ${input.sourceSystemIdentifier},
+          ${input.targetSystemIdentifier}, ${input.serviceId},
+          ${input.latestSuccessfulDeployId}, ${input.observedAt},
+          ${asJsonb(input.declaredServiceIds)}, ${input.beforeSuspended}) AS value`,
+      ),
+    );
   }
 
   async compareAndSet(

@@ -31,6 +31,15 @@ type CombinedLedgerPort = ReleaseAuthorityLedgerPort &
   ReleaseRolloutReconciliationPort;
 
 class ConcurrentRepository implements CombinedLedgerPort {
+  async completeSourceFreeze() {
+    return "recorded" as const;
+  }
+  async prepareSourceFreezeMutation() {
+    return true;
+  }
+  async recordSourceFreezeMutation() {
+    return "recorded" as const;
+  }
   private claimed: typeof binding | undefined;
   private receipt = `sha256:${"0".repeat(64)}`;
   private state: "before" | "uncertain" | "activated" = "before";
@@ -131,6 +140,7 @@ class ConcurrentRepository implements CombinedLedgerPort {
       lastReceiptSha256: this.receipt,
       lastStep: null,
       receiptCount: 0,
+      sourceFreeze: { status: "none" as const, serviceIds: [], services: [] },
     };
   }
   async finalizeActivation() {
@@ -312,6 +322,57 @@ describe("release rollout ledger internal API", () => {
     });
     expect(first.json()).toEqual({ result: "claimed" });
     expect(duplicate.json()).toEqual({ result: "duplicate" });
+    await app.close();
+  });
+
+  it("accepts only rollout-bound source freeze mutation observations", async () => {
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(
+      app,
+      services(new ConcurrentRepository()),
+    );
+    const payload = {
+      ...binding,
+      serviceId: "srv-source",
+      latestSuccessfulDeployId: "dep-source",
+      observedAt: "2026-08-13T00:00:00.000Z",
+      declaredServiceIds: ["srv-source", "srv-other"],
+    };
+    const prepared = await app.inject({
+      method: "POST",
+      url: `/v1/rollouts/${binding.rolloutId}/source-freeze-preparations`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { ...payload, beforeSuspended: false },
+    });
+    expect(prepared.statusCode).toBe(200);
+    expect(prepared.json()).toEqual({ mutationRequired: true });
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/v1/rollouts/${binding.rolloutId}/source-freeze-mutations`,
+      headers: { authorization: `Bearer ${token}` },
+      payload,
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toEqual({ result: "recorded" });
+    const completed = await app.inject({
+      method: "POST",
+      url: `/v1/rollouts/${binding.rolloutId}/source-freeze-completion`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        ...binding,
+        declaredServiceIds: payload.declaredServiceIds,
+        observedAt: payload.observedAt,
+      },
+    });
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json()).toEqual({ result: "recorded" });
+    const mismatched = await app.inject({
+      method: "POST",
+      url: "/v1/rollouts/another/source-freeze-mutations",
+      headers: { authorization: `Bearer ${token}` },
+      payload,
+    });
+    expect(mismatched.statusCode).toBe(400);
     await app.close();
   });
 

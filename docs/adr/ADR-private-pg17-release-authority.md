@@ -81,6 +81,15 @@ permanently ineligible. An ambiguous activation becomes
 activation, or start another rollout until authority state and target receipt
 are reconciled.
 
+Source freeze is a sequential external effect. Each required running-to-
+suspended transition has an immutable authority intent before the provider
+call and an immutable completion before the next service is attempted. An
+unpaired intent is unknown and blocks compensation. Compensation derives its
+resume set solely from paired observations. The database transition to
+compensation requires at least one such pair and safe runner-effect state; an
+authority-backed complete inventory with no mutations and no runner intents is
+handled as a no-op.
+
 ### Prohibitions
 
 - Never test this flow against a real user repository/project. Rehearsal, CI,

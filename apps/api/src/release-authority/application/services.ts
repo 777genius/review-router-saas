@@ -22,6 +22,19 @@ export class ReleaseAuthorityService {
     private readonly targetReceiptReader?: TargetActivationReceiptReaderPort,
   ) {}
   claim = (input: RolloutBinding) => this.repository.claim(input);
+  completeSourceFreeze = (
+    input: Parameters<ReleaseAuthorityLedgerPort["completeSourceFreeze"]>[0],
+  ) => this.repository.completeSourceFreeze(input);
+  prepareSourceFreezeMutation = (
+    input: Parameters<
+      ReleaseAuthorityLedgerPort["prepareSourceFreezeMutation"]
+    >[0],
+  ) => this.repository.prepareSourceFreezeMutation(input);
+  recordSourceFreezeMutation = (
+    input: Parameters<
+      ReleaseAuthorityLedgerPort["recordSourceFreezeMutation"]
+    >[0],
+  ) => this.repository.recordSourceFreezeMutation(input);
   cas = (input: Parameters<ReleaseAuthorityLedgerPort["compareAndSet"]>[0]) =>
     this.repository.compareAndSet(input);
   markUncertain = (input: RolloutBinding) =>

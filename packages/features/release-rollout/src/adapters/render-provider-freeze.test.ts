@@ -17,6 +17,118 @@ const service = {
 };
 
 describe("Render provider writer inventory", () => {
+  it("durably reports the first mutation before a later suspension fails", async () => {
+    const services = [
+      { ...service, id: "srv-a", suspended: "not_suspended" },
+      { ...service, id: "srv-b", suspended: "not_suspended" },
+    ];
+    let aSuspended = false;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/services"))
+        return response(services.map((value) => ({ service: value })));
+      if (url.includes("/env-vars"))
+        return response([
+          { envVar: { key: "DATABASE_URL", value: "redacted" } },
+        ]);
+      if (url.includes("/deploys"))
+        return response([
+          {
+            deploy: {
+              id: url.includes("srv-a") ? "dep-a" : "dep-b",
+              status: "live",
+            },
+          },
+        ]);
+      if (url.endsWith("/services/srv-a/suspend") && init?.method === "POST") {
+        aSuspended = true;
+        return new Response(null, { status: 202 });
+      }
+      if (url.endsWith("/services/srv-a"))
+        return response({
+          ...services[0],
+          suspended: aSuspended ? "suspended" : "not_suspended",
+        });
+      if (url.endsWith("/services/srv-b/suspend") && init?.method === "POST")
+        return new Response(null, { status: 503 });
+      if (url.endsWith("/services/srv-b")) return response(services[1]);
+      throw new Error(`unexpected:${url}`);
+    });
+    const prepareMutation = vi.fn(async () => true);
+    const recordMutation = vi.fn(async () => undefined);
+    await expect(
+      new RenderProviderFreezeAdapter(
+        fetchImpl,
+        async () => undefined,
+      ).freezeAndObserve({
+        apiKey: "redacted",
+        ownerId: service.ownerId,
+        sourceWriterServiceIds: ["srv-a", "srv-b"],
+        prepareMutation,
+        recordMutation,
+      }),
+    ).rejects.toThrow("render_api_suspend_failed:503");
+    expect(recordMutation).toHaveBeenCalledTimes(1);
+    expect(prepareMutation).toHaveBeenCalledTimes(2);
+    expect(recordMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        serviceId: "srv-a",
+        latestSuccessfulDeployId: "dep-a",
+      }),
+    );
+  });
+
+  it("does not record or later resume a service that was already suspended", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/services")) return response([{ service }]);
+      if (url.includes("/env-vars"))
+        return response([
+          { envVar: { key: "DATABASE_URL", value: "redacted" } },
+        ]);
+      if (url.includes("/deploys"))
+        return response([{ deploy: { id: "dep-live", status: "live" } }]);
+      return response(service);
+    });
+    const prepareMutation = vi.fn(async () => false);
+    const recordMutation = vi.fn(async () => undefined);
+    await new RenderProviderFreezeAdapter(fetchImpl).freezeAndObserve({
+      apiKey: "redacted",
+      ownerId: service.ownerId,
+      sourceWriterServiceIds: [service.id],
+      prepareMutation,
+      recordMutation,
+    });
+    expect(prepareMutation).toHaveBeenCalledWith(
+      expect.objectContaining({ serviceId: service.id, beforeSuspended: true }),
+    );
+    expect(recordMutation).not.toHaveBeenCalled();
+  });
+
+  it("completes a durable prior intent when crash replay finds the service suspended", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/services")) return response([{ service }]);
+      if (url.includes("/env-vars"))
+        return response([
+          { envVar: { key: "DATABASE_URL", value: "redacted" } },
+        ]);
+      if (url.includes("/deploys"))
+        return response([{ deploy: { id: "dep-live", status: "live" } }]);
+      return response(service);
+    });
+    const recordMutation = vi.fn(async () => undefined);
+    await new RenderProviderFreezeAdapter(fetchImpl).freezeAndObserve({
+      apiKey: "redacted",
+      ownerId: service.ownerId,
+      sourceWriterServiceIds: [service.id],
+      prepareMutation: vi.fn(async () => true),
+      recordMutation,
+    });
+    expect(recordMutation).toHaveBeenCalledWith(
+      expect.objectContaining({ serviceId: service.id }),
+    );
+    expect(
+      fetchImpl.mock.calls.some(([url]) => String(url).endsWith("/suspend")),
+    ).toBe(false);
+  });
   it.each([
     ["duplicate", [service.id, service.id]],
     ["unsafe", ["../../unsafe"]],
@@ -203,5 +315,58 @@ describe("Render provider writer inventory", () => {
       }),
     ).resolves.toMatchObject({ resumed: true, deployIds: ["dep-live"] });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("safely retries a definite resume failure", async () => {
+    let resumeAttempts = 0;
+    let resumed = false;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/deploys"))
+        return response([{ deploy: { id: "dep-live", status: "live" } }]);
+      if (url.endsWith("/resume") && init?.method === "POST") {
+        resumeAttempts += 1;
+        if (resumeAttempts === 1) return new Response(null, { status: 503 });
+        resumed = true;
+        return new Response(null, { status: 202 });
+      }
+      return response({
+        ...service,
+        suspended: resumed ? "not_suspended" : "suspended",
+      });
+    });
+    const adapter = new RenderProviderFreezeAdapter(
+      fetchImpl,
+      async () => undefined,
+    );
+    const input = {
+      apiKey: "redacted",
+      sourceWriterServiceIds: [service.id],
+      sourceSystemIdentifier: "100",
+      databaseWitness: {
+        systemIdentifier: "100",
+        aclSha256: `sha256:${"a".repeat(64)}`,
+        observedAt: "2026-08-12T00:00:00.000Z",
+        sourceWritesRestored: true as const,
+      },
+      decision: {
+        rolloutId: "rollout-1",
+        operation: ProviderAuthorityOperation.ResumeSource,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        expectedReceiptSha256: `sha256:${"b".repeat(64)}`,
+        activationBoundary: "before" as const,
+        decision: "allow" as const,
+        decisionId: "decision-1",
+        decidedAt: "2026-08-12T00:00:00.000Z",
+      },
+    };
+    await expect(adapter.compensateAndObserve(input)).rejects.toThrow(
+      "render_api_resume_failed:503",
+    );
+    await expect(adapter.compensateAndObserve(input)).resolves.toMatchObject({
+      serviceIds: [service.id],
+      resumed: true,
+    });
+    expect(resumeAttempts).toBe(2);
   });
 });

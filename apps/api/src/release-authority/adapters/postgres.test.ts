@@ -16,6 +16,12 @@ class QueryRecorder {
   async $queryRaw<T>(query: Prisma.Sql): Promise<T> {
     this.queries.push(query);
     const text = query.text;
+    if (text.includes("release_source_freeze_complete"))
+      return [{ value: "recorded" }] as T;
+    if (text.includes("release_source_freeze_prepare"))
+      return [{ value: true }] as T;
+    if (text.includes("release_source_freeze_record"))
+      return [{ value: "recorded" }] as T;
     const value = text.includes("authorize_activation")
       ? {
           rolloutId: "rollout",
@@ -97,6 +103,56 @@ const expectJsonbBinding = (query: Prisma.Sql, expected: unknown): void => {
 };
 
 describe("release authority postgres JSONB bindings", () => {
+  it("binds durable source-freeze inventory as JSONB", async () => {
+    const recorder = new QueryRecorder();
+    const ledger = new RoutineReleaseControlLedgerAdapter(
+      recorder as unknown as PrismaClient,
+    );
+    await expect(
+      ledger.prepareSourceFreezeMutation({
+        rolloutId: "rollout",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        serviceId: "srv-a",
+        latestSuccessfulDeployId: "dep-a",
+        observedAt,
+        declaredServiceIds: ["srv-a", dangerous],
+        beforeSuspended: false,
+      }),
+    ).resolves.toBe(true);
+    expectJsonbBinding(recorder.queries.at(-1)!, ["srv-a", dangerous]);
+    await expect(
+      ledger.completeSourceFreeze({
+        rolloutId: "rollout",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        declaredServiceIds: ["srv-a", dangerous],
+        observedAt,
+      }),
+    ).resolves.toBe("recorded");
+    expectJsonbBinding(recorder.queries.at(-1)!, ["srv-a", dangerous]);
+    await expect(
+      ledger.recordSourceFreezeMutation({
+        rolloutId: "rollout",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        serviceId: "srv-a",
+        latestSuccessfulDeployId: "dep-a",
+        observedAt,
+        declaredServiceIds: ["srv-a", dangerous],
+      }),
+    ).resolves.toBe("recorded");
+    expectJsonbBinding(recorder.queries.at(-1)!, ["srv-a", dangerous]);
+  });
   it("serializes prepared, dispatching, bound, and cleaned list results with owner retention", async () => {
     const ownerId = "rrc-00000000-0000-4000-8000-000000000001";
     const base = {
