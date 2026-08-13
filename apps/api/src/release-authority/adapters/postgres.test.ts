@@ -103,6 +103,42 @@ const expectJsonbBinding = (query: Prisma.Sql, expected: unknown): void => {
 };
 
 describe("release authority postgres JSONB bindings", () => {
+  it("keeps late identity persistence and terminalization on the production routines", async () => {
+    const recorder = new QueryRecorder();
+    const adapter = new RoutineReleaseControlLedgerAdapter(
+      recorder as unknown as PrismaClient,
+    );
+    const job = {
+      rolloutId: "rollout-late",
+      serviceId: "svc-late",
+      jobId: "job-late",
+      observedAt,
+      cleanupCanary: "rr-cleanup:rollout-late:rr-late",
+      lifecycle: "role" as const,
+      provisioningIntentId: `rri-${"d".repeat(64)}`,
+    };
+    const observation = {
+      step: "cleanup_role_runner",
+      observedAt,
+      facts: { terminal: true },
+    };
+
+    await adapter.persistJob(job);
+    await adapter.markTerminal("job-late", observation as never);
+
+    expect(recorder.queries[0]?.text).toContain(
+      "release_runner_persist_job",
+    );
+    expectJsonbBinding(recorder.queries[0]!, job);
+    expect(recorder.queries[1]?.text).toContain(
+      "release_runner_mark_terminal",
+    );
+    expectJsonbBinding(recorder.queries[1]!, observation);
+    expect(recorder.queries.map(({ text }) => text).join("\n")).not.toContain(
+      "runner_job SET",
+    );
+  });
+
   it("binds durable source-freeze inventory as JSONB", async () => {
     const recorder = new QueryRecorder();
     const ledger = new RoutineReleaseControlLedgerAdapter(
@@ -258,6 +294,27 @@ describe("release authority postgres JSONB bindings", () => {
         targetSystemIdentifier: "200",
         expectedReceiptSha256: zeroReceipt,
         activationBoundary: "before",
+      }),
+    ).rejects.toMatchObject({
+      message: "release_authority_conflict",
+      statusCode: 409,
+    });
+
+    conflict.meta.message =
+      "release runner duplicate effects unsafe for activation";
+    await expect(
+      adapter.authorizeActivation({
+        rolloutId: "rollout",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+        jobId: "9",
+        previousReceiptSha256: zeroReceipt,
+        targetDeployIds: ["dep-a"],
+        postgresMajor: 17,
+        migrationChecksum: `sha256:${"7".repeat(64)}`,
       }),
     ).rejects.toMatchObject({
       message: "release_authority_conflict",

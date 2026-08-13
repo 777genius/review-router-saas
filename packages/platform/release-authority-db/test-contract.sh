@@ -75,6 +75,9 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000003
 docker cp "$root/packages/platform/release-authority-db/migrations/000004_selective_source_recovery/migration.sql" \
   "$name:/tmp/migration-000004.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000004.sql >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000005_late_runner_effects/migration.sql" \
+  "$name:/tmp/migration-000005.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000005.sql >/dev/null
 
 postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
@@ -876,6 +879,185 @@ fi
 late_terminal_replayed=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_mark_terminal('job-late-after-clean',jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))")
 test "$late_terminal_replayed" = t
+
+# A duplicate that is durable before the activation state write must fence the
+# write even when the caller already holds the rollout lock.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-activation-fenced',repeat('a',40),'86',1,'186','286');
+   SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
+     'id','rri-'||repeat('a',64),'rolloutId','r-activation-fenced','serviceId','svc-activation',
+     'lifecycle','role','workflowJobId','861','runnerName','rr-activation-fenced','createdAt','$now',
+     'startCommandSha256','sha256:'||repeat('a',64),
+     'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000086'));
+   SELECT release_authority.release_runner_acquire_dispatch_permit(jsonb_build_object(
+     'intentId','rri-'||repeat('a',64),'claimantId','rrc-00000000-0000-4000-8000-000000000086',
+     'startCommandSha256','sha256:'||repeat('a',64),'expectedEpoch',0,'leaseSeconds',120));
+   SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+     'jobId','job-activation-known','rolloutId','r-activation-fenced',
+     'provisioningIntentId','rri-'||repeat('a',64),'serviceId','svc-activation','observedAt','$now',
+     'cleanupCanary','rr-cleanup:r-activation-fenced:rr-activation-fenced','lifecycle','role'));
+   SELECT release_authority.release_runner_reconcile_effect(jsonb_build_object(
+     'intentId','rri-'||repeat('a',64),'claimantId','rrc-00000000-0000-4000-8000-000000000086',
+     'expectedEpoch',1,'jobId','job-activation-known','reconciliation',
+     jsonb_build_object('result','pending','safeForCompensation',false)));
+   SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+     'jobId','job-activation-known-duplicate','rolloutId','r-activation-fenced',
+     'provisioningIntentId','rri-'||repeat('a',64),'serviceId','svc-activation','observedAt','$now',
+     'cleanupCanary','rr-cleanup:r-activation-fenced:rr-activation-fenced','lifecycle','role'))" >/dev/null
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "UPDATE release_authority.rollout SET state='activation_authorized',activation_boundary='uncertain',
+     source_permanently_ineligible=true,authoritative_system_identifier=target_system_identifier
+   WHERE rollout_id='r-activation-fenced'" >/dev/null 2>&1; then
+  echo "known duplicate unexpectedly crossed activation" >&2
+  exit 1
+fi
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT state||':'||activation_boundary FROM release_authority.rollout
+   WHERE rollout_id='r-activation-fenced'")" = pre_activation:before
+
+# The opposite race is forward-only: activation commits first, then late
+# discovery persists, acknowledges the durable duplicate fence, and completes
+# both independently witnessed cleanups without rolling activation back.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-activation-wins',repeat('6',40),'87',1,'187','287');
+   SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
+     'id','rri-'||repeat('6',63)||'7','rolloutId','r-activation-wins','serviceId','svc-activation-wins',
+     'lifecycle','role','workflowJobId','871','runnerName','rr-activation-wins','createdAt','$now',
+     'startCommandSha256','sha256:'||repeat('6',64),
+     'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000087'));
+   SELECT release_authority.release_runner_acquire_dispatch_permit(jsonb_build_object(
+     'intentId','rri-'||repeat('6',63)||'7','claimantId','rrc-00000000-0000-4000-8000-000000000087',
+     'startCommandSha256','sha256:'||repeat('6',64),'expectedEpoch',0,'leaseSeconds',120));
+   SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+     'jobId','job-activation-first','rolloutId','r-activation-wins',
+     'provisioningIntentId','rri-'||repeat('6',63)||'7','serviceId','svc-activation-wins','observedAt','$now',
+     'cleanupCanary','rr-cleanup:r-activation-wins:rr-activation-wins','lifecycle','role'))" >/dev/null
+docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-activation-first',jsonb_build_object(
+    'jobId','job-activation-first','canary','rr-cleanup:r-activation-wins:rr-activation-wins',
+    'providerStatus','succeeded','containerTerminated',true,'logSha256','sha256:'||repeat('6',64),
+    'removedPaths',jsonb_build_array('/runner/_work/rr-activation-wins/original'),'remainingPaths','[]'::jsonb,
+    'providerLogId','log-activation-first','providerObservedAt','$now'))" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_mark_terminal('job-activation-first',
+    jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -Atc \
+  "BEGIN;
+   UPDATE release_authority.rollout SET state='activation_authorized',activation_boundary='uncertain',
+     source_permanently_ineligible=true,authoritative_system_identifier=target_system_identifier
+   WHERE rollout_id='r-activation-wins';
+   SELECT pg_catalog.pg_advisory_xact_lock(810087);
+   SELECT pg_catalog.pg_sleep(3);
+   COMMIT" >/dev/null &
+activation_winner_pid=$!
+activation_winner_ready=false
+for _ in $(seq 1 100); do
+  if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks WHERE locktype='advisory' AND objid=810087 AND granted)")" = t; then
+    activation_winner_ready=true
+    break
+  fi
+  sleep 0.05
+done
+test "$activation_winner_ready" = true
+docker exec -e PGPASSWORD=control -e PGOPTIONS='-c lock_timeout=10s' "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+    'jobId','job-activation-late','rolloutId','r-activation-wins',
+    'provisioningIntentId','rri-'||repeat('6',63)||'7','serviceId','svc-activation-wins','observedAt','$now',
+    'cleanupCanary','rr-cleanup:r-activation-wins:rr-activation-wins','lifecycle','role'));
+   SELECT release_authority.release_runner_reconcile_effect(jsonb_build_object(
+    'intentId','rri-'||repeat('6',63)||'7','claimantId','rrc-00000000-0000-4000-8000-000000000087',
+    'expectedEpoch',1,'reconciliation',jsonb_build_object(
+      'result','blocked','safeForCompensation',false,'reason','duplicate')))" >/dev/null
+wait "$activation_winner_pid"
+docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-activation-late',jsonb_build_object(
+    'jobId','job-activation-late','canary','rr-cleanup:r-activation-wins:rr-activation-wins',
+    'providerStatus','succeeded','containerTerminated',true,'logSha256','sha256:'||repeat('6',64),
+    'removedPaths',jsonb_build_array('/runner/_work/rr-activation-wins/late'),'remainingPaths','[]'::jsonb,
+    'providerLogId','log-activation-late','providerObservedAt','$now'))" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_mark_terminal('job-activation-late',
+    jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+    'jobId','job-activation-late','rolloutId','r-activation-wins',
+    'provisioningIntentId','rri-'||repeat('6',63)||'7','serviceId','svc-activation-wins','observedAt','$now',
+    'cleanupCanary','rr-cleanup:r-activation-wins:rr-activation-wins','lifecycle','role'));
+   SELECT release_authority.release_runner_mark_terminal('job-activation-late',
+    jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))" >/dev/null
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT rollout.state||':'||rollout.activation_boundary||':'||intent.effect_state||':'||
+     intent.effect_safe_for_compensation||':'||count(job.*)||':'||count(job.terminal_at)
+   FROM release_authority.rollout rollout
+   JOIN release_authority.runner_intent intent USING (rollout_id)
+   JOIN release_authority.runner_job job USING (rollout_id)
+   WHERE rollout.rollout_id='r-activation-wins'
+   GROUP BY rollout.state,rollout.activation_boundary,intent.effect_state,intent.effect_safe_for_compensation")" \
+  = activation_authorized:uncertain:blocked:false:2:2
+
+# Compensation may likewise commit after an abandoned no-effect proof. A job
+# discovered behind that lock invalidates the proof durably, but neither the
+# receipt nor aggregate state is rewound while the late job is cleaned.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-compensation-wins',repeat('5',40),'88',1,'188','288');
+   SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
+     'id','rri-'||repeat('5',63)||'8','rolloutId','r-compensation-wins','serviceId','svc-compensation-wins',
+     'lifecycle','role','workflowJobId','881','runnerName','rr-compensation-wins','createdAt','$now',
+     'startCommandSha256','sha256:'||repeat('5',64),
+     'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000088'));
+   UPDATE release_authority.runner_intent SET effect_lease_expires_at=clock_timestamp()-interval '1 second'
+     WHERE intent_id='rri-'||repeat('5',63)||'8';
+   SELECT release_authority.release_runner_abandon_prepared(
+     'rri-'||repeat('5',63)||'8','rrc-00000000-0000-4000-8000-000000000088',0);
+   INSERT INTO release_authority.source_freeze_observation(
+     rollout_id,service_id,phase,latest_successful_deploy_id,observed_at,declared_service_ids)
+   VALUES ('r-compensation-wins','srv-compensation','suspended','dep-compensation','$now',
+     '[\"srv-compensation\"]'::jsonb)" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "BEGIN;
+   SELECT release_authority.release_rollout_append_receipt(
+     'r-compensation-wins',repeat('5',40),'88',1,'188','288','begin_compensation',
+     'sha256:'||repeat('0',64),'sha256:'||repeat('f',64),'188','before','before',NULL);
+   SELECT pg_catalog.pg_advisory_xact_lock(810088);
+   SELECT pg_catalog.pg_sleep(3);
+   COMMIT" >/dev/null &
+compensation_winner_pid=$!
+compensation_winner_ready=false
+for _ in $(seq 1 100); do
+  if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks WHERE locktype='advisory' AND objid=810088 AND granted)")" = t; then
+    compensation_winner_ready=true
+    break
+  fi
+  sleep 0.05
+done
+test "$compensation_winner_ready" = true
+docker exec -e PGPASSWORD=control -e PGOPTIONS='-c lock_timeout=10s' "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+    'jobId','job-compensation-late','rolloutId','r-compensation-wins',
+    'provisioningIntentId','rri-'||repeat('5',63)||'8','serviceId','svc-compensation-wins','observedAt','$now',
+    'cleanupCanary','rr-cleanup:r-compensation-wins:rr-compensation-wins','lifecycle','role'))" >/dev/null
+wait "$compensation_winner_pid"
+docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_witness -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_cleanup_witness('job-compensation-late',jsonb_build_object(
+    'jobId','job-compensation-late','canary','rr-cleanup:r-compensation-wins:rr-compensation-wins',
+    'providerStatus','succeeded','containerTerminated',true,'logSha256','sha256:'||repeat('5',64),
+    'removedPaths',jsonb_build_array('/runner/_work/rr-compensation-wins/late'),'remainingPaths','[]'::jsonb,
+    'providerLogId','log-compensation-late','providerObservedAt','$now'))" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_mark_terminal('job-compensation-late',
+    jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))" >/dev/null
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT rollout.state||':'||rollout.last_receipt_sha256||':'||intent.effect_state||':'||
+     intent.effect_safe_for_compensation||':'||(job.terminal_at IS NOT NULL)
+   FROM release_authority.rollout rollout
+   JOIN release_authority.runner_intent intent USING (rollout_id)
+   JOIN release_authority.runner_job job USING (rollout_id)
+   WHERE rollout.rollout_id='r-compensation-wins'")" \
+  = compensating:sha256:$(printf 'f%.0s' $(seq 1 64)):blocked:false:true
 
 for provider_status in failed canceled; do
   rollout="r-clean-$provider_status"

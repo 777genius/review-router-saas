@@ -22,6 +22,22 @@ describe("release authority database installation", () => {
       "REVOKE ALL ON FUNCTION release_authority.release_source_freeze_immutable() FROM PUBLIC;",
     );
   });
+  it("installs the late-effect activation fence and forward-only persistence repair", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000005_late_runner_effects/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain(
+      "release runner duplicate effects unsafe for activation",
+    );
+    expect(migration).toContain("rolloutStateAtPersistence");
+    expect(migration).toContain(
+      "release_authority.release_runner_persist_job",
+    );
+    expect(migration).toContain(
+      "REVOKE ALL ON FUNCTION release_authority.release_runner_compensation_gate() FROM PUBLIC;",
+    );
+  });
   it("applies the complete ordered migration chain exactly once in one transaction", () => {
     expect(releaseAuthorityMigrationPaths).toEqual([
       "packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql",
@@ -29,6 +45,7 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000002_transactional_service_transition/migration.sql",
       "packages/platform/release-authority-db/migrations/000003_partial_source_freeze/migration.sql",
       "packages/platform/release-authority-db/migrations/000004_selective_source_recovery/migration.sql",
+      "packages/platform/release-authority-db/migrations/000005_late_runner_effects/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths.map((path) =>
@@ -40,6 +57,7 @@ describe("release authority database installation", () => {
       "5f52fdc1fcf6e37fabe9a69908d3c4e4bf82dfa6ab24c6b2ee9c4f3cda2a1099",
       "28079c64266e1045c9db82743f82412d9630f6b97f3143fcbe7730c290c33e94",
       "c86e2546a9e135f5b23142a2ef1eb70bc12a0b41345f29abd5d2e5b7cbcaed97",
+      "35db45ebd364e6f8cbeafbfb0ab6ac0056fe7e51de2b5fe844b91f1207ba1cfb",
     ]);
     const bundle = releaseAuthorityMigrationBundle();
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
@@ -53,11 +71,13 @@ describe("release authority database installation", () => {
     const fifth = bundle.indexOf(
       "CREATE TRIGGER release_source_resume_rollout_ownership_guard",
     );
+    const sixth = bundle.indexOf("rolloutStateAtPersistence");
     expect(first).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(first);
     expect(third).toBeGreaterThan(second);
     expect(fourth).toBeGreaterThan(third);
     expect(fifth).toBeGreaterThan(fourth);
+    expect(sixth).toBeGreaterThan(fifth);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
     expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(1);

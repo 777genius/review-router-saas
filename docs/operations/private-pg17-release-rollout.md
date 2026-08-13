@@ -97,12 +97,13 @@ passwords, backup material, or raw recovery witnesses.
    pnpm release-authority:install
    ```
 
-   The installer applies `000001_release_authority` followed by
-   `000002_external_effect_protocol` and
-   `000003_partial_source_freeze`, each exactly once in one transaction. It
-   is fresh-install-only: never run it against an existing authority catalog or
-   substitute application Prisma migration tooling. Retain this DB across
-   cutovers.
+   The installer applies `000001_release_authority`,
+   `000002_external_effect_protocol`,
+   `000002_transactional_service_transition`,
+   `000003_partial_source_freeze`, and `000005_late_runner_effects` in that
+   order, each exactly once in one transaction. It is fresh-install-only: never
+   run it against an existing authority catalog or substitute application
+   Prisma migration tooling. Retain this DB across cutovers.
 
 2. Deploy control and witness from the same immutable release and verify their
    `/health` service identities. Healthy control must observe the 000002

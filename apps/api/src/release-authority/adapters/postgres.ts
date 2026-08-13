@@ -44,6 +44,7 @@ const conflictMessages = new Set([
   "release authority activation receipt conflict",
   "provider authority replay conflict",
   "release runner intent identity conflict",
+  "release runner duplicate effects unsafe for activation",
   "release source freeze binding invalid",
   "release source freeze replay conflict",
   "release source freeze inventory conflict",
