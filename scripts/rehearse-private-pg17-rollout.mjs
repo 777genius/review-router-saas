@@ -243,7 +243,7 @@ export async function executeDisposableRehearsal(
       "000064_codex_oauth_versioned_secret_namespaces",
       "000065_codex_oauth_authority_acl_hardening",
       "000066_codex_oauth_rotating_cascade_authority",
-      "000067_release_rollout_ledger",
+      "000069_release_rollout_ledger",
     ])
       rmSync(join(preReleasePrisma, "migrations", migration), {
         recursive: true,

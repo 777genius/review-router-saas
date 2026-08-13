@@ -57,7 +57,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(matrix).toContain("name: migration64Name");
     expect(matrix).toContain("name: migration65Name");
     expect(matrix).toContain("name: migration66Name");
-    expect(matrix).not.toContain("name: migration67Name");
+    expect(matrix).not.toContain("name: migration69Name");
     expect(matrix).not.toContain("release_rollout_receipt_ledger");
     expect(matrix).toContain('psql(url, ["-c", testCase.decoy])');
     expect(matrix).toContain("`${testCase.name} injected failure missing`");
@@ -81,11 +81,11 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toContain("function registerDirectMigrationSuccess");
   });
 
-  it("requires 000067 to remain an immutable application-database no-op marker", () => {
+  it("requires 000069 to remain an immutable application-database no-op marker", () => {
     const migration = readFileSync(
       resolve(
         import.meta.dirname,
-        "../packages/platform/db/prisma/migrations/000067_release_rollout_ledger/migration.sql",
+        "../packages/platform/db/prisma/migrations/000069_release_rollout_ledger/migration.sql",
       ),
       "utf8",
     );

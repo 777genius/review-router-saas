@@ -24,7 +24,7 @@ const migration63Name = "000063_codex_oauth_setup_payload_claim";
 const migration64Name = "000064_codex_oauth_versioned_secret_namespaces";
 const migration65Name = "000065_codex_oauth_authority_acl_hardening";
 const migration66Name = "000066_codex_oauth_rotating_cascade_authority";
-const migration67Name = "000067_release_rollout_ledger";
+const migration69Name = "000069_release_rollout_ledger";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -33,7 +33,10 @@ const migration64 = join(migrationsDirectory, migration64Name, "migration.sql");
 const migration65 = join(migrationsDirectory, migration65Name, "migration.sql");
 const migration66 = join(migrationsDirectory, migration66Name, "migration.sql");
 const rotatingMigrationNames = readdirSync(migrationsDirectory)
-  .filter((name) => /^00006[0-6]_/u.test(name))
+  .filter(
+    (name) =>
+      /^00006[0-6]_codex_oauth_/u.test(name) || name === migration69Name,
+  )
   .sort();
 assert(
   JSON.stringify(rotatingMigrationNames) ===
@@ -45,7 +48,7 @@ assert(
       migration64Name,
       migration65Name,
       migration66Name,
-      migration67Name,
+      migration69Name,
     ]),
   "rehearsal migration inventory must exactly match rotating migrations 000060 through 000066",
 );
@@ -124,7 +127,7 @@ try {
   const observation = collectObservation(rehearsalUrl);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000067 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000069 rehearsal passed.\n",
   );
 } finally {
   psql(
@@ -235,7 +238,7 @@ function proveLateMigrationRollbackAndReplayMatrix() {
 }
 
 function proveReleaseAuthorityMarkerIsolation(url) {
-  proveMigrationRunnerHistory(url, migration67Name, true);
+  proveMigrationRunnerHistory(url, migration69Name, true);
   const forbiddenObjects = psql(url, [
     "-Atc",
     String.raw`
@@ -250,7 +253,7 @@ function proveReleaseAuthorityMarkerIsolation(url) {
   ]).stdout.trim();
   assert(
     forbiddenObjects === "0",
-    "000067 no-op marker created release authority objects in the application database",
+    "000069 no-op marker created release authority objects in the application database",
   );
   for (const role of [
     "reviewrouter_release_control",
@@ -261,7 +264,7 @@ function proveReleaseAuthorityMarkerIsolation(url) {
         "-Atc",
         `SELECT count(*) FROM pg_roles WHERE rolname=${quoteLiteral(role)}`,
       ]).stdout.trim() === "0",
-      `000067 no-op marker created external authority role ${role} in the application database`,
+      `000069 no-op marker created external authority role ${role} in the application database`,
     );
   }
 }
@@ -3212,7 +3215,7 @@ function proveMigrateDeployNoOp(url) {
   proveMigrationRunnerHistory(url, migration64Name, true);
   proveMigrationRunnerHistory(url, migration65Name, true);
   proveMigrationRunnerHistory(url, migration66Name, true);
-  proveMigrationRunnerHistory(url, migration67Name, true);
+  proveMigrationRunnerHistory(url, migration69Name, true);
 }
 
 function collectObservation(url) {

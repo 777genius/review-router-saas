@@ -59,7 +59,7 @@ describe("Codex rotating immutable migration history policy", () => {
     );
   });
 
-  it("pins the exact checked-in digest for the unpublished 000067 no-op marker", () => {
+  it("pins the exact checked-in digest for the unpublished 000069 no-op marker", () => {
     const checkedInDigest = createHash("sha256")
       .update(
         readFileSync(
@@ -81,7 +81,7 @@ describe("Codex rotating immutable migration history policy", () => {
     );
   });
 
-  it("keeps 000067 free of application database and authority DDL", () => {
+  it("keeps 000069 free of application database and authority DDL", () => {
     const source = readFileSync(
       resolve(
         "packages/platform/db/prisma/migrations",
@@ -99,7 +99,7 @@ describe("Codex rotating immutable migration history policy", () => {
     expect(source).not.toMatch(/reviewrouter_release_(?:control|witness)/u);
   });
 
-  it("loads the exact 000067 source digest and queries its prepublication history", () => {
+  it("loads the exact 000069 source digest and queries its prepublication history", () => {
     const expectedMigrationNames = Object.keys(
       checkedInCodexRotatingMigrationChecksums,
     );
@@ -175,7 +175,7 @@ describe("Codex rotating immutable migration history policy", () => {
     }
 
     const forwardDigest =
-      /000067 no-op marker policy[\s\S]+?exact checked-in SHA-256 is\s+`([a-f0-9]{64})`/u.exec(
+      /000069 no-op marker policy[\s\S]+?exact checked-in SHA-256 is\s+`([a-f0-9]{64})`/u.exec(
         runbook,
       )?.[1];
     expect(forwardDigest).toBe(
@@ -232,7 +232,7 @@ describe("Codex rotating immutable migration history policy", () => {
     ).toThrow("codex_rotating_000061_preexisting_history_forbidden");
   });
 
-  it("rejects any prepublication history for forward migration 000067", () => {
+  it("rejects any prepublication history for forward migration 000069", () => {
     expect(() =>
       assertCodexRotatingMigrationHistoryIsPristine([
         {
@@ -244,13 +244,13 @@ describe("Codex rotating immutable migration history policy", () => {
         },
       ]),
     ).toThrow(
-      "codex_rotating_000067_prepublication_history_forbidden:" +
+      "codex_rotating_000069_prepublication_history_forbidden:" +
         "use_the_forward_release_migration_once_from_the_immutable_release_caller",
     );
   });
 
   it.each(["rewritten", "unfinished", "rolled_back", "duplicate"] as const)(
-    "rejects %s prepublication 000067 history rather than blessing it",
+    "rejects %s prepublication 000069 history rather than blessing it",
     (kind) => {
       const original: CodexRotatingMigrationHistoryRow = {
         migration_name: forwardUnpublishedCodexRotatingMigration.name,
@@ -271,7 +271,7 @@ describe("Codex rotating immutable migration history policy", () => {
         assertCodexRotatingMigrationHistoryIsPristine(
           kind === "duplicate" ? [row, row] : [row],
         ),
-      ).toThrow("codex_rotating_000067_prepublication_history_forbidden");
+      ).toThrow("codex_rotating_000069_prepublication_history_forbidden");
     },
   );
 

@@ -59,7 +59,7 @@ Render one-off creation sends only `startCommand` and optional compute
 scoped by protected environment and visible only to the exact step using them.
 The service implements the endpoints consumed by
 `AuthenticatedRunnerLedgerAdapter` over SaaS migration
-`000067_release_rollout_ledger`:
+`000069_release_rollout_ledger`:
 
 - atomically claim a never-used rollout ID bound to commit, run, attempt, and
   both system identifiers;

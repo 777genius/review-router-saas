@@ -24,7 +24,7 @@ export const immutableCodexRotatingMigrationChecksums = Object.freeze({
 });
 
 export const forwardUnpublishedCodexRotatingMigration = Object.freeze({
-  name: "000067_release_rollout_ledger",
+  name: "000069_release_rollout_ledger",
   checksum: "82356ad61a366e22a15f4e53dabf8c97e14bad97c5970ef28710fe9367c06a05",
 });
 
@@ -46,9 +46,9 @@ const editedBeforeRolloutMigration =
  * other historical migrations may be absent or have exactly one successful
  * row bearing the immutable checked-in checksum. The non-atomic 000063 digest
  * existed only on an unpublished local side branch and is never accepted as
- * released history. Forward migration 000067 is an immutable no-op marker: it
+ * released history. Forward migration 000069 is an immutable no-op marker: it
  * is pinned above but remains unpublished, so this pre-release policy rejects
- * every preexisting 000067 history row. Release Authority state lives only in
+ * every preexisting 000069 history row. Release Authority state lives only in
  * its dedicated external PostgreSQL database.
  */
 export function assertCodexRotatingMigrationHistoryIsPristine(
@@ -61,7 +61,7 @@ export function assertCodexRotatingMigrationHistoryIsPristine(
     )
   ) {
     throw new Error(
-      "codex_rotating_000067_prepublication_history_forbidden:" +
+      "codex_rotating_000069_prepublication_history_forbidden:" +
         "use_the_forward_release_migration_once_from_the_immutable_release_caller",
     );
   }

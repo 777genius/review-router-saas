@@ -548,7 +548,7 @@ describe("release authority process composition", () => {
       "utf8",
     );
     const mainMigration = readFileSync(
-      "packages/platform/db/prisma/migrations/000067_release_rollout_ledger/migration.sql",
+      "packages/platform/db/prisma/migrations/000069_release_rollout_ledger/migration.sql",
       "utf8",
     );
     expect(appSource).not.toContain("release-rollout-ledger");
