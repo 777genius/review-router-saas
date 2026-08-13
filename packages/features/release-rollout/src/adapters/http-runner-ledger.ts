@@ -23,6 +23,7 @@ import {
   type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
 } from "../domain/external-effect";
+import { assertRecoveryEffectRecord } from "../domain/recovery-effect";
 
 export class AuthenticatedRunnerLedgerAdapter
   implements
@@ -485,6 +486,48 @@ export class AuthenticatedRunnerLedgerAdapter
     await this.request(
       `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/complete`,
       { method: "POST", body: JSON.stringify({ outcome: input.outcome }) },
+    );
+  }
+  async intendRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["intendRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["intendRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/intend`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  async claimRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["claimRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["claimRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/claim`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  async consumeRecoveryEffectPermit(
+    input: Parameters<
+      ServiceTransitionLedger["consumeRecoveryEffectPermit"]
+    >[0],
+  ): ReturnType<ServiceTransitionLedger["consumeRecoveryEffectPermit"]> {
+    return assertRecoveryEffectRecord(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/consume`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  async completeRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["completeRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["completeRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/complete`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
     );
   }
   async recordSourceFreezeMutation(input: {

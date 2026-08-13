@@ -20,7 +20,7 @@ const authorityReadiness = (
     roleName,
     systemIdentifier: "authority-system",
     postgresMajor: 17,
-    schemaVersion: 9,
+    schemaVersion: 10,
     migrationManifest: [
       [
         "000001_release_authority",
@@ -62,6 +62,10 @@ const authorityReadiness = (
         "000009_authority_history_and_forward_repairs",
         "14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7",
       ],
+      [
+        "000010_recovery_effect_permits",
+        "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
+      ],
     ].map(([migrationName, checksum], index) => ({
       position: index + 1,
       migrationName,
@@ -76,6 +80,7 @@ const authorityReadiness = (
     sourceFreezeProtocol: true,
     selectiveRecoveryProtocol: true,
     lateRunnerEffectProtocol: true,
+    recoveryEffectProtocol: true,
     compensationCheckpointDefinition: true,
     runnerProviderBoundary: true,
     cleanupWitnessTemporalSemantics: true,
@@ -101,6 +106,7 @@ const installerReadiness = [
     sourceFreezeProtocol: false,
     selectiveRecoveryProtocol: false,
     lateRunnerEffectProtocol: false,
+    recoveryEffectProtocol: false,
     compensationCheckpointDefinition: false,
     runnerProviderBoundary: false,
     cleanupWitnessTemporalSemantics: false,
@@ -126,6 +132,7 @@ const readerReadiness = [
     sourceFreezeProtocol: false,
     selectiveRecoveryProtocol: false,
     lateRunnerEffectProtocol: false,
+    recoveryEffectProtocol: false,
     compensationCheckpointDefinition: false,
     runnerProviderBoundary: false,
     cleanupWitnessTemporalSemantics: false,
@@ -771,6 +778,7 @@ describe("release authority process composition", () => {
   it.each([
     "selectiveRecoveryProtocol",
     "lateRunnerEffectProtocol",
+    "recoveryEffectProtocol",
     "compensationCheckpointDefinition",
     "runnerProviderBoundary",
     "cleanupWitnessTemporalSemantics",

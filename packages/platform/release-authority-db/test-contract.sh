@@ -95,6 +95,15 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
    VALUES (10,'000009_authority_history_and_forward_repairs',
      'sha256:14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7',
      'canonical')" >/dev/null
+docker cp "$root/packages/platform/release-authority-db/migrations/000010_recovery_effect_permits/migration.sql" \
+  "$name:/tmp/migration-000010.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000010.sql >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "INSERT INTO release_authority.schema_migration
+     (position,migration_name,checksum_sha256,byte_variant)
+   VALUES (11,'000010_recovery_effect_permits',
+     'sha256:a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd',
+     'canonical')" >/dev/null
 
 postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
@@ -1289,6 +1298,80 @@ for rejected_status in pending running unknown; do
   fi
 done
 
+# A recovery claim is only a lease. Expiry advances the epoch and fences the
+# old token; consumption is single-use. A job persisted after completion makes
+# the rollout and effect monotonically forward-only rather than undoing it.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT release_authority.release_rollout_claim('r-recovery-permit',repeat('2',40),'91',1,'191','291');
+   SELECT release_authority.release_runner_prepare_effect(jsonb_build_object(
+     'id','rri-'||repeat('2',64),'rolloutId','r-recovery-permit','serviceId','svc-recovery-permit',
+     'lifecycle','role','workflowJobId','911','runnerName','rr-recovery-permit','createdAt','$now',
+     'startCommandSha256','sha256:'||repeat('2',64),
+     'creationLeaseOwner','rrc-00000000-0000-4000-8000-000000000091'));
+   UPDATE release_authority.runner_intent SET effect_lease_expires_at=clock_timestamp()-interval '1 second'
+     WHERE intent_id='rri-'||repeat('2',64);
+   SELECT release_authority.release_runner_abandon_prepared(
+     'rri-'||repeat('2',64),'rrc-00000000-0000-4000-8000-000000000091',0);
+   INSERT INTO release_authority.source_freeze_observation(
+     rollout_id,service_id,phase,latest_successful_deploy_id,observed_at,declared_service_ids)
+   VALUES ('r-recovery-permit','srv-recovery','suspended','dep-recovery','$now','[\"srv-recovery\"]'::jsonb);
+   SELECT release_authority.release_rollout_append_receipt(
+     'r-recovery-permit',repeat('2',40),'91',1,'191','291','begin_compensation',
+     'sha256:'||repeat('0',64),'sha256:'||repeat('2',64),'191','before','before',NULL)" >/dev/null
+recovery_intent=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_recovery_effect_intend(jsonb_build_object(
+    'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
+    'kind','restore_database_writes'))->>'state'")
+test "$recovery_intent" = intended
+first_claim=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_recovery_effect_claim(jsonb_build_object(
+    'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
+    'ownerId','recovery-worker-1','leaseSeconds',5))")
+first_epoch=$(printf '%s' "$first_claim" | sed -n 's/.*"epoch": \([0-9]*\).*/\1/p')
+first_token=$(printf '%s' "$first_claim" | sed -n 's/.*"permitToken": "\([a-f0-9]*\)".*/\1/p')
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "UPDATE release_authority.recovery_effect SET lease_expires_at=clock_timestamp()-interval '1 second'
+   WHERE rollout_id='r-recovery-permit' AND effect_key='restore_database_writes'" >/dev/null
+second_claim=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_recovery_effect_claim(jsonb_build_object(
+    'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
+    'ownerId','recovery-worker-2','leaseSeconds',30))")
+second_epoch=$(printf '%s' "$second_claim" | sed -n 's/.*"epoch": \([0-9]*\).*/\1/p')
+second_token=$(printf '%s' "$second_claim" | sed -n 's/.*"permitToken": "\([a-f0-9]*\)".*/\1/p')
+test "$second_epoch" -gt "$first_epoch"
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_recovery_effect_consume(jsonb_build_object(
+    'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
+    'ownerId','recovery-worker-1','epoch',$first_epoch,'permitToken','$first_token'))" >/dev/null 2>&1; then
+  echo "expired recovery permit unexpectedly replayed" >&2
+  exit 1
+fi
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_recovery_effect_consume(jsonb_build_object(
+    'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
+    'ownerId','recovery-worker-2','epoch',$second_epoch,'permitToken','$second_token'));
+   SELECT release_authority.release_recovery_effect_complete(jsonb_build_object(
+    'rolloutId','r-recovery-permit','effectKey','restore_database_writes',
+    'epoch',$second_epoch,'permitToken','$second_token','observation',
+    jsonb_build_object('sourceWritesRestored',true,'aclSha256','sha256:'||repeat('2',64))))" >/dev/null
+docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_job(jsonb_build_object(
+    'jobId','job-recovery-late','rolloutId','r-recovery-permit',
+    'provisioningIntentId','rri-'||repeat('2',64),'serviceId','svc-recovery-permit',
+    'observedAt','$now','providerCreationNotBefore','$now',
+    'cleanupCanary','rr-cleanup:r-recovery-permit:rr-recovery-permit','lifecycle','role'))" >/dev/null
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT rollout.recovery_forward_only||':'||effect.state||':'||effect.epoch||':'||
+      (effect.observation->>'sourceWritesRestored')
+   FROM release_authority.rollout rollout JOIN release_authority.recovery_effect effect USING (rollout_id)
+   WHERE rollout.rollout_id='r-recovery-permit'")" = "true:forward_repair:$second_epoch:true"
+
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "INSERT INTO release_authority.rollout(
      rollout_id,expected_commit_sha,run_id,run_attempt,
@@ -1346,7 +1429,14 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
       ('release_source_freeze_immutable',false),
       ('release_source_freeze_prepare',true),
       ('release_source_freeze_record',true),
-      ('release_source_freeze_complete',true)
+      ('release_source_freeze_complete',true),
+      ('release_recovery_effect_snapshot',false),
+      ('release_recovery_effect_intend',true),
+      ('release_recovery_effect_claim',true),
+      ('release_recovery_effect_consume',true),
+      ('release_recovery_effect_complete',true),
+      ('release_late_job_recovery_effect_gate',false),
+      ('release_recovery_checkpoint_permit_gate',false)
     ), functions AS (
       SELECT p.oid,p.proname,m.control_allowed,p.proacl,p.proowner,p.proconfig
       FROM migrated m
@@ -1367,7 +1457,7 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
         'reviewrouter_release_witness',oid,'EXECUTE'))||':'||
       bool_and(proconfig=ARRAY['search_path=pg_catalog']::text[])
     FROM functions")
-test "$migration_acl" = 15:true:true:true:true:true
+test "$migration_acl" = 22:true:true:true:true:true
 legacy_control_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT pg_catalog.has_function_privilege('reviewrouter_release_control',
       'release_authority.release_runner_persist_intent(jsonb)','EXECUTE')||':'||

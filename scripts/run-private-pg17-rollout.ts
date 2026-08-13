@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   AuthenticatedRunnerLedgerAdapter,
@@ -210,6 +211,7 @@ for (const expectation of serviceExpectations) {
 const transactionalServices = new TransactionalServiceCutover(
   ledger,
   renderServices,
+  `recovery-${randomUUID()}`,
 );
 const generation = new PostgreSqlGenerationAdapter(
   new RedactedProcessCommandAdapter(),

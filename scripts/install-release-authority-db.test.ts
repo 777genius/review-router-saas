@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   releaseAuthorityMigrationBundle,
+  releaseAuthorityMigrationManifest,
   releaseAuthorityMigrationPaths,
 } from "./install-release-authority-db.mjs";
 
@@ -95,6 +96,16 @@ describe("release authority database installation", () => {
     expect(migration).toContain("intent_rollout_id");
     expect(migration).toContain("release_schema_migration_manifest");
   });
+  it("installs single-use rollout-first recovery effect permits", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000010_recovery_effect_permits/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain("release_recovery_effect_consume");
+    expect(migration).toContain("release_late_job_recovery_effect_gate");
+    expect(migration).toContain("release_recovery_checkpoint_permit_gate");
+    expect(migration).toContain("state='forward_repair'");
+  });
   it("applies the complete ordered migration chain exactly once in one transaction", () => {
     expect(releaseAuthorityMigrationPaths).toEqual([
       "packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql",
@@ -107,6 +118,7 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000007_compensation_effect_fence/migration.sql",
       "packages/platform/release-authority-db/migrations/000008_trigger_helper_acl/migration.sql",
       "packages/platform/release-authority-db/migrations/000009_authority_history_and_forward_repairs/migration.sql",
+      "packages/platform/release-authority-db/migrations/000010_recovery_effect_permits/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths.map((path) =>
@@ -123,6 +135,7 @@ describe("release authority database installation", () => {
       "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
       "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
       "14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7",
+      "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
     ]);
     const bundle = releaseAuthorityMigrationBundle();
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
@@ -147,6 +160,10 @@ describe("release authority database installation", () => {
       "CREATE TABLE release_authority.schema_migration",
       ninth,
     );
+    const eleventh = bundle.indexOf(
+      "CREATE TABLE release_authority.recovery_effect",
+      tenth,
+    );
     expect(first).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(first);
     expect(third).toBeGreaterThan(second);
@@ -157,6 +174,7 @@ describe("release authority database installation", () => {
     expect(eighth).toBeGreaterThan(seventh);
     expect(ninth).toBeGreaterThan(eighth);
     expect(tenth).toBeGreaterThan(ninth);
+    expect(eleventh).toBeGreaterThan(tenth);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
     expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(1);
@@ -174,6 +192,28 @@ describe("release authority database installation", () => {
         /CREATE FUNCTION release_authority\.release_source_freeze_complete/gu,
       ),
     ).toHaveLength(1);
+  });
+
+  it("keeps the static migration ledger identical to the immutable file bytes", () => {
+    expect(
+      releaseAuthorityMigrationManifest.map(
+        ([migrationName, checksumSha256]) => ({
+          migrationName,
+          checksumSha256,
+        }),
+      ),
+    ).toEqual(
+      releaseAuthorityMigrationPaths.map((path) => ({
+        migrationName: path.split("/").at(-2),
+        checksumSha256: `sha256:${createHash("sha256")
+          .update(readFileSync(path))
+          .digest("hex")}`,
+      })),
+    );
+    const bundle = releaseAuthorityMigrationBundle();
+    expect(bundle).toContain("authority_forward_present");
+    expect(bundle).toContain("release authority migration history mismatch");
+    expect(bundle).toContain("VALUES (11, '000010_recovery_effect_permits'");
   });
 
   it("requires rollout-owned suspension evidence for every source resume", () => {

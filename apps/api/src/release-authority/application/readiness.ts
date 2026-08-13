@@ -17,6 +17,7 @@ export type ReleaseAuthorityDatabaseReadiness = Readonly<{
   sourceFreezeProtocol: boolean;
   selectiveRecoveryProtocol: boolean;
   lateRunnerEffectProtocol: boolean;
+  recoveryEffectProtocol: boolean;
   compensationCheckpointDefinition: boolean;
   runnerProviderBoundary: boolean;
   cleanupWitnessTemporalSemantics: boolean;
@@ -81,6 +82,10 @@ const expectedMigrationIdentities = [
     "000009_authority_history_and_forward_repairs",
     ["sha256:14ce6300054668f4bba3d9c7415ba34217791892bce86dc9d7dbe9203f8efaa7"],
   ],
+  [
+    "000010_recovery_effect_permits",
+    ["sha256:a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd"],
+  ],
 ] as const;
 
 const migrationManifestIsReady = (
@@ -104,7 +109,7 @@ const migrationManifestIsReady = (
 export const releaseAuthoritySchemaIsReady = (
   readiness: ReleaseAuthorityDatabaseReadiness,
 ): boolean =>
-  readiness.schemaVersion === 9 &&
+  readiness.schemaVersion === 10 &&
   migrationManifestIsReady(readiness.migrationManifest) &&
   readiness.controlRoutine &&
   readiness.providerRoutine &&
@@ -112,6 +117,7 @@ export const releaseAuthoritySchemaIsReady = (
   readiness.sourceFreezeProtocol &&
   readiness.selectiveRecoveryProtocol &&
   readiness.lateRunnerEffectProtocol &&
+  readiness.recoveryEffectProtocol &&
   readiness.compensationCheckpointDefinition &&
   readiness.runnerProviderBoundary &&
   readiness.cleanupWitnessTemporalSemantics &&

@@ -18,10 +18,19 @@ import {
   type ProviderControlPort,
 } from "./ports";
 import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
+import {
+  RecoveryEffectProtocol,
+  type RecoveryEffectAuthorityPort,
+} from "./recovery-effect-protocol";
+import {
+  RecoveryEffectKind,
+  RecoveryEffectState,
+} from "../domain/recovery-effect";
 
 type CompensationPorts = {
+  recoveryOwnerId: string;
   authority: ProviderAuthorityDecisionPort;
-  ledger: {
+  ledger: RecoveryEffectAuthorityPort & {
     observeCompensationCheckpoint(input: {
       rolloutId: string;
       sourceSystemIdentifier: string;
@@ -53,7 +62,11 @@ type CompensationPorts = {
     >;
   };
   compensateDatabase(): Promise<DatabaseAclWitness>;
-  provider: Pick<ProviderControlPort, "compensateAndObserve">;
+  observeDatabaseCompensation(): Promise<DatabaseAclWitness | null>;
+  provider: Pick<ProviderControlPort, "compensateAndObserve"> & {
+    /** The implementation consumes per-service recovery permits internally. */
+    readonly recoveryEffectsAreAuthorityMediated: true;
+  };
 };
 
 export type CompensationSafetyReconciliation = Readonly<{
@@ -183,7 +196,12 @@ function zeroIntentCompensationSafety(
 }
 
 export class ReleaseCompensationReconciliationUseCase {
-  constructor(private readonly ports: CompensationPorts) {}
+  private readonly recoveryEffects: RecoveryEffectProtocol;
+  constructor(private readonly ports: CompensationPorts) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/u.test(ports.recoveryOwnerId))
+      throw new Error("release_compensation_recovery_owner_invalid");
+    this.recoveryEffects = new RecoveryEffectProtocol(ports.ledger);
+  }
 
   async execute(rollout: ReleaseRollout): Promise<{
     outcome: "compensated" | "forward_only" | "denied" | "no_op";
@@ -270,7 +288,30 @@ export class ReleaseCompensationReconciliationUseCase {
       )
         throw new Error("release_compensation_checkpoint_changed");
 
-      const databaseWitness = await this.ports.compensateDatabase();
+      let databaseWitness: DatabaseAclWitness | undefined;
+      const databaseEffect = await this.recoveryEffects.execute({
+        rolloutId: rollout.rolloutId,
+        effectKey: "restore_database_writes",
+        kind: RecoveryEffectKind.RestoreDatabaseWrites,
+        ownerId: this.ports.recoveryOwnerId,
+        effect: async () => {
+          databaseWitness = await this.ports.compensateDatabase();
+          return databaseWitness;
+        },
+        observe: async (witness) => witness,
+        reconcileConsumed: () => this.ports.observeDatabaseCompensation(),
+      });
+      if (databaseEffect.state === RecoveryEffectState.ForwardRepair)
+        return {
+          outcome: "forward_only",
+          externalEffects,
+          reconciliation: await this.ports.ledger.reconcileRollout(
+            rollout.rolloutId,
+          ),
+        };
+      if (databaseEffect.state !== RecoveryEffectState.Completed)
+        throw new Error("release_database_recovery_effect_ambiguous");
+      databaseWitness ??= databaseEffect.observation as DatabaseAclWitness;
 
       ({ checkpoint, externalEffects } = await this.safetySnapshot(rollout));
       if (!externalEffects.safeForCompensation)

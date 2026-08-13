@@ -20,9 +20,13 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           to_regprocedure('release_authority.release_compensation_source_recovery_gate()') AS compensation_recovery_gate,
           to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') AS provider_decide,
           to_regprocedure('release_authority.release_rollout_reconcile(text,jsonb)') AS rollout_reconcile,
-          to_regprocedure('release_authority.release_rollout_compensation_checkpoint(text,text,text)') AS compensation_checkpoint
-          ,to_regprocedure('release_authority.release_schema_migration_manifest()') AS migration_manifest
-          ,to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)') AS persist_cleanup_witness
+          to_regprocedure('release_authority.release_rollout_compensation_checkpoint(text,text,text)') AS compensation_checkpoint,
+          to_regprocedure('release_authority.release_schema_migration_manifest()') AS migration_manifest,
+          to_regprocedure('release_authority.release_runner_persist_cleanup_witness(text,jsonb)') AS persist_cleanup_witness,
+          to_regprocedure('release_authority.release_recovery_effect_intend(jsonb)') AS recovery_effect_intend,
+          to_regprocedure('release_authority.release_recovery_effect_claim(jsonb)') AS recovery_effect_claim,
+          to_regprocedure('release_authority.release_recovery_effect_consume(jsonb)') AS recovery_effect_consume,
+          to_regprocedure('release_authority.release_recovery_effect_complete(jsonb)') AS recovery_effect_complete
       ), definitions AS (
         SELECT facts.*,
           coalesce(pg_get_functiondef(recovery_append), '') AS recovery_append_definition,
@@ -81,8 +85,12 @@ export async function observeReleaseAuthorityDatabaseReadiness(
             to_regprocedure('release_authority.release_service_transition_activation_gate(text,jsonb)'),
             to_regprocedure('release_authority.release_source_freeze_prepare(text,text,text,integer,text,text,text,text,timestamptz,jsonb,boolean)'),
             to_regprocedure('release_authority.release_source_freeze_record(text,text,text,integer,text,text,text,text,timestamptz,jsonb)'),
-            to_regprocedure('release_authority.release_source_freeze_complete(text,text,text,integer,text,text,jsonb,timestamptz)')
-            ,to_regprocedure('release_authority.release_schema_migration_manifest()')
+            to_regprocedure('release_authority.release_source_freeze_complete(text,text,text,integer,text,text,jsonb,timestamptz)'),
+            to_regprocedure('release_authority.release_schema_migration_manifest()'),
+            to_regprocedure('release_authority.release_recovery_effect_intend(jsonb)'),
+            to_regprocedure('release_authority.release_recovery_effect_claim(jsonb)'),
+            to_regprocedure('release_authority.release_recovery_effect_consume(jsonb)'),
+            to_regprocedure('release_authority.release_recovery_effect_complete(jsonb)')
           ]::oid[], ARRAY[
             to_regprocedure('release_authority.release_service_transition_immutable()')
           ]::oid[]),
@@ -136,7 +144,11 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           AND definitions.rollout_reconcile IS NOT NULL
           AND definitions.compensation_checkpoint IS NOT NULL
           AND definitions.migration_manifest IS NOT NULL
-          AND (SELECT count(*) = 9 FROM pg_catalog.pg_class relation
+          AND definitions.recovery_effect_intend IS NOT NULL
+          AND definitions.recovery_effect_claim IS NOT NULL
+          AND definitions.recovery_effect_consume IS NOT NULL
+          AND definitions.recovery_effect_complete IS NOT NULL
+          AND (SELECT count(*) = 10 FROM pg_catalog.pg_class relation
             JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
             WHERE namespace.nspname = 'release_authority'
               AND relation.relkind IN ('r','p')
@@ -144,7 +156,7 @@ export async function observeReleaseAuthorityDatabaseReadiness(
                 'rollout','receipt','runner_intent','runner_job',
                 'provider_authority_decision','service_transition',
                 'service_transition_checkpoint','source_freeze_observation',
-                'source_freeze_completion'
+                'source_freeze_completion','recovery_effect'
               ))
           AND (SELECT count(*) = 8 FROM pg_catalog.pg_attribute attribute
             JOIN pg_catalog.pg_class relation ON relation.oid = attribute.attrelid
@@ -158,8 +170,8 @@ export async function observeReleaseAuthorityDatabaseReadiness(
                 'effect_discovery_deadline','effect_safe_for_compensation',
                 'effect_block_reason'
               ))
-          THEN 9 ELSE 0 END AS "schemaVersion",
-        '[]'::jsonb AS "migrationManifest",
+          THEN 10 ELSE 0 END AS "schemaVersion",
+          '[]'::jsonb AS "migrationManifest",
         to_regprocedure('release_authority.release_rollout_claim(text,text,text,integer,text,text)') IS NOT NULL AS "controlRoutine",
         to_regprocedure('release_authority.release_provider_authority_decide(jsonb)') IS NOT NULL AS "providerRoutine",
         to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL AS "installerRoutine",
@@ -239,7 +251,14 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           AND definitions.persist_cleanup_witness_definition
             LIKE '%providerObservedAt%clock_timestamp()%5 minutes%'
           AS "cleanupWitnessTemporalSemantics",
-        (SELECT count(*) = 10 AND bool_and(trigger.tgenabled = 'O')
+        definitions.recovery_effect_intend IS NOT NULL
+          AND definitions.recovery_effect_claim IS NOT NULL
+          AND definitions.recovery_effect_consume IS NOT NULL
+          AND definitions.recovery_effect_complete IS NOT NULL
+          AND pg_get_functiondef(definitions.recovery_effect_consume) LIKE '%FOR UPDATE%'
+          AND pg_get_functiondef(definitions.recovery_effect_consume) LIKE '%release_compensation_effects_are_safe%'
+          AS "recoveryEffectProtocol",
+        (SELECT count(*) = 12 AND bool_and(trigger.tgenabled = 'O')
           FROM pg_catalog.pg_trigger trigger
           JOIN pg_catalog.pg_class relation ON relation.oid = trigger.tgrelid
           JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -265,7 +284,11 @@ export async function observeReleaseAuthorityDatabaseReadiness(
               ('receipt', 'release_compensation_receipt_effect_gate_trigger',
                 definitions.compensation_receipt_gate),
               ('service_transition_checkpoint', 'release_compensation_source_recovery_gate_trigger',
-                definitions.compensation_recovery_gate)
+                definitions.compensation_recovery_gate),
+              ('runner_job', 'release_late_job_recovery_effect_gate_trigger',
+                to_regprocedure('release_authority.release_late_job_recovery_effect_gate()')),
+              ('service_transition_checkpoint', 'release_recovery_checkpoint_permit_gate_trigger',
+                to_regprocedure('release_authority.release_recovery_checkpoint_permit_gate()'))
             )
         ) AND EXISTS (
           SELECT 1 FROM pg_catalog.pg_trigger trigger
@@ -374,7 +397,7 @@ export async function observeReleaseAuthorityDatabaseReadiness(
     throw new Error("release_control_database_identity_unavailable");
   const readiness = rows[0];
   if (
-    readiness.schemaVersion === 9 &&
+    readiness.schemaVersion === 10 &&
     readiness.migrationManifest.length === 0
   ) {
     const manifestRows = await prisma.$queryRaw<

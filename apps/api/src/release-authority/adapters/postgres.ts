@@ -11,6 +11,7 @@ import type {
 import {
   assertExternalEffectRecord,
   assertRunnerProvisioningIntentRecord,
+  assertRecoveryEffectRecord,
 } from "@reviewrouter/features-release-rollout";
 import type {
   IndependentCleanupWitness,
@@ -586,6 +587,48 @@ export class RoutineReleaseControlLedgerAdapter
       await firstValue(
         this.prisma,
         Prisma.sql`SELECT release_authority.release_service_transition_complete(${asJsonb(input)}) AS value`,
+      ),
+    );
+  }
+  async intendRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["intendRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["intendRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_recovery_effect_intend(${asJsonb(input)}) AS value`,
+      ),
+    );
+  }
+  async claimRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["claimRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["claimRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_recovery_effect_claim(${asJsonb(input)}) AS value`,
+      ),
+    );
+  }
+  async consumeRecoveryEffectPermit(
+    input: Parameters<
+      ServiceTransitionLedger["consumeRecoveryEffectPermit"]
+    >[0],
+  ): ReturnType<ServiceTransitionLedger["consumeRecoveryEffectPermit"]> {
+    return assertRecoveryEffectRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_recovery_effect_consume(${asJsonb(input)}) AS value`,
+      ),
+    );
+  }
+  async completeRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["completeRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["completeRecoveryEffect"]> {
+    return assertRecoveryEffectRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_recovery_effect_complete(${asJsonb(input)}) AS value`,
       ),
     );
   }

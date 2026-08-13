@@ -86,7 +86,11 @@ function ports(initial: {
     };
     return true;
   });
+  let recoveryEffect:
+    | import("../domain/recovery-effect").RecoveryEffectRecord
+    | undefined;
   return {
+    recoveryOwnerId: "test-recovery-owner",
     authority: {
       decide: vi.fn().mockImplementation(async (input) => ({
         ...input,
@@ -111,9 +115,55 @@ function ports(initial: {
           },
         },
       ]),
+      intendRecoveryEffect: vi.fn(
+        async (input) =>
+          (recoveryEffect ??= {
+            ...input,
+            serviceId: null,
+            state: "intended",
+            epoch: 0,
+            claimOwnerId: null,
+            permitToken: null,
+            leaseExpiresAt: null,
+            consumedAt: null,
+            completedAt: null,
+            observation: null,
+          }),
+      ),
+      claimRecoveryEffect: vi.fn(
+        async (input) =>
+          (recoveryEffect = {
+            ...recoveryEffect!,
+            state: "claimed",
+            epoch: recoveryEffect!.epoch + 1,
+            claimOwnerId: input.ownerId,
+            permitToken: "a".repeat(64),
+            leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          }),
+      ),
+      consumeRecoveryEffectPermit: vi.fn(
+        async () =>
+          (recoveryEffect = {
+            ...recoveryEffect!,
+            state: "consumed",
+            leaseExpiresAt: null,
+            consumedAt: new Date().toISOString(),
+          }),
+      ),
+      completeRecoveryEffect: vi.fn(
+        async (input) =>
+          (recoveryEffect = {
+            ...recoveryEffect!,
+            state: "completed",
+            completedAt: new Date().toISOString(),
+            observation: input.observation,
+          }),
+      ),
     },
     compensateDatabase: vi.fn().mockResolvedValue(databaseWitness),
+    observeDatabaseCompensation: vi.fn().mockResolvedValue(null),
     provider: {
+      recoveryEffectsAreAuthorityMediated: true as const,
       compensateAndObserve: vi.fn().mockResolvedValue(providerWitness),
     },
   };

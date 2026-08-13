@@ -13,6 +13,7 @@ import {
   type TargetServiceContract,
 } from "./transactional-service-cutover";
 import { createHash } from "node:crypto";
+import type { RecoveryEffectRecord } from "../domain/recovery-effect";
 
 const sha = (value: unknown) =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
@@ -193,6 +194,31 @@ const harness = (fail?: string, failOrdinal = 1) => {
       });
     return "created";
   });
+  const recoveryEffects = new Map<string, RecoveryEffectRecord>();
+  const snapshot = (
+    input: Partial<RecoveryEffectRecord> &
+      Pick<RecoveryEffectRecord, "rolloutId" | "effectKey" | "kind">,
+  ): RecoveryEffectRecord => ({
+    rolloutId: input.rolloutId,
+    effectKey: input.effectKey,
+    kind: input.kind,
+    serviceId: input.serviceId ?? null,
+    state: input.state ?? "intended",
+    epoch: input.epoch ?? 0,
+    claimOwnerId: input.claimOwnerId ?? null,
+    permitToken: input.permitToken ?? null,
+    leaseExpiresAt:
+      input.state === "claimed"
+        ? new Date(Date.now() + 60_000).toISOString()
+        : null,
+    consumedAt:
+      input.state &&
+      ["consumed", "completed", "forward_repair"].includes(input.state)
+        ? new Date().toISOString()
+        : null,
+    completedAt: input.state === "completed" ? new Date().toISOString() : null,
+    observation: input.observation ?? null,
+  });
   const ledger = {
     begin,
     readContract: vi.fn(async () => ({
@@ -212,7 +238,50 @@ const harness = (fail?: string, failOrdinal = 1) => {
     ),
     read: vi.fn(async () => checkpoints),
     complete: vi.fn(async () => undefined),
-  };
+    intendRecoveryEffect: vi.fn(async (input) => {
+      const existing = recoveryEffects.get(input.effectKey);
+      if (existing) return existing;
+      const value = snapshot(input);
+      recoveryEffects.set(input.effectKey, value);
+      return value;
+    }),
+    claimRecoveryEffect: vi.fn(async (input) => {
+      const existing = recoveryEffects.get(input.effectKey)!;
+      const value = snapshot({
+        ...existing,
+        state: "claimed",
+        epoch: existing.epoch + 1,
+        claimOwnerId: input.ownerId,
+        permitToken: "a".repeat(64),
+      });
+      recoveryEffects.set(input.effectKey, value);
+      return value;
+    }),
+    consumeRecoveryEffectPermit: vi.fn(async (input) => {
+      const existing = recoveryEffects.get(input.effectKey)!;
+      const value = snapshot({
+        ...existing,
+        state: "consumed",
+        epoch: input.epoch,
+        claimOwnerId: input.ownerId,
+        permitToken: input.permitToken,
+      });
+      recoveryEffects.set(input.effectKey, value);
+      return value;
+    }),
+    completeRecoveryEffect: vi.fn(async (input) => {
+      const existing = recoveryEffects.get(input.effectKey)!;
+      const value = snapshot({
+        ...existing,
+        state: "completed",
+        epoch: input.epoch,
+        permitToken: input.permitToken,
+        observation: input.observation,
+      });
+      recoveryEffects.set(input.effectKey, value);
+      return value;
+    }),
+  } satisfies ServiceTransitionLedger;
   const provider = {
     observe: vi.fn(async (id: string) => current.get(id)!),
     suspend: vi.fn(async (id: string) => {
@@ -282,7 +351,11 @@ const harness = (fail?: string, failOrdinal = 1) => {
     })),
   };
   return {
-    cutover: new TransactionalServiceCutover(ledger, provider),
+    cutover: new TransactionalServiceCutover(
+      ledger,
+      provider,
+      "test-recovery-owner",
+    ),
     ledger,
     provider,
     checkpoints,
@@ -320,6 +393,8 @@ describe("transactional same-service cutover", () => {
       await expect(
         test.cutover.stage({ source, protectedEnvironment, target }),
       ).rejects.toThrow();
+      expect(test.provider.configureSource).not.toHaveBeenCalled();
+      await test.cutover.recover({ source, protectedEnvironment, target });
       expect(test.provider.configureSource).toHaveBeenCalledTimes(3);
     },
   );
@@ -340,7 +415,9 @@ describe("transactional same-service cutover", () => {
     });
     await expect(
       test.cutover.stage({ source, protectedEnvironment, target }),
-    ).rejects.toThrow("interrupted_source_recovered");
+    ).rejects.toThrow("interrupted_recovery_required");
+    expect(test.provider.configureSource).not.toHaveBeenCalled();
+    await test.cutover.recover({ source, protectedEnvironment, target });
     expect(test.provider.configureSource).toHaveBeenCalledTimes(3);
   });
 
@@ -360,6 +437,8 @@ describe("transactional same-service cutover", () => {
     await expect(
       test.cutover.stage({ source, protectedEnvironment, target }),
     ).rejects.toThrow("concurrent_or_interrupted");
+    expect(test.provider.configureSource).not.toHaveBeenCalled();
+    await test.cutover.recover({ source, protectedEnvironment, target });
     expect(test.provider.configureSource).toHaveBeenCalledTimes(3);
   });
 
@@ -470,7 +549,7 @@ describe("transactional same-service cutover", () => {
     });
   });
 
-  it("retries a resume failure from durable checkpoints", async () => {
+  it("reconciles an ambiguous consumed resume without replay", async () => {
     const test = harness("resume");
     await test.cutover.stage({ source, protectedEnvironment, target });
     await test.cutover.recover({ source, protectedEnvironment, target });
@@ -485,6 +564,12 @@ describe("transactional same-service cutover", () => {
     await expect(
       test.cutover.finalizeAuthorizedSourceRecovery(input),
     ).rejects.toThrow("crash:resume");
+    await expect(
+      test.cutover.finalizeAuthorizedSourceRecovery(input),
+    ).rejects.toThrow("service_transition_recovery_effect_ambiguous");
+    // Independent provider observation later proves the dropped call took
+    // effect; the protocol completes the consumed permit without another POST.
+    await test.provider.resume("srv-web");
     await expect(
       test.cutover.finalizeAuthorizedSourceRecovery(input),
     ).resolves.toMatchObject({

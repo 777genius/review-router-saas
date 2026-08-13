@@ -257,6 +257,23 @@ export class PostgreSqlGenerationAdapter {
         .map((role) => `GRANT CONNECT ON DATABASE :"DBNAME" TO ${role};`)
         .join(" ")} COMMIT;`,
     );
+    const observed = this.observeCompensatedSource(input);
+    if (!observed)
+      throw new Error("postgres_generation_compensation_acl_unproven");
+    return observed;
+  }
+
+  /** Read-only reconciliation after a consumed restore-writes permit. */
+  observeCompensatedSource(input: {
+    adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    reconnectUrls: Readonly<Record<string, string>>;
+  }): DatabaseAclWitness | null {
+    this.observeIdentity(input.adminUrl, input.source);
+    if (runtimeRoles.some((role) => !input.reconnectUrls[role]))
+      throw new Error(
+        "postgres_generation_compensation_reconnect_urls_missing",
+      );
     const acl = JSON.parse(
       this.psql(
         input.adminUrl,
@@ -272,7 +289,7 @@ export class PostgreSqlGenerationAdapter {
       acl.publicConnectDenied !== true ||
       acl.systemIdentifier !== input.source.systemIdentifier
     )
-      throw new Error("postgres_generation_compensation_acl_unproven");
+      return null;
     for (const role of runtimeRoles) {
       const connection = decomposePostgresConnection(
         input.reconnectUrls[role]!,

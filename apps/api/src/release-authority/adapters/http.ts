@@ -349,6 +349,42 @@ export async function registerReleaseRolloutLedgerRoutes(
       } as never),
     }),
   );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/recovery-effects/intend",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().intendRecoveryEffect({
+        ...record(request.body),
+        rolloutId: request.params.rolloutId,
+      } as never),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/recovery-effects/claim",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().claimRecoveryEffect({
+        ...record(request.body),
+        rolloutId: request.params.rolloutId,
+      } as never),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/recovery-effects/consume",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().consumeRecoveryEffectPermit({
+        ...record(request.body),
+        rolloutId: request.params.rolloutId,
+      } as never),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/recovery-effects/complete",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().completeRecoveryEffect({
+        ...record(request.body),
+        rolloutId: request.params.rolloutId,
+      } as never),
+  );
   app.get<{ Params: { rolloutId: string } }>(
     "/v1/service-transitions/:rolloutId/contract",
     { preHandler: control },

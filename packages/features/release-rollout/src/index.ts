@@ -7,6 +7,8 @@ export * from "./application/use-cases";
 export * from "./application/reconcile-compensation";
 export * from "./application/external-effect-protocol";
 export * from "./domain/external-effect";
+export * from "./domain/recovery-effect";
+export * from "./application/recovery-effect-protocol";
 export * from "./adapters/render-private-runner";
 export * from "./adapters/github-jit-bootstrap";
 export * from "./adapters/render-provider-freeze";

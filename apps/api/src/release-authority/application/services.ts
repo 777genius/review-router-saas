@@ -184,6 +184,26 @@ export class ReleaseServiceTransitionService {
   complete = (
     input: Parameters<ReleaseServiceTransitionLedgerPort["complete"]>[0],
   ) => this.repository.complete(input);
+  intendRecoveryEffect = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["intendRecoveryEffect"]
+    >[0],
+  ) => this.repository.intendRecoveryEffect(input);
+  claimRecoveryEffect = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["claimRecoveryEffect"]
+    >[0],
+  ) => this.repository.claimRecoveryEffect(input);
+  consumeRecoveryEffectPermit = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["consumeRecoveryEffectPermit"]
+    >[0],
+  ) => this.repository.consumeRecoveryEffectPermit(input);
+  completeRecoveryEffect = (
+    input: Parameters<
+      ReleaseServiceTransitionLedgerPort["completeRecoveryEffect"]
+    >[0],
+  ) => this.repository.completeRecoveryEffect(input);
 }
 
 export class ReleaseRolloutReconciliationService {

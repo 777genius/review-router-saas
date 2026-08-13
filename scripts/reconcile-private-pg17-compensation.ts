@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import {
@@ -10,7 +10,6 @@ import {
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
   ReleaseCompensationReconciliationUseCase,
-  RenderProviderFreezeAdapter,
   RenderTransactionalServicesAdapter,
   TransactionalServiceCutover,
   type ProtectedSourceEnvironment,
@@ -153,6 +152,7 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
     new RenderTransactionalServicesAdapter(
       required("RENDER_TARGET_SWITCH_API_KEY"),
     ),
+    `recovery-${randomUUID()}`,
   );
   const checkpoints = await ledger.read(rollout.rolloutId);
   const sourceWriterServiceIds = parseCompensationSourceWriterServiceIds(
@@ -171,7 +171,6 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
     throw new Error("private_pg17_reconcile_service_scope_invalid");
   if ((checkpoints.length === 0) !== (durableContract === null))
     throw new Error("private_pg17_reconcile_transition_state_inconsistent");
-  const frozenSource = new RenderProviderFreezeAdapter();
   if (
     checkpoints.length > 0 &&
     (!sourceRecoveryManifest ||
@@ -183,6 +182,7 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
     throw new Error("private_pg17_reconcile_transition_contract_missing");
   let sourceServicesRestored = false;
   const useCase = new ReleaseCompensationReconciliationUseCase({
+    recoveryOwnerId: `recovery-${randomUUID()}`,
     authority,
     ledger,
     compensateDatabase: async () => {
@@ -202,7 +202,16 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
         ) as Record<string, string>,
       });
     },
+    observeDatabaseCompensation: async () =>
+      database.observeCompensatedSource({
+        adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+        source: rollout.source,
+        reconnectUrls: JSON.parse(
+          required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
+        ) as Record<string, string>,
+      }),
     provider: {
+      recoveryEffectsAreAuthorityMediated: true as const,
       compensateAndObserve: async ({
         decision,
         databaseWitness,
@@ -215,13 +224,7 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
         )
           throw new Error("private_pg17_service_recovery_authority_invalid");
         if (checkpoints.length === 0)
-          return frozenSource.compensateAndObserve({
-            apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
-            sourceWriterServiceIds: durableFreezeServiceIds,
-            sourceSystemIdentifier: rollout.source.systemIdentifier,
-            decision,
-            databaseWitness,
-          });
+          throw new Error("legacy_provider_compensation_path_disabled");
         return await serviceTransition.finalizeAuthorizedSourceRecovery({
           source: sourceRecoveryManifest!,
           protectedEnvironment: protectedSourceEnvironment,
