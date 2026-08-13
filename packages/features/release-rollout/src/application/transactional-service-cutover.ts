@@ -592,7 +592,7 @@ export class TransactionalServiceCutover {
         ownerId: this.recoveryOwnerId,
         effect: async () =>
           beforeRestore.environmentSha256 === contract.sourceEnvSha256
-            ? contract.sourceEnvSha256
+            ? beforeRestore.environmentSha256
             : await this.provider.replaceEnvironment(contract.serviceId, {
                 set: sourceEnv,
                 remove: [
@@ -614,7 +614,12 @@ export class TransactionalServiceCutover {
         }),
       });
       await this.requireCompletedRecoveryEffect(envEffect);
-      const envHash = contract.sourceEnvSha256;
+      const envObservation = envEffect.observation as {
+        environmentSha256?: unknown;
+      } | null;
+      const envHash = envObservation?.environmentSha256;
+      if (typeof envHash !== "string")
+        throw new Error("service_transition_source_env_observation_missing");
       if (envHash !== contract.sourceEnvSha256)
         throw new Error("service_transition_source_env_restore_failed");
       await this.checkpoint(common, contract.serviceId, "source_env_restored", {

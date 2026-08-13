@@ -141,20 +141,55 @@ function ports(initial: {
             leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
           }),
       ),
-      consumeRecoveryEffectPermit: vi.fn(
-        async () =>
-          (recoveryEffect = {
-            ...recoveryEffect!,
-            state: "consumed",
-            leaseExpiresAt: null,
-            consumedAt: new Date().toISOString(),
-          }),
-      ),
+      consumeRecoveryEffectPermit: vi.fn(async (input) => {
+        recoveryEffect = {
+          ...recoveryEffect!,
+          state: "consumed",
+          leaseExpiresAt: null,
+          consumedAt: new Date().toISOString(),
+        };
+        return {
+          record: recoveryEffect,
+          executionAuthorization: {
+            receipt: "b".repeat(64),
+            rolloutId: input.rolloutId,
+            effectKey: input.effectKey,
+            kind: input.kind,
+            ownerId: input.ownerId,
+            epoch: input.epoch,
+            permitToken: input.permitToken,
+          },
+        };
+      }),
+      validateRecoveryEffectExecution: vi.fn(async (input) => {
+        recoveryEffect = { ...recoveryEffect!, state: "executing" };
+        return {
+          record: recoveryEffect,
+          executionAuthorization: {
+            receipt: input.executionReceipt,
+            rolloutId: input.rolloutId,
+            effectKey: input.effectKey,
+            kind: input.kind,
+            ownerId: input.ownerId,
+            epoch: input.epoch,
+            permitToken: input.permitToken,
+          },
+        };
+      }),
       completeRecoveryEffect: vi.fn(
         async (input) =>
           (recoveryEffect = {
             ...recoveryEffect!,
             state: "completed",
+            completedAt: new Date().toISOString(),
+            observation: input.observation,
+          }),
+      ),
+      reconcileRecoveryEffect: vi.fn(
+        async (input) =>
+          (recoveryEffect = {
+            ...recoveryEffect!,
+            state: "forward_repair",
             completedAt: new Date().toISOString(),
             observation: input.observation,
           }),

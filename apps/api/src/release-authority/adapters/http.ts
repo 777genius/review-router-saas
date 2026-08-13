@@ -5,6 +5,11 @@ import type {
   RunnerIdentity,
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
+import {
+  RecoveryEffectKind,
+  assertRecoveryEffectObservation,
+  type RecoveryEffectAuthorityPort,
+} from "@reviewrouter/features-release-rollout";
 import type {
   CreateProvisioningIntent,
   PersistRunnerRegistrationInput,
@@ -76,6 +81,204 @@ const invalidEffectRequest = (): never => {
   throw Object.assign(new Error("release_runner_effect_request_invalid"), {
     statusCode: 400,
   });
+};
+const invalidRecoveryEffectRequest = (): never => {
+  throw Object.assign(new Error("release_recovery_effect_request_invalid"), {
+    statusCode: 400,
+  });
+};
+const recoveryEffectKeyPattern = /^[a-z][a-z0-9_]*(?::[A-Za-z0-9._-]+)?$/u;
+const recoveryOwnerPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/u;
+const recoveryPermitPattern = /^[a-f0-9]{64}$/u;
+const recoveryReceiptPattern = recoveryPermitPattern;
+const recoveryKinds = Object.values(RecoveryEffectKind);
+const recoveryBase = (value: unknown, rolloutId: string) => {
+  const body = record(value);
+  if (
+    body.rolloutId !== rolloutId ||
+    !nonemptyString(body.rolloutId) ||
+    typeof body.effectKey !== "string" ||
+    !recoveryEffectKeyPattern.test(body.effectKey)
+  )
+    invalidRecoveryEffectRequest();
+  return body;
+};
+const recoveryEffectIntendRequest = (
+  value: unknown,
+  rolloutId: string,
+): Parameters<RecoveryEffectAuthorityPort["intendRecoveryEffect"]>[0] => {
+  const body = recoveryBase(value, rolloutId);
+  const hasService = Object.hasOwn(body, "serviceId");
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "effectKey",
+      "kind",
+      ...(hasService ? ["serviceId"] : []),
+    ]) ||
+    !recoveryKinds.includes(body.kind as never) ||
+    (body.kind === RecoveryEffectKind.RestoreDatabaseWrites) !== !hasService ||
+    (hasService && !nonemptyString(body.serviceId))
+  )
+    invalidRecoveryEffectRequest();
+  return body as unknown as Parameters<
+    RecoveryEffectAuthorityPort["intendRecoveryEffect"]
+  >[0];
+};
+const recoveryEffectClaimRequest = (
+  value: unknown,
+  rolloutId: string,
+): Parameters<RecoveryEffectAuthorityPort["claimRecoveryEffect"]>[0] => {
+  const body = recoveryBase(value, rolloutId);
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "effectKey",
+      "kind",
+      "ownerId",
+      "leaseSeconds",
+    ]) ||
+    !recoveryKinds.includes(body.kind as never) ||
+    typeof body.ownerId !== "string" ||
+    !recoveryOwnerPattern.test(body.ownerId) ||
+    !Number.isSafeInteger(body.leaseSeconds) ||
+    Number(body.leaseSeconds) < 5 ||
+    Number(body.leaseSeconds) > 300
+  )
+    invalidRecoveryEffectRequest();
+  return body as unknown as Parameters<
+    RecoveryEffectAuthorityPort["claimRecoveryEffect"]
+  >[0];
+};
+const recoveryEffectConsumeRequest = (
+  value: unknown,
+  rolloutId: string,
+): Parameters<
+  RecoveryEffectAuthorityPort["consumeRecoveryEffectPermit"]
+>[0] => {
+  const body = recoveryBase(value, rolloutId);
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "effectKey",
+      "kind",
+      "ownerId",
+      "epoch",
+      "permitToken",
+    ]) ||
+    !recoveryKinds.includes(body.kind as never) ||
+    typeof body.ownerId !== "string" ||
+    !recoveryOwnerPattern.test(body.ownerId) ||
+    !Number.isSafeInteger(body.epoch) ||
+    Number(body.epoch) < 1 ||
+    typeof body.permitToken !== "string" ||
+    !recoveryPermitPattern.test(body.permitToken)
+  )
+    invalidRecoveryEffectRequest();
+  return body as unknown as Parameters<
+    RecoveryEffectAuthorityPort["consumeRecoveryEffectPermit"]
+  >[0];
+};
+const recoveryEffectCompleteRequest = (
+  value: unknown,
+  rolloutId: string,
+): Parameters<RecoveryEffectAuthorityPort["completeRecoveryEffect"]>[0] => {
+  const body = recoveryBase(value, rolloutId);
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "effectKey",
+      "kind",
+      "ownerId",
+      "epoch",
+      "permitToken",
+      "executionReceipt",
+      "observation",
+    ]) ||
+    !recoveryKinds.includes(body.kind as never) ||
+    typeof body.ownerId !== "string" ||
+    !recoveryOwnerPattern.test(body.ownerId) ||
+    !Number.isSafeInteger(body.epoch) ||
+    Number(body.epoch) < 1 ||
+    typeof body.permitToken !== "string" ||
+    !recoveryPermitPattern.test(body.permitToken) ||
+    typeof body.executionReceipt !== "string" ||
+    !recoveryReceiptPattern.test(body.executionReceipt)
+  )
+    invalidRecoveryEffectRequest();
+  try {
+    assertRecoveryEffectObservation(body.kind as never, body.observation);
+  } catch {
+    invalidRecoveryEffectRequest();
+  }
+  return body as unknown as Parameters<
+    RecoveryEffectAuthorityPort["completeRecoveryEffect"]
+  >[0];
+};
+const recoveryEffectValidateExecutionRequest = (
+  value: unknown,
+  rolloutId: string,
+): Parameters<
+  RecoveryEffectAuthorityPort["validateRecoveryEffectExecution"]
+>[0] => {
+  const body = recoveryBase(value, rolloutId);
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "effectKey",
+      "kind",
+      "ownerId",
+      "epoch",
+      "permitToken",
+      "executionReceipt",
+    ]) ||
+    !recoveryKinds.includes(body.kind as never) ||
+    typeof body.ownerId !== "string" ||
+    !recoveryOwnerPattern.test(body.ownerId) ||
+    !Number.isSafeInteger(body.epoch) ||
+    Number(body.epoch) < 1 ||
+    typeof body.permitToken !== "string" ||
+    !recoveryPermitPattern.test(body.permitToken) ||
+    typeof body.executionReceipt !== "string" ||
+    !recoveryReceiptPattern.test(body.executionReceipt)
+  )
+    invalidRecoveryEffectRequest();
+  return body as unknown as Parameters<
+    RecoveryEffectAuthorityPort["validateRecoveryEffectExecution"]
+  >[0];
+};
+const recoveryEffectReconcileRequest = (
+  value: unknown,
+  rolloutId: string,
+): Parameters<RecoveryEffectAuthorityPort["reconcileRecoveryEffect"]>[0] => {
+  const body = recoveryBase(value, rolloutId);
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "effectKey",
+      "kind",
+      "ownerId",
+      "epoch",
+      "permitToken",
+      "observation",
+    ]) ||
+    !recoveryKinds.includes(body.kind as never) ||
+    typeof body.ownerId !== "string" ||
+    !recoveryOwnerPattern.test(body.ownerId) ||
+    !Number.isSafeInteger(body.epoch) ||
+    Number(body.epoch) < 1 ||
+    typeof body.permitToken !== "string" ||
+    !recoveryPermitPattern.test(body.permitToken)
+  )
+    invalidRecoveryEffectRequest();
+  try {
+    assertRecoveryEffectObservation(body.kind as never, body.observation);
+  } catch {
+    invalidRecoveryEffectRequest();
+  }
+  return body as unknown as Parameters<
+    RecoveryEffectAuthorityPort["reconcileRecoveryEffect"]
+  >[0];
 };
 const persistedJobRequest = (value: unknown): PersistedJob => {
   const body = record(value);
@@ -367,37 +570,52 @@ export async function registerReleaseRolloutLedgerRoutes(
     "/v1/service-transitions/:rolloutId/recovery-effects/intend",
     { preHandler: control },
     async (request) =>
-      serviceTransition().intendRecoveryEffect({
-        ...record(request.body),
-        rolloutId: request.params.rolloutId,
-      } as never),
+      serviceTransition().intendRecoveryEffect(
+        recoveryEffectIntendRequest(request.body, request.params.rolloutId),
+      ),
   );
   app.post<{ Params: { rolloutId: string } }>(
     "/v1/service-transitions/:rolloutId/recovery-effects/claim",
     { preHandler: control },
     async (request) =>
-      serviceTransition().claimRecoveryEffect({
-        ...record(request.body),
-        rolloutId: request.params.rolloutId,
-      } as never),
+      serviceTransition().claimRecoveryEffect(
+        recoveryEffectClaimRequest(request.body, request.params.rolloutId),
+      ),
   );
   app.post<{ Params: { rolloutId: string } }>(
     "/v1/service-transitions/:rolloutId/recovery-effects/consume",
     { preHandler: control },
     async (request) =>
-      serviceTransition().consumeRecoveryEffectPermit({
-        ...record(request.body),
-        rolloutId: request.params.rolloutId,
-      } as never),
+      serviceTransition().consumeRecoveryEffectPermit(
+        recoveryEffectConsumeRequest(request.body, request.params.rolloutId),
+      ),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/recovery-effects/validate-execution",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().validateRecoveryEffectExecution(
+        recoveryEffectValidateExecutionRequest(
+          request.body,
+          request.params.rolloutId,
+        ),
+      ),
   );
   app.post<{ Params: { rolloutId: string } }>(
     "/v1/service-transitions/:rolloutId/recovery-effects/complete",
     { preHandler: control },
     async (request) =>
-      serviceTransition().completeRecoveryEffect({
-        ...record(request.body),
-        rolloutId: request.params.rolloutId,
-      } as never),
+      serviceTransition().completeRecoveryEffect(
+        recoveryEffectCompleteRequest(request.body, request.params.rolloutId),
+      ),
+  );
+  app.post<{ Params: { rolloutId: string } }>(
+    "/v1/service-transitions/:rolloutId/recovery-effects/reconcile",
+    { preHandler: control },
+    async (request) =>
+      serviceTransition().reconcileRecoveryEffect(
+        recoveryEffectReconcileRequest(request.body, request.params.rolloutId),
+      ),
   );
   app.get<{ Params: { rolloutId: string } }>(
     "/v1/service-transitions/:rolloutId/contract",

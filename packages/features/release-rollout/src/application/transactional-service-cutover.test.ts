@@ -213,10 +213,14 @@ const harness = (fail?: string, failOrdinal = 1) => {
         : null,
     consumedAt:
       input.state &&
-      ["consumed", "completed", "forward_repair"].includes(input.state)
+      ["consumed", "executing", "completed", "forward_repair"].includes(
+        input.state,
+      )
         ? new Date().toISOString()
         : null,
-    completedAt: input.state === "completed" ? new Date().toISOString() : null,
+    completedAt:
+      input.completedAt ??
+      (input.state === "completed" ? new Date().toISOString() : null),
     observation: input.observation ?? null,
   });
   const ledger = {
@@ -267,7 +271,35 @@ const harness = (fail?: string, failOrdinal = 1) => {
         permitToken: input.permitToken,
       });
       recoveryEffects.set(input.effectKey, value);
-      return value;
+      return {
+        record: value,
+        executionAuthorization: {
+          receipt: "b".repeat(64),
+          rolloutId: input.rolloutId,
+          effectKey: input.effectKey,
+          kind: input.kind,
+          ownerId: input.ownerId,
+          epoch: input.epoch,
+          permitToken: input.permitToken,
+        },
+      };
+    }),
+    validateRecoveryEffectExecution: vi.fn(async (input) => {
+      const existing = recoveryEffects.get(input.effectKey)!;
+      const value = snapshot({ ...existing, state: "executing" });
+      recoveryEffects.set(input.effectKey, value);
+      return {
+        record: value,
+        executionAuthorization: {
+          receipt: input.executionReceipt,
+          rolloutId: input.rolloutId,
+          effectKey: input.effectKey,
+          kind: input.kind,
+          ownerId: input.ownerId,
+          epoch: input.epoch,
+          permitToken: input.permitToken,
+        },
+      };
     }),
     completeRecoveryEffect: vi.fn(async (input) => {
       const existing = recoveryEffects.get(input.effectKey)!;
@@ -276,6 +308,17 @@ const harness = (fail?: string, failOrdinal = 1) => {
         state: "completed",
         epoch: input.epoch,
         permitToken: input.permitToken,
+        observation: input.observation,
+      });
+      recoveryEffects.set(input.effectKey, value);
+      return value;
+    }),
+    reconcileRecoveryEffect: vi.fn(async (input) => {
+      const existing = recoveryEffects.get(input.effectKey)!;
+      const value = snapshot({
+        ...existing,
+        state: "forward_repair",
+        completedAt: new Date().toISOString(),
         observation: input.observation,
       });
       recoveryEffects.set(input.effectKey, value);
@@ -359,6 +402,7 @@ const harness = (fail?: string, failOrdinal = 1) => {
     ledger,
     provider,
     checkpoints,
+    recoveryEffects,
   };
 };
 
@@ -504,6 +548,37 @@ describe("transactional same-service cutover", () => {
     ).rejects.toThrow("environment_ambiguous");
   });
 
+  it("persists and rejects a wrong well-formed provider environment hash without checkpointing", async () => {
+    const test = harness();
+    await test.cutover.stage({ source, protectedEnvironment, target });
+    const wrongHash = `sha256:${"d".repeat(64)}`;
+    test.provider.replaceEnvironment.mockResolvedValueOnce(wrongHash);
+
+    await expect(
+      test.cutover.recover({ source, protectedEnvironment, target }),
+    ).rejects.toThrow("service_transition_source_env_restore_failed");
+
+    const failedEffect = [...test.recoveryEffects.values()].find(
+      (record) =>
+        (record.observation as { environmentSha256?: unknown } | null)
+          ?.environmentSha256 === wrongHash,
+    );
+    expect(failedEffect).toMatchObject({
+      state: "completed",
+      observation: {
+        environmentSha256: wrongHash,
+      },
+    });
+    const failedServiceId = failedEffect?.serviceId;
+    expect(failedServiceId).toBeTruthy();
+    expect(test.checkpoints).not.toContainEqual(
+      expect.objectContaining({
+        serviceId: failedServiceId,
+        step: "source_env_restored",
+      }),
+    );
+  });
+
   it.each([
     ["partial", ["srv-web", "srv-worker"]],
     ["complete", ["srv-web", "srv-api", "srv-worker"]],
@@ -593,15 +668,12 @@ describe("transactional same-service cutover", () => {
     await expect(
       test.cutover.finalizeAuthorizedSourceRecovery(input),
     ).rejects.toThrow("service_transition_recovery_effect_ambiguous");
-    // Independent provider observation later proves the dropped call took
-    // effect; the protocol completes the consumed permit without another POST.
+    // Independent observation is retained for forward repair, but it cannot
+    // turn an ambiguous consumed/executing permit into completed recovery.
     await test.provider.resume("srv-web");
     await expect(
       test.cutover.finalizeAuthorizedSourceRecovery(input),
-    ).resolves.toMatchObject({
-      serviceIds: ["srv-web", "srv-worker"],
-      resumed: true,
-    });
+    ).rejects.toThrow("service_transition_recovery_forward_repair_required");
   });
 
   it("rejects durable freeze evidence outside the recovery manifest", async () => {

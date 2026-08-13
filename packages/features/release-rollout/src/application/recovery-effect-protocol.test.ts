@@ -13,6 +13,8 @@ class FakeAuthority implements RecoveryEffectAuthorityPort {
   lateJob = false;
   forwardOnly = false;
   now = Date.now();
+  receipts = 0;
+  receiptByEffect = new Map<string, string>();
   private record(
     input: Partial<RecoveryEffectRecord> &
       Pick<RecoveryEffectRecord, "rolloutId" | "effectKey" | "kind">,
@@ -54,6 +56,12 @@ class FakeAuthority implements RecoveryEffectAuthorityPort {
   ) {
     if (this.lateJob) throw new Error("late_job_prevents_claim");
     const old = this.records.get(input.effectKey)!;
+    if (
+      ["consumed", "executing", "completed", "forward_repair"].includes(
+        old.state,
+      )
+    )
+      return old;
     if (old.state === "claimed" && Date.parse(old.leaseExpiresAt!) > this.now)
       return old;
     const value = this.record({
@@ -77,6 +85,16 @@ class FakeAuthority implements RecoveryEffectAuthorityPort {
     const old = this.records.get(input.effectKey)!;
     if (this.lateJob) throw new Error("late_job_prevents_consumption");
     if (
+      ["consumed", "executing", "completed", "forward_repair"].includes(
+        old.state,
+      ) &&
+      old.kind === input.kind &&
+      old.epoch === input.epoch &&
+      old.permitToken === input.permitToken &&
+      old.claimOwnerId === input.ownerId
+    )
+      return { record: old, executionAuthorization: null };
+    if (
       old.state !== "claimed" ||
       old.epoch !== input.epoch ||
       old.permitToken !== input.permitToken ||
@@ -91,13 +109,62 @@ class FakeAuthority implements RecoveryEffectAuthorityPort {
       consumedAt: new Date(this.now).toISOString(),
     });
     this.records.set(input.effectKey, value);
-    return value;
+    const receipt = (++this.receipts).toString(16).padStart(64, "0");
+    this.receiptByEffect.set(input.effectKey, receipt);
+    return {
+      record: value,
+      executionAuthorization: {
+        receipt,
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+        epoch: input.epoch,
+        permitToken: input.permitToken,
+      },
+    };
+  }
+  async validateRecoveryEffectExecution(
+    input: Parameters<
+      RecoveryEffectAuthorityPort["validateRecoveryEffectExecution"]
+    >[0],
+  ) {
+    const old = this.records.get(input.effectKey)!;
+    if (this.lateJob) throw new Error("late_job_prevents_execution");
+    if (
+      old.epoch !== input.epoch ||
+      old.permitToken !== input.permitToken ||
+      old.claimOwnerId !== input.ownerId ||
+      this.receiptByEffect.get(input.effectKey) !== input.executionReceipt
+    )
+      throw new Error("execution_fence_conflict");
+    if (old.state === "executing")
+      return { record: old, executionAuthorization: null };
+    if (old.state !== "consumed") throw new Error("execution_denied");
+    const value = this.record({ ...old, state: "executing" });
+    this.records.set(input.effectKey, value);
+    return {
+      record: value,
+      executionAuthorization: {
+        receipt: input.executionReceipt,
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+        epoch: input.epoch,
+        permitToken: input.permitToken,
+      },
+    };
   }
   async completeRecoveryEffect(
     input: Parameters<RecoveryEffectAuthorityPort["completeRecoveryEffect"]>[0],
   ) {
     const old = this.records.get(input.effectKey)!;
-    if (old.epoch !== input.epoch || old.permitToken !== input.permitToken)
+    if (
+      old.epoch !== input.epoch ||
+      old.permitToken !== input.permitToken ||
+      this.receiptByEffect.get(input.effectKey) !== input.executionReceipt
+    )
       throw new Error("completion_fence_conflict");
     if (this.forwardOnly) {
       const forward = this.markForward(input.effectKey);
@@ -121,6 +188,7 @@ class FakeAuthority implements RecoveryEffectAuthorityPort {
         throw new Error("completion_replay_conflict");
       return old;
     }
+    if (old.state !== "executing") throw new Error("execution_not_authorized");
     const value = this.record({
       ...old,
       state: "completed",
@@ -130,11 +198,34 @@ class FakeAuthority implements RecoveryEffectAuthorityPort {
     this.records.set(input.effectKey, value);
     return value;
   }
+  async reconcileRecoveryEffect(
+    input: Parameters<
+      RecoveryEffectAuthorityPort["reconcileRecoveryEffect"]
+    >[0],
+  ) {
+    const old = this.records.get(input.effectKey)!;
+    if (
+      old.epoch !== input.epoch ||
+      old.permitToken !== input.permitToken ||
+      old.claimOwnerId !== input.ownerId ||
+      !["consumed", "executing", "forward_repair"].includes(old.state)
+    )
+      throw new Error("reconciliation_fence_conflict");
+    this.forwardOnly = true;
+    const value = this.record({
+      ...old,
+      state: "forward_repair",
+      completedAt: old.completedAt ?? new Date(this.now).toISOString(),
+      observation: old.observation ?? input.observation,
+    });
+    this.records.set(input.effectKey, value);
+    return value;
+  }
   commitLateJob() {
     this.lateJob = true;
     if (
       [...this.records.values()].some((item) =>
-        ["consumed", "completed"].includes(item.state),
+        ["consumed", "executing", "completed"].includes(item.state),
       )
     ) {
       this.forwardOnly = true;
@@ -163,7 +254,10 @@ const input = (authority: FakeAuthority, effect = vi.fn(async () => "ok")) => ({
     kind: RecoveryEffectKind.RestoreDatabaseWrites,
     ownerId: "worker-1",
     effect,
-    observe: async () => ({ sourceWritesRestored: true }),
+    observe: async () => ({
+      sourceWritesRestored: true,
+      observedAt: "2026-08-13T00:00:00.000Z",
+    }),
   },
 });
 
@@ -199,11 +293,30 @@ describe("authority-mediated recovery effects", () => {
     const test = input(authority, effect);
     await expect(test.protocol.execute(test.value)).resolves.toMatchObject({
       state: "forward_repair",
-      observation: { sourceWritesRestored: true },
+      observation: {
+        sourceWritesRestored: true,
+        observedAt: "2026-08-13T00:00:00.000Z",
+      },
     });
     expect(effect).toHaveBeenCalledOnce();
   });
-  it("reconciles a dropped response without replaying the consumed effect", async () => {
+  it("denies execution when a late job commits after consume before the callback", async () => {
+    const authority = new FakeAuthority();
+    const original = authority.validateRecoveryEffectExecution.bind(authority);
+    authority.validateRecoveryEffectExecution = async (value) => {
+      authority.commitLateJob();
+      return original(value);
+    };
+    const test = input(authority);
+    await expect(test.protocol.execute(test.value)).rejects.toThrow(
+      "late_job_prevents_execution",
+    );
+    expect(test.effect).not.toHaveBeenCalled();
+    expect(authority.records.get("restore_database_writes")?.state).toBe(
+      "forward_repair",
+    );
+  });
+  it("reconciles a dropped response forward-only without replaying the effect", async () => {
     const authority = new FakeAuthority();
     const first = input(
       authority,
@@ -220,8 +333,95 @@ describe("authority-mediated recovery effects", () => {
       effect: retryEffect,
       reconcileConsumed: async () => "observed",
     });
-    expect(result.state).toBe("completed");
+    expect(result.state).toBe("forward_repair");
     expect(retryEffect).not.toHaveBeenCalled();
+  });
+  it("binds reconciliation to the consumed rollout and effect identity", async () => {
+    const authority = new FakeAuthority();
+    const test = input(
+      authority,
+      vi.fn(async () => {
+        throw new Error("dropped");
+      }),
+    );
+    await expect(test.protocol.execute(test.value)).rejects.toThrow("dropped");
+    const consumed = authority.records.get("restore_database_writes")!;
+    await expect(
+      test.protocol.reconcileFromObservation({
+        rolloutId: "rollout-attacker",
+        effectKey: consumed.effectKey,
+        consumed,
+        observation: {
+          sourceWritesRestored: true,
+          observedAt: "2026-08-13T00:00:00.000Z",
+        },
+      }),
+    ).rejects.toThrow("recovery_effect_response_binding_invalid");
+  });
+  it("authorizes only one same-owner concurrent execution", async () => {
+    const authority = new FakeAuthority();
+    const effect = vi.fn(async () => "ok");
+    const test = input(authority, effect);
+    const [first, second] = await Promise.all([
+      test.protocol.execute(test.value),
+      test.protocol.execute(test.value),
+    ]);
+    expect(effect).toHaveBeenCalledOnce();
+    expect([first.state, second.state]).toEqual(["completed", "consumed"]);
+  });
+  it("leaves a crash after consume ambiguous and reconciles forward-only without I/O replay", async () => {
+    const authority = new FakeAuthority();
+    const test = input(authority);
+    const original = authority.validateRecoveryEffectExecution.bind(authority);
+    authority.validateRecoveryEffectExecution = async () => {
+      throw new Error("crash_after_consume");
+    };
+    await expect(test.protocol.execute(test.value)).rejects.toThrow(
+      "crash_after_consume",
+    );
+    expect(test.effect).not.toHaveBeenCalled();
+    authority.validateRecoveryEffectExecution = original;
+    const replay = vi.fn(async () => "replayed");
+    const result = await test.protocol.execute({
+      ...test.value,
+      effect: replay,
+      reconcileConsumed: async () => "observed",
+    });
+    expect(replay).not.toHaveBeenCalled();
+    expect(result.state).toBe("forward_repair");
+  });
+  it("completes an uncontended execution through the authority fence", async () => {
+    const authority = new FakeAuthority();
+    const test = input(authority);
+    await expect(test.protocol.execute(test.value)).resolves.toMatchObject({
+      state: "completed",
+    });
+    expect(test.effect).toHaveBeenCalledOnce();
+  });
+  it.each([
+    {
+      sourceWritesRestored: true,
+      observedAt: "2026-08-13T00:00:00.000Z",
+      token: "secret",
+    },
+    {
+      sourceWritesRestored: true,
+      observedAt: "2026-08-13T00:00:00.000Z",
+      environmentDelta: {},
+    },
+    {
+      sourceWritesRestored: true,
+      observedAt: "https://user:password@example.test",
+    },
+  ])("rejects non-allowlisted durable observations", async (observation) => {
+    const authority = new FakeAuthority();
+    const test = input(authority);
+    await expect(
+      test.protocol.execute({
+        ...test.value,
+        observe: async () => observation,
+      }),
+    ).rejects.toThrow("recovery_effect_observation_invalid");
   });
   it("fences duplicate, expired, and old-epoch permit replay", async () => {
     const authority = new FakeAuthority();
@@ -233,6 +433,7 @@ describe("authority-mediated recovery effects", () => {
     const first = await authority.claimRecoveryEffect({
       rolloutId: "rollout-1",
       effectKey: "restore_database_writes",
+      kind: RecoveryEffectKind.RestoreDatabaseWrites,
       ownerId: "worker-1",
       leaseSeconds: 5,
     });
@@ -240,6 +441,7 @@ describe("authority-mediated recovery effects", () => {
     const second = await authority.claimRecoveryEffect({
       rolloutId: "rollout-1",
       effectKey: "restore_database_writes",
+      kind: RecoveryEffectKind.RestoreDatabaseWrites,
       ownerId: "worker-2",
       leaseSeconds: 5,
     });
@@ -248,6 +450,7 @@ describe("authority-mediated recovery effects", () => {
       authority.consumeRecoveryEffectPermit({
         rolloutId: "rollout-1",
         effectKey: "restore_database_writes",
+        kind: RecoveryEffectKind.RestoreDatabaseWrites,
         ownerId: "worker-1",
         epoch: first.epoch,
         permitToken: first.permitToken!,
@@ -265,7 +468,12 @@ describe("authority-mediated recovery effects", () => {
         serviceId,
         ownerId: "worker-1",
         effect: async () => serviceId,
-        observe: async (id) => ({ serviceId: id, resumed: true }),
+        observe: async (id) => ({
+          serviceId: id,
+          resumed: true,
+          serviceContractSha256: `sha256:${"a".repeat(64)}`,
+          environmentSha256: `sha256:${"b".repeat(64)}`,
+        }),
       });
     expect(
       [...authority.records.values()].map((item) => item.serviceId),

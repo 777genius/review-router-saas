@@ -235,6 +235,10 @@ describe("release authority database installation", () => {
       "utf8",
     );
     expect(migration).toContain("release_recovery_effect_consume");
+    expect(migration).toContain("release_recovery_effect_validate_execution");
+    expect(migration).toContain("execution_receipt_sha256");
+    expect(migration).toContain("state='executing'");
+    expect(migration).toContain("release_recovery_effect_reconcile");
     expect(migration).toContain("release_late_job_recovery_effect_gate");
     expect(migration).toContain("release_recovery_checkpoint_permit_gate");
     expect(migration).toContain("state='forward_repair'");
@@ -268,7 +272,7 @@ describe("release authority database installation", () => {
       "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
       "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
       "f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4",
-      "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
+      "5e75a0deb033644c9a418082181dd9f21d65771cd47a7684f7497aa56e157107",
     ]);
     const bundle = releaseAuthorityMigrationBundle();
     const first = bundle.indexOf("CREATE SCHEMA release_authority");

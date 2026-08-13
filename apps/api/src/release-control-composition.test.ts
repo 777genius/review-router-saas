@@ -64,7 +64,7 @@ const authorityReadiness = (
       ],
       [
         "000010_recovery_effect_permits",
-        "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
+        "5e75a0deb033644c9a418082181dd9f21d65771cd47a7684f7497aa56e157107",
       ],
     ].map(([migrationName, checksum], index) => ({
       position: index + 1,

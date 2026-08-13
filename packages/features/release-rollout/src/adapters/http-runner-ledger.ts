@@ -23,7 +23,10 @@ import {
   type ExternalEffectControlReconciliation,
   type ExternalEffectRecord,
 } from "../domain/external-effect";
-import { assertRecoveryEffectRecord } from "../domain/recovery-effect";
+import {
+  assertRecoveryEffectConsumptionResult,
+  assertRecoveryEffectRecordBinding,
+} from "../domain/recovery-effect";
 
 export class AuthenticatedRunnerLedgerAdapter
   implements
@@ -492,21 +495,33 @@ export class AuthenticatedRunnerLedgerAdapter
   async intendRecoveryEffect(
     input: Parameters<ServiceTransitionLedger["intendRecoveryEffect"]>[0],
   ): ReturnType<ServiceTransitionLedger["intendRecoveryEffect"]> {
-    return assertRecoveryEffectRecord(
+    return assertRecoveryEffectRecordBinding(
       await this.request(
         `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/intend`,
         { method: "POST", body: JSON.stringify(input) },
       ),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        serviceId: input.serviceId ?? null,
+      },
     );
   }
   async claimRecoveryEffect(
     input: Parameters<ServiceTransitionLedger["claimRecoveryEffect"]>[0],
   ): ReturnType<ServiceTransitionLedger["claimRecoveryEffect"]> {
-    return assertRecoveryEffectRecord(
+    return assertRecoveryEffectRecordBinding(
       await this.request(
         `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/claim`,
         { method: "POST", body: JSON.stringify(input) },
       ),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+      },
     );
   }
   async consumeRecoveryEffectPermit(
@@ -514,21 +529,61 @@ export class AuthenticatedRunnerLedgerAdapter
       ServiceTransitionLedger["consumeRecoveryEffectPermit"]
     >[0],
   ): ReturnType<ServiceTransitionLedger["consumeRecoveryEffectPermit"]> {
-    return assertRecoveryEffectRecord(
+    return assertRecoveryEffectConsumptionResult(
       await this.request(
         `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/consume`,
         { method: "POST", body: JSON.stringify(input) },
       ),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+        epoch: input.epoch,
+        permitToken: input.permitToken,
+      },
     );
   }
   async completeRecoveryEffect(
     input: Parameters<ServiceTransitionLedger["completeRecoveryEffect"]>[0],
   ): ReturnType<ServiceTransitionLedger["completeRecoveryEffect"]> {
-    return assertRecoveryEffectRecord(
+    return assertRecoveryEffectRecordBinding(
       await this.request(
         `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/complete`,
         { method: "POST", body: JSON.stringify(input) },
       ),
+      {
+        rolloutId: input.rolloutId,
+        effectKey: input.effectKey,
+        kind: input.kind,
+        ownerId: input.ownerId,
+        epoch: input.epoch,
+        permitToken: input.permitToken,
+      },
+    );
+  }
+  async validateRecoveryEffectExecution(
+    input: Parameters<
+      ServiceTransitionLedger["validateRecoveryEffectExecution"]
+    >[0],
+  ): ReturnType<ServiceTransitionLedger["validateRecoveryEffectExecution"]> {
+    return assertRecoveryEffectConsumptionResult(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/validate-execution`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+      input,
+    );
+  }
+  async reconcileRecoveryEffect(
+    input: Parameters<ServiceTransitionLedger["reconcileRecoveryEffect"]>[0],
+  ): ReturnType<ServiceTransitionLedger["reconcileRecoveryEffect"]> {
+    return assertRecoveryEffectRecordBinding(
+      await this.request(
+        `/v1/service-transitions/${encodeURIComponent(input.rolloutId)}/recovery-effects/reconcile`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+      input,
     );
   }
   async recordSourceFreezeMutation(input: {
