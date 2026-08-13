@@ -20,11 +20,46 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration.sql >/
 # Seed an unresolved v1 effect before the forward migration; it must fail closed.
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r-legacy', repeat('9',40), '90', 1, '190', '290');
+   SELECT release_authority.release_rollout_claim('r-legacy-cleaned', repeat('8',40), '89', 1, '189', '289');
    INSERT INTO release_authority.runner_intent(
      intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,start_command_sha256)
-   VALUES ('rri-'||repeat('9',64),'r-legacy','svc-legacy','role','990','rr-legacy',clock_timestamp(),'sha256:'||repeat('9',64));" >/dev/null
+   VALUES ('rri-'||repeat('9',64),'r-legacy','svc-legacy','role','990','rr-legacy',clock_timestamp(),'sha256:'||repeat('9',64));
+   INSERT INTO release_authority.runner_intent(
+     intent_id,rollout_id,service_id,lifecycle,workflow_job_id,runner_name,created_at,
+     start_command_sha256,outcome,reconciliation_observation)
+   VALUES ('rri-'||repeat('8',64),'r-legacy-cleaned','svc-legacy-cleaned','role','890',
+     'rr-legacy-cleaned',clock_timestamp(),'sha256:'||repeat('8',64),
+     'persistence_failed_cleaned','{"safeForCompensation":true}'::jsonb);" >/dev/null
 docker cp "$root/packages/platform/release-authority-db/migrations/000002_external_effect_protocol/migration.sql" \
   "$name:/tmp/migration-000002.sql" >/dev/null
+
+# A statement failure before COMMIT must leave none of migration 000002 behind.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c "CREATE DATABASE rr_atomic" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_atomic -f /tmp/migration.sql >/dev/null
+docker exec "$name" sh -c \
+  "sed 's/^COMMIT;$/SELECT definitely_missing_atomic_probe(); COMMIT;/' /tmp/migration-000002.sql > /tmp/migration-000002-fail.sql"
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_atomic \
+  -f /tmp/migration-000002-fail.sql >/dev/null 2>&1; then
+  echo "deliberately failed migration 000002 unexpectedly committed" >&2
+  exit 1
+fi
+atomic_residue=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_atomic -Atc \
+  "SELECT (SELECT count(*) FROM information_schema.columns
+             WHERE table_schema='release_authority' AND table_name='runner_intent'
+               AND column_name='effect_state')::text||':'||
+          (SELECT count(*) FROM pg_catalog.pg_proc p
+             JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='release_authority'
+               AND p.proname IN ('release_runner_job_cleanup_proven',
+                 'release_runner_effect_snapshot','release_runner_prepare_effect',
+                 'release_runner_acquire_dispatch_permit','release_runner_reconcile_effect',
+                 'release_runner_abandon_prepared','release_runner_terminal_effect',
+                 'release_runner_compensation_gate'))::text||':'||
+          (SELECT count(*) FROM pg_catalog.pg_trigger
+             WHERE tgname IN ('release_runner_terminal_effect_trigger',
+               'release_runner_compensation_gate_trigger'))::text")
+test "$atomic_residue" = 0:0:0
+
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration-000002.sql >/dev/null
 
 legacy_effect=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
@@ -32,6 +67,10 @@ legacy_effect=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
     (release_authority.release_runner_effect_snapshot(r)->'reconciliation'->>'result')
    FROM release_authority.runner_intent r WHERE intent_id='rri-'||repeat('9',64)")
 test "$legacy_effect" = blocked:false:unresolved_legacy:blocked
+legacy_claimed_clean=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT effect_state||':'||effect_safe_for_compensation||':'||effect_block_reason
+   FROM release_authority.runner_intent WHERE intent_id='rri-'||repeat('8',64)")
+test "$legacy_claimed_clean" = blocked:false:unresolved_legacy
 
 first=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r1', repeat('a',40), '1', 1, '100', '200')")
@@ -117,7 +156,7 @@ bound_effect=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1
   "SELECT release_authority.release_runner_reconcile_effect(
     '{\"intentId\":\"rri-$(printf '2%.0s' $(seq 1 64))\",\"claimantId\":\"rrc-00000000-0000-4000-8000-000000000099\",\"expectedEpoch\":1,\"jobId\":\"job-effect\",\"reconciliation\":{\"result\":\"pending\",\"safeForCompensation\":false}}')->>'state'")
 test "$bound_effect" = bound
-clean_effect=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_runner_reconcile_effect(jsonb_build_object(
     'intentId','rri-'||repeat('2',64),'claimantId','rrc-00000000-0000-4000-8000-000000000099',
     'expectedEpoch',1,'jobId','job-effect',
@@ -127,8 +166,34 @@ clean_effect=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1
       'facts',jsonb_build_object(
         'provider',jsonb_build_object('id','job-effect','serviceId','svc-effect','status','succeeded'),
         'runner',jsonb_build_object('listenerStopped',true,'workspaceRemoved',true,
-          'credentialProcessGone',true,'canary','rr-cleanup:r-effect:rr-effect')))))->>'safeForCompensation'")
-test "$clean_effect" = true
+          'credentialProcessGone',true,'canary','rr-cleanup:r-effect:rr-effect')))))->>'safeForCompensation'" \
+  >/dev/null 2>&1; then
+  echo "control-supplied cleanup booleans unexpectedly forged safe cleanup" >&2
+  exit 1
+fi
+unsafe_effect=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT effect_state||':'||effect_safe_for_compensation
+   FROM release_authority.runner_intent WHERE intent_id='rri-'||repeat('2',64)")
+test "$unsafe_effect" = bound:false
+effect_witness=$(docker exec -e PGPASSWORD=witness "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_witness -d postgres -Atc \
+  "SELECT release_authority.release_runner_persist_cleanup_witness(
+    'job-effect',jsonb_build_object('jobId','job-effect',
+      'canary','rr-cleanup:r-effect:rr-effect','providerStatus','succeeded',
+      'containerTerminated',true,'logSha256','sha256:'||repeat('3',64),
+      'removedPaths',jsonb_build_array('/runner/_work/rr-effect/repo'),
+      'remainingPaths','[]'::jsonb,'providerLogId','log-effect',
+      'providerObservedAt','$now'))")
+test "$effect_witness" = true
+effect_terminal=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_mark_terminal(
+    'job-effect',jsonb_build_object('step','cleanup_role_runner','observedAt','$now'))")
+test "$effect_terminal" = true
+clean_effect=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT effect_state||':'||effect_safe_for_compensation
+   FROM release_authority.runner_intent WHERE intent_id='rri-'||repeat('2',64)")
+test "$clean_effect" = cleaned:true
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "DO \$\$
@@ -187,13 +252,6 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
      IF snapshot->>'state' <> 'blocked' OR (snapshot->>'safeForCompensation')::boolean
        THEN RAISE EXCEPTION 'discovery timeout was not blocked unsafe'; END IF;
    END \$\$;" >/dev/null
-
-if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
-  -U reviewrouter_release_control -d postgres -Atc \
-  "SELECT release_authority.release_runner_claim_provider_creation('{}')" >/dev/null 2>&1; then
-  echo "legacy provider creation authority unexpectedly remained executable" >&2
-  exit 1
-fi
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT release_authority.release_rollout_claim('r-order', repeat('d',40), '4', 1, '103', '203')" >/dev/null
@@ -517,6 +575,61 @@ test "$control_acl" = activated
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT count(*) FROM release_authority.rollout" >/dev/null 2>&1; then
   echo "control role unexpectedly has direct table access" >&2
+  exit 1
+fi
+migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "WITH migrated(proname,control_allowed) AS (VALUES
+      ('release_runner_job_cleanup_proven',false),
+      ('release_runner_effect_snapshot',false),
+      ('release_runner_list_intents',true),
+      ('release_runner_prepare_effect',true),
+      ('release_runner_acquire_dispatch_permit',true),
+      ('release_runner_persist_job',true),
+      ('release_runner_reconcile_effect',true),
+      ('release_runner_abandon_prepared',true),
+      ('release_runner_terminal_effect',false),
+      ('release_runner_compensation_gate',false)
+    ), functions AS (
+      SELECT p.oid,p.proname,m.control_allowed,p.proacl,p.proowner,p.proconfig
+      FROM migrated m
+      JOIN pg_catalog.pg_proc p ON p.proname=m.proname
+      JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='release_authority'
+    )
+    SELECT count(*)||':'||
+      bool_and(NOT EXISTS (
+        SELECT 1 FROM pg_catalog.aclexplode(
+          coalesce(functions.proacl,pg_catalog.acldefault('f',functions.proowner))) acl
+        WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE'))||':'||
+      bool_and(pg_catalog.has_function_privilege(
+        'reviewrouter_release_control',oid,'EXECUTE')=control_allowed)||':'||
+      bool_and(NOT pg_catalog.has_function_privilege(
+        'reviewrouter_provider_authority',oid,'EXECUTE'))||':'||
+      bool_and(NOT pg_catalog.has_function_privilege(
+        'reviewrouter_release_witness',oid,'EXECUTE'))||':'||
+      bool_and(proconfig=ARRAY['search_path=pg_catalog']::text[])
+    FROM functions")
+test "$migration_acl" = 10:true:true:true:true:true
+legacy_control_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT pg_catalog.has_function_privilege('reviewrouter_release_control',
+      'release_authority.release_runner_persist_intent(jsonb)','EXECUTE')||':'||
+    pg_catalog.has_function_privilege('reviewrouter_release_control',
+      'release_authority.release_runner_claim_provider_creation(jsonb)','EXECUTE')||':'||
+    pg_catalog.has_function_privilege('reviewrouter_release_control',
+      'release_authority.release_runner_record_intent_outcome(jsonb)','EXECUTE')")
+test "$legacy_control_acl" = false:false:false
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_effect_snapshot(
+     NULL::release_authority.runner_intent)" >/dev/null 2>&1; then
+  echo "control role unexpectedly executes private effect snapshot" >&2
+  exit 1
+fi
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_runner_job_cleanup_proven(
+     NULL::release_authority.runner_job)" >/dev/null 2>&1; then
+  echo "control role unexpectedly executes private cleanup proof predicate" >&2
   exit 1
 fi
 for role_and_password in "reviewrouter_release_control:control" "reviewrouter_provider_authority:provider" "reviewrouter_release_witness:witness"; do

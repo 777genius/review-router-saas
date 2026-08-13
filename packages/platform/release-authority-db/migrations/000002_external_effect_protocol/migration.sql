@@ -1,5 +1,7 @@
 -- Forward-only external-effect safety protocol. Provider dispatch is authorized by
 -- one atomic prepared -> dispatching transition; dispatching is never lease-redriven.
+BEGIN;
+
 ALTER TABLE release_authority.runner_intent
   ADD COLUMN effect_state text NOT NULL DEFAULT 'blocked',
   ADD COLUMN effect_epoch bigint NOT NULL DEFAULT 0,
@@ -23,15 +25,51 @@ ALTER TABLE release_authority.runner_intent
   ADD CONSTRAINT runner_intent_effect_bound_check CHECK
     ((effect_state <> 'bound') OR provider_job_id IS NOT NULL);
 
-UPDATE release_authority.runner_intent SET
+-- This predicate is deliberately not executable by the control-plane role.  A safe
+-- cleanup fact is computed solely from the runner_job row written through the
+-- independently credentialed witness path and its witness-gated terminal CAS.
+CREATE FUNCTION release_authority.release_runner_job_cleanup_proven(
+  p_job release_authority.runner_job
+) RETURNS boolean LANGUAGE sql IMMUTABLE SET search_path = pg_catalog
+AS $body$
+  SELECT p_job.terminal_at IS NOT NULL
+    AND p_job.cleanup_observation IS NOT NULL
+    AND p_job.cleanup_provider_witness IS NOT NULL
+    AND p_job.cleanup_provider_witness->>'jobId' = p_job.job_id
+    AND p_job.cleanup_provider_witness->>'canary' = p_job.cleanup_canary
+    AND coalesce(p_job.cleanup_provider_witness->>'providerStatus','')
+      IN ('succeeded','failed','canceled')
+    AND p_job.cleanup_provider_witness->>'containerTerminated' = 'true'
+    AND jsonb_typeof(p_job.cleanup_provider_witness->'removedPaths') = 'array'
+    AND jsonb_array_length(p_job.cleanup_provider_witness->'removedPaths') > 0
+    AND jsonb_typeof(p_job.cleanup_provider_witness->'remainingPaths') = 'array'
+    AND jsonb_array_length(p_job.cleanup_provider_witness->'remainingPaths') = 0
+$body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_job_cleanup_proven(
+  release_authority.runner_job) FROM PUBLIC;
+
+UPDATE release_authority.runner_intent intent SET
   effect_state = CASE
+    WHEN EXISTS (
+      SELECT 1 FROM release_authority.runner_job job
+      WHERE job.provisioning_intent_id = intent.intent_id
+        AND release_authority.release_runner_job_cleanup_proven(job)
+    ) THEN 'cleaned'
     WHEN outcome = 'bound' AND provider_job_id IS NOT NULL THEN 'bound'
-    WHEN outcome = 'persistence_failed_cleaned' THEN 'cleaned'
     ELSE 'blocked'
   END,
-  effect_safe_for_compensation = coalesce(outcome = 'persistence_failed_cleaned', false),
+  effect_safe_for_compensation = EXISTS (
+    SELECT 1 FROM release_authority.runner_job job
+    WHERE job.provisioning_intent_id = intent.intent_id
+      AND release_authority.release_runner_job_cleanup_proven(job)
+  ),
   effect_block_reason = CASE
-    WHEN outcome IS NULL OR outcome = 'persistence_failed_unknown'
+    WHEN EXISTS (
+      SELECT 1 FROM release_authority.runner_job job
+      WHERE job.provisioning_intent_id = intent.intent_id
+        AND release_authority.release_runner_job_cleanup_proven(job)
+    ) OR (outcome = 'bound' AND provider_job_id IS NOT NULL) THEN NULL
+    WHEN outcome IS NULL OR outcome IN ('persistence_failed_unknown','persistence_failed_cleaned')
       THEN 'unresolved_legacy' ELSE NULL END,
   effect_owner = NULL,
   effect_lease_expires_at = NULL;
@@ -73,6 +111,8 @@ AS $body$
       ELSE jsonb_build_object('result','pending','safeForCompensation',false)
     END)
 $body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_effect_snapshot(
+  release_authority.runner_intent) FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION release_authority.release_runner_list_intents(p_rollout_id text) RETURNS jsonb
 LANGUAGE sql SECURITY DEFINER STABLE SET search_path = pg_catalog
@@ -88,6 +128,7 @@ AS $body$
     'effect', release_authority.release_runner_effect_snapshot(r)) ORDER BY created_at), '[]'::jsonb)
   FROM release_authority.runner_intent r WHERE rollout_id = p_rollout_id
 $body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_list_intents(text) FROM PUBLIC;
 
 CREATE FUNCTION release_authority.release_runner_prepare_effect(p_intent jsonb)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
@@ -138,6 +179,7 @@ BEGIN
   END IF;
   RETURN release_authority.release_runner_effect_snapshot(current_row);
 END $body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_prepare_effect(jsonb) FROM PUBLIC;
 
 CREATE FUNCTION release_authority.release_runner_acquire_dispatch_permit(p_input jsonb)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
@@ -172,6 +214,7 @@ BEGIN
   END IF;
   RETURN release_authority.release_runner_effect_snapshot(current_row);
 END $body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_acquire_dispatch_permit(jsonb) FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION release_authority.release_runner_persist_job(p_job jsonb)
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
@@ -196,6 +239,7 @@ BEGIN
     p_job->>'cleanupCanary', p_job->>'lifecycle');
   RETURN true;
 END $body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_persist_job(jsonb) FROM PUBLIC;
 
 CREATE FUNCTION release_authority.release_runner_reconcile_effect(p_input jsonb)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
@@ -204,9 +248,8 @@ DECLARE current_row release_authority.runner_intent%ROWTYPE;
 DECLARE result text := p_input->'reconciliation'->>'result';
 DECLARE reason text := p_input->'reconciliation'->>'reason';
 BEGIN
-  IF result IS NULL OR result NOT IN ('clean','pending','blocked')
-    OR (result = 'clean' AND p_input->'reconciliation'->>'safeForCompensation' IS DISTINCT FROM 'true')
-    OR (result <> 'clean' AND p_input->'reconciliation'->>'safeForCompensation' IS DISTINCT FROM 'false')
+  IF result IS NULL OR result NOT IN ('pending','blocked')
+    OR p_input->'reconciliation'->>'safeForCompensation' IS DISTINCT FROM 'false'
   THEN RAISE EXCEPTION 'release runner reconciliation safety invalid'; END IF;
   SELECT * INTO STRICT current_row FROM release_authority.runner_intent
     WHERE intent_id = p_input->>'intentId' FOR UPDATE;
@@ -216,28 +259,7 @@ BEGIN
     OR current_row.effect_epoch <> (p_input->>'expectedEpoch')::bigint
   THEN RAISE EXCEPTION 'release runner reconciliation fence conflict'; END IF;
 
-  IF result = 'clean' THEN
-    IF coalesce(p_input->>'jobId','') = ''
-      OR jsonb_typeof(p_input->'observation') IS DISTINCT FROM 'object'
-      OR p_input->'observation'->>'step' IS DISTINCT FROM
-        (CASE current_row.lifecycle WHEN 'role' THEN 'cleanup_role_runner'
-          ELSE 'cleanup_cutover_runner' END)
-      OR p_input->'observation'->'provider'->>'renderJobId' IS DISTINCT FROM p_input->>'jobId'
-      OR p_input->'observation'->'facts'->'provider'->>'id' IS DISTINCT FROM p_input->>'jobId'
-      OR p_input->'observation'->'facts'->'provider'->>'serviceId' IS DISTINCT FROM current_row.service_id
-      OR coalesce(p_input->'observation'->'facts'->'provider'->>'status','')
-        NOT IN ('succeeded','failed','canceled')
-      OR p_input->'observation'->'facts'->'runner'->>'listenerStopped' IS DISTINCT FROM 'true'
-      OR p_input->'observation'->'facts'->'runner'->>'workspaceRemoved' IS DISTINCT FROM 'true'
-      OR p_input->'observation'->'facts'->'runner'->>'credentialProcessGone' IS DISTINCT FROM 'true'
-      OR p_input->'observation'->'facts'->'runner'->>'canary' IS DISTINCT FROM
-        'rr-cleanup:'||current_row.rollout_id||':'||current_row.runner_name
-    THEN RAISE EXCEPTION 'release runner clean reconciliation proof invalid'; END IF;
-    UPDATE release_authority.runner_intent SET effect_state = 'cleaned',
-      effect_safe_for_compensation = true, effect_block_reason = NULL,
-      reconciliation_observation = p_input->'observation', reconciled_at = clock_timestamp()
-    WHERE intent_id = current_row.intent_id RETURNING * INTO current_row;
-  ELSIF result = 'blocked' THEN
+  IF result = 'blocked' THEN
     IF reason IS NULL OR reason NOT IN ('unknown','duplicate','timeout','unresolved_legacy')
       THEN RAISE EXCEPTION 'release runner reconciliation reason invalid'; END IF;
     UPDATE release_authority.runner_intent SET effect_state = 'blocked',
@@ -271,6 +293,7 @@ BEGIN
   END IF;
   RETURN release_authority.release_runner_effect_snapshot(current_row);
 END $body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_reconcile_effect(jsonb) FROM PUBLIC;
 
 CREATE FUNCTION release_authority.release_runner_abandon_prepared(
   p_intent_id text, p_owner text, p_expected_epoch bigint
@@ -286,18 +309,25 @@ BEGIN
   IF NOT FOUND THEN RAISE EXCEPTION 'release runner prepared abandon conflict'; END IF;
   RETURN release_authority.release_runner_effect_snapshot(current_row);
 END $body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_abandon_prepared(
+  text,text,bigint) FROM PUBLIC;
 
 CREATE FUNCTION release_authority.release_runner_terminal_effect() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $body$
 BEGIN
   IF OLD.terminal_at IS NULL AND NEW.terminal_at IS NOT NULL THEN
+    IF NOT release_authority.release_runner_job_cleanup_proven(NEW) THEN
+      RAISE EXCEPTION 'release runner terminal cleanup witness unproven';
+    END IF;
     UPDATE release_authority.runner_intent SET effect_state = 'cleaned',
       effect_safe_for_compensation = true, effect_block_reason = NULL,
       reconciled_at = clock_timestamp()
-    WHERE intent_id = NEW.provisioning_intent_id AND effect_state = 'bound';
+    WHERE intent_id = NEW.provisioning_intent_id
+      AND effect_state IN ('dispatching','bound');
   END IF;
   RETURN NEW;
 END $body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_terminal_effect() FROM PUBLIC;
 CREATE TRIGGER release_runner_terminal_effect_trigger
 AFTER UPDATE OF terminal_at ON release_authority.runner_job
 FOR EACH ROW EXECUTE FUNCTION release_authority.release_runner_terminal_effect();
@@ -318,19 +348,25 @@ BEGIN
   THEN RAISE EXCEPTION 'release runner effects unsafe for compensation'; END IF;
   RETURN NEW;
 END $body$;
+REVOKE ALL ON FUNCTION release_authority.release_runner_compensation_gate() FROM PUBLIC;
 CREATE TRIGGER release_runner_compensation_gate_trigger
 BEFORE UPDATE OF state ON release_authority.rollout
 FOR EACH ROW EXECUTE FUNCTION release_authority.release_runner_compensation_gate();
 
-REVOKE ALL ON FUNCTION release_authority.release_runner_prepare_effect(jsonb) FROM PUBLIC;
-REVOKE ALL ON FUNCTION release_authority.release_runner_acquire_dispatch_permit(jsonb) FROM PUBLIC;
-REVOKE ALL ON FUNCTION release_authority.release_runner_reconcile_effect(jsonb) FROM PUBLIC;
-REVOKE ALL ON FUNCTION release_authority.release_runner_abandon_prepared(text,text,bigint) FROM PUBLIC;
-REVOKE ALL ON FUNCTION release_authority.release_runner_compensation_gate() FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_runner_persist_intent(jsonb) FROM reviewrouter_release_control;
 REVOKE ALL ON FUNCTION release_authority.release_runner_claim_provider_creation(jsonb) FROM reviewrouter_release_control;
 REVOKE ALL ON FUNCTION release_authority.release_runner_record_intent_outcome(jsonb) FROM reviewrouter_release_control;
-GRANT EXECUTE ON FUNCTION release_authority.release_runner_prepare_effect(jsonb) TO reviewrouter_release_control;
-GRANT EXECUTE ON FUNCTION release_authority.release_runner_acquire_dispatch_permit(jsonb) TO reviewrouter_release_control;
-GRANT EXECUTE ON FUNCTION release_authority.release_runner_reconcile_effect(jsonb) TO reviewrouter_release_control;
-GRANT EXECUTE ON FUNCTION release_authority.release_runner_abandon_prepared(text,text,bigint) TO reviewrouter_release_control;
+DO $operational_acl$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'reviewrouter_release_control') THEN
+    GRANT EXECUTE ON FUNCTION release_authority.release_runner_list_intents(text) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_runner_prepare_effect(jsonb) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_runner_acquire_dispatch_permit(jsonb) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_runner_persist_job(jsonb) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_runner_reconcile_effect(jsonb) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_runner_abandon_prepared(text,text,bigint) TO reviewrouter_release_control;
+  END IF;
+END
+$operational_acl$;
+
+COMMIT;
