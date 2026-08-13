@@ -908,6 +908,7 @@ export async function convergeImmutableRuntimeImage(
     image: { imagePath: imageUrl },
     serviceDetails: {
       preDeployCommand: "",
+      runtime: "image",
     },
   });
   const observed = await client.request("GET", `/services/${service.id}`);

@@ -1551,8 +1551,55 @@ describe("Render hosted deploy hardening", () => {
       image: { imagePath: imageUrl },
       serviceDetails: {
         preDeployCommand: "",
+        runtime: "image",
       },
     });
+  });
+
+  it("fails closed when Render keeps the existing native runtime", async () => {
+    const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        image: { imagePath: imageUrl },
+        serviceDetails: { runtime: "image" },
+      })
+      .mockResolvedValueOnce({
+        image: { imagePath: imageUrl },
+        serviceDetails: { runtime: "node" },
+      });
+
+    await expect(
+      convergeImmutableRuntimeImage(
+        { request } as never,
+        { id: "srv-1", name: "api" },
+        { startCommand: "pnpm api:start" },
+        imageUrl,
+      ),
+    ).rejects.toThrow("did not converge on the immutable image source");
+    expect(request).toHaveBeenNthCalledWith(2, "GET", "/services/srv-1");
+  });
+
+  it("fails closed when Render keeps a mutable image source", async () => {
+    const imageUrl = `ghcr.io/777genius/review-router-saas-runtime@sha256:${"b".repeat(64)}`;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        image: {
+          imagePath: "ghcr.io/777genius/review-router-saas-runtime:latest",
+        },
+        serviceDetails: { runtime: "image" },
+      });
+
+    await expect(
+      convergeImmutableRuntimeImage(
+        { request } as never,
+        { id: "srv-1", name: "api" },
+        { startCommand: "pnpm api:start" },
+        imageUrl,
+      ),
+    ).rejects.toThrow("did not converge on the immutable image source");
   });
 
   it("refuses a mutable or non-canonical runtime image", async () => {
