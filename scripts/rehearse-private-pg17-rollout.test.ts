@@ -92,7 +92,7 @@ describe("disposable dual-version rehearsal", () => {
       "executePrivateGenerationActivation",
       "roleProvisioningSql",
       "runtimeGrantSql",
-      "canonicalActivationSql",
+      "activationRoutineBodyTrustRoots",
       "assembleTrustedRolloutEvidence",
       "reconnectDenied",
       "beginCompensation",
@@ -175,6 +175,6 @@ describe("disposable dual-version rehearsal", () => {
     expect(source).not.toContain("persistLedger");
     expect(source).not.toContain("RENDER_API_KEY");
     expect(source).not.toContain("GITHUB_TOKEN");
-    expect(source).toContain(".slice(0, 2_000)");
+    expect(source).toContain("JSON.stringify(safe)");
   });
 });
