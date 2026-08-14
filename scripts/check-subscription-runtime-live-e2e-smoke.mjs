@@ -65,6 +65,21 @@ try {
     );
   }
 
+  const malformedRecoveryWitness = runCheckOnly(env, {
+    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(42),
+  });
+  if (
+    malformedRecoveryWitness.status === 0 ||
+    !malformedRecoveryWitness.stderr.includes(
+      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS must be available",
+    )
+  ) {
+    fail(
+      "check-only must reject a malformed database recovery witness",
+      malformedRecoveryWitness,
+    );
+  }
+
   const existingWithoutId = runCheckOnly(env, {
     REVIEW_ROUTER_LIVE_E2E_SMOKE_REPOSITORY_MODE: "existing",
     REVIEW_ROUTER_CODEX_ROTATING_E2E_DISPOSABLE_REPOSITORY_ID: "",

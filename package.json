@@ -164,7 +164,8 @@
     "turbo": "^2.10.6",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "yaml": "^2.9.0"
   },
   "pnpm": {
     "overrides": {

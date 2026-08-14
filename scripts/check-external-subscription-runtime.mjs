@@ -3,6 +3,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(
@@ -22,15 +23,33 @@ if (!sourceMatch) {
 }
 
 const pinnedCommit = sourceMatch[1];
-const lockfile = await readFile(resolve(root, "pnpm-lock.yaml"), "utf8");
+const expectedSpecifier = `git+ssh://git@github.com/777genius/ar.git#${pinnedCommit}`;
+const expectedPackageKey = `@vioxen/subscription-runtime@git+https://git@github.com:777genius/ar.git#${pinnedCommit}`;
+const lockfile = parse(await readFile(resolve(root, "pnpm-lock.yaml"), "utf8"));
+const importerDependency =
+  lockfile?.importers?.["."]?.optionalDependencies?.[
+    "@777genius/subscription-runtime"
+  ];
+const linkedPackageKey =
+  typeof importerDependency?.version === "string"
+    ? importerDependency.version.match(
+        /^(@vioxen\/subscription-runtime@git\+https:\/\/git@github\.com:777genius\/ar\.git#[0-9a-f]{40})(?:\(|$)/u,
+      )?.[1]
+    : undefined;
+const resolution =
+  linkedPackageKey === undefined
+    ? undefined
+    : lockfile?.packages?.[linkedPackageKey]?.resolution;
+
 if (
-  !lockfile.includes(`commit: ${pinnedCommit}`) ||
-  !lockfile.includes(
-    `specifier: git+ssh://git@github.com/777genius/ar.git#${pinnedCommit}`,
-  )
+  importerDependency?.specifier !== expectedSpecifier ||
+  linkedPackageKey !== expectedPackageKey ||
+  resolution?.type !== "git" ||
+  resolution?.repo !== "git@github.com:777genius/ar.git" ||
+  resolution?.commit !== pinnedCommit
 ) {
   throw new Error(
-    "subscription runtime package.json and pnpm lockfile pins do not match",
+    "subscription runtime package.json, importer, and resolved git package do not match",
   );
 }
 
