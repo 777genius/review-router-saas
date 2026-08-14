@@ -164,7 +164,7 @@ describe("application database release-authority isolation", () => {
     expect(sql).toContain("unexpected_set_permission");
     expect(sql).toContain("database_owner_contract_mismatch");
     expect(sql).toContain(
-      "WHERE capability.enabled AND NOT coalesce(\n      CASE capability.kind",
+      "WHERE capability.enabled\n      AND reachable.login_name <> 'reviewrouter_role_bootstrap'\n      AND NOT coalesce(",
     );
     expect(sql).toContain(
       '"login":"reviewrouter_api","role":"reviewrouter_activation_receipt_guard","usage":false,"set":false',
