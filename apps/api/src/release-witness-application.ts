@@ -102,10 +102,11 @@ export class AttestReleaseWitnessBinding {
     // This is the publication boundary: the independent witness gate may not
     // reuse evidence which began before the provider facts above were read.
     await this.readiness?.assertForceNew();
-    const [source, authority, target] = await Promise.all([
+    const [source, authority, target, targetGeneration] = await Promise.all([
       this.databases.observeSource(),
       this.databases.observeAuthority(),
       this.databases.observeTarget(),
+      this.databases.observeTargetGeneration(),
     ]);
     const observedAtMilliseconds = this.now().getTime();
     if (
@@ -140,11 +141,24 @@ export class AttestReleaseWitnessBinding {
       source.systemIdentifier !== request.source.systemIdentifier ||
       source.postgresMajor !== request.source.majorVersion ||
       source.databaseIdentity.databaseName !== request.source.databaseName ||
+      source.recoveryWitnessSha256 !==
+        this.policy.sourceGeneration.recoveryWitnessSha256 ||
       authority.systemIdentifier !==
         this.policy.authorityDatabaseIdentity.serverIdentity ||
       target.systemIdentifier !== request.target.systemIdentifier ||
       target.postgresMajor !== request.target.majorVersion ||
       target.databaseIdentity.databaseName !== request.target.databaseName ||
+      targetGeneration.roleName !== "reviewrouter_activation_receipt_reader" ||
+      !runtimeDatabaseIdentityEquals(
+        targetGeneration.databaseIdentity,
+        this.policy.targetDatabaseIdentity,
+      ) ||
+      targetGeneration.systemIdentifier !== request.target.systemIdentifier ||
+      targetGeneration.postgresMajor !== request.target.majorVersion ||
+      targetGeneration.databaseIdentity.databaseName !==
+        request.target.databaseName ||
+      targetGeneration.recoveryWitnessSha256 !==
+        this.policy.targetGeneration.recoveryWitnessSha256 ||
       !authority.exact ||
       !target.exact ||
       authority.catalogFingerprint !==
@@ -166,6 +180,16 @@ export class AttestReleaseWitnessBinding {
     const expiresAt = new Date(
       observedAtMilliseconds + this.policy.maximumAgeMilliseconds,
     ).toISOString();
+    // Provider selectors stay provider observations, while the recovery marker
+    // in the signed generation is sourced only from each database session.
+    const observedSourceGeneration = Object.freeze({
+      ...generations[0],
+      recoveryWitnessSha256: source.recoveryWitnessSha256,
+    });
+    const observedTargetGeneration = Object.freeze({
+      ...generations[1],
+      recoveryWitnessSha256: targetGeneration.recoveryWitnessSha256,
+    });
     const unsigned = Object.freeze({
       schemaVersion: 2 as const,
       rolloutId: request.rolloutId,
@@ -187,8 +211,8 @@ export class AttestReleaseWitnessBinding {
         installerRoutineBodySha256: target.installerRoutineBodySha256,
         readerRoutineBodySha256: target.readerRoutineBodySha256,
       }),
-      source: request.source,
-      target: request.target,
+      source: observedSourceGeneration,
+      target: observedTargetGeneration,
       deployments: Object.freeze([...deployments]),
       observedAt,
       expiresAt,

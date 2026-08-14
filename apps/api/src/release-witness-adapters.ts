@@ -206,9 +206,15 @@ type TransactionalPrisma = PrismaClient & {
     callback: (transaction: PrismaClient) => Promise<T>,
   ): Promise<T>;
 };
+type ReleaseWitnessGenerationProbe = Omit<
+  ReleaseWitnessGenerationObservation,
+  "recoveryWitnessSha256"
+> &
+  Readonly<{ databaseComment: unknown }>;
 
 const manifestIdentity = (value: unknown): string =>
   `sha256:${sha256Canonical(value)}`;
+const recoveryWitnessSha256 = /^[a-f0-9]{64}$/u;
 
 /** Every observation is pinned to one transaction/session to prevent pool mixing. */
 export class PostgresReleaseBindingObservationAdapter implements ReleaseWitnessDatabasePort {
@@ -220,26 +226,59 @@ export class PostgresReleaseBindingObservationAdapter implements ReleaseWitnessD
   ) {}
 
   async observeSource(): Promise<ReleaseWitnessGenerationObservation> {
-    return (this.sourcePrisma as TransactionalPrisma).$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(
-          "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
-        );
-        const rows = await tx.$queryRaw<ReleaseWitnessGenerationObservation[]>(
-          Prisma.sql`SELECT current_user AS "roleName",
+    return this.observeGeneration(this.sourcePrisma, "source");
+  }
+
+  observeTargetGeneration(): Promise<ReleaseWitnessGenerationObservation> {
+    return this.observeGeneration(this.targetPrisma, "target");
+  }
+
+  private async observeGeneration(
+    prisma: PrismaClient,
+    kind: "source" | "target",
+  ): Promise<ReleaseWitnessGenerationObservation> {
+    return (prisma as TransactionalPrisma).$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
+      );
+      const rows = await tx.$queryRaw<ReleaseWitnessGenerationProbe[]>(
+        Prisma.sql`SELECT current_user AS "roleName",
           jsonb_build_object(
             'serverIdentity', (SELECT system_identifier::text FROM pg_control_system()),
             'databaseIdentity', (SELECT oid::text FROM pg_database WHERE datname=current_database()),
             'databaseName', current_database()
           ) AS "databaseIdentity",
           (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
-          current_setting('server_version_num')::integer / 10000 AS "postgresMajor"`,
-        );
-        if (rows.length !== 1 || !rows[0])
-          throw new Error("release_witness_source_observation_unavailable");
-        return Object.freeze(rows[0]);
-      },
-    );
+          current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
+          (SELECT pg_catalog.shobj_description(database.oid, 'pg_database')
+            FROM pg_catalog.pg_database database
+            WHERE database.datname = current_database()) AS "databaseComment"`,
+      );
+      const row = rows[0];
+      let marker: unknown;
+      try {
+        const comment =
+          typeof row?.databaseComment === "string"
+            ? (JSON.parse(row.databaseComment) as unknown)
+            : null;
+        marker =
+          comment && typeof comment === "object" && !Array.isArray(comment)
+            ? (comment as Record<string, unknown>).recoveryWitnessSha256
+            : undefined;
+      } catch {
+        // Never include a malformed database comment in an error: comments
+        // are operator-controlled metadata and may contain sensitive text.
+      }
+      if (
+        rows.length !== 1 ||
+        !row ||
+        typeof marker !== "string" ||
+        !recoveryWitnessSha256.test(marker)
+      )
+        throw new Error(`release_witness_${kind}_generation_unavailable`);
+      const { databaseComment: _databaseComment, ...generation } = row;
+      return Object.freeze({ ...generation, recoveryWitnessSha256: marker });
+    });
   }
 
   observeAuthority(): Promise<ReleaseWitnessDatabaseObservation> {

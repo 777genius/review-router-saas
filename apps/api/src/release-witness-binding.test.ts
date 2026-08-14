@@ -10,6 +10,7 @@ import {
 } from "./release-witness-adapters";
 import type {
   ReleaseWitnessDatabaseObservation,
+  ReleaseWitnessGenerationObservation,
   ReleaseWitnessRequest,
   TrustedReleaseWitnessPolicy,
 } from "./release-witness-domain";
@@ -106,6 +107,8 @@ const create = (
   overrides: {
     authority?: ReleaseWitnessDatabaseObservation;
     target?: ReleaseWitnessDatabaseObservation;
+    sourceGeneration?: ReleaseWitnessGenerationObservation;
+    targetGeneration?: ReleaseWitnessGenerationObservation;
     observedExecution?: ReleaseWitnessRequest["execution"];
     observedDeployments?: ReleaseWitnessRequest["deployments"];
     observedGenerations?: readonly [
@@ -121,12 +124,15 @@ const create = (
     {
       observeSource: async () => {
         overrides.events?.push("database");
-        return {
-          roleName: "reviewrouter_release_witness",
-          databaseIdentity: sourceIdentity,
-          systemIdentifier: "100",
-          postgresMajor: 16,
-        };
+        return (
+          overrides.sourceGeneration ?? {
+            roleName: "reviewrouter_release_witness",
+            databaseIdentity: sourceIdentity,
+            systemIdentifier: "100",
+            postgresMajor: 16,
+            recoveryWitnessSha256: request.source.recoveryWitnessSha256,
+          }
+        );
       },
       observeAuthority: async () => {
         overrides.events?.push("database");
@@ -135,6 +141,18 @@ const create = (
       observeTarget: async () => {
         overrides.events?.push("database");
         return overrides.target ?? observation("target");
+      },
+      observeTargetGeneration: async () => {
+        overrides.events?.push("database");
+        return (
+          overrides.targetGeneration ?? {
+            roleName: "reviewrouter_activation_receipt_reader",
+            databaseIdentity: targetIdentity,
+            systemIdentifier: "200",
+            postgresMajor: 17,
+            recoveryWitnessSha256: request.target.recoveryWitnessSha256,
+          }
+        );
       },
     },
     {
@@ -192,7 +210,12 @@ describe("release witness binding policy", () => {
     }).execute(request);
     expect(events.slice(0, 3)).toEqual(["provider", "provider", "provider"]);
     expect(events[3]).toBe("force-new");
-    expect(events.slice(4, 7)).toEqual(["database", "database", "database"]);
+    expect(events.slice(4, 8)).toEqual([
+      "database",
+      "database",
+      "database",
+      "database",
+    ]);
     expect(events.at(-1)).toBe("sign");
 
     const denied: string[] = [];
@@ -252,6 +275,43 @@ describe("release witness binding policy", () => {
       })}`,
     ).not.toBe(result.bindingSha256);
   });
+
+  it.each([
+    [
+      "source",
+      {
+        roleName: "reviewrouter_release_witness",
+        databaseIdentity: sourceIdentity,
+        systemIdentifier: "100",
+        postgresMajor: 16,
+        recoveryWitnessSha256: hex("f"),
+      },
+    ],
+    [
+      "target",
+      {
+        roleName: "reviewrouter_activation_receipt_reader",
+        databaseIdentity: targetIdentity,
+        systemIdentifier: "200",
+        postgresMajor: 17,
+        recoveryWitnessSha256: hex("f"),
+      },
+    ],
+  ] as const)(
+    "fails closed before signing when the %s session observes another recovery marker",
+    async (kind, generation) => {
+      const events: string[] = [];
+      await expect(
+        create({
+          events,
+          ...(kind === "source"
+            ? { sourceGeneration: generation }
+            : { targetGeneration: generation }),
+        }).execute(request),
+      ).rejects.toThrow("release_witness_database_binding_mismatch");
+      expect(events).not.toContain("sign");
+    },
+  );
 
   it.each([
     [
@@ -347,11 +407,27 @@ describe("release witness observation adapters", () => {
           databaseIdentity: sourceIdentity,
           systemIdentifier: "100",
           postgresMajor: 16,
+          databaseComment: JSON.stringify({
+            recoveryWitnessSha256: request.source.recoveryWitnessSha256,
+          }),
         },
       ]),
     };
     const authorityTransaction = { marker: "authority" };
-    const targetTransaction = { marker: "target" };
+    const targetTransaction = {
+      $executeRawUnsafe: vi.fn(async () => undefined),
+      $queryRaw: vi.fn(async () => [
+        {
+          roleName: "reviewrouter_activation_receipt_reader",
+          databaseIdentity: targetIdentity,
+          systemIdentifier: "200",
+          postgresMajor: 17,
+          databaseComment: JSON.stringify({
+            recoveryWitnessSha256: request.target.recoveryWitnessSha256,
+          }),
+        },
+      ]),
+    };
     const client = (transaction: object) => ({
       $transaction: vi.fn(async (callback: (value: object) => unknown) =>
         callback(transaction),
@@ -372,11 +448,29 @@ describe("release witness observation adapters", () => {
       observer as never,
     );
 
-    await adapter.observeSource();
+    const observedSource = await adapter.observeSource();
     await adapter.observeAuthority();
     await adapter.observeTarget();
+    const observedTarget = await adapter.observeTargetGeneration();
 
     expect(sourceTransaction.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(targetTransaction.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(observedSource.recoveryWitnessSha256).toBe(
+      request.source.recoveryWitnessSha256,
+    );
+    expect(observedTarget.recoveryWitnessSha256).toBe(
+      request.target.recoveryWitnessSha256,
+    );
+    for (const transaction of [sourceTransaction, targetTransaction]) {
+      const query = (
+        transaction.$queryRaw.mock.calls as unknown[][]
+      )[0]?.[0] as { strings?: readonly string[] } | undefined;
+      expect(query).toBeDefined();
+      expect(query?.strings?.join(" ")).toContain(
+        "shobj_description(database.oid, 'pg_database')",
+      );
+      expect(query?.strings?.join(" ")).toContain('AS "databaseComment"');
+    }
     expect(sourceTransaction.$executeRawUnsafe).toHaveBeenCalledWith(
       "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
     );
@@ -386,6 +480,70 @@ describe("release witness observation adapters", () => {
       ),
     ).toEqual([authorityClient, targetClient]);
   });
+
+  it.each([
+    ["source", "missing", null],
+    ["target", "missing", null],
+    [
+      "source",
+      "malformed",
+      '{"recoveryWitnessSha256":"plaintext-recovery-secret"',
+    ],
+    [
+      "target",
+      "malformed",
+      '{"recoveryWitnessSha256":"plaintext-recovery-secret"',
+    ],
+  ] as const)(
+    "rejects and redacts a %s-session %s recovery marker",
+    async (kind, _case, databaseComment) => {
+      const transaction = {
+        $executeRawUnsafe: vi.fn(async () => undefined),
+        $queryRaw: vi.fn(async () => [
+          {
+            roleName:
+              kind === "source"
+                ? "reviewrouter_release_witness"
+                : "reviewrouter_activation_receipt_reader",
+            databaseIdentity:
+              kind === "source" ? sourceIdentity : targetIdentity,
+            systemIdentifier: kind === "source" ? "100" : "200",
+            postgresMajor: kind === "source" ? 16 : 17,
+            databaseComment,
+          },
+        ]),
+      };
+      const client = {
+        $transaction: vi.fn(
+          async (callback: (value: typeof transaction) => unknown) =>
+            callback(transaction),
+        ),
+      };
+      const unused = {
+        $transaction: vi.fn(async () => {
+          throw new Error("unused_database_session");
+        }),
+      };
+      const adapter = new PostgresReleaseBindingObservationAdapter(
+        (kind === "source" ? client : unused) as never,
+        unused as never,
+        (kind === "target" ? client : unused) as never,
+      );
+
+      const failure = await (
+        kind === "source"
+          ? adapter.observeSource()
+          : adapter.observeTargetGeneration()
+      ).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe(
+        `release_witness_${kind}_generation_unavailable`,
+      );
+      expect((failure as Error).message).not.toContain(
+        "plaintext-recovery-secret",
+      );
+    },
+  );
 
   it("rejects a rollout replay even when the run coordinates otherwise match", async () => {
     const fetchImpl = vi.fn(

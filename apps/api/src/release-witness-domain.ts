@@ -97,6 +97,7 @@ export type ReleaseWitnessGenerationObservation = Readonly<{
   databaseIdentity: RuntimeDatabaseIdentity;
   systemIdentifier: string;
   postgresMajor: number;
+  recoveryWitnessSha256: string;
 }>;
 
 export type ReleaseWitnessAttestation = Readonly<{
@@ -137,6 +138,7 @@ export interface ReleaseWitnessDatabasePort {
   observeSource(): Promise<ReleaseWitnessGenerationObservation>;
   observeAuthority(): Promise<ReleaseWitnessDatabaseObservation>;
   observeTarget(): Promise<ReleaseWitnessDatabaseObservation>;
+  observeTargetGeneration(): Promise<ReleaseWitnessGenerationObservation>;
 }
 
 export interface ReleaseWitnessExecutionPort {
