@@ -149,7 +149,42 @@ function safeErrorCode(error: unknown): string {
     "codex_rotating_setup_activation_mismatch",
     "codex_rotating_setup_activation_stale_epoch",
   ]);
-  return allowed.has(code) ? code : "invalid_request";
+  if (allowed.has(code)) return code;
+
+  const embeddedSafeCode = [
+    "codex_rotating_retryable_uncommitted",
+    "codex_rotating_setup_confirmation_stale_epoch",
+    "codex_rotating_setup_manifest_digest_mismatch",
+    "codex_rotating_setup_namespace_retired",
+    "codex_rotating_setup_recovery_association_conflict",
+    "codex_rotating_setup_recovery_transition_conflict",
+    "codex_rotating_t0_action_ref_invalid",
+    "codex_rotating_t0_refresh_schedule_not_canonical",
+    "codex_rotating_t0_secret_namespace_metadata_invalid",
+    "codex_rotating_t0_workflow_metadata_missing",
+    "codex_rotating_t0_workflow_source_not_canonical",
+    "codex_rotating_workflow_action_ref_not_trusted",
+    "codex_rotating_workflow_api_url_not_trusted",
+    "codex_rotating_workflow_mapping_required",
+    "codex_rotating_workflow_non_finite_number",
+    "codex_rotating_workflow_provider_instance_mismatch",
+    "codex_rotating_workflow_repository_id_invalid",
+    "codex_rotating_workflow_repository_identity_mismatch",
+    "codex_rotating_workflow_string_required",
+    "codex_rotating_workflow_v4_required",
+    "codex_rotating_workflow_yaml_invalid",
+    "provider_secret_namespace_epoch_mismatch",
+    "provider_secret_namespace_id_mismatch",
+    "provider_secret_namespace_name_mismatch",
+    "provider_secret_namespace_provider_mismatch",
+    "provider_secret_namespace_repository_mismatch",
+    "codex_oauth_secret_namespace_identity_immutable",
+    "codex_oauth_setup_claim_evidence_immutable",
+    "codex_oauth_setup_manifest_promotion_evidence_invalid",
+    "codex_oauth_setup_manifest_terminal_evidence_immutable",
+    "codex_oauth_setup_recovery_evidence_immutable",
+  ].find((candidate) => message.includes(candidate));
+  return embeddedSafeCode ?? "invalid_request";
 }
 
 function statusForError(code: string): number {
@@ -175,6 +210,8 @@ function statusForError(code: string): number {
   ) {
     return 502;
   }
-  if (code.startsWith("codex_rotating_")) return 409;
+  if (code.startsWith("codex_rotating_") || code.startsWith("codex_oauth_")) {
+    return 409;
+  }
   return 400;
 }

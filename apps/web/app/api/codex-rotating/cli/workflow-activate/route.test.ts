@@ -215,6 +215,21 @@ describe("Codex rotating CLI workflow activation route", () => {
       error: "invalid_request",
     });
   });
+
+  it("extracts only an allowlisted activation invariant from wrapped errors", async () => {
+    mocks.activate.mockRejectedValueOnce(
+      new Error(
+        "Raw query failed. Code: 23514. Message: codex_oauth_setup_recovery_evidence_immutable; private detail omitted",
+      ),
+    );
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "codex_oauth_setup_recovery_evidence_immutable",
+    });
+  });
 });
 
 function request(repository = "777genius/review-router-saas-e2e"): Request {
