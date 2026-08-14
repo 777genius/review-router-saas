@@ -86,12 +86,17 @@ const observeOnConnection = async (
           (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)')),'')),
           (2,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')),'')),
           (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)')),'')),
-          (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')),'')),
-          (5,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),''))
+          (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
+          (5,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')),'')),
+          (6,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),''))
         ) bodies(ordinal,body_sha256))),'')
         AS "installerRoutineBodySha256",
-      coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc
-        WHERE oid=to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')),'')
+      coalesce((SELECT encode(sha256(convert_to(string_agg(body_sha256, ':' ORDER BY ordinal),'UTF8')),'hex')
+        FROM (VALUES
+          (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')),'')),
+          (2,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
+          (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')),''))
+        ) bodies(ordinal,body_sha256))),'')
         AS "readerRoutineBodySha256",
       '' AS "applicationMigrationManifestIdentity",
       CASE WHEN to_regnamespace('reviewrouter_activation') IS NULL THEN ''
@@ -217,8 +222,30 @@ const observeOnConnection = async (
           FROM pg_namespace n CROSS JOIN pg_roles guard
           WHERE n.nspname='reviewrouter_activation'
             AND guard.rolname='reviewrouter_activation_receipt_guard'),false)
-        AND coalesce((SELECT count(*)=5 AND bool_and(p.prosecdef
-            AND p.proowner=guard.oid AND NOT has_function_privilege('public',p.oid,'EXECUTE')
+        AND coalesce((SELECT count(*)=6 AND bool_and(p.prosecdef
+            AND p.prokind='f' AND p.proowner=guard.oid
+            AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+            AND l.lanname=CASE WHEN p.oid=to_regprocedure(
+                'reviewrouter_activation.canonical_json(jsonb)')
+              THEN 'sql' ELSE 'plpgsql' END
+            AND p.provolatile=CASE
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')
+                THEN 'i'::"char"
+              WHEN p.oid IN (
+                to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
+                to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)'),
+                to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)'))
+                THEN 's'::"char" ELSE 'v'::"char" END
+            AND p.prorettype=CASE
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()')
+                THEN 'void'::regtype
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')
+                THEN 'text'::regtype
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')
+                THEN to_regtype('reviewrouter_activation.activation_principal_evidence')
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')
+                THEN 'boolean'::regtype ELSE 'jsonb'::regtype END
+            AND NOT has_function_privilege('public',p.oid,'EXECUTE')
             AND has_function_privilege('reviewrouter_release_migration',p.oid,'EXECUTE')
               IS NOT DISTINCT FROM (p.oid IN (
                 to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
@@ -239,11 +266,13 @@ const observeOnConnection = async (
                     THEN 'reviewrouter_release_migration'
                   ELSE NULL END))
           FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+          JOIN pg_language l ON l.oid=p.prolang
           CROSS JOIN pg_roles guard WHERE n.nspname='reviewrouter_activation'
             AND guard.rolname='reviewrouter_activation_receipt_guard'
             AND p.oid IN (to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
               to_regprocedure('reviewrouter_activation.canonical_json(jsonb)'),
               to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)'),
+              to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)'),
               to_regprocedure('reviewrouter_activation.activate_generation(text)'),
               to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'))),false)
         AND coalesce((SELECT

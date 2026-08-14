@@ -52,6 +52,14 @@ describe("target-local PG17 activation permit", () => {
     expect(effectivePrincipalInventorySql).toContain("attribute.attacl");
     expect(effectivePrincipalInventorySql).toContain("routine.proacl");
     expect(effectivePrincipalInventorySql).toContain("database.datacl");
+    expect(effectivePrincipalInventorySql).toContain("acl.is_grantable");
+    expect(effectivePrincipalInventorySql).toContain(
+      "pg_get_userbyid(acl.grantor)",
+    );
+    expect(effectivePrincipalInventorySql).toContain("'roleReachability'");
+    expect(effectivePrincipalInventorySql).toContain("pg_has_role(");
+    expect(effectivePrincipalInventorySql).toContain("'rowSecurity'");
+    expect(effectivePrincipalInventorySql).toContain("policy.polroles");
   });
 
   it("gives the dedicated installer only the permit installation capability", () => {
@@ -193,7 +201,7 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain("activation receipt conflicts with catalog replay");
     expect(
       sql.indexOf("WITH runtime_roles(role_name, role_kind)"),
-    ).toBeLessThan(sql.indexOf("IF receipt.rollout_id IS NOT NULL THEN"));
+    ).toBeLessThan(sql.lastIndexOf("IF receipt.rollout_id IS NOT NULL THEN"));
     expect(sql).toContain("consumed activation permit has no receipt");
     expect(sql).toContain("activation permit consumption raced");
   });
@@ -214,13 +222,13 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain("reviewrouter-effective-principal-policy");
     expect(sql).toContain("unexpected_login");
     expect(sql).toContain("unexpected_effective_role");
-    expect(sql).toContain("membership_facts.set_option");
-    expect(sql).toContain(
-      "current_role.role_inherit AND membership_facts.inherit_option",
-    );
+    expect(sql).toContain("unexpected_effective_permission");
+    expect(sql).toContain("unexpected_ownership");
+    expect(sql).toContain("unexpected_row_security_principal");
+    expect(sql).toContain("principal_login_contract_mismatch");
+    expect(sql).toContain("projected_inventory->'roleReachability'");
     expect(sql).toContain("unexpected_public_permission");
-    expect(sql).toContain("relation.relrowsecurity");
-    expect(sql).toContain("relation.relforcerowsecurity");
+    expect(sql).toContain("projected_inventory->'rowSecurity'");
     expect(sql).toContain("principal evidence invalid or stale");
     expect(sql).toContain("principal evidence activation update raced");
     expect(sql).toContain(
@@ -229,8 +237,14 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain("activationPrincipalEvidenceContract");
     expect(sql).toContain("principalInventorySqlSha256");
     expect(sql).toContain("principalProjectorBodySha256");
+    expect(sql).toContain("principalEvidenceValidatorBodySha256");
     expect(sql).toContain("activateGenerationBodySha256");
     expect(sql).toContain("readActivationReceiptBodySha256");
+    expect(sql).toContain("validate_principal_evidence(");
+    expect(sql).toContain("requested_rollout_id,receipt.transaction_id");
+    expect(sql).toContain(
+      "activation receipt principal evidence invalid or legacy",
+    );
   });
 
   it("emits all four durable digests on direct and reconstructed receipt paths", () => {

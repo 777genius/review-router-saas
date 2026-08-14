@@ -646,11 +646,6 @@ ROLLBACK;`,
       target,
       "GRANT USAGE ON SCHEMA reviewrouter_activation TO reviewrouter_role_bootstrap",
     );
-    const routineBodySha256 = (signature) =>
-      sql(
-        target,
-        `SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('${signature}')`,
-      );
     const activationTrustRoots = activationRoutineBodyTrustRoots();
     const trustedDatabaseIdentity = {
       authorityDatabaseIdentity: {
@@ -680,9 +675,7 @@ ROLLBACK;`,
       activationGuardRoleName: "reviewrouter_activation_receipt_guard",
       installerRoutineBodySha256:
         activationTrustRoots.installerRoutineBodySha256,
-      readerRoutineBodySha256: routineBodySha256(
-        "reviewrouter_activation.read_activation_receipt(text)",
-      ),
+      readerRoutineBodySha256: activationTrustRoots.readerRoutineBodySha256,
     };
     const controlToken = randomBytes(32).toString("hex");
     const providerAuthorityToken = randomBytes(32).toString("hex");

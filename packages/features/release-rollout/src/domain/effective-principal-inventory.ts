@@ -62,6 +62,30 @@ export interface EffectivePrincipalGrant {
   /** Provider-neutral stable identity, e.g. database, schema, table, column or routine. */
   readonly resource: string;
   readonly source: "attribute" | "ownership" | "privilege" | "public";
+  /** PostgreSQL delegation path; absent only in legacy version-1 observations. */
+  readonly grantable?: boolean;
+  /** Catalog-derived grantor; absent only in legacy version-1 observations. */
+  readonly grantor?: string;
+}
+export interface EffectivePrincipalRoleReachability {
+  readonly principal: string;
+  readonly role: string;
+  /** Native pg_has_role(..., 'USAGE') result, including nested membership. */
+  readonly usage: boolean;
+  /** Native pg_has_role(..., 'SET') result, including nested membership. */
+  readonly set: boolean;
+}
+export interface EffectivePrincipalRowSecurity {
+  readonly relation: string;
+  readonly owner: string;
+  readonly enabled: boolean;
+  readonly forced: boolean;
+  readonly policies: readonly Readonly<{
+    name: string;
+    command: string;
+    permissive: boolean;
+    roles: readonly string[];
+  }>[];
 }
 export interface EffectivePrincipalInventory {
   readonly version: 1;
@@ -69,6 +93,10 @@ export interface EffectivePrincipalInventory {
   readonly sessionPrincipal: string;
   readonly roles: readonly EffectivePrincipalRole[];
   readonly memberships: readonly EffectivePrincipalMembership[];
+  /** Present in the server-derived activation projection contract. */
+  readonly roleReachability?: readonly EffectivePrincipalRoleReachability[];
+  /** Present in the server-derived activation projection contract. */
+  readonly rowSecurity?: readonly EffectivePrincipalRowSecurity[];
   readonly grants: readonly EffectivePrincipalGrant[];
 }
 export interface EffectivePrincipalPermission {
@@ -111,6 +139,10 @@ export const ActivationPrincipalViolationKind = Object.freeze({
   UnexpectedEffectiveRole: "unexpected_effective_role",
   UnexpectedPublicPermission: "unexpected_public_permission",
   UnexpectedAdministrativeCapability: "unexpected_administrative_capability",
+  UnexpectedEffectivePermission: "unexpected_effective_permission",
+  UnexpectedOwnership: "unexpected_ownership",
+  UnexpectedRowSecurityPrincipal: "unexpected_row_security_principal",
+  PrincipalLoginContractMismatch: "principal_login_contract_mismatch",
 } as const);
 export type ActivationPrincipalViolationKind =
   (typeof ActivationPrincipalViolationKind)[keyof typeof ActivationPrincipalViolationKind];
@@ -126,12 +158,7 @@ export interface ServerDerivedActivationPrincipalProjection {
     phase: (typeof ActivationPrincipalPolicyPhase)[keyof typeof ActivationPrincipalPolicyPhase];
     allowedPrincipals: readonly string[];
     publicPermissionKinds: readonly PrincipalCapability[];
-    rowSecurity: readonly Readonly<{
-      relation: string;
-      owner: string;
-      enabled: boolean;
-      forced: boolean;
-    }>[];
+    rowSecurity: readonly EffectivePrincipalRowSecurity[];
     violations: readonly Readonly<{
       kind: ActivationPrincipalViolationKind;
       principal: string;

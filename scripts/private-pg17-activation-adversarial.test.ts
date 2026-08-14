@@ -87,6 +87,8 @@ describePg17("disposable PG17 activation-principal adversarial proof", () => {
           "postgres",
           "--dbname",
           "postgres",
+          "--timeout",
+          "1",
         ]).status === 0
       )
         break;
@@ -110,6 +112,9 @@ CREATE TABLE public._prisma_migrations (
 INSERT INTO public._prisma_migrations VALUES
   ('0001_disposable','sha256:${"a".repeat(64)}',clock_timestamp(),NULL);
 CREATE TABLE public.activation_attack_target (id integer PRIMARY KEY);
+ALTER TABLE public.activation_attack_target OWNER TO reviewrouter_release_migration;
+ALTER SCHEMA public OWNER TO reviewrouter_release_migration;
+GRANT CONNECT ON DATABASE postgres TO reviewrouter_release_migration WITH GRANT OPTION;
 `);
     psql(activationAuthorityProvisioningSql());
     systemIdentifier = psql(
@@ -164,7 +169,8 @@ SELECT reviewrouter_activation.install_activation_permit(
 
   it("rejects an unexpected login with direct CONNECT/table ACL and legacy forged JSON", () => {
     installPermit("direct-acl-attack", 1);
-    psql(`CREATE ROLE rr_unexpected_direct LOGIN;
+    psql("CREATE ROLE rr_unexpected_direct LOGIN;");
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
 GRANT CONNECT ON DATABASE postgres TO rr_unexpected_direct;
 GRANT SELECT ON public.activation_attack_target TO rr_unexpected_direct;`);
     const legacy = docker(
@@ -182,10 +188,9 @@ SELECT reviewrouter_activation.stage_principal_evidence(
   it("rejects nested INHERIT/SET ROLE privilege reachability", () => {
     psql("DROP OWNED BY rr_unexpected_direct; DROP ROLE rr_unexpected_direct;");
     installPermit("membership-attack", 2);
-    psql(`CREATE ROLE rr_unexpected_member LOGIN;
-CREATE ROLE rr_attack_parent NOLOGIN;
+    psql(`CREATE ROLE rr_attack_parent NOLOGIN;
 CREATE ROLE rr_attack_grandparent NOLOGIN;
-GRANT rr_attack_parent TO rr_unexpected_member WITH INHERIT TRUE, SET TRUE;
+GRANT rr_attack_parent TO reviewrouter_api WITH INHERIT TRUE, SET TRUE;
 GRANT rr_attack_grandparent TO rr_attack_parent WITH INHERIT TRUE, SET TRUE;
 GRANT SELECT ON public.activation_attack_target TO rr_attack_grandparent;`);
     rejectedWithoutWrite("membership-attack");
@@ -195,14 +200,62 @@ GRANT SELECT ON public.activation_attack_target TO rr_attack_grandparent;`);
     psql(`DROP OWNED BY rr_attack_grandparent;
 DROP ROLE rr_attack_grandparent;
 DROP ROLE rr_attack_parent;
-DROP ROLE rr_unexpected_member;`);
+`);
     installPermit("public-attack", 3);
-    psql("GRANT SELECT ON public.activation_attack_target TO PUBLIC;");
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+GRANT SELECT ON public.activation_attack_target TO PUBLIC;`);
     rejectedWithoutWrite("public-attack");
-    psql("REVOKE SELECT ON public.activation_attack_target FROM PUBLIC;");
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+REVOKE SELECT ON public.activation_attack_target FROM PUBLIC;`);
     installPermit("ownership-attack", 4);
     psql(`CREATE ROLE rr_unexpected_owner LOGIN;
+GRANT rr_unexpected_owner TO reviewrouter_release_migration WITH SET TRUE;`);
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
 ALTER TABLE public.activation_attack_target OWNER TO rr_unexpected_owner;`);
     rejectedWithoutWrite("ownership-attack");
+  });
+
+  it("fails closed when recovery encounters caller-attested legacy evidence", () => {
+    installPermit("legacy-evidence", 5);
+    const digest = `sha256:${"0".repeat(64)}`;
+    psql(`INSERT INTO reviewrouter_activation.activation_principal_evidence (
+      rollout_id,source_system_identifier,target_system_identifier,postgres_major,
+      expected_commit_sha,migration_checksum,target_deploy_ids,permit_epoch,permit_nonce,
+      before_inventory,before_policy,activated_inventory,activated_policy,
+      before_principal_inventory_sha256,before_principal_policy_sha256,
+      activated_principal_inventory_sha256,activated_principal_policy_sha256,transaction_id
+    ) VALUES (
+      'legacy-evidence','1','${systemIdentifier}',17,'${"b".repeat(40)}',
+      '${migrationChecksum}','["dep-disposable"]'::jsonb,5,
+      '${"5".padStart(32, "0")}',
+      '{"version":1,"forgedClean":true}'::jsonb,
+      '{"version":1,"forgedClean":true}'::jsonb,
+      '{"version":1,"forgedClean":true}'::jsonb,
+      '{"version":1,"forgedClean":true}'::jsonb,
+      '${digest}','${digest}','${digest}','${digest}',1
+    );
+    INSERT INTO reviewrouter_activation.activation_receipt (
+      rollout_id,source_system_identifier,target_system_identifier,postgres_major,
+      expected_commit_sha,migration_checksum,target_deploy_ids,permit_epoch,permit_nonce,
+      canonical_privileges_sha256,catalog_facts_sha256,
+      before_principal_inventory_sha256,before_principal_policy_sha256,
+      activated_principal_inventory_sha256,activated_principal_policy_sha256,
+      first_write_receipt_sha256,transaction_id
+    ) VALUES (
+      'legacy-evidence','1','${systemIdentifier}',17,'${"b".repeat(40)}',
+      '${migrationChecksum}','["dep-disposable"]'::jsonb,5,
+      '${"5".padStart(32, "0")}',
+      '${digest}','${digest}','${digest}','${digest}','${digest}','${digest}',
+      '${digest}',1
+    );`);
+    const rejected = docker(
+      ["exec", "-i", container, "psql", "-U", "postgres", "-d", "postgres"],
+      `SET SESSION AUTHORIZATION reviewrouter_activation_receipt_reader;
+SELECT reviewrouter_activation.read_activation_receipt('legacy-evidence');`,
+    );
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain(
+      "activation principal evidence contract invalid",
+    );
   });
 });
