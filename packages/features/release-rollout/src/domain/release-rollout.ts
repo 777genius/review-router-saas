@@ -923,6 +923,8 @@ function assertStepFacts(
             const provedAt = Date.parse(String(proof.provedAt));
             return (
               proof.runtimeRole !== ["api", "web", "worker"][index] ||
+              proof.databaseRole !==
+                `reviewrouter_${["api", "web", "worker"][index]}` ||
               service.runtimeRole !== ["api", "web", "worker"][index] ||
               typeof service.deployId !== "string" ||
               !/^[a-f0-9]{40,64}$/u.test(
@@ -932,7 +934,10 @@ function assertStepFacts(
               proof.nonce !== facts.nonce ||
               proof.requestedAt !== facts.requestedAt ||
               proof.serviceId !== service.serviceId ||
+              proof.deployId !== service.deployId ||
               proof.deploymentProvenance !== service.deploymentProvenance ||
+              proof.servicePostconditionSha256 !==
+                service.servicePostconditionSha256 ||
               proof.systemIdentifier !== rollout.target.systemIdentifier ||
               proof.releaseCommitSha !== rollout.expectedCommitSha ||
               proof.recoveryWitnessSha256 !== facts.recoveryWitnessSha256 ||

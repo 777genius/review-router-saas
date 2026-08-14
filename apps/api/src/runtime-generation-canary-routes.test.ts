@@ -37,6 +37,9 @@ const prisma = (proofs: unknown[]) =>
   }) as unknown as PrismaClient;
 
 const proofs = ["api", "web", "worker"].map((runtimeRole) => ({
+  nonce: requestBody.nonce,
+  rolloutId: requestBody.rolloutId,
+  requestedAt: new Date(requestBody.requestedAt),
   runtimeRole,
   databaseRole: `reviewrouter_${runtimeRole}`,
   systemIdentifier: "200",
@@ -44,9 +47,13 @@ const proofs = ["api", "web", "worker"].map((runtimeRole) => ({
   releaseCommitSha: commit,
   provedAt: new Date("2026-08-13T00:00:01.000Z"),
   serviceId: `srv-${runtimeRole}`,
+  deployId: `dep-${runtimeRole}`,
   deploymentProvenance: requestBody.serviceFacts.find(
     (item) => item.runtimeRole === runtimeRole,
   )!.deploymentProvenance,
+  servicePostconditionSha256: requestBody.serviceFacts.find(
+    (item) => item.runtimeRole === runtimeRole,
+  )!.servicePostconditionSha256,
 }));
 
 describe("runtime generation canary", () => {
@@ -74,7 +81,10 @@ describe("runtime generation canary", () => {
       runtimeWitnessProofs: proofs.map((proof) => ({
         runtimeRole: proof.runtimeRole,
         recoveryWitnessSha256: witnessSha256,
+        deployId: proof.deployId,
+        servicePostconditionSha256: proof.servicePostconditionSha256,
       })),
+      serviceFacts: requestBody.serviceFacts,
       writeReadRoundTrip: true,
     });
     expect(response.body).not.toContain(token);
@@ -109,4 +119,37 @@ describe("runtime generation canary", () => {
     expect(response.statusCode).toBe(503);
     expect(response.body).not.toContain(witnessSha256);
   });
+
+  it.each([
+    ["deploy ID", { deployId: "dep-forged" }],
+    [
+      "service postcondition",
+      { servicePostconditionSha256: `sha256:${"f".repeat(64)}` },
+    ],
+  ])(
+    "rejects a database proof with a forged %s binding",
+    async (_name, forged) => {
+      const app = Fastify();
+      await registerRuntimeGenerationCanaryRoute(app, {
+        prisma: prisma(
+          proofs.map((proof, index) =>
+            index === 2 ? { ...proof, ...forged } : proof,
+          ),
+        ),
+        tokenSha256,
+        releaseCommitSha: commit,
+        expectedRecoveryWitnessSha256: witnessSha256,
+        rolloutStartedAt: new Date("2026-08-12T23:59:59.000Z"),
+        sleep: async () => undefined,
+        now: () => new Date("2026-08-13T00:00:00.000Z"),
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: "/internal/release-canary",
+        headers: { authorization: `Bearer ${token}` },
+        payload: requestBody,
+      });
+      expect(response.statusCode).toBe(503);
+    },
+  );
 });

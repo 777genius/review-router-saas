@@ -415,7 +415,10 @@ const observe = (step: (typeof steps)[number], index: number) => {
               nonce,
               requestedAt: observedAt,
               serviceId: serviceFacts[index]!.serviceId,
+              deployId: serviceFacts[index]!.deployId,
               deploymentProvenance: serviceFacts[index]!.deploymentProvenance,
+              servicePostconditionSha256:
+                serviceFacts[index]!.servicePostconditionSha256,
               systemIdentifier: "200",
               releaseCommitSha: "d".repeat(40),
             }),

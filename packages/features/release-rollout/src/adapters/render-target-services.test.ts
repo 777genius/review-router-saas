@@ -24,6 +24,13 @@ class RenderTargetServicesAdapter extends ProductionRenderTargetServicesAdapter 
       ...input,
     });
   }
+  withRenderApiKey(apiKey = "render-secret") {
+    this.renderApiKey = apiKey;
+    return this;
+  }
+  hasRenderApiKey() {
+    return this.renderApiKey !== null;
+  }
 }
 
 const recoveryWitness = "w".repeat(64);
@@ -88,6 +95,13 @@ const service = {
     numInstances: 1,
   },
 };
+const canaryEnvironment = [{ key: "DATABASE_URL", value: "redacted" }];
+const canaryService = (runtimeRole: string) => ({
+  ...service,
+  id: `srv-${runtimeRole}`,
+  suspended: "not_suspended" as const,
+  type: runtimeRole === "worker" ? "background_worker" : "web_service",
+});
 const expectedCanaryServices = ["api", "web", "worker"].map((runtimeRole) => ({
   runtimeRole: runtimeRole as "api" | "web" | "worker",
   serviceId: `srv-${runtimeRole}`,
@@ -96,28 +110,10 @@ const expectedCanaryServices = ["api", "web", "worker"].map((runtimeRole) => ({
     kind: "git" as const,
     commitSha: "a".repeat(40),
   },
-  servicePostcondition: {
-    serviceId: `srv-${runtimeRole}`,
-    ownerId: "tea-owner",
-    serviceType: runtimeRole === "worker" ? "background_worker" : "web_service",
-    suspended: false,
-    region: "frankfurt",
-    plan: "starter",
-    runtime: "image" as const,
-    image: `registry.example.test/app@sha256:${"d".repeat(64)}`,
-    repository: null,
-    branch: null,
-    rootDirectory: null,
-    buildCommand: null,
-    startCommand: null,
-    preDeployCommand: "",
-    healthPath: runtimeRole === "worker" ? null : "/health",
-    automaticDeployments: false as const,
-    automaticDeployTrigger: "off" as const,
-    shutdownDelaySeconds: 60,
-    instanceCount: 1,
-    environmentSha256: `sha256:${"e".repeat(64)}`,
-  },
+  servicePostcondition: normalizeRenderServicePostcondition(
+    canaryService(runtimeRole) as never,
+    environmentSha256(canaryEnvironment),
+  ),
 }));
 const deploy = (id: string, status: string) => [
   {
@@ -125,6 +121,25 @@ const deploy = (id: string, status: string) => [
     cursor: null,
   },
 ];
+const finalRenderResponse = (url: string) => {
+  const parsed = new URL(url);
+  const match = parsed.pathname.match(
+    /^\/v1\/services\/(srv-(api|web|worker))(.*)$/u,
+  );
+  if (!match) throw new Error(`unexpected Render URL: ${url}`);
+  const [, serviceId, runtimeRole, suffix] = match;
+  if (suffix === "/env-vars")
+    return json(canaryEnvironment.map((envVar) => ({ envVar, cursor: null })));
+  if (suffix === "/deploys") return json(deploy(`dep-${runtimeRole}`, "live"));
+  if (suffix === `/deploys/dep-${runtimeRole}`)
+    return json({
+      id: `dep-${runtimeRole}`,
+      status: "live",
+      commit: { id: "a".repeat(40) },
+    });
+  if (suffix === "") return json(canaryService(runtimeRole!));
+  throw new Error(`unexpected Render path: ${serviceId}${suffix}`);
+};
 describe("Render target switch and live canary", () => {
   it("patches environment keys and deploys the exact immutable build", async () => {
     const targetUrl =
@@ -293,6 +308,7 @@ describe("Render target switch and live canary", () => {
     await expect(adapter.resumeDeployAndObserve(input)).resolves.toMatchObject({
       facts: [{ serviceId: expected.serviceId, resumed: true }],
     });
+    expect(adapter.hasRenderApiKey()).toBe(true);
     expect(
       fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/resume")),
     ).toHaveLength(1);
@@ -373,7 +389,9 @@ describe("Render target switch and live canary", () => {
   });
 
   it("uses an authenticated unique no-store POST and binds the write/read response", async () => {
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (new URL(url).hostname === "api.render.com")
+        return finalRenderResponse(url);
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       const serviceFacts = body.serviceFacts as Array<Record<string, unknown>>;
       expect(init?.method).toBe("POST");
@@ -408,15 +426,17 @@ describe("Render target switch and live canary", () => {
       fetchImpl,
       async () => undefined,
       () => new Date("2026-08-12T00:00:00.000Z"),
-    ).verifyLiveCanary({
-      url: "https://api.example.test/internal/release-canary",
-      expectedCommitSha: "a".repeat(40),
-      expectedSystemIdentifier: "200",
-      expectedRecoveryWitnessSha256: recoveryWitnessSha256,
-      rolloutId: "rollout-target-1",
-      bearerToken: "canary-secret",
-      expectedServices: expectedCanaryServices,
-    });
+    )
+      .withRenderApiKey()
+      .verifyLiveCanary({
+        url: "https://api.example.test/internal/release-canary",
+        expectedCommitSha: "a".repeat(40),
+        expectedSystemIdentifier: "200",
+        expectedRecoveryWitnessSha256: recoveryWitnessSha256,
+        rolloutId: "rollout-target-1",
+        bearerToken: "canary-secret",
+        expectedServices: expectedCanaryServices,
+      });
     expect(observation.facts).toMatchObject({
       rolloutId: "rollout-target-1",
       databaseSystemIdentifier: "200",
@@ -436,10 +456,26 @@ describe("Render target switch and live canary", () => {
         provedAt: "2026-08-11T23:59:59.999Z",
       }),
     ],
+    [
+      "forged deploy ID",
+      (proof: Record<string, unknown>) => ({
+        ...proof,
+        deployId: "dep-attacker",
+      }),
+    ],
+    [
+      "forged service postcondition",
+      (proof: Record<string, unknown>) => ({
+        ...proof,
+        servicePostconditionSha256: `sha256:${"f".repeat(64)}`,
+      }),
+    ],
   ])(
     "rejects %s reuse for the current canary challenge",
     async (_name, mutate) => {
-      const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+        if (new URL(url).hostname === "api.render.com")
+          return finalRenderResponse(url);
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         const serviceFacts = body.serviceFacts as Array<
           Record<string, unknown>
@@ -477,7 +513,66 @@ describe("Render target switch and live canary", () => {
           fetchImpl,
           async () => undefined,
           () => new Date("2026-08-12T00:00:00.000Z"),
-        ).verifyLiveCanary({
+        )
+          .withRenderApiKey()
+          .verifyLiveCanary({
+            url: "https://api.example.test/internal/release-canary",
+            expectedCommitSha: "a".repeat(40),
+            expectedSystemIdentifier: "200",
+            expectedRecoveryWitnessSha256: recoveryWitnessSha256,
+            rolloutId: "rollout-target-1",
+            bearerToken: "canary-secret",
+            expectedServices: expectedCanaryServices,
+          }),
+      ).rejects.toThrow("render_target_canary_identity_mismatch");
+    },
+  );
+
+  it("rejects a deploy that drifts after all runtime proofs complete", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (new URL(url).hostname === "api.render.com") {
+        const response = finalRenderResponse(url);
+        if (url.endsWith("/services/srv-worker/deploys/dep-worker"))
+          return json({
+            id: "dep-attacker",
+            status: "live",
+            commit: { id: "a".repeat(40) },
+          });
+        return response;
+      }
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const serviceFacts = body.serviceFacts as Array<Record<string, unknown>>;
+      return json(
+        {
+          ...body,
+          commitSha: "a".repeat(40),
+          databaseSystemIdentifier: "200",
+          recoveryWitnessSha256,
+          runtimeWitnessProofs: serviceFacts.map((fact) => ({
+            ...fact,
+            databaseRole: `reviewrouter_${fact.runtimeRole}`,
+            recoveryWitnessSha256,
+            systemIdentifier: "200",
+            releaseCommitSha: "a".repeat(40),
+            nonce: body.nonce,
+            requestedAt: body.requestedAt,
+            provedAt: "2026-08-12T00:00:00.500Z",
+          })),
+          writeReadRoundTrip: true,
+          observedAt: "2026-08-12T00:00:01.000Z",
+        },
+        200,
+        { "cache-control": "private, no-store" },
+      );
+    });
+    await expect(
+      new RenderTargetServicesAdapter(
+        fetchImpl,
+        async () => undefined,
+        () => new Date("2026-08-12T00:00:00.000Z"),
+      )
+        .withRenderApiKey()
+        .verifyLiveCanary({
           url: "https://api.example.test/internal/release-canary",
           expectedCommitSha: "a".repeat(40),
           expectedSystemIdentifier: "200",
@@ -486,9 +581,8 @@ describe("Render target switch and live canary", () => {
           bearerToken: "canary-secret",
           expectedServices: expectedCanaryServices,
         }),
-      ).rejects.toThrow("render_target_canary_identity_mismatch");
-    },
-  );
+    ).rejects.toThrow("render_target_canary_final_observation_mismatch");
+  });
 
   it("does not expose target canary bodies, cookies, or bearer tokens", async () => {
     const error = await new RenderTargetServicesAdapter(
@@ -499,6 +593,7 @@ describe("Render target switch and live canary", () => {
         }),
       ),
     )
+      .withRenderApiKey()
       .verifyLiveCanary({
         url: "https://api.example.test/internal/release-canary",
         expectedCommitSha: "a".repeat(40),

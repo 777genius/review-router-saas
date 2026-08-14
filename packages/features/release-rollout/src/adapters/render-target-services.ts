@@ -48,6 +48,7 @@ const active = new Set([
 ]);
 export class RenderTargetServicesAdapter {
   private readonly consumedCanaryNonces = new Set<string>();
+  protected renderApiKey: string | null = null;
   constructor(
     private readonly fetchImpl: RenderFetch = fetch,
     private readonly sleep: (milliseconds: number) => Promise<void> = (
@@ -254,6 +255,7 @@ export class RenderTargetServicesAdapter {
         servicePostcondition,
       });
     }
+    this.renderApiKey = input.apiKey;
     return {
       step: RolloutStep.StageTargetServices,
       observedAt: new Date().toISOString(),
@@ -364,6 +366,7 @@ export class RenderTargetServicesAdapter {
         servicePostcondition: finalPostcondition,
       });
     }
+    this.renderApiKey = input.apiKey;
     return {
       step: RolloutStep.ResumeTargetServices,
       observedAt: new Date().toISOString(),
@@ -394,6 +397,7 @@ export class RenderTargetServicesAdapter {
     if (
       !input.url.startsWith("https://") ||
       !input.bearerToken ||
+      !this.renderApiKey ||
       input.expectedServices.length !== 3 ||
       input.expectedServices.map((item) => item.runtimeRole).join("\0") !==
         "api\0web\0worker" ||
@@ -472,8 +476,11 @@ export class RenderTargetServicesAdapter {
           proof.systemIdentifier !== input.expectedSystemIdentifier ||
           proof.releaseCommitSha !== input.expectedCommitSha ||
           proof.serviceId !== serviceFacts[index]?.serviceId ||
+          proof.deployId !== serviceFacts[index]?.deployId ||
           proof.deploymentProvenance !==
             serviceFacts[index]?.deploymentProvenance ||
+          proof.servicePostconditionSha256 !==
+            serviceFacts[index]?.servicePostconditionSha256 ||
           proof.nonce !== nonce ||
           proof.requestedAt !== requestedAt ||
           !Number.isFinite(Date.parse(String(proof.provedAt))) ||
@@ -500,6 +507,52 @@ export class RenderTargetServicesAdapter {
       Date.parse(value.observedAt) > this.now().getTime() + 30_000
     )
       throw new Error("render_target_canary_identity_mismatch");
+    const render = new RenderApiAdapter(this.renderApiKey, this.fetchImpl);
+    const finalServiceFacts = await Promise.all(
+      input.expectedServices.map(async (expected) => {
+        const [service, environment, deploy, deploys] = await Promise.all([
+          render.getService(expected.serviceId),
+          render.listAllEnv(expected.serviceId),
+          render.getDeploy(expected.serviceId, expected.deployId),
+          render.listAllDeploys(expected.serviceId),
+        ]);
+        const postcondition = normalizeRenderServicePostcondition(
+          service,
+          environmentSha256(environment),
+        );
+        const latest = deploys.find((item) => item.status === "live");
+        if (
+          service.id !== expected.serviceId ||
+          deploy.id !== expected.deployId ||
+          deploy.status !== "live" ||
+          latest?.id !== expected.deployId ||
+          deploys.some((item) => active.has(item.status)) ||
+          (expected.provenance.kind === "git"
+            ? deploy.commit?.id !== expected.provenance.commitSha ||
+              deploy.image !== undefined
+            : deploy.image?.sha !== expected.provenance.imageSha ||
+              deploy.commit !== undefined) ||
+          !sameNormalizedServicePostcondition(
+            postcondition,
+            expected.servicePostcondition,
+          )
+        )
+          throw new Error("render_target_canary_final_observation_mismatch");
+        return {
+          runtimeRole: expected.runtimeRole,
+          serviceId: service.id,
+          deployId: deploy.id,
+          deploymentProvenance:
+            expected.provenance.kind === "git"
+              ? deploy.commit!.id
+              : deploy.image!.sha.replace(/^sha256:/u, ""),
+          servicePostconditionSha256:
+            normalizedServicePostconditionSha256(postcondition),
+        };
+      }),
+    );
+    if (JSON.stringify(finalServiceFacts) !== JSON.stringify(serviceFacts))
+      throw new Error("render_target_canary_final_observation_mismatch");
     this.consumedCanaryNonces.add(nonce);
     return {
       step: RolloutStep.VerifyLiveCanary,
@@ -515,7 +568,7 @@ export class RenderTargetServicesAdapter {
         requestedAt,
         observedAt: value.observedAt,
         expectedGeneration: value.expectedGeneration,
-        serviceFacts,
+        serviceFacts: finalServiceFacts,
       },
     };
   }

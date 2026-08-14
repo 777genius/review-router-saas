@@ -263,7 +263,13 @@ are terminal. After activation, the second runner is also cleanup-proven. Only
 then may the hosted finalizer use the service-suspension credential to resume
 the exact target services, observe their live deploys, execute the unique
 authenticated no-store POST write/read canary, and assemble/verify trusted
-evidence. The evidence binds the
+evidence. Each API, web, and worker database-role proof is challenge-bound to
+its service ID, exact Render deploy ID, immutable provenance, and normalized
+service-postcondition digest. After all three proofs, the finalizer performs a
+fresh Render observation and fails if the live deploy identity, provenance, or
+postcondition moved. The trusted `liveCanarySha256` must equal the
+`VerifyLiveCanary` receipt's observation digest; a shape-valid replacement
+digest is not accepted. The evidence also binds the
 protected-environment receipt, rollout/SHA/run/job/attempt/deploy identities,
 both generations, external backup witness, receipt chain, activation boundary,
 both runner lifecycles, resumed deploys, and live canary.

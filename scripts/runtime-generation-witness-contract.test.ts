@@ -41,9 +41,20 @@ describe("runtime generation witness database contract", () => {
       "deploy/render-runtime/entrypoint.sh",
       "utf8",
     );
+    const apiRoute = readFileSync(
+      "apps/api/src/runtime-generation-canary-routes.ts",
+      "utf8",
+    );
     expect(migration).toContain('PRIMARY KEY ("nonce", "runtimeRole")');
     expect(migration).toContain('challenge."expiresAt" >= clock_timestamp()');
     expect(migration).toContain("item->>'servicePostconditionSha256'");
+    expect(migration).toContain('"deployId" TEXT NOT NULL');
+    expect(migration).toContain('"servicePostconditionSha256" TEXT NOT NULL');
+    expect(migration).toContain("expected_service->>'deployId'");
+    expect(migration).toContain('challenge."requestedAt"');
+    expect(migration).toContain("expected_service->>'deploymentProvenance'");
+    expect(apiRoute).toContain("serviceFacts: observedServiceFacts");
+    expect(apiRoute).not.toContain("serviceFacts: body.data.serviceFacts");
     expect(migration).toContain("current_deployment_provenance");
     expect(entrypoint).toContain("respond-runtime-canary-challenges.mjs");
 

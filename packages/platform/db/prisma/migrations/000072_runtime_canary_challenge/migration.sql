@@ -14,8 +14,10 @@ CREATE TABLE public."RuntimeCanaryChallengeProof" (
   "nonce" TEXT NOT NULL REFERENCES public."RuntimeCanaryChallenge"("nonce") ON DELETE CASCADE,
   "runtimeRole" TEXT NOT NULL CHECK ("runtimeRole" IN ('api','web','worker')),
   "databaseRole" TEXT NOT NULL,
-  "serviceId" TEXT NOT NULL,
-  "deploymentProvenance" TEXT NOT NULL,
+  "serviceId" TEXT NOT NULL CHECK ("serviceId" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$'),
+  "deployId" TEXT NOT NULL CHECK ("deployId" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$'),
+  "deploymentProvenance" TEXT NOT NULL CHECK ("deploymentProvenance" ~ '^[a-f0-9]{40,64}$'),
+  "servicePostconditionSha256" TEXT NOT NULL CHECK ("servicePostconditionSha256" ~ '^sha256:[a-f0-9]{64}$'),
   "systemIdentifier" TEXT NOT NULL,
   "recoveryWitnessSha256" TEXT NOT NULL,
   "releaseCommitSha" TEXT NOT NULL,
@@ -44,11 +46,13 @@ BEGIN
      OR (SELECT count(DISTINCT item->>'runtimeRole') FROM jsonb_array_elements(requested_service_facts) item) <> 3
      OR EXISTS (
        SELECT 1 FROM jsonb_array_elements(requested_service_facts) item
-       WHERE item->>'runtimeRole' NOT IN ('api','web','worker')
-          OR item->>'serviceId' IS NULL
-          OR item->>'deployId' IS NULL
-          OR item->>'deploymentProvenance' IS NULL
-          OR item->>'servicePostconditionSha256' IS NULL
+       WHERE jsonb_typeof(item) <> 'object'
+          OR (SELECT count(*) FROM jsonb_object_keys(item)) <> 5
+          OR NOT item ?& ARRAY['runtimeRole','serviceId','deployId','deploymentProvenance','servicePostconditionSha256']
+          OR item->>'runtimeRole' NOT IN ('api','web','worker')
+          OR item->>'serviceId' !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$'
+          OR item->>'deployId' !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$'
+          OR item->>'deploymentProvenance' !~ '^[a-f0-9]{40,64}$'
           OR item->>'servicePostconditionSha256' !~ '^sha256:[a-f0-9]{64}$'
      ) THEN
     RAISE EXCEPTION 'runtime canary challenge invalid';
@@ -75,6 +79,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $fn$
 DECLARE selected public."RuntimeCanaryChallenge"%ROWTYPE;
 DECLARE expected_role TEXT := 'reviewrouter_' || current_runtime_role;
 DECLARE binding JSONB;
+DECLARE expected_service JSONB;
 BEGIN
   IF session_user <> expected_role THEN
     RAISE EXCEPTION 'runtime canary responder role mismatch';
@@ -98,6 +103,16 @@ BEGIN
     )
   ORDER BY challenge."requestedAt" DESC LIMIT 1;
   IF selected."nonce" IS NULL THEN RETURN NULL; END IF;
+  SELECT item INTO expected_service
+  FROM jsonb_array_elements(selected."serviceFacts") item
+  WHERE item->>'runtimeRole' = current_runtime_role
+    AND item->>'serviceId' = current_service_id
+    AND item->>'deploymentProvenance' = current_deployment_provenance;
+  IF expected_service IS NULL
+     OR expected_service->>'deployId' IS NULL
+     OR expected_service->>'servicePostconditionSha256' !~ '^sha256:[a-f0-9]{64}$' THEN
+    RAISE EXCEPTION 'runtime canary service binding mismatch';
+  END IF;
   SELECT shobj_description(oid, 'pg_database')::jsonb INTO binding
   FROM pg_database WHERE datname = current_database();
   IF binding IS NULL
@@ -109,11 +124,14 @@ BEGIN
     RAISE EXCEPTION 'runtime canary generation binding mismatch';
   END IF;
   INSERT INTO public."RuntimeCanaryChallengeProof" (
-    "nonce","runtimeRole","databaseRole","serviceId","deploymentProvenance",
-    "systemIdentifier","recoveryWitnessSha256","releaseCommitSha"
+    "nonce","runtimeRole","databaseRole","serviceId","deployId",
+    "deploymentProvenance","servicePostconditionSha256","systemIdentifier",
+    "recoveryWitnessSha256","releaseCommitSha"
   ) VALUES (
-    selected."nonce", current_runtime_role, session_user, current_service_id,
-    current_deployment_provenance, selected."systemIdentifier",
+    selected."nonce", current_runtime_role, session_user,
+    expected_service->>'serviceId', expected_service->>'deployId',
+    expected_service->>'deploymentProvenance',
+    expected_service->>'servicePostconditionSha256', selected."systemIdentifier",
     current_recovery_witness_sha256, current_release_commit_sha
   );
   RETURN selected."nonce";
@@ -122,8 +140,10 @@ END $fn$;
 CREATE OR REPLACE FUNCTION public.reviewrouter_read_runtime_canary_challenge_proofs(
   requested_nonce TEXT
 ) RETURNS TABLE (
+  "nonce" TEXT, "rolloutId" TEXT, "requestedAt" TIMESTAMPTZ,
   "runtimeRole" TEXT, "databaseRole" TEXT, "serviceId" TEXT,
-  "deploymentProvenance" TEXT, "systemIdentifier" TEXT,
+  "deployId" TEXT, "deploymentProvenance" TEXT,
+  "servicePostconditionSha256" TEXT, "systemIdentifier" TEXT,
   "recoveryWitnessSha256" TEXT, "releaseCommitSha" TEXT, "provedAt" TIMESTAMPTZ
 )
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $fn$
@@ -131,10 +151,13 @@ BEGIN
   IF session_user <> 'reviewrouter_api' THEN
     RAISE EXCEPTION 'runtime canary proof reader role mismatch';
   END IF;
-  RETURN QUERY SELECT proof."runtimeRole", proof."databaseRole", proof."serviceId",
-    proof."deploymentProvenance", proof."systemIdentifier",
+  RETURN QUERY SELECT proof."nonce", challenge."rolloutId", challenge."requestedAt",
+    proof."runtimeRole", proof."databaseRole", proof."serviceId",
+    proof."deployId", proof."deploymentProvenance", proof."servicePostconditionSha256",
+    proof."systemIdentifier",
     proof."recoveryWitnessSha256", proof."releaseCommitSha", proof."provedAt"
   FROM public."RuntimeCanaryChallengeProof" proof
+  INNER JOIN public."RuntimeCanaryChallenge" challenge ON challenge."nonce" = proof."nonce"
   WHERE proof."nonce" = requested_nonce ORDER BY proof."runtimeRole";
 END $fn$;
 

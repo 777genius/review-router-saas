@@ -511,6 +511,19 @@ describe("trusted post-cleanup evidence", () => {
             ...evidence.activation,
             activatedCatalogPolicySha256: `sha256:${"f".repeat(64)}`,
           },
+  it("rejects a rehashed live-canary digest not observed by its receipt", () => {
+    const {
+      schemaVersion: _schemaVersion,
+      evidenceSha256: _hash,
+      ...unsigned
+    } = create();
+    void _schemaVersion;
+    void _hash;
+    expect(() =>
+      assembleTrustedRolloutEvidence(
+        {
+          ...unsigned,
+          liveCanarySha256: `sha256:${"b".repeat(64)}`,
         },
         trustedImagePolicy,
         trustedWitnessPolicy,
@@ -536,6 +549,7 @@ describe("trusted post-cleanup evidence", () => {
         trustedWitnessPolicy,
       ),
     ).toThrow("trusted_rollout_evidence_release_witness_invalid");
+    ).toThrow("trusted_rollout_evidence_live_canary_binding_invalid");
   });
   it("rejects legacy schema 4 evidence instead of implicitly upgrading v1 provenance", () => {
     expect(() =>
@@ -598,6 +612,13 @@ describe("trusted post-cleanup evidence", () => {
       (v: TrustedRolloutEvidence) => ({
         ...v,
         protectedEnvironmentPreflightSha256: `sha256:${"b".repeat(64)}`,
+      }),
+    ],
+    [
+      "live canary digest substitution",
+      (v: TrustedRolloutEvidence) => ({
+        ...v,
+        liveCanarySha256: `sha256:${"b".repeat(64)}`,
       }),
     ],
     [

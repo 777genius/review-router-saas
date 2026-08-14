@@ -15,8 +15,8 @@ const bodySchema = z.strictObject({
     .array(
       z.strictObject({
         runtimeRole: z.enum(["api", "web", "worker"]),
-        serviceId: z.string().min(1),
-        deployId: z.string().min(1),
+        serviceId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u),
+        deployId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u),
         deploymentProvenance: z.string().regex(/^[a-f0-9]{40,64}$/u),
         servicePostconditionSha256: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
       }),
@@ -24,6 +24,9 @@ const bodySchema = z.strictObject({
     .length(3),
 });
 type ProofRow = {
+  nonce: string;
+  rolloutId: string;
+  requestedAt: Date;
   runtimeRole: string;
   databaseRole: string;
   systemIdentifier: string;
@@ -31,7 +34,9 @@ type ProofRow = {
   releaseCommitSha: string;
   provedAt: Date;
   serviceId: string;
+  deployId: string;
   deploymentProvenance: string;
+  servicePostconditionSha256: string;
 };
 
 export async function registerRuntimeGenerationCanaryRoute(
@@ -82,6 +87,7 @@ export async function registerRuntimeGenerationCanaryRoute(
           input.expectedRecoveryWitnessSha256 ||
         requestedAt < now - 10_000 ||
         requestedAt > now + 5_000 ||
+        requestedAt < input.rolloutStartedAt.getTime() ||
         body.data.serviceFacts.map((item) => item.runtimeRole).join("\0") !==
           "api\0web\0worker"
       )
@@ -140,14 +146,21 @@ export async function registerRuntimeGenerationCanaryRoute(
         proofs.some(
           (proof, index) =>
             proof.runtimeRole !== roles[index] ||
+            proof.nonce !== body.data.nonce ||
+            proof.rolloutId !== body.data.rolloutId ||
+            !(proof.requestedAt instanceof Date) ||
+            proof.requestedAt.getTime() !== requestedAt ||
             proof.databaseRole !== `reviewrouter_${proof.runtimeRole}` ||
             proof.systemIdentifier !== identity.systemIdentifier ||
             proof.recoveryWitnessSha256 !==
               input.expectedRecoveryWitnessSha256 ||
             proof.releaseCommitSha !== input.releaseCommitSha ||
             proof.serviceId !== body.data.serviceFacts[index]?.serviceId ||
+            proof.deployId !== body.data.serviceFacts[index]?.deployId ||
             proof.deploymentProvenance !==
               body.data.serviceFacts[index]?.deploymentProvenance ||
+            proof.servicePostconditionSha256 !==
+              body.data.serviceFacts[index]?.servicePostconditionSha256 ||
             !(proof.provedAt instanceof Date) ||
             proof.provedAt.getTime() < requestedAt ||
             proof.provedAt.getTime() > requestedAt + 10_000,
@@ -157,17 +170,24 @@ export async function registerRuntimeGenerationCanaryRoute(
           new Error("runtime_generation_canary_proof_invalid"),
           { statusCode: 503 },
         );
+      const observedServiceFacts = proofs.map((proof) => ({
+        runtimeRole: proof.runtimeRole,
+        serviceId: proof.serviceId,
+        deployId: proof.deployId,
+        deploymentProvenance: proof.deploymentProvenance,
+        servicePostconditionSha256: proof.servicePostconditionSha256,
+      }));
       return reply
         .header("Cache-Control", "private, no-store")
         .code(200)
         .send({
-          rolloutId: body.data.rolloutId,
-          nonce: body.data.nonce,
-          requestedAt: body.data.requestedAt,
+          rolloutId: proofs[0]!.rolloutId,
+          nonce: proofs[0]!.nonce,
+          requestedAt: proofs[0]!.requestedAt.toISOString(),
           observedAt: new Date().toISOString(),
-          commitSha: input.releaseCommitSha,
-          databaseSystemIdentifier: identity.systemIdentifier,
-          recoveryWitnessSha256: input.expectedRecoveryWitnessSha256,
+          commitSha: proofs[0]!.releaseCommitSha,
+          databaseSystemIdentifier: proofs[0]!.systemIdentifier,
+          recoveryWitnessSha256: proofs[0]!.recoveryWitnessSha256,
           runtimeWitnessProofs: proofs.map((proof) => ({
             runtimeRole: proof.runtimeRole,
             databaseRole: proof.databaseRole,
@@ -176,12 +196,17 @@ export async function registerRuntimeGenerationCanaryRoute(
             releaseCommitSha: proof.releaseCommitSha,
             provedAt: proof.provedAt.toISOString(),
             serviceId: proof.serviceId,
+            deployId: proof.deployId,
             deploymentProvenance: proof.deploymentProvenance,
-            nonce: body.data.nonce,
-            requestedAt: body.data.requestedAt,
+            servicePostconditionSha256: proof.servicePostconditionSha256,
+            nonce: proof.nonce,
+            requestedAt: proof.requestedAt.toISOString(),
           })),
-          expectedGeneration: body.data.expectedGeneration,
-          serviceFacts: body.data.serviceFacts,
+          expectedGeneration: {
+            systemIdentifier: proofs[0]!.systemIdentifier,
+            recoveryWitnessSha256: proofs[0]!.recoveryWitnessSha256,
+          },
+          serviceFacts: observedServiceFacts,
           writeReadRoundTrip: true,
         });
     },

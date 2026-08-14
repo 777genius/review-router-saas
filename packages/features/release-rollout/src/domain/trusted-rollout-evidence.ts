@@ -477,6 +477,12 @@ export function assertTrustedRolloutEvidence(
     !digest.test(value.activation.activatedPrincipalPolicySha256)
   )
     throw new Error("trusted_rollout_evidence_activation_invalid");
+  if (
+    value.receipts.find(
+      (receipt) => receipt.step === RolloutStep.VerifyLiveCanary,
+    )?.observationSha256 !== value.liveCanarySha256
+  )
+    throw new Error("trusted_rollout_evidence_live_canary_binding_invalid");
   value.runners.forEach((runner, index) => {
     if (
       runner.organization !== value.execution.organization ||

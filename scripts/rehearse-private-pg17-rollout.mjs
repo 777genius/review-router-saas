@@ -2053,7 +2053,9 @@ COMMIT;
               (contract) =>
                 stagedServices.get(contract.serviceId).provenance.deploymentId,
             ),
-            liveCanarySha256: digest,
+            liveCanarySha256: current.receipts.find(
+              (receipt) => receipt.step === RolloutStep.VerifyLiveCanary,
+            ).observationSha256,
             releaseWitness,
             cleanups: [
               {
