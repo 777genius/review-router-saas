@@ -535,36 +535,54 @@ realDescribe("release authority exact catalog readiness", () => {
     },
   );
 
-  it("rejects mixed, partial, and mismatched migration history", async () => {
-    if (!admin) throw new Error("real_postgres_test_unconfigured");
-    const cases = [
+  it.each([
+    [
+      "legacy-equivalent first migration",
       "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b', byte_variant='legacy_equivalent' WHERE position=1",
+    ],
+    [
+      "missing migration 11",
       "DELETE FROM release_authority.schema_migration WHERE position=11",
+    ],
+    [
+      "mismatched migration 11",
       "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=11",
+    ],
+    [
+      "missing migration 12",
       "DELETE FROM release_authority.schema_migration WHERE position=12",
+    ],
+    [
+      "mismatched migration 12",
       "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=12",
+    ],
+    [
+      "missing migration 13",
       "DELETE FROM release_authority.schema_migration WHERE position=13",
+    ],
+    [
+      "mismatched migration 13",
       "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=13",
-    ];
-    for (const mutate of cases) {
+    ],
+  ] as const)("rejects %s history", async (_case, mutate) => {
+    if (!admin) throw new Error("real_postgres_test_unconfigured");
+    await admin.$executeRawUnsafe(
+      "CREATE TABLE public.readiness_history_backup AS TABLE release_authority.schema_migration",
+    );
+    await admin.$executeRawUnsafe(mutate);
+    try {
+      const observed = await readiness();
+      expect(releaseAuthoritySchemaIsReady(observed)).toBe(false);
+    } finally {
       await admin.$executeRawUnsafe(
-        "CREATE TABLE public.readiness_history_backup AS TABLE release_authority.schema_migration",
+        "TRUNCATE release_authority.schema_migration",
       );
-      await admin.$executeRawUnsafe(mutate);
-      try {
-        const observed = await readiness();
-        expect(releaseAuthoritySchemaIsReady(observed)).toBe(false);
-      } finally {
-        await admin.$executeRawUnsafe(
-          "TRUNCATE release_authority.schema_migration",
-        );
-        await admin.$executeRawUnsafe(
-          "INSERT INTO release_authority.schema_migration SELECT * FROM public.readiness_history_backup",
-        );
-        await admin.$executeRawUnsafe(
-          "DROP TABLE public.readiness_history_backup",
-        );
-      }
+      await admin.$executeRawUnsafe(
+        "INSERT INTO release_authority.schema_migration SELECT * FROM public.readiness_history_backup",
+      );
+      await admin.$executeRawUnsafe(
+        "DROP TABLE public.readiness_history_backup",
+      );
     }
   });
 
