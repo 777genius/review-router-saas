@@ -85,6 +85,13 @@ describe("PostgreSQL secret and connection boundary", () => {
 });
 
 describe("PostgreSQL effective-principal catalog adapter", () => {
+  it("projects role attributes through the roles CTE alias", () => {
+    expect(effectivePrincipalInventorySql).toContain(
+      "SELECT role.name, capability, resource, 'attribute', true, role.name",
+    );
+    expect(effectivePrincipalInventorySql).not.toContain("role.rolname");
+  });
+
   it("enumerates login attributes, membership options, ownership, and every write surface", () => {
     for (const token of [
       "rolcanlogin",

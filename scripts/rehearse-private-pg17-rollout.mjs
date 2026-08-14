@@ -418,6 +418,17 @@ export async function executeDisposableRehearsal(
     const baselinePrincipalPolicy = draftEffectivePrincipalPolicy(
       baselinePrincipalInventory,
     );
+    const targetPrincipalInventory = JSON.parse(
+      sql(target, effectivePrincipalInventorySql),
+    );
+    const targetPrincipalDecision = evaluateEffectivePrincipalInventory(
+      targetPrincipalInventory,
+      draftEffectivePrincipalPolicy(targetPrincipalInventory),
+    );
+    if (!targetPrincipalDecision.allowed)
+      throw new Error(
+        "private_pg17_rehearsal_target_principal_inventory_failed",
+      );
     const attackedPrincipalInventory = JSON.parse(
       sql(
         source,

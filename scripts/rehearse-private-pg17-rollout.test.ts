@@ -343,4 +343,16 @@ describe("disposable dual-version rehearsal", () => {
     expect(source).not.toContain("GITHUB_TOKEN");
     expect(source).toContain("JSON.stringify(safe)");
   });
+  it("executes the canonical effective-principal projection on PG16 and PG17", () => {
+    const source = readFileSync(
+      "scripts/rehearse-private-pg17-rollout.mjs",
+      "utf8",
+    );
+
+    expect(source).toContain("sql(source, effectivePrincipalInventorySql)");
+    expect(source).toContain("sql(target, effectivePrincipalInventorySql)");
+    expect(source).toContain(
+      "private_pg17_rehearsal_target_principal_inventory_failed",
+    );
+  });
 });

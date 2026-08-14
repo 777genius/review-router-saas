@@ -27,7 +27,7 @@ roles AS (
   WHERE namespace.nspname NOT IN ('pg_catalog','information_schema')
     AND namespace.nspname !~ '^pg_toast'
 ), grants(principal, capability, resource, source, grantable, grantor) AS (
-  SELECT role.rolname, capability, resource, 'attribute', true, role.rolname
+  SELECT role.name, capability, resource, 'attribute', true, role.name
   FROM roles role CROSS JOIN LATERAL (VALUES
     ('admin:superuser',role.superuser), ('admin:bypassrls',role."bypassRls"),
     ('admin:replication',role.replication), ('admin:createdb',role."createDatabase"),
