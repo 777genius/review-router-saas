@@ -799,20 +799,73 @@ describeDatabase("Codex rotating setup serialization", () => {
           WHERE "id" = ${prepared.claimId}
         `,
     ).rejects.toThrow();
+    const reseedRetryRequestId = `recovery:${randomUUID()}`;
+    const reseedRetryRecovery = await recoverCodexRotatingSetup(
+      {
+        workspaceId,
+        repositoryId: recoveryRepositoryId,
+        githubRepositoryId: recoveryGithubRepositoryId,
+        recoveryRequestId: reseedRetryRequestId,
+        actor: "user:github:operator-retry",
+        acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
+        now: new Date("2036-08-09T12:00:00.000Z"),
+      },
+      { recovery: recoveryAdapter },
+    );
+    expect(reseedRetryRecovery).toMatchObject({ status: "recovered" });
     await expect(
-      recoverCodexRotatingSetup(
-        {
-          workspaceId,
-          repositoryId: recoveryRepositoryId,
-          githubRepositoryId: recoveryGithubRepositoryId,
-          recoveryRequestId: `recovery:${randomUUID()}`,
-          actor: "user:github:operator",
-          acknowledgement: codexRotatingSetupRecoveryAcknowledgement,
-          now: new Date("2036-08-09T12:00:00.000Z"),
+      prisma.codexOAuthSetupRecoveryRequest.findMany({
+        where: {
+          providerInstanceRowId: provider.id,
+          recoveryRequestId: { in: [recoveryRequestId, reseedRetryRequestId] },
         },
-        { recovery: recoveryAdapter },
-      ),
-    ).rejects.toThrow("codex_rotating_setup_recovery_request_conflict");
+        orderBy: { requestedAt: "asc" },
+        select: { recoveryRequestId: true, mode: true, state: true },
+      }),
+    ).resolves.toEqual([
+      {
+        recoveryRequestId,
+        mode: "forced_reseed",
+        state: "superseded",
+      },
+      {
+        recoveryRequestId: reseedRetryRequestId,
+        mode: "forced_reseed",
+        state: "active",
+      },
+    ]);
+    await expect(
+      prisma.codexOAuthSetupManifest.findUniqueOrThrow({
+        where: { id: recoveryLedger[0]!.latestManifestId! },
+        select: { status: true, payloadClaimedAt: true },
+      }),
+    ).resolves.toEqual({ status: "recovered", payloadClaimedAt: null });
+    const reseedRetrySetup = await issueCodexRotatingSetupCommand({
+      prisma,
+      workspaceId,
+      repositoryId: recoveryRepositoryId,
+      repositoryFullName: recoveryFullName,
+      githubRepositoryId: recoveryGithubRepositoryId,
+      installer,
+      databaseRecoveryWitness: "w".repeat(43),
+      installerArguments: ["--force-reseed"],
+      recovery: {
+        requestId: reseedRetryRequestId,
+        epoch: reseedRetryRecovery.recoveryEpoch,
+      },
+      setupManifestUrl:
+        "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+      now: new Date("2036-08-09T12:00:00.500Z"),
+    });
+    expect(reseedRetrySetup.command).toContain("--force-reseed");
+    const reseedRetryManifest =
+      await prisma.codexOAuthSetupRecoveryRequest.findFirstOrThrow({
+        where: {
+          providerInstanceRowId: provider.id,
+          recoveryRequestId: reseedRetryRequestId,
+        },
+        select: { latestManifestId: true },
+      });
     await expect(
       recoveryAdapter.inspectStatus({
         workspaceId,
@@ -820,7 +873,7 @@ describeDatabase("Codex rotating setup serialization", () => {
         issuanceEnabled: true,
       }),
     ).resolves.toEqual({
-      status: "recovery_required",
+      status: "ready",
     });
 
     const accountSwitchRequestId = `recovery:${randomUUID()}`;
@@ -843,7 +896,7 @@ describeDatabase("Codex rotating setup serialization", () => {
         where: {
           providerInstanceRowId: provider.id,
           recoveryRequestId: {
-            in: [recoveryRequestId, accountSwitchRequestId],
+            in: [reseedRetryRequestId, accountSwitchRequestId],
           },
         },
         orderBy: { requestedAt: "asc" },
@@ -855,7 +908,7 @@ describeDatabase("Codex rotating setup serialization", () => {
       }),
     ).resolves.toEqual([
       {
-        recoveryRequestId,
+        recoveryRequestId: reseedRetryRequestId,
         mode: "forced_reseed",
         state: "superseded",
       },
@@ -867,7 +920,7 @@ describeDatabase("Codex rotating setup serialization", () => {
     ]);
     await expect(
       prisma.codexOAuthSetupManifest.findUniqueOrThrow({
-        where: { id: recoveryLedger[0]!.latestManifestId! },
+        where: { id: reseedRetryManifest.latestManifestId! },
         select: { status: true, payloadClaimedAt: true },
       }),
     ).resolves.toEqual({ status: "recovered", payloadClaimedAt: null });

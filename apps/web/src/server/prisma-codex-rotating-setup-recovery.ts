@@ -246,8 +246,7 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         );
         const maySupersedeActiveOtherRequest =
           activeOtherRequest !== null &&
-          input.accountSwitch &&
-          (await canSupersedeUnclaimedRecoveryForAccountSwitch(tx, {
+          (await canSupersedeUnclaimedRecoveryRequest(tx, {
             providerInstanceRowId: provider.id,
             recoveryRequestRowId: activeOtherRequest.id,
             currentWitness,
@@ -359,7 +358,7 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         }
 
         if (activeOtherRequest) {
-          await supersedeUnclaimedRecoveryForAccountSwitch(tx, {
+          await supersedeUnclaimedRecoveryRequest(tx, {
             providerInstanceRowId: provider.id,
             recoveryRequestRowId: activeOtherRequest.id,
             currentWitness,
@@ -522,7 +521,7 @@ async function findOtherActiveRecoveryRequest(
   return rows[0] ?? null;
 }
 
-export async function canSupersedeUnclaimedRecoveryForAccountSwitch(
+export async function canSupersedeUnclaimedRecoveryRequest(
   tx: Prisma.TransactionClient,
   input: {
     readonly providerInstanceRowId: string;
@@ -560,7 +559,7 @@ export async function canSupersedeUnclaimedRecoveryForAccountSwitch(
   return rows[0]?.allowed === true;
 }
 
-export async function supersedeUnclaimedRecoveryForAccountSwitch(
+export async function supersedeUnclaimedRecoveryRequest(
   tx: Prisma.TransactionClient,
   input: {
     readonly providerInstanceRowId: string;
