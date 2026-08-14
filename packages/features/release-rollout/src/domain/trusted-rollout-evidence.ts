@@ -503,20 +503,22 @@ export function assertTrustedRolloutEvidence(
         ),
       )
     : undefined;
-  let witnessSignatureValid = false;
-  try {
-    const publicKey = createPublicKey(trustedWitnessPolicy.publicKeyPem);
-    witnessSignatureValid =
-      publicKey.asymmetricKeyType === "ed25519" &&
-      verify(
-        null,
-        Buffer.from(witness.bindingSha256, "utf8"),
-        publicKey,
-        Buffer.from(witness.signature.value, "base64"),
+  const witnessSignatureValid = (() => {
+    try {
+      const publicKey = createPublicKey(trustedWitnessPolicy.publicKeyPem);
+      return (
+        publicKey.asymmetricKeyType === "ed25519" &&
+        verify(
+          null,
+          Buffer.from(witness.bindingSha256, "utf8"),
+          publicKey,
+          Buffer.from(witness.signature.value, "base64"),
+        )
       );
-  } catch {
-    witnessSignatureValid = false;
-  }
+    } catch {
+      return false;
+    }
+  })();
   if (
     !witness ||
     !/^[A-Za-z0-9._:-]{1,128}$/u.test(trustedWitnessPolicy.keyId) ||

@@ -276,8 +276,13 @@ export class PostgresReleaseBindingObservationAdapter implements ReleaseWitnessD
         !recoveryWitnessSha256.test(marker)
       )
         throw new Error(`release_witness_${kind}_generation_unavailable`);
-      const { databaseComment: _databaseComment, ...generation } = row;
-      return Object.freeze({ ...generation, recoveryWitnessSha256: marker });
+      return Object.freeze({
+        roleName: row.roleName,
+        databaseIdentity: row.databaseIdentity,
+        systemIdentifier: row.systemIdentifier,
+        postgresMajor: row.postgresMajor,
+        recoveryWitnessSha256: marker,
+      });
     });
   }
 

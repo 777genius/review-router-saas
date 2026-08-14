@@ -5,7 +5,8 @@ const transactionHarness = (queryRaw: ReturnType<typeof vi.fn>) => {
   const executeRawUnsafe = vi.fn().mockResolvedValue(0);
   let released = false;
   const transaction = vi.fn(
-    async (operation: (client: unknown) => unknown, _options?: unknown) => {
+    async (operation: (client: unknown) => unknown, options?: unknown) => {
+      void options;
       try {
         return await operation({
           $queryRaw: queryRaw,

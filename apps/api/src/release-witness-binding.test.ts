@@ -12,6 +12,7 @@ import type {
   ReleaseWitnessDatabaseObservation,
   ReleaseWitnessGenerationObservation,
   ReleaseWitnessRequest,
+  ReleaseWitnessAttestation,
   TrustedReleaseWitnessPolicy,
 } from "./release-witness-domain";
 
@@ -101,6 +102,24 @@ const observation = (
   installerRoutineBodySha256: policy.installerRoutineBodySha256,
   readerRoutineBodySha256: policy.readerRoutineBodySha256,
   exact: true,
+});
+
+const unsignedAttestation = (result: ReleaseWitnessAttestation) => ({
+  schemaVersion: result.schemaVersion,
+  rolloutId: result.rolloutId,
+  deploymentRevision: result.deploymentRevision,
+  artifactDigest: result.artifactDigest,
+  execution: result.execution,
+  sourceDatabaseIdentity: result.sourceDatabaseIdentity,
+  authorityDatabaseIdentity: result.authorityDatabaseIdentity,
+  targetDatabaseIdentity: result.targetDatabaseIdentity,
+  releaseAuthority: result.releaseAuthority,
+  activation: result.activation,
+  source: result.source,
+  target: result.target,
+  deployments: result.deployments,
+  observedAt: result.observedAt,
+  expiresAt: result.expiresAt,
 });
 
 const create = (
@@ -233,11 +252,7 @@ describe("release witness binding policy", () => {
   });
   it("attests one exact database, deployment, revision, rollout, run and generation", async () => {
     const result = await create().execute(request);
-    const {
-      bindingSha256: _bindingSha256,
-      signature: _signature,
-      ...unsigned
-    } = result;
+    const unsigned = unsignedAttestation(result);
     expect(result.bindingSha256).toBe(`sha256:${sha256Canonical(unsigned)}`);
     expect(result).toMatchObject({
       rolloutId: "rollout-1",
@@ -256,11 +271,7 @@ describe("release witness binding policy", () => {
 
   it("includes runtime deployment revision and artifact digest in the signed hash", async () => {
     const result = await create().execute(request);
-    const {
-      bindingSha256: _binding,
-      signature: _signature,
-      ...unsigned
-    } = result;
+    const unsigned = unsignedAttestation(result);
     expect(result.bindingSha256).toBe(`sha256:${sha256Canonical(unsigned)}`);
     expect(
       `sha256:${sha256Canonical({
@@ -375,12 +386,19 @@ describe("release witness binding policy", () => {
           },
         }).execute(request),
     ],
-  ])("rejects replay through %s", async (_label, operation) => {
+  ])("rejects replay through %s", async (label, operation) => {
+    expect(label).toBeTypeOf("string");
     await expect(operation()).rejects.toThrow();
   });
 
   it("fails closed for partial legacy requests", async () => {
-    const { target: _target, ...partial } = request;
+    const partial = {
+      rolloutId: request.rolloutId,
+      execution: request.execution,
+      source: request.source,
+      deployments: request.deployments,
+    };
+    expect(partial).not.toHaveProperty("target");
     await expect(
       create().execute(partial as ReleaseWitnessRequest),
     ).rejects.toThrow("release_witness_binding_request_invalid");
@@ -496,7 +514,8 @@ describe("release witness observation adapters", () => {
     ],
   ] as const)(
     "rejects and redacts a %s-session %s recovery marker",
-    async (kind, _case, databaseComment) => {
+    async (kind, markerCase, databaseComment) => {
+      expect(markerCase).toMatch(/^(?:missing|malformed)$/u);
       const transaction = {
         $executeRawUnsafe: vi.fn(async () => undefined),
         $queryRaw: vi.fn(async () => [
