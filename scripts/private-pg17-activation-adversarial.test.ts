@@ -11,17 +11,25 @@ const docker = (args: readonly string[], input?: string) =>
     input,
     timeout: 30_000,
   });
-const inspectedImage = docker([
-  "image",
-  "inspect",
-  "--format",
-  "{{.Id}}",
-  "postgres:17",
-]);
+const requiredProof =
+  process.env.REVIEW_ROUTER_REQUIRE_PG17_ADVERSARIAL === "1";
+const configuredImage = process.env.REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE ?? "";
+const pinnedImage =
+  /^postgres:17\.[0-9]+-[a-z0-9.-]+@sha256:[a-f0-9]{64}$/u.test(
+    configuredImage,
+  );
+if (requiredProof && !pinnedImage)
+  throw new Error("pg17_adversarial_digest_pinned_image_required");
+const inspectedImage = pinnedImage
+  ? docker(["image", "inspect", "--format", "{{.Id}}", configuredImage])
+  : { status: null, stdout: "", stderr: "" };
 const dockerReady =
+  pinnedImage &&
   docker(["info", "--format", "{{.ServerVersion}}"]).status === 0 &&
   inspectedImage.status === 0 &&
   inspectedImage.stdout.trim().startsWith("sha256:");
+if (requiredProof && !dockerReady)
+  throw new Error("pg17_adversarial_digest_pinned_image_unavailable");
 const describePg17 = dockerReady ? describe : describe.skip;
 const container = `rr-activation-principal-${process.pid}`;
 const configuration = {

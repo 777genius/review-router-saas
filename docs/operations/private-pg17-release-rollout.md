@@ -245,6 +245,23 @@ The trusted order is:
    `operation=incremental-upgrade`. The protected
    `production-release-authority-migration` environment supplies the one-use
    owner credential and requires approval.
+
+   ```bash
+   EXPECTED_SHA=$(git rev-parse origin/main)
+   gh workflow run release-authority-migration.yml \
+     --ref main \
+     -f expected_sha="$EXPECTED_SHA" \
+     -f operation=incremental-upgrade
+   gh run list --workflow release-authority-migration.yml --branch main --limit 5
+   ```
+
+   The workflow first proves that `EXPECTED_SHA`, the dispatch SHA, and current
+   protected `main` are identical. From that exact checkout it then verifies a
+   single successful trusted CI run and the dedicated PG17 authority-contract
+   and full-rehearsal jobs plus their digest-addressed exact-SHA artifacts. Only
+   after both jobs succeed can the protected environment be entered and the
+   owner credential materialized.
+
 4. Require that workflow to succeed. Its gate takes the PostgreSQL advisory
    lock, applies bounded lock and statement timeouts, verifies checked-in and
    recorded checksums/catalog provenance, and commits the valid forward chain
@@ -265,6 +282,37 @@ database. The `incremental-upgrade` operation requires the authority schema to
 already exist. Neither operation guesses intent or falls back to the other. A
 byte-identical incremental rerun is idempotent; never use fresh installation as
 upgrade recovery.
+
+### Provider mutation crash recovery
+
+Migration 000012 fences each Render mutation by resource, rollout, operation,
+owner, epoch, permit, expected fingerprint, and optional provider version. The
+authority state, not an HTTP timeout or an operator's recollection, determines
+recovery:
+
+- `claimed` means no permit was consumed. Recover the same binding; an expired
+  claim may be replaced normally.
+- `consumed` means the one-use receipt exists but execution validation did not
+  commit. Do not immediately repeat the provider call. Recover the same binding;
+  only after the lease expires may authority rotate the epoch and return a new
+  permit, invalidating the old receipt atomically.
+- `executing` means execution validation committed and the provider outcome may
+  be ambiguous. Recovery is reconciliation-only. Observe the exact fenced
+  resource and submit `exact_postcondition`, `precondition_drift`,
+  `execution_not_authorized`, or `ambiguous_forward_repair`; never issue or
+  replay the provider mutation.
+- `forward_repair` is terminal and retains the resource fence. Pause dependent
+  rollout work, preserve the receipt and provider observation, and execute an
+  approved monotonic forward repair. Never clear the lease, rewind the state, or
+  reuse the old permit by direct SQL.
+
+Use the normal protected workflow/controller recovery path so calls go through
+`release_provider_mutation_recover` and
+`release_provider_mutation_reconcile`. Do not invoke authority routines from an
+operator shell or edit `provider_mutation`/`provider_resource_lease` rows. If
+the authority migration itself failed, preserve its output and rerun the same
+exact-SHA `incremental-upgrade` workflow only after the underlying lock,
+catalog, or infrastructure fault is resolved.
 
 ## Rehearsal and gates
 
@@ -305,8 +353,9 @@ The authority installer proves the append-only chain in this exact order:
 `000006_runner_provider_creation_boundary`,
 `000007_compensation_effect_fence`, `000008_trigger_helper_acl`,
 `000009_authority_history_and_forward_repairs`,
-`000010_recovery_effect_permits`, and
-`000011_default_and_final_acl_exactness`. Migrations 000001 and 000002
+`000010_recovery_effect_permits`,
+`000011_default_and_final_acl_exactness`, and
+`000012_provider_mutation_resource_fence`. Migrations 000001 and 000002
 are the immutable bytes published on `origin/main`; their later lock-order,
 retryability, terminal-projection, and receipt-link repairs live only in 000009.
 
@@ -323,15 +372,17 @@ Exactly one shadow must match before
 previously published modified 000001/000002 bytes, migration 000009 retains
 those two exact legacy checksums as `legacy_equivalent` and converges their
 behavior to the same forward state. Migration 000010 adds the single-use
-recovery-effect permit protocol and its provider-neutral execution fence after
-the migration ledger exists. Only the consume winner receives the ephemeral
-receipt needed for one atomic execution validation; a late runner job changes
-consumed/executing effects to durable forward repair, and completion or
-checkpoint creation then fails closed. Migration 000011 removes PostgreSQL's
-implicit `PUBLIC` usage from the declared authority enum before the exact ACL
-assertion. Existing pre-ledger authorities apply 000009 through 000011, while
-authorities already recorded through 000010 apply only 000011. Health requires
-every ordered identity through 000011, the matching
+recovery-effect permit protocol after the migration ledger exists. Migration
+000011 removes PostgreSQL's implicit `PUBLIC` usage from the declared authority
+enum before the exact ACL assertion. Migration 000012 hardens recovery effects
+with a separate executing transition and execution receipt, then adds the
+resource-scoped provider-mutation permit and reconciliation fence. Only the
+consume winner receives the receipt needed for one atomic execution validation;
+a late runner or ambiguous provider result changes consumed/executing work to
+durable forward repair, and completion or checkpoint creation then fails closed.
+Existing pre-ledger authorities apply 000009 through 000012; authorities already
+recorded through 000010 apply 000011 and 000012, and those through 000011 apply
+only 000012. Health requires every ordered identity through 000012, the matching
 canonical/approved-legacy checksum and variant, the 000006 provider creation
 column plus validated NOT NULL/order constraint and witness time bounds, the
 000007 compensation fences, the 000008 helper revocation, common ownership,

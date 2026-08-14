@@ -57,7 +57,9 @@ jobs:
     name: Dedicated Release Authority PG17 contract
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_authority_pg17_contract) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -76,11 +78,13 @@ jobs:
       - name: Generate Prisma client
         run: pnpm db:generate
       - name: Pin PostgreSQL 17 contract image
-        run: |
-          docker pull postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
-          docker tag postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4 postgres:17-alpine
+        run: docker pull "$REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE"
       - name: Run dedicated authority contract
         run: bash packages/platform/release-authority-db/test-contract.sh
+      - name: Run digest-pinned activation adversarial proof
+        env:
+          REVIEW_ROUTER_REQUIRE_PG17_ADVERSARIAL: "1"
+        run: pnpm exec vitest run scripts/private-pg17-activation-adversarial.test.ts
       - name: Create exact release-gate evidence
         id: evidence
         run: node scripts/release-gate-evidence.mjs write release-authority-pg17-contract >> "$GITHUB_OUTPUT"

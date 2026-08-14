@@ -334,6 +334,38 @@ describe("release workflow contract", () => {
     }
   });
 
+  it("requires the digest-pinned adversarial proof before PG17 evidence publication", () => {
+    const start = ci.indexOf("  release-authority-pg17-contract:");
+    const end = ci.indexOf("\n  private-pg16-to-pg17-rehearsal:", start);
+    const job = ci.slice(start, end);
+    const adversarial = readFileSync(
+      "scripts/private-pg17-activation-adversarial.test.ts",
+      "utf8",
+    );
+
+    expect(job).toMatch(
+      /REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE: postgres:17\.[0-9]+-bookworm@sha256:[a-f0-9]{64}/u,
+    );
+    expect(job).toContain(
+      'docker pull "$REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE"',
+    );
+    expect(job).toContain('REVIEW_ROUTER_REQUIRE_PG17_ADVERSARIAL: "1"');
+    expect(job).toContain(
+      "pnpm exec vitest run scripts/private-pg17-activation-adversarial.test.ts",
+    );
+    expect(job).not.toContain("docker tag");
+    expect(
+      job.indexOf("Run digest-pinned activation adversarial proof"),
+    ).toBeLessThan(job.indexOf("Create exact release-gate evidence"));
+    expect(adversarial).toContain(
+      "pg17_adversarial_digest_pinned_image_required",
+    );
+    expect(adversarial).toContain(
+      "pg17_adversarial_digest_pinned_image_unavailable",
+    );
+    expect(adversarial).not.toContain('"postgres:17",');
+  });
+
   it("verifies exact evidence before any production image can be published", () => {
     const gate = release.indexOf(
       "node scripts/release-gate-evidence.mjs verify",

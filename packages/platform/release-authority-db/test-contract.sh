@@ -4,7 +4,8 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../../.." && pwd)
 name="rr-release-authority-pg17-$$"
 contract_tmp=$(mktemp -d)
-docker run -d --rm --name "$name" -p 127.0.0.1::5432 -e POSTGRES_PASSWORD=test postgres:17-alpine >/dev/null
+pg17_image=${REVIEW_ROUTER_PG17_ADVERSARIAL_IMAGE:-postgres:17-alpine}
+docker run -d --rm --name "$name" -p 127.0.0.1::5432 -e POSTGRES_PASSWORD=test "$pg17_image" >/dev/null
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true; rm -rf "$contract_tmp"' EXIT
 
 for _ in $(seq 1 60); do

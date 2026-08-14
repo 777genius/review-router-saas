@@ -565,28 +565,71 @@ describe("private-network PG17 workflow security contract", () => {
   });
 
   it("keeps fresh authority installation separate from the trusted upgrade gate", () => {
+    const authorityJobs = jobs(authorityMigrationWorkflow);
+    const trustBootstrap = authorityJobs.find((job) =>
+      job.startsWith("  trust-bootstrap:"),
+    )!;
+    const evidenceGate = authorityJobs.find((job) =>
+      job.startsWith("  verify-release-gate-evidence:"),
+    )!;
+    const mutation = authorityJobs.find((job) =>
+      job.startsWith("  trusted-release-authority-migration:"),
+    )!;
+
     expect(authorityMigrationWorkflow).toContain(
       "group: release-authority-database-mutation-production",
     );
-    expect(authorityMigrationWorkflow).toContain(
+    expect(mutation).toContain(
+      "needs: [trust-bootstrap, verify-release-gate-evidence]",
+    );
+    expect(mutation).toContain(
       "environment: production-release-authority-migration",
     );
-    expect(authorityMigrationWorkflow).toContain(
+    expect(mutation).toContain(
       "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL",
     );
-    expect(authorityMigrationWorkflow).toContain(
-      "run: pnpm release-authority:fresh-install",
+    expect(mutation).toContain("run: pnpm release-authority:fresh-install");
+    expect(mutation).toContain("run: pnpm release-authority:upgrade");
+    expect(trustBootstrap).toContain('required("GITHUB_EVENT_NAME")');
+    expect(trustBootstrap).toContain('required("GITHUB_REF")');
+    expect(trustBootstrap).toContain('required("GITHUB_SHA")');
+    expect(trustBootstrap).toContain('required("EXPECTED_SHA")');
+    expect(trustBootstrap).toContain("branch.protected !== true");
+    expect(trustBootstrap).toContain(
+      "branch.commit?.sha?.toLowerCase() !== sha",
     );
-    expect(authorityMigrationWorkflow).toContain(
-      "run: pnpm release-authority:upgrade",
+    expect(trustBootstrap).not.toContain("actions/checkout");
+    expect(trustBootstrap).not.toContain("scripts/");
+    expect(evidenceGate).toContain("needs: trust-bootstrap");
+    expect(evidenceGate).toContain("actions: read");
+    expect(evidenceGate).toContain(
+      "REVIEW_ROUTER_RELEASE_GATE_SHA: ${{ needs.trust-bootstrap.outputs.trusted_sha }}",
     );
-    expect(authorityMigrationWorkflow).toContain(
-      'test "$GITHUB_SHA" = "$EXPECTED_SHA"',
+    expect(evidenceGate).toContain(
+      "node scripts/release-gate-evidence.mjs verify",
     );
+    expect(evidenceGate).not.toContain(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL",
+    );
+    expect(mutation).toContain(
+      "ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}",
+    );
+    expect(
+      mutation.indexOf("Materialize one-use migration credential"),
+    ).toBeLessThan(mutation.indexOf("Run fresh installation gate"));
     expect(authorityMigrationWorkflow).not.toContain("env | ");
     expect(rolloutRunbook.indexOf("incremental-upgrade")).toBeLessThan(
       rolloutRunbook.indexOf("## Rehearsal and gates"),
     );
+    expect(rolloutRunbook).toContain(
+      "gh workflow run release-authority-migration.yml",
+    );
+    expect(rolloutRunbook).toContain('-f expected_sha="$EXPECTED_SHA"');
+    expect(rolloutRunbook).toContain("000012_provider_mutation_resource_fence");
+    for (const state of ["`consumed`", "`executing`", "`forward_repair`"]) {
+      expect(rolloutRunbook).toContain(state);
+    }
+    expect(rolloutRunbook).toContain("release_provider_mutation_reconcile");
   });
 
   it("pins base image and runner download, and never supplies the App private key by env", () => {
