@@ -219,6 +219,42 @@ describe("RepositorySetupProgressPanel", () => {
     expect(actionUnmounts).toBe(0);
   });
 
+  it("allows a rotating provider namespace to refresh its merged workflow", async () => {
+    vi.mocked(createSetupPullRequestClientAction).mockResolvedValueOnce({
+      params: {
+        notice: "setup_pr_ready",
+        repository: "777genius/example",
+        pr: "https://github.com/777genius/example/pull/2",
+      },
+    });
+
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="configured"
+        initialSetupPullRequestUrl={null}
+        workflowCurrent
+        mutationsEnabled
+        initialStep={3}
+        enableReviewAction={<button type="button">Set up provider</button>}
+        providerSetupBeforeWorkflow
+      />,
+    );
+
+    const updateForm = screen
+      .getByRole("button", { name: "Update setup PR" })
+      .closest("form");
+    expect(updateForm).toBeTruthy();
+    updateForm!.requestSubmit();
+
+    expect(await screen.findByText("2 of 4 - merge setup PR")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Open setup PR/i })).toBeTruthy();
+  });
+
   it("does not advance progress for a provider setup outside the effective config", () => {
     render(
       <RepositorySetupProgressPanel
