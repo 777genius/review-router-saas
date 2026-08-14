@@ -411,17 +411,43 @@ export async function executeDisposableRehearsal(
       });
     sql(
       source,
-      `COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE reviewrouter TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three'); CREATE SCHEMA app_private; CREATE TABLE app_private.rehearsal_private(id integer PRIMARY KEY, value text); INSERT INTO app_private.rehearsal_private VALUES (1,'private'); CREATE SEQUENCE app_private.called_sequence; SELECT nextval('app_private.called_sequence'); CREATE SEQUENCE app_private.uncalled_sequence;`,
+      `COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE reviewrouter TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three'); CREATE SCHEMA app_private; CREATE TABLE app_private.rehearsal_private(id integer PRIMARY KEY, value text); INSERT INTO app_private.rehearsal_private VALUES (1,'private'); CREATE SEQUENCE app_private.called_sequence; SELECT nextval('app_private.called_sequence'); CREATE SEQUENCE app_private.uncalled_sequence; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO PUBLIC;`,
+    );
+    sql(
+      target,
+      "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO PUBLIC",
     );
     const baselinePrincipalInventory = JSON.parse(
       sql(source, effectivePrincipalInventorySql),
     );
+    if (
+      !baselinePrincipalInventory.grants.some(
+        (grant) =>
+          grant.principal === "PUBLIC" &&
+          grant.capability === "table:read" &&
+          grant.resource === "default:postgres:r:public",
+      )
+    )
+      throw new Error(
+        "private_pg17_rehearsal_pg16_default_acl_projection_failed",
+      );
     const baselinePrincipalPolicy = draftEffectivePrincipalPolicy(
       baselinePrincipalInventory,
     );
     const targetPrincipalInventory = JSON.parse(
       sql(target, effectivePrincipalInventorySql),
     );
+    if (
+      !targetPrincipalInventory.grants.some(
+        (grant) =>
+          grant.principal === "PUBLIC" &&
+          grant.capability === "table:read" &&
+          grant.resource === "default:postgres:r:public",
+      )
+    )
+      throw new Error(
+        "private_pg17_rehearsal_pg17_default_acl_projection_failed",
+      );
     const targetPrincipalDecision = evaluateEffectivePrincipalInventory(
       targetPrincipalInventory,
       draftEffectivePrincipalPolicy(targetPrincipalInventory),

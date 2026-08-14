@@ -352,6 +352,16 @@ describe("disposable dual-version rehearsal", () => {
     expect(source).toContain("sql(source, effectivePrincipalInventorySql)");
     expect(source).toContain("sql(target, effectivePrincipalInventorySql)");
     expect(source).toContain(
+      "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO PUBLIC",
+    );
+    expect(source).toContain("default:postgres:r:public");
+    expect(source).toContain(
+      "private_pg17_rehearsal_pg16_default_acl_projection_failed",
+    );
+    expect(source).toContain(
+      "private_pg17_rehearsal_pg17_default_acl_projection_failed",
+    );
+    expect(source).toContain(
       "private_pg17_rehearsal_target_principal_inventory_failed",
     );
   });

@@ -92,6 +92,15 @@ describe("PostgreSQL effective-principal catalog adapter", () => {
     expect(effectivePrincipalInventorySql).not.toContain("role.rolname");
   });
 
+  it("casts the internal-char default ACL object type before resource concatenation", () => {
+    expect(effectivePrincipalInventorySql).toContain(
+      "defaults.defaclobjtype::text||':'||coalesce(namespace.nspname,'*')",
+    );
+    expect(effectivePrincipalInventorySql).not.toContain(
+      "defaults.defaclobjtype||':'||coalesce(namespace.nspname,'*')",
+    );
+  });
+
   it("enumerates login attributes, membership options, ownership, and every write surface", () => {
     for (const token of [
       "rolcanlogin",

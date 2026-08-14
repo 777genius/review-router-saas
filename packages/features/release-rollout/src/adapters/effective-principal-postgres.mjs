@@ -100,7 +100,7 @@ roles AS (
       WHEN 'T' THEN 'type:usage'
     END,
     'default:'||pg_get_userbyid(defaults.defaclrole)||':'||
-      defaults.defaclobjtype||':'||coalesce(namespace.nspname,'*'),
+      defaults.defaclobjtype::text||':'||coalesce(namespace.nspname,'*'),
     CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END,
     acl.is_grantable, pg_get_userbyid(acl.grantor)
   FROM pg_catalog.pg_default_acl defaults
