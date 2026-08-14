@@ -2416,6 +2416,7 @@ async function executionIdsWithoutDependents(
         AND NOT EXISTS (SELECT 1 FROM "ReviewSnapshotCommitReceiptV2" receipt WHERE receipt."sourceExecutionId" = execution."executionId")
         AND NOT EXISTS (SELECT 1 FROM "ReviewPublicationAttemptV2" publication WHERE publication."executionId" = execution."executionId")
         AND NOT EXISTS (SELECT 1 FROM "ReviewCompletionProcess" process WHERE process."executionId" = execution."executionId")
+        AND NOT EXISTS (SELECT 1 FROM "ReviewInvestigation" investigation WHERE investigation."executionId" = execution."executionId")
         AND EXISTS (SELECT 1 FROM "ReviewRunAuthorization" auth_row WHERE auth_row."authorizationId" = execution."authorizationId" AND auth_row."expiresAt" < (clock_timestamp() AT TIME ZONE 'UTC'))
       ORDER BY execution."executionId"
     `,
