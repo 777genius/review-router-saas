@@ -19,6 +19,8 @@ export type ReleaseAuthorityDatabaseReadiness = Readonly<{
   expectedCatalogFingerprint: string;
   catalogVerifier: string;
   catalogExact: boolean;
+  defaultAclExact: boolean;
+  finalAclExact: boolean;
   controlRoutine: boolean;
   providerRoutine: boolean;
   installerRoutine: boolean;
@@ -62,8 +64,10 @@ export type TrustedReleaseControlDatabaseIdentity = Readonly<{
 export const releaseAuthoritySchemaIsReady = (
   readiness: ReleaseAuthorityDatabaseReadiness,
 ): boolean =>
-  readiness.schemaVersion === 10 &&
+  readiness.schemaVersion === 11 &&
   readiness.catalogExact &&
+  readiness.defaultAclExact &&
+  readiness.finalAclExact &&
   readiness.authorityRoleTopologyExact &&
   readiness.catalogVerifier === releaseAuthorityCatalogVerifier &&
   readiness.catalogFingerprint === readiness.expectedCatalogFingerprint &&

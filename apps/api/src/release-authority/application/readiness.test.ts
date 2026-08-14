@@ -14,7 +14,7 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
   authorityOwnerRoleName: "reviewrouter_release_authority_owner",
   systemIdentifier: "1",
   postgresMajor: 17,
-  schemaVersion: 10,
+  schemaVersion: 11,
   migrationManifest: releaseAuthorityMigrationContract.map(
     ([migrationName, checksumSha256], index) => {
       if (!migrationName || !checksumSha256)
@@ -31,6 +31,8 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
   expectedCatalogFingerprint: "sha256:catalog",
   catalogVerifier: releaseAuthorityCatalogVerifier,
   catalogExact: true,
+  defaultAclExact: true,
+  finalAclExact: true,
   controlRoutine: true,
   providerRoutine: true,
   installerRoutine: false,
@@ -125,6 +127,8 @@ describe("release authority exact readiness contract", () => {
 
   it.each([
     "catalogExact",
+    "defaultAclExact",
+    "finalAclExact",
     "authorityOwnershipExact",
     "authorityAclExact",
     "requiredTriggers",

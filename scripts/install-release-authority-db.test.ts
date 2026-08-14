@@ -64,6 +64,79 @@ describe("release authority database installation", () => {
     ).toThrow("release_authority_statement_timeout_invalid");
   });
 
+  it("fails closed on global and schema-scoped creating-owner default ACLs before DDL", () => {
+    for (const mode of ["fresh-install", "incremental-upgrade"] as const) {
+      const bundle = releaseAuthorityMigrationBundle(mode);
+      const gate = bundle.indexOf("DO $default_acl_gate$");
+      const firstAuthorityDdl = bundle.indexOf(
+        "CREATE SCHEMA release_authority",
+      );
+      expect(gate).toBeGreaterThan(bundle.indexOf("DO $upgrade_gate$"));
+      expect(gate).toBeLessThan(firstAuthorityDdl);
+      expect(bundle).toContain("pg_catalog.pg_default_acl");
+      expect(bundle).toContain("WITH relevant_owners(owner_oid) AS");
+      expect(bundle).toContain(
+        "default_acl.defaclrole IN (SELECT owner_oid FROM relevant_owners)",
+      );
+      expect(bundle).toContain(
+        "default_acl.defaclnamespace IN\n        (0,coalesce(pg_catalog.to_regnamespace('release_authority')::oid,0))",
+      );
+      for (const kind of ["r", "S", "f", "T"])
+        expect(bundle).toContain(`'${kind}'::"char"`);
+      expect(bundle).toContain(
+        "release authority creating owner default ACL is noncanonical",
+      );
+    }
+  });
+
+  it("independently gates activation on the explicit final object ACL matrix", () => {
+    const bundle = releaseAuthorityMigrationBundle("incremental-upgrade");
+    const finalGate = bundle.indexOf("DO $final_catalog$");
+    const attestation = bundle.indexOf(
+      "COMMENT ON SCHEMA release_authority",
+      finalGate,
+    );
+    expect(finalGate).toBeGreaterThan(-1);
+    expect(attestation).toBeGreaterThan(finalGate);
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "release authority final default ACL is noncanonical",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "release authority final object ACL matrix mismatch",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "attribute.attacl IS NOT NULL",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "type_record.typacl IS NOT NULL",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain("acl.is_grantable");
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "acl.grantor<>target.nspowner",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "relation.relowner=target.nspowner",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "sequence.relowner=target.nspowner",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "procedure.proowner=target.nspowner",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "pg_catalog.pg_auth_members",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "reviewrouter_release_control",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "reviewrouter_provider_authority",
+    );
+    expect(bundle.slice(finalGate, attestation)).toContain(
+      "reviewrouter_release_witness",
+    );
+  });
+
   it("isolates owner psql from ambient PostgreSQL configuration", () => {
     const environment = postgresEnvironment(
       "postgresql://owner:secret@authority.internal/reviewrouter",
@@ -229,7 +302,7 @@ describe("release authority database installation", () => {
     const bundle = releaseAuthorityMigrationBundle("incremental-upgrade");
     expect(bundle).toContain("release_authority_verify_canonical");
     expect(bundle).toContain("release_authority_verify_legacy");
-    expect(bundle).toContain("complete_catalog_v2");
+    expect(bundle).toContain("complete_catalog_v3_acl_exact");
     expect(bundle).toContain(
       "legacy catalog is ambiguous or modified; audited repair required",
     );
@@ -340,168 +413,19 @@ describe("release authority database installation", () => {
 
     expect(fingerprintStart).toBeGreaterThan(-1);
     expect(fingerprintEnd).toBeGreaterThan(fingerprintStart);
-    expect(bundle.slice(fingerprintStart, fingerprintEnd).trim())
-      .toMatchInlineSnapshot(`
-      "CREATE TEMP TABLE release_authority_catalog_verification (
-        catalog_fingerprint text NOT NULL,
-        byte_variant text NOT NULL CHECK (byte_variant IN ('canonical','legacy_equivalent')),
-        verifier text NOT NULL CHECK (verifier IN ('complete_catalog_v1','complete_catalog_v2'))
-      ) ON COMMIT DROP;
-
-      CREATE OR REPLACE FUNCTION pg_temp.release_authority_acl_fingerprint(p_acl aclitem[])
-      RETURNS jsonb LANGUAGE sql STABLE SET search_path = pg_catalog AS $acl$
-        SELECT coalesce(jsonb_agg(jsonb_build_object(
-          'grantor',CASE WHEN acl.grantor=0 THEN 'PUBLIC'
-            ELSE pg_catalog.pg_get_userbyid(acl.grantor) END,
-          'grantee',CASE WHEN acl.grantee=0 THEN 'PUBLIC'
-            ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-          'privilege_type',acl.privilege_type,
-          'is_grantable',acl.is_grantable
-        ) ORDER BY
-          CASE WHEN acl.grantor=0 THEN 'PUBLIC'
-            ELSE pg_catalog.pg_get_userbyid(acl.grantor) END,
-          CASE WHEN acl.grantee=0 THEN 'PUBLIC'
-            ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-          acl.privilege_type,acl.is_grantable),'[]'::jsonb)
-        FROM pg_catalog.aclexplode(CASE
-          WHEN pg_catalog.cardinality(p_acl)>0 THEN p_acl
-          ELSE NULL::aclitem[]
-        END) acl
-      $acl$;
-
-      CREATE OR REPLACE FUNCTION pg_temp.release_authority_catalog_fingerprint(p_schema text)
-      RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
-        WITH target AS (
-          SELECT oid, nspowner, nspacl FROM pg_catalog.pg_namespace WHERE nspname=p_schema
-        ), records(kind, identity, definition) AS (
-          SELECT 'schema', p_schema,
-            jsonb_build_object(
-              'owner', pg_catalog.pg_get_userbyid(nspowner),
-              'acl',pg_temp.release_authority_acl_fingerprint(
-                coalesce(nspacl,pg_catalog.acldefault('n',nspowner))))
-          FROM target
-          UNION ALL
-          SELECT 'relation', relation.relname,
-            jsonb_build_object(
-              'kind',relation.relkind,'persistence',relation.relpersistence,
-              'owner',pg_catalog.pg_get_userbyid(relation.relowner),
-              'replicaIdentity',relation.relreplident,'rowSecurity',relation.relrowsecurity,
-              'forceRowSecurity',relation.relforcerowsecurity,
-              'options',coalesce(to_jsonb(relation.reloptions),'[]'::jsonb),
-              'accessMethod',coalesce(access_method.amname,''),
-              'tablespace',CASE WHEN relation.reltablespace=0 THEN ''
-                ELSE pg_catalog.pg_tablespace_location(relation.reltablespace) END,
-              'acl',pg_temp.release_authority_acl_fingerprint(
-                coalesce(relation.relacl,pg_catalog.acldefault(
-                  CASE WHEN relation.relkind='S' THEN 'S'::"char" ELSE 'r'::"char" END,
-                  relation.relowner))),
-              'columns',(SELECT coalesce(jsonb_agg(jsonb_build_object(
-                'position',attribute.attnum,'name',attribute.attname,
-                'type',replace(pg_catalog.format_type(attribute.atttypid,attribute.atttypmod),p_schema,'release_authority'),
-                'notNull',attribute.attnotnull,'identity',attribute.attidentity,
-                'generated',attribute.attgenerated,'compression',attribute.attcompression,
-                'collation',CASE WHEN attribute.attcollation=0 THEN ''
-                  ELSE attribute.attcollation::regcollation::text END,
-                'storage',attribute.attstorage,'statistics',attribute.attstattarget,
-                'default',replace(coalesce(pg_catalog.pg_get_expr(default_record.adbin,default_record.adrelid),''),p_schema,'release_authority')
-                ,'acl',pg_temp.release_authority_acl_fingerprint(attribute.attacl)
-              ) ORDER BY attribute.attnum),'[]'::jsonb)
-                FROM pg_catalog.pg_attribute attribute
-                LEFT JOIN pg_catalog.pg_attrdef default_record
-                  ON default_record.adrelid=attribute.attrelid AND default_record.adnum=attribute.attnum
-                WHERE attribute.attrelid=relation.oid AND attribute.attnum>0 AND NOT attribute.attisdropped),
-              'constraints',(SELECT coalesce(jsonb_agg(jsonb_build_array(constraint_record.conname,
-                constraint_record.contype,constraint_record.condeferrable,constraint_record.condeferred,
-                constraint_record.convalidated,replace(pg_catalog.pg_get_constraintdef(constraint_record.oid,true),p_schema,'release_authority'))
-                ORDER BY constraint_record.conname),'[]'::jsonb)
-                FROM pg_catalog.pg_constraint constraint_record WHERE constraint_record.conrelid=relation.oid),
-              'indexes',(SELECT coalesce(jsonb_agg(replace(pg_catalog.pg_get_indexdef(index_record.indexrelid),p_schema,'release_authority')
-                ORDER BY index_record.indexrelid::regclass::text),'[]'::jsonb)
-                FROM pg_catalog.pg_index index_record WHERE index_record.indrelid=relation.oid),
-              'sequence',(SELECT jsonb_build_array(sequence_record.seqtypid::regtype::text,
-                sequence_record.seqstart,sequence_record.seqincrement,sequence_record.seqmax,
-                sequence_record.seqmin,sequence_record.seqcache,sequence_record.seqcycle)
-                FROM pg_catalog.pg_sequence sequence_record WHERE sequence_record.seqrelid=relation.oid)
-            )
-          FROM pg_catalog.pg_class relation JOIN target ON target.oid=relation.relnamespace
-          LEFT JOIN pg_catalog.pg_am access_method ON access_method.oid=relation.relam
-          UNION ALL
-          SELECT 'function', procedure.oid::regprocedure::text,
-            jsonb_build_object(
-              'identityArgs',replace(pg_catalog.pg_get_function_identity_arguments(procedure.oid),p_schema,'release_authority'),
-              'arguments',replace(pg_catalog.pg_get_function_arguments(procedure.oid),p_schema,'release_authority'),
-              'result',replace(pg_catalog.pg_get_function_result(procedure.oid),p_schema,'release_authority'),
-              'kind',procedure.prokind,'language',language.lanname,'volatility',procedure.provolatile,
-              'strict',procedure.proisstrict,'securityDefiner',procedure.prosecdef,
-              'leakproof',procedure.proleakproof,'parallel',procedure.proparallel,
-              'cost',procedure.procost,'rows',procedure.prorows,
-              'config',coalesce(to_jsonb(procedure.proconfig),'[]'::jsonb),
-              'owner',pg_catalog.pg_get_userbyid(procedure.proowner),
-              'source',replace(procedure.prosrc,p_schema,'release_authority'),
-              'acl',pg_temp.release_authority_acl_fingerprint(
-                coalesce(procedure.proacl,pg_catalog.acldefault('f',procedure.proowner)))
-            )
-          FROM pg_catalog.pg_proc procedure
-          JOIN target ON target.oid=procedure.pronamespace
-          JOIN pg_catalog.pg_language language ON language.oid=procedure.prolang
-          UNION ALL
-          SELECT 'trigger', relation.relname||'.'||trigger.tgname,
-            jsonb_build_object('enabled',trigger.tgenabled,
-              'definition',replace(pg_catalog.pg_get_triggerdef(trigger.oid,true),p_schema,'release_authority'))
-          FROM pg_catalog.pg_trigger trigger
-          JOIN pg_catalog.pg_class relation ON relation.oid=trigger.tgrelid
-          JOIN target ON target.oid=relation.relnamespace WHERE NOT trigger.tgisinternal
-          UNION ALL
-          SELECT 'inheritance', child.oid::regclass::text||'>'||parent.oid::regclass::text,
-            jsonb_build_object('sequence',inheritance.inhseqno,'detachPending',inheritance.inhdetachpending)
-          FROM pg_catalog.pg_inherits inheritance
-          JOIN pg_catalog.pg_class child ON child.oid=inheritance.inhrelid
-          JOIN pg_catalog.pg_class parent ON parent.oid=inheritance.inhparent
-          JOIN target ON target.oid=child.relnamespace OR target.oid=parent.relnamespace
-          UNION ALL
-          SELECT 'rewrite', relation.relname||'.'||rewrite.rulename,
-            jsonb_build_object('event',rewrite.ev_type,'instead',rewrite.is_instead,
-              'enabled',rewrite.ev_enabled,
-              'definition',replace(pg_catalog.pg_get_ruledef(rewrite.oid,true),p_schema,'release_authority'))
-          FROM pg_catalog.pg_rewrite rewrite
-          JOIN pg_catalog.pg_class relation ON relation.oid=rewrite.ev_class
-          JOIN target ON target.oid=relation.relnamespace
-          UNION ALL
-          SELECT 'policy', relation.relname||'.'||policy.polname,
-            jsonb_build_object('command',policy.polcmd,'permissive',policy.polpermissive,
-              'roles',(SELECT coalesce(jsonb_agg(CASE WHEN role_oid=0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(role_oid) END
-                ORDER BY CASE WHEN role_oid=0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(role_oid) END),'[]'::jsonb)
-                FROM unnest(policy.polroles) role_oid),
-              'using',replace(coalesce(pg_catalog.pg_get_expr(policy.polqual,policy.polrelid),''),p_schema,'release_authority'),
-              'check',replace(coalesce(pg_catalog.pg_get_expr(policy.polwithcheck,policy.polrelid),''),p_schema,'release_authority'))
-          FROM pg_catalog.pg_policy policy
-          JOIN pg_catalog.pg_class relation ON relation.oid=policy.polrelid
-          JOIN target ON target.oid=relation.relnamespace
-          UNION ALL
-          SELECT 'type', type_record.typname,
-            jsonb_build_object(
-              'kind',type_record.typtype,'category',type_record.typcategory,
-              'owner',pg_catalog.pg_get_userbyid(type_record.typowner),
-              'notNull',type_record.typnotnull,'byValue',type_record.typbyval,
-              'alignment',type_record.typalign,'storage',type_record.typstorage,
-              'base',replace(CASE WHEN type_record.typbasetype=0 THEN '' ELSE type_record.typbasetype::regtype::text END,p_schema,'release_authority'),
-              'element',replace(CASE WHEN type_record.typelem=0 THEN '' ELSE type_record.typelem::regtype::text END,p_schema,'release_authority'),
-              'default',coalesce(type_record.typdefault,''),
-              'acl',pg_temp.release_authority_acl_fingerprint(
-                coalesce(type_record.typacl,pg_catalog.acldefault('T',type_record.typowner))),
-              'enum',(SELECT coalesce(jsonb_agg(enum_record.enumlabel ORDER BY enum_record.enumsortorder),'[]'::jsonb)
-                FROM pg_catalog.pg_enum enum_record WHERE enum_record.enumtypid=type_record.oid)
-            )
-          FROM pg_catalog.pg_type type_record JOIN target ON target.oid=type_record.typnamespace
-        )
-        SELECT coalesce(jsonb_agg(jsonb_build_array(kind,
-          replace(identity,p_schema,'release_authority'),definition)
-          ORDER BY kind,replace(identity,p_schema,'release_authority')),'[]'::jsonb)::text
-        FROM records
-      $fingerprint$;"
-    `);
+    const fingerprint = bundle.slice(fingerprintStart, fingerprintEnd).trim();
+    expect(fingerprint).toContain(
+      "verifier text NOT NULL CHECK (verifier IN ('complete_catalog_v1','complete_catalog_v3_acl_exact'))",
+    );
+    expect(fingerprint).toContain("SELECT 'default_acl', p_schema");
+    expect(fingerprint).toContain("pg_catalog.pg_default_acl default_acl");
+    expect(fingerprint).toContain("default_acl.defaclobjtype=ANY");
+    expect(fingerprint).toContain("SELECT 'schema', p_schema");
+    expect(fingerprint).toContain("SELECT 'relation', relation.relname");
+    expect(fingerprint).toContain(
+      "SELECT 'function', procedure.oid::regprocedure::text",
+    );
+    expect(fingerprint).toContain("SELECT 'type', type_record.typname");
   });
   it("installs single-use rollout-first recovery effect permits", () => {
     const migration = readFileSync(
@@ -517,6 +441,15 @@ describe("release authority database installation", () => {
     expect(migration).toContain("release_recovery_checkpoint_permit_gate");
     expect(migration).toContain("state='forward_repair'");
   });
+  it("removes implicit PUBLIC usage from the declared authority type", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000011_default_and_final_acl_exactness/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain(
+      "REVOKE ALL ON TYPE release_authority.aggregate_state FROM PUBLIC",
+    );
+  });
   it("applies the complete ordered migration chain exactly once in one transaction", () => {
     expect(releaseAuthorityMigrationPaths).toEqual([
       "packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql",
@@ -530,6 +463,7 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000008_trigger_helper_acl/migration.sql",
       "packages/platform/release-authority-db/migrations/000009_authority_history_and_forward_repairs/migration.sql",
       "packages/platform/release-authority-db/migrations/000010_recovery_effect_permits/migration.sql",
+      "packages/platform/release-authority-db/migrations/000011_default_and_final_acl_exactness/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths.map((path) =>
@@ -547,6 +481,7 @@ describe("release authority database installation", () => {
       "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
       "f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4",
       "5e75a0deb033644c9a418082181dd9f21d65771cd47a7684f7497aa56e157107",
+      "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
     ]);
     const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
@@ -575,6 +510,10 @@ describe("release authority database installation", () => {
       "CREATE TABLE release_authority.recovery_effect",
       tenth,
     );
+    const twelfth = bundle.indexOf(
+      "REVOKE ALL ON TYPE release_authority.aggregate_state FROM PUBLIC",
+      eleventh,
+    );
     expect(first).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(first);
     expect(third).toBeGreaterThan(second);
@@ -586,6 +525,7 @@ describe("release authority database installation", () => {
     expect(ninth).toBeGreaterThan(eighth);
     expect(tenth).toBeGreaterThan(ninth);
     expect(eleventh).toBeGreaterThan(tenth);
+    expect(twelfth).toBeGreaterThan(eleventh);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
     expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(4);
@@ -605,6 +545,26 @@ describe("release authority database installation", () => {
     ).toHaveLength(2);
   });
 
+  it("keeps clean fresh install, clean upgrade, and idempotent replay deterministic", () => {
+    const fresh = releaseAuthorityMigrationBundle("fresh-install");
+    const upgrade = releaseAuthorityMigrationBundle("incremental-upgrade");
+    expect(releaseAuthorityMigrationBundle("fresh-install")).toBe(fresh);
+    expect(releaseAuthorityMigrationBundle("incremental-upgrade")).toBe(
+      upgrade,
+    );
+    for (const bundle of [fresh, upgrade]) {
+      expect(bundle).toContain("authority_forward_11_present");
+      expect(bundle).toContain("authority_forward_12_present");
+      expect(bundle).toContain(
+        "release authority forward migration 12 already present",
+      );
+      expect(bundle).toContain(
+        "release authority final object ACL matrix mismatch",
+      );
+      expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
+    }
+  });
+
   it("keeps the static migration ledger identical to the immutable file bytes", () => {
     expect(
       releaseAuthorityMigrationManifest.map(
@@ -622,10 +582,14 @@ describe("release authority database installation", () => {
       })),
     );
     const bundle = releaseAuthorityMigrationBundle("incremental-upgrade");
-    expect(bundle).toContain("authority_forward_present");
+    expect(bundle).toContain("authority_forward_11_present");
+    expect(bundle).toContain("authority_forward_12_present");
     expect(bundle).toContain("release authority migration history mismatch");
     expect(bundle).toContain("position=1) IS DISTINCT FROM");
     expect(bundle).toContain("VALUES (11, '000010_recovery_effect_permits'");
+    expect(bundle).toContain(
+      "VALUES (12, '000011_default_and_final_acl_exactness'",
+    );
   });
 
   it("requires rollout-owned suspension evidence for every source resume", () => {

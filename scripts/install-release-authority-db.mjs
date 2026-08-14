@@ -15,6 +15,11 @@ import {
   releaseAuthorityCatalogDigestExpression,
   releaseAuthorityCatalogFingerprintSql,
 } from "../apps/api/src/release-authority/adapters/catalog-fingerprint.mjs";
+import {
+  releaseAuthorityDefaultAclExactExpression,
+  releaseAuthorityDefaultAclPreflightSql,
+  releaseAuthorityFinalAclExactExpression,
+} from "../apps/api/src/release-authority/adapters/acl-policy-postgres.mjs";
 
 export {
   releaseAuthorityAclFingerprintSql,
@@ -121,11 +126,11 @@ export function releaseAuthorityMigrationBundle(
         `release_authority_migration_checksum_invalid:${releaseAuthorityMigrationPaths[index]}`,
       );
   });
-  const bootstrapMigration = migrations.at(-2);
-  const forwardMigration = migrations.at(-1);
-  if (!bootstrapMigration || !forwardMigration)
+  const bootstrapMigration = migrations.at(-3);
+  const forwardMigrations = migrations.slice(-2);
+  if (!bootstrapMigration || forwardMigrations.length !== 2)
     throw new Error("release_authority_migrations_empty");
-  const historicalMigrations = migrations.slice(0, -2);
+  const historicalMigrations = migrations.slice(0, -3);
   // Audit the two published variants at their last independently observable
   // boundary. Migration 000003 replaces the only catalog difference between
   // the 000001 byte variants, so building shadows through later migrations
@@ -136,7 +141,6 @@ export function releaseAuthorityMigrationBundle(
       migrationBody(rewriteAuthoritySchema(source, schema), path),
     ]);
   const expectedHistoryValues = releaseAuthorityMigrationManifest
-    .slice(0, -1)
     .map(
       ([name, checksum], index) =>
         `(${index + 1},'${name}','${checksum}','canonical')`,
@@ -151,6 +155,31 @@ export function releaseAuthorityMigrationBundle(
     .join(",\n          ");
   const allowedHistoryValues = `${expectedHistoryValues},
           ${legacyHistoryValues}`;
+  const forwardApplicationSteps = forwardMigrations.flatMap(
+    (migration, forwardIndex) => {
+      const position = 11 + forwardIndex;
+      const [name, checksum] = releaseAuthorityMigrationManifest[position - 1];
+      const variable = `authority_forward_${position}_present`;
+      return [
+        `SELECT EXISTS (
+       SELECT 1 FROM release_authority.schema_migration
+       WHERE position=${position}
+         AND migration_name='${name}'
+         AND checksum_sha256='${checksum}'
+         AND byte_variant='canonical'
+     ) AS ${variable} \\gset`,
+        `\\if :${variable}`,
+        `\\echo release authority forward migration ${position} already present`,
+        "\\else",
+        `\\echo applying ${migration.path}`,
+        migrationBody(migration.source, migration.path),
+        `INSERT INTO release_authority.schema_migration
+      (position, migration_name, checksum_sha256, byte_variant)
+     VALUES (${position}, '${name}', '${checksum}', 'canonical');`,
+        "\\endif",
+      ];
+    },
+  );
   return [
     "\\set ON_ERROR_STOP on",
     "BEGIN;",
@@ -184,6 +213,7 @@ export function releaseAuthorityMigrationBundle(
        END IF;
      END
      $upgrade_gate$;`,
+    releaseAuthorityDefaultAclPreflightSql("release_authority"),
     "SELECT (to_regnamespace('release_authority') IS NULL) AS authority_schema_absent,",
     "  (to_regclass('release_authority.schema_migration') IS NOT NULL) AS authority_history_present \\gset",
     `CREATE TEMP TABLE release_authority_catalog_verification (
@@ -254,10 +284,16 @@ export function releaseAuthorityMigrationBundle(
     "\\endif",
     `DO $migration_history$
      BEGIN
-       IF (SELECT count(*) NOT IN (10,11)
+       IF (SELECT count(*) NOT IN (10,11,12)
              FROM release_authority.schema_migration)
        OR (SELECT count(*) <> 10 FROM release_authority.schema_migration
              WHERE position <= 10)
+       OR EXISTS (
+         SELECT expected_position
+         FROM pg_catalog.generate_series(1,(SELECT count(*)::integer
+           FROM release_authority.schema_migration)) expected_position
+         EXCEPT SELECT position FROM release_authority.schema_migration
+       )
        OR (SELECT byte_variant FROM release_authority.schema_migration
              WHERE position=1) IS DISTINCT FROM
           (SELECT byte_variant FROM release_authority.schema_migration
@@ -270,34 +306,21 @@ export function releaseAuthorityMigrationBundle(
           ${allowedHistoryValues})
        ) OR EXISTS (
          SELECT 1 FROM release_authority.schema_migration
-         WHERE position > 10 AND (
-           position <> 11
-           OR migration_name <> '000010_recovery_effect_permits'
-           OR checksum_sha256 <> '${releaseAuthorityMigrationManifest[10][1]}'
-           OR byte_variant <> 'canonical'
-         )
+         WHERE position > 10 AND NOT (
+           position=11
+             AND migration_name='000010_recovery_effect_permits'
+             AND checksum_sha256='${releaseAuthorityMigrationManifest[10][1]}'
+             AND byte_variant='canonical'
+           OR position=12
+             AND migration_name='000011_default_and_final_acl_exactness'
+             AND checksum_sha256='${releaseAuthorityMigrationManifest[11][1]}'
+             AND byte_variant='canonical')
        ) THEN
          RAISE EXCEPTION 'release authority migration history mismatch';
        END IF;
      END
      $migration_history$;`,
-    `SELECT EXISTS (
-       SELECT 1 FROM release_authority.schema_migration
-       WHERE position=11
-         AND migration_name='000010_recovery_effect_permits'
-         AND checksum_sha256='${releaseAuthorityMigrationManifest[10][1]}'
-         AND byte_variant='canonical'
-     ) AS authority_forward_present \\gset`,
-    "\\if :authority_forward_present",
-    "\\echo release authority forward migration already present",
-    "\\else",
-    `\\echo applying ${forwardMigration.path}`,
-    migrationBody(forwardMigration.source, forwardMigration.path),
-    `INSERT INTO release_authority.schema_migration
-      (position, migration_name, checksum_sha256, byte_variant)
-     VALUES (11, '000010_recovery_effect_permits',
-       '${releaseAuthorityMigrationManifest[10][1]}', 'canonical');`,
-    "\\endif",
+    ...forwardApplicationSteps,
     "DELETE FROM release_authority_catalog_verification;",
     ...shadowMigrations("release_authority_verify_final", historicalMigrations),
     `INSERT INTO release_authority_catalog_verification
@@ -315,21 +338,32 @@ export function releaseAuthorityMigrationBundle(
        (position,migration_name,checksum_sha256,byte_variant)
      VALUES (10,'000009_authority_history_and_forward_repairs',
        '${releaseAuthorityMigrationManifest[9][1]}','canonical');`,
-    migrationBody(
-      rewriteAuthoritySchema(
-        forwardMigration.source,
-        "release_authority_verify_final",
-      ),
-      forwardMigration.path,
-    ),
-    `INSERT INTO release_authority_verify_final.schema_migration
+    ...forwardMigrations.flatMap((migration, forwardIndex) => {
+      const position = 11 + forwardIndex;
+      const [name, checksum] = releaseAuthorityMigrationManifest[position - 1];
+      return [
+        migrationBody(
+          rewriteAuthoritySchema(
+            migration.source,
+            "release_authority_verify_final",
+          ),
+          migration.path,
+        ),
+        `INSERT INTO release_authority_verify_final.schema_migration
        (position,migration_name,checksum_sha256,byte_variant)
-     VALUES (11,'000010_recovery_effect_permits',
-       '${releaseAuthorityMigrationManifest[10][1]}','canonical');`,
+     VALUES (${position},'${name}','${checksum}','canonical');`,
+      ];
+    }),
     `DO $final_catalog$
      DECLARE live_digest text := ${releaseAuthorityCatalogDigestExpression("release_authority")};
      DECLARE expected_digest text := ${releaseAuthorityCatalogDigestExpression("release_authority_verify_final")};
      BEGIN
+       IF NOT (${releaseAuthorityDefaultAclExactExpression("release_authority")}) THEN
+         RAISE EXCEPTION 'release authority final default ACL is noncanonical';
+       END IF;
+       IF NOT (${releaseAuthorityFinalAclExactExpression("release_authority")}) THEN
+         RAISE EXCEPTION 'release authority final object ACL matrix mismatch';
+       END IF;
        IF live_digest IS DISTINCT FROM expected_digest THEN
          RAISE EXCEPTION 'release authority final catalog fingerprint mismatch';
        END IF;

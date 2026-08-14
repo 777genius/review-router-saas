@@ -25,6 +25,12 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("role.rolbypassrls");
     expect(sql).toContain('AS "authorityRoleTopologyExact"');
     expect(sql).toContain('AS "catalogExact"');
+    expect(sql).toContain('AS "defaultAclExact"');
+    expect(sql).toContain('AS "finalAclExact"');
+    expect(sql).toContain("pg_catalog.pg_default_acl");
+    expect(sql).toContain("expected_execute(routine_name,role_name)");
+    expect(sql).toContain("attribute.attacl IS NOT NULL");
+    expect(sql).toContain("type_record.typacl IS NOT NULL");
     expect(sql).not.toContain("pg_get_functiondef");
     expect(sql).not.toContain(" LIKE ");
   });

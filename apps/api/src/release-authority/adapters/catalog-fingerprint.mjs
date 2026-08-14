@@ -1,3 +1,5 @@
+import { releaseAuthorityDefaultAclRowsExpression } from "./acl-policy-postgres.mjs";
+
 // One catalog serialization is used by the installer and runtime observer.
 // It deliberately records complete object shape, routine source, triggers,
 // ownership, and effective ACL rows instead of a hand-picked object list.
@@ -27,6 +29,11 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
   WITH target AS (
     SELECT oid, nspowner, nspacl FROM pg_catalog.pg_namespace WHERE nspname=p_schema
   ), records(kind, identity, definition) AS (
+    SELECT 'default_acl', p_schema,
+      jsonb_build_object('entries',
+        ${releaseAuthorityDefaultAclRowsExpression("release_authority").replaceAll("'release_authority'", "p_schema")})
+    FROM target
+    UNION ALL
     SELECT 'schema', p_schema,
       jsonb_build_object(
         'owner', pg_catalog.pg_get_userbyid(nspowner),

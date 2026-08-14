@@ -32,6 +32,9 @@ realDescribe("release authority exact catalog readiness", () => {
     await admin.$executeRawUnsafe(
       "CREATE ROLE reviewrouter_inbound_membership_probe LOGIN",
     );
+    await admin.$executeRawUnsafe(
+      'CREATE ROLE "reviewrouter quoted acl probe" NOLOGIN',
+    );
     const owners = await admin.$queryRawUnsafe<{ owner: string }[]>(
       "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname='release_authority'",
     );
@@ -64,6 +67,12 @@ realDescribe("release authority exact catalog readiness", () => {
       await admin.$executeRawUnsafe(
         "DROP ROLE IF EXISTS reviewrouter_inbound_membership_probe",
       );
+      await admin.$executeRawUnsafe(
+        'DROP OWNED BY "reviewrouter quoted acl probe"',
+      );
+      await admin.$executeRawUnsafe(
+        'DROP ROLE IF EXISTS "reviewrouter quoted acl probe"',
+      );
     }
     await Promise.all(
       [admin, control, legacyControl]
@@ -82,12 +91,25 @@ realDescribe("release authority exact catalog readiness", () => {
     expect(releaseAuthoritySchemaIsReady(observed)).toBe(false);
   };
 
+  const expectAclRejected = async () => {
+    const observed = await readiness();
+    expect(observed.defaultAclExact && observed.finalAclExact).toBe(false);
+    expect(releaseAuthoritySchemaIsReady(observed)).toBe(false);
+  };
+  const expectFinalAclRejected = async () => {
+    const observed = await readiness();
+    expect(observed.finalAclExact).toBe(false);
+    expect(releaseAuthoritySchemaIsReady(observed)).toBe(false);
+  };
+
   it("accepts the canonical PostgreSQL 17 catalog", async () => {
     const observed = await readiness();
     expect(observed).toMatchObject({
       postgresMajor: 17,
-      schemaVersion: 10,
-      catalogVerifier: "complete_catalog_v2",
+      schemaVersion: 11,
+      catalogVerifier: "complete_catalog_v3_acl_exact",
+      defaultAclExact: true,
+      finalAclExact: true,
       catalogExact: true,
     });
     expect(observed.catalogFingerprint).toBe(
@@ -107,6 +129,33 @@ realDescribe("release authority exact catalog readiness", () => {
     ]);
     expect(releaseAuthoritySchemaIsReady(observed)).toBe(true);
   });
+
+  it.each([
+    ["TABLES", "", "SELECT"],
+    ["SEQUENCES", "", "USAGE"],
+    ["FUNCTIONS", "", "EXECUTE"],
+    ["TYPES", "", "USAGE"],
+    ["TABLES", "IN SCHEMA release_authority ", "SELECT"],
+    ["SEQUENCES", "IN SCHEMA release_authority ", "USAGE"],
+    ["FUNCTIONS", "IN SCHEMA release_authority ", "EXECUTE"],
+    ["TYPES", "IN SCHEMA release_authority ", "USAGE"],
+  ] as const)(
+    "rejects malicious %s creating-owner defaults at global/schema scope",
+    async (objects, scope, privilege) => {
+      if (!admin) throw new Error("real_postgres_test_unconfigured");
+      const prefix = `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedOwner} ${scope}`;
+      await admin.$executeRawUnsafe(
+        `${prefix}GRANT ${privilege} ON ${objects} TO "reviewrouter quoted acl probe"`,
+      );
+      try {
+        await expectAclRejected();
+      } finally {
+        await admin.$executeRawUnsafe(
+          `${prefix}REVOKE ${privilege} ON ${objects} FROM "reviewrouter quoted acl probe"`,
+        );
+      }
+    },
+  );
 
   it("rejects a replaced function body", async () => {
     if (!admin) throw new Error("real_postgres_test_unconfigured");
@@ -153,7 +202,7 @@ realDescribe("release authority exact catalog readiness", () => {
     if (!admin) throw new Error("real_postgres_test_unconfigured");
     await admin.$executeRawUnsafe(mutate);
     try {
-      await expectCatalogRejected();
+      await expectFinalAclRejected();
     } finally {
       await admin.$executeRawUnsafe(restore());
     }
@@ -165,7 +214,7 @@ realDescribe("release authority exact catalog readiness", () => {
       "ALTER FUNCTION release_authority.release_source_resume_is_rollout_owned() OWNER TO reviewrouter_unexpected_acl_probe",
     );
     try {
-      await expectCatalogRejected();
+      await expectFinalAclRejected();
     } finally {
       await admin.$executeRawUnsafe(
         `ALTER FUNCTION release_authority.release_source_resume_is_rollout_owned() OWNER TO ${quotedOwner}`,
@@ -178,6 +227,21 @@ realDescribe("release authority exact catalog readiness", () => {
       "an unexpected function grantee",
       "GRANT EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) TO reviewrouter_unexpected_acl_probe",
       "REVOKE ALL ON FUNCTION release_authority.observe_state(text,text,text) FROM reviewrouter_unexpected_acl_probe",
+    ],
+    [
+      "an unexpected table grantee",
+      "GRANT SELECT ON TABLE release_authority.rollout TO reviewrouter_unexpected_acl_probe",
+      "REVOKE ALL ON TABLE release_authority.rollout FROM reviewrouter_unexpected_acl_probe",
+    ],
+    [
+      "an unexpected sequence grantee",
+      "GRANT SELECT ON SEQUENCE release_authority.source_freeze_observation_observation_id_seq TO reviewrouter_unexpected_acl_probe",
+      "REVOKE ALL ON SEQUENCE release_authority.source_freeze_observation_observation_id_seq FROM reviewrouter_unexpected_acl_probe",
+    ],
+    [
+      "an unexpected type grantee",
+      "GRANT USAGE ON TYPE release_authority.aggregate_state TO reviewrouter_unexpected_acl_probe",
+      "REVOKE ALL ON TYPE release_authority.aggregate_state FROM reviewrouter_unexpected_acl_probe",
     ],
     [
       "PUBLIC schema CREATE",
@@ -203,9 +267,42 @@ realDescribe("release authority exact catalog readiness", () => {
     if (!admin) throw new Error("real_postgres_test_unconfigured");
     await admin.$executeRawUnsafe(mutate);
     try {
-      await expectCatalogRejected();
+      await expectFinalAclRejected();
     } finally {
       await admin.$executeRawUnsafe(restore);
+    }
+  });
+
+  it("independently rejects an extra ACL-bearing authority object", async () => {
+    if (!admin) throw new Error("real_postgres_test_unconfigured");
+    await admin.$executeRawUnsafe(
+      "CREATE TABLE release_authority.readiness_acl_object_probe(id integer)",
+    );
+    await admin.$executeRawUnsafe(
+      "GRANT SELECT ON release_authority.readiness_acl_object_probe TO reviewrouter_unexpected_acl_probe",
+    );
+    try {
+      const observed = await readiness();
+      expect(observed.finalAclExact).toBe(false);
+      expect(releaseAuthoritySchemaIsReady(observed)).toBe(false);
+    } finally {
+      await admin.$executeRawUnsafe(
+        "DROP TABLE release_authority.readiness_acl_object_probe",
+      );
+    }
+  });
+
+  it("rejects an inherited authority ACL through stale role membership", async () => {
+    if (!admin) throw new Error("real_postgres_test_unconfigured");
+    await admin.$executeRawUnsafe(
+      "GRANT reviewrouter_release_control TO reviewrouter_unexpected_acl_probe",
+    );
+    try {
+      await expectFinalAclRejected();
+    } finally {
+      await admin.$executeRawUnsafe(
+        "REVOKE reviewrouter_release_control FROM reviewrouter_unexpected_acl_probe",
+      );
     }
   });
 
@@ -382,6 +479,8 @@ realDescribe("release authority exact catalog readiness", () => {
       "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:e88a7cc8f29e91a86434bf14b4051f1fb17b5df02f8fc2dae6ec63d5792b398b', byte_variant='legacy_equivalent' WHERE position=1",
       "DELETE FROM release_authority.schema_migration WHERE position=11",
       "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=11",
+      "DELETE FROM release_authority.schema_migration WHERE position=12",
+      "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=12",
     ];
     for (const mutate of cases) {
       await admin.$executeRawUnsafe(
@@ -413,7 +512,7 @@ realDescribe("release authority exact catalog readiness", () => {
     const comment = comments[0]?.comment;
     if (!comment) throw new Error("real_postgres_catalog_attestation_missing");
     await admin.$executeRawUnsafe(
-      'COMMENT ON SCHEMA release_authority IS \'{"verifier":"complete_catalog_v2","catalogFingerprint":"sha256:0000"}\'',
+      'COMMENT ON SCHEMA release_authority IS \'{"verifier":"complete_catalog_v3_acl_exact","catalogFingerprint":"sha256:0000"}\'',
     );
     try {
       await expectCatalogRejected();

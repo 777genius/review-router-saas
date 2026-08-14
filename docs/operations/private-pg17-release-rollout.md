@@ -200,6 +200,12 @@ The trusted order is:
    recorded checksums/catalog provenance, and commits the valid forward chain
    atomically. A concurrent caller, timeout, partial statement failure, history
    drift, or catalog drift is a deploy blocker.
+   The database-owner role must have no `pg_default_acl` rows for tables,
+   sequences, routines, or types, either globally or scoped to the
+   `release_authority` schema. The installer checks this before any authority
+   DDL on both fresh and upgrade paths. Do not work around this gate by granting
+   to `PUBLIC` or another role: remove the noncanonical owner default, preserve
+   catalog evidence, and rerun the same operation.
 5. Only after that success may same-SHA control and witness images be deployed
    and pass health/readiness. Deploy other code that depends on the new
    authority readiness contract afterward.
@@ -248,8 +254,9 @@ The authority installer proves the append-only chain in this exact order:
 `000004_selective_source_recovery`, `000005_late_runner_effects`,
 `000006_runner_provider_creation_boundary`,
 `000007_compensation_effect_fence`, `000008_trigger_helper_acl`,
-`000009_authority_history_and_forward_repairs`, and
-`000010_recovery_effect_permits`. Migrations 000001 and 000002
+`000009_authority_history_and_forward_repairs`,
+`000010_recovery_effect_permits`, and
+`000011_default_and_final_acl_exactness`. Migrations 000001 and 000002
 are the immutable bytes published on `origin/main`; their later lock-order,
 retryability, terminal-projection, and receipt-link repairs live only in 000009.
 
@@ -260,7 +267,8 @@ a few columns or surviving routine fragments. In the install transaction the
 installer builds canonical and exact-published-legacy shadow catalogs from the
 immutable source bytes and compares a deterministic representation of every
 relation, column/default, constraint, index, sequence, routine body/property,
-trigger, schema/type/enum, owner, and ACL. Exactly one shadow must match before
+trigger, schema/type/enum, owner, ACL, and relevant `pg_default_acl` state.
+Exactly one shadow must match before
 000009 may backfill history. For a matching authority database carrying the
 previously published modified 000001/000002 bytes, migration 000009 retains
 those two exact legacy checksums as `legacy_equivalent` and converges their
@@ -269,13 +277,24 @@ recovery-effect permit protocol and its provider-neutral execution fence after
 the migration ledger exists. Only the consume winner receives the ephemeral
 receipt needed for one atomic execution validation; a late runner job changes
 consumed/executing effects to durable forward repair, and completion or
-checkpoint creation then fails closed. Existing pre-ledger authorities apply 000009
-then 000010, while authorities already recorded through 000009 apply only 000010. Health requires every ordered identity through 000010, the matching
+checkpoint creation then fails closed. Migration 000011 removes PostgreSQL's
+implicit `PUBLIC` usage from the declared authority enum before the exact ACL
+assertion. Existing pre-ledger authorities apply 000009 through 000011, while
+authorities already recorded through 000010 apply only 000011. Health requires
+every ordered identity through 000011, the matching
 canonical/approved-legacy checksum and variant, the 000006 provider creation
 column plus validated NOT NULL/order constraint and witness time bounds, the
 000007 compensation fences, the 000008 helper revocation, common ownership,
 exact role grants, and no PUBLIC authority privileges. A missing, reordered,
 unknown, or partially applied entry is release-blocking.
+
+Shadow catalog equality is not an ACL trust root. Before writing the final
+schema attestation, and independently on every runtime readiness observation,
+the gate evaluates the domain-owned object/role/privilege matrix against every
+authority table, sequence, and routine, schema privilege, object owner, column
+ACL, and type ACL. Extra grantees or ACL-bearing objects, inherited stale access,
+`PUBLIC`, grant options, missing grants, owner drift, and non-empty relevant
+owner defaults make readiness fail even if a catalog digest happens to match.
 
 An absent-ledger catalog that matches neither shadow, or matches ambiguously,
 stops before history or forward repairs are written. Preserve the failed

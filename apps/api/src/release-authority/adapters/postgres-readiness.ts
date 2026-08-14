@@ -3,6 +3,10 @@ import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { ReleaseAuthorityDatabaseReadiness } from "../application/readiness.js";
 import { releaseAuthorityCatalogVerifier } from "../domain/readiness-contract.mjs";
 import { releaseAuthorityReadOnlyCatalogDigestExpression } from "./catalog-fingerprint.mjs";
+import {
+  releaseAuthorityDefaultAclExactExpression,
+  releaseAuthorityFinalAclExactExpression,
+} from "./acl-policy-postgres.mjs";
 
 type ReadinessClient = Pick<PrismaClient, "$queryRaw">;
 
@@ -31,6 +35,8 @@ const absentAuthorityReadiness = (
   expectedCatalogFingerprint: "",
   catalogVerifier: "",
   catalogExact: false,
+  defaultAclExact: false,
+  finalAclExact: false,
   controlRoutine: false,
   providerRoutine: false,
   externalEffectProtocol: false,
@@ -299,6 +305,10 @@ const observeOnConnection = async (
 
   const catalogDigest =
     releaseAuthorityReadOnlyCatalogDigestExpression("release_authority");
+  const defaultAclExact =
+    releaseAuthorityDefaultAclExactExpression("release_authority");
+  const finalAclExact =
+    releaseAuthorityFinalAclExactExpression("release_authority");
   const rows = await prisma.$queryRaw<ReleaseAuthorityDatabaseReadiness[]>(
     Prisma.sql`
       WITH facts AS (
@@ -314,6 +324,8 @@ const observeOnConnection = async (
           attestation->>'verifier' = ${releaseAuthorityCatalogVerifier}
           AND attestation->>'catalogFingerprint' = 'sha256:' || catalog_digest
           AS catalog_exact,
+          ${Prisma.raw(defaultAclExact)} AS default_acl_exact,
+          ${Prisma.raw(finalAclExact)} AS final_acl_exact,
           NOT EXISTS (
             SELECT 1
             FROM pg_catalog.pg_roles candidate
@@ -368,7 +380,8 @@ const observeOnConnection = async (
           AS "authorityOwnerRoleName",
         (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
         current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
-        CASE WHEN catalog_exact AND owner_membership_exact AND role_topology_exact THEN 10 ELSE 0 END
+        CASE WHEN catalog_exact AND default_acl_exact AND final_acl_exact
+          AND owner_membership_exact AND role_topology_exact THEN 11 ELSE 0 END
           AS "schemaVersion",
         '[]'::jsonb AS "migrationManifest",
         'sha256:' || catalog_digest AS "catalogFingerprint",
@@ -376,6 +389,8 @@ const observeOnConnection = async (
           AS "expectedCatalogFingerprint",
         coalesce(attestation->>'verifier', '') AS "catalogVerifier",
         catalog_exact AND owner_membership_exact AND role_topology_exact AS "catalogExact",
+        default_acl_exact AS "defaultAclExact",
+        final_acl_exact AS "finalAclExact",
         catalog_exact AND owner_membership_exact AS "controlRoutine",
         catalog_exact AND owner_membership_exact AS "providerRoutine",
         to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL
@@ -398,17 +413,17 @@ const observeOnConnection = async (
         catalog_exact AND owner_membership_exact
           AS "cleanupWitnessTemporalSemantics",
         catalog_exact AND owner_membership_exact AS "requiredTriggers",
-        catalog_exact AND owner_membership_exact AS "authorityOwnershipExact",
-        catalog_exact AND owner_membership_exact AS "authorityAclExact",
-        catalog_exact AND owner_membership_exact AS "publicAuthorityRevoked",
-        catalog_exact AND owner_membership_exact AS "authorityTablesRevoked"
+        final_acl_exact AND owner_membership_exact AS "authorityOwnershipExact",
+        final_acl_exact AND owner_membership_exact AS "authorityAclExact",
+        final_acl_exact AND owner_membership_exact AS "publicAuthorityRevoked",
+        final_acl_exact AND owner_membership_exact AS "authorityTablesRevoked"
       FROM exactness
     `,
   );
   if (rows.length !== 1 || !rows[0])
     throw new Error("release_control_database_identity_unavailable");
   const readiness = rows[0];
-  if (readiness.schemaVersion !== 10 || readiness.migrationManifest.length > 0)
+  if (readiness.schemaVersion !== 11 || readiness.migrationManifest.length > 0)
     return readiness;
   const manifestRows = await prisma.$queryRaw<
     Pick<ReleaseAuthorityDatabaseReadiness, "migrationManifest">[]

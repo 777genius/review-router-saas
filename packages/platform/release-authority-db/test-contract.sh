@@ -15,7 +15,7 @@ for _ in $(seq 1 60); do
 done
 
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
-  "CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'provider'; CREATE ROLE reviewrouter_release_witness LOGIN PASSWORD 'witness';"
+  "CREATE ROLE reviewrouter_release_control LOGIN PASSWORD 'control'; CREATE ROLE reviewrouter_provider_authority LOGIN PASSWORD 'provider'; CREATE ROLE reviewrouter_release_witness LOGIN PASSWORD 'witness'; CREATE ROLE \"reviewrouter quoted acl probe\" NOLOGIN;"
 docker cp "$root/packages/platform/release-authority-db/migrations/000001_release_authority/migration.sql" \
   "$name:/tmp/migration.sql" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -f /tmp/migration.sql >/dev/null
@@ -108,6 +108,26 @@ done
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
   "CREATE DATABASE rr_authority_gate" >/dev/null
 
+# Every creating-owner default family, including PUBLIC and a quoted arbitrary
+# role, must stop a fresh install before authority DDL. Restoring the empty
+# canonical default permits the same bundle to proceed.
+for default_case in \
+  'TABLES|SELECT|PUBLIC' \
+  'SEQUENCES|USAGE|"reviewrouter quoted acl probe"' \
+  'FUNCTIONS|EXECUTE|"reviewrouter quoted acl probe"' \
+  'TYPES|USAGE|"reviewrouter quoted acl probe"'; do
+  IFS='|' read -r objects privilege grantee <<<"$default_case"
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+    "ALTER DEFAULT PRIVILEGES GRANT $privilege ON $objects TO $grantee" >/dev/null
+  if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+    -f /tmp/fresh.sql >/dev/null 2>&1; then
+    echo "fresh authority install accepted malicious global $objects defaults" >&2
+    exit 1
+  fi
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+    "ALTER DEFAULT PRIVILEGES REVOKE $privilege ON $objects FROM $grantee" >/dev/null
+done
+
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
   -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
   echo "incremental authority upgrade admitted an absent authority schema" >&2
@@ -172,6 +192,22 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
 fi
 wait "$upgrade_gate_pid"
 
+# Schema-scoped defaults are equally noncanonical on upgrade and the failed
+# transaction must leave the installed authority unchanged.
+for default_case in \
+  'TABLES|SELECT' 'SEQUENCES|USAGE' 'FUNCTIONS|EXECUTE' 'TYPES|USAGE'; do
+  IFS='|' read -r objects privilege <<<"$default_case"
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+    "ALTER DEFAULT PRIVILEGES IN SCHEMA release_authority GRANT $privilege ON $objects TO \"reviewrouter quoted acl probe\"" >/dev/null
+  if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+    -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+    echo "authority upgrade accepted malicious schema $objects defaults" >&2
+    exit 1
+  fi
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+    "ALTER DEFAULT PRIVILEGES IN SCHEMA release_authority REVOKE $privilege ON $objects FROM \"reviewrouter quoted acl probe\"" >/dev/null
+done
+
 # A conflicting table lock is bounded by lock_timeout rather than waiting for
 # the process timeout. No migration history changes on the failed attempt.
 gate_manifest=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
@@ -206,6 +242,15 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
 fi
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
   "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:5e75a0deb033644c9a418082181dd9f21d65771cd47a7684f7497aa56e157107' WHERE position=11" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=12" >/dev/null
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+  echo "authority upgrade accepted ACL exactness checksum drift" >&2
+  exit 1
+fi
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420' WHERE position=12" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
   -f /tmp/release-authority-install.sql >/dev/null
 first_gate_attestation=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \

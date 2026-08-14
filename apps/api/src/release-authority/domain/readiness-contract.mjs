@@ -4,7 +4,7 @@
  * Keep catalog identities here, outside PostgreSQL adapters, so installation
  * and runtime readiness cannot silently accept different migration histories.
  */
-export const releaseAuthorityCatalogVerifier = "complete_catalog_v2";
+export const releaseAuthorityCatalogVerifier = "complete_catalog_v3_acl_exact";
 
 export const releaseAuthorityMigrationContract = Object.freeze([
   [
@@ -52,6 +52,10 @@ export const releaseAuthorityMigrationContract = Object.freeze([
   [
     "000010_recovery_effect_permits",
     "sha256:5e75a0deb033644c9a418082181dd9f21d65771cd47a7684f7497aa56e157107",
+  ],
+  [
+    "000011_default_and_final_acl_exactness",
+    "sha256:727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
   ],
 ]);
 
