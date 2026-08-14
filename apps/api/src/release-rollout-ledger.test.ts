@@ -345,6 +345,7 @@ describe("release rollout ledger internal API", () => {
     };
     expect(() => assertOneShotMutationPermit(permit, new Date())).not.toThrow();
     const providerMutationAuthority = new ProviderMutationAuthorityService({
+      recover: async () => ({ status: "absent" }),
       issue: async () => permit,
       consume: async () => {
         if (state === "fresh") state = "consumed";
@@ -374,6 +375,18 @@ describe("release rollout ledger internal API", () => {
         headers: { authorization: `Bearer ${token}` },
         payload,
       });
+    expect(
+      (
+        await request("recover", {
+          rolloutId: permit.rolloutId,
+          operation: permit.operation,
+          resource,
+          ownerId: permit.ownerId,
+          expected,
+          leaseSeconds: 60,
+        })
+      ).json(),
+    ).toEqual({ status: "absent" });
     expect(
       (
         await request("issue", {

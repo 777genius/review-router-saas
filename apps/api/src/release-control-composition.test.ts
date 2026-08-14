@@ -148,7 +148,7 @@ const authorityReadiness = (
       ],
       [
         "000012_provider_mutation_resource_fence",
-        "8fc5e73892ff81a18047fa5ebdf3b6ddeb85cea6c4d920afd734c5e7a6b3d686",
+        "25dad3460923729a2dc2f3f2ba0f9e0c13913ac9c8a146f6952bb5e11b1ada31",
       ],
     ].map(([migrationName, checksum], index) => ({
       position: index + 1,

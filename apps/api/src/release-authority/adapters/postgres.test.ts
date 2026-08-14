@@ -25,6 +25,8 @@ class QueryRecorder {
       return [{ value: "recorded" }] as T;
     if (text.includes("release_provider_mutation_validate_execution"))
       return [{ value: true }] as T;
+    if (text.includes("release_provider_mutation_recover"))
+      return [{ value: { status: "absent" } }] as T;
     if (
       text.includes("release_provider_mutation_complete") ||
       text.includes("release_provider_mutation_reconcile")

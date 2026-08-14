@@ -98,6 +98,76 @@ describe("HTTP provider mutation authority", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it("recovers a committed permit after its issuance response is lost", async () => {
+    const receipt = {
+      rolloutId: permit.rolloutId,
+      operation: permit.operation,
+      resource: permit.resource,
+      ownerId: permit.ownerId,
+      epoch: permit.epoch,
+      permitId: permit.permitId,
+      receiptId: "d".repeat(64),
+      expected: permit.expected,
+      consumedAt: "2026-08-14T00:00:01.000Z",
+    };
+    const observation = {
+      resource: permit.resource,
+      state: { fingerprint: `sha256:${"e".repeat(64)}`, version: null },
+      observedAt: "2026-08-14T00:00:02.000Z",
+    };
+    let issued = false;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/recover"))
+        return Response.json(
+          issued ? { status: "permit", permit } : { status: "absent" },
+        );
+      if (url.endsWith("/issue")) {
+        issued = true;
+        throw new Error("response lost after issue commit");
+      }
+      if (url.endsWith("/consume")) return Response.json(receipt);
+      if (url.endsWith("/validate-execution"))
+        return Response.json({ authorized: true });
+      if (url.endsWith("/complete"))
+        return Response.json({ status: "terminal" });
+      throw new Error("unexpected authority operation");
+    });
+    const authority = new HttpProviderMutationAuthorityAdapter(
+      "https://authority.invalid",
+      "secret",
+      fetchImpl,
+    );
+    const mutate = vi.fn().mockResolvedValue(undefined);
+    const input = {
+      rolloutId: permit.rolloutId,
+      operation: permit.operation,
+      resource: permit.resource,
+      ownerId: permit.ownerId,
+      expected: permit.expected,
+      expectedPostcondition: observation.state,
+      observe: vi
+        .fn()
+        .mockResolvedValueOnce({
+          resource: permit.resource,
+          state: permit.expected,
+          observedAt: "2026-08-14T00:00:00.000Z",
+        })
+        .mockResolvedValue(observation),
+      mutate,
+    };
+    const serialized = new AuthoritySerializedMutation(
+      authority,
+      () => new Date("2026-08-14T00:00:00.000Z"),
+    );
+    await expect(serialized.execute(input)).rejects.toThrow(
+      '"code":"provider_http_request_failed"',
+    );
+    await expect(serialized.execute(input)).resolves.toMatchObject({
+      status: "applied",
+    });
+    expect(mutate).toHaveBeenCalledOnce();
+  });
+
   it("retries exact consume and terminal commands after response loss", async () => {
     const receipt = {
       rolloutId: permit.rolloutId,
@@ -139,6 +209,45 @@ describe("HTTP provider mutation authority", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
+  it("retries the durable recovery read after a lost response", async () => {
+    const receipt = {
+      rolloutId: permit.rolloutId,
+      operation: permit.operation,
+      resource: permit.resource,
+      ownerId: permit.ownerId,
+      epoch: permit.epoch,
+      permitId: permit.permitId,
+      receiptId: "d".repeat(64),
+      expected: permit.expected,
+      consumedAt: "2026-08-14T00:00:01.000Z",
+    };
+    const recovery = {
+      status: "receipt" as const,
+      phase: "executing" as const,
+      reconciliationOnly: true,
+      receipt,
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("recovery response lost"))
+      .mockResolvedValueOnce(Response.json(recovery));
+    await expect(
+      new HttpProviderMutationAuthorityAdapter(
+        "https://authority.invalid",
+        "secret",
+        fetchImpl,
+      ).recover({
+        rolloutId: permit.rolloutId,
+        operation: permit.operation,
+        resource: permit.resource,
+        ownerId: permit.ownerId,
+        expected: permit.expected,
+        leaseSeconds: 60,
+      }),
+    ).resolves.toEqual(recovery);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("converges committed consume and complete response loss without a duplicate provider write", async () => {
     const receipt = {
       rolloutId: permit.rolloutId,
@@ -166,6 +275,7 @@ describe("HTTP provider mutation authority", () => {
     let consumeCommitted = false;
     let completeCommitted = false;
     const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/recover")) return Response.json({ status: "absent" });
       if (url.endsWith("/issue")) return Response.json(permit);
       if (url.endsWith("/consume")) {
         if (!consumeCommitted) {
@@ -217,7 +327,7 @@ describe("HTTP provider mutation authority", () => {
     expect(mutate).toHaveBeenCalledOnce();
     expect(consumeCommitted).toBe(true);
     expect(completeCommitted).toBe(true);
-    expect(fetchImpl).toHaveBeenCalledTimes(6);
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
   });
 
   it("drops invalid JSON bodies, response headers, and request tokens", async () => {

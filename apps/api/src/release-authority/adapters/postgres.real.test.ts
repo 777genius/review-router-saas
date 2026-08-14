@@ -327,6 +327,78 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         ownerId: "actor-expiring",
       }),
     ).rejects.toThrow();
+
+    const recoverRequest = {
+      ...base,
+      operation: `recover:srv-${unique.slice(0, 12)}`,
+      resource: { ...base.resource, id: `srv-recover-${unique.slice(0, 12)}` },
+      ownerId: "actor-recover-one",
+    } as const;
+    const recoverPermit = await authority.issue(recoverRequest);
+    await expect(authority.recover(recoverRequest)).resolves.toEqual({
+      status: "permit",
+      permit: recoverPermit,
+    });
+    await expect(
+      authority.recover({ ...recoverRequest, ownerId: "actor-conflict" }),
+    ).rejects.toThrow();
+    const recoverReceipt = await authority.consume(recoverPermit);
+    await expect(authority.recover(recoverRequest)).resolves.toEqual({
+      status: "receipt",
+      phase: "consumed",
+      reconciliationOnly: false,
+      receipt: recoverReceipt,
+    });
+    await admin.$executeRawUnsafe(
+      `UPDATE release_authority.provider_mutation
+       SET expires_at=clock_timestamp()-interval '1 second'
+       WHERE rollout_id=$1 AND operation=$2 AND provider=$3
+         AND resource_kind=$4 AND resource_id=$5`,
+      recoverPermit.rolloutId,
+      recoverPermit.operation,
+      recoverPermit.resource.provider,
+      recoverPermit.resource.kind,
+      recoverPermit.resource.id,
+    );
+    const takeoverRequest = {
+      ...recoverRequest,
+      ownerId: "actor-recover-two",
+    } as const;
+    const takeover = await authority.recover(takeoverRequest);
+    expect(takeover.status).toBe("permit");
+    if (takeover.status !== "permit")
+      throw new Error("provider_mutation_safe_takeover_missing");
+    expect(takeover.permit.epoch).toBeGreaterThan(recoverPermit.epoch);
+    await expect(authority.validateExecution(recoverReceipt)).rejects.toThrow();
+    const takeoverReceipt = await authority.consume(takeover.permit);
+    await expect(authority.validateExecution(takeoverReceipt)).resolves.toBe(
+      true,
+    );
+    await expect(authority.recover(takeoverRequest)).resolves.toEqual({
+      status: "receipt",
+      phase: "executing",
+      reconciliationOnly: true,
+      receipt: takeoverReceipt,
+    });
+    await expect(
+      authority.recover({ ...takeoverRequest, ownerId: "actor-conflict" }),
+    ).rejects.toThrow();
+    await authority.reconcile({
+      result: "exact_postcondition",
+      receipt: takeoverReceipt,
+      observation: {
+        resource: takeoverReceipt.resource,
+        state: base.expected,
+        observedAt: new Date().toISOString(),
+      },
+    });
+    await expect(authority.recover(takeoverRequest)).resolves.toMatchObject({
+      status: "terminal",
+      outcome: {
+        result: "exact_postcondition",
+        receiptId: takeoverReceipt.receiptId,
+      },
+    });
     await expect(
       authority.issue({
         ...base,

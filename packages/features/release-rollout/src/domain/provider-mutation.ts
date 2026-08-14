@@ -90,23 +90,63 @@ export const ProviderMutationTerminalResult = Object.freeze({
   PreconditionDrift: "precondition_drift",
   ExecutionNotAuthorized: "execution_not_authorized",
   AmbiguousForwardRepair: "ambiguous_forward_repair",
+  ExpiredUnconsumed: "expired_unconsumed",
 } as const);
 export type ProviderMutationTerminalResult =
   (typeof ProviderMutationTerminalResult)[keyof typeof ProviderMutationTerminalResult];
 
-export type MutationTerminalOutcome = Readonly<{
+type MutationTerminalOutcomeBase = Readonly<{
   status: "terminal";
-  result: ProviderMutationTerminalResult;
   rolloutId: string;
   operation: string;
   resource: ProviderResourceIdentity;
   ownerId: string;
   epoch: number;
   permitId: string;
-  receiptId: string;
-  observation: ObservedProviderPostcondition | null;
+  expected: ExpectedProviderState;
   completedAt: string;
 }>;
+
+export type MutationTerminalOutcome = MutationTerminalOutcomeBase &
+  (
+    | Readonly<{
+        result: Exclude<ProviderMutationTerminalResult, "expired_unconsumed">;
+        receiptId: string;
+        consumedAt: string;
+        observation: ObservedProviderPostcondition | null;
+      }>
+    | Readonly<{
+        result: "expired_unconsumed";
+        receiptId: null;
+        consumedAt: null;
+        observation: null;
+      }>
+  );
+
+export type ProviderMutationRecoveryRequest = Readonly<{
+  rolloutId: string;
+  operation: string;
+  resource: ProviderResourceIdentity;
+  ownerId: string;
+  expected: ExpectedProviderState;
+  leaseSeconds: number;
+}>;
+
+/**
+ * Durable authority state for an idempotent mutation identity. An executing
+ * receipt is reconciliation-only: provider I/O may already have happened and
+ * must never be replayed from this state.
+ */
+export type ProviderMutationRecovery =
+  | Readonly<{ status: "absent" }>
+  | Readonly<{ status: "permit"; permit: OneShotMutationPermit }>
+  | Readonly<{
+      status: "receipt";
+      phase: "consumed" | "executing";
+      reconciliationOnly: boolean;
+      receipt: MutationExecutionReceipt;
+    }>
+  | Readonly<{ status: "terminal"; outcome: MutationTerminalOutcome }>;
 
 const sha256 = /^sha256:[a-f0-9]{64}$/u;
 const token = /^[a-f0-9]{64}$/u;

@@ -46,12 +46,12 @@ describe("release authority ACL policy", () => {
     expect(releaseAuthorityFinalAclPolicy.grantOptions).toEqual([]);
     expect(releaseAuthorityFinalAclPolicy.roleMemberships).toEqual([]);
     expect(new Set(releaseAuthorityFinalAclPolicy.relations).size).toBe(13);
-    expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(73);
+    expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(74);
     expect(
       new Set(
         releaseAuthorityFinalAclPolicy.routineExecuteRoles
           .reviewrouter_release_control,
       ).size,
-    ).toBe(47);
+    ).toBe(48);
   });
 });

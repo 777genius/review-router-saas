@@ -667,6 +667,17 @@ export class RoutineProviderMutationAuthorityAdapter implements ReleaseProviderM
           }
         : prisma;
   }
+
+  recover(
+    input: Parameters<ReleaseProviderMutationAuthorityPort["recover"]>[0],
+  ): ReturnType<ReleaseProviderMutationAuthorityPort["recover"]> {
+    return firstValue(
+      this.prisma,
+      Prisma.sql`SELECT release_authority.release_provider_mutation_recover(${asJsonb(input)}) AS value`,
+    ).then(requiredRecord) as ReturnType<
+      ReleaseProviderMutationAuthorityPort["recover"]
+    >;
+  }
   async issue(
     input: Parameters<ReleaseProviderMutationAuthorityPort["issue"]>[0],
   ): ReturnType<ReleaseProviderMutationAuthorityPort["issue"]> {

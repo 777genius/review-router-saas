@@ -15,6 +15,9 @@ export class TestProviderMutationAuthority implements ProviderMutationAuthorityP
   private hash(value: string): string {
     return createHash("sha256").update(value).digest("hex");
   }
+  async recover(): ReturnType<ProviderMutationAuthorityPort["recover"]> {
+    return { status: "absent" };
+  }
   async issue(
     input: Parameters<ProviderMutationAuthorityPort["issue"]>[0],
   ): Promise<OneShotMutationPermit> {

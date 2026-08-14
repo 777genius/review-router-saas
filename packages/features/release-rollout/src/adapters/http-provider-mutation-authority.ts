@@ -2,6 +2,7 @@ import type { ProviderMutationAuthorityPort } from "../application/provider-muta
 import type {
   MutationExecutionReceipt,
   OneShotMutationPermit,
+  ProviderMutationRecovery,
 } from "../domain/provider-mutation";
 import {
   BoundedProviderHttpClient,
@@ -19,6 +20,12 @@ export class HttpProviderMutationAuthorityAdapter implements ProviderMutationAut
     if (!origin.startsWith("https://") || !token)
       throw new Error("provider_mutation_authority_configuration_invalid");
     this.http = new BoundedProviderHttpClient(fetchImpl);
+  }
+
+  recover(
+    input: Parameters<ProviderMutationAuthorityPort["recover"]>[0],
+  ): Promise<ProviderMutationRecovery> {
+    return this.command("recover", input, true);
   }
 
   issue(

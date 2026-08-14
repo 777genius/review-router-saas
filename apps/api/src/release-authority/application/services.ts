@@ -259,6 +259,12 @@ export class ProviderMutationAuthorityService {
     private readonly repository: ReleaseProviderMutationAuthorityPort,
     private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate = withoutHighRiskGate,
   ) {}
+  recover = async (
+    input: Parameters<ReleaseProviderMutationAuthorityPort["recover"]>[0],
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(() => this.repository.recover(input)),
+    );
   issue = async (
     input: Parameters<ReleaseProviderMutationAuthorityPort["issue"]>[0],
   ) =>

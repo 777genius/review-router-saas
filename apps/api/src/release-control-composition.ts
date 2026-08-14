@@ -433,6 +433,7 @@ export async function createReleaseControlApp(input: {
     ...(dependencies.providerMutationAuthority
       ? {
           providerMutationAuthority: {
+            recover: dependencies.providerMutationAuthority.recover,
             issue: dependencies.providerMutationAuthority.issue,
             consume: dependencies.providerMutationAuthority.consume,
             validateExecution:

@@ -703,6 +703,12 @@ export async function registerReleaseRolloutLedgerRoutes(
     return authorize(request, dependencies.providerAuthorityTokenSha256);
   };
   app.post(
+    "/v1/provider-mutations/recover",
+    { preHandler: providerMutationControl },
+    async (request) =>
+      providerMutationAuthority().recover(mutationIssueRequest(request.body)),
+  );
+  app.post(
     "/v1/provider-mutations/issue",
     { preHandler: providerMutationControl },
     async (request) =>

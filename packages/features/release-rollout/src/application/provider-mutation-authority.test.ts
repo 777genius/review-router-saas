@@ -34,6 +34,13 @@ class FakeAuthority implements ProviderMutationAuthorityPort {
   completed = 0;
   expiresAt = "2026-08-14T00:01:00.000Z";
   lastPermit: OneShotMutationPermit | undefined;
+  recovery: Awaited<ReturnType<ProviderMutationAuthorityPort["recover"]>> = {
+    status: "absent",
+  };
+
+  async recover() {
+    return this.recovery;
+  }
 
   async issue(input: Parameters<ProviderMutationAuthorityPort["issue"]>[0]) {
     if (this.active) throw new Error("provider_mutation_lease_held");
@@ -102,6 +109,115 @@ const execute = (
   });
 
 describe("authority-serialized provider mutation", () => {
+  it("resumes a durable consumed receipt after a crash before provider I/O", async () => {
+    const authority = new FakeAuthority();
+    const permit = await authority.issue({
+      rolloutId: "rollout-one",
+      operation: "suspend_service",
+      resource,
+      ownerId: "actor-one",
+      expected: before,
+      leaseSeconds: 60,
+    });
+    const receipt = await authority.consume(permit);
+    authority.recovery = {
+      status: "receipt",
+      phase: "consumed",
+      reconciliationOnly: false,
+      receipt,
+    };
+    const mutate = vi.fn().mockResolvedValue(undefined);
+    await expect(execute(authority, { mutate })).resolves.toMatchObject({
+      status: "applied",
+    });
+    expect(mutate).toHaveBeenCalledOnce();
+  });
+
+  it("reconciles a recovered executing receipt without replaying provider I/O", async () => {
+    const authority = new FakeAuthority();
+    const permit = await authority.issue({
+      rolloutId: "rollout-one",
+      operation: "suspend_service",
+      resource,
+      ownerId: "actor-one",
+      expected: before,
+      leaseSeconds: 60,
+    });
+    const receipt = await authority.consume(permit);
+    await authority.validateExecution(receipt);
+    authority.recovery = {
+      status: "receipt",
+      phase: "executing",
+      reconciliationOnly: true,
+      receipt,
+    };
+    const mutate = vi.fn();
+    await expect(
+      execute(authority, { mutate, observe: async () => observed(after) }),
+    ).resolves.toMatchObject({ status: "reconciled" });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(authority.reconciliations.at(-1)?.result).toBe(
+      "exact_postcondition",
+    );
+  });
+
+  it("makes a recovered executing receipt permanently ambiguous when the postcondition is unproven", async () => {
+    const authority = new FakeAuthority();
+    const permit = await authority.issue({
+      rolloutId: "rollout-one",
+      operation: "suspend_service",
+      resource,
+      ownerId: "actor-one",
+      expected: before,
+      leaseSeconds: 60,
+    });
+    const receipt = await authority.consume(permit);
+    await authority.validateExecution(receipt);
+    authority.recovery = {
+      status: "receipt",
+      phase: "executing",
+      reconciliationOnly: true,
+      receipt,
+    };
+    const mutate = vi.fn();
+    await expect(
+      execute(authority, { mutate, observe: async () => observed(before) }),
+    ).rejects.toThrow("provider_mutation_forward_repair_required");
+    expect(mutate).not.toHaveBeenCalled();
+    expect(authority.reconciliations.at(-1)?.result).toBe(
+      "ambiguous_forward_repair",
+    );
+  });
+
+  it("returns a durable terminal outcome after a lost completion response", async () => {
+    const authority = new FakeAuthority();
+    const observation = observed(after);
+    const mutate = vi.fn();
+    authority.recovery = {
+      status: "terminal",
+      outcome: {
+        status: "terminal",
+        result: "exact_postcondition",
+        rolloutId: "rollout-one",
+        operation: "suspend_service",
+        resource,
+        ownerId: "actor-one",
+        epoch: 1,
+        permitId: "permit-1",
+        receiptId: "receipt-1",
+        expected: before,
+        consumedAt: "2026-08-14T00:00:01.000Z",
+        observation,
+        completedAt: "2026-08-14T00:00:02.000Z",
+      },
+    };
+    await expect(execute(authority, { mutate })).resolves.toMatchObject({
+      status: "reconciled",
+      observation,
+    });
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
   it("allows one concurrent actor and rejects the other", async () => {
     const authority = new FakeAuthority();
     let release!: () => void;

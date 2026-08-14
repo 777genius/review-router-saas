@@ -561,7 +561,11 @@ CREATE FUNCTION release_authority.release_provider_mutation_outcome(
     'resource',jsonb_build_object('provider',p_row.provider,
       'kind',p_row.resource_kind,'id',p_row.resource_id),
     'ownerId',p_row.owner_id,'epoch',p_row.epoch,'permitId',p_row.permit_id,
-    'receiptId',p_row.receipt_id,'observation',p_row.observation,
+    'receiptId',p_row.receipt_id,
+    'expected',jsonb_build_object('fingerprint',p_row.expected_fingerprint,
+      'version',p_row.expected_version),
+    'consumedAt',to_char(p_row.consumed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'observation',p_row.observation,
     'completedAt',to_char(p_row.completed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
 $body$;
 
@@ -691,6 +695,101 @@ BEGIN
     RETURNING * INTO mutation;
   END IF;
   RETURN release_authority.release_provider_mutation_permit(mutation);
+END $body$;
+
+-- Durable idempotency read and bounded takeover. A stale consumed record is
+-- safe to rotate because execution validation did not commit; the epoch change
+-- invalidates the old receipt atomically. Executing is reconciliation-only.
+CREATE FUNCTION release_authority.release_provider_mutation_recover(p_input jsonb)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $body$
+DECLARE mutation release_authority.provider_mutation%ROWTYPE;
+DECLARE resource_lease release_authority.provider_resource_lease%ROWTYPE;
+DECLARE seconds integer;
+DECLARE new_permit_id text;
+BEGIN
+  IF jsonb_typeof(p_input)<>'object'
+    OR jsonb_array_length(jsonb_path_query_array(p_input,'$.keyvalue()'))<>6
+    OR NOT p_input ?& ARRAY['rolloutId','operation','resource','ownerId','expected','leaseSeconds']
+    OR length(p_input->>'rolloutId') NOT BETWEEN 1 AND 256
+    OR length(p_input->>'operation') NOT BETWEEN 1 AND 256
+    OR coalesce(p_input->>'ownerId','') !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'
+    OR jsonb_typeof(p_input->'resource')<>'object'
+    OR jsonb_array_length(jsonb_path_query_array(p_input->'resource','$.keyvalue()'))<>3
+    OR NOT (p_input->'resource') ?& ARRAY['provider','kind','id']
+    OR p_input#>>'{resource,provider}' <> 'render'
+    OR p_input#>>'{resource,kind}' NOT IN (
+      'service','service_environment','deploy_creation_slot','job_creation_intent')
+    OR length(p_input#>>'{resource,id}') NOT BETWEEN 1 AND 256
+    OR jsonb_typeof(p_input->'expected')<>'object'
+    OR jsonb_array_length(jsonb_path_query_array(p_input->'expected','$.keyvalue()'))<>2
+    OR NOT (p_input->'expected') ?& ARRAY['fingerprint','version']
+    OR coalesce(p_input#>>'{expected,fingerprint}','') !~ '^sha256:[a-f0-9]{64}$'
+    OR ((p_input#>'{expected,version}') <> 'null'::jsonb
+      AND length(p_input#>>'{expected,version}') NOT BETWEEN 1 AND 256)
+    OR jsonb_typeof(p_input->'leaseSeconds')<>'number'
+    OR coalesce(p_input->>'leaseSeconds','') !~ '^[0-9]+$'
+    OR (p_input->>'leaseSeconds')::numeric NOT BETWEEN 5 AND 300
+  THEN RAISE EXCEPTION 'provider mutation recovery invalid'; END IF;
+  seconds := (p_input->>'leaseSeconds')::integer;
+  SELECT * INTO mutation FROM release_authority.provider_mutation
+  WHERE rollout_id=p_input->>'rolloutId' AND operation=p_input->>'operation'
+    AND provider=p_input#>>'{resource,provider}'
+    AND resource_kind=p_input#>>'{resource,kind}'
+    AND resource_id=p_input#>>'{resource,id}' FOR UPDATE;
+  IF NOT FOUND THEN RETURN jsonb_build_object('status','absent'); END IF;
+  SELECT * INTO STRICT resource_lease FROM release_authority.provider_resource_lease
+  WHERE provider=mutation.provider AND resource_kind=mutation.resource_kind
+    AND resource_id=mutation.resource_id FOR UPDATE;
+  IF mutation.expected_fingerprint<>p_input#>>'{expected,fingerprint}'
+    OR mutation.expected_version IS DISTINCT FROM nullif(p_input#>>'{expected,version}','')
+    OR (mutation.owner_id<>p_input->>'ownerId' AND (
+      mutation.completed_at IS NOT NULL OR mutation.state='executing'
+      OR mutation.expires_at>clock_timestamp()))
+  THEN RAISE EXCEPTION 'provider mutation recovery binding conflict'; END IF;
+  IF mutation.completed_at IS NOT NULL THEN
+    RETURN jsonb_build_object('status','terminal','outcome',
+      release_authority.release_provider_mutation_outcome(mutation));
+  END IF;
+  IF resource_lease.fence_epoch<>mutation.epoch
+    OR resource_lease.active_rollout_id<>mutation.rollout_id
+    OR resource_lease.active_operation<>mutation.operation
+    OR resource_lease.active_permit_id<>mutation.permit_id
+  THEN RAISE EXCEPTION 'provider mutation recovery resource fence conflict'; END IF;
+  IF mutation.state='claimed' THEN
+    IF mutation.expires_at<=clock_timestamp() THEN
+      RETURN jsonb_build_object('status','absent');
+    END IF;
+    RETURN jsonb_build_object('status','permit','permit',
+      release_authority.release_provider_mutation_permit(mutation));
+  END IF;
+  IF mutation.state='consumed' AND mutation.expires_at<=clock_timestamp() THEN
+    new_permit_id := replace(gen_random_uuid()::text,'-','')||
+      replace(gen_random_uuid()::text,'-','');
+    UPDATE release_authority.provider_resource_lease SET
+      fence_epoch=fence_epoch+1,active_permit_id=new_permit_id,
+      active_state='claimed',updated_at=date_trunc('milliseconds',clock_timestamp())
+    WHERE provider=mutation.provider AND resource_kind=mutation.resource_kind
+      AND resource_id=mutation.resource_id RETURNING * INTO resource_lease;
+    UPDATE release_authority.provider_mutation SET state='claimed',
+      owner_id=p_input->>'ownerId',epoch=resource_lease.fence_epoch,
+      permit_id=new_permit_id,
+      permit_token=replace(gen_random_uuid()::text,'-','')||
+        replace(gen_random_uuid()::text,'-',''),
+      issued_at=date_trunc('milliseconds',clock_timestamp()),
+      expires_at=date_trunc('milliseconds',clock_timestamp()+make_interval(secs=>seconds)),
+      consumed_at=NULL,receipt_id=NULL
+    WHERE rollout_id=mutation.rollout_id AND operation=mutation.operation
+      AND provider=mutation.provider AND resource_kind=mutation.resource_kind
+      AND resource_id=mutation.resource_id RETURNING * INTO mutation;
+    RETURN jsonb_build_object('status','permit','permit',
+      release_authority.release_provider_mutation_permit(mutation));
+  END IF;
+  IF mutation.state IN ('consumed','executing') THEN
+    RETURN jsonb_build_object('status','receipt','phase',mutation.state,
+      'reconciliationOnly',mutation.state='executing','receipt',
+      release_authority.release_provider_mutation_receipt(mutation));
+  END IF;
+  RAISE EXCEPTION 'provider mutation recovery state invalid';
 END $body$;
 
 CREATE FUNCTION release_authority.release_provider_mutation_consume(p_input jsonb)
@@ -873,6 +972,7 @@ REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_receipt(
 REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_outcome(
   release_authority.provider_mutation) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_issue(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_recover(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_consume(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_validate_execution(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_finish(jsonb,boolean) FROM PUBLIC;
@@ -891,6 +991,8 @@ BEGIN
     GRANT EXECUTE ON FUNCTION release_authority.release_recovery_effect_reconcile(jsonb)
       TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_provider_mutation_issue(jsonb)
+      TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_provider_mutation_recover(jsonb)
       TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_provider_mutation_consume(jsonb)
       TO reviewrouter_release_control;
