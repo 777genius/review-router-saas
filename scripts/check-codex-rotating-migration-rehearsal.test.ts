@@ -148,7 +148,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "verifyCodexRotatingDatabaseCatalog(observation.catalog, {",
     );
     expect(source).toContain(
-      "production catalog verifier rejected the PostgreSQL 17 rehearsal",
+      'assert(result.ok, "production_catalog_verifier_rejected_rehearsal")',
     );
     expect(source).toContain("verifyPrivileges: false");
     const collection =
@@ -377,7 +377,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).not.toContain("PGAPPNAME");
     expect(source).toContain(
-      "rehearsal-only rolled-back history contract mismatch",
+      "rehearsal_rolled_back_history_contract_mismatch:${migrationName}",
     );
     expect(source).not.toContain(
       "convergeSyntheticReleaseOwnerEquivalentPrivileges",
@@ -843,6 +843,11 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   });
 
   it("runs the positive proof with isolated identities, database time, and replay evidence", () => {
+    const runtimeWritebackProof =
+      /function proveRuntimeVersionedWriteback\(url, clients\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(runtimeWritebackProof).toBeDefined();
     for (const environmentName of [
       "REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL",
       "REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL",
@@ -867,7 +872,16 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toMatch(
       /already connected\.\*deprecated\|deprecated\.\*already connected/iu,
     );
-    expect(source).toContain("clients.release.toString()");
+    expect(runtimeWritebackProof).toContain(
+      "release: createDatabaseCredentialBoundary(clients.release)",
+    );
+    expect(runtimeWritebackProof).toContain(
+      "REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL_FILE:",
+    );
+    expect(runtimeWritebackProof).toContain(
+      "credentials.release.environment.REVIEW_ROUTER_DATABASE_URL_FILE",
+    );
+    expect(runtimeWritebackProof).not.toContain("clients.release.toString()");
     expect(source).not.toContain("clients.admin");
   });
 

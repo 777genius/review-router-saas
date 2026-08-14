@@ -203,6 +203,10 @@ describe("disposable dual-version rehearsal", () => {
       "scripts/rehearse-private-pg17-rollout.mjs",
       "utf8",
     );
+    const releaseMigrationSource = readFileSync(
+      "scripts/run-codex-rotating-release-migration.mjs",
+      "utf8",
+    );
     for (const required of [
       "ReleaseRolloutUseCases",
       "TransactionalServiceCutover",
@@ -219,7 +223,6 @@ describe("disposable dual-version rehearsal", () => {
       "authorityOwnerRoleName",
       "installerRoutineBodySha256",
       "readerRoutineBodySha256",
-      "SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex')",
       "reviewrouter_provider_authority",
       "providerAuthorityPrisma",
       "Promise.allSettled",
@@ -246,6 +249,27 @@ describe("disposable dual-version rehearsal", () => {
       "redactedErrorChain",
     ])
       expect(source).toContain(required);
+    const activationTrustRootContract =
+      /export function activationRoutineBodyTrustRoots\(\) \{([\s\S]+?)\n\}/u.exec(
+        releaseMigrationSource,
+      )?.[1];
+    expect(activationTrustRootContract).toBeDefined();
+    expect(source).toContain(
+      "const activationTrustRoots = activationRoutineBodyTrustRoots()",
+    );
+    expect(source).toContain("activationTrustRoots.installerRoutineBodySha256");
+    expect(source).toContain("activationTrustRoots.readerRoutineBodySha256");
+    expect(activationTrustRootContract).toContain(
+      'digestBody("install_permit")',
+    );
+    expect(activationTrustRootContract).toContain('digestBody("activate")');
+    expect(activationTrustRootContract).toContain('digestBody("read_receipt")');
+    expect(releaseMigrationSource).toContain(
+      "encode(pg_catalog.sha256(convert_to(installer.prosrc,'UTF8')),'hex')",
+    );
+    expect(releaseMigrationSource).toContain(
+      "encode(pg_catalog.sha256(convert_to(reader.prosrc,'UTF8')),'hex')",
+    );
     const installer = readFileSync(
       "scripts/install-release-authority-db.mjs",
       "utf8",
