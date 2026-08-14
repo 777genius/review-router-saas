@@ -225,10 +225,10 @@ export class PrismaCodexRotatingOAuthRepository
     readonly repository: ActionRepositoryContext;
     readonly binding: CodexRotatingProviderBinding;
   }): Promise<void> {
-    if (
-      !input.binding.activeSecretNamespace ||
-      !input.binding.activeWorkflowSource
-    ) {
+    // The workflow verifier returns its source proof as a separate attestation.
+    // The prelease use case validates that proof against the durable source
+    // before this identity/namespace check runs.
+    if (!input.binding.activeSecretNamespace) {
       throw new Error("codex_rotating_active_secret_namespace_required");
     }
     const activeSecretNamespace = input.binding.activeSecretNamespace;
