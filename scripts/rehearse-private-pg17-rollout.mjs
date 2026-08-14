@@ -452,7 +452,7 @@ export async function executeDisposableRehearsal(
       targetPrincipalInventory,
       draftEffectivePrincipalPolicy(targetPrincipalInventory),
     );
-    if (!targetPrincipalDecision.allowed)
+    if (!targetPrincipalDecision.accepted)
       throw new Error(
         "private_pg17_rehearsal_target_principal_inventory_failed",
       );

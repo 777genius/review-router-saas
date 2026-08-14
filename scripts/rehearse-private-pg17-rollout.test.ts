@@ -364,5 +364,7 @@ describe("disposable dual-version rehearsal", () => {
     expect(source).toContain(
       "private_pg17_rehearsal_target_principal_inventory_failed",
     );
+    expect(source).toContain("if (!targetPrincipalDecision.accepted)");
+    expect(source).not.toContain("targetPrincipalDecision.allowed");
   });
 });
