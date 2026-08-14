@@ -23,9 +23,16 @@ group must:
   re-read retain the returned positive runner ID, group ID, and exact labels.
 
 The protected `main` workflow is dispatch-only and rejects run attempts other
-than one. `production-release-preflight` must require at least one reviewer,
-prevent self-review, and allow protected branches only. Preflight reads and
-hashes the observed GitHub policy; a variable claiming the policy is not proof.
+than one. Dispatch must use `--ref main`: environment branch policy evaluates
+the workflow ref, not `inputs.expected_sha`. Every privileged environment must
+require at least one reviewer, prevent self-review, and allow protected branches
+only. Before checkout, an inline read-only bootstrap proves the workflow ref,
+dispatch SHA, current protected `main`, `expected_sha`, release run/artifact
+coordinates, and every environment policy agree. It emits the only SHA later
+checkouts may use, all with persisted credentials disabled. If bootstrap or
+protected preflight fails or is skipped, downstream and always-reconcile jobs
+cannot start or receive secrets. Preflight then reads and hashes the observed
+GitHub policy into durable evidence; a variable claiming the policy is not proof.
 Every dispatch also supplies the immutable release workflow run ID and hosted
 runtime identity artifact ID. Before rollout claim or any provider/database
 mutation, preflight downloads that exact artifact, verifies its GitHub artifact

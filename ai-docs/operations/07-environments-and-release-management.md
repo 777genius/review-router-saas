@@ -210,6 +210,15 @@ contract` and `Full private PG16 to PG17 rehearsal` as successful jobs.
 git ls-remote --tags https://github.com/777genius/review-router.git refs/tags/v1.0.40
 ```
 
+4. Confirm the GitHub `production-release` environment exists, requires at
+   least one reviewer, prevents self-review, and permits protected branches
+   only. `main` itself must remain protected. These are external repository
+   settings; the workflow audits them and fails closed but does not create or
+   repair them. Store `SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64` there and, when the
+   optional production Action-ref sync is used, store its scoped
+   `RENDER_API_KEY` there as environment secrets rather than repository
+   secrets.
+
 Run the GitHub Actions workflow:
 
 ```bash
@@ -222,6 +231,10 @@ gh workflow run release.yml \
 
 The SaaS `Release` workflow validates:
 
+- an inline, read-only bootstrap runs before checkout or repository code and
+  proves that the dispatch workflow ref is `refs/heads/main`, the dispatch SHA
+  is still current protected `main`, and `production-release` has the required
+  reviewer and protected-branch policy
 - the requested version is `vN.N.N`
 - it is running on `main`
 - local `HEAD` matches `origin/main`
@@ -242,6 +255,10 @@ contract` and `Full private PG16 to PG17 rehearsal` jobs
   workflow uploads `hosted-runtime-image-<version>` with the exact
   commit/image URL/digest tuple used by the Render deployment gate
 
+The repository checkout uses only the SHA emitted by that bootstrap and never
+persists checkout credentials. The write-capable release job cannot start
+until the `production-release` environment gate is satisfied; package, OIDC,
+tag, release, and Render credentials are introduced only after bootstrap.
 Only after those gates pass, it creates `v1.0.x`, force-moves `v1`, and creates
 the GitHub Release. Hosted beta production keeps `REVIEW_ROUTER_ACTION_REF` on
 `777genius/review-router@main` by default. Normal release invocation:

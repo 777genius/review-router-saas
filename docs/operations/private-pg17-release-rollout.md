@@ -16,7 +16,9 @@ are fixed by
 3. Never copy, restore, clone, promote, or roll back the Release Authority DB
    with an application DB, or expose its URLs to a private runner.
 4. Dispatch only exact protected `main` commits. `rollout_id` is globally
-   unique and never reused, including after failure.
+   unique and never reused, including after failure. Always dispatch with
+   `--ref main`; environment branch restrictions evaluate this workflow ref,
+   not the separately supplied `expected_sha`.
 5. After ambiguity, never manually resume writers or rerun activation. Reconcile
    durable authority and the target receipt first.
 
@@ -74,6 +76,11 @@ Protected environment secrets:
 | `production`                    | release-control and provider-authority tokens, target-switch key, release-migration and target runtime URLs                                                                             |
 | `production-service-switch`     | release-control and provider-authority tokens, suspension key, live-canary token                                                                                                        |
 
+Every environment in this table must exist, require at least one reviewer,
+prevent self-review, and allow protected branches only. `main` must be a
+protected branch. These are external GitHub settings: the workflow's read-only
+bootstrap verifies all of them before checkout, but it never configures them.
+
 Server-only service values:
 
 | Service | Values                                                                                                                                                                                                      |
@@ -94,6 +101,16 @@ variable: preflight derives the only accepted image digest from the attested
 identity and verifies repository, release workflow/ref/run, exact commit, OCI
 digest, and immutable URL before rollout claim or the first mutation. The same
 verified identity is embedded in final trusted evidence.
+
+Before any checkout or repository-controlled command, the inline bootstrap
+also requires the workflow ref to be `refs/heads/main`, requires `github.sha`,
+current protected `main`, and `expected_sha` to be identical, and verifies that
+the successful attempt-1 release run and unexpired artifact IDs belong to that
+same SHA. Every later checkout uses only the bootstrap output with persisted
+credentials disabled. If bootstrap or protected preflight fails or is skipped,
+no downstream job—including always-reconcile—can start or receive production
+secrets. Reconciliation remains unconditional only after those two trust gates
+succeed, so it still runs after a later mutation-phase failure.
 
 The GitHub workflow, ref, GHCR repository, and artifact-attestation rules are
 infrastructure policy owned by the preflight verifier. The domain record stores

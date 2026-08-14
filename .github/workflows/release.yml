@@ -18,27 +18,108 @@ on:
         default: false
         type: boolean
 
-permissions:
-  actions: read
-  attestations: write
-  contents: write
-  id-token: write
-  packages: write
+permissions: {}
 
 concurrency:
   group: release-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: release
+  trust-bootstrap:
+    name: verify-protected-main-and-release-environment
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      trusted_sha: ${{ steps.trust.outputs.trusted_sha }}
+    steps:
+      - name: Establish immutable release trust before repository execution
+        id: trust
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUIRED_ENVIRONMENT: production-release
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          // trust-bootstrap-node:start
+          const { appendFileSync } = require("node:fs");
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value) throw new Error(`release_trust_missing:${name}`);
+            return value;
+          };
+          const fail = (reason) => {
+            throw new Error(`release_trust_rejected:${reason}`);
+          };
+          const repository = required("GITHUB_REPOSITORY");
+          const sha = required("GITHUB_SHA").toLowerCase();
+          if (required("GITHUB_EVENT_NAME") !== "workflow_dispatch") fail("event");
+          if (required("GITHUB_REF") !== "refs/heads/main") fail("workflow_ref");
+          if (!/^[a-f0-9]{40}$/.test(sha)) fail("dispatch_sha");
+          const headers = {
+            Authorization: `Bearer ${required("GH_TOKEN")}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          };
+          const get = async (path) => {
+            const response = await fetch(`https://api.github.com${path}`, { headers });
+            if (!response.ok) fail(`github_api_${response.status}`);
+            return response.json();
+          };
+          const branch = await get(`/repos/${repository}/branches/main`);
+          if (branch.protected !== true || branch.commit?.sha?.toLowerCase() !== sha)
+            fail("stale_or_unprotected_main");
+          const environmentName = required("REQUIRED_ENVIRONMENT");
+          const environment = await get(
+            `/repos/${repository}/environments/${encodeURIComponent(environmentName)}`,
+          );
+          const rules = environment.protection_rules;
+          const reviewers = Array.isArray(rules)
+            ? rules.find((rule) => rule?.type === "required_reviewers")
+            : undefined;
+          const branchPolicy = Array.isArray(rules)
+            ? rules.find((rule) => rule?.type === "branch_policy")
+            : undefined;
+          if (
+            !reviewers ||
+            !Array.isArray(reviewers.reviewers) ||
+            reviewers.reviewers.length < 1 ||
+            reviewers.prevent_self_review !== true ||
+            !branchPolicy ||
+            environment.deployment_branch_policy?.protected_branches !== true
+          ) fail("environment_unprotected");
+          appendFileSync(required("GITHUB_OUTPUT"), `trusted_sha=${sha}\n`, "utf8");
+          // trust-bootstrap-node:end
+          NODE
+
+  prepare-release:
+    name: validate-and-prepare-release
+    needs: trust-bootstrap
+    environment: production-release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      major_tag: ${{ steps.release.outputs.major_tag }}
+      action_sha: ${{ steps.release.outputs.action_sha }}
+      action_ref: ${{ steps.release.outputs.action_ref }}
+      version_tag_exists: ${{ steps.release.outputs.version_tag_exists }}
+      installer_url: ${{ steps.installer.outputs.url }}
+      installer_sha256: ${{ steps.installer.outputs.sha256 }}
+      installer_descriptor_sha256: ${{ steps.installer.outputs.descriptor_sha256 }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
 
       - name: Recheck Codex secret-write boundary
         run: node scripts/check-codex-secret-write-boundary.mjs
@@ -47,6 +128,7 @@ jobs:
         id: release
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           ACTION_REPOSITORY: 777genius/review-router
         run: |
@@ -64,7 +146,9 @@ jobs:
             exit 1
           fi
 
-          git fetch --force --tags origin main
+          GIT_AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git -c http.https://github.com/.extraheader="$GIT_AUTH_HEADER" \
+            fetch --force --tags origin main
 
           if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
             echo "::error::checked out commit must match origin/main"
@@ -78,11 +162,13 @@ jobs:
           fi
 
           REMOTE_VERSION_SHA="$(
-            git ls-remote --tags origin "refs/tags/$VERSION^{}" | awk 'NR == 1 { print $1 }'
+            git -c http.https://github.com/.extraheader="$GIT_AUTH_HEADER" \
+              ls-remote --tags origin "refs/tags/$VERSION^{}" | awk 'NR == 1 { print $1 }'
           )"
           if [[ -z "$REMOTE_VERSION_SHA" ]]; then
             REMOTE_VERSION_SHA="$(
-              git ls-remote --tags origin "refs/tags/$VERSION" | awk 'NR == 1 { print $1 }'
+              git -c http.https://github.com/.extraheader="$GIT_AUTH_HEADER" \
+                ls-remote --tags origin "refs/tags/$VERSION" | awk 'NR == 1 { print $1 }'
             )"
           fi
 
@@ -233,6 +319,25 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  publish-runtime:
+    name: publish-hosted-runtime-image
+    needs: [trust-bootstrap, prepare-release]
+    environment: production-release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    outputs:
+      runtime_image_url: ${{ steps.runtime_identity.outputs.url }}
+      runtime_identity_artifact_id: ${{ steps.runtime_identity_artifact.outputs.artifact-id }}
+    steps:
+      - name: Checkout verified release commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
 
@@ -255,16 +360,16 @@ jobs:
           sbom: true
           build-args: |
             IMAGE_REVISION=${{ github.sha }}
-            IMAGE_VERSION=${{ steps.release.outputs.version }}
+            IMAGE_VERSION=${{ needs.prepare-release.outputs.version }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.version=${{ needs.prepare-release.outputs.version }}
           secrets: |
             subscription_runtime_deploy_key_b64=${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
           tags: |
             ghcr.io/777genius/review-router-saas-runtime:${{ github.sha }}
-            ghcr.io/777genius/review-router-saas-runtime:${{ steps.release.outputs.version }}
+            ghcr.io/777genius/review-router-saas-runtime:${{ needs.prepare-release.outputs.version }}
 
       - name: Verify immutable hosted runtime digest
         id: runtime_identity
@@ -306,22 +411,65 @@ jobs:
         id: runtime_identity_artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: hosted-runtime-image-${{ steps.release.outputs.version }}
+          name: hosted-runtime-image-${{ needs.prepare-release.outputs.version }}
           path: hosted-runtime-image.json
           if-no-files-found: error
           retention-days: 90
           compression-level: 0
+
+  attest-runtime:
+    name: attest-hosted-runtime-identity
+    needs: [trust-bootstrap, prepare-release, publish-runtime]
+    environment: production-release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: write
+      id-token: write
+    steps:
+      - name: Download immutable hosted runtime identity
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hosted-runtime-image-${{ needs.prepare-release.outputs.version }}
 
       - name: Attest immutable hosted runtime identity
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with:
           subject-path: hosted-runtime-image.json
 
+  release:
+    name: publish-tags-assets-and-release
+    needs: [trust-bootstrap, prepare-release, publish-runtime, attest-runtime]
+    environment: production-release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout verified release commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
+
+      - name: Download immutable rotating installer descriptor
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: codex-rotating-installer-descriptor-${{ needs.prepare-release.outputs.version }}
+          path: release-assets
+
+      - name: Download immutable hosted runtime identity
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hosted-runtime-image-${{ needs.prepare-release.outputs.version }}
+          path: release-assets
+
       - name: Preflight production Action ref override sync
         if: ${{ inputs.sync_production_action_ref }}
         shell: bash
         env:
-          ACTION_REF: ${{ steps.release.outputs.action_ref }}
+          ACTION_REF: ${{ needs.prepare-release.outputs.action_ref }}
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
           set -euo pipefail
@@ -339,28 +487,32 @@ jobs:
       - name: Publish exact and stable tags
         shell: bash
         env:
-          VERSION: ${{ steps.release.outputs.version }}
-          MAJOR_TAG: ${{ steps.release.outputs.major_tag }}
-          VERSION_TAG_EXISTS: ${{ steps.release.outputs.version_tag_exists }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          MAJOR_TAG: ${{ needs.prepare-release.outputs.major_tag }}
+          VERSION_TAG_EXISTS: ${{ needs.prepare-release.outputs.version_tag_exists }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          GIT_AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
 
           if [[ "$VERSION_TAG_EXISTS" == "true" ]]; then
             echo "Exact tag $VERSION already points to $GITHUB_SHA; reusing it"
           else
             git tag "$VERSION" "$GITHUB_SHA"
-            git push origin "refs/tags/$VERSION"
+            git -c http.https://github.com/.extraheader="$GIT_AUTH_HEADER" \
+              push origin "refs/tags/$VERSION"
           fi
           git tag -f "$MAJOR_TAG" "$GITHUB_SHA"
-          git push --force origin "refs/tags/$MAJOR_TAG"
+          git -c http.https://github.com/.extraheader="$GIT_AUTH_HEADER" \
+            push --force origin "refs/tags/$MAJOR_TAG"
 
       - name: Sync production Action ref override
         if: ${{ inputs.sync_production_action_ref }}
         shell: bash
         env:
-          ACTION_REF: ${{ steps.release.outputs.action_ref }}
+          ACTION_REF: ${{ needs.prepare-release.outputs.action_ref }}
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
           set -euo pipefail
@@ -373,13 +525,14 @@ jobs:
         if: ${{ inputs.create_github_release }}
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.release.outputs.version }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           set -euo pipefail
 
-          installer_path="${{ steps.installer.outputs.path }}"
+          installer_path="release-assets/reviewrouter-codex-rotating-installer-descriptor.json"
           installer_name="$(basename "$installer_path")"
-          runtime_path="hosted-runtime-image.json"
+          runtime_path="release-assets/hosted-runtime-image.json"
+          runtime_name="$(basename "$runtime_path")"
 
           if ! gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$VERSION" \
@@ -398,7 +551,7 @@ jobs:
           release_assets="$(jq -r '.assets[].name' <<<"$release_json")"
 
           if ! grep -Fxq "$installer_name" <<<"$release_assets" || \
-             ! grep -Fxq "$runtime_path" <<<"$release_assets"; then
+             ! grep -Fxq "$runtime_name" <<<"$release_assets"; then
             if [[ "$release_is_draft" != "true" ]]; then
               echo "::error::Published immutable release $VERSION is missing required assets"
               exit 1
@@ -414,7 +567,7 @@ jobs:
           fi
 
           grep -Fxq "$installer_name" <<<"$release_assets"
-          grep -Fxq "$runtime_path" <<<"$release_assets"
+          grep -Fxq "$runtime_name" <<<"$release_assets"
 
           if [[ "$release_is_draft" == "true" ]]; then
             gh release edit "$VERSION" \
@@ -428,16 +581,16 @@ jobs:
       - name: Summary
         shell: bash
         env:
-          VERSION: ${{ steps.release.outputs.version }}
-          MAJOR_TAG: ${{ steps.release.outputs.major_tag }}
-          ACTION_REF: ${{ steps.release.outputs.action_ref }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          MAJOR_TAG: ${{ needs.prepare-release.outputs.major_tag }}
+          ACTION_REF: ${{ needs.prepare-release.outputs.action_ref }}
           SYNC_PRODUCTION_ACTION_REF: ${{ inputs.sync_production_action_ref }}
-          VERSION_TAG_EXISTS: ${{ steps.release.outputs.version_tag_exists }}
-          INSTALLER_URL: ${{ steps.installer.outputs.url }}
-          INSTALLER_SHA256: ${{ steps.installer.outputs.sha256 }}
-          INSTALLER_DESCRIPTOR_SHA256: ${{ steps.installer.outputs.descriptor_sha256 }}
-          RUNTIME_IMAGE_URL: ${{ steps.runtime_identity.outputs.url }}
-          RUNTIME_IDENTITY_ARTIFACT_ID: ${{ steps.runtime_identity_artifact.outputs.artifact-id }}
+          VERSION_TAG_EXISTS: ${{ needs.prepare-release.outputs.version_tag_exists }}
+          INSTALLER_URL: ${{ needs.prepare-release.outputs.installer_url }}
+          INSTALLER_SHA256: ${{ needs.prepare-release.outputs.installer_sha256 }}
+          INSTALLER_DESCRIPTOR_SHA256: ${{ needs.prepare-release.outputs.installer_descriptor_sha256 }}
+          RUNTIME_IMAGE_URL: ${{ needs.publish-runtime.outputs.runtime_image_url }}
+          RUNTIME_IDENTITY_ARTIFACT_ID: ${{ needs.publish-runtime.outputs.runtime_identity_artifact_id }}
         run: |
           {
             echo "Released $VERSION"

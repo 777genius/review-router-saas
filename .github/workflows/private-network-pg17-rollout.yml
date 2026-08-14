@@ -20,17 +20,14 @@ on:
         description: Immutable hosted-runtime-image artifact from that release run
         required: true
         type: string
-permissions:
-  actions: read
-  attestations: read
-  contents: read
+permissions: {}
 
 concurrency:
   group: private-network-pg17-production
   cancel-in-progress: false
 
 env:
-  REVIEW_ROUTER_EXPECTED_SHA: ${{ inputs.expected_sha }}
+  REVIEW_ROUTER_EXPECTED_SHA: ${{ github.sha }}
   REVIEW_ROUTER_ROLLOUT_ID: ${{ inputs.rollout_id }}
   REVIEW_ROUTER_RELEASE_CONTROL_ORG: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_ORG }}
   REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY }}
@@ -54,31 +51,155 @@ env:
   REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256 }}
 
 jobs:
+  trust-bootstrap:
+    name: verify-protected-main-dispatch-and-release-artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      trusted_sha: ${{ steps.trust.outputs.trusted_sha }}
+      release_run_id: ${{ steps.trust.outputs.release_run_id }}
+      release_artifact_id: ${{ steps.trust.outputs.release_artifact_id }}
+    steps:
+      - name: Establish immutable rollout trust before repository execution
+        id: trust
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_ARTIFACT_ID: ${{ inputs.release_artifact_id }}
+          REQUIRED_ENVIRONMENTS_JSON: '["production-release-preflight","production-runner-control","production-role-bootstrap","production-runner-ledger-read","production","production-service-switch"]'
+          EXPECTED_ORGANIZATION: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_ORG }}
+          EXPECTED_REPOSITORY: ${{ vars.REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          // trust-bootstrap-node:start
+          const { appendFileSync } = require("node:fs");
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value) throw new Error(`private_pg17_trust_missing:${name}`);
+            return value;
+          };
+          const fail = (reason) => {
+            throw new Error(`private_pg17_trust_rejected:${reason}`);
+          };
+          const repository = required("GITHUB_REPOSITORY");
+          const sha = required("GITHUB_SHA").toLowerCase();
+          const expectedSha = required("EXPECTED_SHA").toLowerCase();
+          const releaseRunId = required("RELEASE_RUN_ID");
+          const releaseArtifactId = required("RELEASE_ARTIFACT_ID");
+          if (required("GITHUB_EVENT_NAME") !== "workflow_dispatch") fail("event");
+          if (required("GITHUB_RUN_ATTEMPT") !== "1") fail("run_attempt");
+          if (required("GITHUB_REF") !== "refs/heads/main") fail("workflow_ref");
+          if (!/^[a-f0-9]{40}$/.test(sha) || expectedSha !== sha)
+            fail("expected_sha");
+          if (!/^[1-9][0-9]*$/.test(releaseRunId) || !/^[1-9][0-9]*$/.test(releaseArtifactId))
+            fail("release_coordinates");
+          if (
+            repository !== required("EXPECTED_REPOSITORY") ||
+            repository.split("/")[0] !== required("EXPECTED_ORGANIZATION")
+          ) fail("control_repository");
+          const headers = {
+            Authorization: `Bearer ${required("GH_TOKEN")}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          };
+          const get = async (path) => {
+            const response = await fetch(`https://api.github.com${path}`, { headers });
+            if (!response.ok) fail(`github_api_${response.status}`);
+            return response.json();
+          };
+          const branch = await get(`/repos/${repository}/branches/main`);
+          if (branch.protected !== true || branch.commit?.sha?.toLowerCase() !== sha)
+            fail("stale_or_unprotected_main");
+          const releaseRun = await get(`/repos/${repository}/actions/runs/${releaseRunId}`);
+          if (
+            String(releaseRun.id) !== releaseRunId ||
+            releaseRun.event !== "workflow_dispatch" ||
+            releaseRun.path !== ".github/workflows/release.yml" ||
+            releaseRun.head_branch !== "main" ||
+            releaseRun.head_sha?.toLowerCase() !== sha ||
+            releaseRun.run_attempt !== 1 ||
+            releaseRun.conclusion !== "success"
+          ) fail("release_run_identity");
+          const artifact = await get(`/repos/${repository}/actions/artifacts/${releaseArtifactId}`);
+          if (
+            String(artifact.id) !== releaseArtifactId ||
+            artifact.expired !== false ||
+            !artifact.name?.startsWith("hosted-runtime-image-v") ||
+            String(artifact.workflow_run?.id) !== releaseRunId ||
+            artifact.workflow_run?.head_sha?.toLowerCase() !== sha
+          ) fail("release_artifact_identity");
+          const environments = JSON.parse(required("REQUIRED_ENVIRONMENTS_JSON"));
+          if (
+            !Array.isArray(environments) ||
+            environments.length < 1 ||
+            environments.some((name) => typeof name !== "string" || !name) ||
+            new Set(environments).size !== environments.length
+          ) fail("environment_inventory");
+          for (const environmentName of environments) {
+            const environment = await get(
+              `/repos/${repository}/environments/${encodeURIComponent(environmentName)}`,
+            );
+            const rules = environment.protection_rules;
+            const reviewers = Array.isArray(rules)
+              ? rules.find((rule) => rule?.type === "required_reviewers")
+              : undefined;
+            const branchPolicy = Array.isArray(rules)
+              ? rules.find((rule) => rule?.type === "branch_policy")
+              : undefined;
+            if (
+              !reviewers ||
+              !Array.isArray(reviewers.reviewers) ||
+              reviewers.reviewers.length < 1 ||
+              reviewers.prevent_self_review !== true ||
+              !branchPolicy ||
+              environment.deployment_branch_policy?.protected_branches !== true
+            ) fail(`environment_unprotected:${environmentName}`);
+          }
+          appendFileSync(required("GITHUB_OUTPUT"), `trusted_sha=${sha}\n`, "utf8");
+          appendFileSync(
+            required("GITHUB_OUTPUT"),
+            `release_run_id=${releaseRunId}\nrelease_artifact_id=${releaseArtifactId}\n`,
+            "utf8",
+          );
+          // trust-bootstrap-node:end
+          NODE
+
   protected-preflight:
     name: protected-release-preflight
+    needs: trust-bootstrap
     environment: production-release-preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          ref: ${{ inputs.expected_sha }}
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - name: Download exact attested release image identity
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          artifact-ids: ${{ inputs.release_artifact_id }}
+          artifact-ids: ${{ needs.trust-bootstrap.outputs.release_artifact_id }}
           github-token: ${{ github.token }}
           merge-multiple: true
           repository: ${{ github.repository }}
-          run-id: ${{ inputs.release_run_id }}
+          run-id: ${{ needs.trust-bootstrap.outputs.release_run_id }}
           path: release-image
       - name: Verify release image identity and GitHub artifact attestation
         env:
           GITHUB_CONTROL_READ_TOKEN: ${{ github.token }}
-          REVIEW_ROUTER_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
-          REVIEW_ROUTER_RELEASE_ARTIFACT_ID: ${{ inputs.release_artifact_id }}
+          REVIEW_ROUTER_RELEASE_RUN_ID: ${{ needs.trust-bootstrap.outputs.release_run_id }}
+          REVIEW_ROUTER_RELEASE_ARTIFACT_ID: ${{ needs.trust-bootstrap.outputs.release_artifact_id }}
           REVIEW_ROUTER_RELEASE_IMAGE_IDENTITY_FILE: release-image/hosted-runtime-image.json
           REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE: verified-release-image-provenance.json
         run: node --import tsx scripts/verify-private-pg17-release-image-provenance.ts
@@ -108,17 +229,20 @@ jobs:
 
   freeze-source-writers:
     name: freeze-source-writers
-    needs: protected-preflight
+    needs: [trust-bootstrap, protected-preflight]
     environment: production-runner-control
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
     outputs:
       observation: ${{ steps.freeze.outputs.observation }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          ref: ${{ inputs.expected_sha }}
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -136,17 +260,20 @@ jobs:
 
   role-bootstrap-private:
     name: copy-and-role-bootstrap-private
-    needs: freeze-source-writers
+    needs: [trust-bootstrap, freeze-source-writers]
     environment: production-role-bootstrap
     runs-on:
       group: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}
       labels: ${{ format('rr-{0}-role-bootstrap', github.run_id) }}
     timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          ref: ${{ inputs.expected_sha }}
+          ref: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -172,7 +299,7 @@ jobs:
           REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL }}
           REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON: ${{ secrets.REVIEW_ROUTER_SOURCE_BACKUP_WITNESS_JSON }}
           REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON: ${{ vars.REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON }}
-          REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
+          REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
         run: node --import tsx scripts/run-private-pg17-copy-bootstrap.ts > copy-bootstrap-evidence.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -184,13 +311,20 @@ jobs:
 
   await-role-runner-cleanup:
     name: await-role-runner-cleanup
-    needs: role-bootstrap-private
+    needs: [trust-bootstrap, role-bootstrap-private]
     environment: production-runner-ledger-read
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
+        with:
+          {
+            persist-credentials: false,
+            ref: "${{ needs.trust-bootstrap.outputs.trusted_sha }}",
+          }
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - env:
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
@@ -199,15 +333,22 @@ jobs:
 
   pg17-cutover-private:
     name: pg17-cutover-private
-    needs: await-role-runner-cleanup
+    needs: [trust-bootstrap, await-role-runner-cleanup]
     environment: production
     runs-on:
       group: ${{ vars.REVIEW_ROUTER_RUNNER_GROUP_NAME }}
       labels: ${{ format('rr-{0}-cutover', github.run_id) }}
     timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
+        with:
+          {
+            persist-credentials: false,
+            ref: "${{ needs.trust-bootstrap.outputs.trusted_sha }}",
+          }
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -242,7 +383,7 @@ jobs:
           REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256: ${{ vars.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS_SHA256 }}
           REVIEW_ROUTER_TARGET_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS }}
           REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS: ${{ secrets.REVIEW_ROUTER_SOURCE_RECOVERY_WITNESS }}
-          REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ inputs.expected_sha }}
+          REVIEW_ROUTER_RELEASE_COMMIT_SHA: ${{ needs.trust-bootstrap.outputs.trusted_sha }}
         run: node --import tsx scripts/run-private-pg17-rollout.ts > private-rollout-body.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -254,13 +395,20 @@ jobs:
 
   await-cutover-runner-cleanup:
     name: await-cutover-runner-cleanup
-    needs: pg17-cutover-private
+    needs: [trust-bootstrap, pg17-cutover-private]
     environment: production-runner-ledger-read
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
+        with:
+          {
+            persist-credentials: false,
+            ref: "${{ needs.trust-bootstrap.outputs.trusted_sha }}",
+          }
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - env:
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
@@ -269,13 +417,20 @@ jobs:
 
   finalize-trusted-rollout:
     name: finalize-target-and-trusted-evidence
-    needs: await-cutover-runner-cleanup
+    needs: [trust-bootstrap, await-cutover-runner-cleanup]
     environment: production-service-switch
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
+        with:
+          {
+            persist-credentials: false,
+            ref: "${{ needs.trust-bootstrap.outputs.trusted_sha }}",
+          }
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -315,9 +470,11 @@ jobs:
 
   always-reconcile:
     name: always-reconcile-runners-and-compensation
-    if: ${{ always() }}
+    if: ${{ always() && needs.trust-bootstrap.result == 'success' && needs.protected-preflight.result == 'success' }}
     needs:
       [
+        trust-bootstrap,
+        protected-preflight,
         freeze-source-writers,
         role-bootstrap-private,
         pg17-cutover-private,
@@ -326,9 +483,16 @@ jobs:
     environment: production-runner-control
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with: { persist-credentials: false, ref: "${{ inputs.expected_sha }}" }
+        with:
+          {
+            persist-credentials: false,
+            ref: "${{ needs.trust-bootstrap.outputs.trusted_sha }}",
+          }
       - run: corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
       - name: Idempotently reconcile persisted jobs and rollout boundary
         env:

@@ -158,9 +158,11 @@ describe("private-network PG17 workflow security contract", () => {
     expect(workflow).toContain("release_run_id:");
     expect(workflow).toContain("release_artifact_id:");
     expect(preflight).toContain(
-      "artifact-ids: ${{ inputs.release_artifact_id }}",
+      "artifact-ids: ${{ needs.trust-bootstrap.outputs.release_artifact_id }}",
     );
-    expect(preflight).toContain("run-id: ${{ inputs.release_run_id }}");
+    expect(preflight).toContain(
+      "run-id: ${{ needs.trust-bootstrap.outputs.release_run_id }}",
+    );
     expect(preflight).toContain(
       "verify-private-pg17-release-image-provenance.ts",
     );
