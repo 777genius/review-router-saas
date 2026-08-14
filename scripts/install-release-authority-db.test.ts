@@ -440,6 +440,8 @@ describe("release authority database installation", () => {
     expect(migration).toContain("release_late_job_recovery_effect_gate");
     expect(migration).toContain("release_recovery_checkpoint_permit_gate");
     expect(migration).toContain("state='forward_repair'");
+    expect(migration).toContain("pg_catalog.gen_random_uuid()");
+    expect(migration).not.toContain("gen_random_bytes");
   });
   it("removes implicit PUBLIC usage from the declared authority type", () => {
     const migration = readFileSync(
@@ -480,7 +482,7 @@ describe("release authority database installation", () => {
       "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
       "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
       "f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4",
-      "4ae1abd87a720d3721f9327f1086b4b3cd469f7c3259b620dfb2232bd03c7c10",
+      "7ead5636edb5cde56580bf66d2ccbe24c4f0da7156cb0e8cd14839e6a44d3c50",
       "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
     ]);
     const bundle = releaseAuthorityMigrationBundle("fresh-install");

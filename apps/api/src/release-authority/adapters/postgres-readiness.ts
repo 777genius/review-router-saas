@@ -273,7 +273,7 @@ const observeOnConnection = async (
                       to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')
                   END,
                   to_regprocedure('reviewrouter_activation.read_activation_migration_manifest_identity()')
-                )))
+                ))))
         AND NOT EXISTS (SELECT 1 FROM pg_roles role
           WHERE role.rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web',
               'reviewrouter_worker','reviewrouter_codex_effect_authority'])

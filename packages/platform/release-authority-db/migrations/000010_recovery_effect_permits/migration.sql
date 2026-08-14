@@ -526,7 +526,9 @@ BEGIN
       RETURN release_authority.release_provider_mutation_permit(mutation);
     END IF;
     UPDATE release_authority.provider_mutation SET owner_id=p_input->>'ownerId',epoch=epoch+1,
-      permit_id=encode(gen_random_bytes(32),'hex'),permit_token=encode(gen_random_bytes(32),'hex'),
+      permit_id=replace(pg_catalog.gen_random_uuid()::text,'-','')||
+        replace(pg_catalog.gen_random_uuid()::text,'-',''),
+      permit_token=replace(pg_catalog.gen_random_uuid()::text,'-','')||replace(pg_catalog.gen_random_uuid()::text,'-',''),
       issued_at=date_trunc('milliseconds',clock_timestamp()),
       expires_at=date_trunc('milliseconds',clock_timestamp()+make_interval(secs=>seconds))
     WHERE rollout_id=mutation.rollout_id AND operation=mutation.operation AND provider=mutation.provider
@@ -539,7 +541,10 @@ BEGIN
   VALUES (p_input->>'rolloutId',p_input->>'operation',p_input#>>'{resource,provider}',
     p_input#>>'{resource,kind}',p_input#>>'{resource,id}',p_input#>>'{expected,fingerprint}',
     nullif(p_input#>>'{expected,version}',''),'claimed',p_input->>'ownerId',1,
-    encode(gen_random_bytes(32),'hex'),encode(gen_random_bytes(32),'hex'),
+    replace(pg_catalog.gen_random_uuid()::text,'-','')||
+      replace(pg_catalog.gen_random_uuid()::text,'-',''),
+    replace(pg_catalog.gen_random_uuid()::text,'-','')||
+      replace(pg_catalog.gen_random_uuid()::text,'-',''),
     date_trunc('milliseconds',clock_timestamp()),
     date_trunc('milliseconds',clock_timestamp()+make_interval(secs=>seconds))) RETURNING * INTO mutation;
   RETURN release_authority.release_provider_mutation_permit(mutation);
@@ -559,7 +564,8 @@ BEGIN
     OR mutation.expected_fingerprint<>p_input#>>'{expected,fingerprint}'
     OR mutation.expected_version IS DISTINCT FROM nullif(p_input#>>'{expected,version}','')
   THEN RAISE EXCEPTION 'provider mutation permit denied or replayed'; END IF;
-  receipt:=encode(gen_random_bytes(32),'hex');
+  receipt:=replace(pg_catalog.gen_random_uuid()::text,'-','')||
+    replace(pg_catalog.gen_random_uuid()::text,'-','');
   UPDATE release_authority.provider_mutation SET state='consumed',
     consumed_at=date_trunc('milliseconds',clock_timestamp()),receipt_sha256=encode(sha256(convert_to(receipt,'UTF8')),'hex')
   WHERE rollout_id=mutation.rollout_id AND operation=mutation.operation AND provider=mutation.provider

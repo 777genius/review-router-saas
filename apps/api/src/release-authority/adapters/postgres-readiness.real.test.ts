@@ -34,7 +34,12 @@ realDescribe("release authority exact catalog readiness", () => {
       "CREATE ROLE reviewrouter_inbound_membership_probe LOGIN",
     );
     await admin.$executeRawUnsafe(
-      'CREATE ROLE "reviewrouter quoted acl probe" NOLOGIN',
+      `DO $role$
+       BEGIN
+         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='reviewrouter quoted acl probe')
+         THEN CREATE ROLE "reviewrouter quoted acl probe" NOLOGIN;
+         END IF;
+       END $role$`,
     );
     const owners = await admin.$queryRawUnsafe<{ owner: string }[]>(
       "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname='release_authority'",

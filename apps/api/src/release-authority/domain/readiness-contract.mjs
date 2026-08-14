@@ -51,7 +51,7 @@ export const releaseAuthorityMigrationContract = Object.freeze([
   ],
   [
     "000010_recovery_effect_permits",
-    "sha256:4ae1abd87a720d3721f9327f1086b4b3cd469f7c3259b620dfb2232bd03c7c10",
+    "sha256:7ead5636edb5cde56580bf66d2ccbe24c4f0da7156cb0e8cd14839e6a44d3c50",
   ],
   [
     "000011_default_and_final_acl_exactness",

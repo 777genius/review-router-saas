@@ -241,7 +241,7 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
   exit 1
 fi
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
-  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:4ae1abd87a720d3721f9327f1086b4b3cd469f7c3259b620dfb2232bd03c7c10' WHERE position=11" >/dev/null
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:7ead5636edb5cde56580bf66d2ccbe24c4f0da7156cb0e8cd14839e6a44d3c50' WHERE position=11" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
   "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=12" >/dev/null
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
@@ -452,7 +452,10 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_activation_target 
   'CREATE TABLE public."_prisma_migrations" (
      migration_name text NOT NULL, checksum text NOT NULL,
      finished_at timestamptz, rolled_back_at timestamptz
-   )' >/dev/null
+   );
+   INSERT INTO public."_prisma_migrations"(
+     migration_name, checksum, finished_at, rolled_back_at
+   ) VALUES ($fixture$000001_disposable_fixture$fixture$, $fixture$fixture-checksum$fixture$, clock_timestamp(), NULL)' >/dev/null
 node -e "import('./scripts/run-codex-rotating-release-migration.mjs').then(m => process.stdout.write(m.activationAuthorityProvisioningSql()))" \
   > "$contract_tmp/activation-authority.sql"
 docker cp "$contract_tmp/activation-authority.sql" \
