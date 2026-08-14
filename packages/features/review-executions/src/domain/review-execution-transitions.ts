@@ -1134,11 +1134,7 @@ export function decideExecutionFinalization(
     createdAt: new Date(input.now),
     retainUntil: new Date(input.retainUntil),
   };
-  const terminalSlots = input.execution.workSlots.map((slot) =>
-    slot.state === ReviewWorkSlotState.Satisfied
-      ? slot
-      : { ...slot, state: ReviewWorkSlotState.Cancelled, activeLeaseId: null },
-  );
+  const terminalSlots = cancelNonTerminalWorkSlots(input.execution.workSlots);
   return {
     status: ExecutionFinalizationDecisionStatus.Finalized,
     artifact,
@@ -1260,11 +1256,7 @@ export function decideAbandonedPreparationFailure(input: {
       ...input.execution,
       version: input.execution.version + 1n,
       state: ReviewExecutionState.Failed,
-      workSlots: input.execution.workSlots.map((slot) => ({
-        ...slot,
-        state: ReviewWorkSlotState.Cancelled,
-        activeLeaseId: null,
-      })),
+      workSlots: cancelNonTerminalWorkSlots(input.execution.workSlots),
       updatedAt: new Date(input.now),
     },
     stream: {
@@ -1393,15 +1385,7 @@ export function decideExpiredRunningExecutionFailure(input: {
       ...input.execution,
       version: input.execution.version + 1n,
       state: ReviewExecutionState.Failed,
-      workSlots: input.execution.workSlots.map((slot) =>
-        slot.state === ReviewWorkSlotState.Satisfied
-          ? slot
-          : {
-              ...slot,
-              state: ReviewWorkSlotState.Cancelled,
-              activeLeaseId: null,
-            },
-      ),
+      workSlots: cancelNonTerminalWorkSlots(input.execution.workSlots),
       updatedAt: new Date(input.now),
     },
     stream: {
@@ -1427,16 +1411,21 @@ export function transitionExecutionToSuperseded(
     version: execution.version + 1n,
     state: ReviewExecutionState.Superseded,
     supersededByExecutionId,
-    workSlots: execution.workSlots.map((slot) => ({
-      ...slot,
-      state:
-        slot.state === ReviewWorkSlotState.Satisfied
-          ? ReviewWorkSlotState.Satisfied
-          : ReviewWorkSlotState.Cancelled,
-      activeLeaseId: null,
-    })),
+    workSlots: cancelNonTerminalWorkSlots(execution.workSlots),
     updatedAt: new Date(now),
   };
+}
+
+function cancelNonTerminalWorkSlots(
+  workSlots: readonly ReviewWorkSlot[],
+): readonly ReviewWorkSlot[] {
+  return workSlots.map((slot) =>
+    slot.state === ReviewWorkSlotState.Satisfied ||
+    slot.state === ReviewWorkSlotState.Exhausted ||
+    slot.state === ReviewWorkSlotState.Cancelled
+      ? slot
+      : { ...slot, state: ReviewWorkSlotState.Cancelled, activeLeaseId: null },
+  );
 }
 
 function unchangedAdmission(
