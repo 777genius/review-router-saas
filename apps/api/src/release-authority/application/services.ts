@@ -15,10 +15,8 @@ import type {
   RunnerIdentity,
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
-import {
-  activationCatalogPolicyDigestsEqual,
-  sha256Canonical,
-} from "@reviewrouter/features-release-rollout";
+import { sha256Canonical } from "@reviewrouter/features-release-rollout";
+import { targetActivationIdentityMatches } from "./target-activation-invariant.js";
 
 export type ExecuteFreshReleaseAuthorityMutation = <Result>(
   target: ReleaseAuthorityMutationTarget,
@@ -107,63 +105,29 @@ export class ReleaseAuthorityService {
     });
   finalize = async (
     input: Parameters<ReleaseAuthorityLedgerPort["finalizeActivation"]>[0],
-  ) => {
-    if (!this.targetReceiptReader)
-      throw new Error("target_activation_receipt_reader_unavailable");
-    const receipt = await this.targetReceiptReader.read(
-      input.authorization.rolloutId,
-    );
-    if (!receipt || "receiptAbsent" in receipt)
-      throw new Error("target_activation_receipt_missing");
-    const proposed = input.activationReceipt;
-    const authorization = input.authorization;
-    if (
-      proposed.rolloutId !== authorization.rolloutId ||
-      proposed.expectedCommitSha !== authorization.expectedCommitSha ||
-      proposed.sourceSystemIdentifier !==
-        authorization.sourceSystemIdentifier ||
-      proposed.targetSystemIdentifier !==
-        authorization.targetSystemIdentifier ||
-      proposed.previousReceiptSha256 !== authorization.previousReceiptSha256 ||
-      proposed.postgresMajor !== authorization.postgresMajor ||
-      proposed.migrationChecksum !== authorization.migrationChecksum ||
-      proposed.permitEpoch !== authorization.epoch ||
-      proposed.permitNonce !== authorization.nonce ||
-      JSON.stringify(proposed.targetDeployIds) !==
-        JSON.stringify(authorization.targetDeployIds) ||
-      proposed.canonicalPrivilegesSha256 !==
-        receipt.canonicalPrivilegesSha256 ||
-      proposed.catalogFactsSha256 !== receipt.catalogFactsSha256 ||
-      proposed.preactivationCatalogPolicySha256 !==
-        receipt.preactivationCatalogPolicySha256 ||
-      proposed.activatedCatalogPolicySha256 !==
-        receipt.activatedCatalogPolicySha256 ||
-      !activationCatalogPolicyDigestsEqual(proposed) ||
-      !activationCatalogPolicyDigestsEqual(receipt) ||
-      proposed.beforePrincipalInventorySha256 !==
-        receipt.beforePrincipalInventorySha256 ||
-      proposed.beforePrincipalPolicySha256 !==
-        receipt.beforePrincipalPolicySha256 ||
-      proposed.activatedPrincipalInventorySha256 !==
-        receipt.activatedPrincipalInventorySha256 ||
-      proposed.activatedPrincipalPolicySha256 !==
-        receipt.activatedPrincipalPolicySha256 ||
-      proposed.transactionId !== receipt.transactionId ||
-      proposed.firstWriteReceiptSha256 !== receipt.firstWriteReceiptSha256 ||
-      proposed.firstWriteBoundary !== receipt.firstWriteBoundary ||
-      proposed.postgresMajor !== receipt.postgresMajor ||
-      proposed.migrationChecksum !== receipt.migrationChecksum ||
-      proposed.permitEpoch !== receipt.permitEpoch ||
-      proposed.permitNonce !== receipt.permitNonce ||
-      JSON.stringify(proposed.targetDeployIds) !==
-        JSON.stringify(receipt.targetDeployIds) ||
-      proposed.receiptSha256 !== input.nextReceiptSha256
-    )
-      throw new Error("target_activation_receipt_mismatch");
-    return this.highRiskGate.execute((executeFresh) =>
-      executeFresh("control", () => this.repository.finalizeActivation(input)),
-    );
-  };
+  ) =>
+    this.highRiskGate.execute(async (executeFresh) => {
+      if (!this.targetReceiptReader)
+        throw new Error("target_activation_receipt_reader_unavailable");
+      const targetReceiptReader = this.targetReceiptReader;
+      const receipt = await executeFresh("reader", () =>
+        targetReceiptReader.read(input.authorization.rolloutId),
+      );
+      if (!receipt || "receiptAbsent" in receipt)
+        throw new Error("target_activation_receipt_missing");
+      if (
+        !targetActivationIdentityMatches({
+          target: receipt,
+          authorization: input.authorization,
+          proposedReceipt: input.activationReceipt,
+          expectedReceiptSha256: input.nextReceiptSha256,
+        })
+      )
+        throw new Error("target_activation_receipt_mismatch");
+      return executeFresh("control", () =>
+        this.repository.finalizeActivation(input),
+      );
+    });
   state = (
     input: Parameters<ReleaseAuthorityLedgerPort["activationState"]>[0],
   ) => this.repository.activationState(input);
@@ -384,7 +348,10 @@ export class ReleaseRolloutReconciliationService {
       });
 
     const authorization = context.authorization;
-    if (!authorization || !targetMatchesAuthorization(target, authorization))
+    if (
+      !authorization ||
+      !targetActivationIdentityMatches({ target, authorization })
+    )
       return this.write({
         rolloutId,
         targetObservation: { kind: "target_receipt_conflict" },
@@ -404,42 +371,6 @@ export class ReleaseRolloutReconciliationService {
       },
     });
   };
-}
-
-function targetMatchesAuthorization(
-  target: Exclude<
-    Awaited<ReturnType<TargetActivationReceiptReaderPort["read"]>>,
-    null | { receiptAbsent: true }
-  >,
-  authorization: import("@reviewrouter/features-release-rollout").ActivationAuthorization,
-): boolean {
-  const digest = /^sha256:[a-f0-9]{64}$/u;
-  return (
-    target.rolloutId === authorization.rolloutId &&
-    target.expectedCommitSha === authorization.expectedCommitSha &&
-    target.sourceSystemIdentifier === authorization.sourceSystemIdentifier &&
-    target.targetSystemIdentifier === authorization.targetSystemIdentifier &&
-    target.postgresMajor === authorization.postgresMajor &&
-    target.migrationChecksum === authorization.migrationChecksum &&
-    target.permitEpoch === authorization.epoch &&
-    target.permitNonce === authorization.nonce &&
-    JSON.stringify(target.targetDeployIds) ===
-      JSON.stringify(authorization.targetDeployIds) &&
-    target.firstWriteBoundary === true &&
-    digest.test(target.canonicalPrivilegesSha256) &&
-    digest.test(target.catalogFactsSha256) &&
-    digest.test(target.preactivationCatalogPolicySha256) &&
-    digest.test(target.activatedCatalogPolicySha256) &&
-    activationCatalogPolicyDigestsEqual(target) &&
-    digest.test(target.beforePrincipalInventorySha256) &&
-    digest.test(target.beforePrincipalPolicySha256) &&
-    digest.test(target.activatedPrincipalInventorySha256) &&
-    digest.test(target.activatedPrincipalPolicySha256) &&
-    digest.test(target.firstWriteReceiptSha256) &&
-    digest.test(target.activationObservationSha256) &&
-    /^[0-9]+$/u.test(target.transactionId) &&
-    Number.isFinite(Date.parse(target.activatedAt))
-  );
 }
 
 function activationReceiptFromTarget(

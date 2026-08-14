@@ -258,7 +258,9 @@ The trusted order is:
 3. Dispatch `release-authority-migration.yml` on that exact SHA with
    `operation=incremental-upgrade`. The protected
    `production-release-authority-migration` environment supplies the one-use
-   owner credential and requires approval.
+   owner credential. It must have at least one required reviewer, prevent self
+   review, and restrict deployments to protected branches. The workflow checks
+   all three settings before the credential-bearing migration job is eligible.
 
    ```bash
    EXPECTED_SHA=$(git rev-parse origin/main)

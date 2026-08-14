@@ -9,6 +9,10 @@ const rollout = readFileSync(
   ".github/workflows/private-network-pg17-rollout.yml",
   "utf8",
 );
+const authorityMigration = readFileSync(
+  ".github/workflows/release-authority-migration.yml",
+  "utf8",
+);
 const sha = "13165687d30af3b9fbb043f0e294744de612a6a0";
 
 function jobs(source: string): string[] {
@@ -94,6 +98,20 @@ const releaseFixture: Fixture = {
     commit: { sha },
   },
   "/repos/777genius/review-router-saas/environments/production-release":
+    protectedEnvironment,
+};
+
+const authorityMigrationEnvironment = {
+  ...releaseEnvironment,
+  EXPECTED_SHA: sha,
+  REQUIRED_ENVIRONMENT: "production-release-authority-migration",
+};
+const authorityMigrationFixture: Fixture = {
+  "/repos/777genius/review-router-saas/branches/main": {
+    protected: true,
+    commit: { sha },
+  },
+  "/repos/777genius/review-router-saas/environments/production-release-authority-migration":
     protectedEnvironment,
 };
 
@@ -194,6 +212,96 @@ describe("release workflow immutable trust bootstrap", () => {
   });
 });
 
+describe("release-authority migration protected environment bootstrap", () => {
+  it("accepts the exact protected main SHA only with the dedicated protected environment", () => {
+    const result = executeBootstrap(
+      authorityMigration,
+      authorityMigrationEnvironment,
+      authorityMigrationFixture,
+    );
+    expect(result.status).toBe(0);
+    expect(result.githubOutput).toBe(`trusted_sha=${sha}\n`);
+  });
+
+  it.each([
+    [
+      "missing required reviewers",
+      {
+        protection_rules: [{ type: "branch_policy" }],
+        deployment_branch_policy: { protected_branches: true },
+      },
+    ],
+    [
+      "self-review enabled",
+      {
+        ...protectedEnvironment,
+        protection_rules: [
+          {
+            type: "required_reviewers",
+            prevent_self_review: false,
+            reviewers: [{ type: "Team", id: 1 }],
+          },
+          { type: "branch_policy" },
+        ],
+      },
+    ],
+    [
+      "unprotected branches",
+      {
+        ...protectedEnvironment,
+        deployment_branch_policy: {
+          protected_branches: false,
+          custom_branch_policies: true,
+        },
+      },
+    ],
+  ])(
+    "rejects %s before owner credentials can be exposed",
+    (_name, environment) => {
+      const result = executeBootstrap(
+        authorityMigration,
+        authorityMigrationEnvironment,
+        {
+          ...authorityMigrationFixture,
+          "/repos/777genius/review-router-saas/environments/production-release-authority-migration":
+            environment,
+        },
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.githubOutput).toBeUndefined();
+      expect(result.stderr).toContain(
+        "authority_migration_trust_rejected:environment_unprotected",
+      );
+    },
+  );
+
+  it("fails closed and redacts credentials when the GitHub environment API fails", () => {
+    const ownerCredential = "owner-database-credential-must-not-appear";
+    const token = "github-token-must-not-appear";
+    const result = executeBootstrap(
+      authorityMigration,
+      {
+        ...authorityMigrationEnvironment,
+        GH_TOKEN: token,
+        REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL: ownerCredential,
+      },
+      {
+        "/repos/777genius/review-router-saas/branches/main": {
+          protected: true,
+          commit: { sha },
+        },
+      },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.githubOutput).toBeUndefined();
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      "authority_migration_trust_rejected:github_api_404",
+    );
+    expect(`${result.stdout}${result.stderr}`).not.toContain(token);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(ownerCredential);
+  });
+});
+
 describe("PG17 workflow immutable trust bootstrap", () => {
   it("binds expected SHA and exact release coordinates to protected main", () => {
     const result = executeBootstrap(
@@ -255,7 +363,7 @@ describe("PG17 workflow immutable trust bootstrap", () => {
 
 describe("privileged workflow structure", () => {
   it("keeps trust jobs repository-independent and permissions read-only", () => {
-    for (const source of [release, rollout]) {
+    for (const source of [release, rollout, authorityMigration]) {
       const trust = jobs(source).find((job) =>
         job.startsWith("  trust-bootstrap:"),
       );
@@ -269,6 +377,26 @@ describe("privileged workflow structure", () => {
       expect(trust).not.toContain("secrets.");
       expect(trust).not.toMatch(/pnpm|scripts\//u);
     }
+  });
+
+  it("keeps migration owner credentials exclusively after the trust dependency", () => {
+    const authorityJobs = jobs(authorityMigration);
+    const trust = authorityJobs.find((job) =>
+      job.startsWith("  trust-bootstrap:"),
+    );
+    const mutation = authorityJobs.find((job) =>
+      job.startsWith("  trusted-release-authority-migration:"),
+    );
+    expect(trust).not.toContain("secrets.");
+    expect(trust).not.toContain(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL",
+    );
+    expect(mutation).toContain(
+      "needs: [trust-bootstrap, verify-release-gate-evidence]",
+    );
+    expect(mutation).toContain(
+      "secrets.REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL",
+    );
   });
 
   it("checks out only verified output SHAs without persisted credentials", () => {

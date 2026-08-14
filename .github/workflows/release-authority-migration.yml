@@ -37,6 +37,7 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           GH_TOKEN: ${{ github.token }}
+          REQUIRED_ENVIRONMENT: production-release-authority-migration
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -57,20 +58,38 @@ jobs:
           if (required("GITHUB_REF") !== "refs/heads/main") fail("workflow_ref");
           if (!/^[a-f0-9]{40}$/.test(sha) || expectedSha !== sha)
             fail("dispatch_sha");
-          const response = await fetch(
-            `https://api.github.com/repos/${repository}/branches/main`,
-            {
-              headers: {
-                Authorization: `Bearer ${required("GH_TOKEN")}`,
-                Accept: "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-              },
-            },
-          );
-          if (!response.ok) fail(`github_api_${response.status}`);
-          const branch = await response.json();
+          const headers = {
+            Authorization: `Bearer ${required("GH_TOKEN")}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          };
+          const get = async (path) => {
+            const response = await fetch(`https://api.github.com${path}`, { headers });
+            if (!response.ok) fail(`github_api_${response.status}`);
+            return response.json();
+          };
+          const branch = await get(`/repos/${repository}/branches/main`);
           if (branch.protected !== true || branch.commit?.sha?.toLowerCase() !== sha)
             fail("stale_or_unprotected_main");
+          const environmentName = required("REQUIRED_ENVIRONMENT");
+          const environment = await get(
+            `/repos/${repository}/environments/${encodeURIComponent(environmentName)}`,
+          );
+          const rules = environment.protection_rules;
+          const reviewers = Array.isArray(rules)
+            ? rules.find((rule) => rule?.type === "required_reviewers")
+            : undefined;
+          const branchPolicy = Array.isArray(rules)
+            ? rules.find((rule) => rule?.type === "branch_policy")
+            : undefined;
+          if (
+            !reviewers ||
+            !Array.isArray(reviewers.reviewers) ||
+            reviewers.reviewers.length < 1 ||
+            reviewers.prevent_self_review !== true ||
+            !branchPolicy ||
+            environment.deployment_branch_policy?.protected_branches !== true
+          ) fail("environment_unprotected");
           appendFileSync(required("GITHUB_OUTPUT"), `trusted_sha=${sha}\n`, "utf8");
           // trust-bootstrap-node:end
           NODE

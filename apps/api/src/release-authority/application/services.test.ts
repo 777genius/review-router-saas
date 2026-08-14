@@ -176,6 +176,45 @@ describe("independent target activation receipt verification", () => {
     ).rejects.toThrow("target_activation_receipt_mismatch");
     expect(fixture.finalizeActivation).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["rolloutId", "rollout-other"],
+    ["expectedCommitSha", "f".repeat(40)],
+    ["sourceSystemIdentifier", "101"],
+    ["targetSystemIdentifier", "201"],
+    ["activatedAt", "2026-08-12T00:02:00.000Z"],
+    ["activationObservationSha256", `sha256:${"8".repeat(64)}`],
+    ["canonicalPrivilegesSha256", `sha256:${"8".repeat(64)}`],
+    ["catalogFactsSha256", `sha256:${"8".repeat(64)}`],
+    ["preactivationCatalogPolicySha256", `sha256:${"8".repeat(64)}`],
+    ["activatedCatalogPolicySha256", `sha256:${"8".repeat(64)}`],
+    ["beforePrincipalInventorySha256", `sha256:${"8".repeat(64)}`],
+    ["beforePrincipalPolicySha256", `sha256:${"8".repeat(64)}`],
+    ["activatedPrincipalInventorySha256", `sha256:${"8".repeat(64)}`],
+    ["activatedPrincipalPolicySha256", `sha256:${"8".repeat(64)}`],
+    ["transactionId", "54321"],
+    ["firstWriteReceiptSha256", `sha256:${"8".repeat(64)}`],
+  ] satisfies readonly (readonly [keyof TargetActivationFacts, string])[])(
+    "rejects an independently observed %s mismatch",
+    async (field, value) => {
+      const fixture = service({ ...targetFacts, [field]: value });
+      await expect(fixture.service.finalize(finalizeInput)).rejects.toThrow(
+        "target_activation_receipt_mismatch",
+      );
+      expect(fixture.finalizeActivation).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a receipt hash identity that differs from the finalization input", async () => {
+    const fixture = service(targetFacts);
+    await expect(
+      fixture.service.finalize({
+        ...finalizeInput,
+        nextReceiptSha256: `sha256:${"8".repeat(64)}`,
+      }),
+    ).rejects.toThrow("target_activation_receipt_mismatch");
+    expect(fixture.finalizeActivation).not.toHaveBeenCalled();
+  });
 });
 
 describe("high-risk activation mutation policy", () => {
@@ -274,7 +313,7 @@ describe("high-risk activation mutation policy", () => {
     ]);
   });
 
-  it("attests finalization after target receipt validation", async () => {
+  it("freshly attests the target reader immediately before finalization", async () => {
     const events: string[] = [];
     const repository = {
       finalizeActivation: vi.fn(async () => {
@@ -304,6 +343,7 @@ describe("high-risk activation mutation policy", () => {
     ).finalize(finalizeInput);
 
     expect(events).toEqual([
+      "reader-attested",
       "target-read",
       "control-attested",
       "authority-write",

@@ -191,6 +191,11 @@ holder of the direct database-owner migration credential. A successful gate on
 that exact SHA is required before deploying control, witness, or other code
 whose readiness depends on the new authority catalog.
 
+That environment must retain at least one required reviewer, prevent self
+review, and allow only protected branches. The workflow verifies those settings
+through the GitHub API in its repository-independent trust job and fails closed
+before the database-owner credential is available to any job.
+
 Fresh provisioning is a different operation: use `operation=fresh-install`
 only for a new database with no `release_authority` schema. Neither operation
 falls back to the other. The normative setup, upgrade, failure, and recovery
