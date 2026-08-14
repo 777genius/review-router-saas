@@ -391,10 +391,13 @@ describe("target-local PG17 activation permit", () => {
       "GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_receipt(text) TO reviewrouter_activation_receipt_reader",
     );
     expect(sql).toContain(
-      "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM reviewrouter_activation_receipt_reader",
+      "REVOKE ALL PRIVILEGES ON ROUTINE %s FROM reviewrouter_activation_receipt_reader",
     );
     expect(sql).toContain(
-      "REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
+      "REVOKE EXECUTE ON ROUTINE %s FROM PUBLIC",
+    );
+    expect(sql).toContain(
+      "acl.grantee = 0",
     );
     expect(sql).not.toMatch(
       /GRANT\s+SELECT\s+ON[^;]+TO reviewrouter_activation_receipt_reader/iu,
