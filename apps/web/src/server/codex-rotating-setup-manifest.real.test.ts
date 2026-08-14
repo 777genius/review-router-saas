@@ -7,6 +7,7 @@ import {
 } from "@reviewrouter/platform-db";
 import {
   authorizeCodexRotatingSetupDispatch,
+  codexRotatingAccountSwitchAcknowledgement,
   codexRotatingSetupRecoveryAcknowledgement,
   codexRotatingSetupManifestSchema,
   fingerprintDatabaseRecoveryWitness,
@@ -820,6 +821,89 @@ describeDatabase("Codex rotating setup serialization", () => {
       }),
     ).resolves.toEqual({
       status: "recovery_required",
+    });
+
+    const accountSwitchRequestId = `recovery:${randomUUID()}`;
+    const accountSwitchRecovery = await recoverCodexRotatingSetup(
+      {
+        workspaceId,
+        repositoryId: recoveryRepositoryId,
+        githubRepositoryId: recoveryGithubRepositoryId,
+        recoveryRequestId: accountSwitchRequestId,
+        actor: "user:github:account-switch-operator",
+        acknowledgement: codexRotatingAccountSwitchAcknowledgement,
+        accountSwitch: true,
+        now: new Date("2036-08-09T12:00:01.000Z"),
+      },
+      { recovery: recoveryAdapter },
+    );
+    expect(accountSwitchRecovery).toMatchObject({ status: "recovered" });
+    await expect(
+      prisma.codexOAuthSetupRecoveryRequest.findMany({
+        where: {
+          providerInstanceRowId: provider.id,
+          recoveryRequestId: {
+            in: [recoveryRequestId, accountSwitchRequestId],
+          },
+        },
+        orderBy: { requestedAt: "asc" },
+        select: {
+          recoveryRequestId: true,
+          mode: true,
+          state: true,
+        },
+      }),
+    ).resolves.toEqual([
+      {
+        recoveryRequestId,
+        mode: "forced_reseed",
+        state: "superseded",
+      },
+      {
+        recoveryRequestId: accountSwitchRequestId,
+        mode: "forced_reseed_account_switch",
+        state: "active",
+      },
+    ]);
+    await expect(
+      prisma.codexOAuthSetupManifest.findUniqueOrThrow({
+        where: { id: recoveryLedger[0]!.latestManifestId! },
+        select: { status: true, payloadClaimedAt: true },
+      }),
+    ).resolves.toEqual({ status: "recovered", payloadClaimedAt: null });
+    await expect(
+      prisma.codexOAuthProviderInstance.findUniqueOrThrow({
+        where: { id: provider.id },
+        select: { activeAccountIdentityHash: true },
+      }),
+    ).resolves.toEqual({ activeAccountIdentityHash: null });
+
+    const accountSwitchSetup = await issueCodexRotatingSetupCommand({
+      prisma,
+      workspaceId,
+      repositoryId: recoveryRepositoryId,
+      repositoryFullName: recoveryFullName,
+      githubRepositoryId: recoveryGithubRepositoryId,
+      installer,
+      databaseRecoveryWitness: "w".repeat(43),
+      installerArguments: ["--force-reseed"],
+      recovery: {
+        requestId: accountSwitchRequestId,
+        epoch: accountSwitchRecovery.recoveryEpoch,
+      },
+      setupManifestUrl:
+        "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+      now: new Date("2036-08-09T12:00:02.000Z"),
+    });
+    expect(accountSwitchSetup.command).toContain("--force-reseed");
+    await expect(
+      recoveryAdapter.inspectStatus({
+        workspaceId,
+        repositoryId: recoveryRepositoryId,
+        issuanceEnabled: true,
+      }),
+    ).resolves.toEqual({
+      status: "ready",
     });
   });
 });

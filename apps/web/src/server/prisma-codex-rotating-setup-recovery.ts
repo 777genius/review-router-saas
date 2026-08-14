@@ -244,7 +244,15 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
           input.recoveryRequestId,
           currentWitness,
         );
-        if (activeOtherRequest) {
+        const maySupersedeActiveOtherRequest =
+          activeOtherRequest !== null &&
+          input.accountSwitch &&
+          (await canSupersedeUnclaimedRecoveryForAccountSwitch(tx, {
+            providerInstanceRowId: provider.id,
+            recoveryRequestRowId: activeOtherRequest.id,
+            currentWitness,
+          }));
+        if (activeOtherRequest && !maySupersedeActiveOtherRequest) {
           throw new Error("codex_rotating_setup_recovery_request_conflict");
         }
         const setup = await tx.codexOAuthSetupManifest.findFirst({
@@ -346,6 +354,15 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
             status: "idempotent_replay" as const,
             recoveryEpoch: request.mutationEpoch,
           };
+        }
+
+        if (activeOtherRequest) {
+          await supersedeUnclaimedRecoveryForAccountSwitch(tx, {
+            providerInstanceRowId: provider.id,
+            recoveryRequestRowId: activeOtherRequest.id,
+            currentWitness,
+            now: input.now,
+          });
         }
 
         const recoveryOwnerId = `setup-recovery:${input.recoveryRequestId}`;
@@ -501,6 +518,87 @@ async function findOtherActiveRecoveryRequest(
     LIMIT 1
   `;
   return rows[0] ?? null;
+}
+
+export async function canSupersedeUnclaimedRecoveryForAccountSwitch(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly providerInstanceRowId: string;
+    readonly recoveryRequestRowId: string;
+    readonly currentWitness: string;
+  },
+): Promise<boolean> {
+  const rows = await tx.$queryRaw<Array<{ readonly allowed: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1
+      FROM "CodexOAuthSetupRecoveryRequest" recovery
+      JOIN "CodexOAuthSetupManifest" manifest
+        ON manifest."id" = recovery."latestManifestId"
+       AND manifest."providerInstanceRowId" = recovery."providerInstanceRowId"
+      JOIN "CodexOAuthProviderInstance" provider
+        ON provider."id" = recovery."providerInstanceRowId"
+      WHERE recovery."id" = ${input.recoveryRequestRowId}
+        AND recovery."providerInstanceRowId" = ${input.providerInstanceRowId}
+        AND recovery."state" = 'manifest_issued'
+        AND recovery."mode" = 'forced_reseed'
+        AND recovery."databaseRecoveryWitness" IS NOT DISTINCT FROM ${input.currentWitness}
+        AND manifest."status" IN ('issued', 'fetched')
+        AND manifest."payloadClaimedAt" IS NULL
+        AND manifest."mutationEpoch" = recovery."mutationEpoch" + 1
+        AND provider."mutationOwner" = 'setup'
+        AND provider."mutationOwnerId" = manifest."id"
+        AND provider."mutationEpoch" = manifest."mutationEpoch"
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "CodexOAuthSetupPayloadClaim" claim
+          WHERE claim."manifestId" = manifest."id"
+        )
+    ) AS "allowed"
+  `;
+  return rows[0]?.allowed === true;
+}
+
+export async function supersedeUnclaimedRecoveryForAccountSwitch(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly providerInstanceRowId: string;
+    readonly recoveryRequestRowId: string;
+    readonly currentWitness: string;
+    readonly now: Date;
+  },
+): Promise<void> {
+  const updated = await tx.$executeRaw`
+    UPDATE "CodexOAuthSetupRecoveryRequest" recovery
+    SET "state" = 'superseded', "completedAt" = ${input.now},
+        "updatedAt" = ${input.now}
+    WHERE recovery."id" = ${input.recoveryRequestRowId}
+      AND recovery."providerInstanceRowId" = ${input.providerInstanceRowId}
+      AND recovery."state" = 'manifest_issued'
+      AND recovery."mode" = 'forced_reseed'
+      AND recovery."databaseRecoveryWitness" IS NOT DISTINCT FROM ${input.currentWitness}
+      AND EXISTS (
+        SELECT 1
+        FROM "CodexOAuthSetupManifest" manifest
+        JOIN "CodexOAuthProviderInstance" provider
+          ON provider."id" = manifest."providerInstanceRowId"
+        WHERE manifest."id" = recovery."latestManifestId"
+          AND manifest."providerInstanceRowId" = recovery."providerInstanceRowId"
+          AND manifest."status" IN ('issued', 'fetched')
+          AND manifest."payloadClaimedAt" IS NULL
+          AND manifest."mutationEpoch" = recovery."mutationEpoch" + 1
+          AND provider."mutationOwner" = 'setup'
+          AND provider."mutationOwnerId" = manifest."id"
+          AND provider."mutationEpoch" = manifest."mutationEpoch"
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "CodexOAuthSetupPayloadClaim" claim
+            WHERE claim."manifestId" = manifest."id"
+          )
+      )
+  `;
+  if (updated !== 1) {
+    throw new Error("codex_rotating_setup_recovery_request_conflict");
+  }
 }
 
 export async function supersedeMismatchedActiveRecoveryRequests(

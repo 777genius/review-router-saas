@@ -9,9 +9,11 @@ import {
 } from "@reviewrouter/features-provider-setup";
 import { fingerprintDatabaseRecoveryWitness } from "@reviewrouter/features-provider-setup";
 import {
+  canSupersedeUnclaimedRecoveryForAccountSwitch,
   PrismaCodexRotatingSetupRecovery,
   retirePriorNamespaceGeneration,
   supersedeMismatchedActiveRecoveryRequests,
+  supersedeUnclaimedRecoveryForAccountSwitch,
   validateCodexRotatingSetupRecoveryAcknowledgement,
 } from "./prisma-codex-rotating-setup-recovery";
 
@@ -143,6 +145,58 @@ describe("Prisma setup recovery status witness admission", () => {
 });
 
 describe("forced setup recovery authority retirement", () => {
+  it("admits account-switch supersession only for the fenced unclaimed manifest", async () => {
+    const tx = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([{ allowed: true }])
+        .mockResolvedValueOnce([{ allowed: false }]),
+    };
+    const input = {
+      providerInstanceRowId: "provider:account-switch",
+      recoveryRequestRowId: "recovery-row:unclaimed",
+      currentWitness: "a".repeat(64),
+    };
+
+    await expect(
+      canSupersedeUnclaimedRecoveryForAccountSwitch(tx as never, input),
+    ).resolves.toBe(true);
+    await expect(
+      canSupersedeUnclaimedRecoveryForAccountSwitch(tx as never, input),
+    ).resolves.toBe(false);
+
+    const query = sqlText(tx.$queryRaw.mock.calls[0]!);
+    expect(query).toContain("recovery.\"mode\" = 'forced_reseed'");
+    expect(query).toContain('manifest."payloadClaimedAt" IS NULL');
+    expect(query).toContain("provider.\"mutationOwner\" = 'setup'");
+    expect(query).toContain("NOT EXISTS (");
+    expect(query).toContain('FROM "CodexOAuthSetupPayloadClaim" claim');
+  });
+
+  it("atomically supersedes the exact unclaimed recovery row or fails closed", async () => {
+    const tx = { $executeRaw: vi.fn().mockResolvedValueOnce(1) };
+    const input = {
+      providerInstanceRowId: "provider:account-switch",
+      recoveryRequestRowId: "recovery-row:unclaimed",
+      currentWitness: "a".repeat(64),
+      now: new Date("2026-08-14T00:00:00.000Z"),
+    };
+
+    await expect(
+      supersedeUnclaimedRecoveryForAccountSwitch(tx as never, input),
+    ).resolves.toBeUndefined();
+    const update = sqlText(tx.$executeRaw.mock.calls[0]!);
+    expect(update).toContain("SET \"state\" = 'superseded'");
+    expect(update).toContain("recovery.\"mode\" = 'forced_reseed'");
+    expect(update).toContain('manifest."payloadClaimedAt" IS NULL');
+    expect(update).toContain("provider.\"mutationOwner\" = 'setup'");
+
+    tx.$executeRaw.mockResolvedValueOnce(0);
+    await expect(
+      supersedeUnclaimedRecoveryForAccountSwitch(tx as never, input),
+    ).rejects.toThrow("codex_rotating_setup_recovery_request_conflict");
+  });
+
   it("makes the explicit admission decision before superseding stale recovery rows", async () => {
     const events: string[] = [];
     const tx = {

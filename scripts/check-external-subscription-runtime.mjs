@@ -1,5 +1,58 @@
 #!/usr/bin/env node
 
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const manifest = JSON.parse(
+  await readFile(resolve(root, "package.json"), "utf8"),
+);
+const dependencySource =
+  manifest.optionalDependencies?.["@777genius/subscription-runtime"];
+const sourceMatch =
+  /^git\+ssh:\/\/git@github\.com\/777genius\/ar\.git#([0-9a-f]{40})$/u.exec(
+    dependencySource ?? "",
+  );
+
+if (!sourceMatch) {
+  throw new Error(
+    "subscription runtime must be pinned to an immutable 777genius/ar commit SHA",
+  );
+}
+
+const pinnedCommit = sourceMatch[1];
+const expectedSpecifier = `git+ssh://git@github.com/777genius/ar.git#${pinnedCommit}`;
+const expectedPackageKey = `@vioxen/subscription-runtime@git+https://git@github.com:777genius/ar.git#${pinnedCommit}`;
+const lockfile = parse(await readFile(resolve(root, "pnpm-lock.yaml"), "utf8"));
+const importerDependency =
+  lockfile?.importers?.["."]?.optionalDependencies?.[
+    "@777genius/subscription-runtime"
+  ];
+const linkedPackageKey =
+  typeof importerDependency?.version === "string"
+    ? importerDependency.version.match(
+        /^(@vioxen\/subscription-runtime@git\+https:\/\/git@github\.com:777genius\/ar\.git#[0-9a-f]{40})(?:\(|$)/u,
+      )?.[1]
+    : undefined;
+const resolution =
+  linkedPackageKey === undefined
+    ? undefined
+    : lockfile?.packages?.[linkedPackageKey]?.resolution;
+
+if (
+  importerDependency?.specifier !== expectedSpecifier ||
+  linkedPackageKey !== expectedPackageKey ||
+  resolution?.type !== "git" ||
+  resolution?.repo !== "git@github.com:777genius/ar.git" ||
+  resolution?.commit !== pinnedCommit
+) {
+  throw new Error(
+    "subscription runtime package.json, importer, and resolved git package do not match",
+  );
+}
+
 const checks = [
   ["@777genius/subscription-runtime/core", "createSubscriptionRuntime"],
   ["@777genius/subscription-runtime/provider-codex", "CodexCliSessionDriver"],

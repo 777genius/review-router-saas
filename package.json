@@ -147,7 +147,7 @@
     "zustand": "^5.0.12"
   },
   "optionalDependencies": {
-    "@777genius/subscription-runtime": "git+ssh://git@github.com/777genius/ar.git#v0.1.0-main.28"
+    "@777genius/subscription-runtime": "git+ssh://git@github.com/777genius/ar.git#6467c59a06a2ac26e3874cf0d104073e7a6c8a2b"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -165,7 +165,8 @@
     "turbo": "^2.10.6",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "yaml": "^2.9.0"
   },
   "pnpm": {
     "overrides": {
