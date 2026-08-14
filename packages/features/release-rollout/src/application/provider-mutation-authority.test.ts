@@ -281,15 +281,143 @@ describe("authority-serialized provider mutation", () => {
     const authority = new FakeAuthority();
     authority.validateExecution = vi
       .fn()
-      .mockRejectedValue(new Error("response lost"));
+      .mockImplementation(async (receipt) => {
+        authority.recovery = {
+          status: "receipt",
+          phase: "executing",
+          reconciliationOnly: false,
+          receipt,
+        };
+        throw new Error("response lost");
+      });
     const mutate = vi.fn();
     await expect(execute(authority, { mutate })).rejects.toThrow(
-      "provider_mutation_execution_not_authorized",
+      "provider_mutation_execution_in_progress",
     );
     expect(mutate).not.toHaveBeenCalled();
-    expect(authority.reconciliations.at(-1)?.result).toBe(
-      "execution_not_authorized",
+    expect(authority.reconciliations).toHaveLength(0);
+    expect(authority.active).toBe(true);
+  });
+
+  it("preserves an active fence when exact application replays race at validation", async () => {
+    let state: "absent" | "consumed" | "executing" | "completed" = "absent";
+    let recoveries = 0;
+    let releaseRecovery!: () => void;
+    const bothRecovered = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    const permit: OneShotMutationPermit = {
+      rolloutId: "rollout-one",
+      operation: "suspend_service",
+      resource,
+      ownerId: "actor-one",
+      expected: before,
+      epoch: 1,
+      permitId: "permit-1",
+      token: "a".repeat(64),
+      issuedAt: "2026-08-14T00:00:00.000Z",
+      expiresAt: "2026-08-14T00:01:00.000Z",
+      singleUse: true,
+    };
+    const receipt: MutationExecutionReceipt = {
+      rolloutId: permit.rolloutId,
+      operation: permit.operation,
+      resource: permit.resource,
+      ownerId: permit.ownerId,
+      expected: permit.expected,
+      epoch: permit.epoch,
+      permitId: permit.permitId,
+      receiptId: "receipt-1",
+      consumedAt: "2026-08-14T00:00:01.000Z",
+    };
+    const reconciliations: ProviderMutationReconciliation[] = [];
+    let fenceActive = false;
+    const authority: ProviderMutationAuthorityPort = {
+      async recover() {
+        recoveries += 1;
+        if (recoveries <= 2) {
+          if (recoveries === 2) releaseRecovery();
+          await bothRecovered;
+          return { status: "absent" };
+        }
+        if (state === "executing")
+          return {
+            status: "receipt",
+            phase: "executing",
+            reconciliationOnly: false,
+            receipt,
+          };
+        throw new Error(`unexpected_recovery:${state}`);
+      },
+      async issue() {
+        fenceActive = true;
+        return permit;
+      },
+      async consume() {
+        state = "consumed";
+        return receipt;
+      },
+      async validateExecution() {
+        if (state !== "consumed") return false;
+        state = "executing";
+        return true;
+      },
+      async complete() {
+        state = "completed";
+        fenceActive = false;
+      },
+      async reconcile(value) {
+        reconciliations.push(value);
+        fenceActive = false;
+      },
+    };
+    let releaseMutation!: () => void;
+    const mutationGate = new Promise<void>((resolve) => {
+      releaseMutation = resolve;
+    });
+    const providerWrite = vi.fn(async () => mutationGate);
+    const observe = vi
+      .fn()
+      .mockResolvedValueOnce(observed(before))
+      .mockResolvedValueOnce(observed(before))
+      .mockResolvedValue(observed(after));
+    const first = new AuthoritySerializedMutation(
+      authority,
+      () => new Date("2026-08-14T00:00:02.000Z"),
+    ).execute({
+      rolloutId: permit.rolloutId,
+      operation: permit.operation,
+      resource,
+      ownerId: permit.ownerId,
+      expected: before,
+      expectedPostcondition: after,
+      observe,
+      mutate: providerWrite,
+    });
+    const second = new AuthoritySerializedMutation(
+      authority,
+      () => new Date("2026-08-14T00:00:02.000Z"),
+    ).execute({
+      rolloutId: permit.rolloutId,
+      operation: permit.operation,
+      resource,
+      ownerId: permit.ownerId,
+      expected: before,
+      expectedPostcondition: after,
+      observe,
+      mutate: providerWrite,
+    });
+    const secondRejected = expect(second).rejects.toThrow(
+      "provider_mutation_execution_in_progress",
     );
+    await vi.waitFor(() => expect(providerWrite).toHaveBeenCalledOnce());
+    await secondRejected;
+    expect(fenceActive).toBe(true);
+    expect(reconciliations).toHaveLength(0);
+    releaseMutation();
+    await expect(first).resolves.toMatchObject({ status: "applied" });
+    expect(providerWrite).toHaveBeenCalledOnce();
+    expect(fenceActive).toBe(false);
   });
 
   it("reconciles the exact postcondition after response loss", async () => {

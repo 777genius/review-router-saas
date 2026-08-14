@@ -296,7 +296,7 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
   exit 1
 fi
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
-  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:25dad3460923729a2dc2f3f2ba0f9e0c13913ac9c8a146f6952bb5e11b1ada31' WHERE position=13" >/dev/null
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:097c180272084ca9b33b3e11d9f7b0e7b7ea2dd103f4e2acea0dc87189b5d047' WHERE position=13" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
   -f /tmp/release-authority-install.sql >/dev/null
 first_gate_attestation=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
@@ -1059,13 +1059,28 @@ pm_takeover_receipt=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR
 pm_authorized=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_provider_mutation_validate_execution('$pm_takeover_receipt')")
 test "$pm_authorized" = t
+pm_concurrent_replay=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_provider_mutation_validate_execution('$pm_takeover_receipt')")
+test "$pm_concurrent_replay" = f
+pm_active_fence=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
+  "SELECT mutation.state||':'||lease.active_state||':'||
+      (lease.active_permit_id=mutation.permit_id)::text||':'||
+      (mutation.completed_at IS NULL)::text
+   FROM release_authority.provider_mutation mutation
+   JOIN release_authority.provider_resource_lease lease USING(provider,resource_kind,resource_id)
+   WHERE mutation.rollout_id='r-pm-recover' AND mutation.operation='freeze:srv-pm'")
+test "$pm_active_fence" = executing:executing:true:true
 pm_executing_recovery=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT (value->>'phase')||':'||(value->>'reconciliationOnly') FROM
     (SELECT release_authority.release_provider_mutation_recover('$pm_takeover_request') value) recovered")
-test "$pm_executing_recovery" = executing:true
+test "$pm_executing_recovery" = executing:false
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "UPDATE release_authority.provider_mutation SET expires_at=clock_timestamp()-interval '1 second'
    WHERE rollout_id='r-pm-recover' AND operation='freeze:srv-pm'" >/dev/null
+pm_expired_executing_recovery=$(docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT (value->>'phase')||':'||(value->>'reconciliationOnly') FROM
+    (SELECT release_authority.release_provider_mutation_recover('$pm_takeover_request') value) recovered")
+test "$pm_expired_executing_recovery" = executing:true
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_provider_mutation_recover(jsonb_set('$pm_takeover_request','{ownerId}','\"actor-pm-conflict\"'))" >/dev/null 2>&1; then
   echo "ambiguous executing provider mutation was unsafely taken over" >&2

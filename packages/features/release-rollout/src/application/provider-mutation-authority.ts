@@ -85,8 +85,11 @@ export class AuthoritySerializedMutation {
     const recovery = await this.authority.recover(request);
     if (recovery.status === "terminal")
       return this.terminalOutcome(recovery.outcome, input);
-    if (recovery.status === "receipt" && recovery.phase === "executing")
+    if (recovery.status === "receipt" && recovery.phase === "executing") {
+      if (!recovery.reconciliationOnly)
+        throw new Error("provider_mutation_execution_in_progress");
       return this.reconcileRecoveredExecution(input, recovery.receipt);
+    }
     const permit =
       recovery.status === "permit"
         ? assertOneShotMutationPermit(recovery.permit, this.now())
@@ -135,14 +138,8 @@ export class AuthoritySerializedMutation {
     } catch {
       authorized = false;
     }
-    if (!authorized) {
-      await this.authority.reconcile({
-        result: "execution_not_authorized",
-        receipt,
-        observation: before,
-      });
-      throw new Error("provider_mutation_execution_not_authorized");
-    }
+    if (!authorized)
+      return this.resolveUncertainValidation(request, input, receipt);
     try {
       await input.mutate();
     } catch {
@@ -169,6 +166,43 @@ export class AuthoritySerializedMutation {
     }
     await this.authority.complete({ receipt, observation: after });
     return { status: "applied", receipt, observation: after };
+  }
+
+  private async resolveUncertainValidation(
+    request: ProviderMutationRecoveryRequest,
+    input: Parameters<AuthoritySerializedMutation["execute"]>[0],
+    receipt: MutationExecutionReceipt,
+  ): Promise<AuthorizedMutationOutcome> {
+    let recovery: ProviderMutationRecovery;
+    try {
+      recovery = await this.authority.recover(request);
+    } catch {
+      // A lost validator response may have committed executing. Never convert
+      // an authority read failure into a terminal denial that clears its fence.
+      throw new Error("provider_mutation_execution_authority_uncertain");
+    }
+    if (recovery.status === "terminal")
+      return this.terminalOutcome(recovery.outcome, input);
+    if (recovery.status === "receipt") {
+      if (!this.receiptMatchesInput(recovery.receipt, input))
+        throw new Error("provider_mutation_receipt_binding_invalid");
+      if (
+        recovery.receipt.receiptId !== receipt.receiptId ||
+        recovery.receipt.epoch !== receipt.epoch ||
+        recovery.receipt.permitId !== receipt.permitId
+      )
+        throw new Error("provider_mutation_execution_not_authorized");
+      if (recovery.phase === "executing") {
+        if (!recovery.reconciliationOnly)
+          throw new Error("provider_mutation_execution_in_progress");
+        return this.reconcileRecoveredExecution(input, recovery.receipt);
+      }
+      throw new Error("provider_mutation_execution_authority_uncertain");
+    }
+    // Absent or rotated permit authority proves this receipt cannot execute.
+    // It does not authorize reconciling the stale receipt or clearing the
+    // resource fence now owned by another permit.
+    throw new Error("provider_mutation_execution_not_authorized");
   }
 
   private async reconcileRecoveredExecution(

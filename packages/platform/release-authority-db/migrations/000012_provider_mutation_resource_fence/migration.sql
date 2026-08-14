@@ -786,7 +786,10 @@ BEGIN
   END IF;
   IF mutation.state IN ('consumed','executing') THEN
     RETURN jsonb_build_object('status','receipt','phase',mutation.state,
-      'reconciliationOnly',mutation.state='executing','receipt',
+      -- A fresh executing lease can still be inside provider I/O. Exact replay
+      -- may inspect it, but must not reconcile or clear its resource fence.
+      'reconciliationOnly',mutation.state='executing'
+        AND mutation.expires_at<=clock_timestamp(),'receipt',
       release_authority.release_provider_mutation_receipt(mutation));
   END IF;
   RAISE EXCEPTION 'provider mutation recovery state invalid';

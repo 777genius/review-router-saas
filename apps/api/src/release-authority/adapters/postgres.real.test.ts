@@ -263,6 +263,36 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     await expect(authority.consume(permit)).resolves.toEqual(receipt);
     await expect(authority.validateExecution(receipt)).resolves.toBe(true);
     await expect(authority.validateExecution(receipt)).resolves.toBe(false);
+    await expect(
+      admin.$queryRawUnsafe<
+        Array<{
+          active_state: string;
+          active_permit_id: string;
+          mutation_state: string;
+          completed_at: Date | null;
+        }>
+      >(
+        `SELECT lease.active_state, lease.active_permit_id,
+                mutation.state AS mutation_state, mutation.completed_at
+         FROM release_authority.provider_resource_lease lease
+         JOIN release_authority.provider_mutation mutation
+           ON mutation.provider=lease.provider
+          AND mutation.resource_kind=lease.resource_kind
+          AND mutation.resource_id=lease.resource_id
+         WHERE lease.provider=$1 AND lease.resource_kind=$2
+           AND lease.resource_id=$3`,
+        receipt.resource.provider,
+        receipt.resource.kind,
+        receipt.resource.id,
+      ),
+    ).resolves.toEqual([
+      {
+        active_state: "executing",
+        active_permit_id: receipt.permitId,
+        mutation_state: "executing",
+        completed_at: null,
+      },
+    ]);
     const observation = {
       resource: base.resource,
       state: base.expected,
@@ -377,12 +407,29 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     await expect(authority.recover(takeoverRequest)).resolves.toEqual({
       status: "receipt",
       phase: "executing",
-      reconciliationOnly: true,
+      reconciliationOnly: false,
       receipt: takeoverReceipt,
     });
     await expect(
       authority.recover({ ...takeoverRequest, ownerId: "actor-conflict" }),
     ).rejects.toThrow();
+    await admin.$executeRawUnsafe(
+      `UPDATE release_authority.provider_mutation
+       SET expires_at=clock_timestamp()-interval '1 second'
+       WHERE rollout_id=$1 AND operation=$2 AND provider=$3
+         AND resource_kind=$4 AND resource_id=$5`,
+      takeoverReceipt.rolloutId,
+      takeoverReceipt.operation,
+      takeoverReceipt.resource.provider,
+      takeoverReceipt.resource.kind,
+      takeoverReceipt.resource.id,
+    );
+    await expect(authority.recover(takeoverRequest)).resolves.toEqual({
+      status: "receipt",
+      phase: "executing",
+      reconciliationOnly: true,
+      receipt: takeoverReceipt,
+    });
     await authority.reconcile({
       result: "exact_postcondition",
       receipt: takeoverReceipt,

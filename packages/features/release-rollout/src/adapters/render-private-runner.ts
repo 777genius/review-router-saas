@@ -20,8 +20,6 @@ import {
   reconcileCompensationSafety,
   type CompensationSafetyReconciliation,
 } from "../application/reconcile-compensation";
-import type { ProviderMutationAuthorityPort } from "../application/provider-mutation-authority";
-import { AuthorizedRenderMutations } from "./authorized-render-mutations";
 import {
   RenderApiAdapter,
   type RenderDeploy,
@@ -215,7 +213,6 @@ export class RenderPrivateRunnerAdapter {
     private readonly providerWitness: RunnerProviderWitnessPort,
     private readonly fetchImpl: RenderFetch = fetch,
     private readonly now: () => Date = () => new Date(),
-    private readonly mutationAuthority?: ProviderMutationAuthorityPort,
   ) {}
 
   private client(token: string): RenderApiAdapter {
@@ -245,12 +242,6 @@ export class RenderPrivateRunnerAdapter {
   }> {
     validate(input);
     const api = this.client(input.apiKey);
-    if (!this.mutationAuthority)
-      throw new Error("render_mutation_authority_missing");
-    const mutations = new AuthorizedRenderMutations(
-      api,
-      this.mutationAuthority,
-    );
     const service = await api.getService(input.baseServiceId);
     if (
       service.id !== input.baseServiceId ||
@@ -333,20 +324,15 @@ export class RenderPrivateRunnerAdapter {
       effectId: provisioningIntentId,
       ownerId: claimantId,
       prepare: prepareInput,
+      // Runner creation has one durable convergence owner: the provisioning
+      // effect protocol keyed by its deterministic start command. Wrapping a
+      // second provider-mutation protocol here can leave contradictory inner
+      // forward-repair and outer bound states after a lost response.
       dispatch: async () =>
-        await mutations.createJob(
-          {
-            rolloutId: input.rolloutId,
-            ownerId: claimantId,
-            operation: `runner_provision:${provisioningIntentId}`,
-          },
-          input.baseServiceId,
-          provisioningIntentId,
-          {
-            startCommand,
-            ...(input.planId ? { planId: input.planId } : {}),
-          },
-        ),
+        await api.createJob(input.baseServiceId, {
+          startCommand,
+          ...(input.planId ? { planId: input.planId } : {}),
+        }),
     });
     const intent = dispatch.record;
     let created: RenderJob = dispatch.response as RenderJob;

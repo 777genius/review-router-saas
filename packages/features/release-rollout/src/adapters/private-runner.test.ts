@@ -13,73 +13,7 @@ import {
   RenderPrivateRunnerAdapter as ProductionRenderPrivateRunnerAdapter,
   type RenderRunnerRequest,
 } from "./render-private-runner";
-import { TestProviderMutationAuthority } from "../test-provider-mutation-authority";
-
-class RenderPrivateRunnerAdapter extends ProductionRenderPrivateRunnerAdapter {
-  private readonly authorityTestState: {
-    phase: "idle" | "before" | "after";
-    createdJob?: unknown;
-    acquisitionBaseline: number;
-  };
-  constructor(...args: any[]) {
-    const delegate = (args[3] ?? fetch) as typeof fetch;
-    const state: {
-      phase: "idle" | "before" | "after";
-      createdJob?: unknown;
-      acquisitionBaseline: number;
-    } = { phase: "idle", acquisitionBaseline: 0 };
-    const authorityAwareFetch = async (url: string, init?: RequestInit) => {
-      const jobsEndpoint = /\/services\/[^/]+\/jobs$/u.test(
-        new URL(url).pathname,
-      );
-      if (jobsEndpoint && !init?.method && state.phase === "before") {
-        const acquired =
-          args[0]?.acquireProviderDispatchPermit?.mock?.calls?.length >
-          state.acquisitionBaseline;
-        if (acquired) return json([]);
-        state.phase = "idle";
-      }
-      if (jobsEndpoint && !init?.method && state.phase === "after") {
-        state.phase = "idle";
-        return json([{ job: state.createdJob }]);
-      }
-      let response: Response;
-      try {
-        response = await delegate(url, init);
-      } catch (error) {
-        if (jobsEndpoint && init?.method === "POST") state.phase = "idle";
-        throw error;
-      }
-      if (jobsEndpoint && init?.method === "POST") {
-        if (response.ok) {
-          state.createdJob = await response.clone().json();
-          state.phase = "after";
-        } else state.phase = "idle";
-      }
-      return response;
-    };
-    super(
-      args[0],
-      args[1],
-      args[2],
-      authorityAwareFetch,
-      args[4] ?? (() => new Date()),
-      new TestProviderMutationAuthority(),
-    );
-    this.authorityTestState = state;
-  }
-  override async provision(input: any) {
-    this.authorityTestState.phase = "before";
-    this.authorityTestState.acquisitionBaseline =
-      (this as any).ledger?.acquireProviderDispatchPermit?.mock?.calls
-        ?.length ?? 0;
-    try {
-      return await super.provision(input);
-    } finally {
-      this.authorityTestState.phase = "idle";
-    }
-  }
-}
+const RenderPrivateRunnerAdapter = ProductionRenderPrivateRunnerAdapter;
 
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {
@@ -381,11 +315,43 @@ describe("Render private runner contract", () => {
 
   it("reconciles the deterministic provider job after create response loss", async () => {
     const jobLedger = ledger();
-    jobLedger.persistProvisioningIntent
-      .mockImplementationOnce(async (value) =>
-        preparedEffect(value.creationLeaseOwner),
-      )
-      .mockResolvedValueOnce(dispatchingEffect);
+    let durableEffect:
+      | ReturnType<typeof preparedEffect>
+      | typeof dispatchingEffect
+      | {
+          state: "bound";
+          ownerId: string;
+          epoch: number;
+          providerId: string;
+          safeForCompensation: false;
+        }
+      | undefined;
+    jobLedger.persistProvisioningIntent.mockImplementation(async (value) => {
+      durableEffect ??= preparedEffect(value.creationLeaseOwner);
+      return durableEffect;
+    });
+    jobLedger.acquireProviderDispatchPermit.mockImplementation(
+      async (value) => {
+        durableEffect = {
+          ...dispatchingEffect,
+          ownerId: value.claimantId,
+          epoch: value.expectedEpoch + 1,
+        };
+        return durableEffect;
+      },
+    );
+    jobLedger.reconcileProvisioningEffect.mockImplementation(async (value) => {
+      if (value.reconciliation.result !== "pending" || !value.jobId)
+        throw new Error("unexpected_runner_reconciliation");
+      durableEffect = {
+        state: "bound",
+        ownerId: durableEffect!.ownerId,
+        epoch: durableEffect!.epoch,
+        providerId: value.jobId,
+        safeForCompensation: false,
+      };
+      return durableEffect;
+    });
     let lostStartCommand = "";
     const firstFetch = vi
       .fn()
@@ -402,7 +368,7 @@ describe("Render private runner contract", () => {
       firstFetch,
     );
     await expect(adapter.provision(request)).rejects.toThrow(
-      "provider_mutation_forward_repair_required",
+      "provider_http_request_failed",
     );
     const durableCreatedAt = String(
       jobLedger.persistProvisioningIntent.mock.calls[0]?.[0].createdAt,
@@ -443,6 +409,12 @@ describe("Render private runner contract", () => {
     expect(
       replayFetch.mock.calls.filter(([, init]) => init?.method === "POST"),
     ).toHaveLength(0);
+    expect(durableEffect).toMatchObject({
+      state: "bound",
+      providerId: created.id,
+      safeForCompensation: false,
+    });
+    expect(jobLedger.reconcileProvisioningEffect).toHaveBeenCalledTimes(1);
   });
 
   it("reuses an existing ledger-bound active job without listing or creating jobs", async () => {

@@ -134,8 +134,9 @@ export type ProviderMutationRecoveryRequest = Readonly<{
 
 /**
  * Durable authority state for an idempotent mutation identity. An executing
- * receipt is reconciliation-only: provider I/O may already have happened and
- * must never be replayed from this state.
+ * receipt is never replayable. It becomes reconciliation-only only after its
+ * active execution lease has elapsed; fresh exact replays must leave the
+ * executing resource fence untouched.
  */
 export type ProviderMutationRecovery =
   | Readonly<{ status: "absent" }>

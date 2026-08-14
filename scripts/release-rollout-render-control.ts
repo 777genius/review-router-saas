@@ -48,7 +48,6 @@ const runnerControl = () => {
     providerWitness,
     fetch,
     () => new Date(),
-    mutationAuthority(),
   );
   return { ledger, useCases: new PrivateRunnerControlUseCases(runners) };
 };
