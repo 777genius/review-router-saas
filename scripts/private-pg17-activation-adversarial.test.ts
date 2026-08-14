@@ -77,23 +77,35 @@ describePg17("disposable PG17 activation-principal adversarial proof", () => {
       inspectedImage.stdout.trim(),
     ]);
     expect(started.status, started.stderr).toBe(0);
+    let ready = false;
     for (let attempt = 0; attempt < 30; attempt += 1) {
-      if (
-        docker([
-          "exec",
-          container,
-          "pg_isready",
-          "--username",
-          "postgres",
-          "--dbname",
-          "postgres",
-          "--timeout",
-          "1",
-        ]).status === 0
-      )
+      const probe = docker([
+        "exec",
+        "--env",
+        "PGCONNECT_TIMEOUT=1",
+        container,
+        "psql",
+        "--host",
+        "127.0.0.1",
+        "--username",
+        "postgres",
+        "--dbname",
+        "postgres",
+        "--no-psqlrc",
+        "--set",
+        "ON_ERROR_STOP=1",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        "SELECT 1",
+      ]);
+      if (probe.status === 0 && probe.stdout.trim() === "1") {
+        ready = true;
         break;
-      if (attempt === 29) throw new Error("disposable_pg17_not_ready");
+      }
+      docker(["exec", container, "sh", "-c", "sleep 1"]);
     }
+    if (!ready) throw new Error("disposable_pg17_not_ready");
     psql(`
 CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN;
 CREATE ROLE reviewrouter_activation_permit_installer LOGIN;

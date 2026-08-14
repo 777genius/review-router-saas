@@ -9,6 +9,33 @@ import {
 } from "./secret-safe-command-boundary.mjs";
 
 describe("secret-safe script command boundary", () => {
+  it("returns only structured evidence for an expected PostgreSQL failure", () => {
+    const directory = mkdtempSync(join(tmpdir(), "rr-command-test-"));
+    try {
+      const binary = join(directory, "fake-psql");
+      writeFileSync(
+        binary,
+        "#!/bin/sh\nprintf '%s' 'raw-stderr-canary: expected topology rejection' >&2\nexit 29\n",
+        { mode: 0o700 },
+      );
+      chmodSync(binary, 0o700);
+
+      const result = runSecretSafePostgresCommand({
+        databaseUrl: "postgresql://owner:password-canary@db.invalid/app",
+        binary,
+        args: ["--no-psqlrc"],
+        expectFailureContaining: "expected topology rejection",
+      });
+
+      expect(result).toEqual({ expectedFailure: true });
+      expect(JSON.stringify(result)).not.toMatch(
+        /raw-stderr-canary|password-canary/u,
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("keeps DSN, argv SQL, environment, stdout, and stderr canaries out of failures", () => {
     const directory = mkdtempSync(join(tmpdir(), "rr-command-test-"));
     try {

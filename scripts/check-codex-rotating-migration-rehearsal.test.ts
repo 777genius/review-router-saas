@@ -173,7 +173,19 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
   });
 
   it("rehearses fail-closed grantor topology and an idempotent second bootstrap", () => {
-    expect(source).toContain("adversarial_foreign_grantor_role_provisioning");
+    const provisioning =
+      /function prepareCanonicalReleaseRoles\(url\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(provisioning).toBeDefined();
+    expect(provisioning).toContain("runSecretSafePostgresCommand({");
+    expect(provisioning).toContain(
+      'expectFailureContaining:\n        "refusing non-canonical role membership topology"',
+    );
+    expect(provisioning).toContain("expectedFailure?.expectedFailure === true");
+    expect(provisioning).not.toContain("rejectedForeignGrantor");
+    expect(provisioning).not.toContain("String(error)");
+    expect(provisioning).not.toContain(".stderr");
     expect(source).toContain("refusing non-canonical role membership topology");
     expect(source).toContain("idempotent_second_role_provisioning");
     expect(source).toContain(

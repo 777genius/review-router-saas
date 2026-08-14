@@ -20,6 +20,7 @@ import {
 import {
   createDatabaseCredentialBoundary,
   createSecretSafePostgresInvocation,
+  runSecretSafePostgresCommand,
 } from "./lib/secret-safe-command-boundary.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -2007,21 +2008,17 @@ function prepareCanonicalReleaseRoles(url) {
      GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY ${foreignGrantor};
      RESET ROLE;`,
   ]);
-  let rejectedForeignGrantor = false;
+  let expectedFailure;
   try {
-    runRehearsalReleaseSubprocess(
-      "adversarial_foreign_grantor_role_provisioning",
-      "psql",
-      [bootstrap.toString(), "--no-psqlrc", "--quiet"],
-      {
-        env: { ...environment, DATABASE_URL: bootstrap.toString() },
-        input: canonicalProvisioningSql,
-      },
-    );
-  } catch (error) {
-    rejectedForeignGrantor = String(error).includes(
-      "refusing non-canonical role membership topology",
-    );
+    expectedFailure = runSecretSafePostgresCommand({
+      databaseUrl: bootstrap,
+      binary: psqlBinary,
+      args: ["-X", "-v", "ON_ERROR_STOP=1", "--no-psqlrc", "--quiet"],
+      input: canonicalProvisioningSql,
+      kind: "rehearsal",
+      expectFailureContaining:
+        "refusing non-canonical role membership topology",
+    });
   } finally {
     psql(url, [
       "-c",
@@ -2033,7 +2030,7 @@ function prepareCanonicalReleaseRoles(url) {
     ]);
   }
   assert(
-    rejectedForeignGrantor,
+    expectedFailure?.expectedFailure === true,
     "role bootstrap did not reject an adversarial foreign membership grantor",
   );
   runRehearsalReleaseSubprocess(
