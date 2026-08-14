@@ -335,7 +335,9 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         const decision = input.decide({
           canonicalIdentity,
           quarantined: quarantine !== null,
-          mutationOwnership: ownership.classification,
+          mutationOwnership: maySupersedeActiveOtherRequest
+            ? "recoverable"
+            : ownership.classification,
           versionedNamespaceRecoveryAvailable: true,
           externalRecoveryWitnessRelation,
           recoveryRequestAlreadyApplied:
@@ -540,7 +542,7 @@ export async function canSupersedeUnclaimedRecoveryForAccountSwitch(
       WHERE recovery."id" = ${input.recoveryRequestRowId}
         AND recovery."providerInstanceRowId" = ${input.providerInstanceRowId}
         AND recovery."state" = 'manifest_issued'
-        AND recovery."mode" = 'forced_reseed'
+        AND recovery."mode" IN ('forced_reseed', 'forced_reseed_account_switch')
         AND recovery."databaseRecoveryWitness" IS NOT DISTINCT FROM ${input.currentWitness}
         AND manifest."status" IN ('issued', 'fetched')
         AND manifest."payloadClaimedAt" IS NULL
@@ -574,7 +576,7 @@ export async function supersedeUnclaimedRecoveryForAccountSwitch(
     WHERE recovery."id" = ${input.recoveryRequestRowId}
       AND recovery."providerInstanceRowId" = ${input.providerInstanceRowId}
       AND recovery."state" = 'manifest_issued'
-      AND recovery."mode" = 'forced_reseed'
+      AND recovery."mode" IN ('forced_reseed', 'forced_reseed_account_switch')
       AND recovery."databaseRecoveryWitness" IS NOT DISTINCT FROM ${input.currentWitness}
       AND EXISTS (
         SELECT 1

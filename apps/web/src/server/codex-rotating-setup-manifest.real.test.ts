@@ -896,6 +896,69 @@ describeDatabase("Codex rotating setup serialization", () => {
       now: new Date("2036-08-09T12:00:02.000Z"),
     });
     expect(accountSwitchSetup.command).toContain("--force-reseed");
+
+    const accountSwitchRetryRequestId = `recovery:${randomUUID()}`;
+    const accountSwitchRetry = await recoverCodexRotatingSetup(
+      {
+        workspaceId,
+        repositoryId: recoveryRepositoryId,
+        githubRepositoryId: recoveryGithubRepositoryId,
+        recoveryRequestId: accountSwitchRetryRequestId,
+        actor: "user:github:account-switch-retry-operator",
+        acknowledgement: codexRotatingAccountSwitchAcknowledgement,
+        accountSwitch: true,
+        now: new Date("2036-08-09T12:00:03.000Z"),
+      },
+      { recovery: recoveryAdapter },
+    );
+    expect(accountSwitchRetry).toMatchObject({ status: "recovered" });
+    await expect(
+      prisma.codexOAuthSetupRecoveryRequest.findMany({
+        where: {
+          providerInstanceRowId: provider.id,
+          recoveryRequestId: {
+            in: [accountSwitchRequestId, accountSwitchRetryRequestId],
+          },
+        },
+        orderBy: { requestedAt: "asc" },
+        select: { recoveryRequestId: true, state: true },
+      }),
+    ).resolves.toEqual([
+      { recoveryRequestId: accountSwitchRequestId, state: "superseded" },
+      { recoveryRequestId: accountSwitchRetryRequestId, state: "active" },
+    ]);
+    const retriedManifest =
+      await prisma.codexOAuthSetupRecoveryRequest.findFirstOrThrow({
+        where: {
+          providerInstanceRowId: provider.id,
+          recoveryRequestId: accountSwitchRequestId,
+        },
+        select: { latestManifestId: true },
+      });
+    await expect(
+      prisma.codexOAuthSetupManifest.findUniqueOrThrow({
+        where: { id: retriedManifest.latestManifestId! },
+        select: { status: true, payloadClaimedAt: true },
+      }),
+    ).resolves.toEqual({ status: "recovered", payloadClaimedAt: null });
+    const accountSwitchRetrySetup = await issueCodexRotatingSetupCommand({
+      prisma,
+      workspaceId,
+      repositoryId: recoveryRepositoryId,
+      repositoryFullName: recoveryFullName,
+      githubRepositoryId: recoveryGithubRepositoryId,
+      installer,
+      databaseRecoveryWitness: "w".repeat(43),
+      installerArguments: ["--force-reseed"],
+      recovery: {
+        requestId: accountSwitchRetryRequestId,
+        epoch: accountSwitchRetry.recoveryEpoch,
+      },
+      setupManifestUrl:
+        "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+      now: new Date("2036-08-09T12:00:04.000Z"),
+    });
+    expect(accountSwitchRetrySetup.command).toContain("--force-reseed");
     await expect(
       recoveryAdapter.inspectStatus({
         workspaceId,

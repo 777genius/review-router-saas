@@ -166,7 +166,9 @@ describe("forced setup recovery authority retirement", () => {
     ).resolves.toBe(false);
 
     const query = sqlText(tx.$queryRaw.mock.calls[0]!);
-    expect(query).toContain("recovery.\"mode\" = 'forced_reseed'");
+    expect(query).toContain(
+      "recovery.\"mode\" IN ('forced_reseed', 'forced_reseed_account_switch')",
+    );
     expect(query).toContain('manifest."payloadClaimedAt" IS NULL');
     expect(query).toContain("provider.\"mutationOwner\" = 'setup'");
     expect(query).toContain("NOT EXISTS (");
@@ -187,7 +189,9 @@ describe("forced setup recovery authority retirement", () => {
     ).resolves.toBeUndefined();
     const update = sqlText(tx.$executeRaw.mock.calls[0]!);
     expect(update).toContain("SET \"state\" = 'superseded'");
-    expect(update).toContain("recovery.\"mode\" = 'forced_reseed'");
+    expect(update).toContain(
+      "recovery.\"mode\" IN ('forced_reseed', 'forced_reseed_account_switch')",
+    );
     expect(update).toContain('manifest."payloadClaimedAt" IS NULL');
     expect(update).toContain("provider.\"mutationOwner\" = 'setup'");
 
