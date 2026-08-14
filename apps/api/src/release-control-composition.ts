@@ -7,9 +7,11 @@ import {
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
   RoutineReleaseControlLedgerAdapter,
+  RoutineProviderMutationAuthorityAdapter,
   RoutineTargetActivationReceiptReaderAdapter,
   RunnerOperationsService,
   ReleaseServiceTransitionService,
+  ProviderMutationAuthorityService,
   type ActivationPermitInstallerPort,
   type ReleaseControlRouteDependencies,
 } from "./release-rollout-ledger.js";
@@ -115,6 +117,9 @@ export function composeReleaseControlDependencies(
       targetReceiptReader,
     ),
     serviceTransition: new ReleaseServiceTransitionService(adapter),
+    providerMutationAuthority: new ProviderMutationAuthorityService(
+      new RoutineProviderMutationAuthorityAdapter(providerAuthorityPrisma),
+    ),
     ...credentials,
   };
 }
@@ -192,6 +197,14 @@ export async function createReleaseControlApp(input: {
       ? {
           serviceTransition: readinessGate(
             dependencies.serviceTransition,
+            assertMutationAuthorityReady,
+          ),
+        }
+      : {}),
+    ...(dependencies.providerMutationAuthority
+      ? {
+          providerMutationAuthority: readinessGate(
+            dependencies.providerMutationAuthority,
             assertMutationAuthorityReady,
           ),
         }

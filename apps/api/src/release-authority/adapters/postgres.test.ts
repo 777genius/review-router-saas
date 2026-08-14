@@ -23,6 +23,17 @@ class QueryRecorder {
       return [{ value: true }] as T;
     if (text.includes("release_source_freeze_record"))
       return [{ value: "recorded" }] as T;
+    if (text.includes("release_provider_mutation_validate_execution"))
+      return [{ value: true }] as T;
+    if (
+      text.includes("release_provider_mutation_complete") ||
+      text.includes("release_provider_mutation_reconcile")
+    )
+      return [{ value: true }] as T;
+    if (text.includes("release_provider_mutation_issue"))
+      return [{ value: { permitId: "permit" } }] as T;
+    if (text.includes("release_provider_mutation_consume"))
+      return [{ value: { receiptId: "receipt" } }] as T;
     const value = text.includes("authorize_activation")
       ? {
           rolloutId: "rollout",

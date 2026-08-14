@@ -6,9 +6,12 @@ import type {
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
 import {
+  assertOneShotMutationPermit,
   RecoveryEffectKind,
   assertRecoveryEffectObservation,
   type RecoveryEffectAuthorityPort,
+  type MutationExecutionReceipt,
+  type ProviderMutationReconciliation,
 } from "@reviewrouter/features-release-rollout";
 import type {
   CreateProvisioningIntent,
@@ -21,6 +24,7 @@ import type {
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
   ReleaseServiceTransitionService,
+  ProviderMutationAuthorityService,
   RunnerOperationsService,
 } from "../application/services.js";
 import {
@@ -33,8 +37,122 @@ export type ReleaseRolloutLedgerRouteDependencies = {
   reconciliation: ReleaseRolloutReconciliationService;
   serviceTransition?: ReleaseServiceTransitionService;
   providerAuthority?: ProviderAuthorityDecisionService;
+  providerMutationAuthority?: ProviderMutationAuthorityService;
   providerAuthorityTokenSha256?: string;
   controlTokenSha256: string;
+};
+
+const mutationFingerprint = /^sha256:[a-f0-9]{64}$/u;
+const mutationResource = (value: unknown) => {
+  const item = record(value);
+  if (
+    !exactKeys(item, ["provider", "kind", "id"]) ||
+    !nonemptyString(item.provider) ||
+    !nonemptyString(item.kind) ||
+    !nonemptyString(item.id)
+  )
+    throw Object.assign(new Error("provider_mutation_request_invalid"), {
+      statusCode: 400,
+    });
+  return item as { provider: string; kind: string; id: string };
+};
+const mutationExpected = (value: unknown) => {
+  const item = record(value);
+  if (
+    !exactKeys(item, ["fingerprint", "version"]) ||
+    typeof item.fingerprint !== "string" ||
+    !mutationFingerprint.test(item.fingerprint) ||
+    (item.version !== null && !nonemptyString(item.version))
+  )
+    throw Object.assign(new Error("provider_mutation_request_invalid"), {
+      statusCode: 400,
+    });
+  return item as { fingerprint: string; version: string | null };
+};
+const mutationIssueRequest = (value: unknown) => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "operation",
+      "resource",
+      "ownerId",
+      "expected",
+      "leaseSeconds",
+    ]) ||
+    !nonemptyString(body.rolloutId) ||
+    !nonemptyString(body.operation) ||
+    !nonemptyString(body.ownerId) ||
+    !Number.isSafeInteger(body.leaseSeconds) ||
+    Number(body.leaseSeconds) < 5 ||
+    Number(body.leaseSeconds) > 300
+  )
+    throw Object.assign(new Error("provider_mutation_request_invalid"), {
+      statusCode: 400,
+    });
+  return {
+    ...body,
+    resource: mutationResource(body.resource),
+    expected: mutationExpected(body.expected),
+  } as Parameters<ProviderMutationAuthorityService["issue"]>[0];
+};
+const mutationPermitRequest = (value: unknown) => {
+  try {
+    return assertOneShotMutationPermit(value as never, new Date());
+  } catch {
+    throw Object.assign(new Error("provider_mutation_request_invalid"), {
+      statusCode: 400,
+    });
+  }
+};
+const mutationReceiptRequest = (value: unknown): MutationExecutionReceipt => {
+  const body = record(value);
+  if (
+    !exactKeys(body, [
+      "rolloutId",
+      "operation",
+      "resource",
+      "ownerId",
+      "epoch",
+      "permitId",
+      "receiptId",
+      "expected",
+      "consumedAt",
+    ]) ||
+    !nonemptyString(body.rolloutId) ||
+    !nonemptyString(body.operation) ||
+    !nonemptyString(body.ownerId) ||
+    !Number.isSafeInteger(body.epoch) ||
+    Number(body.epoch) < 1 ||
+    !nonemptyString(body.permitId) ||
+    !nonemptyString(body.receiptId) ||
+    !nonemptyString(body.consumedAt) ||
+    !Number.isFinite(Date.parse(body.consumedAt))
+  )
+    throw Object.assign(new Error("provider_mutation_request_invalid"), {
+      statusCode: 400,
+    });
+  return {
+    ...body,
+    resource: mutationResource(body.resource),
+    expected: mutationExpected(body.expected),
+  } as MutationExecutionReceipt;
+};
+const mutationObservationRequest = (value: unknown) => {
+  const body = record(value);
+  if (
+    !exactKeys(body, ["resource", "state", "observedAt"]) ||
+    !nonemptyString(body.observedAt) ||
+    !Number.isFinite(Date.parse(body.observedAt))
+  )
+    throw Object.assign(new Error("provider_mutation_request_invalid"), {
+      statusCode: 400,
+    });
+  return {
+    resource: mutationResource(body.resource),
+    state: mutationExpected(body.state),
+    observedAt: body.observedAt,
+  };
 };
 
 export type ReleaseControlRouteDependencies =
@@ -548,6 +666,80 @@ export async function registerReleaseRolloutLedgerRoutes(
       });
     return dependencies.serviceTransition;
   };
+  const providerMutationAuthority = (): ProviderMutationAuthorityService => {
+    if (!dependencies.providerMutationAuthority)
+      throw Object.assign(
+        new Error("provider_mutation_authority_unavailable"),
+        { statusCode: 503 },
+      );
+    return dependencies.providerMutationAuthority;
+  };
+  const providerMutationControl = async (request: FastifyRequest) =>
+    authorize(
+      request,
+      dependencies.providerAuthorityTokenSha256 ??
+        dependencies.controlTokenSha256,
+    );
+  app.post(
+    "/v1/provider-mutations/issue",
+    { preHandler: providerMutationControl },
+    async (request) =>
+      providerMutationAuthority().issue(mutationIssueRequest(request.body)),
+  );
+  app.post(
+    "/v1/provider-mutations/consume",
+    { preHandler: providerMutationControl },
+    async (request) =>
+      providerMutationAuthority().consume(mutationPermitRequest(request.body)),
+  );
+  app.post(
+    "/v1/provider-mutations/validate-execution",
+    { preHandler: providerMutationControl },
+    async (request) => ({
+      authorized: await providerMutationAuthority().validateExecution(
+        mutationReceiptRequest(request.body),
+      ),
+    }),
+  );
+  app.post(
+    "/v1/provider-mutations/complete",
+    { preHandler: providerMutationControl },
+    async (request) => {
+      const body = record(request.body);
+      if (!exactKeys(body, ["receipt", "observation"])) invalidEffectRequest();
+      await providerMutationAuthority().complete({
+        receipt: mutationReceiptRequest(body.receipt),
+        observation: mutationObservationRequest(body.observation),
+      });
+      return { completed: true };
+    },
+  );
+  app.post(
+    "/v1/provider-mutations/reconcile",
+    { preHandler: providerMutationControl },
+    async (request) => {
+      const body = record(request.body);
+      if (
+        !body ||
+        ![
+          "exact_postcondition",
+          "precondition_drift",
+          "execution_not_authorized",
+          "ambiguous_forward_repair",
+        ].includes(typeof body.result === "string" ? body.result : "")
+      )
+        invalidEffectRequest();
+      await providerMutationAuthority().reconcile({
+        result: body.result as ProviderMutationReconciliation["result"],
+        receipt: mutationReceiptRequest(body.receipt),
+        observation:
+          body.observation === null
+            ? null
+            : mutationObservationRequest(body.observation),
+      });
+      return { reconciled: true };
+    },
+  );
   app.post(
     "/v1/service-transitions",
     { preHandler: control },

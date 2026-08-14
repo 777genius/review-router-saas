@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   AuthenticatedRunnerLedgerAdapter,
   HttpProviderAuthorityDecisionAdapter,
+  HttpProviderMutationAuthorityAdapter,
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
   ReleaseRolloutUseCases,
@@ -90,6 +91,10 @@ const authority = new HttpProviderAuthorityDecisionAdapter(
   required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
   required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
 );
+const mutationAuthority = new HttpProviderMutationAuthorityAdapter(
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+);
 const currentRunner = await ledger.currentRunner(rollout.rolloutId, "cutover");
 const cutoverRunner = currentRunner.identity;
 const cutoverProvision = currentRunner.observation;
@@ -157,6 +162,10 @@ const protectedSourceEnvironment = Object.fromEntries(
 ) as ProtectedSourceEnvironment;
 const renderServices = new RenderTransactionalServicesAdapter(
   required("RENDER_TARGET_SWITCH_API_KEY"),
+  fetch,
+  undefined,
+  mutationAuthority,
+  { rolloutId: rollout.rolloutId, ownerId: `cutover-${randomUUID()}` },
 );
 const sourceRecoveryManifest = await renderServices.captureSourceManifest({
   rolloutId: rollout.rolloutId,
@@ -260,6 +269,8 @@ const compensation = new ReleaseCompensationReconciliationUseCase({
     ownerId: `recovery-${randomUUID()}`,
     apiKey: required("RENDER_TARGET_SWITCH_API_KEY"),
     sourceSystemIdentifier: rollout.source.systemIdentifier,
+    rolloutId: rollout.rolloutId,
+    mutationAuthority,
     beforeResume: async () => {
       if ((await ledger.read(rollout.rolloutId)).length === 0) return;
       await transactionalServices.recover({

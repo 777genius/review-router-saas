@@ -3,9 +3,11 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import {
   AuthenticatedRunnerLedgerAdapter,
   AuthenticatedProviderWitnessAdapter,
+  BoundedProviderHttpClient,
   PrivateRunnerControlUseCases,
   RenderPrivateRunnerAdapter,
   RenderProviderFreezeAdapter,
+  HttpProviderMutationAuthorityAdapter,
   type RunnerIdentity,
   type RunnerReconciliationReport,
   type ReleaseRollout,
@@ -25,6 +27,11 @@ const output = (values: Record<string, string>) => {
       mode: 0o600,
     });
 };
+const mutationAuthority = () =>
+  new HttpProviderMutationAuthorityAdapter(
+    required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+    required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+  );
 const runnerControl = () => {
   const ledger = new AuthenticatedRunnerLedgerAdapter(
     required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
@@ -40,6 +47,7 @@ const runnerControl = () => {
     providerWitness,
     fetch,
     () => new Date(),
+    mutationAuthority(),
   );
   return { ledger, useCases: new PrivateRunnerControlUseCases(runners) };
 };
@@ -102,13 +110,14 @@ export const resolveWorkflowJobId = async (
     sleep?: (milliseconds: number) => Promise<void>;
   },
 ): Promise<string> => {
-  const request = options.request ?? fetch;
+  const request = new BoundedProviderHttpClient(options.request ?? fetch);
   const sleep =
     options.sleep ??
     ((milliseconds: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
-    const response = await request(
+    const response = await request.request(
+      "github_job_inventory",
       `https://api.github.com/repos/${required("GITHUB_REPOSITORY")}/actions/runs/${options.runId}/attempts/${options.runAttempt}/jobs?filter=all&per_page=100`,
       {
         headers: {
@@ -162,9 +171,15 @@ if (mode === "freeze") {
   const sourceWriterServiceIds = parseFreezeSourceWriterServiceIds(
     required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
   );
-  const observation = await new RenderProviderFreezeAdapter().freezeAndObserve({
+  const observation = await new RenderProviderFreezeAdapter(
+    fetch,
+    undefined,
+    mutationAuthority(),
+  ).freezeAndObserve({
     apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
     ownerId: required("RENDER_OWNER_ID"),
+    rolloutId: rollout.rolloutId,
+    mutationOwnerId: `freeze-${rollout.execution.runId}-${rollout.execution.runAttempt}`,
     sourceWriterServiceIds,
     prepareMutation: async (evidence) =>
       await ledger.prepareSourceFreezeMutation({
@@ -219,7 +234,8 @@ if (mode === "freeze") {
     "REVIEW_ROUTER_TARGET_SHA",
     "REVIEW_ROUTER_EXPECTED_SHA",
   );
-  const runResponse = await fetch(
+  const runResponse = await new BoundedProviderHttpClient(fetch).request(
+    "github_run",
     `https://api.github.com/repos/${required("GITHUB_REPOSITORY")}/actions/runs/${targetRunId}/attempts/${targetRunAttempt}`,
     {
       headers: {

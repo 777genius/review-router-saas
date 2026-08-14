@@ -245,21 +245,34 @@ class FakeAuthority implements RecoveryEffectAuthorityPort {
   }
 }
 
-const input = (authority: FakeAuthority, effect = vi.fn(async () => "ok")) => ({
-  protocol: new RecoveryEffectProtocol(authority),
-  effect,
-  value: {
-    rolloutId: "rollout-1",
-    effectKey: "restore_database_writes",
-    kind: RecoveryEffectKind.RestoreDatabaseWrites,
-    ownerId: "worker-1",
+const input = (
+  authority: FakeAuthority,
+  effect = vi.fn(async (_permit: unknown) => "ok"),
+) => {
+  const authorizedEffect = async (
+    permit: Readonly<{
+      epoch: number;
+      token: string;
+      executionReceipt: string;
+    }>,
+    executeAuthorized: <R>(io: () => Promise<R>) => Promise<R>,
+  ) => executeAuthorized(() => effect(permit));
+  return {
+    protocol: new RecoveryEffectProtocol(authority),
     effect,
-    observe: async () => ({
-      sourceWritesRestored: true,
-      observedAt: "2026-08-13T00:00:00.000Z",
-    }),
-  },
-});
+    value: {
+      rolloutId: "rollout-1",
+      effectKey: "restore_database_writes",
+      kind: RecoveryEffectKind.RestoreDatabaseWrites,
+      ownerId: "worker-1",
+      effect: authorizedEffect,
+      observe: async () => ({
+        sourceWritesRestored: true,
+        observedAt: "2026-08-13T00:00:00.000Z",
+      }),
+    },
+  };
+};
 
 describe("authority-mediated recovery effects", () => {
   it("prevents an effect when a late job commits before claim", async () => {
@@ -360,7 +373,7 @@ describe("authority-mediated recovery effects", () => {
   });
   it("authorizes only one same-owner concurrent execution", async () => {
     const authority = new FakeAuthority();
-    const effect = vi.fn(async () => "ok");
+    const effect = vi.fn(async (_permit: unknown) => "ok");
     const test = input(authority, effect);
     const [first, second] = await Promise.all([
       test.protocol.execute(test.value),
@@ -467,7 +480,8 @@ describe("authority-mediated recovery effects", () => {
         kind: RecoveryEffectKind.ResumeSourceService,
         serviceId,
         ownerId: "worker-1",
-        effect: async () => serviceId,
+        effect: async (_permit, executeAuthorized) =>
+          executeAuthorized(async () => serviceId),
         observe: async (id) => ({
           serviceId: id,
           resumed: true,

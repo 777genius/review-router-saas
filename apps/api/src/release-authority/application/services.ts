@@ -9,6 +9,7 @@ import type {
   TargetActivationReceiptReaderPort,
   RunnerOperationsLedgerPort,
   ReleaseServiceTransitionLedgerPort,
+  ReleaseProviderMutationAuthorityPort,
 } from "../domain/model.js";
 import type {
   RunnerIdentity,
@@ -214,6 +215,29 @@ export class ReleaseServiceTransitionService {
       ReleaseServiceTransitionLedgerPort["reconcileRecoveryEffect"]
     >[0],
   ) => this.repository.reconcileRecoveryEffect(input);
+}
+
+export class ProviderMutationAuthorityService {
+  constructor(
+    private readonly repository: ReleaseProviderMutationAuthorityPort,
+  ) {}
+  issue = (
+    input: Parameters<ReleaseProviderMutationAuthorityPort["issue"]>[0],
+  ) => this.repository.issue(input);
+  consume = (
+    input: Parameters<ReleaseProviderMutationAuthorityPort["consume"]>[0],
+  ) => this.repository.consume(input);
+  validateExecution = (
+    input: Parameters<
+      ReleaseProviderMutationAuthorityPort["validateExecution"]
+    >[0],
+  ) => this.repository.validateExecution(input);
+  complete = (
+    input: Parameters<ReleaseProviderMutationAuthorityPort["complete"]>[0],
+  ) => this.repository.complete(input);
+  reconcile = (
+    input: Parameters<ReleaseProviderMutationAuthorityPort["reconcile"]>[0],
+  ) => this.repository.reconcile(input);
 }
 
 export class ReleaseRolloutReconciliationService {

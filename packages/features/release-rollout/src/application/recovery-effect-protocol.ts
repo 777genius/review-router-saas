@@ -83,6 +83,7 @@ export class RecoveryEffectProtocol {
         token: string;
         executionReceipt: string;
       }>,
+      executeAuthorized: <R>(io: () => Promise<R>) => Promise<R>,
     ) => Promise<T>;
     observe: (response: T) => Promise<unknown>;
     reconcileConsumed?: () => Promise<T | null>;
@@ -168,38 +169,49 @@ export class RecoveryEffectProtocol {
     // A consumed snapshot alone never authorizes I/O. Only the linearization
     // winner receives this non-replayable response capability.
     if (consumption.executionAuthorization === null) return consumed;
-    const validation = assertRecoveryEffectConsumptionResult(
-      await this.authority.validateRecoveryEffectExecution({
-        rolloutId: input.rolloutId,
-        effectKey: input.effectKey,
-        kind: input.kind,
-        ownerId: input.ownerId,
-        epoch: consumed.epoch,
-        permitToken: consumed.permitToken!,
-        executionReceipt: consumption.executionAuthorization.receipt,
-      }),
+    let executed = false;
+    const executeAuthorized = async <R>(io: () => Promise<R>): Promise<R> => {
+      if (executed) throw new Error("recovery_effect_execution_replay");
+      executed = true;
+      const validation = assertRecoveryEffectConsumptionResult(
+        await this.authority.validateRecoveryEffectExecution({
+          rolloutId: input.rolloutId,
+          effectKey: input.effectKey,
+          kind: input.kind,
+          ownerId: input.ownerId,
+          epoch: consumed.epoch,
+          permitToken: consumed.permitToken!,
+          executionReceipt: consumption.executionAuthorization!.receipt,
+        }),
+        {
+          rolloutId: input.rolloutId,
+          effectKey: input.effectKey,
+          kind: input.kind,
+          ownerId: input.ownerId,
+          epoch: consumed.epoch,
+          permitToken: consumed.permitToken!,
+        },
+      );
+      if (validation.executionAuthorization === null)
+        throw new Error("recovery_effect_execution_not_authorized");
+      assertRecoveryEffectExecutionAuthorization(
+        validation.executionAuthorization,
+        consumption.executionAuthorization!,
+      );
+      // No application/provider observation may occur between this committed
+      // authority validation and invoking the supplied one-shot I/O closure.
+      return io();
+    };
+    const executionAuthorization = consumption.executionAuthorization;
+    const response = await input.effect(
       {
-        rolloutId: input.rolloutId,
-        effectKey: input.effectKey,
-        kind: input.kind,
-        ownerId: input.ownerId,
         epoch: consumed.epoch,
-        permitToken: consumed.permitToken!,
+        token: consumed.permitToken!,
+        executionReceipt: executionAuthorization.receipt,
       },
+      executeAuthorized,
     );
-    if (validation.executionAuthorization === null) return validation.record;
-    const executionAuthorization = assertRecoveryEffectExecutionAuthorization(
-      validation.executionAuthorization,
-      consumption.executionAuthorization,
-    );
-    // The authority transaction has committed immediately before provider I/O.
-    // A late job racing after this point monotonically changes the durable state
-    // to forward_repair, which the completion transaction cannot overwrite.
-    const response = await input.effect({
-      epoch: consumed.epoch,
-      token: consumed.permitToken!,
-      executionReceipt: executionAuthorization.receipt,
-    });
+    if (!executed) throw new Error("recovery_effect_execution_not_authorized");
     const observation = assertRecoveryEffectObservation(
       input.kind,
       await input.observe(response),

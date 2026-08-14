@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
 import type { EnvironmentMutationOutcome } from "../application/service-transition-ports";
+import {
+  BoundedProviderHttpClient,
+  ProviderHttpError,
+  collectCompleteInventory,
+  type BoundedHttpPolicy,
+  type CompleteInventory,
+  type InventoryLimits,
+} from "./bounded-provider-io";
 
 export interface RenderFetch {
   (input: string, init?: RequestInit): Promise<Response>;
@@ -73,21 +81,43 @@ async function body(
   response: Response,
   operation: string,
   status = 200,
+  write = false,
 ): Promise<unknown> {
   if (response.status !== status)
-    throw new Error(`render_api_${operation}_failed:${response.status}`);
+    throw new ProviderHttpError(
+      operation,
+      "response_status",
+      response.status,
+      write && response.status >= 500,
+    );
   try {
     return await response.json();
   } catch {
-    throw new Error(`render_api_${operation}_response_invalid`);
+    throw new ProviderHttpError(
+      operation,
+      "response_invalid",
+      undefined,
+      write,
+    );
   }
 }
 
+const DEFAULT_INVENTORY_LIMITS: InventoryLimits = Object.freeze({
+  maxPages: 100,
+  maxItems: 10_000,
+});
+
 export class RenderApiAdapter {
+  private readonly fetchImpl: RenderFetch;
   constructor(
     private readonly token: string,
-    private readonly fetchImpl: RenderFetch = fetch,
-  ) {}
+    fetchImpl: RenderFetch = fetch,
+    httpPolicy?: BoundedHttpPolicy,
+    private readonly inventoryLimits: InventoryLimits = DEFAULT_INVENTORY_LIMITS,
+  ) {
+    const http = new BoundedProviderHttpClient(fetchImpl, httpPolicy);
+    this.fetchImpl = (input, init) => http.request("render_api", input, init);
+  }
 
   async getService(id: string): Promise<RenderService> {
     const value = requireSubset(
@@ -141,15 +171,15 @@ export class RenderApiAdapter {
     };
   }
 
+  async inventoryServices(): Promise<CompleteInventory<RenderService>> {
+    return collectCompleteInventory(
+      (cursor) => this.listServices(cursor),
+      this.inventoryLimits,
+    );
+  }
+
   async listAllServices(): Promise<readonly RenderService[]> {
-    const all: RenderService[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.listServices(cursor);
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    return Object.freeze(all);
+    return this.requireComplete(await this.inventoryServices());
   }
 
   async listDeploys(
@@ -199,15 +229,17 @@ export class RenderApiAdapter {
     };
   }
 
+  async inventoryDeploys(
+    serviceId: string,
+  ): Promise<CompleteInventory<RenderDeploy>> {
+    return collectCompleteInventory(
+      (cursor) => this.listDeploys(serviceId, cursor),
+      this.inventoryLimits,
+    );
+  }
+
   async listAllDeploys(serviceId: string): Promise<readonly RenderDeploy[]> {
-    const all: RenderDeploy[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.listDeploys(serviceId, cursor);
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    return Object.freeze(all);
+    return this.requireComplete(await this.inventoryDeploys(serviceId));
   }
 
   async getDeploy(serviceId: string, deployId: string): Promise<RenderDeploy> {
@@ -260,6 +292,7 @@ export class RenderApiAdapter {
         ),
         "deploy_create",
         201,
+        true,
       ),
       ["id", "status"],
       "render_deploy_response_invalid",
@@ -289,6 +322,7 @@ export class RenderApiAdapter {
         ),
         "job_create",
         201,
+        true,
       ),
       ["id", "serviceId", "startCommand", "status"],
       "render_job_response_invalid",
@@ -375,15 +409,17 @@ export class RenderApiAdapter {
     };
   }
 
+  async inventoryJobs(
+    serviceId: string,
+  ): Promise<CompleteInventory<RenderJob>> {
+    return collectCompleteInventory(
+      (cursor) => this.listJobs(serviceId, cursor),
+      this.inventoryLimits,
+    );
+  }
+
   async listAllJobs(serviceId: string): Promise<readonly RenderJob[]> {
-    const all: RenderJob[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.listJobs(serviceId, cursor);
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    return Object.freeze(all);
+    return this.requireComplete(await this.inventoryJobs(serviceId));
   }
 
   async listLogs(input: {
@@ -429,7 +465,12 @@ export class RenderApiAdapter {
       { method: "POST", headers: headers(this.token) },
     );
     if (response.status !== 202)
-      throw new Error(`render_api_suspend_failed:${response.status}`);
+      throw new ProviderHttpError(
+        "suspend",
+        "response_status",
+        response.status,
+        response.status >= 500,
+      );
   }
 
   async resume(serviceId: string): Promise<void> {
@@ -438,7 +479,12 @@ export class RenderApiAdapter {
       { method: "POST", headers: headers(this.token) },
     );
     if (response.status !== 202)
-      throw new Error(`render_api_resume_failed:${response.status}`);
+      throw new ProviderHttpError(
+        "resume",
+        "response_status",
+        response.status,
+        response.status >= 500,
+      );
   }
 
   async getEnv(
@@ -478,17 +524,19 @@ export class RenderApiAdapter {
     };
   }
 
+  async inventoryEnv(
+    serviceId: string,
+  ): Promise<CompleteInventory<{ key: string; value: string }>> {
+    return collectCompleteInventory(
+      (cursor) => this.getEnv(serviceId, cursor),
+      this.inventoryLimits,
+    );
+  }
+
   async listAllEnv(
     serviceId: string,
   ): Promise<readonly { key: string; value: string }[]> {
-    const all: Array<{ key: string; value: string }> = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.getEnv(serviceId, cursor);
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    return Object.freeze(all);
+    return this.requireComplete(await this.inventoryEnv(serviceId));
   }
 
   async patchEnvPreservingAll(input: {
@@ -534,76 +582,45 @@ export class RenderApiAdapter {
     )
       throw new Error("render_api_env_contract_invalid");
 
-    let expected = before;
-    const operations = [
-      ...[...removed].sort().map((key) => ({ key, value: undefined })),
-      ...Object.entries(input.set)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, value]) => ({ key, value })),
-    ];
-    for (const operation of operations) {
-      const observed = canonicalEnv(await this.listAllEnv(input.serviceId));
-      if (digest(observed) !== digest(expected))
-        return {
-          status: "conflict",
-          observedEnvironmentSha256: digest(observed),
-        };
-      const next = new Map(expected.map(({ key, value }) => [key, value]));
-      const existed = next.has(operation.key);
-      if (operation.value === undefined) next.delete(operation.key);
-      else next.set(operation.key, operation.value);
-      expected = canonicalEnv(
-        [...next].map(([key, value]) => ({ key, value })),
+    let response: Response;
+    try {
+      // Render's bulk replacement endpoint is deliberately used so a consumed
+      // authority permit can authorize exactly one provider write.
+      response = await this.fetchImpl(
+        `${origin}/services/${encodeURIComponent(input.serviceId)}/env-vars`,
+        {
+          method: "PUT",
+          headers: headers(this.token, true),
+          body: JSON.stringify(after),
+        },
       );
-      let response: Response;
-      try {
-        response = await this.fetchImpl(
-          operation.value !== undefined && !existed
-            ? `${origin}/services/${encodeURIComponent(input.serviceId)}/env-vars`
-            : `${origin}/services/${encodeURIComponent(input.serviceId)}/env-vars/${encodeURIComponent(operation.key)}`,
-          operation.value === undefined
-            ? { method: "DELETE", headers: headers(this.token) }
-            : {
-                method: existed ? "PUT" : "POST",
-                headers: headers(this.token, true),
-                body: JSON.stringify({
-                  ...(!existed ? { key: operation.key } : {}),
-                  value: operation.value,
-                }),
-              },
-        );
-      } catch {
-        return this.observeAmbiguousEnvironment(input.serviceId);
-      }
-      if (response.status === 409 || response.status === 412) {
-        const conflict = canonicalEnv(await this.listAllEnv(input.serviceId));
-        return {
-          status: "conflict",
-          observedEnvironmentSha256: digest(conflict),
-        };
-      }
-      const expectedStatus =
-        operation.value === undefined ? 204 : existed ? 200 : 201;
-      if (response.status !== expectedStatus) {
-        if (response.status >= 500)
-          return this.observeAmbiguousEnvironment(input.serviceId);
-        throw new Error(
-          `render_api_env_key_mutation_failed:${response.status}`,
-        );
-      }
-      let verified: readonly { key: string; value: string }[];
-      try {
-        verified = canonicalEnv(await this.listAllEnv(input.serviceId));
-      } catch {
-        return { status: "ambiguous" };
-      }
-      if (digest(verified) !== digest(expected))
-        return {
-          status: "conflict",
-          observedEnvironmentSha256: digest(verified),
-        };
+    } catch {
+      return this.observeAmbiguousEnvironment(input.serviceId);
     }
-    return appliedEnvironment(expected, beforeSha256, false);
+    if (response.status === 409 || response.status === 412) {
+      const conflict = canonicalEnv(await this.listAllEnv(input.serviceId));
+      return {
+        status: "conflict",
+        observedEnvironmentSha256: digest(conflict),
+      };
+    }
+    if (response.status !== 200) {
+      if (response.status >= 500)
+        return this.observeAmbiguousEnvironment(input.serviceId);
+      throw new Error(`render_api_env_mutation_failed:${response.status}`);
+    }
+    let verified: readonly { key: string; value: string }[];
+    try {
+      verified = canonicalEnv(await this.listAllEnv(input.serviceId));
+    } catch {
+      return { status: "ambiguous" };
+    }
+    if (digest(verified) !== afterSha256)
+      return {
+        status: "conflict",
+        observedEnvironmentSha256: digest(verified),
+      };
+    return appliedEnvironment(verified, beforeSha256, false);
   }
 
   private async observeAmbiguousEnvironment(
@@ -655,7 +672,18 @@ export class RenderApiAdapter {
       },
     );
     if (response.status !== 200)
-      throw new Error(`render_api_service_patch_failed:${response.status}`);
+      throw new ProviderHttpError(
+        "service_patch",
+        "response_status",
+        response.status,
+        response.status >= 500,
+      );
+  }
+
+  private requireComplete<T>(inventory: CompleteInventory<T>): readonly T[] {
+    if (!inventory.complete)
+      throw new Error(`render_inventory_incomplete:${inventory.reason}`);
+    return inventory.items;
   }
 }
 

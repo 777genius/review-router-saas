@@ -6,6 +6,7 @@ import {
   AuthenticatedRunnerLedgerAdapter,
   assertGenerationIdentity,
   HttpProviderAuthorityDecisionAdapter,
+  HttpProviderMutationAuthorityAdapter,
   parseRolloutPhase,
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
@@ -87,6 +88,10 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
     required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
     required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
   );
+  const mutationAuthority = new HttpProviderMutationAuthorityAdapter(
+    required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+    required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+  );
   const database = new PostgreSqlGenerationAdapter(
     new RedactedProcessCommandAdapter(),
   );
@@ -156,6 +161,10 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
     ledger,
     new RenderTransactionalServicesAdapter(
       required("RENDER_TARGET_SWITCH_API_KEY"),
+      fetch,
+      undefined,
+      mutationAuthority,
+      { rolloutId: rollout.rolloutId, ownerId: `recovery-${randomUUID()}` },
     ),
     `recovery-${randomUUID()}`,
   );
@@ -228,6 +237,8 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
       ownerId: `recovery-${randomUUID()}`,
       apiKey: required("RENDER_TARGET_SWITCH_API_KEY"),
       sourceSystemIdentifier: rollout.source.systemIdentifier,
+      rolloutId: rollout.rolloutId,
+      mutationAuthority,
       beforeResume: async () => {
         if (checkpoints.length === 0) return;
         await serviceTransition.recover({

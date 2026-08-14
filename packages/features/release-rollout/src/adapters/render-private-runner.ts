@@ -20,6 +20,8 @@ import {
   reconcileCompensationSafety,
   type CompensationSafetyReconciliation,
 } from "../application/reconcile-compensation";
+import type { ProviderMutationAuthorityPort } from "../application/provider-mutation-authority";
+import { AuthorizedRenderMutations } from "./authorized-render-mutations";
 import {
   RenderApiAdapter,
   type RenderDeploy,
@@ -213,6 +215,7 @@ export class RenderPrivateRunnerAdapter {
     private readonly providerWitness: RunnerProviderWitnessPort,
     private readonly fetchImpl: RenderFetch = fetch,
     private readonly now: () => Date = () => new Date(),
+    private readonly mutationAuthority?: ProviderMutationAuthorityPort,
   ) {}
 
   private client(token: string): RenderApiAdapter {
@@ -242,6 +245,12 @@ export class RenderPrivateRunnerAdapter {
   }> {
     validate(input);
     const api = this.client(input.apiKey);
+    if (!this.mutationAuthority)
+      throw new Error("render_mutation_authority_missing");
+    const mutations = new AuthorizedRenderMutations(
+      api,
+      this.mutationAuthority,
+    );
     const service = await api.getService(input.baseServiceId);
     if (
       service.id !== input.baseServiceId ||
@@ -325,10 +334,19 @@ export class RenderPrivateRunnerAdapter {
       ownerId: claimantId,
       prepare: prepareInput,
       dispatch: async () =>
-        await api.createJob(input.baseServiceId, {
-          startCommand,
-          ...(input.planId ? { planId: input.planId } : {}),
-        }),
+        await mutations.createJob(
+          {
+            rolloutId: input.rolloutId,
+            ownerId: claimantId,
+            operation: `runner_provision:${provisioningIntentId}`,
+          },
+          input.baseServiceId,
+          provisioningIntentId,
+          {
+            startCommand,
+            ...(input.planId ? { planId: input.planId } : {}),
+          },
+        ),
     });
     const intent = dispatch.record;
     let created: RenderJob = dispatch.response as RenderJob;
@@ -644,31 +662,24 @@ export class RenderPrivateRunnerAdapter {
     ]);
     const discovered: PersistedRunnerJob[] = [];
     for (const intent of intents) {
-      let cursor: string | undefined;
-      do {
-        const page = await this.client(apiKey).listJobs(
-          intent.serviceId,
-          cursor,
-        );
-        for (const job of page.items)
-          if (
-            !knownJobIds.has(job.id) &&
-            job.startCommand.includes(`--intent ${intent.id} --context `)
-          ) {
-            knownJobIds.add(job.id);
-            discovered.push({
-              rolloutId,
-              serviceId: intent.serviceId,
-              jobId: job.id,
-              observedAt: this.now().toISOString(),
-              providerCreationNotBefore: intent.createdAt,
-              cleanupCanary: `rr-cleanup:${rolloutId}:${intent.runnerName}`,
-              lifecycle: intent.lifecycle,
-              provisioningIntentId: intent.id,
-            });
-          }
-        cursor = page.nextCursor ?? undefined;
-      } while (cursor);
+      const jobs = await this.client(apiKey).listAllJobs(intent.serviceId);
+      for (const job of jobs)
+        if (
+          !knownJobIds.has(job.id) &&
+          job.startCommand.includes(`--intent ${intent.id} --context `)
+        ) {
+          knownJobIds.add(job.id);
+          discovered.push({
+            rolloutId,
+            serviceId: intent.serviceId,
+            jobId: job.id,
+            observedAt: this.now().toISOString(),
+            providerCreationNotBefore: intent.createdAt,
+            cleanupCanary: `rr-cleanup:${rolloutId}:${intent.runnerName}`,
+            lifecycle: intent.lifecycle,
+            provisioningIntentId: intent.id,
+          });
+        }
     }
     let duplicateObserved = false;
 

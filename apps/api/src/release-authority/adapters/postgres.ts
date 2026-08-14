@@ -32,6 +32,7 @@ import type {
   RunnerOperationsLedgerPort,
   WitnessGatedTerminalCleanupFact,
   ReleaseServiceTransitionLedgerPort,
+  ReleaseProviderMutationAuthorityPort,
 } from "../domain/model.js";
 import type {
   ServiceTransitionCheckpoint,
@@ -616,6 +617,70 @@ export class RoutineReleaseControlLedgerAdapter
         Prisma.sql`SELECT release_authority.release_recovery_effect_reconcile(${asJsonb(input)}) AS value`,
       ),
       input,
+    );
+  }
+}
+
+export class RoutineProviderMutationAuthorityAdapter implements ReleaseProviderMutationAuthorityPort {
+  constructor(private readonly prisma: PrismaClient) {}
+  async issue(
+    input: Parameters<ReleaseProviderMutationAuthorityPort["issue"]>[0],
+  ): ReturnType<ReleaseProviderMutationAuthorityPort["issue"]> {
+    return requiredRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_provider_mutation_issue(${asJsonb(input)}) AS value`,
+      ),
+    ) as unknown as Awaited<
+      ReturnType<ReleaseProviderMutationAuthorityPort["issue"]>
+    >;
+  }
+
+  async consume(
+    input: Parameters<ReleaseProviderMutationAuthorityPort["consume"]>[0],
+  ): ReturnType<ReleaseProviderMutationAuthorityPort["consume"]> {
+    return requiredRecord(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_provider_mutation_consume(${asJsonb(input)}) AS value`,
+      ),
+    ) as unknown as Awaited<
+      ReturnType<ReleaseProviderMutationAuthorityPort["consume"]>
+    >;
+  }
+
+  async validateExecution(
+    input: Parameters<
+      ReleaseProviderMutationAuthorityPort["validateExecution"]
+    >[0],
+  ): Promise<boolean> {
+    return requiredBoolean(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_provider_mutation_validate_execution(${asJsonb(input)}) AS value`,
+      ),
+    );
+  }
+
+  async complete(
+    input: Parameters<ReleaseProviderMutationAuthorityPort["complete"]>[0],
+  ): Promise<void> {
+    requiredBoolean(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_provider_mutation_complete(${asJsonb(input)}) AS value`,
+      ),
+    );
+  }
+
+  async reconcile(
+    input: Parameters<ReleaseProviderMutationAuthorityPort["reconcile"]>[0],
+  ): Promise<void> {
+    requiredBoolean(
+      await firstValue(
+        this.prisma,
+        Prisma.sql`SELECT release_authority.release_provider_mutation_reconcile(${asJsonb(input)}) AS value`,
+      ),
     );
   }
 }

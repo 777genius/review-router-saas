@@ -6,6 +6,7 @@ import {
   HttpProviderAuthorityDecisionAdapter,
   ReleaseRolloutUseCases,
   RenderTargetServicesAdapter,
+  HttpProviderMutationAuthorityAdapter,
   RolloutStep,
   sha256Canonical,
   type CleanupEvidence,
@@ -85,7 +86,16 @@ const preflight = read<Record<string, unknown>>(
 const expectations = JSON.parse(
   required("REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON"),
 ) as TargetServiceExpectation[];
-const render = new RenderTargetServicesAdapter();
+const mutationAuthority = new HttpProviderMutationAuthorityAdapter(
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
+  required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
+);
+const render = new RenderTargetServicesAdapter(
+  fetch,
+  undefined,
+  undefined,
+  mutationAuthority,
+);
 const ledger = new AuthenticatedRunnerLedgerAdapter(
   required("REVIEW_ROUTER_RUNNER_LEDGER_URL"),
   required("REVIEW_ROUTER_RUNNER_LEDGER_TOKEN"),
@@ -176,6 +186,7 @@ const useCases = new ReleaseRolloutUseCases({
         targetSystemIdentifier: rollout.target.systemIdentifier,
         expectedReceiptSha256: rollout.receipts.at(-1)!.receiptSha256,
         decision,
+        mutationOwnerId: `finalize-${rollout.execution.runId}-${rollout.execution.runAttempt}`,
       })) as typeof resumed;
       return resumed;
     },

@@ -6,6 +6,7 @@ import type {
   RunnerJobLedger,
 } from "./render-private-runner";
 import type { RenderFetch } from "./render-api";
+import { BoundedProviderHttpClient } from "./bounded-provider-io";
 import type {
   ActivationAuthorization,
   ActivationReceipt,
@@ -42,13 +43,16 @@ export class AuthenticatedRunnerLedgerAdapter
     RunnerCleanupWitnessPort,
     AuthoritativeGenerationLedger
 {
+  private readonly fetchImpl: RenderFetch;
   constructor(
     private readonly origin: string,
     private readonly token: string,
-    private readonly fetchImpl: RenderFetch = fetch,
+    fetchImpl: RenderFetch = fetch,
   ) {
     if (!origin.startsWith("https://") || !token)
       throw new Error("runner_ledger_configuration_invalid");
+    const http = new BoundedProviderHttpClient(fetchImpl);
+    this.fetchImpl = (url, init) => http.request("authority", url, init);
   }
   private async request(
     path: string,
@@ -741,13 +745,16 @@ export class AuthenticatedRunnerLedgerAdapter
 
 /** Triggers the separately credentialed provider-side observer by job identity. */
 export class AuthenticatedProviderWitnessAdapter {
+  private readonly fetchImpl: RenderFetch;
   constructor(
     private readonly origin: string,
     private readonly token: string,
-    private readonly fetchImpl: RenderFetch = fetch,
+    fetchImpl: RenderFetch = fetch,
   ) {
     if (!origin.startsWith("https://") || !token)
       throw new Error("runner_witness_configuration_invalid");
+    const http = new BoundedProviderHttpClient(fetchImpl);
+    this.fetchImpl = (url, init) => http.request("runner_witness", url, init);
   }
 
   async observe(jobId: string): Promise<void> {

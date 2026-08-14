@@ -10,9 +10,76 @@ import {
 import { assertSafeProcessBoundary } from "./process-command";
 import { RenderBackupIdentityAdapter } from "./render-backup-identity";
 import {
-  RenderPrivateRunnerAdapter,
+  RenderPrivateRunnerAdapter as ProductionRenderPrivateRunnerAdapter,
   type RenderRunnerRequest,
 } from "./render-private-runner";
+import { TestProviderMutationAuthority } from "../test-provider-mutation-authority";
+
+class RenderPrivateRunnerAdapter extends ProductionRenderPrivateRunnerAdapter {
+  private readonly authorityTestState: {
+    phase: "idle" | "before" | "after";
+    createdJob?: unknown;
+    acquisitionBaseline: number;
+  };
+  constructor(...args: any[]) {
+    const delegate = (args[3] ?? fetch) as typeof fetch;
+    const state: {
+      phase: "idle" | "before" | "after";
+      createdJob?: unknown;
+      acquisitionBaseline: number;
+    } = { phase: "idle", acquisitionBaseline: 0 };
+    const authorityAwareFetch = async (url: string, init?: RequestInit) => {
+      const jobsEndpoint = /\/services\/[^/]+\/jobs$/u.test(
+        new URL(url).pathname,
+      );
+      if (jobsEndpoint && !init?.method && state.phase === "before") {
+        const acquired =
+          args[0]?.acquireProviderDispatchPermit?.mock?.calls?.length >
+          state.acquisitionBaseline;
+        if (acquired) return json([]);
+        state.phase = "idle";
+      }
+      if (jobsEndpoint && !init?.method && state.phase === "after") {
+        state.phase = "idle";
+        return json([{ job: state.createdJob }]);
+      }
+      let response: Response;
+      try {
+        response = await delegate(url, init);
+      } catch (error) {
+        if (jobsEndpoint && init?.method === "POST") state.phase = "idle";
+        throw error;
+      }
+      if (jobsEndpoint && init?.method === "POST") {
+        if (response.ok) {
+          state.createdJob = await response.clone().json();
+          state.phase = "after";
+        } else state.phase = "idle";
+      }
+      return response;
+    };
+    super(
+      args[0],
+      args[1],
+      args[2],
+      authorityAwareFetch,
+      args[4] ?? (() => new Date()),
+      new TestProviderMutationAuthority(),
+    );
+    this.authorityTestState = state;
+  }
+  override async provision(input: any) {
+    this.authorityTestState.phase = "before";
+    this.authorityTestState.acquisitionBaseline =
+      (this as any).ledger?.acquireProviderDispatchPermit?.mock?.calls
+        ?.length ?? 0;
+    try {
+      return await super.provision(input);
+    } finally {
+      this.authorityTestState.phase = "idle";
+    }
+  }
+}
 
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {
@@ -335,7 +402,7 @@ describe("Render private runner contract", () => {
       firstFetch,
     );
     await expect(adapter.provision(request)).rejects.toThrow(
-      "connection_lost_after_create",
+      "provider_mutation_forward_repair_required",
     );
     const durableCreatedAt = String(
       jobLedger.persistProvisioningIntent.mock.calls[0]?.[0].createdAt,
@@ -970,7 +1037,7 @@ describe("Render private runner contract", () => {
     expect(harness.open).toEqual([]);
   });
 
-  it("retries a transient provider discovery failure without changing effect authority", async () => {
+  it("retries a safe transient provider discovery read without changing effect authority", async () => {
     const intentId = "rri-reconciliation-test";
     const harness = reconciliationHarness([
       reconciledJob(intentId, "job-provider-retry"),
@@ -979,15 +1046,9 @@ describe("Render private runner contract", () => {
 
     await expect(
       harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
-    ).rejects.toThrow("render_unavailable");
-    expect(harness.effect()).toMatchObject({ state: "dispatching" });
-    expect(
-      harness.jobLedger.reconcileProvisioningEffect,
-    ).not.toHaveBeenCalled();
-
-    await expect(
-      harness.adapter.reconcileOrphans(request.rolloutId, request.apiKey),
     ).resolves.toMatchObject({ result: "clean", safeForCompensation: true });
+    expect(harness.effect()).toMatchObject({ state: "cleaned" });
+    expect(harness.fetchImpl).toHaveBeenCalledTimes(3);
     expect(
       harness.fetchImpl.mock.calls.filter(
         ([, init]) => init?.method === "POST",

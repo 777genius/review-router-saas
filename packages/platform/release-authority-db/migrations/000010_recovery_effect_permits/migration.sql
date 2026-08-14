@@ -443,6 +443,203 @@ CREATE TRIGGER release_recovery_checkpoint_permit_gate_trigger
 BEFORE INSERT ON release_authority.service_transition_checkpoint
 FOR EACH ROW EXECUTE FUNCTION release_authority.release_recovery_checkpoint_permit_gate();
 
+-- Provider-neutral one-shot mutation authority. Render has no conditional
+-- write primitive, so this is an authority lease plus pre/post witness, not a
+-- claim of provider-native CAS.
+CREATE TABLE release_authority.provider_mutation (
+  rollout_id text NOT NULL REFERENCES release_authority.rollout(rollout_id) ON DELETE RESTRICT,
+  operation text NOT NULL CHECK (length(operation) BETWEEN 1 AND 256),
+  provider text NOT NULL CHECK (provider ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'),
+  resource_kind text NOT NULL CHECK (resource_kind ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'),
+  resource_id text NOT NULL CHECK (length(resource_id) BETWEEN 1 AND 256),
+  expected_fingerprint text NOT NULL CHECK (expected_fingerprint ~ '^sha256:[a-f0-9]{64}$'),
+  expected_version text,
+  state text NOT NULL CHECK (state IN ('claimed','consumed','executing','completed','precondition_drift','execution_denied','forward_repair')),
+  owner_id text NOT NULL CHECK (owner_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'),
+  epoch bigint NOT NULL CHECK (epoch > 0),
+  permit_id text NOT NULL CHECK (permit_id ~ '^[a-f0-9]{64}$'),
+  permit_token text NOT NULL CHECK (permit_token ~ '^[a-f0-9]{64}$'),
+  issued_at timestamptz(3) NOT NULL,
+  expires_at timestamptz(3) NOT NULL,
+  consumed_at timestamptz(3),
+  receipt_sha256 text CHECK (receipt_sha256 ~ '^[a-f0-9]{64}$'),
+  observation jsonb,
+  completed_at timestamptz(3),
+  PRIMARY KEY (rollout_id,operation,provider,resource_kind,resource_id),
+  CHECK ((state='claimed')=(consumed_at IS NULL)),
+  CHECK ((state='claimed')=(receipt_sha256 IS NULL)),
+  CHECK ((state IN ('completed','precondition_drift','execution_denied','forward_repair'))=(completed_at IS NOT NULL))
+);
+
+CREATE FUNCTION release_authority.release_provider_mutation_permit(
+  p_row release_authority.provider_mutation
+) RETURNS jsonb LANGUAGE sql IMMUTABLE SET search_path=pg_catalog AS $body$
+  SELECT jsonb_build_object(
+    'rolloutId',p_row.rollout_id,'operation',p_row.operation,
+    'resource',jsonb_build_object('provider',p_row.provider,'kind',p_row.resource_kind,'id',p_row.resource_id),
+    'ownerId',p_row.owner_id,'epoch',p_row.epoch,'permitId',p_row.permit_id,
+    'token',p_row.permit_token,
+    'expected',jsonb_build_object('fingerprint',p_row.expected_fingerprint,'version',p_row.expected_version),
+    'issuedAt',to_char(p_row.issued_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'expiresAt',to_char(p_row.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'singleUse',true)
+$body$;
+
+CREATE FUNCTION release_authority.release_provider_mutation_issue(p_input jsonb)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $body$
+DECLARE mutation release_authority.provider_mutation%ROWTYPE;
+DECLARE seconds integer;
+BEGIN
+  IF jsonb_typeof(p_input)<>'object' OR jsonb_array_length(jsonb_path_query_array(p_input,'$.keyvalue()'))<>6
+    OR NOT p_input ?& ARRAY['rolloutId','operation','resource','ownerId','expected','leaseSeconds']
+    OR length(p_input->>'rolloutId') NOT BETWEEN 1 AND 256
+    OR length(p_input->>'operation') NOT BETWEEN 1 AND 256
+    OR coalesce(p_input->>'ownerId','') !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'
+    OR jsonb_typeof(p_input->'resource')<>'object'
+    OR jsonb_array_length(jsonb_path_query_array(p_input->'resource','$.keyvalue()'))<>3
+    OR NOT (p_input->'resource') ?& ARRAY['provider','kind','id']
+    OR coalesce(p_input#>>'{resource,provider}','') !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    OR coalesce(p_input#>>'{resource,kind}','') !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    OR length(p_input#>>'{resource,id}') NOT BETWEEN 1 AND 256
+    OR jsonb_typeof(p_input->'expected')<>'object'
+    OR jsonb_array_length(jsonb_path_query_array(p_input->'expected','$.keyvalue()'))<>2
+    OR NOT (p_input->'expected') ?& ARRAY['fingerprint','version']
+    OR coalesce(p_input#>>'{expected,fingerprint}','') !~ '^sha256:[a-f0-9]{64}$'
+    OR ((p_input#>'{expected,version}') <> 'null'::jsonb AND length(p_input#>>'{expected,version}') NOT BETWEEN 1 AND 256)
+    OR coalesce(p_input->>'leaseSeconds','') !~ '^[0-9]+$'
+    OR (p_input->>'leaseSeconds')::numeric NOT BETWEEN 5 AND 300
+  THEN RAISE EXCEPTION 'provider mutation issue invalid'; END IF;
+  seconds := (p_input->>'leaseSeconds')::integer;
+  PERFORM 1 FROM release_authority.rollout WHERE rollout_id=p_input->>'rolloutId' FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'provider mutation rollout missing'; END IF;
+  SELECT * INTO mutation FROM release_authority.provider_mutation WHERE
+    rollout_id=p_input->>'rolloutId' AND operation=p_input->>'operation'
+    AND provider=p_input#>>'{resource,provider}' AND resource_kind=p_input#>>'{resource,kind}'
+    AND resource_id=p_input#>>'{resource,id}' FOR UPDATE;
+  IF FOUND THEN
+    IF mutation.expected_fingerprint<>p_input#>>'{expected,fingerprint}'
+      OR mutation.expected_version IS DISTINCT FROM nullif(p_input#>>'{expected,version}','')
+    THEN RAISE EXCEPTION 'provider mutation expected state conflict'; END IF;
+    IF mutation.state<>'claimed' THEN RAISE EXCEPTION 'provider mutation permit already consumed'; END IF;
+    IF mutation.expires_at>clock_timestamp() THEN
+      IF mutation.owner_id<>p_input->>'ownerId' THEN RAISE EXCEPTION 'provider mutation lease held'; END IF;
+      RETURN release_authority.release_provider_mutation_permit(mutation);
+    END IF;
+    UPDATE release_authority.provider_mutation SET owner_id=p_input->>'ownerId',epoch=epoch+1,
+      permit_id=encode(gen_random_bytes(32),'hex'),permit_token=encode(gen_random_bytes(32),'hex'),
+      issued_at=date_trunc('milliseconds',clock_timestamp()),
+      expires_at=date_trunc('milliseconds',clock_timestamp()+make_interval(secs=>seconds))
+    WHERE rollout_id=mutation.rollout_id AND operation=mutation.operation AND provider=mutation.provider
+      AND resource_kind=mutation.resource_kind AND resource_id=mutation.resource_id RETURNING * INTO mutation;
+    RETURN release_authority.release_provider_mutation_permit(mutation);
+  END IF;
+  INSERT INTO release_authority.provider_mutation(
+    rollout_id,operation,provider,resource_kind,resource_id,expected_fingerprint,expected_version,
+    state,owner_id,epoch,permit_id,permit_token,issued_at,expires_at)
+  VALUES (p_input->>'rolloutId',p_input->>'operation',p_input#>>'{resource,provider}',
+    p_input#>>'{resource,kind}',p_input#>>'{resource,id}',p_input#>>'{expected,fingerprint}',
+    nullif(p_input#>>'{expected,version}',''),'claimed',p_input->>'ownerId',1,
+    encode(gen_random_bytes(32),'hex'),encode(gen_random_bytes(32),'hex'),
+    date_trunc('milliseconds',clock_timestamp()),
+    date_trunc('milliseconds',clock_timestamp()+make_interval(secs=>seconds))) RETURNING * INTO mutation;
+  RETURN release_authority.release_provider_mutation_permit(mutation);
+END $body$;
+
+CREATE FUNCTION release_authority.release_provider_mutation_consume(p_input jsonb)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $body$
+DECLARE mutation release_authority.provider_mutation%ROWTYPE; DECLARE receipt text;
+BEGIN
+  SELECT * INTO STRICT mutation FROM release_authority.provider_mutation WHERE
+    rollout_id=p_input->>'rolloutId' AND operation=p_input->>'operation'
+    AND provider=p_input#>>'{resource,provider}' AND resource_kind=p_input#>>'{resource,kind}'
+    AND resource_id=p_input#>>'{resource,id}' FOR UPDATE;
+  IF mutation.state<>'claimed' OR mutation.expires_at<=clock_timestamp()
+    OR mutation.owner_id<>p_input->>'ownerId' OR mutation.epoch<>(p_input->>'epoch')::bigint
+    OR mutation.permit_id<>p_input->>'permitId' OR mutation.permit_token<>p_input->>'token'
+    OR mutation.expected_fingerprint<>p_input#>>'{expected,fingerprint}'
+    OR mutation.expected_version IS DISTINCT FROM nullif(p_input#>>'{expected,version}','')
+  THEN RAISE EXCEPTION 'provider mutation permit denied or replayed'; END IF;
+  receipt:=encode(gen_random_bytes(32),'hex');
+  UPDATE release_authority.provider_mutation SET state='consumed',
+    consumed_at=date_trunc('milliseconds',clock_timestamp()),receipt_sha256=encode(sha256(convert_to(receipt,'UTF8')),'hex')
+  WHERE rollout_id=mutation.rollout_id AND operation=mutation.operation AND provider=mutation.provider
+    AND resource_kind=mutation.resource_kind AND resource_id=mutation.resource_id RETURNING * INTO mutation;
+  RETURN jsonb_build_object('rolloutId',mutation.rollout_id,'operation',mutation.operation,
+    'resource',jsonb_build_object('provider',mutation.provider,'kind',mutation.resource_kind,'id',mutation.resource_id),
+    'ownerId',mutation.owner_id,'epoch',mutation.epoch,'permitId',mutation.permit_id,'receiptId',receipt,
+    'expected',jsonb_build_object('fingerprint',mutation.expected_fingerprint,'version',mutation.expected_version),
+    'consumedAt',to_char(mutation.consumed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+END $body$;
+
+CREATE FUNCTION release_authority.release_provider_mutation_validate_execution(p_input jsonb)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $body$
+DECLARE mutation release_authority.provider_mutation%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT mutation FROM release_authority.provider_mutation WHERE
+    rollout_id=p_input->>'rolloutId' AND operation=p_input->>'operation'
+    AND provider=p_input#>>'{resource,provider}' AND resource_kind=p_input#>>'{resource,kind}'
+    AND resource_id=p_input#>>'{resource,id}' FOR UPDATE;
+  IF mutation.owner_id<>p_input->>'ownerId' OR mutation.epoch<>(p_input->>'epoch')::bigint
+    OR mutation.permit_id<>p_input->>'permitId'
+    OR mutation.receipt_sha256<>encode(sha256(convert_to(p_input->>'receiptId','UTF8')),'hex')
+    OR mutation.expected_fingerprint<>p_input#>>'{expected,fingerprint}'
+    OR mutation.expected_version IS DISTINCT FROM nullif(p_input#>>'{expected,version}','')
+  THEN RAISE EXCEPTION 'provider mutation execution binding conflict'; END IF;
+  IF mutation.state<>'consumed' OR mutation.expires_at<=clock_timestamp() THEN RETURN false; END IF;
+  UPDATE release_authority.provider_mutation SET state='executing' WHERE
+    rollout_id=mutation.rollout_id AND operation=mutation.operation AND provider=mutation.provider
+    AND resource_kind=mutation.resource_kind AND resource_id=mutation.resource_id;
+  RETURN true;
+END $body$;
+
+CREATE FUNCTION release_authority.release_provider_mutation_finish(p_input jsonb,p_reconcile boolean)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $body$
+DECLARE mutation release_authority.provider_mutation%ROWTYPE; DECLARE receipt jsonb:=p_input->'receipt';
+DECLARE result text:=CASE WHEN p_reconcile THEN p_input->>'result' ELSE 'exact_postcondition' END;
+DECLARE observation jsonb:=p_input->'observation';
+BEGIN
+  SELECT * INTO STRICT mutation FROM release_authority.provider_mutation WHERE
+    rollout_id=receipt->>'rolloutId' AND operation=receipt->>'operation'
+    AND provider=receipt#>>'{resource,provider}' AND resource_kind=receipt#>>'{resource,kind}'
+    AND resource_id=receipt#>>'{resource,id}' FOR UPDATE;
+  IF mutation.owner_id<>receipt->>'ownerId' OR mutation.epoch<>(receipt->>'epoch')::bigint
+    OR mutation.permit_id<>receipt->>'permitId'
+    OR mutation.receipt_sha256<>encode(sha256(convert_to(receipt->>'receiptId','UTF8')),'hex')
+    OR result NOT IN ('exact_postcondition','precondition_drift','execution_not_authorized','ambiguous_forward_repair')
+    OR (observation IS NOT NULL AND (observation#>>'{resource,provider}'<>mutation.provider
+      OR observation#>>'{resource,kind}'<>mutation.resource_kind OR observation#>>'{resource,id}'<>mutation.resource_id
+      OR coalesce(observation#>>'{state,fingerprint}','') !~ '^sha256:[a-f0-9]{64}$'))
+  THEN RAISE EXCEPTION 'provider mutation finish binding conflict'; END IF;
+  IF mutation.state NOT IN ('consumed','executing') THEN RAISE EXCEPTION 'provider mutation finish replayed'; END IF;
+  IF NOT p_reconcile AND mutation.state<>'executing' THEN RAISE EXCEPTION 'provider mutation not executing'; END IF;
+  UPDATE release_authority.provider_mutation SET
+    state=CASE result WHEN 'exact_postcondition' THEN 'completed' WHEN 'precondition_drift' THEN 'precondition_drift' WHEN 'execution_not_authorized' THEN 'execution_denied' ELSE 'forward_repair' END,
+    observation=observation,completed_at=date_trunc('milliseconds',clock_timestamp())
+  WHERE rollout_id=mutation.rollout_id AND operation=mutation.operation AND provider=mutation.provider
+    AND resource_kind=mutation.resource_kind AND resource_id=mutation.resource_id;
+  IF result='ambiguous_forward_repair' THEN
+    UPDATE release_authority.rollout SET state='forward_repair_required',updated_at=clock_timestamp()
+      WHERE rollout_id=mutation.rollout_id AND state<>'forward_repair_required';
+  END IF;
+  RETURN true;
+END $body$;
+CREATE FUNCTION release_authority.release_provider_mutation_complete(p_input jsonb)
+RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog AS $body$
+  SELECT release_authority.release_provider_mutation_finish(p_input,false)
+$body$;
+CREATE FUNCTION release_authority.release_provider_mutation_reconcile(p_input jsonb)
+RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog AS $body$
+  SELECT release_authority.release_provider_mutation_finish(p_input,true)
+$body$;
+
+REVOKE ALL ON TABLE release_authority.provider_mutation FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_permit(release_authority.provider_mutation) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_issue(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_consume(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_validate_execution(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_finish(jsonb,boolean) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_complete(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION release_authority.release_provider_mutation_reconcile(jsonb) FROM PUBLIC;
 REVOKE ALL ON TABLE release_authority.recovery_effect FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_recovery_effect_observation_is_valid(text,jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION release_authority.release_recovery_effect_snapshot(release_authority.recovery_effect) FROM PUBLIC;
@@ -463,6 +660,11 @@ DO $acl$ BEGIN
     GRANT EXECUTE ON FUNCTION release_authority.release_recovery_effect_validate_execution(jsonb) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_recovery_effect_complete(jsonb) TO reviewrouter_release_control;
     GRANT EXECUTE ON FUNCTION release_authority.release_recovery_effect_reconcile(jsonb) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_provider_mutation_issue(jsonb) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_provider_mutation_consume(jsonb) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_provider_mutation_validate_execution(jsonb) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_provider_mutation_complete(jsonb) TO reviewrouter_release_control;
+    GRANT EXECUTE ON FUNCTION release_authority.release_provider_mutation_reconcile(jsonb) TO reviewrouter_release_control;
   END IF;
 END $acl$;
 

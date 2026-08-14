@@ -7,6 +7,8 @@ import {
   type ProviderAuthorityDecision,
 } from "../application/ports";
 import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
+import type { ProviderMutationAuthorityPort } from "../application/provider-mutation-authority";
+import { AuthorizedRenderMutations } from "./authorized-render-mutations";
 
 const active = new Set([
   "created",
@@ -21,10 +23,13 @@ export class RenderProviderFreezeAdapter {
     private readonly sleep: (milliseconds: number) => Promise<void> = (
       milliseconds,
     ) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    private readonly mutationAuthority?: ProviderMutationAuthorityPort,
   ) {}
   async freezeAndObserve(input: {
     apiKey: string;
     ownerId: string;
+    rolloutId: string;
+    mutationOwnerId: string;
     sourceWriterServiceIds: readonly string[];
     prepareMutation?: (evidence: {
       serviceId: string;
@@ -45,6 +50,13 @@ export class RenderProviderFreezeAdapter {
     )
       throw new Error("render_freeze_context_invalid");
     const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
+    if (!this.mutationAuthority)
+      throw new Error("render_mutation_authority_missing");
+    const mutations = new AuthorizedRenderMutations(
+      api,
+      this.mutationAuthority,
+      this.sleep,
+    );
     const declared = [...input.sourceWriterServiceIds].sort();
     const ownerServices = (await api.listAllServices()).filter(
       (service) => service.ownerId === input.ownerId,
@@ -102,7 +114,14 @@ export class RenderProviderFreezeAdapter {
           })
         : before.suspended !== "suspended";
       if (mutationRequired && before.suspended !== "suspended")
-        await api.suspend(serviceId);
+        await mutations.suspend(
+          {
+            rolloutId: input.rolloutId,
+            ownerId: input.mutationOwnerId,
+            operation: `freeze:${serviceId}`,
+          },
+          serviceId,
+        );
       if (!mutationRequired && before.suspended !== "suspended")
         throw new Error("render_freeze_preparation_state_contradiction");
       let after = await api.getService(serviceId);
@@ -154,6 +173,8 @@ export class RenderProviderFreezeAdapter {
   async resumeFrozenServiceAndObserve(input: {
     apiKey: string;
     serviceId: string;
+    rolloutId: string;
+    mutationOwnerId: string;
     sourceSystemIdentifier: string;
     expectedDeployId: string;
     decision: ProviderAuthorityDecision;
@@ -163,6 +184,7 @@ export class RenderProviderFreezeAdapter {
       token: string;
       executionReceipt: string;
     }>;
+    executeAuthorized: <R>(io: () => Promise<R>) => Promise<R>;
   }): Promise<{
     serviceId: string;
     deployId: string;
@@ -185,6 +207,13 @@ export class RenderProviderFreezeAdapter {
     )
       throw new Error("render_source_compensation_authority_invalid");
     const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
+    if (!this.mutationAuthority)
+      throw new Error("render_mutation_authority_missing");
+    const mutations = new AuthorizedRenderMutations(
+      api,
+      this.mutationAuthority,
+      this.sleep,
+    );
     const serviceId = input.serviceId;
     const before = await api.getService(serviceId);
     if (
@@ -200,7 +229,17 @@ export class RenderProviderFreezeAdapter {
       throw new Error("render_source_compensation_live_deploy_missing");
     if (latest.id !== input.expectedDeployId)
       throw new Error("render_source_compensation_deploy_identity_changed");
-    if (before.suspended === "suspended") await api.resume(serviceId);
+    if (before.suspended === "suspended")
+      await input.executeAuthorized(() =>
+        mutations.resume(
+          {
+            rolloutId: input.rolloutId,
+            ownerId: input.mutationOwnerId,
+            operation: `recover_resume_source:${serviceId}`,
+          },
+          serviceId,
+        ),
+      );
     let after = await api.getService(serviceId);
     for (
       let poll = 0;

@@ -275,8 +275,10 @@ export class TransactionalServiceCutover {
           kind: RecoveryEffectKind.RestoreServiceConfig,
           serviceId: contract.serviceId,
           ownerId: this.recoveryOwnerId,
-          effect: async () => {
-            await this.provider.configureSource(contract);
+          effect: async (_permit, executeAuthorized) => {
+            await executeAuthorized(() =>
+              this.provider.configureSource(contract),
+            );
             return this.provider.observe(contract.serviceId);
           },
           reconcileConsumed: async () => {
@@ -305,21 +307,23 @@ export class TransactionalServiceCutover {
         kind: RecoveryEffectKind.RestoreServiceEnvironment,
         serviceId: contract.serviceId,
         ownerId: this.recoveryOwnerId,
-        effect: async () =>
-          beforeRestore.environmentSha256 === contract.sourceEnvironmentSha256
-            ? beforeRestore.environmentSha256
-            : requireAppliedEnvironment(
-                await this.provider.replaceEnvironment(contract.serviceId, {
-                  set: sourceEnv,
-                  remove: [
-                    "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
-                    "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
-                    "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
-                  ],
-                  expectedBeforeSha256: target.environmentSha256,
-                  expectedAfterSha256: contract.sourceEnvironmentSha256,
-                }),
-              ),
+        effect: async (_permit, executeAuthorized) =>
+          await executeAuthorized(async () =>
+            beforeRestore.environmentSha256 === contract.sourceEnvironmentSha256
+              ? beforeRestore.environmentSha256
+              : requireAppliedEnvironment(
+                  await this.provider.replaceEnvironment(contract.serviceId, {
+                    set: sourceEnv,
+                    remove: [
+                      "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
+                      "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
+                      "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+                    ],
+                    expectedBeforeSha256: target.environmentSha256,
+                    expectedAfterSha256: contract.sourceEnvironmentSha256,
+                  }),
+                ),
+          ),
         reconcileConsumed: async () => {
           const observed = await this.provider.observe(contract.serviceId);
           return observed.environmentSha256 === contract.sourceEnvironmentSha256
@@ -371,7 +375,7 @@ export class TransactionalServiceCutover {
         kind: RecoveryEffectKind.RestoreServiceDeploy,
         serviceId: contract.serviceId,
         ownerId: this.recoveryOwnerId,
-        effect: async () => {
+        effect: async (_permit, executeAuthorized) => {
           const deployId =
             persistedDeploy ??
             (await this.provider.reconcileSourceDeployment({
@@ -379,9 +383,11 @@ export class TransactionalServiceCutover {
               revision: contract.sourceRevision,
               intentAt: persistedIntentAt ?? restoreIntentAt,
             })) ??
-            (await this.provider.deploySourceRevision(
-              contract.serviceId,
-              contract.sourceRevision,
+            (await executeAuthorized(() =>
+              this.provider.deploySourceRevision(
+                contract.serviceId,
+                contract.sourceRevision,
+              ),
             ));
           await this.provider.waitForDeployment(contract.serviceId, deployId, {
             kind: "source_revision",
@@ -481,8 +487,8 @@ export class TransactionalServiceCutover {
         effectKey: "restore_database_writes",
         kind: RecoveryEffectKind.RestoreDatabaseWrites,
         ownerId: this.recoveryOwnerId,
-        effect: async () => {
-          await input.restoreSourceWritesAndVerify();
+        effect: async (_permit, executeAuthorized) => {
+          await executeAuthorized(input.restoreSourceWritesAndVerify);
           return { sourceWritesRestored: true as const };
         },
         observe: async (value) => ({
@@ -507,8 +513,10 @@ export class TransactionalServiceCutover {
         kind: RecoveryEffectKind.ResumeSourceService,
         serviceId: service.serviceId,
         ownerId: this.recoveryOwnerId,
-        effect: async () => {
-          await this.provider.resume(service.serviceId);
+        effect: async (_permit, executeAuthorized) => {
+          await executeAuthorized(() =>
+            this.provider.resume(service.serviceId),
+          );
           return this.provider.observe(service.serviceId);
         },
         reconcileConsumed: async () => {

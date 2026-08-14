@@ -25,6 +25,84 @@ const environmentSha256 = (environment: Readonly<Record<string, string>>) =>
     .digest("hex")}`;
 
 describe("Render OpenAPI wrappers", () => {
+  it.each([
+    ["cycle", ["cursor-a", "cursor-a"], "cursor_cycle"],
+    ["malformed", ["cursor with space"], "malformed_cursor"],
+  ] as const)(
+    "fails closed on an incomplete %s inventory",
+    async (_name, cursors, reason) => {
+      let page = 0;
+      const fetchImpl = vi.fn(async () =>
+        json([
+          {
+            service: {
+              id: `srv-${page}`,
+              ownerId: "tea-1",
+              type: "web_service",
+              suspended: "suspended",
+              autoDeploy: "no",
+              serviceDetails: {},
+            },
+            cursor: cursors[page++] ?? null,
+          },
+        ]),
+      );
+      await expect(
+        new RenderApiAdapter("redacted", fetchImpl).listAllServices(),
+      ).rejects.toThrow(`render_inventory_incomplete:${reason}`);
+    },
+  );
+
+  it("fails closed on endless and overflowing inventories", async () => {
+    let page = 0;
+    const endless = new RenderApiAdapter(
+      "redacted",
+      vi.fn(async () =>
+        json([
+          {
+            service: {
+              id: `srv-${page}`,
+              ownerId: "tea-1",
+              type: "web_service",
+              suspended: "suspended",
+              autoDeploy: "no",
+              serviceDetails: {},
+            },
+            cursor: `cursor-${++page}`,
+          },
+        ]),
+      ),
+      undefined,
+      { maxPages: 2, maxItems: 10 },
+    );
+    await expect(endless.listAllServices()).rejects.toThrow(
+      "render_inventory_incomplete:max_pages",
+    );
+    const overflow = new RenderApiAdapter(
+      "redacted",
+      vi.fn(async () =>
+        json(
+          ["one", "two"].map((id) => ({
+            service: {
+              id,
+              ownerId: "tea-1",
+              type: "web_service",
+              suspended: "suspended",
+              autoDeploy: "no",
+              serviceDetails: {},
+            },
+            cursor: null,
+          })),
+        ),
+      ),
+      undefined,
+      { maxPages: 2, maxItems: 1 },
+    );
+    await expect(overflow.listAllServices()).rejects.toThrow(
+      "render_inventory_incomplete:max_items",
+    );
+  });
+
   it("accepts additive service/deploy/job fields and cursor wrappers", async () => {
     const fetchImpl = vi
       .fn()
@@ -107,10 +185,15 @@ describe("Render OpenAPI wrappers", () => {
   });
 
   it("reports a conflict when the environment mutates before the key write", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(envResponse({ DATABASE_URL: "source" }))
-      .mockResolvedValueOnce(envResponse({ DATABASE_URL: "concurrent" }));
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === "PUT"
+        ? new Response(null, { status: 409 })
+        : envResponse(
+            fetchImpl.mock.calls.length === 1
+              ? { DATABASE_URL: "source" }
+              : { DATABASE_URL: "concurrent" },
+          ),
+    );
     const outcome = await new RenderApiAdapter(
       "redacted",
       fetchImpl,
@@ -125,7 +208,7 @@ describe("Render OpenAPI wrappers", () => {
         DATABASE_URL: "concurrent",
       }),
     });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
   it("reports a targeted mutation that races during the key write", async () => {
@@ -148,12 +231,18 @@ describe("Render OpenAPI wrappers", () => {
     expect(outcome.status).toBe("conflict");
   });
 
-  it("never reverts an unrelated credential rotation during a key write", async () => {
+  it("uses one bulk replacement write for the authority permit", async () => {
     const state = { DATABASE_URL: "source", API_TOKEN: "old-secret" };
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === "PUT") {
-        state.DATABASE_URL = JSON.parse(String(init.body)).value as string;
-        state.API_TOKEN = "rotated-secret";
+        const replacement = JSON.parse(String(init.body)) as Array<{
+          key: string;
+          value: string;
+        }>;
+        for (const key of Object.keys(state))
+          delete state[key as keyof typeof state];
+        for (const item of replacement)
+          state[item.key as keyof typeof state] = item.value;
         return json({}, 200);
       }
       return envResponse(state);
@@ -166,14 +255,14 @@ describe("Render OpenAPI wrappers", () => {
       set: { DATABASE_URL: "target" },
       remove: [],
     });
-    expect(outcome.status).toBe("conflict");
+    expect(outcome.status).toBe("applied");
     expect(state).toEqual({
       DATABASE_URL: "target",
-      API_TOKEN: "rotated-secret",
+      API_TOKEN: "old-secret",
     });
-    expect(String(fetchImpl.mock.calls[2]?.[1]?.body)).not.toContain(
-      "rotated-secret",
-    );
+    expect(
+      fetchImpl.mock.calls.filter(([, init]) => init?.method === "PUT"),
+    ).toHaveLength(1);
   });
 
   it("reconciles a completed retry as a replay without another write", async () => {
@@ -250,22 +339,14 @@ describe("Render OpenAPI wrappers", () => {
       PRESERVED: "secret",
     };
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      const key = decodeURIComponent(new URL(url).pathname.split("/").at(-1)!);
-      if (init?.method === "DELETE") {
-        delete state[key];
-        return new Response(null, { status: 204 });
-      }
       if (init?.method === "PUT") {
-        state[key] = JSON.parse(String(init.body)).value as string;
-        return json({}, 200);
-      }
-      if (init?.method === "POST") {
-        const created = JSON.parse(String(init.body)) as {
+        const replacement = JSON.parse(String(init.body)) as Array<{
           key: string;
           value: string;
-        };
-        state[created.key] = created.value;
-        return json({}, 201);
+        }>;
+        for (const key of Object.keys(state)) delete state[key];
+        for (const item of replacement) state[item.key] = item.value;
+        return json({}, 200);
       }
       return envResponse(state);
     });
@@ -289,7 +370,7 @@ describe("Render OpenAPI wrappers", () => {
     );
     expect(state).toEqual(desired);
     expect(
-      fetchImpl.mock.calls.some(([, init]) => init?.method === "POST"),
+      fetchImpl.mock.calls.some(([, init]) => init?.method === "PUT"),
     ).toBe(true);
   });
 });

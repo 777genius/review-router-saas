@@ -1,5 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { RenderTransactionalServicesAdapter } from "./render-transactional-services";
+import { RenderTransactionalServicesAdapter as ProductionRenderTransactionalServicesAdapter } from "./render-transactional-services";
+import { TestProviderMutationAuthority } from "../test-provider-mutation-authority";
+
+class RenderTransactionalServicesAdapter extends ProductionRenderTransactionalServicesAdapter {
+  constructor(
+    apiKey: string,
+    fetchImpl?: typeof fetch,
+    sleep?: (milliseconds: number) => Promise<void>,
+  ) {
+    super(apiKey, fetchImpl, sleep, new TestProviderMutationAuthority(), {
+      rolloutId: "test-rollout",
+      ownerId: "test-owner",
+    });
+  }
+}
 
 const serviceId = "srv-transactional";
 const commitSha = "a".repeat(40);

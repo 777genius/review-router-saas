@@ -22,6 +22,8 @@ import {
   type RenderSourceServiceContractV1,
 } from "./render-service-transition-compatibility";
 import { RenderApiAdapter, type RenderFetch } from "./render-api";
+import type { ProviderMutationAuthorityPort } from "../application/provider-mutation-authority";
+import { AuthorizedRenderMutations } from "./authorized-render-mutations";
 
 const active = new Set([
   "created",
@@ -58,14 +60,32 @@ const latestLive = <
 
 export class RenderTransactionalServicesAdapter implements TransactionalServiceProvider {
   private readonly api: RenderApiAdapter;
+  private readonly mutations: AuthorizedRenderMutations | undefined;
   constructor(
     apiKey: string,
     fetchImpl: RenderFetch = fetch,
     private readonly sleep: (milliseconds: number) => Promise<void> = (
       milliseconds,
     ) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    mutationAuthority?: ProviderMutationAuthorityPort,
+    private readonly mutationContext?: Readonly<{
+      rolloutId: string;
+      ownerId: string;
+    }>,
   ) {
     this.api = new RenderApiAdapter(apiKey, fetchImpl);
+    this.mutations = mutationAuthority
+      ? new AuthorizedRenderMutations(this.api, mutationAuthority, this.sleep)
+      : undefined;
+  }
+
+  private mutation(operation: string) {
+    if (!this.mutations || !this.mutationContext)
+      throw new Error("render_mutation_authority_missing");
+    return {
+      mutations: this.mutations,
+      context: { ...this.mutationContext, operation },
+    };
   }
 
   async observe(serviceId: string): Promise<ObservedServiceState> {
@@ -158,22 +178,42 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
 
   async suspend(serviceId: string): Promise<void> {
     const service = await this.api.getService(serviceId);
-    if (service.suspended !== "suspended") await this.api.suspend(serviceId);
+    if (service.suspended !== "suspended") {
+      const { mutations, context } = this.mutation(
+        `service_suspend:${serviceId}`,
+      );
+      await mutations.suspend(context, serviceId);
+    }
     await this.waitForSuspension(serviceId, true);
   }
 
   async resume(serviceId: string): Promise<void> {
     const service = await this.api.getService(serviceId);
-    if (service.suspended !== "not_suspended") await this.api.resume(serviceId);
+    if (service.suspended !== "not_suspended") {
+      const { mutations, context } = this.mutation(
+        `service_resume:${serviceId}`,
+      );
+      await mutations.resume(context, serviceId);
+    }
     await this.waitForSuspension(serviceId, false);
   }
 
   async configureTarget(contract: TargetServiceRelease): Promise<void> {
-    await this.api.patchService(contract.serviceId, {
-      autoDeployTrigger: "off",
-      image: { imagePath: contract.artifact.reference },
-      serviceDetails: { runtime: "image", preDeployCommand: "" },
-    });
+    const { mutations, context } = this.mutation(
+      `configure_target:${contract.serviceId}`,
+    );
+    await mutations.patchService(
+      context,
+      contract.serviceId,
+      {
+        autoDeployTrigger: "off",
+        image: { imagePath: contract.artifact.reference },
+        serviceDetails: { runtime: "image", preDeployCommand: "" },
+      },
+      (service) =>
+        (service.imagePath ?? service.image?.imagePath) ===
+        contract.artifact.reference,
+    );
     await this.waitForTargetConfiguration(contract);
   }
 
@@ -181,24 +221,36 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
     if (contract.configuration.format !== RENDER_SOURCE_CONFIGURATION_FORMAT)
       throw new Error("render_service_transition_configuration_format_invalid");
     const configuration = renderSourceConfigurationV1(contract);
-    await this.api.patchService(contract.serviceId, {
-      autoDeployTrigger: "off",
-      repo: String(configuration.repository),
-      branch: String(configuration.branch),
-      rootDir: String(configuration.rootDir),
-      serviceDetails: {
-        runtime: "node",
-        envSpecificDetails: {
-          buildCommand: String(configuration.buildCommand),
-          startCommand: String(configuration.startCommand),
+    const { mutations, context } = this.mutation(
+      `configure_source:${contract.serviceId}`,
+    );
+    await mutations.patchService(
+      context,
+      contract.serviceId,
+      {
+        autoDeployTrigger: "off",
+        repo: String(configuration.repository),
+        branch: String(configuration.branch),
+        rootDir: String(configuration.rootDir),
+        serviceDetails: {
+          runtime: "node",
+          envSpecificDetails: {
+            buildCommand: String(configuration.buildCommand),
+            startCommand: String(configuration.startCommand),
+          },
+          preDeployCommand: String(configuration.preDeployCommand),
+          healthCheckPath: configuration.healthCheckPath as string | null,
+          region: String(configuration.region),
+          plan: String(configuration.plan),
+          maxShutdownDelaySeconds: Number(
+            configuration.maxShutdownDelaySeconds,
+          ),
         },
-        preDeployCommand: String(configuration.preDeployCommand),
-        healthCheckPath: configuration.healthCheckPath as string | null,
-        region: String(configuration.region),
-        plan: String(configuration.plan),
-        maxShutdownDelaySeconds: Number(configuration.maxShutdownDelaySeconds),
       },
-    });
+      (service) =>
+        service.repo === configuration.repository &&
+        service.branch === configuration.branch,
+    );
     await this.waitForContract(
       contract.serviceId,
       contract.configuration.sha256,
@@ -214,7 +266,10 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
       expectedAfterSha256: string;
     },
   ): Promise<EnvironmentMutationOutcome> {
-    return this.api.patchEnvPreservingAll({ serviceId, ...input });
+    const { mutations, context } = this.mutation(
+      `replace_environment:${serviceId}:${input.expectedAfterSha256}`,
+    );
+    return mutations.replaceEnvironment(context, { serviceId, ...input });
   }
 
   async planEnvironmentDelta(input: {
@@ -340,7 +395,10 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
   async deployArtifact(serviceId: string, reference: string): Promise<string> {
     if (!reference.includes("@sha256:"))
       throw new Error("service_transition_image_digest_invalid");
-    const deploy = await this.api.createPinnedDeploy(serviceId);
+    const { mutations, context } = this.mutation(
+      `deploy_artifact:${serviceId}`,
+    );
+    const deploy = await mutations.createDeploy(context, serviceId);
     return deploy.id;
   }
 
@@ -348,7 +406,10 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
     serviceId: string,
     revision: string,
   ): Promise<string> {
-    const deploy = await this.api.createPinnedDeploy(serviceId, revision);
+    const { mutations, context } = this.mutation(
+      `deploy_source:${serviceId}:${revision}`,
+    );
+    const deploy = await mutations.createDeploy(context, serviceId, revision);
     return deploy.id;
   }
 

@@ -29,6 +29,7 @@ export interface SourceFreezeRecoveryProviderPort {
       token: string;
       executionReceipt: string;
     }>;
+    executeAuthorized: <R>(io: () => Promise<R>) => Promise<R>;
   }): Promise<SourceFreezeServiceRecoveryObservation>;
   observeFrozenSourceService(
     evidence: SourceFreezeServiceEvidence,
@@ -96,12 +97,13 @@ export class SourceFreezeRecoveryUseCase {
         kind: RecoveryEffectKind.ResumeSourceService,
         serviceId,
         ownerId: this.ports.ownerId,
-        effect: async (executionPermit) => {
+        effect: async (executionPermit, executeAuthorized) => {
           const observed = await this.ports.provider.resumeFrozenSourceService({
             evidence,
             decision: input.decision,
             databaseWitness: input.databaseWitness,
             executionPermit,
+            executeAuthorized,
           });
           if (observed.serviceId !== serviceId || observed.suspended)
             throw new Error("source_freeze_recovery_observation_invalid");

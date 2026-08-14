@@ -10,6 +10,9 @@ import {
   type ProviderAuthorityDecision,
 } from "../application/ports";
 import { runtimeGenerationWitnessReplacement } from "./runtime-generation-witness";
+import { BoundedProviderHttpClient } from "./bounded-provider-io";
+import type { ProviderMutationAuthorityPort } from "../application/provider-mutation-authority";
+import { AuthorizedRenderMutations } from "./authorized-render-mutations";
 
 export type TargetServiceExpectation = {
   readonly serviceId: string;
@@ -35,6 +38,7 @@ export class RenderTargetServicesAdapter {
       milliseconds,
     ) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     private readonly now: () => Date = () => new Date(),
+    private readonly mutationAuthority?: ProviderMutationAuthorityPort,
   ) {}
   async stage(input: {
     apiKey: string;
@@ -47,6 +51,7 @@ export class RenderTargetServicesAdapter {
     services: readonly TargetServiceExpectation[];
     fence: TargetSwitchFence;
     decision: ProviderAuthorityDecision;
+    mutationOwnerId: string;
   }): Promise<StepObservation> {
     if (
       !input.apiKey ||
@@ -71,6 +76,13 @@ export class RenderTargetServicesAdapter {
     )
       throw new Error("render_target_stage_context_invalid");
     const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
+    if (!this.mutationAuthority)
+      throw new Error("render_mutation_authority_missing");
+    const mutations = new AuthorizedRenderMutations(
+      api,
+      this.mutationAuthority,
+      this.sleep,
+    );
     const witnessReplacement = runtimeGenerationWitnessReplacement({
       witness: input.targetRecoveryWitness,
       expectedSha256: input.targetRecoveryWitnessSha256,
@@ -104,7 +116,14 @@ export class RenderTargetServicesAdapter {
       )
         throw new Error("render_target_provenance_mismatch");
       if (service.suspended !== "suspended") {
-        await api.suspend(expected.serviceId);
+        await mutations.suspend(
+          {
+            rolloutId: input.fence.rolloutId,
+            ownerId: input.mutationOwnerId,
+            operation: `target_suspend:${expected.serviceId}`,
+          },
+          expected.serviceId,
+        );
         let suspended = await api.getService(expected.serviceId);
         for (
           let poll = 0;
@@ -133,22 +152,36 @@ export class RenderTargetServicesAdapter {
         decodeURIComponent(databaseUrl.username) !== expected.databaseRole
       )
         throw new Error("render_target_database_binding_mismatch");
-      const envReplacement = await api.patchEnvPreservingAll({
-        serviceId: expected.serviceId,
-        set: {
-          [expected.databaseEnvKey]: replacement,
-          ...witnessReplacement,
-          REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: input.fence.rolloutId,
-          REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: input.releaseCommitSha,
-          REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: input.fence.fencedAt,
+      const envReplacement = await mutations.replaceEnvironment(
+        {
+          rolloutId: input.fence.rolloutId,
+          ownerId: input.mutationOwnerId,
+          operation: `target_environment:${expected.serviceId}`,
         },
-        remove: [],
-      });
+        {
+          serviceId: expected.serviceId,
+          set: {
+            [expected.databaseEnvKey]: replacement,
+            ...witnessReplacement,
+            REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: input.fence.rolloutId,
+            REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: input.releaseCommitSha,
+            REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: input.fence.fencedAt,
+          },
+          remove: [],
+        },
+      );
       if (envReplacement.status === "conflict")
         throw new Error("render_target_environment_conflict");
       if (envReplacement.status === "ambiguous")
         throw new Error("render_target_environment_ambiguous");
-      const created = await api.createDeploy(expected.serviceId);
+      const created = await mutations.createDeploy(
+        {
+          rolloutId: input.fence.rolloutId,
+          ownerId: input.mutationOwnerId,
+          operation: `target_deploy:${expected.serviceId}`,
+        },
+        expected.serviceId,
+      );
       let rechecked = await api.listAllDeploys(expected.serviceId);
       let pinned = rechecked.find((deploy) => deploy.id === created.id);
       for (let poll = 0; pinned?.status !== "live" && poll < 44; poll += 1) {
@@ -206,6 +239,7 @@ export class RenderTargetServicesAdapter {
     targetSystemIdentifier: string;
     expectedReceiptSha256: string;
     decision: ProviderAuthorityDecision;
+    mutationOwnerId: string;
   }): Promise<StepObservation> {
     if (
       !input.services.length ||
@@ -219,9 +253,23 @@ export class RenderTargetServicesAdapter {
     )
       throw new Error("render_target_resume_authority_invalid");
     const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
+    if (!this.mutationAuthority)
+      throw new Error("render_mutation_authority_missing");
+    const mutations = new AuthorizedRenderMutations(
+      api,
+      this.mutationAuthority,
+      this.sleep,
+    );
     const facts = [];
     for (const expected of input.services) {
-      await api.resume(expected.serviceId);
+      await mutations.resume(
+        {
+          rolloutId: input.rolloutId,
+          ownerId: input.mutationOwnerId,
+          operation: `target_resume:${expected.serviceId}`,
+        },
+        expected.serviceId,
+      );
       let service = await api.getService(expected.serviceId);
       for (
         let poll = 0;
@@ -282,7 +330,9 @@ export class RenderTargetServicesAdapter {
       throw new Error("render_target_canary_url_invalid");
     const nonce = randomBytes(24).toString("hex");
     const requestedAt = this.now().toISOString();
-    const response = await (input.fetchImpl ?? this.fetchImpl)(input.url, {
+    const response = await new BoundedProviderHttpClient(
+      input.fetchImpl ?? this.fetchImpl,
+    ).request("target_canary", input.url, {
       method: "POST",
       headers: {
         Accept: "application/json",

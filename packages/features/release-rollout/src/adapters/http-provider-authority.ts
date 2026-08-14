@@ -4,15 +4,20 @@ import type {
   ProviderAuthorityRequest,
 } from "../application/ports";
 import type { RenderFetch } from "./render-api";
+import { BoundedProviderHttpClient } from "./bounded-provider-io";
 
 export class HttpProviderAuthorityDecisionAdapter implements ProviderAuthorityDecisionPort {
+  private readonly fetchImpl: RenderFetch;
   constructor(
     private readonly origin: string,
     private readonly token: string,
-    private readonly fetchImpl: RenderFetch = fetch,
+    fetchImpl: RenderFetch = fetch,
   ) {
     if (!origin.startsWith("https://") || !token)
       throw new Error("provider_authority_configuration_invalid");
+    const http = new BoundedProviderHttpClient(fetchImpl);
+    this.fetchImpl = (url, init) =>
+      http.request("provider_authority", url, init);
   }
 
   async decide(

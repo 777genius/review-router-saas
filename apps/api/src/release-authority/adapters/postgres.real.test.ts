@@ -4,6 +4,7 @@ import { createPrismaClient } from "@reviewrouter/platform-db";
 import {
   RoutineReleaseControlLedgerAdapter,
   RoutineRunnerCleanupWitnessAdapter,
+  RoutineProviderMutationAuthorityAdapter,
 } from "./postgres";
 
 const controlUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL;
@@ -187,5 +188,44 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         ],
       },
     });
+  });
+
+  it("serializes concurrent provider permits and consumes execution exactly once", async () => {
+    if (!control) throw new Error("real_postgres_test_unconfigured");
+    const ledger = new RoutineReleaseControlLedgerAdapter(control);
+    const authority = new RoutineProviderMutationAuthorityAdapter(control);
+    const unique = randomUUID().replaceAll("-", "");
+    const rolloutId = `r-provider-mutation-${unique.slice(0, 16)}`;
+    await ledger.claim({
+      rolloutId,
+      expectedCommitSha: "a".repeat(40),
+      runId: "902",
+      runAttempt: 1,
+      sourceSystemIdentifier: "192",
+      targetSystemIdentifier: "292",
+    });
+    const base = {
+      rolloutId,
+      operation: "freeze:srv-authority",
+      resource: { provider: "render", kind: "service", id: "srv-authority" },
+      expected: { fingerprint: `sha256:${"b".repeat(64)}`, version: null },
+      leaseSeconds: 60,
+    } as const;
+    const results = await Promise.allSettled([
+      authority.issue({ ...base, ownerId: "actor-one" }),
+      authority.issue({ ...base, ownerId: "actor-two" }),
+    ]);
+    expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(
+      1,
+    );
+    const permit = (
+      results.find(
+        (item) => item.status === "fulfilled",
+      ) as PromiseFulfilledResult<any>
+    ).value;
+    const receipt = await authority.consume(permit);
+    await expect(authority.consume(permit)).rejects.toThrow();
+    await expect(authority.validateExecution(receipt)).resolves.toBe(true);
+    await expect(authority.validateExecution(receipt)).resolves.toBe(false);
   });
 });

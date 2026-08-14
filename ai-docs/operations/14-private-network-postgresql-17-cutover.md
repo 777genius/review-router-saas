@@ -148,28 +148,26 @@ Use four independent credentials:
   immutable deploy creation/polling only.
 
 Adapters accept additive documented fields while requiring their security
-subset. Service/deploy/job/env list cursor wrappers and suspend/resume HTTP 202
-follow Render OpenAPI. Environment deltas use only Render's single-key
-`POST /services/{serviceId}/env-vars`,
-`PUT /services/{serviceId}/env-vars/{key}`, and
-`DELETE /services/{serviceId}/env-vars/{key}` operations. The adapter reads a
-complete snapshot before every key mutation and after every acknowledged
-mutation. A changed snapshot produces a provider-neutral conflict; a lost or
-5xx mutation response produces an ambiguous result even when a later read has
-the desired value. Application policy must stop on either result. Completed
-operations can be replayed only when the complete environment digest equals the
-contract's expected-after digest.
+subset. Every inventory has explicit page/item ceilings, cursor syntax and
+cycle checks; an incomplete inventory fails closed. Every HTTP request has an
+abort deadline. Only safe reads have bounded automatic retries.
 
-Render does not document an ETag, version precondition, or multi-key atomic
-environment transaction for these endpoints. Therefore this is not CAS and a
-multi-key delta can be partially applied before a later conflict. Key-scoped
-operations guarantee that a stale client never submits or overwrites unrelated
-keys, so an unrelated credential rotation is preserved and detected by the
-complete post-write digest. A concurrent write to the same targeted key can
-still be ordered immediately before the Render write and be superseded; service
-suspension does not fence console/API configuration writers. Keep the rollout
-stopped on conflict or ambiguity and reconcile from a fresh protected manifest.
-No environment value or response body is logged or returned in an outcome.
+Every Render write consumes a durable, single-use provider-mutation permit
+bound to rollout, operation, exact resource, expected state fingerprint,
+authority epoch and expiry. The adapter re-observes that fingerprint, validates
+the consumed execution receipt immediately before one HTTP write, and records
+the exact postcondition. Environment changes use one bulk
+`PUT /services/{serviceId}/env-vars` replacement per permit. Lost write
+responses are observed and reconciled; they are never blindly replayed.
+
+Render does not document ETags or conditional writes. This protocol is
+authority-serialized compare-and-swap with pre/post state witnesses, not
+provider-native CAS. It serializes ReviewRouter actors, but cannot fence a
+simultaneous Render console or independently credentialed API writer in the
+small interval between the final observation and the provider write. Any drift,
+unproven postcondition, deadline, or response loss closes the operation and
+requires durable reconciliation/forward repair. No environment value, URL,
+token, or provider response body is included in errors or outcomes.
 
 There is no backups-by-ID call. Render contributes only
 `GET /postgres/{id}/recovery`. A separately authenticated export witness binds

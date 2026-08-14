@@ -10,6 +10,7 @@ import type {
   RunnerIdentity,
   StepObservation,
   TargetSwitchFence,
+  ProviderMutationAuthorityPort,
 } from "@reviewrouter/features-release-rollout";
 import type {
   ServiceTransitionCheckpoint,
@@ -202,6 +203,10 @@ export interface ReleaseServiceTransitionLedgerPort extends ServiceTransitionLed
     checkpoint: Omit<ServiceTransitionCheckpoint, "sequence">,
   ): Promise<ServiceTransitionCheckpoint>;
 }
+
+/** Durable authority boundary for provider writes; implemented by DB routines. */
+export type ReleaseProviderMutationAuthorityPort =
+  ProviderMutationAuthorityPort;
 
 export interface ActivationPermitInstallerPort {
   install(

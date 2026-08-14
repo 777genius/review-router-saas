@@ -312,8 +312,10 @@ export class ReleaseCompensationReconciliationUseCase {
         effectKey: "restore_database_writes",
         kind: RecoveryEffectKind.RestoreDatabaseWrites,
         ownerId: this.ports.recoveryOwnerId,
-        effect: async () => {
-          databaseWitness = await this.ports.compensateDatabase();
+        effect: async (_permit, executeAuthorized) => {
+          databaseWitness = await executeAuthorized(() =>
+            this.ports.compensateDatabase(),
+          );
           return databaseWitness;
         },
         observe: async (witness) => witness,

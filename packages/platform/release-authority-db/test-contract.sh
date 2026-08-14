@@ -241,7 +241,7 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
   exit 1
 fi
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
-  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:5e75a0deb033644c9a418082181dd9f21d65771cd47a7684f7497aa56e157107' WHERE position=11" >/dev/null
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:4ae1abd87a720d3721f9327f1086b4b3cd469f7c3259b620dfb2232bd03c7c10' WHERE position=11" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
   "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=12" >/dev/null
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \

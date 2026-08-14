@@ -93,7 +93,7 @@ const authorityReadiness = (
       ],
       [
         "000010_recovery_effect_permits",
-        "5e75a0deb033644c9a418082181dd9f21d65771cd47a7684f7497aa56e157107",
+        "4ae1abd87a720d3721f9327f1086b4b3cd469f7c3259b620dfb2232bd03c7c10",
       ],
       [
         "000011_default_and_final_acl_exactness",

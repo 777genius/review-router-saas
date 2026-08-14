@@ -100,13 +100,17 @@ function harness() {
     environmentSha256: `sha256:${"d".repeat(64)}`,
     provenance: { kind: "source_revision" as const, revision: "f".repeat(40) },
   };
+  const providerIo = vi.fn(async () => observed);
   const provider = {
-    resumeFrozenSourceService: vi.fn(async () => observed),
+    resumeFrozenSourceService: vi.fn(async ({ executeAuthorized }) =>
+      executeAuthorized(providerIo),
+    ),
     observeFrozenSourceService: vi.fn(async () => null),
   };
   return {
     authority,
     provider,
+    providerIo,
     useCase: new SourceFreezeRecoveryUseCase({
       ownerId: "recovery-owner",
       authority,
@@ -158,9 +162,7 @@ describe("authority-mediated source-freeze recovery", () => {
       expect(
         test.authority.validateRecoveryEffectExecution.mock
           .invocationCallOrder[0],
-      ).toBeLessThan(
-        test.provider.resumeFrozenSourceService.mock.invocationCallOrder[0]!,
-      );
+      ).toBeLessThan(test.providerIo.mock.invocationCallOrder[0]!);
     },
   );
 
@@ -208,6 +210,6 @@ describe("authority-mediated source-freeze recovery", () => {
       }),
     ).rejects.toThrow("recovery_effect_execution_not_authorized");
     expect(test.authority.consumeRecoveryEffectPermit).toHaveBeenCalledOnce();
-    expect(test.provider.resumeFrozenSourceService).not.toHaveBeenCalled();
+    expect(test.providerIo).not.toHaveBeenCalled();
   });
 });

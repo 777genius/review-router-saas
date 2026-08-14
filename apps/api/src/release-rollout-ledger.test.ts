@@ -7,11 +7,13 @@ import type {
   ProviderAuthorityRequest,
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
+import { assertOneShotMutationPermit } from "@reviewrouter/features-release-rollout";
 import { registerReleaseRolloutLedgerRoutes } from "./release-authority/adapters/http";
 import {
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
   RunnerOperationsService,
+  ProviderMutationAuthorityService,
 } from "./release-authority/application/services";
 import type {
   ReleaseAuthorityLedgerPort,
@@ -303,6 +305,98 @@ const services = (repository: CombinedLedgerPort) => ({
 });
 
 describe("release rollout ledger internal API", () => {
+  it("exposes the authenticated one-shot provider mutation authority protocol", async () => {
+    let state: "fresh" | "consumed" | "executing" | "completed" = "fresh";
+    const expected = { fingerprint: `sha256:${"b".repeat(64)}`, version: null };
+    const resource = { provider: "render", kind: "service", id: "srv-one" };
+    const permit = {
+      rolloutId: binding.rolloutId,
+      operation: "freeze:srv-one",
+      resource,
+      ownerId: "actor-one",
+      epoch: 1,
+      permitId: "c".repeat(64),
+      token: "d".repeat(64),
+      expected,
+      issuedAt: "2020-01-01T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      singleUse: true as const,
+    };
+    const receipt = {
+      rolloutId: permit.rolloutId,
+      operation: permit.operation,
+      resource,
+      ownerId: permit.ownerId,
+      epoch: permit.epoch,
+      permitId: permit.permitId,
+      receiptId: "e".repeat(64),
+      expected,
+      consumedAt: "2026-08-14T00:00:01.000Z",
+    };
+    expect(() => assertOneShotMutationPermit(permit, new Date())).not.toThrow();
+    const providerMutationAuthority = new ProviderMutationAuthorityService({
+      issue: async () => permit,
+      consume: async () => {
+        if (state !== "fresh") throw new Error("replay");
+        state = "consumed";
+        return receipt;
+      },
+      validateExecution: async () => {
+        if (state !== "consumed") return false;
+        state = "executing";
+        return true;
+      },
+      complete: async () => {
+        if (state !== "executing") throw new Error("not_executing");
+        state = "completed";
+      },
+      reconcile: async () => undefined,
+    });
+    const app = Fastify();
+    await registerReleaseRolloutLedgerRoutes(app, {
+      ...services(new ConcurrentRepository()),
+      providerMutationAuthority,
+      providerAuthorityTokenSha256: tokenSha256,
+    });
+    const request = (path: string, payload: object) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/provider-mutations/${path}`,
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+    expect(
+      (
+        await request("issue", {
+          rolloutId: permit.rolloutId,
+          operation: permit.operation,
+          resource,
+          ownerId: permit.ownerId,
+          expected,
+          leaseSeconds: 60,
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect((await request("consume", permit)).json()).toEqual(receipt);
+    expect((await request("consume", permit)).statusCode).toBe(500);
+    expect((await request("validate-execution", receipt)).json()).toEqual({
+      authorized: true,
+    });
+    expect((await request("validate-execution", receipt)).json()).toEqual({
+      authorized: false,
+    });
+    const observation = {
+      resource,
+      state: expected,
+      observedAt: "2026-08-14T00:00:02.000Z",
+    };
+    expect(
+      (await request("complete", { receipt, observation })).statusCode,
+    ).toBe(200);
+    expect(state).toBe("completed");
+    await app.close();
+  });
+
   it("requires the authority-owned provider creation boundary on runner jobs", async () => {
     const repository = new ConcurrentRepository();
     const app = Fastify();

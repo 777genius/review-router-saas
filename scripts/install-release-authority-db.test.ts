@@ -480,7 +480,7 @@ describe("release authority database installation", () => {
       "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
       "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
       "f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4",
-      "5e75a0deb033644c9a418082181dd9f21d65771cd47a7684f7497aa56e157107",
+      "4ae1abd87a720d3721f9327f1086b4b3cd469f7c3259b620dfb2232bd03c7c10",
       "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
     ]);
     const bundle = releaseAuthorityMigrationBundle("fresh-install");

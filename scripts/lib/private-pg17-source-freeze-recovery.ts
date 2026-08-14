@@ -6,6 +6,7 @@ import {
   type CompensationCheckpoint,
   type ProviderStateWitness,
   type RecoveryEffectAuthorityPort,
+  type ProviderMutationAuthorityPort,
 } from "../../packages/features/release-rollout/src/index";
 
 /** Render is confined to this composition adapter; the use case stays provider-neutral. */
@@ -14,10 +15,22 @@ export function createPrivatePg17SourceFreezeRecovery(input: {
   ownerId: string;
   apiKey: string;
   sourceSystemIdentifier: string;
+  rolloutId: string;
+  mutationAuthority: ProviderMutationAuthorityPort;
   beforeResume?: () => Promise<ProviderStateWitness | void>;
 }) {
-  const freeze = new RenderProviderFreezeAdapter();
-  const services = new RenderTransactionalServicesAdapter(input.apiKey);
+  const freeze = new RenderProviderFreezeAdapter(
+    fetch,
+    undefined,
+    input.mutationAuthority,
+  );
+  const services = new RenderTransactionalServicesAdapter(
+    input.apiKey,
+    fetch,
+    undefined,
+    input.mutationAuthority,
+    { rolloutId: input.rolloutId, ownerId: input.ownerId },
+  );
   const recovery = new SourceFreezeRecoveryUseCase({
     ownerId: input.ownerId,
     authority: input.ledger,
@@ -27,15 +40,19 @@ export function createPrivatePg17SourceFreezeRecovery(input: {
         decision,
         databaseWitness,
         executionPermit,
+        executeAuthorized,
       }) => {
         await freeze.resumeFrozenServiceAndObserve({
           apiKey: input.apiKey,
           serviceId: evidence.serviceId,
+          rolloutId: input.rolloutId,
+          mutationOwnerId: input.ownerId,
           expectedDeployId: evidence.latestSuccessfulDeployId,
           sourceSystemIdentifier: input.sourceSystemIdentifier,
           decision,
           databaseWitness,
           executionPermit,
+          executeAuthorized,
         });
         return services.observe(evidence.serviceId);
       },

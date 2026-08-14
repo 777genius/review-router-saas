@@ -1,7 +1,28 @@
 import { describe, expect, it, vi } from "vitest";
-import { RenderTargetServicesAdapter } from "./render-target-services";
+import { RenderTargetServicesAdapter as ProductionRenderTargetServicesAdapter } from "./render-target-services";
 import { ProviderAuthorityOperation } from "../application/ports";
 import { fingerprintRuntimeRecoveryWitness } from "./runtime-generation-witness";
+import { TestProviderMutationAuthority } from "../test-provider-mutation-authority";
+
+class RenderTargetServicesAdapter extends ProductionRenderTargetServicesAdapter {
+  constructor(...args: any[]) {
+    super(
+      args[0] ?? fetch,
+      args[1],
+      args[2],
+      new TestProviderMutationAuthority(),
+    );
+  }
+  override stage(input: any) {
+    return super.stage({ mutationOwnerId: "test-owner", ...input });
+  }
+  override resumeDeployAndObserve(input: any) {
+    return super.resumeDeployAndObserve({
+      mutationOwnerId: "test-owner",
+      ...input,
+    });
+  }
+}
 
 const recoveryWitness = "w".repeat(64);
 const recoveryWitnessSha256 =
@@ -67,13 +88,14 @@ describe("Render target switch and live canary", () => {
     };
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       const pathname = new URL(url).pathname;
-      if (pathname.endsWith("/env-vars") && init?.method === "POST") {
-        const created = JSON.parse(String(init.body)) as {
+      if (pathname.endsWith("/env-vars") && init?.method === "PUT") {
+        const replacement = JSON.parse(String(init.body)) as Array<{
           key: string;
           value: string;
-        };
-        environment[created.key] = created.value;
-        return json({}, 201);
+        }>;
+        for (const key of Object.keys(environment)) delete environment[key];
+        for (const item of replacement) environment[item.key] = item.value;
+        return json({}, 200);
       }
       if (pathname.endsWith("/env-vars"))
         return json(
@@ -82,11 +104,6 @@ describe("Render target switch and live canary", () => {
             cursor: null,
           })),
         );
-      if (pathname.includes("/env-vars/") && init?.method === "PUT") {
-        const key = decodeURIComponent(pathname.split("/").at(-1)!);
-        environment[key] = JSON.parse(String(init.body)).value as string;
-        return json({}, 200);
-      }
       if (pathname.endsWith("/deploys") && init?.method === "POST")
         return json(
           {
@@ -136,7 +153,7 @@ describe("Render target switch and live canary", () => {
         String(url).includes("/env-vars") &&
         (init?.method === "PUT" || init?.method === "POST"),
     );
-    expect(replacements).toHaveLength(6);
+    expect(replacements).toHaveLength(1);
     expect(environment).toMatchObject({
       DATABASE_URL: targetUrl,
       UNCHANGED: "yes",
