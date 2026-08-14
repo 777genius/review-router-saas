@@ -533,6 +533,30 @@ export async function executeDisposableRehearsal(
       target,
       "GRANT USAGE ON SCHEMA reviewrouter_activation TO reviewrouter_role_bootstrap",
     );
+    const routineBodySha256 = (signature) =>
+      sql(
+        target,
+        `SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('${signature}')`,
+      );
+    const trustedDatabaseIdentity = {
+      authoritySystemIdentifier: sql(
+        authority,
+        "SELECT system_identifier::text FROM pg_control_system()",
+      ),
+      targetSystemIdentifier:
+        canonicalEnv.REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER,
+      authorityOwnerRoleName: sql(
+        authority,
+        "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='release_authority'",
+      ),
+      activationGuardRoleName: "reviewrouter_activation_receipt_guard",
+      installerRoutineBodySha256: routineBodySha256(
+        "reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)",
+      ),
+      readerRoutineBodySha256: routineBodySha256(
+        "reviewrouter_activation.read_activation_receipt(text)",
+      ),
+    };
     const controlToken = randomBytes(32).toString("hex");
     const providerAuthorityToken = randomBytes(32).toString("hex");
     const authorityUrl = `postgresql://reviewrouter_release_control:disposable-control@127.0.0.1:${authorityPort}/reviewrouter?sslmode=disable`;
@@ -570,6 +594,7 @@ export async function executeDisposableRehearsal(
           .update(providerAuthorityToken)
           .digest("hex"),
       },
+      trustedDatabaseIdentity,
     });
     releaseControl.addHook("onError", async (_request, _reply, error) => {
       process.stderr.write(
