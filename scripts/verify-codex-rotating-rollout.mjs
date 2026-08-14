@@ -381,13 +381,31 @@ function verifyDatabase(db, descriptor, need, options) {
       "migrationSources",
       "history",
       "catalog",
+      "effectivePrincipalInventory",
+      "effectivePrincipalDecision",
       "drainObservations",
     ]) &&
-      db?.observationVersion === 5 &&
+      db?.observationVersion === 6 &&
       db?.source === "production-postgresql-writer" &&
       db?.captureKind === "database-query" &&
       db?.rehearsal === false,
     "database observation must come from the actual production writer",
+  );
+  need(
+    db?.effectivePrincipalInventory?.version === 1 &&
+      Array.isArray(db?.effectivePrincipalInventory?.roles) &&
+      Array.isArray(db?.effectivePrincipalInventory?.memberships) &&
+      Array.isArray(db?.effectivePrincipalInventory?.grants) &&
+      db?.effectivePrincipalDecision?.accepted === true &&
+      Array.isArray(db?.effectivePrincipalDecision?.violations) &&
+      db.effectivePrincipalDecision.violations.length === 0 &&
+      /^sha256:[a-f0-9]{64}$/u.test(
+        db?.effectivePrincipalDecision?.inventorySha256 ?? "",
+      ) &&
+      /^sha256:[a-f0-9]{64}$/u.test(
+        db?.effectivePrincipalDecision?.policySha256 ?? "",
+      ),
+    "effective principal inventory or canonical policy attestation invalid",
   );
   need(
     hasExactKeys(db?.databaseIdentity, [

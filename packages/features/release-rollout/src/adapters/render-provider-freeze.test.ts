@@ -211,6 +211,7 @@ describe("Render provider writer inventory", () => {
           },
         ],
         writerInventorySha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        discoveryScope: "provider_hint_only_database_fence_authoritative",
       }),
     );
   });

@@ -15,6 +15,7 @@ import {
   type ProtectedSourceEnvironment,
   type TargetServiceRelease,
   type ReleaseRollout,
+  type EffectivePrincipalPolicy,
 } from "../packages/features/release-rollout/src/index";
 import { parseCompensationSourceWriterServiceIds } from "./reconcile-private-pg17-compensation-config";
 import { createPrivatePg17SourceFreezeRecovery } from "./lib/private-pg17-source-freeze-recovery";
@@ -89,6 +90,9 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
   const database = new PostgreSqlGenerationAdapter(
     new RedactedProcessCommandAdapter(),
   );
+  const sourcePrincipalPolicy = JSON.parse(
+    required("REVIEW_ROUTER_SOURCE_PRINCIPAL_POLICY_JSON"),
+  ) as EffectivePrincipalPolicy;
   const durableContract = await ledger.readContract(rollout.rolloutId);
   const sourceRecoveryManifest = durableContract?.sourceManifest;
   const persistedTargets = durableContract?.targetContracts;
@@ -156,6 +160,22 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
     `recovery-${randomUUID()}`,
   );
   const checkpoints = await ledger.read(rollout.rolloutId);
+  if (
+    checkpoints.at(-1)?.activationBoundary === "activated" ||
+    checkpoints.at(-1)?.activationBoundary === "uncertain"
+  ) {
+    const activeFence = database.findActiveSourceFence({
+      adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+      source: rollout.source,
+      rolloutId: rollout.rolloutId,
+    });
+    if (activeFence)
+      database.markSourceFenceForwardOnly({
+        adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+        source: rollout.source,
+        fence: activeFence,
+      });
+  }
   const sourceWriterServiceIds = parseCompensationSourceWriterServiceIds(
     required("REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS"),
   );
@@ -186,16 +206,22 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
     authority,
     ledger,
     compensateDatabase: async () =>
-      database.compensateSource({
+      database.restoreSourceFence({
         adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
         source: rollout.source,
-        reconnectUrls: sourceUrls,
+        fence: database.observeSourceFence({
+          adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+          source: rollout.source,
+          rolloutId: rollout.rolloutId,
+        }),
+        beforePolicy: sourcePrincipalPolicy,
       }),
     observeDatabaseCompensation: async () =>
-      database.observeCompensatedSource({
+      database.observeRestoredSourceFence({
         adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
         source: rollout.source,
-        reconnectUrls: sourceUrls,
+        rolloutId: rollout.rolloutId,
+        beforePolicy: sourcePrincipalPolicy,
       }),
     provider: createPrivatePg17SourceFreezeRecovery({
       ledger,

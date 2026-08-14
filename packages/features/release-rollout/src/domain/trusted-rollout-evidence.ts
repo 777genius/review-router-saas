@@ -37,7 +37,22 @@ export interface QuiescenceEvidence {
   readonly stabilizationSeries: readonly number[];
   readonly reconnectDeniedRoles: readonly string[];
   readonly legacyAmbiguity: LegacyAmbiguityEvidence;
+  readonly fence: SourceDatabaseFenceEvidence;
   readonly complete: true;
+}
+export interface SourceDatabaseFenceEvidence {
+  readonly version: 1;
+  readonly fenceId: string;
+  readonly rolloutId: string;
+  readonly sourceSystemIdentifier: string;
+  readonly authorityPrincipal: string;
+  readonly beforeInventorySha256: string;
+  readonly fencedInventorySha256: string;
+  readonly beforePolicySha256: string;
+  readonly fencedPolicySha256: string;
+  readonly priorConnectAclSha256: string;
+  readonly lifecycle: "active";
+  readonly observedAt: string;
 }
 export interface LegacyAmbiguityEvidence {
   readonly inventorySha256: string;
@@ -74,6 +89,13 @@ export interface EquivalenceEvidence {
   readonly equivalent: true;
   readonly streamingHash: true;
   readonly maxProcessBufferBytes: number;
+  readonly effectivePrincipals: {
+    readonly sourceInventorySha256: string;
+    readonly sourcePolicySha256: string;
+    readonly targetInventorySha256: string;
+    readonly targetPolicySha256: string;
+    readonly stable: true;
+  };
 }
 export interface CleanupEvidence {
   readonly renderJobId: string;
@@ -104,7 +126,7 @@ export interface LegacyReconciliationEvidence {
   readonly status: "reconciled";
 }
 export interface TrustedRolloutEvidence {
-  readonly schemaVersion: 5;
+  readonly schemaVersion: 6;
   readonly rolloutId: string;
   readonly releaseCommitSha: string;
   readonly releaseImageProvenance: VerifiedReleaseImageProvenance;
@@ -148,7 +170,7 @@ export function assembleTrustedRolloutEvidence(
   value: Omit<TrustedRolloutEvidence, "schemaVersion" | "evidenceSha256">,
   trustedImagePolicy: TrustedReleaseImagePolicy,
 ): TrustedRolloutEvidence {
-  const unsigned = Object.freeze({ ...value, schemaVersion: 5 as const });
+  const unsigned = Object.freeze({ ...value, schemaVersion: 6 as const });
   const evidence = Object.freeze({
     ...unsigned,
     evidenceSha256: `sha256:${sha256Canonical(unsigned)}`,
@@ -184,7 +206,7 @@ export function assertTrustedRolloutEvidence(
       "assembledAt",
       "evidenceSha256",
     ]) ||
-    value.schemaVersion !== 5 ||
+    value.schemaVersion !== 6 ||
     !sha.test(value.releaseCommitSha) ||
     value.execution.runAttempt !== 1 ||
     value.execution.event !== "workflow_dispatch" ||
@@ -204,7 +226,20 @@ export function assertTrustedRolloutEvidence(
     !value.quiescence.writerServices.length ||
     value.quiescence.stabilizationSeries.length < 3 ||
     value.quiescence.stabilizationSeries.some((count) => count !== 0) ||
-    value.quiescence.reconnectDeniedRoles.length !== 4 ||
+    value.quiescence.reconnectDeniedRoles.length < 1 ||
+    new Set(value.quiescence.reconnectDeniedRoles).size !==
+      value.quiescence.reconnectDeniedRoles.length ||
+    value.quiescence.fence?.version !== 1 ||
+    value.quiescence.fence.lifecycle !== "active" ||
+    value.quiescence.fence.rolloutId !== value.rolloutId ||
+    value.quiescence.fence.sourceSystemIdentifier !==
+      value.source.systemIdentifier ||
+    !timestamp(value.quiescence.fence.observedAt) ||
+    !digest.test(value.quiescence.fence.beforeInventorySha256) ||
+    !digest.test(value.quiescence.fence.fencedInventorySha256) ||
+    !digest.test(value.quiescence.fence.beforePolicySha256) ||
+    !digest.test(value.quiescence.fence.fencedPolicySha256) ||
+    !digest.test(value.quiescence.fence.priorConnectAclSha256) ||
     !digest.test(value.quiescence.aclSha256) ||
     !digest.test(value.quiescence.legacyAmbiguity.inventorySha256) ||
     value.quiescence.legacyAmbiguity.stable !== true ||
@@ -230,6 +265,14 @@ export function assertTrustedRolloutEvidence(
     Object.keys(value.equivalence.catalogSha256).length !== 7 ||
     Object.values(value.equivalence.catalogSha256).some(
       (item) => !digest.test(item),
+    ) ||
+    value.equivalence.effectivePrincipals.stable !== true ||
+    value.quiescence.fence.fencedInventorySha256 !==
+      value.equivalence.effectivePrincipals.sourceInventorySha256 ||
+    value.quiescence.fence.fencedPolicySha256 !==
+      value.equivalence.effectivePrincipals.sourcePolicySha256 ||
+    Object.entries(value.equivalence.effectivePrincipals).some(
+      ([key, item]) => key !== "stable" && !digest.test(String(item)),
     ) ||
     value.legacyReconciliation.version !== 1 ||
     value.legacyReconciliation.acknowledgement !==
@@ -348,7 +391,11 @@ export function assertTrustedRolloutEvidence(
     value.activation.sourceSystemIdentifier !== value.source.systemIdentifier ||
     value.activation.targetSystemIdentifier !== value.target.systemIdentifier ||
     !digest.test(value.activation.firstWriteReceiptSha256) ||
-    !digest.test(value.activation.catalogFactsSha256)
+    !digest.test(value.activation.catalogFactsSha256) ||
+    !digest.test(value.activation.beforePrincipalInventorySha256) ||
+    !digest.test(value.activation.beforePrincipalPolicySha256) ||
+    !digest.test(value.activation.activatedPrincipalInventorySha256) ||
+    !digest.test(value.activation.activatedPrincipalPolicySha256)
   )
     throw new Error("trusted_rollout_evidence_activation_invalid");
   value.runners.forEach((runner, index) => {

@@ -215,18 +215,25 @@ The source sequence is mandatory:
    mutation intent before each required suspend call, re-observe it suspended,
    persist an immutable completion observation, and finally persist the
    complete inspected inventory;
-2. revoke `CONNECT` from PUBLIC and runtime roles and commit it;
-3. terminate existing sessions;
-4. observe at least three bounded zero-session samples;
-5. prove every exact runtime credential connects to the expected source system
-   before revocation, then require the exact database CONNECT
-   permission-denied class from that same credential/system.
+2. install an attested source-local fence ledger, snapshot the exact CONNECT
+   ACL, revoke CONNECT from PUBLIC and every catalog role except the isolated
+   fence authority, commit that database-level fence, and only then terminate
+   all other sessions;
+3. evaluate the complete effective-principal inventory against the reviewed
+   phase policy, deny reconnect for every approved runtime credential, and use
+   bounded zero-session samples only as supporting evidence.
 
 `writersSuspended` is never synthesized. If freeze stops part-way, the durable
 intent/completion observations—not the adapter process—name the exact mutated
 subset. An unresolved intent is an unknown provider effect and denies
-compensation. A definite
-failure before activation enters compensation only after the database gate
+compensation.
+
+Render environment-key discovery is only a provider hint; it is not proof that
+all database-capable processes were found. The complete PostgreSQL principal
+inventory and committed database fence are the security boundary for unlisted
+or external writers.
+
+A definite failure before activation enters compensation only after the database gate
 proves that subset and runner external effects are safe; source ACL/environment
 is restored and exactly that subset is resumed and re-observed. Zero runner
 intents are safe only with partial/complete mutation evidence. A completed
@@ -239,8 +246,11 @@ each table/materialized view through a hash with an 8 MiB process ceiling, and
 also binds sequence `last_value`/`is_called`/owner/dependency, columns/defaults,
 constraints/indexes/triggers, policies and RLS, functions/views/schemas,
 ACL/default privileges/ownership, and migration history. Activation rejects an
-unclassified application schema, privileged/bypass-RLS runtime roles, runtime
-ownership, or unsafe PUBLIC privileges. Canonical grants, catalog-fact hash,
+unclassified application schema, any unlisted login or SET ROLE path,
+privileged/bypass-RLS role, unapproved owner, or unsafe PUBLIC/table/column/
+sequence/routine privilege. The same provider-neutral inventory and exact
+policy matrix are attested at source freeze, both sides of equivalence,
+activation, production-writer capture, and compensation. Canonical grants, catalog-fact hash,
 and immutable first-write receipt share one transaction. Duplicate activation,
 including an identical replay, is rejected.
 

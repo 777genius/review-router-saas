@@ -286,6 +286,10 @@ export interface ActivationReceipt extends StepReceipt {
   readonly permitEpoch: number;
   readonly permitNonce: string;
   readonly targetDeployIds: readonly string[];
+  readonly beforePrincipalInventorySha256: string;
+  readonly beforePrincipalPolicySha256: string;
+  readonly activatedPrincipalInventorySha256: string;
+  readonly activatedPrincipalPolicySha256: string;
 }
 
 export interface ReleaseMigrationReceipt extends StepReceipt {
@@ -448,13 +452,6 @@ function receiptDigest(receipt: Omit<StepReceipt, "receiptSha256">): string {
   return `sha256:${sha256Canonical(receipt)}`;
 }
 
-const runtimeRoles = Object.freeze([
-  "reviewrouter_api",
-  "reviewrouter_web",
-  "reviewrouter_worker",
-  "reviewrouter_codex_effect_authority",
-]);
-
 function record(value: unknown, error: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error(error);
@@ -535,6 +532,8 @@ function assertStepFacts(
       );
       if (
         facts.complete !== true ||
+        facts.discoveryScope !==
+          "provider_hint_only_database_fence_authoritative" ||
         services.length === 0 ||
         services.some((item) => {
           const service = record(
@@ -628,6 +627,10 @@ function assertStepFacts(
         facts.reconnectDeniedRoles,
         "source_quiescence_observation_invalid",
       );
+      const fence = record(
+        facts.fence,
+        "source_quiescence_observation_invalid",
+      );
       if (
         facts.complete !== true ||
         services.length === 0 ||
@@ -638,10 +641,28 @@ function assertStepFacts(
         ) ||
         series.length < 3 ||
         series.some((count) => count !== 0) ||
-        [...denied].sort().join(",") !== [...runtimeRoles].sort().join(",")
+        denied.length === 0 ||
+        denied.some((role) => typeof role !== "string") ||
+        new Set(denied).size !== denied.length ||
+        fence.version !== 1 ||
+        fence.lifecycle !== "active" ||
+        fence.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
+        typeof fence.fenceId !== "string" ||
+        typeof fence.rolloutId !== "string" ||
+        fence.rolloutId !== rollout.rolloutId ||
+        typeof fence.authorityPrincipal !== "string" ||
+        !validTimestamp(fence.observedAt)
       )
         throw new Error("source_quiescence_observation_invalid");
       assertDigest(facts.aclSha256, "source_quiescence_observation_invalid");
+      for (const key of [
+        "beforeInventorySha256",
+        "fencedInventorySha256",
+        "beforePolicySha256",
+        "fencedPolicySha256",
+        "priorConnectAclSha256",
+      ])
+        assertDigest(fence[key], "source_quiescence_observation_invalid");
       break;
     }
     case RolloutStep.CopyDatabaseGeneration:
@@ -659,6 +680,10 @@ function assertStepFacts(
       );
       const catalogs = record(
         facts.catalogSha256,
+        "database_equivalence_observation_invalid",
+      );
+      const principals = record(
+        facts.effectivePrincipals,
         "database_equivalence_observation_invalid",
       );
       if (
@@ -680,9 +705,20 @@ function assertStepFacts(
         Object.keys(catalogs).length !== 7 ||
         Object.values(catalogs).some(
           (value) => !digestPattern.test(String(value)),
-        )
+        ) ||
+        principals.stable !== true
       )
         throw new Error("database_equivalence_observation_invalid");
+      for (const key of [
+        "sourceInventorySha256",
+        "sourcePolicySha256",
+        "targetInventorySha256",
+        "targetPolicySha256",
+      ])
+        assertDigest(
+          principals[key],
+          "database_equivalence_observation_invalid",
+        );
       break;
     }
     case RolloutStep.BootstrapTargetRoles:
@@ -798,6 +834,10 @@ function assertStepFacts(
         "catalogFactsSha256",
         "firstWriteReceiptSha256",
         "observationSha256",
+        "beforePrincipalInventorySha256",
+        "beforePrincipalPolicySha256",
+        "activatedPrincipalInventorySha256",
+        "activatedPrincipalPolicySha256",
       ])
         assertDigest(facts[key], "activation_observation_invalid");
       break;
@@ -983,6 +1023,16 @@ export function transitionFromObservation(
       permitNonce: String(facts.permitNonce),
       targetDeployIds: Object.freeze(
         (facts.targetDeployIds as unknown[]).map(String),
+      ),
+      beforePrincipalInventorySha256: String(
+        facts.beforePrincipalInventorySha256,
+      ),
+      beforePrincipalPolicySha256: String(facts.beforePrincipalPolicySha256),
+      activatedPrincipalInventorySha256: String(
+        facts.activatedPrincipalInventorySha256,
+      ),
+      activatedPrincipalPolicySha256: String(
+        facts.activatedPrincipalPolicySha256,
       ),
     };
     receipt = {

@@ -49,21 +49,29 @@ release service values by the workflows.
 
 Repository variables:
 
-| Group             | Variables                                                                                                                         |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Workflow identity | `REVIEW_ROUTER_RELEASE_CONTROL_ORG`, `REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY`                                                   |
-| Service origins   | `REVIEW_ROUTER_RELEASE_CONTROL_URL`, `REVIEW_ROUTER_RELEASE_WITNESS_URL`                                                          |
-| Runners           | `REVIEW_ROUTER_RUNNER_GROUP_ID`, `REVIEW_ROUTER_RUNNER_GROUP_NAME`, `REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID`                        |
-| Provider          | `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS`, `RENDER_OWNER_ID`                                                                      |
-| Generations       | source/target `RENDER_DATABASE_ID`, `INTERNAL_HOSTNAME`, `DATABASE_NAME`, `DATABASE_SYSTEM_IDENTIFIER`, `RECOVERY_WITNESS_SHA256` |
-| Release           | `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, `REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON`                                        |
-| Canary            | `REVIEW_ROUTER_LIVE_CANARY_URL`                                                                                                   |
+| Group             | Variables                                                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow identity | `REVIEW_ROUTER_RELEASE_CONTROL_ORG`, `REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY`                                                                                                       |
+| Service origins   | `REVIEW_ROUTER_RELEASE_CONTROL_URL`, `REVIEW_ROUTER_RELEASE_WITNESS_URL`                                                                                                              |
+| Runners           | `REVIEW_ROUTER_RUNNER_GROUP_ID`, `REVIEW_ROUTER_RUNNER_GROUP_NAME`, `REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID`                                                                            |
+| Provider          | `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS`, `RENDER_OWNER_ID`                                                                                                                          |
+| Generations       | source/target `RENDER_DATABASE_ID`, `INTERNAL_HOSTNAME`, `DATABASE_NAME`, `DATABASE_SYSTEM_IDENTIFIER`, `RECOVERY_WITNESS_SHA256`                                                     |
+| Release           | `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, `REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON`, source/source-fenced/target-equivalence/target-preactivation/target principal policy JSON |
+| Canary            | `REVIEW_ROUTER_LIVE_CANARY_URL`                                                                                                                                                       |
 
 `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS` has one canonical encoding in every
 phase: a compact JSON array of unique Render service IDs, for example
 `["srv-api123","srv-worker456"]`. It must contain 1-100 sorted lowercase
 `srv-` IDs with no whitespace, duplicate entries, CSV encoding, or surrounding object.
 Freeze, cutover, and compensation all fail closed on any other value.
+
+The five principal-policy variables are canonical `EffectivePrincipalPolicy`
+version 1 documents, not discovered allowlists. They name every approved login
+and non-login role plus the exact database, schema, relation, column, sequence,
+routine, ownership, and administrative capabilities allowed in that phase.
+Quoted PostgreSQL names are represented literally in JSON. Generate and review
+them from a disposable, production-shaped catalog; never copy live discovery
+output into the allowlist without review.
 
 Protected environment secrets:
 
@@ -116,10 +124,10 @@ The GitHub workflow, ref, GHCR repository, and artifact-attestation rules are
 infrastructure policy owned by the preflight verifier. The domain record stores
 the provider-neutral v2 claim: source repository/revision, OCI image repository
 and digest, build run, artifact identity, identity hash, and the hash of the
-verification policy. Trusted rollout evidence schema 5 is the explicit wire
-migration from schema 4/v1 provenance; schema 4 artifacts remain historical
-records and must not be submitted to the schema 5 verifier or upgraded without
-rerunning the current preflight verification.
+verification policy. Trusted rollout evidence schema 6 is the explicit wire
+migration adding source-fence and principal-inventory attestations; schema 5
+artifacts remain historical records and must not be submitted to the schema 6
+verifier or upgraded without rerunning the current preflight verification.
 
 ## Fresh authority installation (provision once)
 

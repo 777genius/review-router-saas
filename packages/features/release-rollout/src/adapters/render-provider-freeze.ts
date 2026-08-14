@@ -135,6 +135,8 @@ export class RenderProviderFreezeAdapter {
         services: Object.freeze(observations),
         writerInventory: Object.freeze(credentialBearing),
         writerInventorySha256: inventorySha256,
+        discoveryScope:
+          "provider_hint_only_database_fence_authoritative" as const,
         complete: true,
       },
       provider: {

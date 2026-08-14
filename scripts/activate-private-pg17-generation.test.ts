@@ -15,6 +15,55 @@ const env = {
   REVIEW_ROUTER_RELEASE_COMMIT_SHA: "a".repeat(40),
   REVIEW_ROUTER_RELEASE_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
   REVIEW_ROUTER_ROLLOUT_ID: "rollout-activation-1",
+  REVIEW_ROUTER_TARGET_PREACTIVATION_PRINCIPAL_POLICY_JSON: JSON.stringify({
+    version: 1,
+    publicPermissions: [],
+    principals: [
+      {
+        principal: "reviewrouter_release_migration",
+        mayLogin: true,
+        inherit: true,
+        connectionLimit: -1,
+        validUntil: null,
+        permissions: [],
+      },
+    ],
+  }),
+  REVIEW_ROUTER_TARGET_PRINCIPAL_POLICY_JSON: JSON.stringify({
+    version: 1,
+    publicPermissions: [],
+    principals: [
+      {
+        principal: "reviewrouter_release_migration",
+        mayLogin: true,
+        inherit: true,
+        connectionLimit: -1,
+        validUntil: null,
+        permissions: [],
+      },
+    ],
+  }),
+};
+const inventory = {
+  version: 1,
+  database: "review_router",
+  sessionPrincipal: "reviewrouter_release_migration",
+  roles: [
+    {
+      name: "reviewrouter_release_migration",
+      canLogin: true,
+      inherit: true,
+      superuser: false,
+      bypassRls: false,
+      replication: false,
+      createDatabase: false,
+      createRole: false,
+      connectionLimit: -1,
+      validUntil: null,
+    },
+  ],
+  memberships: [],
+  grants: [],
 };
 
 const receipt = {
@@ -42,8 +91,9 @@ describe("private target activation runner", () => {
       execute: (
         _command: string,
         _args: string[],
-        options: { input: string },
+        options: { input?: string },
       ) => {
+        if (!options.input) return { stdout: `${JSON.stringify(inventory)}\n` };
         input = options.input;
         return {
           stdout: `${JSON.stringify(receipt)}\n`,
@@ -74,9 +124,16 @@ describe("private target activation runner", () => {
 
   it("rejects a tampered receipt", () => {
     const commands = {
-      execute: () => ({
-        stdout: `${JSON.stringify({ ...receipt, postgresMajor: 16 })}\n`,
-      }),
+      execute: (
+        _command: string,
+        _args: string[],
+        options: { input?: string },
+      ) =>
+        options.input
+          ? {
+              stdout: `${JSON.stringify({ ...receipt, postgresMajor: 16 })}\n`,
+            }
+          : { stdout: `${JSON.stringify(inventory)}\n` },
     };
     expect(() =>
       executePrivateGenerationActivation(env, commands as never),

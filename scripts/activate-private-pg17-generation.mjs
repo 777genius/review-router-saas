@@ -7,6 +7,9 @@ import {
 } from "./run-codex-rotating-release-migration.mjs";
 import {
   decomposePostgresConnection,
+  assertEffectivePrincipalInventory,
+  draftEffectivePrincipalPolicy,
+  PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
 } from "../packages/features/release-rollout/src/index.ts";
 
@@ -27,6 +30,7 @@ const forbiddenCutoverAuthorityEnvironment = Object.freeze([
 export function executePrivateGenerationActivation(
   env = process.env,
   commands = new RedactedProcessCommandAdapter(),
+  options = {},
 ) {
   for (const name of forbiddenCutoverAuthorityEnvironment) {
     if (env[name] !== undefined)
@@ -36,6 +40,33 @@ export function executePrivateGenerationActivation(
   }
   const configuration = resolveReleaseMigrationConfiguration(env);
   const rolloutId = required(env, "REVIEW_ROUTER_ROLLOUT_ID");
+  const draftPolicyForDisposableRehearsal =
+    options.draftPolicyForDisposableRehearsal === true;
+  let beforePolicy;
+  let activatedPolicy;
+  if (!draftPolicyForDisposableRehearsal)
+    try {
+      beforePolicy = JSON.parse(
+        required(
+          env,
+          "REVIEW_ROUTER_TARGET_PREACTIVATION_PRINCIPAL_POLICY_JSON",
+        ),
+      );
+      activatedPolicy = JSON.parse(
+        required(env, "REVIEW_ROUTER_TARGET_PRINCIPAL_POLICY_JSON"),
+      );
+    } catch {
+      throw new Error("release_activation_principal_policy_invalid");
+    }
+  const inventory = new PostgreSqlGenerationAdapter(commands);
+  const beforeInventory = inventory.inventoryEffectivePrincipals(
+    configuration.releaseUrl,
+  );
+  beforePolicy ??= draftEffectivePrincipalPolicy(beforeInventory);
+  const beforeDecision = assertEffectivePrincipalInventory(
+    beforeInventory,
+    beforePolicy,
+  );
   const activation = canonicalActivationSql(configuration, { rolloutId });
   const connection = decomposePostgresConnection(configuration.releaseUrl);
   let output;
@@ -78,11 +109,23 @@ export function executePrivateGenerationActivation(
     !/^[0-9]+$/u.test(observed?.transactionId ?? "")
   )
     throw new Error("release_activation_receipt_unproven");
+  const activatedInventory = inventory.inventoryEffectivePrincipals(
+    configuration.releaseUrl,
+  );
+  activatedPolicy ??= draftEffectivePrincipalPolicy(activatedInventory);
+  const activatedDecision = assertEffectivePrincipalInventory(
+    activatedInventory,
+    activatedPolicy,
+  );
   return {
     step: "activate_target_generation",
     observedAt: observed.activatedAt,
     facts: {
       ...observed,
+      beforePrincipalInventorySha256: beforeDecision.inventorySha256,
+      beforePrincipalPolicySha256: beforeDecision.policySha256,
+      activatedPrincipalInventorySha256: activatedDecision.inventorySha256,
+      activatedPrincipalPolicySha256: activatedDecision.policySha256,
       observationSha256: `sha256:${createHash("sha256").update(JSON.stringify(observed)).digest("hex")}`,
     },
   };

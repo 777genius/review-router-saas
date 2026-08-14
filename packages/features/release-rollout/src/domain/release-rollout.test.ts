@@ -149,6 +149,7 @@ const observe = (step: (typeof steps)[number], index: number) => {
             },
           ],
           complete: true,
+          discoveryScope: "provider_hint_only_database_fence_authoritative",
         },
         provider: {
           renderServiceIds: ["srv-writer"],
@@ -206,6 +207,20 @@ const observe = (step: (typeof steps)[number], index: number) => {
             "reviewrouter_worker",
             "reviewrouter_codex_effect_authority",
           ],
+          fence: {
+            version: 1,
+            fenceId: "source-fence:rollout-2026-08-12",
+            rolloutId: "rollout-2026-08-12",
+            sourceSystemIdentifier: "100",
+            authorityPrincipal: "fence_authority",
+            beforeInventorySha256: digest,
+            fencedInventorySha256: digest,
+            beforePolicySha256: digest,
+            fencedPolicySha256: digest,
+            priorConnectAclSha256: digest,
+            lifecycle: "active",
+            observedAt,
+          },
           complete: true,
         },
       };
@@ -235,6 +250,13 @@ const observe = (step: (typeof steps)[number], index: number) => {
           equivalent: true,
           streamingHash: true,
           maxProcessBufferBytes: 8 * 1024 * 1024,
+          effectivePrincipals: {
+            sourceInventorySha256: digest,
+            sourcePolicySha256: digest,
+            targetInventorySha256: digest,
+            targetPolicySha256: digest,
+            stable: true,
+          },
         },
       };
     case RolloutStep.BootstrapTargetRoles:
@@ -313,6 +335,10 @@ const observe = (step: (typeof steps)[number], index: number) => {
           targetSystemIdentifier: "200",
           firstWriteBoundary: true,
           canonicalPrivilegesSha256: digest,
+          beforePrincipalInventorySha256: digest,
+          beforePrincipalPolicySha256: digest,
+          activatedPrincipalInventorySha256: digest,
+          activatedPrincipalPolicySha256: digest,
           catalogFactsSha256: digest,
           firstWriteReceiptSha256: digest,
           observationSha256: digest,

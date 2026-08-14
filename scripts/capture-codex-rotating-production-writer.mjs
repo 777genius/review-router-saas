@@ -742,6 +742,14 @@ export function assertProductionWriterCaptureConfiguration(env) {
   const databaseUrl = env.REVIEW_ROUTER_PRODUCTION_WRITER_DATABASE_URL;
   if (!databaseUrl)
     throw new Error("production writer database URL is required");
+  let principalPolicy;
+  try {
+    principalPolicy = JSON.parse(
+      env.REVIEW_ROUTER_PRODUCTION_WRITER_PRINCIPAL_POLICY_JSON ?? "",
+    );
+  } catch {
+    throw new Error("production writer principal policy is required");
+  }
   const parsed = new URL(databaseUrl);
   if (!["postgres:", "postgresql:"].includes(parsed.protocol)) {
     throw new Error("production writer database URL must use PostgreSQL");
@@ -883,6 +891,7 @@ export function assertProductionWriterCaptureConfiguration(env) {
     databaseUrl,
     rolloutId,
     runtimeWitnessSha256: deployObservation?.runtimeWitness?.sha256,
+    principalPolicy,
   };
 }
 
@@ -976,6 +985,8 @@ export async function captureProductionWriterObservation(
       new Promise((resolveSleep) => setTimeout(resolveSleep, delayMs)),
   } = {},
 ) {
+  const { assertEffectivePrincipalInventory, effectivePrincipalInventorySql } =
+    await import("../packages/features/release-rollout/src/index.ts");
   const configuration = assertProductionWriterCaptureConfiguration(env);
   const intervalMs = Number(
     env.REVIEW_ROUTER_DRAIN_OBSERVATION_INTERVAL_MS ?? 60_000,
@@ -1042,6 +1053,14 @@ export async function captureProductionWriterObservation(
       "database recovery witness is not independently bound to the Render runtime secret",
     );
   }
+  const effectivePrincipalInventory = query(
+    configuration.databaseUrl,
+    effectivePrincipalInventorySql,
+  );
+  const effectivePrincipalDecision = assertEffectivePrincipalInventory(
+    effectivePrincipalInventory,
+    configuration.principalPolicy,
+  );
   const bindDrainObservation = (observation) => ({
     ...observation,
     recoveryWitnessSha256,
@@ -1054,7 +1073,7 @@ export async function captureProductionWriterObservation(
     query(configuration.databaseUrl, drainObservationSql),
   );
   return {
-    observationVersion: 5,
+    observationVersion: 6,
     source: "production-postgresql-writer",
     captureKind: "database-query",
     rehearsal: false,
@@ -1089,6 +1108,8 @@ export async function captureProductionWriterObservation(
     })),
     history: base.history,
     catalog: base.catalog,
+    effectivePrincipalInventory,
+    effectivePrincipalDecision,
     drainObservations: [firstDrain, secondDrain],
   };
 }

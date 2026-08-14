@@ -72,7 +72,7 @@
     "release-authority:upgrade": "node scripts/install-release-authority-db.mjs --incremental-upgrade",
     "release-rollout:evidence:assemble": "node --import tsx scripts/assemble-private-pg17-trusted-evidence.ts",
     "release-rollout:evidence:verify": "node --import tsx scripts/verify-private-pg17-trusted-evidence.ts",
-    "codex-rotating:production-writer-observation": "node scripts/capture-codex-rotating-production-writer.mjs",
+    "codex-rotating:production-writer-observation": "node --import tsx scripts/capture-codex-rotating-production-writer.mjs",
     "codex-rotating:secret-write-boundary": "node scripts/check-codex-secret-write-boundary.mjs",
     "review-v2:e2e": "REVIEW_ROUTER_REVIEW_V2_E2E=1 vitest run scripts/review-action-v2-production-e2e/review-action-v2-production.e2e.test.ts",
     "review-investigation:e2e": "REVIEW_ROUTER_REVIEW_INVESTIGATION_E2E=1 vitest run scripts/review-investigation-production-e2e/review-investigation-production.e2e.test.ts",

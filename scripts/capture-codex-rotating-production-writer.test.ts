@@ -80,6 +80,20 @@ const validEnv = {
   REVIEW_ROUTER_RENDER_OBSERVATION_PATH: renderObservationPath,
   REVIEW_ROUTER_ROLLOUT_EVIDENCE_ROLLOUT_ID: "rollout-1",
   REVIEW_ROUTER_DRAIN_OBSERVATION_INTERVAL_MS: "15000",
+  REVIEW_ROUTER_PRODUCTION_WRITER_PRINCIPAL_POLICY_JSON: JSON.stringify({
+    version: 1,
+    publicPermissions: [],
+    principals: [
+      {
+        principal: "release",
+        mayLogin: true,
+        inherit: true,
+        connectionLimit: -1,
+        validUntil: null,
+        permissions: [],
+      },
+    ],
+  }),
 };
 
 describe("production-writer rollout observation capture", () => {
@@ -517,9 +531,31 @@ describe("production-writer rollout observation capture", () => {
       ...firstDrain,
       observedAt: "2026-08-09T00:00:15.000Z",
     };
+    const effectivePrincipalInventory = {
+      version: 1,
+      database: "review_router",
+      sessionPrincipal: "release",
+      roles: [
+        {
+          name: "release",
+          canLogin: true,
+          inherit: true,
+          superuser: false,
+          bypassRls: false,
+          replication: false,
+          createDatabase: false,
+          createRole: false,
+          connectionLimit: -1,
+          validUntil: null,
+        },
+      ],
+      memberships: [],
+      grants: [],
+    };
     const query = vi
       .fn()
       .mockReturnValueOnce(base)
+      .mockReturnValueOnce(effectivePrincipalInventory)
       .mockReturnValueOnce(firstDrain)
       .mockReturnValueOnce(secondDrain);
     const sleep = vi.fn(async () => undefined);
@@ -554,6 +590,7 @@ describe("production-writer rollout observation capture", () => {
         recoveryWitnessSha256: "f".repeat(64),
       },
       recoveryOwnerId: "setup-recovery:fetched",
+      effectivePrincipalDecision: { accepted: true },
       drainObservations: [
         {
           ...firstDrain,
@@ -595,7 +632,7 @@ describe("production-writer rollout observation capture", () => {
         },
       ],
     });
-    expect(query).toHaveBeenCalledTimes(3);
+    expect(query).toHaveBeenCalledTimes(4);
     expect(sleep).toHaveBeenCalledWith(15_000);
 
     await expect(

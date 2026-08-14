@@ -24,6 +24,9 @@ import {
   renderSourceServiceContractSha256,
   targetServiceConfigurationSha256,
   transitionFailure,
+  draftEffectivePrincipalPolicy,
+  effectivePrincipalInventorySql,
+  evaluateEffectivePrincipalInventory,
 } from "../packages/features/release-rollout/src/index.ts";
 import { createPrismaClient } from "../packages/platform/db/src/index.ts";
 import { createReleaseControlApp } from "../apps/api/src/release-control-composition.ts";
@@ -330,6 +333,70 @@ export async function executeDisposableRehearsal(
       source,
       `COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE reviewrouter TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three'); CREATE SCHEMA app_private; CREATE TABLE app_private.rehearsal_private(id integer PRIMARY KEY, value text); INSERT INTO app_private.rehearsal_private VALUES (1,'private'); CREATE SEQUENCE app_private.called_sequence; SELECT nextval('app_private.called_sequence'); CREATE SEQUENCE app_private.uncalled_sequence;`,
     );
+    const baselinePrincipalInventory = JSON.parse(
+      sql(source, effectivePrincipalInventorySql),
+    );
+    const baselinePrincipalPolicy = draftEffectivePrincipalPolicy(
+      baselinePrincipalInventory,
+    );
+    const attackedPrincipalInventory = JSON.parse(
+      sql(
+        source,
+        `BEGIN;
+CREATE ROLE rr_direct LOGIN;
+GRANT CONNECT ON DATABASE reviewrouter TO rr_direct;
+GRANT UPDATE ON rehearsal_items TO rr_direct;
+CREATE ROLE rr_parent NOLOGIN;
+GRANT UPDATE ON rehearsal_items TO rr_parent;
+CREATE ROLE rr_inherited LOGIN;
+GRANT rr_parent TO rr_inherited;
+CREATE ROLE rr_set_parent NOLOGIN;
+GRANT DELETE ON rehearsal_items TO rr_set_parent;
+CREATE ROLE rr_set_child LOGIN NOINHERIT;
+GRANT rr_set_parent TO rr_set_child WITH INHERIT FALSE, SET TRUE;
+CREATE ROLE rr_owner LOGIN;
+CREATE TABLE rr_owned(value text);
+ALTER TABLE rr_owned OWNER TO rr_owner;
+CREATE ROLE rr_super LOGIN SUPERUSER;
+CREATE ROLE rr_bypass LOGIN BYPASSRLS;
+CREATE ROLE rr_column LOGIN;
+GRANT UPDATE(value) ON rehearsal_items TO rr_column;
+CREATE ROLE rr_sequence LOGIN;
+GRANT USAGE ON SEQUENCE rehearsal_items_id_seq TO rr_sequence;
+CREATE ROLE rr_routine LOGIN;
+CREATE FUNCTION public.rr_attack_write() RETURNS void LANGUAGE sql
+  AS $attack$ INSERT INTO rehearsal_items(value) VALUES ('attack') $attack$;
+GRANT EXECUTE ON FUNCTION public.rr_attack_write() TO rr_routine;
+CREATE ROLE "quoted writer" LOGIN;
+GRANT UPDATE ON rehearsal_items TO "quoted writer";
+GRANT UPDATE ON rehearsal_items TO PUBLIC;
+${effectivePrincipalInventorySql};
+ROLLBACK;`,
+      ),
+    );
+    const adversarialPrincipalDecision = evaluateEffectivePrincipalInventory(
+      attackedPrincipalInventory,
+      baselinePrincipalPolicy,
+    );
+    const adversarialPrincipalViolations =
+      adversarialPrincipalDecision.violations.join("\n");
+    for (const expected of [
+      "unexpected_login:rr_direct",
+      "unexpected_permission:rr_inherited:table:update",
+      "unexpected_permission:rr_set_child:table:delete",
+      "unexpected_effective_principal:rr_owner",
+      "unexpected_permission:rr_super:admin:superuser",
+      "unexpected_permission:rr_bypass:admin:bypassrls",
+      "unexpected_permission:rr_column:column:update",
+      "unexpected_permission:rr_sequence:sequence:usage",
+      "unexpected_permission:rr_routine:routine:execute",
+      "unexpected_login:quoted writer",
+      "unexpected_public_permission:table:update",
+    ])
+      if (!adversarialPrincipalViolations.includes(expected))
+        throw new Error(
+          `private_pg17_rehearsal_principal_attack_not_rejected:${expected}`,
+        );
     sql(
       target,
       `COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"c".repeat(64)}"}'`,
@@ -1225,6 +1292,7 @@ async function verifyProductionPathRehearsal(facts) {
               },
             ],
             complete: true,
+            discoveryScope: "provider_hint_only_database_fence_authoritative",
           },
           {
             renderServiceIds: ["source-writer"],
@@ -1328,6 +1396,20 @@ async function verifyProductionPathRehearsal(facts) {
             "reviewrouter_worker",
             "reviewrouter_codex_effect_authority",
           ],
+          fence: {
+            version: 1,
+            fenceId: `source-fence:${rollout.rolloutId}`,
+            rolloutId: rollout.rolloutId,
+            sourceSystemIdentifier: rollout.source.systemIdentifier,
+            authorityPrincipal: "fence_authority",
+            beforeInventorySha256: digest,
+            fencedInventorySha256: digest,
+            beforePolicySha256: digest,
+            fencedPolicySha256: digest,
+            priorConnectAclSha256: digest,
+            lifecycle: "active",
+            observedAt: "2026-08-12T00:00:02.000Z",
+          },
           legacyAmbiguity: {
             inventorySha256: digest,
             activeLeaseIds: [],
@@ -1369,6 +1451,13 @@ async function verifyProductionPathRehearsal(facts) {
           equivalent: true,
           streamingHash: true,
           maxProcessBufferBytes: 8 * 1024 * 1024,
+          effectivePrincipals: {
+            sourceInventorySha256: digest,
+            sourcePolicySha256: digest,
+            targetInventorySha256: digest,
+            targetPolicySha256: digest,
+            stable: true,
+          },
         }),
       bootstrapTargetRoles: async () =>
         observed(
@@ -1462,6 +1551,7 @@ COMMIT;
         return executePrivateGenerationActivation(
           { ...facts.canonicalEnv, REVIEW_ROUTER_ROLLOUT_ID: rolloutId },
           activationCommands,
+          { draftPolicyForDisposableRehearsal: true },
         );
       },
       compensateSource: async () =>
@@ -1609,6 +1699,20 @@ COMMIT;
                 "reviewrouter_worker",
                 "reviewrouter_codex_effect_authority",
               ],
+              fence: {
+                version: 1,
+                fenceId: `source-fence:${current.rolloutId}`,
+                rolloutId: current.rolloutId,
+                sourceSystemIdentifier: current.source.systemIdentifier,
+                authorityPrincipal: "fence_authority",
+                beforeInventorySha256: digest,
+                fencedInventorySha256: digest,
+                beforePolicySha256: digest,
+                fencedPolicySha256: digest,
+                priorConnectAclSha256: digest,
+                lifecycle: "active",
+                observedAt: "2026-08-12T00:00:02.000Z",
+              },
               legacyAmbiguity: {
                 inventorySha256: legacyReconciliation.inventorySha256,
                 activeLeaseIds: legacyReconciliation.inventory.activeLeaseIds,
@@ -1644,6 +1748,13 @@ COMMIT;
               equivalent: true,
               streamingHash: true,
               maxProcessBufferBytes: 8 * 1024 * 1024,
+              effectivePrincipals: {
+                sourceInventorySha256: digest,
+                sourcePolicySha256: digest,
+                targetInventorySha256: digest,
+                targetPolicySha256: digest,
+                stable: true,
+              },
             },
             legacyReconciliation,
             protectedEnvironmentPreflightSha256: current.receipts.find(
@@ -1789,6 +1900,7 @@ COMMIT;
   const replayedActivation = executePrivateGenerationActivation(
     facts.canonicalEnv,
     activationCommands,
+    { draftPolicyForDisposableRehearsal: true },
   );
   const activationReplayStable =
     replayedActivation.facts.firstWriteReceiptSha256 ===

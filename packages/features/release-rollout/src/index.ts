@@ -3,6 +3,7 @@ export * from "./domain/trusted-rollout-evidence";
 export * from "./domain/release-image-provenance";
 export * from "./domain/source-writer-service-ids";
 export * from "./domain/source-freeze-recovery";
+export * from "./domain/effective-principal-inventory";
 export * from "./domain/service-transition";
 export * from "./application/ports";
 export * from "./application/service-transition-ports";

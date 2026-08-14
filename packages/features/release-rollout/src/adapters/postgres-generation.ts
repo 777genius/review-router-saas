@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import {
   RolloutStep,
+  sha256Canonical,
   type DatabaseGenerationIdentity,
   type StepObservation,
 } from "../domain/release-rollout";
@@ -18,17 +19,179 @@ import type {
   EquivalenceEvidence,
   LegacyAmbiguityEvidence,
   QuiescenceEvidence,
+  SourceDatabaseFenceEvidence,
 } from "../domain/trusted-rollout-evidence";
 import type { CommandExecutor } from "./process-command";
 import type { DatabaseAclWitness } from "../application/ports";
+import {
+  assertEffectivePrincipalInventory,
+  canonicalEffectivePrincipalPolicy,
+  type EffectivePrincipalGrant,
+  type EffectivePrincipalInventory,
+  type EffectivePrincipalPolicy,
+} from "../domain/effective-principal-inventory";
 
-const runtimeRoles = Object.freeze([
-  "reviewrouter_api",
-  "reviewrouter_web",
-  "reviewrouter_worker",
-  "reviewrouter_codex_effect_authority",
-]);
 const identifier = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
+/**
+ * PostgreSQL catalog projection for the provider-neutral effective-principal
+ * contract. Policy deliberately does not live in this adapter.
+ */
+export const effectivePrincipalInventorySql = `WITH
+roles AS (
+  SELECT rolname AS name, rolcanlogin AS "canLogin", rolinherit AS inherit,
+    rolsuper AS superuser, rolbypassrls AS "bypassRls",
+    rolreplication AS replication, rolcreatedb AS "createDatabase",
+    rolcreaterole AS "createRole", rolconnlimit AS "connectionLimit",
+    CASE WHEN rolvaliduntil IS NULL THEN NULL
+      WHEN rolvaliduntil='infinity'::timestamptz THEN 'infinity'
+      ELSE to_char(rolvaliduntil AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+    END AS "validUntil", oid
+  FROM pg_catalog.pg_roles
+), memberships AS (
+  SELECT member.rolname AS member, parent.rolname AS role,
+    membership.set_option AS "setOption",
+    membership.inherit_option AS "inheritOption"
+    , membership.admin_option AS "adminOption", grantor.rolname AS grantor
+  FROM pg_catalog.pg_auth_members membership
+  JOIN pg_catalog.pg_roles member ON member.oid=membership.member
+  JOIN pg_catalog.pg_roles parent ON parent.oid=membership.roleid
+  JOIN pg_catalog.pg_roles grantor ON grantor.oid=membership.grantor
+), objects AS (
+  SELECT relation.oid, namespace.nspname AS schema_name, relation.relname AS object_name,
+    relation.relkind, relation.relowner
+  FROM pg_catalog.pg_class relation
+  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace
+  WHERE namespace.nspname NOT IN ('pg_catalog','information_schema')
+    AND namespace.nspname !~ '^pg_toast'
+), grants(principal, capability, resource, source) AS (
+  SELECT role.rolname, capability, resource, 'attribute'
+  FROM roles role CROSS JOIN LATERAL (VALUES
+    ('admin:superuser',role.superuser), ('admin:bypassrls',role."bypassRls"),
+    ('admin:replication',role.replication), ('admin:createdb',role."createDatabase"),
+    ('admin:createrole',role."createRole")
+  ) attribute(capability, enabled)
+  CROSS JOIN LATERAL (VALUES ('cluster')) target(resource)
+  WHERE enabled
+  UNION ALL
+  SELECT membership.member, 'admin:role-membership', 'role:'||membership.role, 'attribute'
+  FROM memberships membership WHERE membership."adminOption"
+  UNION ALL
+  SELECT pg_get_userbyid(database.datdba), 'owner:database', 'database:'||database.datname, 'ownership'
+  FROM pg_catalog.pg_database database WHERE database.datname=current_database()
+  UNION ALL
+  SELECT pg_get_userbyid(namespace.nspowner), 'owner:schema', 'schema:'||namespace.nspname, 'ownership'
+  FROM pg_catalog.pg_namespace namespace
+  WHERE namespace.nspname NOT IN ('pg_catalog','information_schema') AND namespace.nspname !~ '^pg_toast'
+  UNION ALL
+  SELECT pg_get_userbyid(object.relowner), 'owner:object',
+    CASE WHEN object.relkind='S' THEN 'sequence:' ELSE 'relation:' END||
+      quote_ident(object.schema_name)||'.'||quote_ident(object.object_name), 'ownership'
+  FROM objects object
+  UNION ALL
+  SELECT pg_get_userbyid(routine.proowner), 'owner:object',
+    'routine:'||routine.oid::regprocedure::text, 'ownership'
+  FROM pg_catalog.pg_proc routine JOIN pg_catalog.pg_namespace namespace ON namespace.oid=routine.pronamespace
+  WHERE namespace.nspname NOT IN ('pg_catalog','information_schema') AND namespace.nspname !~ '^pg_toast'
+  UNION ALL
+  SELECT pg_get_userbyid(type.typowner), 'owner:object',
+    'type:'||quote_ident(namespace.nspname)||'.'||quote_ident(type.typname), 'ownership'
+  FROM pg_catalog.pg_type type JOIN pg_catalog.pg_namespace namespace ON namespace.oid=type.typnamespace
+  WHERE namespace.nspname NOT IN ('pg_catalog','information_schema') AND namespace.nspname !~ '^pg_toast'
+    AND type.typtype IN ('d','e','m','r','c')
+  UNION ALL
+  SELECT coalesce(grantee.rolname,'PUBLIC'),
+    CASE acl.privilege_type WHEN 'CONNECT' THEN 'database:connect'
+      WHEN 'CREATE' THEN 'database:create' WHEN 'TEMPORARY' THEN 'database:temporary' END,
+    'database:'||database.datname, CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END
+  FROM pg_catalog.pg_database database
+  CROSS JOIN LATERAL aclexplode(coalesce(database.datacl,acldefault('d',database.datdba))) acl
+  LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
+  WHERE database.datname=current_database()
+  UNION ALL
+  SELECT coalesce(grantee.rolname,'PUBLIC'),
+    CASE acl.privilege_type WHEN 'CREATE' THEN 'schema:create' ELSE 'schema:usage' END,
+    'schema:'||namespace.nspname, CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END
+  FROM pg_catalog.pg_namespace namespace
+  CROSS JOIN LATERAL aclexplode(coalesce(namespace.nspacl,acldefault('n',namespace.nspowner))) acl
+  LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
+  WHERE namespace.nspname NOT IN ('pg_catalog','information_schema') AND namespace.nspname !~ '^pg_toast'
+  UNION ALL
+  SELECT coalesce(grantee.rolname,'PUBLIC'),
+    CASE defaults.defaclobjtype
+      WHEN 'r' THEN CASE acl.privilege_type WHEN 'INSERT' THEN 'table:insert'
+        WHEN 'UPDATE' THEN 'table:update' WHEN 'DELETE' THEN 'table:delete'
+        WHEN 'TRUNCATE' THEN 'table:truncate' WHEN 'TRIGGER' THEN 'table:trigger'
+        WHEN 'REFERENCES' THEN 'table:references' ELSE 'table:read' END
+      WHEN 'S' THEN CASE acl.privilege_type WHEN 'USAGE' THEN 'sequence:usage'
+        WHEN 'UPDATE' THEN 'sequence:update' ELSE 'sequence:read' END
+      WHEN 'f' THEN 'routine:execute'
+      WHEN 'n' THEN CASE acl.privilege_type WHEN 'CREATE' THEN 'schema:create' ELSE 'schema:usage' END
+      WHEN 'T' THEN 'type:usage'
+    END,
+    'default:'||defaults.defaclobjtype||':'||coalesce(namespace.nspname,'*'),
+    CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END
+  FROM pg_catalog.pg_default_acl defaults
+  CROSS JOIN LATERAL aclexplode(defaults.defaclacl) acl
+  LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
+  LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=defaults.defaclnamespace
+  UNION ALL
+  SELECT coalesce(grantee.rolname,'PUBLIC'), 'type:usage',
+    'type:'||quote_ident(namespace.nspname)||'.'||quote_ident(type.typname),
+    CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END
+  FROM pg_catalog.pg_type type JOIN pg_catalog.pg_namespace namespace ON namespace.oid=type.typnamespace
+  CROSS JOIN LATERAL aclexplode(coalesce(type.typacl,acldefault('T',type.typowner))) acl
+  LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
+  WHERE namespace.nspname NOT IN ('pg_catalog','information_schema') AND namespace.nspname !~ '^pg_toast'
+    AND type.typtype IN ('d','e','m','r','c')
+  UNION ALL
+  SELECT coalesce(grantee.rolname,'PUBLIC'),
+    CASE acl.privilege_type WHEN 'INSERT' THEN 'table:insert' WHEN 'UPDATE' THEN 'table:update'
+      WHEN 'DELETE' THEN 'table:delete' WHEN 'TRUNCATE' THEN 'table:truncate'
+      WHEN 'TRIGGER' THEN 'table:trigger' WHEN 'REFERENCES' THEN 'table:references'
+      ELSE 'table:read' END,
+    'relation:'||quote_ident(object.schema_name)||'.'||quote_ident(object.object_name),
+    CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END
+  FROM objects object
+  CROSS JOIN LATERAL aclexplode(coalesce((SELECT relacl FROM pg_catalog.pg_class WHERE oid=object.oid),acldefault('r',object.relowner))) acl
+  LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
+  WHERE object.relkind IN ('r','p','v','m','f')
+  UNION ALL
+  SELECT coalesce(grantee.rolname,'PUBLIC'),
+    CASE acl.privilege_type WHEN 'INSERT' THEN 'column:insert' WHEN 'UPDATE' THEN 'column:update'
+      WHEN 'REFERENCES' THEN 'column:references' ELSE 'column:read' END,
+    'column:'||quote_ident(namespace.nspname)||'.'||quote_ident(relation.relname)||'.'||quote_ident(attribute.attname),
+    CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END
+  FROM pg_catalog.pg_attribute attribute
+  JOIN pg_catalog.pg_class relation ON relation.oid=attribute.attrelid
+  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace
+  CROSS JOIN LATERAL aclexplode(attribute.attacl) acl
+  LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
+  WHERE attribute.attnum>0 AND NOT attribute.attisdropped
+    AND namespace.nspname NOT IN ('pg_catalog','information_schema') AND namespace.nspname !~ '^pg_toast'
+  UNION ALL
+  SELECT coalesce(grantee.rolname,'PUBLIC'),
+    CASE acl.privilege_type WHEN 'USAGE' THEN 'sequence:usage' WHEN 'UPDATE' THEN 'sequence:update' ELSE 'sequence:read' END,
+    'sequence:'||quote_ident(object.schema_name)||'.'||quote_ident(object.object_name),
+    CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END
+  FROM objects object JOIN pg_catalog.pg_class sequence ON sequence.oid=object.oid
+  CROSS JOIN LATERAL aclexplode(coalesce(sequence.relacl,acldefault('S',sequence.relowner))) acl
+  LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee WHERE object.relkind='S'
+  UNION ALL
+  SELECT coalesce(grantee.rolname,'PUBLIC'), 'routine:execute',
+    'routine:'||routine.oid::regprocedure::text,
+    CASE WHEN acl.grantee=0 THEN 'public' ELSE 'privilege' END
+  FROM pg_catalog.pg_proc routine JOIN pg_catalog.pg_namespace namespace ON namespace.oid=routine.pronamespace
+  CROSS JOIN LATERAL aclexplode(coalesce(routine.proacl,acldefault('f',routine.proowner))) acl
+  LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
+  WHERE namespace.nspname NOT IN ('pg_catalog','information_schema') AND namespace.nspname !~ '^pg_toast'
+)
+SELECT json_build_object('version',1,'database',current_database(),
+  'sessionPrincipal',session_user,
+  'roles',(SELECT coalesce(json_agg(to_jsonb(roles)-'oid' ORDER BY name),'[]'::json) FROM roles),
+  'memberships',(SELECT coalesce(json_agg(memberships ORDER BY member,role),'[]'::json) FROM memberships),
+  'grants',(SELECT coalesce(json_agg(json_build_object('principal',principal,'capability',capability,
+    'resource',resource,'source',source) ORDER BY principal,capability,resource,source),'[]'::json) FROM grants WHERE capability IS NOT NULL))`;
 const safeEnvironment = (): NodeJS.ProcessEnv => ({
   PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
   LANG: "C.UTF-8",
@@ -94,6 +257,8 @@ export function decomposePostgresConnection(value: string): Connection {
 
 const digest = (value: string | Buffer): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
+const sqlLiteral = (value: string): string =>
+  `'${value.replaceAll("'", "''")}'`;
 const observation = <T>(
   step: StepObservation["step"],
   facts: T,
@@ -137,6 +302,450 @@ export class PostgreSqlGenerationAdapter {
     } finally {
       target.cleanup();
     }
+  }
+
+  inventoryEffectivePrincipals(url: string): EffectivePrincipalInventory {
+    const value = JSON.parse(
+      this.psql(url, effectivePrincipalInventorySql),
+    ) as EffectivePrincipalInventory;
+    if (
+      value.version !== 1 ||
+      typeof value.database !== "string" ||
+      typeof value.sessionPrincipal !== "string" ||
+      !Array.isArray(value.roles) ||
+      !Array.isArray(value.memberships) ||
+      !Array.isArray(value.grants)
+    )
+      throw new Error("postgres_effective_principal_inventory_invalid");
+    return Object.freeze({
+      ...value,
+      roles: Object.freeze(value.roles),
+      memberships: Object.freeze(value.memberships),
+      grants: Object.freeze(value.grants as readonly EffectivePrincipalGrant[]),
+    });
+  }
+
+  establishSourceFence(input: {
+    adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    rolloutId: string;
+    fenceId: string;
+    beforePolicy: EffectivePrincipalPolicy;
+    fencedPolicy: EffectivePrincipalPolicy;
+  }): SourceDatabaseFenceEvidence {
+    this.observeIdentity(input.adminUrl, input.source);
+    this.psql(
+      input.adminUrl,
+      `BEGIN;
+CREATE SCHEMA IF NOT EXISTS release_authority;
+CREATE TABLE IF NOT EXISTS release_authority.source_database_fence (
+  fence_id text PRIMARY KEY, rollout_id text NOT NULL UNIQUE,
+  source_system_identifier text NOT NULL, authority_principal text NOT NULL,
+  before_inventory_sha256 text NOT NULL, before_policy_sha256 text NOT NULL,
+  fenced_inventory_sha256 text, fenced_policy_sha256 text NOT NULL, prior_connect_acl jsonb NOT NULL,
+  lifecycle text NOT NULL CHECK (lifecycle IN ('active','released','forward_only')),
+  established_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
+  released_at timestamptz
+);
+COMMIT;`,
+    );
+    const fencedPolicySha256 = `sha256:${sha256Canonical(canonicalEffectivePrincipalPolicy(input.fencedPolicy))}`;
+    if (
+      this.psql(
+        input.adminUrl,
+        "SELECT to_regclass('release_authority.source_database_fence') IS NOT NULL",
+      ) === "t"
+    ) {
+      const replay = this.psql(
+        input.adminUrl,
+        `SELECT json_build_object('version',1,'fenceId',fence_id,'rolloutId',rollout_id,
+          'sourceSystemIdentifier',source_system_identifier,'authorityPrincipal',authority_principal,
+          'beforeInventorySha256',before_inventory_sha256,'fencedInventorySha256',fenced_inventory_sha256,
+          'beforePolicySha256',before_policy_sha256,'fencedPolicySha256',fenced_policy_sha256,
+          'priorConnectAclSha256','sha256:'||encode(digest(convert_to(prior_connect_acl::text,'UTF8'),'sha256'),'hex'),
+          'lifecycle',lifecycle,'observedAt',established_at)
+         FROM release_authority.source_database_fence WHERE rollout_id=${sqlLiteral(input.rolloutId)}`,
+      );
+      if (replay) {
+        const persisted = JSON.parse(replay) as SourceDatabaseFenceEvidence;
+        if (
+          persisted.fenceId !== input.fenceId ||
+          persisted.sourceSystemIdentifier !== input.source.systemIdentifier ||
+          persisted.lifecycle !== "active" ||
+          persisted.beforePolicySha256 !==
+            `sha256:${sha256Canonical(canonicalEffectivePrincipalPolicy(input.beforePolicy))}` ||
+          persisted.fencedPolicySha256 !== fencedPolicySha256
+        )
+          throw new Error("postgres_source_fence_replay_mismatch");
+        const fenced = assertEffectivePrincipalInventory(
+          this.inventoryEffectivePrincipals(input.adminUrl),
+          input.fencedPolicy,
+        );
+        if (
+          persisted.fencedInventorySha256 &&
+          persisted.fencedInventorySha256 !== fenced.inventorySha256
+        )
+          throw new Error("postgres_source_fence_replay_mismatch");
+        const attested = this.psql(
+          input.adminUrl,
+          `UPDATE release_authority.source_database_fence
+             SET fenced_inventory_sha256=${sqlLiteral(fenced.inventorySha256)}
+           WHERE fence_id=${sqlLiteral(input.fenceId)} AND lifecycle='active'
+             AND (fenced_inventory_sha256 IS NULL OR fenced_inventory_sha256=${sqlLiteral(fenced.inventorySha256)})
+           RETURNING true`,
+        );
+        if (attested !== "t")
+          throw new Error(
+            "postgres_source_fence_inventory_attestation_cas_failed",
+          );
+        return Object.freeze({
+          ...persisted,
+          fencedInventorySha256: fenced.inventorySha256,
+          lifecycle: "active" as const,
+        });
+      }
+    }
+    const beforeInventory = this.inventoryEffectivePrincipals(input.adminUrl);
+    const before = assertEffectivePrincipalInventory(
+      beforeInventory,
+      input.beforePolicy,
+    );
+    if (
+      before.effectivePermissions[beforeInventory.sessionPrincipal] ===
+      undefined
+    ) {
+      // The adapter authority must itself be represented by the attested inventory.
+      throw new Error("postgres_source_fence_authority_not_in_inventory");
+    }
+    const persisted = JSON.parse(
+      this.psql(
+        input.adminUrl,
+        `BEGIN;
+SELECT pg_advisory_xact_lock(hashtext('reviewrouter_source_database_fence'));
+CREATE SCHEMA IF NOT EXISTS release_authority;
+CREATE TABLE IF NOT EXISTS release_authority.source_database_fence (
+  fence_id text PRIMARY KEY, rollout_id text NOT NULL UNIQUE,
+  source_system_identifier text NOT NULL, authority_principal text NOT NULL,
+  before_inventory_sha256 text NOT NULL, before_policy_sha256 text NOT NULL,
+  fenced_inventory_sha256 text, fenced_policy_sha256 text NOT NULL, prior_connect_acl jsonb NOT NULL,
+  lifecycle text NOT NULL CHECK (lifecycle IN ('active','released','forward_only')),
+  established_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
+  released_at timestamptz
+);
+DO $fence$
+DECLARE existing release_authority.source_database_fence%ROWTYPE;
+DECLARE principal record;
+DECLARE prior_acl jsonb;
+BEGIN
+  SELECT coalesce(jsonb_agg(jsonb_build_object(
+    'principal',coalesce(grantee.rolname,'PUBLIC'),'grantable',acl.is_grantable
+  ) ORDER BY coalesce(grantee.rolname,'PUBLIC'),acl.is_grantable),'[]'::jsonb)
+  INTO prior_acl
+  FROM pg_database database
+  CROSS JOIN LATERAL aclexplode(coalesce(database.datacl,acldefault('d',database.datdba))) acl
+  LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
+  WHERE database.datname=current_database() AND acl.privilege_type='CONNECT';
+  SELECT * INTO existing FROM release_authority.source_database_fence
+    WHERE rollout_id=${sqlLiteral(input.rolloutId)} FOR UPDATE;
+  IF existing.fence_id IS NOT NULL THEN
+    IF existing.fence_id<>${sqlLiteral(input.fenceId)}
+       OR existing.source_system_identifier<>${sqlLiteral(input.source.systemIdentifier)}
+       OR existing.before_inventory_sha256<>${sqlLiteral(before.inventorySha256)}
+       OR existing.before_policy_sha256<>${sqlLiteral(before.policySha256)}
+       OR existing.fenced_policy_sha256<>${sqlLiteral(fencedPolicySha256)}
+       OR existing.lifecycle<>'active' THEN
+      RAISE EXCEPTION 'source database fence replay mismatch';
+    END IF;
+  ELSE
+    INSERT INTO release_authority.source_database_fence(
+      fence_id,rollout_id,source_system_identifier,authority_principal,
+      before_inventory_sha256,before_policy_sha256,fenced_policy_sha256,
+      prior_connect_acl,lifecycle
+    ) VALUES (${sqlLiteral(input.fenceId)},${sqlLiteral(input.rolloutId)},
+      ${sqlLiteral(input.source.systemIdentifier)},session_user,
+      ${sqlLiteral(before.inventorySha256)},${sqlLiteral(before.policySha256)},
+      ${sqlLiteral(fencedPolicySha256)},prior_acl,'active');
+  END IF;
+  EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC',current_database());
+  FOR principal IN SELECT rolname FROM pg_roles WHERE rolname<>session_user LOOP
+    EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM %I',current_database(),principal.rolname);
+  END LOOP;
+  EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',current_database(),session_user);
+END $fence$;
+COMMIT;
+DO $terminate$ DECLARE connection record; BEGIN
+  FOR connection IN SELECT pid FROM pg_stat_activity
+    WHERE datname=current_database() AND pid<>pg_backend_pid() LOOP
+    PERFORM pg_terminate_backend(connection.pid);
+  END LOOP;
+END $terminate$;
+SELECT json_build_object('fenceId',fence_id,'rolloutId',rollout_id,
+  'sourceSystemIdentifier',source_system_identifier,'authorityPrincipal',authority_principal,
+  'priorConnectAclSha256','sha256:'||encode(digest(convert_to(prior_connect_acl::text,'UTF8'),'sha256'),'hex'),
+  'lifecycle',lifecycle,'observedAt',established_at)
+FROM release_authority.source_database_fence WHERE rollout_id=${sqlLiteral(input.rolloutId)}`,
+      ),
+    ) as Omit<
+      SourceDatabaseFenceEvidence,
+      | "version"
+      | "beforeInventorySha256"
+      | "fencedInventorySha256"
+      | "beforePolicySha256"
+      | "fencedPolicySha256"
+    >;
+    const fenced = assertEffectivePrincipalInventory(
+      this.inventoryEffectivePrincipals(input.adminUrl),
+      input.fencedPolicy,
+    );
+    const attested = this.psql(
+      input.adminUrl,
+      `UPDATE release_authority.source_database_fence
+       SET fenced_inventory_sha256=${sqlLiteral(fenced.inventorySha256)}
+       WHERE fence_id=${sqlLiteral(input.fenceId)} AND rollout_id=${sqlLiteral(input.rolloutId)}
+         AND lifecycle='active'
+         AND (fenced_inventory_sha256 IS NULL OR fenced_inventory_sha256=${sqlLiteral(fenced.inventorySha256)})
+       RETURNING true`,
+    );
+    if (attested !== "t")
+      throw new Error("postgres_source_fence_inventory_attestation_cas_failed");
+    if (persisted.lifecycle !== "active")
+      throw new Error("postgres_source_fence_not_active");
+    return Object.freeze({
+      version: 1,
+      ...persisted,
+      beforeInventorySha256: before.inventorySha256,
+      fencedInventorySha256: fenced.inventorySha256,
+      beforePolicySha256: before.policySha256,
+      fencedPolicySha256: fenced.policySha256,
+      lifecycle: "active" as const,
+    });
+  }
+
+  observeSourceFence(input: {
+    adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    rolloutId: string;
+  }): SourceDatabaseFenceEvidence {
+    this.observeIdentity(input.adminUrl, input.source);
+    const raw = this.psql(
+      input.adminUrl,
+      `SELECT json_build_object('version',1,'fenceId',fence_id,'rolloutId',rollout_id,
+          'sourceSystemIdentifier',source_system_identifier,'authorityPrincipal',authority_principal,
+          'beforeInventorySha256',before_inventory_sha256,'fencedInventorySha256',fenced_inventory_sha256,
+          'beforePolicySha256',before_policy_sha256,'fencedPolicySha256',fenced_policy_sha256,
+          'priorConnectAclSha256','sha256:'||encode(digest(convert_to(prior_connect_acl::text,'UTF8'),'sha256'),'hex'),
+          'lifecycle',lifecycle,'observedAt',established_at)
+         FROM release_authority.source_database_fence WHERE rollout_id=${sqlLiteral(input.rolloutId)}`,
+    );
+    if (!raw) throw new Error("postgres_source_fence_observation_invalid");
+    const value = JSON.parse(raw) as SourceDatabaseFenceEvidence;
+    if (
+      value.version !== 1 ||
+      value.rolloutId !== input.rolloutId ||
+      value.sourceSystemIdentifier !== input.source.systemIdentifier ||
+      value.lifecycle !== "active" ||
+      !/^sha256:[a-f0-9]{64}$/u.test(value.fencedInventorySha256)
+    )
+      throw new Error("postgres_source_fence_observation_invalid");
+    return Object.freeze(value);
+  }
+
+  findActiveSourceFence(input: {
+    adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    rolloutId: string;
+  }): SourceDatabaseFenceEvidence | null {
+    this.observeIdentity(input.adminUrl, input.source);
+    if (
+      this.psql(
+        input.adminUrl,
+        "SELECT to_regclass('release_authority.source_database_fence') IS NOT NULL",
+      ) !== "t"
+    )
+      return null;
+    try {
+      return this.observeSourceFence(input);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "postgres_source_fence_observation_invalid"
+      )
+        return null;
+      throw error;
+    }
+  }
+
+  verifySourceFence(input: {
+    adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    rolloutId: string;
+    fencedPolicy: EffectivePrincipalPolicy;
+  }): SourceDatabaseFenceEvidence {
+    const fence = this.observeSourceFence(input);
+    const decision = assertEffectivePrincipalInventory(
+      this.inventoryEffectivePrincipals(input.adminUrl),
+      input.fencedPolicy,
+    );
+    if (
+      decision.inventorySha256 !== fence.fencedInventorySha256 ||
+      decision.policySha256 !== fence.fencedPolicySha256
+    )
+      throw new Error("postgres_source_fence_drifted");
+    return fence;
+  }
+
+  observeSourcePolicy(input: {
+    adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    policy: EffectivePrincipalPolicy;
+  }): DatabaseAclWitness {
+    this.observeIdentity(input.adminUrl, input.source);
+    const decision = assertEffectivePrincipalInventory(
+      this.inventoryEffectivePrincipals(input.adminUrl),
+      input.policy,
+    );
+    return Object.freeze({
+      systemIdentifier: input.source.systemIdentifier,
+      aclSha256: decision.inventorySha256,
+      observedAt: new Date().toISOString(),
+      sourceWritesRestored: true as const,
+    });
+  }
+
+  restoreSourceFence(input: {
+    adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    fence: SourceDatabaseFenceEvidence;
+    beforePolicy: EffectivePrincipalPolicy;
+  }): DatabaseAclWitness {
+    this.observeIdentity(input.adminUrl, input.source);
+    if (
+      input.fence.lifecycle !== "active" ||
+      input.fence.sourceSystemIdentifier !== input.source.systemIdentifier
+    )
+      throw new Error("postgres_source_fence_restore_identity_invalid");
+    const activeInventorySha256 = `sha256:${sha256Canonical(
+      this.inventoryEffectivePrincipals(input.adminUrl),
+    )}`;
+    if (activeInventorySha256 !== input.fence.fencedInventorySha256)
+      throw new Error("postgres_source_fence_restore_inventory_drifted");
+    const restored = JSON.parse(
+      this.psql(
+        input.adminUrl,
+        `BEGIN;
+SELECT pg_advisory_xact_lock(hashtext('reviewrouter_source_database_fence'));
+DO $restore$
+DECLARE fence release_authority.source_database_fence%ROWTYPE;
+DECLARE principal record;
+DECLARE saved record;
+BEGIN
+  SELECT * INTO fence FROM release_authority.source_database_fence
+    WHERE fence_id=${sqlLiteral(input.fence.fenceId)} AND rollout_id=${sqlLiteral(input.fence.rolloutId)} FOR UPDATE;
+  IF fence.fence_id IS NULL OR fence.lifecycle<>'active'
+     OR fence.source_system_identifier<>${sqlLiteral(input.source.systemIdentifier)}
+     OR fence.before_inventory_sha256<>${sqlLiteral(input.fence.beforeInventorySha256)}
+     OR fence.before_policy_sha256<>${sqlLiteral(input.fence.beforePolicySha256)}
+     OR ('sha256:'||encode(digest(convert_to(fence.prior_connect_acl::text,'UTF8'),'sha256'),'hex'))<>${sqlLiteral(input.fence.priorConnectAclSha256)} THEN
+    RAISE EXCEPTION 'source database fence restore attestation mismatch';
+  END IF;
+  EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC',current_database());
+  FOR principal IN SELECT rolname FROM pg_roles LOOP
+    EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM %I',current_database(),principal.rolname);
+  END LOOP;
+  FOR saved IN SELECT value->>'principal' AS principal,
+      (value->>'grantable')::boolean AS grantable
+    FROM jsonb_array_elements(fence.prior_connect_acl) LOOP
+    IF saved.principal='PUBLIC' THEN
+      EXECUTE format('GRANT CONNECT ON DATABASE %I TO PUBLIC%s',current_database(),
+        CASE WHEN saved.grantable THEN ' WITH GRANT OPTION' ELSE '' END);
+    ELSE
+      EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I%s',current_database(),saved.principal,
+        CASE WHEN saved.grantable THEN ' WITH GRANT OPTION' ELSE '' END);
+    END IF;
+  END LOOP;
+  UPDATE release_authority.source_database_fence AS stored
+    SET lifecycle='released',released_at=transaction_timestamp()
+    WHERE stored.fence_id=fence.fence_id;
+END $restore$;
+COMMIT;
+SELECT json_build_object('lifecycle',lifecycle,'sourceSystemIdentifier',source_system_identifier)
+FROM release_authority.source_database_fence WHERE fence_id=${sqlLiteral(input.fence.fenceId)}`,
+      ),
+    ) as { lifecycle: string; sourceSystemIdentifier: string };
+    if (
+      restored.lifecycle !== "released" ||
+      restored.sourceSystemIdentifier !== input.source.systemIdentifier
+    )
+      throw new Error("postgres_source_fence_restore_not_persisted");
+    const decision = assertEffectivePrincipalInventory(
+      this.inventoryEffectivePrincipals(input.adminUrl),
+      input.beforePolicy,
+    );
+    if (decision.inventorySha256 !== input.fence.beforeInventorySha256)
+      throw new Error("postgres_source_fence_restore_inventory_mismatch");
+    return Object.freeze({
+      systemIdentifier: input.source.systemIdentifier,
+      aclSha256: input.fence.priorConnectAclSha256,
+      observedAt: new Date().toISOString(),
+      sourceWritesRestored: true as const,
+    });
+  }
+
+  observeRestoredSourceFence(input: {
+    adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    rolloutId: string;
+    beforePolicy: EffectivePrincipalPolicy;
+  }): DatabaseAclWitness | null {
+    this.observeIdentity(input.adminUrl, input.source);
+    const raw = this.psql(
+      input.adminUrl,
+      `SELECT json_build_object('lifecycle',lifecycle,
+        'beforeInventorySha256',before_inventory_sha256,
+        'priorConnectAclSha256','sha256:'||encode(digest(convert_to(prior_connect_acl::text,'UTF8'),'sha256'),'hex'))
+       FROM release_authority.source_database_fence
+       WHERE rollout_id=${sqlLiteral(input.rolloutId)} AND source_system_identifier=${sqlLiteral(input.source.systemIdentifier)}`,
+    );
+    if (!raw) return null;
+    const fence = JSON.parse(raw) as {
+      lifecycle: string;
+      beforeInventorySha256: string;
+      priorConnectAclSha256: string;
+    };
+    if (fence.lifecycle !== "released") return null;
+    const decision = assertEffectivePrincipalInventory(
+      this.inventoryEffectivePrincipals(input.adminUrl),
+      input.beforePolicy,
+    );
+    if (decision.inventorySha256 !== fence.beforeInventorySha256) return null;
+    return Object.freeze({
+      systemIdentifier: input.source.systemIdentifier,
+      aclSha256: fence.priorConnectAclSha256,
+      observedAt: new Date().toISOString(),
+      sourceWritesRestored: true as const,
+    });
+  }
+
+  markSourceFenceForwardOnly(input: {
+    adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    fence: SourceDatabaseFenceEvidence;
+  }): void {
+    this.observeIdentity(input.adminUrl, input.source);
+    const state = this.psql(
+      input.adminUrl,
+      `WITH changed AS (UPDATE release_authority.source_database_fence SET lifecycle='forward_only'
+         WHERE fence_id=${sqlLiteral(input.fence.fenceId)} AND rollout_id=${sqlLiteral(input.fence.rolloutId)}
+           AND source_system_identifier=${sqlLiteral(input.source.systemIdentifier)} AND lifecycle='active'
+         RETURNING lifecycle)
+       SELECT lifecycle FROM changed UNION ALL
+       SELECT lifecycle FROM release_authority.source_database_fence
+        WHERE fence_id=${sqlLiteral(input.fence.fenceId)} AND rollout_id=${sqlLiteral(input.fence.rolloutId)}
+          AND source_system_identifier=${sqlLiteral(input.source.systemIdentifier)} AND lifecycle='forward_only'
+       LIMIT 1`,
+    );
+    if (state !== "forward_only")
+      throw new Error("postgres_source_fence_forward_only_cas_failed");
   }
 
   private legacyAmbiguityInventory(url: string): {
@@ -241,97 +850,6 @@ export class PostgreSqlGenerationAdapter {
     return expected;
   }
 
-  compensateSource(input: {
-    adminUrl: string;
-    source: DatabaseGenerationIdentity;
-    reconnectUrls: Readonly<Record<string, string>>;
-  }): DatabaseAclWitness {
-    this.observeIdentity(input.adminUrl, input.source);
-    if (runtimeRoles.some((role) => !input.reconnectUrls[role]))
-      throw new Error(
-        "postgres_generation_compensation_reconnect_urls_missing",
-      );
-    this.psql(
-      input.adminUrl,
-      `BEGIN; REVOKE CONNECT ON DATABASE :"DBNAME" FROM PUBLIC; ${runtimeRoles
-        .map((role) => `GRANT CONNECT ON DATABASE :"DBNAME" TO ${role};`)
-        .join(" ")} COMMIT;`,
-    );
-    const observed = this.observeCompensatedSource(input);
-    if (!observed)
-      throw new Error("postgres_generation_compensation_acl_unproven");
-    return observed;
-  }
-
-  /** Read-only reconciliation after a consumed restore-writes permit. */
-  observeCompensatedSource(input: {
-    adminUrl: string;
-    source: DatabaseGenerationIdentity;
-    reconnectUrls: Readonly<Record<string, string>>;
-  }): DatabaseAclWitness | null {
-    this.observeIdentity(input.adminUrl, input.source);
-    if (runtimeRoles.some((role) => !input.reconnectUrls[role]))
-      throw new Error(
-        "postgres_generation_compensation_reconnect_urls_missing",
-      );
-    const acl = JSON.parse(
-      this.psql(
-        input.adminUrl,
-        `SELECT json_build_object('allRuntimeRolesCanConnect', NOT EXISTS (SELECT 1 FROM unnest(ARRAY[${runtimeRoles
-          .map((role) => `'${role}'`)
-          .join(
-            ",",
-          )}]) role WHERE NOT has_database_privilege(role,current_database(),'CONNECT')), 'publicConnectDenied', NOT has_database_privilege('public',current_database(),'CONNECT'), 'systemIdentifier', (SELECT system_identifier::text FROM pg_control_system()))`,
-      ),
-    );
-    if (
-      acl.allRuntimeRolesCanConnect !== true ||
-      acl.publicConnectDenied !== true ||
-      acl.systemIdentifier !== input.source.systemIdentifier
-    )
-      return null;
-    for (const role of runtimeRoles) {
-      const connection = decomposePostgresConnection(
-        input.reconnectUrls[role]!,
-      );
-      try {
-        const observed = JSON.parse(
-          this.commands
-            .execute(
-              "psql",
-              [
-                ...connection.args,
-                "--no-psqlrc",
-                "--set",
-                "ON_ERROR_STOP=1",
-                "--tuples-only",
-                "--no-align",
-                "--command",
-                "SELECT json_build_object('role',current_user,'systemIdentifier',system_identifier::text) FROM pg_control_system()",
-              ],
-              { env: connection.env },
-            )
-            .stdout.trim(),
-        );
-        if (
-          observed.role !== role ||
-          observed.systemIdentifier !== input.source.systemIdentifier
-        )
-          throw new Error(
-            "postgres_generation_compensation_reconnect_mismatch",
-          );
-      } finally {
-        connection.cleanup();
-      }
-    }
-    return Object.freeze({
-      systemIdentifier: input.source.systemIdentifier,
-      aclSha256: digest(JSON.stringify(acl)),
-      observedAt: new Date().toISOString(),
-      sourceWritesRestored: true as const,
-    });
-  }
-
   captureBackup(input: {
     sourceUrl: string;
     dumpPath: string;
@@ -375,6 +893,11 @@ export class PostgreSqlGenerationAdapter {
 
   quiesceSource(input: {
     adminUrl: string;
+    source: DatabaseGenerationIdentity;
+    rolloutId: string;
+    fenceId: string;
+    beforePolicy: EffectivePrincipalPolicy;
+    fencedPolicy: EffectivePrincipalPolicy;
     writerSuspension: WriterSuspensionObservation;
     reconnectUrls: Readonly<Record<string, string>>;
   }): { evidence: QuiescenceEvidence; observation: StepObservation } {
@@ -386,16 +909,22 @@ export class PostgreSqlGenerationAdapter {
       )
     )
       throw new Error("postgres_generation_writers_not_observably_suspended");
+    const probeRoles = input.beforePolicy.principals
+      .filter((role) => role.mayLogin)
+      .map((role) => role.principal)
+      .filter(
+        (role) => role !== decodeURIComponent(new URL(input.adminUrl).username),
+      )
+      .sort();
     if (
-      Object.keys(input.reconnectUrls).sort().join(",") !==
-      [...runtimeRoles].sort().join(",")
+      Object.keys(input.reconnectUrls).sort().join(",") !== probeRoles.join(",")
     )
       throw new Error("postgres_generation_reconnect_probe_set_incomplete");
     const sourceSystemIdentifier = this.psql(
       input.adminUrl,
       "SELECT system_identifier::text FROM pg_control_system()",
     );
-    for (const role of runtimeRoles) {
+    for (const role of probeRoles) {
       const preRevocation = JSON.parse(
         this.psql(
           input.reconnectUrls[role]!,
@@ -408,21 +937,18 @@ export class PostgreSqlGenerationAdapter {
       )
         throw new Error("postgres_generation_pre_revocation_probe_mismatch");
     }
-    const roleSql = runtimeRoles
-      .map((role) => `REVOKE CONNECT ON DATABASE :"DBNAME" FROM ${role};`)
-      .join("\n");
-    this.psql(
-      input.adminUrl,
-      `BEGIN; REVOKE CONNECT ON DATABASE :"DBNAME" FROM PUBLIC; ${roleSql} COMMIT;`,
-    );
-    this.psql(
-      input.adminUrl,
-      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()`,
-    );
+    const fence = this.establishSourceFence({
+      adminUrl: input.adminUrl,
+      source: input.source,
+      rolloutId: input.rolloutId,
+      fenceId: input.fenceId,
+      beforePolicy: input.beforePolicy,
+      fencedPolicy: input.fencedPolicy,
+    });
     const acl = JSON.parse(
       this.psql(
         input.adminUrl,
-        `SELECT json_build_object('effectiveConnectDenied', NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=ANY(ARRAY[${runtimeRoles.map((role) => `'${role}'`).join(",")}]) AND has_database_privilege(rolname,current_database(),'CONNECT')), 'publicConnectDenied', NOT has_database_privilege('public',current_database(),'CONNECT'), 'membershipSha256', encode(digest(coalesce((SELECT string_agg(member.rolname||'>'||parent.rolname,',' ORDER BY member.rolname,parent.rolname) FROM pg_auth_members m JOIN pg_roles member ON member.oid=m.member JOIN pg_roles parent ON parent.oid=m.roleid),''),'sha256'),'hex'))`,
+        `SELECT json_build_object('effectiveConnectDenied', NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolcanlogin AND rolname<>session_user AND has_database_privilege(rolname,current_database(),'CONNECT')), 'publicConnectDenied', NOT has_database_privilege('public',current_database(),'CONNECT'), 'membershipSha256', encode(digest(coalesce((SELECT string_agg(member.rolname||'>'||parent.rolname,',' ORDER BY member.rolname,parent.rolname) FROM pg_auth_members m JOIN pg_roles member ON member.oid=m.member JOIN pg_roles parent ON parent.oid=m.roleid),''),'sha256'),'hex'))`,
       ),
     );
     if (acl.effectiveConnectDenied !== true || acl.publicConnectDenied !== true)
@@ -442,7 +968,7 @@ export class PostgreSqlGenerationAdapter {
     if (stabilizationSeries.some((count) => count !== 0))
       throw new Error("postgres_generation_sessions_not_stable");
     const reconnectDenied: string[] = [];
-    for (const role of runtimeRoles) {
+    for (const role of probeRoles) {
       const connection = decomposePostgresConnection(
         input.reconnectUrls[role]!,
       );
@@ -466,7 +992,7 @@ export class PostgreSqlGenerationAdapter {
         connection.cleanup();
       }
     }
-    if (reconnectDenied.length !== runtimeRoles.length)
+    if (reconnectDenied.length !== probeRoles.length)
       throw new Error("postgres_generation_reconnect_probe_succeeded");
     const evidence: QuiescenceEvidence = Object.freeze({
       writerServices: input.writerSuspension.services,
@@ -474,6 +1000,7 @@ export class PostgreSqlGenerationAdapter {
       stabilizationSeries: Object.freeze(stabilizationSeries),
       reconnectDeniedRoles: Object.freeze(reconnectDenied),
       legacyAmbiguity: this.observeStableLegacyAmbiguity(input.adminUrl),
+      fence,
       complete: true,
     });
     return {
@@ -624,7 +1151,19 @@ export class PostgreSqlGenerationAdapter {
     sourceUrl: string,
     targetUrl: string,
     applicationSchemas: readonly string[],
+    policies: {
+      source: EffectivePrincipalPolicy;
+      target: EffectivePrincipalPolicy;
+    },
   ): Promise<{ evidence: EquivalenceEvidence; observation: StepObservation }> {
+    const sourcePrincipalBefore = assertEffectivePrincipalInventory(
+      this.inventoryEffectivePrincipals(sourceUrl),
+      policies.source,
+    );
+    const targetPrincipalBefore = assertEffectivePrincipalInventory(
+      this.inventoryEffectivePrincipals(targetUrl),
+      policies.target,
+    );
     const [source, target] = await Promise.all([
       this.snapshot(sourceUrl, applicationSchemas),
       this.snapshot(targetUrl, applicationSchemas),
@@ -651,12 +1190,34 @@ export class PostgreSqlGenerationAdapter {
       JSON.stringify(source.metadata) !== JSON.stringify(target.metadata)
     )
       throw new Error("postgres_generation_equivalence_failed");
+    const sourcePrincipalAfter = assertEffectivePrincipalInventory(
+      this.inventoryEffectivePrincipals(sourceUrl),
+      policies.source,
+    );
+    const targetPrincipalAfter = assertEffectivePrincipalInventory(
+      this.inventoryEffectivePrincipals(targetUrl),
+      policies.target,
+    );
+    if (
+      sourcePrincipalBefore.inventorySha256 !==
+        sourcePrincipalAfter.inventorySha256 ||
+      targetPrincipalBefore.inventorySha256 !==
+        targetPrincipalAfter.inventorySha256
+    )
+      throw new Error("postgres_generation_principal_inventory_drifted");
     const evidence: EquivalenceEvidence = Object.freeze({
       tables: Object.freeze(tables),
       catalogSha256: Object.freeze(source.metadata),
       equivalent: true,
       streamingHash: true,
       maxProcessBufferBytes: 8 * 1024 * 1024,
+      effectivePrincipals: Object.freeze({
+        sourceInventorySha256: sourcePrincipalAfter.inventorySha256,
+        sourcePolicySha256: sourcePrincipalAfter.policySha256,
+        targetInventorySha256: targetPrincipalAfter.inventorySha256,
+        targetPolicySha256: targetPrincipalAfter.policySha256,
+        stable: true as const,
+      }),
     });
     return {
       evidence,

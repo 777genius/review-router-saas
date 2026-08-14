@@ -15,6 +15,7 @@ import {
   type RunnerIdentity,
   type StepObservation,
   type WriterSuspensionObservation,
+  type EffectivePrincipalPolicy,
   assertVerifiedReleaseImageProvenance,
   type VerifiedReleaseImageProvenance,
 } from "../packages/features/release-rollout/src/index";
@@ -83,6 +84,15 @@ const commands = new RedactedProcessCommandAdapter();
 const database = new PostgreSqlGenerationAdapter(commands);
 const sourceUrl = required("REVIEW_ROUTER_SOURCE_DATABASE_URL");
 const targetUrl = required("REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL");
+const sourcePrincipalPolicy = JSON.parse(
+  required("REVIEW_ROUTER_SOURCE_PRINCIPAL_POLICY_JSON"),
+) as EffectivePrincipalPolicy;
+const sourceFencedPrincipalPolicy = JSON.parse(
+  required("REVIEW_ROUTER_SOURCE_FENCED_PRINCIPAL_POLICY_JSON"),
+) as EffectivePrincipalPolicy;
+const targetPrincipalPolicy = JSON.parse(
+  required("REVIEW_ROUTER_TARGET_EQUIVALENCE_PRINCIPAL_POLICY_JSON"),
+) as EffectivePrincipalPolicy;
 const freezeObservation = decode<
   StepObservation<{
     services: WriterSuspensionObservation["services"];
@@ -90,7 +100,9 @@ const freezeObservation = decode<
   }>
 >("REVIEW_ROUTER_FREEZE_OBSERVATION");
 let backupResult: ReturnType<PostgreSqlGenerationAdapter["captureBackup"]>;
-let quiescence: ReturnType<PostgreSqlGenerationAdapter["quiesceSource"]>;
+let quiescence:
+  | ReturnType<PostgreSqlGenerationAdapter["quiesceSource"]>
+  | undefined;
 let equivalence: Awaited<
   ReturnType<PostgreSqlGenerationAdapter["verifyEquivalence"]>
 >;
@@ -121,17 +133,33 @@ const compensation = new ReleaseCompensationReconciliationUseCase({
   recoveryOwnerId: `recovery-${randomUUID()}`,
   authority,
   ledger,
-  compensateDatabase: async () =>
-    database.compensateSource({
-      adminUrl: sourceUrl,
-      source,
-      reconnectUrls,
-    }),
+  compensateDatabase: async () => {
+    const fence =
+      quiescence?.evidence.fence ??
+      database.findActiveSourceFence({
+        adminUrl: sourceUrl,
+        source,
+        rolloutId: rollout.rolloutId,
+      });
+    return fence
+      ? database.restoreSourceFence({
+          adminUrl: sourceUrl,
+          source,
+          fence,
+          beforePolicy: sourcePrincipalPolicy,
+        })
+      : database.observeSourcePolicy({
+          adminUrl: sourceUrl,
+          source,
+          policy: sourcePrincipalPolicy,
+        });
+  },
   observeDatabaseCompensation: async () =>
-    database.observeCompensatedSource({
+    database.observeRestoredSourceFence({
       adminUrl: sourceUrl,
       source,
-      reconnectUrls,
+      rolloutId: rollout.rolloutId,
+      beforePolicy: sourcePrincipalPolicy,
     }),
   provider: createPrivatePg17SourceFreezeRecovery({
     ledger,
@@ -177,6 +205,11 @@ const useCases = new ReleaseRolloutUseCases({
     quiesce: async () => {
       quiescence = database.quiesceSource({
         adminUrl: sourceUrl,
+        source,
+        rolloutId: rollout.rolloutId,
+        fenceId: `source-fence:${rollout.rolloutId}`,
+        beforePolicy: sourcePrincipalPolicy,
+        fencedPolicy: sourceFencedPrincipalPolicy,
         writerSuspension: {
           services: freezeObservation.facts.services,
           complete: true,
@@ -198,6 +231,10 @@ const useCases = new ReleaseRolloutUseCases({
         JSON.parse(
           required("REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON"),
         ) as string[],
+        {
+          source: sourceFencedPrincipalPolicy,
+          target: targetPrincipalPolicy,
+        },
       );
       return equivalence.observation;
     },

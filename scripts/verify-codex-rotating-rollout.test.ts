@@ -1168,10 +1168,25 @@ function observedFixture(): any {
   );
   const artifacts: any = {
     database: {
-      observationVersion: 5,
+      observationVersion: 6,
       source: "production-postgresql-writer",
       captureKind: "database-query",
       rehearsal: false,
+      effectivePrincipalInventory: {
+        version: 1,
+        database: "review_router",
+        sessionPrincipal: "reviewrouter_release_migration",
+        roles: [],
+        memberships: [],
+        grants: [],
+      },
+      effectivePrincipalDecision: {
+        accepted: true,
+        inventorySha256: `sha256:${"8".repeat(64)}`,
+        policySha256: `sha256:${"9".repeat(64)}`,
+        violations: [],
+        effectivePermissions: {},
+      },
       databaseIdentity: {
         currentDatabase: "review_router",
         currentSchema: "public",

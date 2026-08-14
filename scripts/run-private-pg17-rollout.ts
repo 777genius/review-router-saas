@@ -21,6 +21,8 @@ import {
   assertVerifiedReleaseImageProvenance,
   sameReleaseImageProvenance,
   type VerifiedReleaseImageProvenance,
+  type EffectivePrincipalPolicy,
+  type SourceDatabaseFenceEvidence,
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
 import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
@@ -38,7 +40,9 @@ const copy = JSON.parse(
   releaseImageProvenance: VerifiedReleaseImageProvenance;
   roleBootstrapRunner: RunnerIdentity;
   backup: unknown;
-  quiescence: unknown;
+  quiescence: {
+    readonly evidence: { readonly fence: SourceDatabaseFenceEvidence };
+  };
   equivalence: unknown;
 };
 let rollout = copy.rollout;
@@ -220,6 +224,12 @@ const transactionalServices = new TransactionalServiceCutover(
 const generation = new PostgreSqlGenerationAdapter(
   new RedactedProcessCommandAdapter(),
 );
+const sourcePrincipalPolicy = JSON.parse(
+  required("REVIEW_ROUTER_SOURCE_PRINCIPAL_POLICY_JSON"),
+) as EffectivePrincipalPolicy;
+const sourceFencedPrincipalPolicy = JSON.parse(
+  required("REVIEW_ROUTER_SOURCE_FENCED_PRINCIPAL_POLICY_JSON"),
+) as EffectivePrincipalPolicy;
 const canonical = new PrivatePg17CanonicalAdapter();
 const unavailable = async (): Promise<never> => {
   throw new Error("private_pg17_port_not_available_in_cutover_phase");
@@ -232,16 +242,18 @@ const compensation = new ReleaseCompensationReconciliationUseCase({
   authority,
   ledger,
   compensateDatabase: async () =>
-    generation.compensateSource({
+    generation.restoreSourceFence({
       adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
       source: rollout.source,
-      reconnectUrls: sourceUrls,
+      fence: copy.quiescence.evidence.fence,
+      beforePolicy: sourcePrincipalPolicy,
     }),
   observeDatabaseCompensation: async () =>
-    generation.observeCompensatedSource({
+    generation.observeRestoredSourceFence({
       adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
       source: rollout.source,
-      reconnectUrls: sourceUrls,
+      rolloutId: rollout.rolloutId,
+      beforePolicy: sourcePrincipalPolicy,
     }),
   provider: createPrivatePg17SourceFreezeRecovery({
     ledger,
@@ -392,12 +404,34 @@ try {
     cause: error,
   });
 }
+generation.verifySourceFence({
+  adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+  source: rollout.source,
+  rolloutId: rollout.rolloutId,
+  fencedPolicy: sourceFencedPrincipalPolicy,
+});
 try {
   rollout = await useCases.activateTargetGeneration(
     rollout,
     cutoverRunner.workflowJobId,
   );
+  generation.verifySourceFence({
+    adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+    source: rollout.source,
+    rolloutId: rollout.rolloutId,
+    fencedPolicy: sourceFencedPrincipalPolicy,
+  });
+  generation.markSourceFenceForwardOnly({
+    adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+    source: rollout.source,
+    fence: copy.quiescence.evidence.fence,
+  });
 } catch (error) {
+  generation.markSourceFenceForwardOnly({
+    adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+    source: rollout.source,
+    fence: copy.quiescence.evidence.fence,
+  });
   rollout = await useCases.recoverFromFailure(rollout, "activation_uncertain");
   throw new Error(
     `private_pg17_activation_uncertain:${error instanceof Error ? error.message : "unknown"}`,
