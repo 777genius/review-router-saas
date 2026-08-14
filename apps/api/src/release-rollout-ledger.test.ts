@@ -337,8 +337,7 @@ describe("release rollout ledger internal API", () => {
     const providerMutationAuthority = new ProviderMutationAuthorityService({
       issue: async () => permit,
       consume: async () => {
-        if (state !== "fresh") throw new Error("replay");
-        state = "consumed";
+        if (state === "fresh") state = "consumed";
         return receipt;
       },
       validateExecution: async () => {
@@ -347,8 +346,8 @@ describe("release rollout ledger internal API", () => {
         return true;
       },
       complete: async () => {
-        if (state !== "executing") throw new Error("not_executing");
-        state = "completed";
+        if (state === "executing") state = "completed";
+        if (state !== "completed") throw new Error("not_executing");
       },
       reconcile: async () => undefined,
     });
@@ -378,7 +377,7 @@ describe("release rollout ledger internal API", () => {
       ).statusCode,
     ).toBe(200);
     expect((await request("consume", permit)).json()).toEqual(receipt);
-    expect((await request("consume", permit)).statusCode).toBe(500);
+    expect((await request("consume", permit)).json()).toEqual(receipt);
     expect((await request("validate-execution", receipt)).json()).toEqual({
       authorized: true,
     });
@@ -390,9 +389,12 @@ describe("release rollout ledger internal API", () => {
       state: expected,
       observedAt: "2026-08-14T00:00:02.000Z",
     };
-    expect(
-      (await request("complete", { receipt, observation })).statusCode,
-    ).toBe(200);
+    const completed = await request("complete", { receipt, observation });
+    expect(completed.statusCode).toBe(200);
+    expect(await request("complete", { receipt, observation })).toMatchObject({
+      statusCode: 200,
+      body: completed.body,
+    });
     expect(state).toBe("completed");
     await app.close();
   });

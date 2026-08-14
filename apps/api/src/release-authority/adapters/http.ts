@@ -47,14 +47,27 @@ const mutationResource = (value: unknown) => {
   const item = record(value);
   if (
     !exactKeys(item, ["provider", "kind", "id"]) ||
-    !nonemptyString(item.provider) ||
-    !nonemptyString(item.kind) ||
+    item.provider !== "render" ||
+    ![
+      "service",
+      "service_environment",
+      "deploy_creation_slot",
+      "job_creation_intent",
+    ].includes(typeof item.kind === "string" ? item.kind : "") ||
     !nonemptyString(item.id)
   )
     throw Object.assign(new Error("provider_mutation_request_invalid"), {
       statusCode: 400,
     });
-  return item as { provider: string; kind: string; id: string };
+  return item as {
+    provider: "render";
+    kind:
+      | "service"
+      | "service_environment"
+      | "deploy_creation_slot"
+      | "job_creation_intent";
+    id: string;
+  };
 };
 const mutationExpected = (value: unknown) => {
   const item = record(value);
@@ -674,12 +687,14 @@ export async function registerReleaseRolloutLedgerRoutes(
       );
     return dependencies.providerMutationAuthority;
   };
-  const providerMutationControl = async (request: FastifyRequest) =>
-    authorize(
-      request,
-      dependencies.providerAuthorityTokenSha256 ??
-        dependencies.controlTokenSha256,
-    );
+  const providerMutationControl = async (request: FastifyRequest) => {
+    if (!dependencies.providerAuthorityTokenSha256)
+      throw Object.assign(
+        new Error("provider_mutation_authority_unavailable"),
+        { statusCode: 503 },
+      );
+    return authorize(request, dependencies.providerAuthorityTokenSha256);
+  };
   app.post(
     "/v1/provider-mutations/issue",
     { preHandler: providerMutationControl },

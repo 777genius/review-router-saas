@@ -19,7 +19,7 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
     databaseName: "authority",
   },
   postgresMajor: 17,
-  schemaVersion: 11,
+  schemaVersion: 12,
   migrationManifest: releaseAuthorityMigrationContract.map(
     ([migrationName, checksumSha256], index) => {
       if (!migrationName || !checksumSha256)

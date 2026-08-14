@@ -118,7 +118,7 @@ export function composeReleaseControlDependencies(
     ),
     serviceTransition: new ReleaseServiceTransitionService(adapter),
     providerMutationAuthority: new ProviderMutationAuthorityService(
-      new RoutineProviderMutationAuthorityAdapter(providerAuthorityPrisma),
+      new RoutineProviderMutationAuthorityAdapter(controlPrisma),
     ),
     ...credentials,
   };

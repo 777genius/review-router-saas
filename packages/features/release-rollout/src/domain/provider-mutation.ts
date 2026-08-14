@@ -1,6 +1,21 @@
+export const ProviderIdentifier = Object.freeze({
+  Render: "render",
+} as const);
+export type ProviderIdentifier =
+  (typeof ProviderIdentifier)[keyof typeof ProviderIdentifier];
+
+export const ProviderResourceKind = Object.freeze({
+  Service: "service",
+  ServiceEnvironment: "service_environment",
+  DeployCreationSlot: "deploy_creation_slot",
+  JobCreationIntent: "job_creation_intent",
+} as const);
+export type ProviderResourceKind =
+  (typeof ProviderResourceKind)[keyof typeof ProviderResourceKind];
+
 export interface ProviderResourceIdentity {
-  readonly provider: string;
-  readonly kind: string;
+  readonly provider: ProviderIdentifier;
+  readonly kind: ProviderResourceKind;
   readonly id: string;
 }
 
@@ -10,11 +25,31 @@ export interface ExpectedProviderState {
   readonly version: string | null;
 }
 
+export const ProviderResourceLeaseState = Object.freeze({
+  Claimed: "claimed",
+  Consumed: "consumed",
+  Executing: "executing",
+  ForwardRepair: "forward_repair",
+} as const);
+export type ProviderResourceLeaseState =
+  (typeof ProviderResourceLeaseState)[keyof typeof ProviderResourceLeaseState];
+
+/** Resource-wide fence, independent of rollout and operation identity. */
+export type ProviderResourceLease = Readonly<{
+  resource: ProviderResourceIdentity;
+  fenceEpoch: number;
+  state: ProviderResourceLeaseState;
+  rolloutId: string;
+  operation: string;
+  permitId: string;
+}>;
+
 export interface MutationLeaseIdentity {
   readonly rolloutId: string;
   readonly operation: string;
   readonly resource: ProviderResourceIdentity;
   readonly ownerId: string;
+  /** Monotonic epoch of the resource-wide fence. */
   readonly epoch: number;
 }
 
@@ -50,12 +85,38 @@ export type ProviderMutationReconciliation = Readonly<{
   observation: ObservedProviderPostcondition | null;
 }>;
 
+export const ProviderMutationTerminalResult = Object.freeze({
+  ExactPostcondition: "exact_postcondition",
+  PreconditionDrift: "precondition_drift",
+  ExecutionNotAuthorized: "execution_not_authorized",
+  AmbiguousForwardRepair: "ambiguous_forward_repair",
+} as const);
+export type ProviderMutationTerminalResult =
+  (typeof ProviderMutationTerminalResult)[keyof typeof ProviderMutationTerminalResult];
+
+export type MutationTerminalOutcome = Readonly<{
+  status: "terminal";
+  result: ProviderMutationTerminalResult;
+  rolloutId: string;
+  operation: string;
+  resource: ProviderResourceIdentity;
+  ownerId: string;
+  epoch: number;
+  permitId: string;
+  receiptId: string;
+  observation: ObservedProviderPostcondition | null;
+  completedAt: string;
+}>;
+
 const sha256 = /^sha256:[a-f0-9]{64}$/u;
 const token = /^[a-f0-9]{64}$/u;
 const bounded = (value: unknown, max = 256): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= max;
 const timestamp = (value: string): boolean =>
   Number.isFinite(Date.parse(value));
+const providerKinds = new Set<ProviderResourceKind>(
+  Object.values(ProviderResourceKind),
+);
 
 export function assertOneShotMutationPermit(
   value: OneShotMutationPermit,
@@ -64,8 +125,8 @@ export function assertOneShotMutationPermit(
   if (
     !bounded(value.rolloutId) ||
     !bounded(value.operation) ||
-    !bounded(value.resource.provider, 64) ||
-    !bounded(value.resource.kind, 64) ||
+    value.resource.provider !== ProviderIdentifier.Render ||
+    !providerKinds.has(value.resource.kind) ||
     !bounded(value.resource.id) ||
     !bounded(value.ownerId) ||
     !Number.isSafeInteger(value.epoch) ||

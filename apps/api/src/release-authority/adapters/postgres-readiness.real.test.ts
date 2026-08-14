@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import { releaseAuthoritySchemaIsReady } from "../application/readiness";
+import { releaseAuthorityReadOnlyCatalogDigestExpression } from "./catalog-fingerprint.mjs";
 import { observeReleaseAuthorityDatabaseReadiness } from "./postgres-readiness";
 
 const adminUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_ADMIN_TEST_URL;
@@ -126,11 +127,25 @@ realDescribe("release authority exact catalog readiness", () => {
     expect(releaseAuthoritySchemaIsReady(observed)).toBe(false);
   };
 
+  it("has PostgreSQL parse both embedded read-only catalog digests", async () => {
+    if (!admin) throw new Error("real_postgres_test_unconfigured");
+    const activationCatalogDigest =
+      releaseAuthorityReadOnlyCatalogDigestExpression(
+        "reviewrouter_activation",
+      );
+    const authorityCatalogDigest =
+      releaseAuthorityReadOnlyCatalogDigestExpression("release_authority");
+    const plan = await admin.$queryRawUnsafe<{ "QUERY PLAN": string }[]>(
+      `EXPLAIN (COSTS OFF) SELECT ${activationCatalogDigest} AS activation_catalog_digest, ${authorityCatalogDigest} AS authority_catalog_digest`,
+    );
+    expect(plan.length).toBeGreaterThan(0);
+  });
+
   it("accepts the canonical PostgreSQL 17 catalog", async () => {
     const observed = await readiness();
     expect(observed).toMatchObject({
       postgresMajor: 17,
-      schemaVersion: 11,
+      schemaVersion: 12,
       catalogVerifier: "complete_catalog_v3_acl_exact",
       defaultAclExact: true,
       finalAclExact: true,
@@ -528,6 +543,8 @@ realDescribe("release authority exact catalog readiness", () => {
       "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=11",
       "DELETE FROM release_authority.schema_migration WHERE position=12",
       "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=12",
+      "DELETE FROM release_authority.schema_migration WHERE position=13",
+      "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=13",
     ];
     for (const mutate of cases) {
       await admin.$executeRawUnsafe(

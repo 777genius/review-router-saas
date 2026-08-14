@@ -665,7 +665,7 @@ export class RoutineProviderMutationAuthorityAdapter implements ReleaseProviderM
   async complete(
     input: Parameters<ReleaseProviderMutationAuthorityPort["complete"]>[0],
   ): Promise<void> {
-    requiredBoolean(
+    requiredRecord(
       await firstValue(
         this.prisma,
         Prisma.sql`SELECT release_authority.release_provider_mutation_complete(${asJsonb(input)}) AS value`,
@@ -676,7 +676,7 @@ export class RoutineProviderMutationAuthorityAdapter implements ReleaseProviderM
   async reconcile(
     input: Parameters<ReleaseProviderMutationAuthorityPort["reconcile"]>[0],
   ): Promise<void> {
-    requiredBoolean(
+    requiredRecord(
       await firstValue(
         this.prisma,
         Prisma.sql`SELECT release_authority.release_provider_mutation_reconcile(${asJsonb(input)}) AS value`,

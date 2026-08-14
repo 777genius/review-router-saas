@@ -82,7 +82,7 @@ const authorityReadiness = (
     systemIdentifier: "1",
     databaseIdentity: trustedDatabaseIdentity.authorityDatabaseIdentity,
     postgresMajor: 17,
-    schemaVersion: 11,
+    schemaVersion: 12,
     catalogFingerprint: "sha256:canonical-catalog",
     expectedCatalogFingerprint: "sha256:canonical-catalog",
     catalogVerifier: "complete_catalog_v3_acl_exact",
@@ -128,15 +128,19 @@ const authorityReadiness = (
       ],
       [
         "000009_authority_history_and_forward_repairs",
-        "f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4",
+        "bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
       ],
       [
         "000010_recovery_effect_permits",
-        "7ead5636edb5cde56580bf66d2ccbe24c4f0da7156cb0e8cd14839e6a44d3c50",
+        "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
       ],
       [
         "000011_default_and_final_acl_exactness",
         "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
+      ],
+      [
+        "000012_provider_mutation_resource_fence",
+        "8fc5e73892ff81a18047fa5ebdf3b6ddeb85cea6c4d920afd734c5e7a6b3d686",
       ],
     ].map(([migrationName, checksum], index) => ({
       position: index + 1,
@@ -272,7 +276,7 @@ const readinessQuery = (
           authorityOwnerRoleName: readiness.authorityOwnerRoleName,
           systemIdentifier: readiness.systemIdentifier,
           postgresMajor: readiness.postgresMajor,
-          authorityPresent: readiness.schemaVersion === 11,
+          authorityPresent: readiness.schemaVersion === 12,
           installerRoutine: readiness.installerRoutine,
           readerRoutine: readiness.readerRoutine,
           installerRoutineBodySha256: readiness.installerRoutineBodySha256,
@@ -768,6 +772,85 @@ describe("release authority process composition", () => {
         activationBoundary: "before",
       }),
     );
+    await app.close();
+  });
+
+  it("authenticates provider mutation callers with the provider bearer but routes routines through release control", async () => {
+    const permit = {
+      rolloutId: "rollout-provider-mutation",
+      operation: "freeze:srv-one",
+      resource: { provider: "render", kind: "service", id: "srv-one" },
+      ownerId: "actor-one",
+      epoch: 1,
+      permitId: "a".repeat(64),
+      token: "b".repeat(64),
+      expected: { fingerprint: `sha256:${"c".repeat(64)}`, version: null },
+      issuedAt: "2026-08-14T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      singleUse: true,
+    };
+    const controlOperation = vi.fn().mockResolvedValue([{ value: permit }]);
+    const providerOperation = vi.fn();
+    const app = await createReleaseControlApp({
+      controlPrisma: {
+        $queryRaw: readinessQuery(
+          authorityReadiness("reviewrouter_release_control"),
+          controlOperation,
+        ),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: readinessQuery(
+          authorityReadiness("reviewrouter_provider_authority"),
+          providerOperation,
+        ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: readinessQuery(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: readinessQuery(readerReadiness),
+      } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/provider-mutations/issue",
+      headers: { authorization: "Bearer provider" },
+      payload: {
+        rolloutId: permit.rolloutId,
+        operation: permit.operation,
+        resource: permit.resource,
+        ownerId: permit.ownerId,
+        expected: permit.expected,
+        leaseSeconds: 60,
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(permit);
+    expect(controlOperation).toHaveBeenCalledOnce();
+    expect(providerOperation).not.toHaveBeenCalled();
+    expect(String(controlOperation.mock.calls[0]?.[0]?.text)).toContain(
+      "release_provider_mutation_issue",
+    );
+
+    const controlCredentialResponse = await app.inject({
+      method: "POST",
+      url: "/v1/provider-mutations/issue",
+      headers: { authorization: "Bearer control" },
+      payload: {
+        rolloutId: permit.rolloutId,
+        operation: permit.operation,
+        resource: permit.resource,
+        ownerId: permit.ownerId,
+        expected: permit.expected,
+        leaseSeconds: 60,
+      },
+    });
+    expect(controlCredentialResponse.statusCode).toBe(401);
+    expect(controlOperation).toHaveBeenCalledOnce();
     await app.close();
   });
 

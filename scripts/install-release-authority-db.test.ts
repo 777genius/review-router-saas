@@ -276,7 +276,7 @@ describe("release authority database installation", () => {
       "REVOKE ALL ON FUNCTION release_authority.release_service_transition_immutable() FROM PUBLIC;",
     );
   });
-  it("moves published-file repairs into 000009 and records canonical or legacy byte identity", () => {
+  it("keeps published 000009 immutable and records canonical or legacy byte identity", () => {
     const migration = readFileSync(
       "packages/platform/release-authority-db/migrations/000009_authority_history_and_forward_repairs/migration.sql",
       "utf8",
@@ -296,9 +296,8 @@ describe("release authority database installation", () => {
     );
     expect(migration).toContain("intent_rollout_id");
     expect(migration).toContain("release_schema_migration_manifest");
-    expect(migration).toContain("complete catalog verification");
-    expect(migration).toContain(
-      "release_authority_catalog_fingerprint('release_authority')",
+    expect(createHash("sha256").update(migration).digest("hex")).toBe(
+      "bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
     );
   });
   it("identifies exact two-file catalogs before later migrations can erase byte evidence", () => {
@@ -430,9 +429,16 @@ describe("release authority database installation", () => {
     );
     expect(fingerprint).toContain("SELECT 'type', type_record.typname");
   });
-  it("installs single-use rollout-first recovery effect permits", () => {
-    const migration = readFileSync(
+  it("keeps published 000010 immutable and appends hardened recovery and provider permits", () => {
+    const published = readFileSync(
       "packages/platform/release-authority-db/migrations/000010_recovery_effect_permits/migration.sql",
+      "utf8",
+    );
+    expect(createHash("sha256").update(published).digest("hex")).toBe(
+      "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
+    );
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000012_provider_mutation_resource_fence/migration.sql",
       "utf8",
     );
     expect(migration).toContain("release_recovery_effect_consume");
@@ -443,8 +449,11 @@ describe("release authority database installation", () => {
     expect(migration).toContain("release_late_job_recovery_effect_gate");
     expect(migration).toContain("release_recovery_checkpoint_permit_gate");
     expect(migration).toContain("state='forward_repair'");
-    expect(migration).toContain("pg_catalog.gen_random_uuid()");
+    expect(migration).toContain("gen_random_uuid()");
     expect(migration).not.toContain("gen_random_bytes");
+    expect(migration).toContain("provider_resource_lease");
+    expect(migration).toContain("receipt_id");
+    expect(migration).toContain("provider mutation terminal replay conflict");
   });
   it("removes implicit PUBLIC usage from the declared authority type", () => {
     const migration = readFileSync(
@@ -469,6 +478,7 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000009_authority_history_and_forward_repairs/migration.sql",
       "packages/platform/release-authority-db/migrations/000010_recovery_effect_permits/migration.sql",
       "packages/platform/release-authority-db/migrations/000011_default_and_final_acl_exactness/migration.sql",
+      "packages/platform/release-authority-db/migrations/000012_provider_mutation_resource_fence/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths.map((path) =>
@@ -484,9 +494,10 @@ describe("release authority database installation", () => {
       "4ee3a75a1528870df6d66a24eded9fc588aed2681b82aef57335ad7bbadf1260",
       "99e384395f93e2c82ea900fdfd86a810f5067bfafec5c32fe5ccd7d51a8d93a9",
       "550e7c1e5f11bd795a867c03873d09a6b681c559f07b2101b8e8a3dbea3408c8",
-      "f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4",
-      "7ead5636edb5cde56580bf66d2ccbe24c4f0da7156cb0e8cd14839e6a44d3c50",
+      "bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
+      "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
       "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
+      "8fc5e73892ff81a18047fa5ebdf3b6ddeb85cea6c4d920afd734c5e7a6b3d686",
     ]);
     const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
@@ -519,6 +530,10 @@ describe("release authority database installation", () => {
       "REVOKE ALL ON TYPE release_authority.aggregate_state FROM PUBLIC",
       eleventh,
     );
+    const thirteenth = bundle.indexOf(
+      "CREATE TABLE release_authority.provider_resource_lease",
+      twelfth,
+    );
     expect(first).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(first);
     expect(third).toBeGreaterThan(second);
@@ -531,6 +546,7 @@ describe("release authority database installation", () => {
     expect(tenth).toBeGreaterThan(ninth);
     expect(eleventh).toBeGreaterThan(tenth);
     expect(twelfth).toBeGreaterThan(eleventh);
+    expect(thirteenth).toBeGreaterThan(twelfth);
     expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
     expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
     expect(bundle.match(/CREATE SCHEMA release_authority/gu)).toHaveLength(4);
@@ -560,8 +576,9 @@ describe("release authority database installation", () => {
     for (const bundle of [fresh, upgrade]) {
       expect(bundle).toContain("authority_forward_11_present");
       expect(bundle).toContain("authority_forward_12_present");
+      expect(bundle).toContain("authority_forward_13_present");
       expect(bundle).toContain(
-        "release authority forward migration 12 already present",
+        "release authority forward migration 13 already present",
       );
       expect(bundle).toContain(
         "release authority final object ACL matrix mismatch",
@@ -589,11 +606,15 @@ describe("release authority database installation", () => {
     const bundle = releaseAuthorityMigrationBundle("incremental-upgrade");
     expect(bundle).toContain("authority_forward_11_present");
     expect(bundle).toContain("authority_forward_12_present");
+    expect(bundle).toContain("authority_forward_13_present");
     expect(bundle).toContain("release authority migration history mismatch");
     expect(bundle).toContain("position=1) IS DISTINCT FROM");
     expect(bundle).toContain("VALUES (11, '000010_recovery_effect_permits'");
     expect(bundle).toContain(
       "VALUES (12, '000011_default_and_final_acl_exactness'",
+    );
+    expect(bundle).toContain(
+      "VALUES (13, '000012_provider_mutation_resource_fence'",
     );
   });
 

@@ -23,6 +23,9 @@ describe("release authority ACL policy", () => {
     expect(releaseAuthorityFinalAclPolicy.relations).toContain(
       "recovery_effect",
     );
+    expect(releaseAuthorityFinalAclPolicy.relations).toContain(
+      "provider_resource_lease",
+    );
     expect(releaseAuthorityFinalAclPolicy.sequences).toEqual([
       "source_freeze_observation_observation_id_seq",
     ]);
@@ -42,8 +45,8 @@ describe("release authority ACL policy", () => {
     expect(releaseAuthorityFinalAclPolicy.publicPrivileges).toEqual([]);
     expect(releaseAuthorityFinalAclPolicy.grantOptions).toEqual([]);
     expect(releaseAuthorityFinalAclPolicy.roleMemberships).toEqual([]);
-    expect(new Set(releaseAuthorityFinalAclPolicy.relations).size).toBe(12);
-    expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(71);
+    expect(new Set(releaseAuthorityFinalAclPolicy.relations).size).toBe(13);
+    expect(new Set(releaseAuthorityFinalAclPolicy.routines).size).toBe(73);
     expect(
       new Set(
         releaseAuthorityFinalAclPolicy.routineExecuteRoles

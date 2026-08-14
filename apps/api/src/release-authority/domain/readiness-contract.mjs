@@ -47,15 +47,19 @@ export const releaseAuthorityMigrationContract = Object.freeze([
   ],
   [
     "000009_authority_history_and_forward_repairs",
-    "sha256:f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4",
+    "sha256:bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
   ],
   [
     "000010_recovery_effect_permits",
-    "sha256:7ead5636edb5cde56580bf66d2ccbe24c4f0da7156cb0e8cd14839e6a44d3c50",
+    "sha256:a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
   ],
   [
     "000011_default_and_final_acl_exactness",
     "sha256:727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
+  ],
+  [
+    "000012_provider_mutation_resource_fence",
+    "sha256:8fc5e73892ff81a18047fa5ebdf3b6ddeb85cea6c4d920afd734c5e7a6b3d686",
   ],
 ]);
 

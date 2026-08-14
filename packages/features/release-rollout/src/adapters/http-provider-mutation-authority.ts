@@ -41,15 +41,32 @@ export class HttpProviderMutationAuthorityAdapter implements ProviderMutationAut
   async complete(
     input: Parameters<ProviderMutationAuthorityPort["complete"]>[0],
   ): Promise<void> {
-    await this.command("complete", input);
+    await this.command("complete", input, true);
   }
   async reconcile(
     input: Parameters<ProviderMutationAuthorityPort["reconcile"]>[0],
   ): Promise<void> {
-    await this.command("reconcile", input);
+    await this.command("reconcile", input, true);
   }
 
-  private async command<T>(operation: string, body: unknown): Promise<T> {
+  private async command<T>(
+    operation: string,
+    body: unknown,
+    retryExactReplay = operation === "consume",
+  ): Promise<T> {
+    const attempts = retryExactReplay ? 2 : 1;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.commandOnce<T>(operation, body);
+      } catch (error) {
+        if (!(error instanceof ProviderHttpError) || attempt === attempts)
+          throw error;
+      }
+    }
+    throw new Error("provider_mutation_authority_retry_exhausted");
+  }
+
+  private async commandOnce<T>(operation: string, body: unknown): Promise<T> {
     const response = await this.http.request(
       `mutation_authority_${operation}`,
       `${this.origin.replace(/\/$/u, "")}/v1/provider-mutations/${operation}`,

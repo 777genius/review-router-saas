@@ -88,6 +88,8 @@ describe("release authority ACL readiness observation", () => {
     );
     expect(sql).toContain("installerRoutineBodySha256");
     expect(sql).toContain("readerRoutineBodySha256");
+    expect(sql).toContain(") bodies(ordinal,body_sha256)),'')");
+    expect(sql).not.toContain(") bodies(ordinal,body_sha256))),'')");
     expect(sql).toContain(
       "activation_permit','activation_receipt','activation_principal_evidence",
     );
@@ -149,7 +151,7 @@ describe("release authority ACL readiness observation", () => {
           },
         },
       ],
-      [{ schemaVersion: 11, migrationManifest: [] }],
+      [{ schemaVersion: 12, migrationManifest: [] }],
       [{ migrationManifest: manifest }],
     ]);
     const harness = transactionHarness(queryRaw);

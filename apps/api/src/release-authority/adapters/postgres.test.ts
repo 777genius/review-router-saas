@@ -29,7 +29,9 @@ class QueryRecorder {
       text.includes("release_provider_mutation_complete") ||
       text.includes("release_provider_mutation_reconcile")
     )
-      return [{ value: true }] as T;
+      return [
+        { value: { status: "terminal", result: "exact_postcondition" } },
+      ] as T;
     if (text.includes("release_provider_mutation_issue"))
       return [{ value: { permitId: "permit" } }] as T;
     if (text.includes("release_provider_mutation_consume"))

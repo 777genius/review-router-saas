@@ -1740,7 +1740,7 @@ COMMIT;
             databaseName: current.target.databaseName,
           },
           releaseAuthority: {
-            schemaVersion: 11,
+            schemaVersion: 12,
             migrationManifestIdentity: digest,
             catalogFingerprint: digest,
             catalogVerifier: "disposable-rehearsal",

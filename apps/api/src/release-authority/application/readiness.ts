@@ -74,7 +74,7 @@ export type TrustedReleaseControlDatabaseIdentity = Readonly<{
 export const releaseAuthoritySchemaIsReady = (
   readiness: ReleaseAuthorityDatabaseReadiness,
 ): boolean =>
-  readiness.schemaVersion === 11 &&
+  readiness.schemaVersion === 12 &&
   readiness.catalogExact &&
   readiness.defaultAclExact &&
   readiness.finalAclExact &&

@@ -76,6 +76,7 @@ export const releaseAuthorityFinalAclPolicy = Object.freeze({
   relations: Object.freeze([
     "provider_authority_decision",
     "provider_mutation",
+    "provider_resource_lease",
     "receipt",
     "recovery_effect",
     "rollout",
@@ -115,6 +116,8 @@ export const releaseAuthorityFinalAclPolicy = Object.freeze({
     "release_provider_mutation_finish",
     "release_provider_mutation_issue",
     "release_provider_mutation_permit",
+    "release_provider_mutation_receipt",
+    "release_provider_mutation_outcome",
     "release_provider_mutation_reconcile",
     "release_provider_mutation_validate_execution",
     "release_recovery_checkpoint_permit_gate",

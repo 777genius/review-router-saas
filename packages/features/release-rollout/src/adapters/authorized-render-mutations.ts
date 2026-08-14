@@ -5,6 +5,7 @@ import type {
   ExpectedProviderState,
   ObservedProviderPostcondition,
   ProviderResourceIdentity,
+  ProviderResourceKind,
 } from "../domain/provider-mutation";
 import {
   RenderApiAdapter,
@@ -28,7 +29,10 @@ const state = (
   fingerprint: fingerprint(value),
   version,
 });
-const resource = (kind: string, id: string): ProviderResourceIdentity => ({
+const resource = (
+  kind: ProviderResourceKind,
+  id: string,
+): ProviderResourceIdentity => ({
   provider: "render",
   kind,
   id,

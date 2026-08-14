@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { HttpProviderMutationAuthorityAdapter } from "./http-provider-mutation-authority";
+import { AuthoritySerializedMutation } from "../application/provider-mutation-authority";
 
 const permit = {
   rolloutId: "rollout-one",
@@ -13,7 +14,7 @@ const permit = {
   issuedAt: "2026-08-14T00:00:00.000Z",
   expiresAt: "2099-01-01T00:00:00.000Z",
   singleUse: true as const,
-};
+} as const;
 
 describe("HTTP provider mutation authority", () => {
   it("uses one bounded HTTP command per authority transition", async () => {
@@ -28,12 +29,23 @@ describe("HTTP provider mutation authority", () => {
       expected: permit.expected,
       consumedAt: "2026-08-14T00:00:01.000Z",
     };
+    const outcome = {
+      status: "terminal" as const,
+      result: "exact_postcondition" as const,
+      ...receipt,
+      observation: {
+        resource: permit.resource,
+        state: permit.expected,
+        observedAt: "2026-08-14T00:00:02.000Z",
+      },
+      completedAt: "2026-08-14T00:00:03.000Z",
+    };
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(Response.json(permit))
       .mockResolvedValueOnce(Response.json(receipt))
       .mockResolvedValueOnce(Response.json({ authorized: true }))
-      .mockResolvedValueOnce(Response.json({ completed: true }));
+      .mockResolvedValueOnce(Response.json(outcome));
     const adapter = new HttpProviderMutationAuthorityAdapter(
       "https://authority.invalid",
       "secret",
@@ -67,7 +79,7 @@ describe("HTTP provider mutation authority", () => {
     ).toBe(true);
   });
 
-  it("never retries a lost authority write", async () => {
+  it("never retries a lost permit issuance", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("hung/lost"));
     await expect(
       new HttpProviderMutationAuthorityAdapter(
@@ -84,6 +96,128 @@ describe("HTTP provider mutation authority", () => {
       }),
     ).rejects.toThrow('"code":"provider_http_request_failed"');
     expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("retries exact consume and terminal commands after response loss", async () => {
+    const receipt = {
+      rolloutId: permit.rolloutId,
+      operation: permit.operation,
+      resource: permit.resource,
+      ownerId: permit.ownerId,
+      epoch: permit.epoch,
+      permitId: permit.permitId,
+      receiptId: "d".repeat(64),
+      expected: permit.expected,
+      consumedAt: "2026-08-14T00:00:01.000Z",
+    };
+    const outcome = {
+      status: "terminal" as const,
+      result: "exact_postcondition" as const,
+      ...receipt,
+      observation: {
+        resource: permit.resource,
+        state: permit.expected,
+        observedAt: "2026-08-14T00:00:02.000Z",
+      },
+      completedAt: "2026-08-14T00:00:03.000Z",
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("consume response lost"))
+      .mockResolvedValueOnce(Response.json(receipt))
+      .mockRejectedValueOnce(new Error("complete response lost"))
+      .mockResolvedValueOnce(Response.json(outcome));
+    const adapter = new HttpProviderMutationAuthorityAdapter(
+      "https://authority.invalid",
+      "secret",
+      fetchImpl,
+    );
+    await expect(adapter.consume(permit)).resolves.toEqual(receipt);
+    await expect(
+      adapter.complete({ receipt, observation: outcome.observation }),
+    ).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  it("converges committed consume and complete response loss without a duplicate provider write", async () => {
+    const receipt = {
+      rolloutId: permit.rolloutId,
+      operation: permit.operation,
+      resource: permit.resource,
+      ownerId: permit.ownerId,
+      epoch: permit.epoch,
+      permitId: permit.permitId,
+      receiptId: "d".repeat(64),
+      expected: permit.expected,
+      consumedAt: "2026-08-14T00:00:01.000Z",
+    };
+    const observation = {
+      resource: permit.resource,
+      state: { fingerprint: `sha256:${"e".repeat(64)}`, version: null },
+      observedAt: "2026-08-14T00:00:02.000Z",
+    };
+    const outcome = {
+      status: "terminal" as const,
+      result: "exact_postcondition" as const,
+      ...receipt,
+      observation,
+      completedAt: "2026-08-14T00:00:03.000Z",
+    };
+    let consumeCommitted = false;
+    let completeCommitted = false;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/issue")) return Response.json(permit);
+      if (url.endsWith("/consume")) {
+        if (!consumeCommitted) {
+          consumeCommitted = true;
+          throw new Error("response lost after consume commit");
+        }
+        return Response.json(receipt);
+      }
+      if (url.endsWith("/validate-execution"))
+        return Response.json({ authorized: true });
+      if (url.endsWith("/complete")) {
+        if (!completeCommitted) {
+          completeCommitted = true;
+          throw new Error("response lost after complete commit");
+        }
+        return Response.json(outcome);
+      }
+      throw new Error("unexpected authority operation");
+    });
+    const mutate = vi.fn().mockResolvedValue(undefined);
+    const observe = vi
+      .fn()
+      .mockResolvedValueOnce({
+        resource: permit.resource,
+        state: permit.expected,
+        observedAt: "2026-08-14T00:00:00.000Z",
+      })
+      .mockResolvedValue(observation);
+    const authority = new HttpProviderMutationAuthorityAdapter(
+      "https://authority.invalid",
+      "secret",
+      fetchImpl,
+    );
+    await expect(
+      new AuthoritySerializedMutation(
+        authority,
+        () => new Date("2026-08-14T00:00:00.000Z"),
+      ).execute({
+        rolloutId: permit.rolloutId,
+        operation: permit.operation,
+        resource: permit.resource,
+        ownerId: permit.ownerId,
+        expected: permit.expected,
+        expectedPostcondition: observation.state,
+        observe,
+        mutate,
+      }),
+    ).resolves.toMatchObject({ status: "applied" });
+    expect(mutate).toHaveBeenCalledOnce();
+    expect(consumeCommitted).toBe(true);
+    expect(completeCommitted).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
   });
 
   it("drops invalid JSON bodies, response headers, and request tokens", async () => {

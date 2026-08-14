@@ -9,7 +9,9 @@ import {
 
 const controlUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL;
 const witnessUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_TEST_URL;
-const realDescribe = controlUrl && witnessUrl ? describe : describe.skip;
+const adminUrl = process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_ADMIN_TEST_URL;
+const realDescribe =
+  controlUrl && witnessUrl && adminUrl ? describe : describe.skip;
 
 realDescribe("release authority API/Postgres runtime contract", () => {
   const control = controlUrl
@@ -18,10 +20,11 @@ realDescribe("release authority API/Postgres runtime contract", () => {
   const witness = witnessUrl
     ? createPrismaClient({ databaseUrl: witnessUrl })
     : null;
+  const admin = adminUrl ? createPrismaClient({ databaseUrl: adminUrl }) : null;
 
   afterAll(async () => {
     await Promise.all(
-      [control, witness]
+      [control, witness, admin]
         .filter((client) => client !== null)
         .map((client) => client.$disconnect()),
     );
@@ -190,12 +193,13 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     });
   });
 
-  it("serializes concurrent provider permits and consumes execution exactly once", async () => {
-    if (!control) throw new Error("real_postgres_test_unconfigured");
+  it("serializes provider permits by resource across rollouts and replays exact committed outcomes", async () => {
+    if (!control || !admin) throw new Error("real_postgres_test_unconfigured");
     const ledger = new RoutineReleaseControlLedgerAdapter(control);
     const authority = new RoutineProviderMutationAuthorityAdapter(control);
     const unique = randomUUID().replaceAll("-", "");
     const rolloutId = `r-provider-mutation-${unique.slice(0, 16)}`;
+    const secondRolloutId = `r-provider-second-${unique.slice(0, 16)}`;
     await ledger.claim({
       rolloutId,
       expectedCommitSha: "a".repeat(40),
@@ -204,28 +208,135 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       sourceSystemIdentifier: "192",
       targetSystemIdentifier: "292",
     });
+    await ledger.claim({
+      rolloutId: secondRolloutId,
+      expectedCommitSha: "c".repeat(40),
+      runId: "903",
+      runAttempt: 1,
+      sourceSystemIdentifier: "193",
+      targetSystemIdentifier: "293",
+    });
     const base = {
       rolloutId,
-      operation: "freeze:srv-authority",
-      resource: { provider: "render", kind: "service", id: "srv-authority" },
+      operation: `freeze:srv-${unique.slice(0, 12)}`,
+      resource: {
+        provider: "render",
+        kind: "service",
+        id: `srv-authority-${unique.slice(0, 12)}`,
+      },
       expected: { fingerprint: `sha256:${"b".repeat(64)}`, version: null },
       leaseSeconds: 60,
     } as const;
+    const contenders = [
+      { ...base, ownerId: "actor-one" },
+      {
+        ...base,
+        rolloutId: secondRolloutId,
+        operation: `resume:srv-${unique.slice(0, 12)}`,
+        ownerId: "actor-two",
+      },
+    ] as const;
     const results = await Promise.allSettled([
-      authority.issue({ ...base, ownerId: "actor-one" }),
-      authority.issue({ ...base, ownerId: "actor-two" }),
+      authority.issue(contenders[0]),
+      authority.issue(contenders[1]),
     ]);
     expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(
       1,
     );
-    const permit = (
-      results.find(
-        (item) => item.status === "fulfilled",
-      ) as PromiseFulfilledResult<any>
-    ).value;
+    const first = results[0];
+    const second = results[1];
+    if (!first || !second)
+      throw new Error("provider_mutation_race_result_missing");
+    const winnerRequest =
+      first.status === "fulfilled" ? contenders[0] : contenders[1];
+    const loserRequest =
+      first.status === "fulfilled" ? contenders[1] : contenders[0];
+    const permit =
+      first.status === "fulfilled"
+        ? first.value
+        : second.status === "fulfilled"
+          ? second.value
+          : (() => {
+              throw new Error("provider_mutation_race_has_no_winner");
+            })();
     const receipt = await authority.consume(permit);
-    await expect(authority.consume(permit)).rejects.toThrow();
+    await expect(authority.consume(permit)).resolves.toEqual(receipt);
     await expect(authority.validateExecution(receipt)).resolves.toBe(true);
     await expect(authority.validateExecution(receipt)).resolves.toBe(false);
+    const observation = {
+      resource: base.resource,
+      state: base.expected,
+      observedAt: new Date().toISOString(),
+    };
+    const outcome = await authority.complete({ receipt, observation });
+    await expect(authority.complete({ receipt, observation })).resolves.toEqual(
+      outcome,
+    );
+
+    const next = await authority.issue({
+      ...loserRequest,
+      ownerId: "actor-three",
+    });
+    expect(next.epoch).toBeGreaterThan(receipt.epoch);
+    const nextReceipt = await authority.consume(next);
+    await authority.reconcile({
+      result: "ambiguous_forward_repair",
+      receipt: nextReceipt,
+      observation: null,
+    });
+    await expect(
+      authority.issue({
+        ...base,
+        rolloutId: winnerRequest.rolloutId,
+        operation: `other-operation:srv-${unique.slice(0, 12)}`,
+        ownerId: "actor-four",
+      }),
+    ).rejects.toThrow();
+
+    const expiring = await authority.issue({
+      ...base,
+      operation: `freeze-expiring:srv-${unique.slice(0, 12)}`,
+      resource: { ...base.resource, id: `srv-expiring-${unique.slice(0, 12)}` },
+      ownerId: "actor-expiring",
+    });
+    await admin.$executeRawUnsafe(
+      `UPDATE release_authority.provider_mutation
+       SET expires_at=clock_timestamp()-interval '1 second'
+       WHERE rollout_id=$1 AND operation=$2 AND provider=$3
+         AND resource_kind=$4 AND resource_id=$5`,
+      expiring.rolloutId,
+      expiring.operation,
+      expiring.resource.provider,
+      expiring.resource.kind,
+      expiring.resource.id,
+    );
+    const afterExpiry = await authority.issue({
+      ...base,
+      rolloutId: secondRolloutId,
+      operation: `resume-expired:srv-${unique.slice(0, 12)}`,
+      resource: expiring.resource,
+      ownerId: "actor-after-expiry",
+    });
+    expect(afterExpiry.epoch).toBeGreaterThan(expiring.epoch);
+    await expect(authority.consume(expiring)).rejects.toThrow();
+    await expect(
+      authority.issue({
+        ...base,
+        operation: expiring.operation,
+        resource: expiring.resource,
+        ownerId: "actor-expiring",
+      }),
+    ).rejects.toThrow();
+    await expect(
+      authority.issue({
+        ...base,
+        operation: `freeze-unrelated:srv-${unique.slice(0, 12)}`,
+        resource: {
+          ...base.resource,
+          id: `srv-unrelated-${unique.slice(0, 12)}`,
+        },
+        ownerId: "actor-four",
+      }),
+    ).resolves.toMatchObject({ epoch: 1 });
   });
 });

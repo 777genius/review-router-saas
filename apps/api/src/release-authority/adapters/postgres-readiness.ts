@@ -89,14 +89,14 @@ const observeOnConnection = async (
           (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
           (5,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')),'')),
           (6,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),''))
-        ) bodies(ordinal,body_sha256))),'')
+        ) bodies(ordinal,body_sha256)),'')
         AS "installerRoutineBodySha256",
       coalesce((SELECT encode(sha256(convert_to(string_agg(body_sha256, ':' ORDER BY ordinal),'UTF8')),'hex')
         FROM (VALUES
           (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')),'')),
           (2,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
           (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')),''))
-        ) bodies(ordinal,body_sha256))),'')
+        ) bodies(ordinal,body_sha256)),'')
         AS "readerRoutineBodySha256",
       '' AS "applicationMigrationManifestIdentity",
       CASE WHEN to_regnamespace('reviewrouter_activation') IS NULL THEN ''
@@ -494,7 +494,7 @@ const observeOnConnection = async (
         ) AS "databaseIdentity",
         current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
         CASE WHEN catalog_exact AND default_acl_exact AND final_acl_exact
-          AND owner_membership_exact AND role_topology_exact THEN 11 ELSE 0 END
+          AND owner_membership_exact AND role_topology_exact THEN 12 ELSE 0 END
           AS "schemaVersion",
         '[]'::jsonb AS "migrationManifest",
         'sha256:' || catalog_digest AS "catalogFingerprint",
@@ -539,7 +539,7 @@ const observeOnConnection = async (
   if (rows.length !== 1 || !rows[0])
     throw new Error("release_control_database_identity_unavailable");
   const readiness = rows[0];
-  if (readiness.schemaVersion !== 11 || readiness.migrationManifest.length > 0)
+  if (readiness.schemaVersion !== 12 || readiness.migrationManifest.length > 0)
     return readiness;
   const manifestRows = await prisma.$queryRaw<
     Pick<ReleaseAuthorityDatabaseReadiness, "migrationManifest">[]

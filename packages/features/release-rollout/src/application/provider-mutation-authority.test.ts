@@ -15,7 +15,11 @@ const digest = (value: string) =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const before = { fingerprint: digest("before"), version: null };
 const after = { fingerprint: digest("after"), version: null };
-const resource = { provider: "render", kind: "service", id: "srv-one" };
+const resource = {
+  provider: "render",
+  kind: "service",
+  id: "srv-one",
+} as const;
 const observed = (state = before): ObservedProviderPostcondition => ({
   resource,
   state,

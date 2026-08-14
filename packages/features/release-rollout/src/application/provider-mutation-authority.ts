@@ -20,9 +20,11 @@ export interface ProviderMutationAuthorityPort {
     expected: ExpectedProviderState;
     leaseSeconds: number;
   }): Promise<OneShotMutationPermit>;
+  /** Exact committed retries return the bound receipt, never a new receipt. */
   consume(input: OneShotMutationPermit): Promise<MutationExecutionReceipt>;
   /** Authority-backed validation is deliberately adjacent to provider I/O. */
   validateExecution(input: MutationExecutionReceipt): Promise<boolean>;
+  /** Exact committed retries resolve successfully without reopening authority. */
   complete(input: {
     receipt: MutationExecutionReceipt;
     observation: ObservedProviderPostcondition;

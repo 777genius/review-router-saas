@@ -166,6 +166,43 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
   echo "fresh authority installer admitted an existing authority schema" >&2
   exit 1
 fi
+
+# Install the exact origin/main published history in a second disposable
+# database, then run the candidate append-only upgrade. This is intentionally
+# sourced from git objects rather than the candidate worktree.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "CREATE DATABASE rr_authority_origin_upgrade" >/dev/null
+origin_migrations='000001_release_authority 000002_external_effect_protocol 000002_transactional_service_transition 000003_partial_source_freeze 000004_selective_source_recovery 000005_late_runner_effects 000006_runner_provider_creation_boundary 000007_compensation_effect_fence 000008_trigger_helper_acl 000009_authority_history_and_forward_repairs 000010_recovery_effect_permits'
+for origin_migration in $origin_migrations; do
+  git show "origin/main:packages/platform/release-authority-db/migrations/$origin_migration/migration.sql" \
+    > "$contract_tmp/origin-$origin_migration.sql"
+  docker cp "$contract_tmp/origin-$origin_migration.sql" \
+    "$name:/tmp/origin-$origin_migration.sql" >/dev/null
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+    -d rr_authority_origin_upgrade \
+    -f "/tmp/origin-$origin_migration.sql" >/dev/null
+  if test "$origin_migration" = 000009_authority_history_and_forward_repairs; then
+    docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+      -d rr_authority_origin_upgrade -c \
+      "INSERT INTO release_authority.schema_migration(position,migration_name,checksum_sha256,byte_variant) VALUES (10,'000009_authority_history_and_forward_repairs','sha256:bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25','canonical')" >/dev/null
+  elif test "$origin_migration" = 000010_recovery_effect_permits; then
+    docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+      -d rr_authority_origin_upgrade -c \
+      "INSERT INTO release_authority.schema_migration(position,migration_name,checksum_sha256,byte_variant) VALUES (11,'000010_recovery_effect_permits','sha256:a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd','canonical')" >/dev/null
+  fi
+done
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+  -d rr_authority_origin_upgrade -f /tmp/release-authority-install.sql >/dev/null
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+  -d rr_authority_origin_upgrade -Atc \
+  "SELECT count(*)||':'||max(position) FROM release_authority.schema_migration")" = 13:13
+fresh_catalog_identity=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+  -d rr_authority_gate -Atc \
+  "SELECT obj_description('release_authority'::regnamespace,'pg_namespace')")
+upgrade_catalog_identity=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
+  -d rr_authority_origin_upgrade -Atc \
+  "SELECT obj_description('release_authority'::regnamespace,'pg_namespace')")
+test "$upgrade_catalog_identity" = "$fresh_catalog_identity"
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
   -U reviewrouter_release_control -d rr_authority_gate \
   -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
@@ -241,7 +278,7 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
   exit 1
 fi
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
-  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:7ead5636edb5cde56580bf66d2ccbe24c4f0da7156cb0e8cd14839e6a44d3c50' WHERE position=11" >/dev/null
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd' WHERE position=11" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
   "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=12" >/dev/null
 if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
@@ -251,6 +288,15 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
 fi
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
   "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420' WHERE position=12" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=13" >/dev/null
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+  echo "authority upgrade accepted provider fence checksum drift" >&2
+  exit 1
+fi
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:8fc5e73892ff81a18047fa5ebdf3b6ddeb85cea6c4d920afd734c5e7a6b3d686' WHERE position=13" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
   -f /tmp/release-authority-install.sql >/dev/null
 first_gate_attestation=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
@@ -1855,7 +1901,16 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
       ('release_recovery_effect_complete',true),
       ('release_recovery_effect_reconcile',true),
       ('release_late_job_recovery_effect_gate',false),
-      ('release_recovery_checkpoint_permit_gate',false)
+      ('release_recovery_checkpoint_permit_gate',false),
+      ('release_provider_mutation_permit',false),
+      ('release_provider_mutation_receipt',false),
+      ('release_provider_mutation_outcome',false),
+      ('release_provider_mutation_finish',false),
+      ('release_provider_mutation_issue',true),
+      ('release_provider_mutation_consume',true),
+      ('release_provider_mutation_validate_execution',true),
+      ('release_provider_mutation_complete',true),
+      ('release_provider_mutation_reconcile',true)
     ), functions AS (
       SELECT p.oid,p.proname,m.control_allowed,p.proacl,p.proowner,p.proconfig
       FROM migrated m
@@ -1876,7 +1931,7 @@ migration_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
         'reviewrouter_release_witness',oid,'EXECUTE'))||':'||
       bool_and(proconfig=ARRAY['search_path=pg_catalog']::text[])
     FROM functions")
-test "$migration_acl" = 25:true:true:true:true:true
+test "$migration_acl" = 34:true:true:true:true:true
 legacy_control_acl=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -Atc \
   "SELECT pg_catalog.has_function_privilege('reviewrouter_release_control',
       'release_authority.release_runner_persist_intent(jsonb)','EXECUTE')||':'||
@@ -1907,6 +1962,13 @@ for role_and_password in "reviewrouter_release_control:control" "reviewrouter_pr
     echo "$role unexpectedly has direct decision table access" >&2
     exit 1
   fi
+  for protected_relation in provider_mutation provider_resource_lease; do
+    if docker exec -e PGPASSWORD="$password" "$name" psql -v ON_ERROR_STOP=1 -U "$role" -d postgres -Atc \
+      "SELECT count(*) FROM release_authority.$protected_relation" >/dev/null 2>&1; then
+      echo "$role unexpectedly has direct $protected_relation access" >&2
+      exit 1
+    fi
+  done
 done
 if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_provider_authority_decide('$deploy_request')" >/dev/null 2>&1; then

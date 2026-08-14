@@ -134,11 +134,12 @@ export function releaseAuthorityMigrationBundle(
         `release_authority_migration_checksum_invalid:${releaseAuthorityMigrationPaths[index]}`,
       );
   });
-  const bootstrapMigration = migrations.at(-3);
-  const forwardMigrations = migrations.slice(-2);
-  if (!bootstrapMigration || forwardMigrations.length !== 2)
+  const bootstrapPosition = 10;
+  const bootstrapMigration = migrations[bootstrapPosition - 1];
+  const forwardMigrations = migrations.slice(bootstrapPosition);
+  if (!bootstrapMigration || forwardMigrations.length < 1)
     throw new Error("release_authority_migrations_empty");
-  const historicalMigrations = migrations.slice(0, -3);
+  const historicalMigrations = migrations.slice(0, bootstrapPosition - 1);
   // Audit the two published variants at their last independently observable
   // boundary. Migration 000003 replaces the only catalog difference between
   // the 000001 byte variants, so building shadows through later migrations
@@ -163,6 +164,16 @@ export function releaseAuthorityMigrationBundle(
     .join(",\n          ");
   const allowedHistoryValues = `${expectedHistoryValues},
           ${legacyHistoryValues}`;
+  const allowedForwardHistory = releaseAuthorityMigrationManifest
+    .slice(bootstrapPosition)
+    .map(
+      ([name, checksum], index) =>
+        `(position=${bootstrapPosition + index + 1}
+             AND migration_name='${name}'
+             AND checksum_sha256='${checksum}'
+             AND byte_variant='canonical')`,
+    )
+    .join(" OR ");
   const forwardApplicationSteps = forwardMigrations.flatMap(
     (migration, forwardIndex) => {
       const position = 11 + forwardIndex;
@@ -292,7 +303,8 @@ export function releaseAuthorityMigrationBundle(
     "\\endif",
     `DO $migration_history$
      BEGIN
-       IF (SELECT count(*) NOT IN (10,11,12)
+       IF (SELECT count(*) NOT BETWEEN ${bootstrapPosition}
+             AND ${releaseAuthorityMigrationManifest.length}
              FROM release_authority.schema_migration)
        OR (SELECT count(*) <> 10 FROM release_authority.schema_migration
              WHERE position <= 10)
@@ -314,15 +326,8 @@ export function releaseAuthorityMigrationBundle(
           ${allowedHistoryValues})
        ) OR EXISTS (
          SELECT 1 FROM release_authority.schema_migration
-         WHERE position > 10 AND NOT (
-           position=11
-             AND migration_name='000010_recovery_effect_permits'
-             AND checksum_sha256='${releaseAuthorityMigrationManifest[10][1]}'
-             AND byte_variant='canonical'
-           OR position=12
-             AND migration_name='000011_default_and_final_acl_exactness'
-             AND checksum_sha256='${releaseAuthorityMigrationManifest[11][1]}'
-             AND byte_variant='canonical')
+         WHERE position > ${bootstrapPosition} AND NOT (
+           ${allowedForwardHistory})
        ) THEN
          RAISE EXCEPTION 'release authority migration history mismatch';
        END IF;
