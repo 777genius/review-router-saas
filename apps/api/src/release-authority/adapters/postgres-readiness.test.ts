@@ -1,18 +1,50 @@
 import { describe, expect, it, vi } from "vitest";
 import { observeReleaseAuthorityDatabaseReadiness } from "./postgres-readiness";
 
+const transactionHarness = (queryRaw: ReturnType<typeof vi.fn>) => {
+  const executeRawUnsafe = vi.fn().mockResolvedValue(0);
+  let released = false;
+  const transaction = vi.fn(async (operation: (client: unknown) => unknown) => {
+    try {
+      return await operation({
+        $queryRaw: queryRaw,
+        $executeRawUnsafe: executeRawUnsafe,
+      });
+    } finally {
+      released = true;
+    }
+  });
+  return {
+    prisma: { $transaction: transaction, $queryRaw: vi.fn() },
+    executeRawUnsafe,
+    transaction,
+    released: () => released,
+  };
+};
+
+const sqlText = (queryRaw: ReturnType<typeof vi.fn>) =>
+  queryRaw.mock.calls.map((call) => String(call[0]?.text)).join("\n");
+
+const withTimeoutSetup = (values: readonly unknown[]) => {
+  let valueIndex = 0;
+  return vi.fn((query: { text?: string; values?: readonly unknown[] }) =>
+    String(query.text).includes("set_config('statement_timeout'")
+      ? Promise.resolve([{}])
+      : Promise.resolve(values[valueIndex++]),
+  );
+};
+
 describe("release authority ACL readiness observation", () => {
   it("observes direct, transitive, inherited, and SET owner-role privilege paths", async () => {
-    const queryRaw = vi
-      .fn()
-      .mockResolvedValueOnce([{ authorityPresent: true }])
-      .mockResolvedValue([{ schemaVersion: 0, migrationManifest: [] }]);
+    const queryRaw = withTimeoutSetup([
+      [{ authorityPresent: true }],
+      [{ schemaVersion: 0, migrationManifest: [] }],
+    ]);
+    const harness = transactionHarness(queryRaw);
 
-    await observeReleaseAuthorityDatabaseReadiness({
-      $queryRaw: queryRaw,
-    } as never);
+    await observeReleaseAuthorityDatabaseReadiness(harness.prisma as never);
 
-    const sql = String(queryRaw.mock.calls[1]?.[0]?.text);
+    const sql = sqlText(queryRaw);
     expect(sql).toContain("candidate.rolcanlogin");
     expect(sql).toContain("candidate.rolsuper");
     expect(sql).toContain("'reviewrouter_release_control'");
@@ -36,19 +68,20 @@ describe("release authority ACL readiness observation", () => {
   });
 
   it("attests activation routines, guard objects, inbound role edges, and runtime bounds", async () => {
-    const queryRaw = vi.fn().mockResolvedValue([
-      {
-        authorityPresent: false,
-        installerRoutine: false,
-        readerRoutine: false,
-      },
+    const queryRaw = withTimeoutSetup([
+      [
+        {
+          authorityPresent: false,
+          installerRoutine: false,
+          readerRoutine: false,
+        },
+      ],
     ]);
+    const harness = transactionHarness(queryRaw);
 
-    await observeReleaseAuthorityDatabaseReadiness({
-      $queryRaw: queryRaw,
-    } as never);
+    await observeReleaseAuthorityDatabaseReadiness(harness.prisma as never);
 
-    const sql = String(queryRaw.mock.calls[0]?.[0]?.text);
+    const sql = sqlText(queryRaw);
     expect(sql).toContain("p.prosecdef");
     expect(sql).toContain(
       "p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']",
@@ -61,54 +94,127 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("rolbypassrls");
   });
 
-  it("observes the exact catalog without DDL, TEMP privileges, or connection affinity", async () => {
-    const executeRawUnsafe = vi.fn().mockResolvedValue(0);
-    const queryRaw = vi
-      .fn()
-      .mockResolvedValueOnce([{ authorityPresent: true }])
-      .mockResolvedValue([{ schemaVersion: 0, migrationManifest: [] }]);
-    const prisma = {
-      $executeRawUnsafe: executeRawUnsafe,
-      $queryRaw: queryRaw,
-      $transaction: vi.fn(),
-    };
+  it("pins the exact catalog observation to one bounded read-only transaction", async () => {
+    const queryRaw = withTimeoutSetup([
+      [{ authorityPresent: true }],
+      [{ schemaVersion: 0, migrationManifest: [] }],
+    ]);
+    const harness = transactionHarness(queryRaw);
 
-    await observeReleaseAuthorityDatabaseReadiness(prisma as never);
+    await observeReleaseAuthorityDatabaseReadiness(harness.prisma as never, {
+      statementTimeoutMilliseconds: 321,
+    });
 
-    expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(executeRawUnsafe).not.toHaveBeenCalled();
-    const sql = String(queryRaw.mock.calls[1]?.[0]?.text);
+    expect(harness.transaction).toHaveBeenCalledOnce();
+    expect(harness.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(harness.executeRawUnsafe).toHaveBeenCalledWith(
+      "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
+    );
+    expect(harness.released()).toBe(true);
+    const sql = sqlText(queryRaw);
+    expect(queryRaw.mock.calls[0]?.[0]?.values).toEqual(["321ms", "321ms"]);
     expect(sql).toContain("pg_catalog.aclexplode");
     expect(sql).toContain("'release_authority'::text");
     expect(sql).not.toContain("CREATE ");
-    expect(sql).not.toContain("pg_temp");
+    expect(sql).not.toContain("CREATE TEMP");
   });
 
-  it("skips the authority catalog serializer for activation-only databases", async () => {
-    const queryRaw = vi.fn().mockResolvedValue([
+  it("cannot assemble identity, catalog, and manifest from mixed pool sessions", async () => {
+    const manifest = [
       {
-        roleName: "reviewrouter_activation_permit_installer",
-        systemIdentifier: "target-system",
-        postgresMajor: 17,
-        authorityPresent: false,
-        installerRoutine: true,
-        readerRoutine: false,
+        position: 1,
+        migrationName: "000001_release_authority",
+        checksumSha256: `sha256:${"a".repeat(64)}`,
+        byteVariant: "canonical",
       },
+    ];
+    const queryRaw = withTimeoutSetup([
+      [
+        {
+          authorityPresent: true,
+          databaseIdentity: {
+            serverIdentity: "1",
+            databaseIdentity: "10",
+            databaseName: "authority",
+          },
+        },
+      ],
+      [{ schemaVersion: 11, migrationManifest: [] }],
+      [{ migrationManifest: manifest }],
     ]);
+    const harness = transactionHarness(queryRaw);
 
-    const readiness = await observeReleaseAuthorityDatabaseReadiness({
-      $queryRaw: queryRaw,
-    } as never);
+    const observed = await observeReleaseAuthorityDatabaseReadiness(
+      harness.prisma as never,
+    );
 
-    expect(queryRaw).toHaveBeenCalledOnce();
+    expect(observed.migrationManifest).toEqual(manifest);
+    expect(harness.transaction).toHaveBeenCalledOnce();
+    expect(harness.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(harness.released()).toBe(true);
+  });
+
+  it("skips the authority catalog phase for activation-only databases", async () => {
+    const queryRaw = withTimeoutSetup([
+      [
+        {
+          roleName: "reviewrouter_activation_permit_installer",
+          systemIdentifier: "target-system",
+          postgresMajor: 17,
+          authorityPresent: false,
+          installerRoutine: true,
+          readerRoutine: false,
+          activationNamespaceFingerprint: `sha256:${"a".repeat(64)}`,
+        },
+      ],
+      [
+        {
+          applicationMigrationManifestIdentity: `sha256:${"b".repeat(64)}`,
+        },
+      ],
+    ]);
+    const harness = transactionHarness(queryRaw);
+
+    const readiness = await observeReleaseAuthorityDatabaseReadiness(
+      harness.prisma as never,
+    );
+
+    expect(queryRaw).toHaveBeenCalledTimes(3);
     expect(readiness).toMatchObject({
       schemaVersion: 0,
       catalogExact: false,
       installerRoutine: true,
       readerRoutine: false,
+      applicationMigrationManifestIdentity: `sha256:${"b".repeat(64)}`,
     });
-    expect(String(queryRaw.mock.calls[0]?.[0]?.text)).not.toContain(
-      "pg_catalog.aclexplode",
+    expect(sqlText(queryRaw)).toContain(
+      "read_activation_migration_manifest_identity()",
     );
+    expect(sqlText(queryRaw)).toContain("reviewrouter_activation");
+    expect(sqlText(queryRaw)).not.toContain("WITH facts AS");
+  });
+
+  it("cancels before checkout and releases a failed pinned observation", async () => {
+    const aborted = new AbortController();
+    aborted.abort();
+    const unused = transactionHarness(vi.fn());
+    await expect(
+      observeReleaseAuthorityDatabaseReadiness(unused.prisma as never, {
+        signal: aborted.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(unused.transaction).not.toHaveBeenCalled();
+
+    const failed = transactionHarness(
+      vi.fn((query: { text?: string }) =>
+        String(query.text).includes("set_config")
+          ? Promise.resolve([{}])
+          : Promise.reject(new Error("statement timeout")),
+      ),
+    );
+    await expect(
+      observeReleaseAuthorityDatabaseReadiness(failed.prisma as never),
+    ).rejects.toThrow("statement timeout");
+    expect(failed.released()).toBe(true);
   });
 });

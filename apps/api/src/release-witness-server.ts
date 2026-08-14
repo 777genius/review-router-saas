@@ -18,6 +18,13 @@ const app = await createReleaseWitnessApp({
   witnessPrisma,
   triggerTokenSha256: required("REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256"),
   renderReadToken: required("REVIEW_ROUTER_RELEASE_WITNESS_RENDER_READ_TOKEN"),
+  trustedDatabaseIdentity: {
+    serverIdentity: required(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_SYSTEM_IDENTIFIER",
+    ),
+    databaseIdentity: required("REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_OID"),
+    databaseName: required("REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_NAME"),
+  },
 });
 app.addHook("onClose", async () => witnessPrisma.$disconnect());
 await app.listen({

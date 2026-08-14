@@ -11,7 +11,7 @@ export type BoundedReadinessPolicy = Readonly<{
 const defaultMonotonicNow = (): number => performance.now();
 
 export function createBoundedReadinessPolicy(
-  observe: () => Promise<void>,
+  observe: (signal: AbortSignal) => Promise<void>,
   unavailableError: () => Error,
   options: BoundedReadinessPolicyOptions,
 ): BoundedReadinessPolicy {
@@ -33,16 +33,18 @@ export function createBoundedReadinessPolicy(
   const observeWithinDeadline = (): Promise<void> =>
     new Promise<void>((resolve, reject) => {
       let settled = false;
+      const cancellation = new AbortController();
       const deadline = setTimeout(() => {
         if (settled) return;
         settled = true;
+        cancellation.abort(new Error("readiness_deadline_exceeded"));
         reject(unavailableError());
       }, options.deadlineMilliseconds);
 
       // Attaching both handlers immediately is intentional: after the deadline,
       // a late probe settlement must be consumed without changing policy state.
       Promise.resolve()
-        .then(observe)
+        .then(() => observe(cancellation.signal))
         .then(
           () => {
             if (settled) return;

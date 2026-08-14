@@ -20,6 +20,7 @@ realDescribe("release authority exact catalog readiness", () => {
     : null;
   let owner = "";
   let quotedOwner = "";
+  let crossDatabaseControl: ReturnType<typeof createPrismaClient> | null = null;
 
   beforeAll(async () => {
     if (!admin) throw new Error("real_postgres_test_unconfigured");
@@ -42,10 +43,28 @@ realDescribe("release authority exact catalog readiness", () => {
     if (!/^[A-Za-z_][A-Za-z0-9_$]*$/u.test(owner))
       throw new Error("real_postgres_authority_owner_invalid");
     quotedOwner = `"${owner.replaceAll('"', '""')}"`;
+    await admin.$executeRawUnsafe(
+      "DROP DATABASE IF EXISTS reviewrouter_identity_cross_database_probe WITH (FORCE)",
+    );
+    await admin.$executeRawUnsafe(
+      "CREATE DATABASE reviewrouter_identity_cross_database_probe",
+    );
+    await admin.$executeRawUnsafe(
+      "GRANT CONNECT ON DATABASE reviewrouter_identity_cross_database_probe TO reviewrouter_release_control",
+    );
+    const crossDatabaseUrl = new URL(controlUrl!);
+    crossDatabaseUrl.pathname = "/reviewrouter_identity_cross_database_probe";
+    crossDatabaseControl = createPrismaClient({
+      databaseUrl: crossDatabaseUrl.toString(),
+    });
   });
 
   afterAll(async () => {
+    await crossDatabaseControl?.$disconnect();
     if (admin) {
+      await admin.$executeRawUnsafe(
+        "DROP DATABASE IF EXISTS reviewrouter_identity_cross_database_probe WITH (FORCE)",
+      );
       await admin.$executeRawUnsafe(
         `REASSIGN OWNED BY reviewrouter_unexpected_acl_probe TO ${quotedOwner || "postgres"}`,
       );
@@ -111,11 +130,34 @@ realDescribe("release authority exact catalog readiness", () => {
       defaultAclExact: true,
       finalAclExact: true,
       catalogExact: true,
+      databaseIdentity: {
+        serverIdentity: observed.systemIdentifier,
+        databaseName: expect.any(String),
+        databaseIdentity: expect.stringMatching(/^[0-9]+$/u),
+      },
     });
     expect(observed.catalogFingerprint).toBe(
       observed.expectedCatalogFingerprint,
     );
     expect(releaseAuthoritySchemaIsReady(observed)).toBe(true);
+  });
+
+  it("distinguishes two databases on the same PostgreSQL 17 cluster", async () => {
+    if (!crossDatabaseControl)
+      throw new Error("real_postgres_cross_database_test_unconfigured");
+    const [authorityDatabase, otherDatabase] = await Promise.all([
+      readiness(),
+      observeReleaseAuthorityDatabaseReadiness(crossDatabaseControl),
+    ]);
+    expect(otherDatabase.databaseIdentity.serverIdentity).toBe(
+      authorityDatabase.databaseIdentity.serverIdentity,
+    );
+    expect(otherDatabase.databaseIdentity.databaseIdentity).not.toBe(
+      authorityDatabase.databaseIdentity.databaseIdentity,
+    );
+    expect(otherDatabase.databaseIdentity.databaseName).not.toBe(
+      authorityDatabase.databaseIdentity.databaseName,
+    );
   });
 
   it("accepts the documented exact legacy-equivalent catalog history", async () => {
@@ -549,6 +591,8 @@ activationDescribe("activation target semantic readiness", () => {
   let readerDefinition = "";
   let installerBodySha256 = "";
   let readerBodySha256 = "";
+  let activationNamespaceFingerprint = "";
+  let applicationMigrationManifestIdentity = "";
 
   beforeAll(async () => {
     if (!admin || !installer || !reader)
@@ -575,6 +619,10 @@ activationDescribe("activation target semantic readiness", () => {
       await observeReleaseAuthorityDatabaseReadiness(reader);
     installerBodySha256 = installerReadiness.installerRoutineBodySha256;
     readerBodySha256 = readerReadiness.readerRoutineBodySha256;
+    activationNamespaceFingerprint =
+      installerReadiness.activationNamespaceFingerprint;
+    applicationMigrationManifestIdentity =
+      installerReadiness.applicationMigrationManifestIdentity;
   });
 
   afterAll(async () => {
@@ -632,6 +680,9 @@ activationDescribe("activation target semantic readiness", () => {
           expect(observed.installerRoutineBodySha256).not.toBe(
             installerBodySha256,
           );
+          expect(observed.activationNamespaceFingerprint).not.toBe(
+            activationNamespaceFingerprint,
+          );
         },
         restore: () => admin.$executeRawUnsafe(installerDefinition),
       },
@@ -677,6 +728,26 @@ activationDescribe("activation target semantic readiness", () => {
         await restore();
       }
     }
+  });
+
+  it("rejects a changed application migration manifest identity", async () => {
+    if (!admin) throw new Error("real_postgres_activation_test_unconfigured");
+    await admin.$executeRawUnsafe(`UPDATE public._prisma_migrations
+      SET checksum=checksum || '-readiness-probe'
+      WHERE migration_name=(SELECT min(migration_name) FROM public._prisma_migrations)`);
+    try {
+      const observed = await installerReadiness();
+      expect(observed.applicationMigrationManifestIdentity).not.toBe(
+        applicationMigrationManifestIdentity,
+      );
+    } finally {
+      await admin.$executeRawUnsafe(`UPDATE public._prisma_migrations
+        SET checksum=left(checksum, length(checksum)-length('-readiness-probe'))
+        WHERE checksum LIKE '%-readiness-probe'`);
+    }
+    expect(
+      (await installerReadiness()).applicationMigrationManifestIdentity,
+    ).toBe(applicationMigrationManifestIdentity);
   });
 
   it("rejects reader body drift", async () => {

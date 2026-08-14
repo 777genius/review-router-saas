@@ -32,7 +32,7 @@ export type ReleaseControlCredentials = Readonly<{
 
 const defaultReadinessPolicy: BoundedReadinessPolicyOptions = {
   deadlineMilliseconds: 5_000,
-  successfulLeaseMilliseconds: 30_000,
+  successfulLeaseMilliseconds: 0,
 };
 
 const readinessGate = <Service extends object>(
@@ -132,6 +132,7 @@ export async function createReleaseControlApp(input: {
   readonly credentials: ReleaseControlCredentials;
   readonly readinessPolicy?: Partial<BoundedReadinessPolicyOptions>;
   readonly trustedDatabaseIdentity?: TrustedReleaseControlDatabaseIdentity;
+  readonly readinessObserver?: typeof observeReleaseAuthorityDatabaseReadiness;
 }): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   const dependencies = composeReleaseControlDependencies(
@@ -141,12 +142,22 @@ export async function createReleaseControlApp(input: {
     input.permitInstallerPrisma,
     input.targetReceiptReaderPrisma,
   );
-  const observeMutationAuthority = async () => {
+  const readinessPolicyOptions = {
+    ...defaultReadinessPolicy,
+    ...input.readinessPolicy,
+  };
+  const readinessObserver =
+    input.readinessObserver ?? observeReleaseAuthorityDatabaseReadiness;
+  const observeMutationAuthority = async (signal: AbortSignal) => {
+    const observationOptions = {
+      signal,
+      statementTimeoutMilliseconds: readinessPolicyOptions.deadlineMilliseconds,
+    };
     const [control, provider, installer, reader] = await Promise.all([
-      observeReleaseAuthorityDatabaseReadiness(input.controlPrisma),
-      observeReleaseAuthorityDatabaseReadiness(input.providerAuthorityPrisma),
-      observeReleaseAuthorityDatabaseReadiness(input.permitInstallerPrisma),
-      observeReleaseAuthorityDatabaseReadiness(input.targetReceiptReaderPrisma),
+      readinessObserver(input.controlPrisma, observationOptions),
+      readinessObserver(input.providerAuthorityPrisma, observationOptions),
+      readinessObserver(input.permitInstallerPrisma, observationOptions),
+      readinessObserver(input.targetReceiptReaderPrisma, observationOptions),
     ]);
     if (
       !input.trustedDatabaseIdentity ||
@@ -168,7 +179,7 @@ export async function createReleaseControlApp(input: {
       Object.assign(new Error("release_control_readiness_unavailable"), {
         statusCode: 503,
       }),
-    { ...defaultReadinessPolicy, ...input.readinessPolicy },
+    readinessPolicyOptions,
   );
   const assertMutationAuthorityReady = () => readiness.assertReady();
   const gatedDependencies: ReleaseControlRouteDependencies = {

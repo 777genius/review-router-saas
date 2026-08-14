@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PrismaClient } from "@reviewrouter/platform-db";
+import type { ReleaseAuthorityDatabaseReadiness } from "./release-authority/application/readiness";
 import {
   composeReleaseControlDependencies,
   createReleaseControlApp as createReleaseControlAppBase,
 } from "./release-control-composition";
-import { createReleaseWitnessApp } from "./release-witness-composition";
+import { createReleaseWitnessApp as createReleaseWitnessAppBase } from "./release-witness-composition";
 
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -15,13 +17,48 @@ afterEach(() => {
 });
 
 const trustedDatabaseIdentity = {
-  authoritySystemIdentifier: "1",
-  targetSystemIdentifier: "2",
+  authorityDatabaseIdentity: {
+    serverIdentity: "1",
+    databaseIdentity: "16384",
+    databaseName: "authority",
+  },
+  targetDatabaseIdentity: {
+    serverIdentity: "2",
+    databaseIdentity: "16385",
+    databaseName: "target",
+  },
   authorityOwnerRoleName: "reviewrouter_release_authority_owner",
   activationGuardRoleName: "reviewrouter_activation_receipt_guard",
   installerRoutineBodySha256: "a".repeat(64),
   readerRoutineBodySha256: "b".repeat(64),
+  targetMigrationManifestIdentity: `sha256:${"c".repeat(64)}`,
+  activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
 } as const;
+
+const testReadinessObserver = async (
+  prisma: PrismaClient,
+  options?: Readonly<{ signal?: AbortSignal }>,
+) => {
+  options?.signal?.throwIfAborted();
+  const rows = await (
+    prisma.$queryRaw as unknown as (query: {
+      text: string;
+    }) => Promise<ReleaseAuthorityDatabaseReadiness[]>
+  )({ text: "WITH facts AS" });
+  if (!rows[0]) throw new Error("test_readiness_unavailable");
+  return rows[0];
+};
+
+const createReleaseWitnessApp = (
+  input: Parameters<typeof createReleaseWitnessAppBase>[0],
+) =>
+  createReleaseWitnessAppBase({
+    ...input,
+    trustedDatabaseIdentity:
+      input.trustedDatabaseIdentity ??
+      trustedDatabaseIdentity.authorityDatabaseIdentity,
+    readinessObserver: input.readinessObserver ?? testReadinessObserver,
+  });
 
 const createReleaseControlApp = (
   input: Parameters<typeof createReleaseControlAppBase>[0],
@@ -30,6 +67,7 @@ const createReleaseControlApp = (
     ...input,
     trustedDatabaseIdentity:
       input.trustedDatabaseIdentity ?? trustedDatabaseIdentity,
+    readinessObserver: input.readinessObserver ?? testReadinessObserver,
   });
 
 const authorityReadiness = (
@@ -42,6 +80,7 @@ const authorityReadiness = (
     roleName,
     authorityOwnerRoleName: trustedDatabaseIdentity.authorityOwnerRoleName,
     systemIdentifier: "1",
+    databaseIdentity: trustedDatabaseIdentity.authorityDatabaseIdentity,
     postgresMajor: 17,
     schemaVersion: 11,
     catalogFingerprint: "sha256:canonical-catalog",
@@ -111,6 +150,8 @@ const authorityReadiness = (
     readerRoutine: false,
     installerRoutineBodySha256: "",
     readerRoutineBodySha256: "",
+    applicationMigrationManifestIdentity: "",
+    activationNamespaceFingerprint: "",
     authorityRoleTopologyExact: true,
     activationGuardExact: false,
     activationRuntimePrivilegesExact: false,
@@ -134,6 +175,7 @@ const installerReadiness = [
     roleName: "reviewrouter_activation_permit_installer",
     authorityOwnerRoleName: "",
     systemIdentifier: "2",
+    databaseIdentity: trustedDatabaseIdentity.targetDatabaseIdentity,
     postgresMajor: 17,
     schemaVersion: 0,
     catalogFingerprint: "sha256:empty-catalog",
@@ -149,6 +191,10 @@ const installerReadiness = [
     readerRoutine: true,
     installerRoutineBodySha256: "a".repeat(64),
     readerRoutineBodySha256: "b".repeat(64),
+    applicationMigrationManifestIdentity:
+      trustedDatabaseIdentity.targetMigrationManifestIdentity,
+    activationNamespaceFingerprint:
+      trustedDatabaseIdentity.activationNamespaceFingerprint,
     authorityRoleTopologyExact: false,
     activationGuardExact: true,
     activationRuntimePrivilegesExact: true,
@@ -172,6 +218,7 @@ const readerReadiness = [
     roleName: "reviewrouter_activation_receipt_reader",
     authorityOwnerRoleName: "",
     systemIdentifier: "2",
+    databaseIdentity: trustedDatabaseIdentity.targetDatabaseIdentity,
     postgresMajor: 17,
     schemaVersion: 0,
     catalogFingerprint: "sha256:empty-catalog",
@@ -187,6 +234,10 @@ const readerReadiness = [
     readerRoutine: true,
     installerRoutineBodySha256: "a".repeat(64),
     readerRoutineBodySha256: "b".repeat(64),
+    applicationMigrationManifestIdentity:
+      trustedDatabaseIdentity.targetMigrationManifestIdentity,
+    activationNamespaceFingerprint:
+      trustedDatabaseIdentity.activationNamespaceFingerprint,
     authorityRoleTopologyExact: false,
     activationGuardExact: true,
     activationRuntimePrivilegesExact: true,

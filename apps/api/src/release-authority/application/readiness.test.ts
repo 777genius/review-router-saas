@@ -13,6 +13,11 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
   roleName: "reviewrouter_release_control",
   authorityOwnerRoleName: "reviewrouter_release_authority_owner",
   systemIdentifier: "1",
+  databaseIdentity: {
+    serverIdentity: "1",
+    databaseIdentity: "16384",
+    databaseName: "authority",
+  },
   postgresMajor: 17,
   schemaVersion: 11,
   migrationManifest: releaseAuthorityMigrationContract.map(
@@ -39,6 +44,8 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
   readerRoutine: false,
   installerRoutineBodySha256: "",
   readerRoutineBodySha256: "",
+  applicationMigrationManifestIdentity: "",
+  activationNamespaceFingerprint: "",
   authorityRoleTopologyExact: true,
   activationGuardExact: false,
   activationRuntimePrivilegesExact: false,
@@ -73,10 +80,17 @@ describe("release authority exact readiness contract", () => {
       schemaVersion: 0,
       roleName: "reviewrouter_activation_permit_installer",
       systemIdentifier: "2",
+      databaseIdentity: {
+        serverIdentity: "2",
+        databaseIdentity: "16385",
+        databaseName: "target",
+      },
       installerRoutine: true,
       readerRoutine: true,
       installerRoutineBodySha256: "a".repeat(64),
       readerRoutineBodySha256: "b".repeat(64),
+      applicationMigrationManifestIdentity: `sha256:${"c".repeat(64)}`,
+      activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
       activationGuardExact: true,
       activationRuntimePrivilegesExact: true,
     };
@@ -85,12 +99,14 @@ describe("release authority exact readiness contract", () => {
       roleName: "reviewrouter_activation_receipt_reader",
     };
     const trusted = {
-      authoritySystemIdentifier: "1",
-      targetSystemIdentifier: "2",
+      authorityDatabaseIdentity: control.databaseIdentity,
+      targetDatabaseIdentity: activation.databaseIdentity,
       authorityOwnerRoleName: "reviewrouter_release_authority_owner",
       activationGuardRoleName: "reviewrouter_activation_receipt_guard",
       installerRoutineBodySha256: "a".repeat(64),
       readerRoutineBodySha256: "b".repeat(64),
+      targetMigrationManifestIdentity: `sha256:${"c".repeat(64)}`,
+      activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
     };
     expect(
       releaseControlDatabaseSetIsReady(
@@ -101,9 +117,39 @@ describe("release authority exact readiness contract", () => {
     expect(
       releaseControlDatabaseSetIsReady(
         {
-          control: { ...control, systemIdentifier: "stale" },
-          provider: { ...provider, systemIdentifier: "stale" },
+          control: {
+            ...control,
+            databaseIdentity: {
+              ...control.databaseIdentity,
+              databaseIdentity: "99999",
+              databaseName: "same_cluster_wrong_database",
+            },
+          },
+          provider,
           installer: activation,
+          reader,
+        },
+        trusted,
+      ),
+    ).toBe(false);
+    expect(
+      releaseControlDatabaseSetIsReady(
+        { control, provider, installer: activation, reader },
+        {
+          ...trusted,
+          targetMigrationManifestIdentity: undefined as unknown as string,
+        },
+      ),
+    ).toBe(false);
+    expect(
+      releaseControlDatabaseSetIsReady(
+        {
+          control,
+          provider,
+          installer: {
+            ...activation,
+            applicationMigrationManifestIdentity: `sha256:${"e".repeat(64)}`,
+          },
           reader,
         },
         trusted,

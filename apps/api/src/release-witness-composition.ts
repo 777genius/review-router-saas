@@ -12,6 +12,10 @@ import {
 import { ObserveRunnerCleanup } from "./release-witness-application.js";
 import type { ReleaseAuthorityMutationReadinessPort } from "./release-witness-domain.js";
 import {
+  runtimeDatabaseIdentityEquals,
+  type RuntimeDatabaseIdentity,
+} from "./release-authority/domain/database-identity.js";
+import {
   PostgresCleanupObservationAdapter,
   RenderCleanupObservationAdapter,
 } from "./release-witness-adapters.js";
@@ -24,20 +28,38 @@ export async function createReleaseWitnessApp(input: {
   readonly renderFetch?: typeof fetch;
   readonly readinessObserver?: (
     prisma: PrismaClient,
+    options?: Readonly<{
+      signal?: AbortSignal;
+      statementTimeoutMilliseconds?: number;
+    }>,
   ) => Promise<ReleaseAuthorityDatabaseReadiness>;
   readonly readinessPolicy?: Partial<BoundedReadinessPolicyOptions>;
   readonly mutationReadiness?: ReleaseAuthorityMutationReadinessPort;
+  readonly trustedDatabaseIdentity?: RuntimeDatabaseIdentity;
 }): Promise<FastifyInstance> {
   if (!/^[a-f0-9]{64}$/u.test(input.triggerTokenSha256))
     throw new Error("release_witness_credential_hash_invalid");
   const postgres = new PostgresCleanupObservationAdapter(input.witnessPrisma);
-  const observeAuthority = async (): Promise<void> => {
+  const readinessPolicyOptions = {
+    deadlineMilliseconds: 5_000,
+    successfulLeaseMilliseconds: 0,
+    ...input.readinessPolicy,
+  };
+  const observeAuthority = async (signal: AbortSignal): Promise<void> => {
     const readiness = await (
       input.readinessObserver ?? observeReleaseAuthorityDatabaseReadiness
-    )(input.witnessPrisma);
+    )(input.witnessPrisma, {
+      signal,
+      statementTimeoutMilliseconds: readinessPolicyOptions.deadlineMilliseconds,
+    });
     if (
       readiness.roleName !== "reviewrouter_release_witness" ||
       readiness.postgresMajor !== 17 ||
+      !input.trustedDatabaseIdentity ||
+      !runtimeDatabaseIdentityEquals(
+        readiness.databaseIdentity,
+        input.trustedDatabaseIdentity,
+      ) ||
       !releaseAuthoritySchemaIsReady(readiness)
     )
       throw new Error("release_witness_authority_readiness_degraded");
@@ -48,11 +70,7 @@ export async function createReleaseWitnessApp(input: {
       Object.assign(new Error("release_witness_readiness_unavailable"), {
         statusCode: 503,
       }),
-    {
-      deadlineMilliseconds: 5_000,
-      successfulLeaseMilliseconds: 0,
-      ...input.readinessPolicy,
-    },
+    readinessPolicyOptions,
   );
   const assertAuthorityReady = () => readiness.assertReady();
   const observeCleanup = new ObserveRunnerCleanup(

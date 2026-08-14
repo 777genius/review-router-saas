@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { ReleaseAuthorityDatabaseReadiness } from "../application/readiness.js";
+import type { RuntimeDatabaseIdentity } from "../domain/database-identity.js";
 import { releaseAuthorityCatalogVerifier } from "../domain/readiness-contract.mjs";
 import { releaseAuthorityReadOnlyCatalogDigestExpression } from "./catalog-fingerprint.mjs";
 import {
@@ -8,18 +9,24 @@ import {
   releaseAuthorityFinalAclExactExpression,
 } from "./acl-policy-postgres.mjs";
 
-type ReadinessClient = Pick<PrismaClient, "$queryRaw">;
+type ReadinessClient = Pick<
+  Prisma.TransactionClient,
+  "$queryRaw" | "$executeRawUnsafe"
+>;
 
 type DatabaseIdentityProbe = Readonly<{
   roleName: string;
   authorityOwnerRoleName: string;
   systemIdentifier: string;
+  databaseIdentity: RuntimeDatabaseIdentity;
   postgresMajor: number;
   authorityPresent: boolean;
   installerRoutine: boolean;
   readerRoutine: boolean;
   installerRoutineBodySha256: string;
   readerRoutineBodySha256: string;
+  applicationMigrationManifestIdentity: string;
+  activationNamespaceFingerprint: string;
   authorityRoleTopologyExact: boolean;
   activationGuardExact: boolean;
   activationRuntimePrivilegesExact: boolean;
@@ -56,10 +63,20 @@ const absentAuthorityReadiness = (
 
 const observeOnConnection = async (
   prisma: ReadinessClient,
+  signal?: AbortSignal,
 ): Promise<ReleaseAuthorityDatabaseReadiness> => {
+  signal?.throwIfAborted();
+  const activationCatalogDigest =
+    releaseAuthorityReadOnlyCatalogDigestExpression("reviewrouter_activation");
   const probeRows = await prisma.$queryRaw<DatabaseIdentityProbe[]>(Prisma.sql`
     SELECT current_user AS "roleName",
       (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
+      jsonb_build_object(
+        'serverIdentity', (SELECT system_identifier::text FROM pg_control_system()),
+        'databaseIdentity', (SELECT oid::text FROM pg_database
+          WHERE datname=current_database()),
+        'databaseName', current_database()
+      ) AS "databaseIdentity",
       current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
       coalesce((SELECT pg_get_userbyid(nspowner) FROM pg_namespace
         WHERE nspname='release_authority'),'') AS "authorityOwnerRoleName",
@@ -70,6 +87,10 @@ const observeOnConnection = async (
       coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc
         WHERE oid=to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')),'')
         AS "readerRoutineBodySha256",
+      '' AS "applicationMigrationManifestIdentity",
+      CASE WHEN to_regnamespace('reviewrouter_activation') IS NULL THEN ''
+        ELSE 'sha256:' || ${Prisma.raw(activationCatalogDigest)} END
+        AS "activationNamespaceFingerprint",
       false AS "authorityRoleTopologyExact",
       coalesce((SELECT count(*)=2 AND bool_and(c.relkind='r'
           AND c.relowner=guard.oid
@@ -244,12 +265,15 @@ const observeOnConnection = async (
             OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
               WHERE n.nspname IN ('public','reviewrouter_activation')
                 AND has_function_privilege(role.oid,p.oid,'EXECUTE')
-                AND p.oid<>CASE role.rolname
-                  WHEN 'reviewrouter_activation_permit_installer' THEN
-                    to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)')
-                  WHEN 'reviewrouter_activation_receipt_reader' THEN
-                    to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')
-                END)))
+                AND p.oid NOT IN (
+                  CASE role.rolname
+                    WHEN 'reviewrouter_activation_permit_installer' THEN
+                      to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)')
+                    WHEN 'reviewrouter_activation_receipt_reader' THEN
+                      to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')
+                  END,
+                  to_regprocedure('reviewrouter_activation.read_activation_migration_manifest_identity()')
+                )))
         AND NOT EXISTS (SELECT 1 FROM pg_roles role
           WHERE role.rolname=ANY(ARRAY['reviewrouter_api','reviewrouter_web',
               'reviewrouter_worker','reviewrouter_codex_effect_authority'])
@@ -295,13 +319,26 @@ const observeOnConnection = async (
         WHERE p.oid=to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')),false)
         AS "readerRoutine"
   `);
+  signal?.throwIfAborted();
   if (probeRows.length !== 1 || !probeRows[0])
     throw new Error("release_control_database_identity_unavailable");
-  // Focused test adapters may return the complete read model directly.
   if (typeof probeRows[0].authorityPresent !== "boolean")
-    return probeRows[0] as unknown as ReleaseAuthorityDatabaseReadiness;
-  if (!probeRows[0].authorityPresent)
-    return absentAuthorityReadiness(probeRows[0]);
+    throw new Error("release_control_database_identity_unavailable");
+  if (!probeRows[0].authorityPresent) {
+    const readiness = absentAuthorityReadiness(probeRows[0]);
+    if (!probeRows[0].installerRoutine && !probeRows[0].readerRoutine)
+      return readiness;
+    const migrationRows = await prisma.$queryRaw<
+      { applicationMigrationManifestIdentity: string }[]
+    >(Prisma.sql`
+      SELECT reviewrouter_activation.read_activation_migration_manifest_identity()
+        AS "applicationMigrationManifestIdentity"
+    `);
+    signal?.throwIfAborted();
+    if (migrationRows.length !== 1 || !migrationRows[0])
+      throw new Error("release_control_database_migration_history_unavailable");
+    return { ...readiness, ...migrationRows[0] };
+  }
 
   const catalogDigest =
     releaseAuthorityReadOnlyCatalogDigestExpression("release_authority");
@@ -379,6 +416,12 @@ const observeOnConnection = async (
         pg_get_userbyid((SELECT nspowner FROM pg_namespace WHERE nspname='release_authority'))
           AS "authorityOwnerRoleName",
         (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
+        jsonb_build_object(
+          'serverIdentity', (SELECT system_identifier::text FROM pg_control_system()),
+          'databaseIdentity', (SELECT oid::text FROM pg_database
+            WHERE datname=current_database()),
+          'databaseName', current_database()
+        ) AS "databaseIdentity",
         current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
         CASE WHEN catalog_exact AND default_acl_exact AND final_acl_exact
           AND owner_membership_exact AND role_topology_exact THEN 11 ELSE 0 END
@@ -399,6 +442,8 @@ const observeOnConnection = async (
           AS "readerRoutine",
         '' AS "installerRoutineBodySha256",
         '' AS "readerRoutineBodySha256",
+        '' AS "applicationMigrationManifestIdentity",
+        '' AS "activationNamespaceFingerprint",
         role_topology_exact AS "authorityRoleTopologyExact",
         false AS "activationGuardExact",
         false AS "activationRuntimePrivilegesExact",
@@ -420,6 +465,7 @@ const observeOnConnection = async (
       FROM exactness
     `,
   );
+  signal?.throwIfAborted();
   if (rows.length !== 1 || !rows[0])
     throw new Error("release_control_database_identity_unavailable");
   const readiness = rows[0];
@@ -431,6 +477,7 @@ const observeOnConnection = async (
     SELECT release_authority.release_schema_migration_manifest()
       AS "migrationManifest"
   `);
+  signal?.throwIfAborted();
   if (manifestRows.length !== 1 || !manifestRows[0])
     throw new Error("release_control_database_migration_history_unavailable");
   return { ...readiness, migrationManifest: manifestRows[0].migrationManifest };
@@ -438,6 +485,37 @@ const observeOnConnection = async (
 
 export async function observeReleaseAuthorityDatabaseReadiness(
   prisma: PrismaClient,
+  options: Readonly<{
+    signal?: AbortSignal;
+    statementTimeoutMilliseconds?: number;
+  }> = {},
 ): Promise<ReleaseAuthorityDatabaseReadiness> {
-  return observeOnConnection(prisma);
+  const statementTimeoutMilliseconds =
+    options.statementTimeoutMilliseconds ?? 5_000;
+  if (
+    !Number.isSafeInteger(statementTimeoutMilliseconds) ||
+    statementTimeoutMilliseconds < 1 ||
+    statementTimeoutMilliseconds > 60_000
+  )
+    throw new Error("release_control_readiness_timeout_invalid");
+  options.signal?.throwIfAborted();
+
+  return prisma.$transaction(
+    async (connection) => {
+      options.signal?.throwIfAborted();
+      await connection.$executeRawUnsafe(
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
+      );
+      await connection.$queryRaw(Prisma.sql`
+        SELECT
+          set_config('statement_timeout', ${`${statementTimeoutMilliseconds}ms`}, true),
+          set_config('lock_timeout', ${`${statementTimeoutMilliseconds}ms`}, true)
+      `);
+      return observeOnConnection(connection, options.signal);
+    },
+    {
+      maxWait: statementTimeoutMilliseconds,
+      timeout: statementTimeoutMilliseconds + 1_000,
+    },
+  );
 }

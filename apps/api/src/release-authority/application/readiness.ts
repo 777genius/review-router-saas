@@ -2,11 +2,17 @@ import {
   releaseAuthorityCatalogVerifier,
   releaseAuthorityMigrationManifestIsExact,
 } from "../domain/readiness-contract.mjs";
+import {
+  runtimeDatabaseIdentityEquals,
+  runtimeDatabaseIdentityIsCanonical,
+  type RuntimeDatabaseIdentity,
+} from "../domain/database-identity.js";
 
 export type ReleaseAuthorityDatabaseReadiness = Readonly<{
   roleName: string;
   authorityOwnerRoleName: string;
   systemIdentifier: string;
+  databaseIdentity: RuntimeDatabaseIdentity;
   postgresMajor: number;
   schemaVersion: number;
   migrationManifest: readonly Readonly<{
@@ -27,6 +33,8 @@ export type ReleaseAuthorityDatabaseReadiness = Readonly<{
   readerRoutine: boolean;
   installerRoutineBodySha256: string;
   readerRoutineBodySha256: string;
+  applicationMigrationManifestIdentity: string;
+  activationNamespaceFingerprint: string;
   authorityRoleTopologyExact: boolean;
   activationGuardExact: boolean;
   activationRuntimePrivilegesExact: boolean;
@@ -53,12 +61,14 @@ export type ReleaseControlDatabaseSet = Readonly<{
 }>;
 
 export type TrustedReleaseControlDatabaseIdentity = Readonly<{
-  authoritySystemIdentifier: string;
-  targetSystemIdentifier: string;
+  authorityDatabaseIdentity: RuntimeDatabaseIdentity;
+  targetDatabaseIdentity: RuntimeDatabaseIdentity;
   authorityOwnerRoleName: string;
   activationGuardRoleName: string;
   installerRoutineBodySha256: string;
   readerRoutineBodySha256: string;
+  targetMigrationManifestIdentity: string;
+  activationNamespaceFingerprint: string;
 }>;
 
 export const releaseAuthoritySchemaIsReady = (
@@ -93,31 +103,65 @@ export function releaseControlDatabaseSetIsReady(
   trusted: TrustedReleaseControlDatabaseIdentity,
 ): boolean {
   const { control, provider, installer, reader } = input;
-  const systemIdentifier = /^[0-9]{1,64}$/u;
   const roleName = /^[a-z_][a-z0-9_]{0,62}$/u;
+  const systemIdentifier = /^[0-9]{1,64}$/u;
   const sha256 = /^[a-f0-9]{64}$/u;
   return (
-    systemIdentifier.test(trusted.authoritySystemIdentifier) &&
-    systemIdentifier.test(trusted.targetSystemIdentifier) &&
+    runtimeDatabaseIdentityIsCanonical(trusted.authorityDatabaseIdentity) &&
+    runtimeDatabaseIdentityIsCanonical(trusted.targetDatabaseIdentity) &&
+    trusted.authorityDatabaseIdentity.serverIdentity !==
+      trusted.targetDatabaseIdentity.serverIdentity &&
     roleName.test(trusted.authorityOwnerRoleName) &&
     sha256.test(trusted.installerRoutineBodySha256) &&
     sha256.test(trusted.readerRoutineBodySha256) &&
+    /^sha256:[a-f0-9]{64}$/u.test(trusted.targetMigrationManifestIdentity) &&
+    /^sha256:[a-f0-9]{64}$/u.test(trusted.activationNamespaceFingerprint) &&
     control.roleName === "reviewrouter_release_control" &&
     provider.roleName === "reviewrouter_provider_authority" &&
     installer.roleName === "reviewrouter_activation_permit_installer" &&
     reader.roleName === "reviewrouter_activation_receipt_reader" &&
+    [control, provider, installer, reader].every(
+      (readiness) =>
+        systemIdentifier.test(readiness.systemIdentifier) &&
+        readiness.systemIdentifier ===
+          readiness.databaseIdentity.serverIdentity,
+    ) &&
     control.authorityOwnerRoleName === trusted.authorityOwnerRoleName &&
     provider.authorityOwnerRoleName === trusted.authorityOwnerRoleName &&
-    control.systemIdentifier === trusted.authoritySystemIdentifier &&
-    provider.systemIdentifier === trusted.authoritySystemIdentifier &&
-    installer.systemIdentifier === trusted.targetSystemIdentifier &&
-    reader.systemIdentifier === trusted.targetSystemIdentifier &&
-    trusted.authoritySystemIdentifier !== trusted.targetSystemIdentifier &&
+    runtimeDatabaseIdentityEquals(
+      control.databaseIdentity,
+      trusted.authorityDatabaseIdentity,
+    ) &&
+    runtimeDatabaseIdentityEquals(
+      provider.databaseIdentity,
+      trusted.authorityDatabaseIdentity,
+    ) &&
+    runtimeDatabaseIdentityEquals(
+      installer.databaseIdentity,
+      trusted.targetDatabaseIdentity,
+    ) &&
+    runtimeDatabaseIdentityEquals(
+      reader.databaseIdentity,
+      trusted.targetDatabaseIdentity,
+    ) &&
+    !runtimeDatabaseIdentityEquals(
+      trusted.authorityDatabaseIdentity,
+      trusted.targetDatabaseIdentity,
+    ) &&
     trusted.activationGuardRoleName ===
       "reviewrouter_activation_receipt_guard" &&
-    control.systemIdentifier === provider.systemIdentifier &&
-    control.systemIdentifier !== installer.systemIdentifier &&
-    installer.systemIdentifier === reader.systemIdentifier &&
+    runtimeDatabaseIdentityEquals(
+      control.databaseIdentity,
+      provider.databaseIdentity,
+    ) &&
+    !runtimeDatabaseIdentityEquals(
+      control.databaseIdentity,
+      installer.databaseIdentity,
+    ) &&
+    runtimeDatabaseIdentityEquals(
+      installer.databaseIdentity,
+      reader.databaseIdentity,
+    ) &&
     [control, provider, installer, reader].every(
       (readiness) => readiness.postgresMajor === 17,
     ) &&
@@ -126,10 +170,18 @@ export function releaseControlDatabaseSetIsReady(
     installer.installerRoutine &&
     installer.installerRoutineBodySha256 ===
       trusted.installerRoutineBodySha256 &&
+    installer.applicationMigrationManifestIdentity ===
+      trusted.targetMigrationManifestIdentity &&
+    installer.activationNamespaceFingerprint ===
+      trusted.activationNamespaceFingerprint &&
     installer.activationGuardExact &&
     installer.activationRuntimePrivilegesExact &&
     reader.readerRoutine &&
     reader.readerRoutineBodySha256 === trusted.readerRoutineBodySha256 &&
+    reader.applicationMigrationManifestIdentity ===
+      trusted.targetMigrationManifestIdentity &&
+    reader.activationNamespaceFingerprint ===
+      trusted.activationNamespaceFingerprint &&
     reader.activationGuardExact &&
     reader.activationRuntimePrivilegesExact
   );

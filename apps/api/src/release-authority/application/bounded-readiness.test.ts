@@ -44,9 +44,13 @@ describe("bounded readiness policy", () => {
   it("times out a hung observation and allows a later request to succeed", async () => {
     vi.useFakeTimers();
     const hung = deferred();
+    let firstSignal: AbortSignal | undefined;
     const observe = vi
-      .fn<() => Promise<void>>()
-      .mockImplementationOnce(() => hung.promise)
+      .fn<(signal: AbortSignal) => Promise<void>>()
+      .mockImplementationOnce((signal) => {
+        firstSignal = signal;
+        return hung.promise;
+      })
       .mockResolvedValueOnce();
     const policy = createBoundedReadinessPolicy(observe, unavailable, {
       deadlineMilliseconds: 25,
@@ -60,6 +64,7 @@ describe("bounded readiness policy", () => {
     });
     await vi.advanceTimersByTimeAsync(25);
     await firstResult;
+    expect(firstSignal?.aborted).toBe(true);
 
     await expect(policy.assertReady()).resolves.toBeUndefined();
     expect(observe).toHaveBeenCalledTimes(2);

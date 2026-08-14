@@ -30,6 +30,7 @@ import {
 } from "../packages/features/release-rollout/src/index.ts";
 import { createPrismaClient } from "../packages/platform/db/src/index.ts";
 import { createReleaseControlApp } from "../apps/api/src/release-control-composition.ts";
+import { observeReleaseAuthorityDatabaseReadiness } from "../apps/api/src/release-authority/adapters/postgres-readiness.ts";
 import { PostgresCleanupObservationAdapter } from "../apps/api/src/release-witness-adapters.ts";
 import {
   canonicalActivationSql,
@@ -606,12 +607,26 @@ ROLLBACK;`,
         `SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('${signature}')`,
       );
     const trustedDatabaseIdentity = {
-      authoritySystemIdentifier: sql(
-        authority,
-        "SELECT system_identifier::text FROM pg_control_system()",
-      ),
-      targetSystemIdentifier:
-        canonicalEnv.REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER,
+      authorityDatabaseIdentity: {
+        serverIdentity: sql(
+          authority,
+          "SELECT system_identifier::text FROM pg_control_system()",
+        ),
+        databaseIdentity: sql(
+          authority,
+          "SELECT oid::text FROM pg_database WHERE datname=current_database()",
+        ),
+        databaseName: "reviewrouter",
+      },
+      targetDatabaseIdentity: {
+        serverIdentity:
+          canonicalEnv.REVIEW_ROUTER_TARGET_DATABASE_SYSTEM_IDENTIFIER,
+        databaseIdentity: sql(
+          target,
+          "SELECT oid::text FROM pg_database WHERE datname=current_database()",
+        ),
+        databaseName: "reviewrouter",
+      },
       authorityOwnerRoleName: sql(
         authority,
         "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='release_authority'",
@@ -648,6 +663,8 @@ ROLLBACK;`,
       poolMax: 1,
     });
     witnessPrisma = createPrismaClient({ databaseUrl: witnessUrl, poolMax: 1 });
+    const activationAttestation =
+      await observeReleaseAuthorityDatabaseReadiness(permitInstallerPrisma);
     releaseControl = await createReleaseControlApp({
       controlPrisma,
       providerAuthorityPrisma,
@@ -661,7 +678,13 @@ ROLLBACK;`,
           .update(providerAuthorityToken)
           .digest("hex"),
       },
-      trustedDatabaseIdentity,
+      trustedDatabaseIdentity: {
+        ...trustedDatabaseIdentity,
+        targetMigrationManifestIdentity:
+          activationAttestation.applicationMigrationManifestIdentity,
+        activationNamespaceFingerprint:
+          activationAttestation.activationNamespaceFingerprint,
+      },
     });
     releaseControl.addHook("onError", async (_request, _reply, error) => {
       process.stderr.write(

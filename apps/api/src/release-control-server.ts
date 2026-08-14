@@ -43,12 +43,24 @@ const app = await createReleaseControlApp({
     ),
   },
   trustedDatabaseIdentity: {
-    authoritySystemIdentifier: required(
-      "REVIEW_ROUTER_RELEASE_AUTHORITY_SYSTEM_IDENTIFIER",
-    ),
-    targetSystemIdentifier: required(
-      "REVIEW_ROUTER_ACTIVATION_TARGET_SYSTEM_IDENTIFIER",
-    ),
+    authorityDatabaseIdentity: {
+      serverIdentity: required(
+        "REVIEW_ROUTER_RELEASE_AUTHORITY_SYSTEM_IDENTIFIER",
+      ),
+      databaseIdentity: required(
+        "REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_OID",
+      ),
+      databaseName: required("REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_NAME"),
+    },
+    targetDatabaseIdentity: {
+      serverIdentity: required(
+        "REVIEW_ROUTER_ACTIVATION_TARGET_SYSTEM_IDENTIFIER",
+      ),
+      databaseIdentity: required(
+        "REVIEW_ROUTER_ACTIVATION_TARGET_DATABASE_OID",
+      ),
+      databaseName: required("REVIEW_ROUTER_ACTIVATION_TARGET_DATABASE_NAME"),
+    },
     authorityOwnerRoleName: required(
       "REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_ROLE",
     ),
@@ -58,6 +70,12 @@ const app = await createReleaseControlApp({
     ),
     readerRoutineBodySha256: required(
       "REVIEW_ROUTER_ACTIVATION_READER_BODY_SHA256",
+    ),
+    targetMigrationManifestIdentity: required(
+      "REVIEW_ROUTER_ACTIVATION_MIGRATION_MANIFEST_SHA256",
+    ),
+    activationNamespaceFingerprint: required(
+      "REVIEW_ROUTER_ACTIVATION_NAMESPACE_FINGERPRINT",
     ),
   },
 });

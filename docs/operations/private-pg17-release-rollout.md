@@ -157,23 +157,34 @@ verifier or upgraded without rerunning the current preflight verification.
    routines; healthy witness must observe the 000002 effect snapshot routine.
    Healthy control must also expose the 000003 source-freeze prepare, record,
    complete, and compensation-checkpoint routines before rollout use.
-   Configure release-control with the independently captured authority and
-   target `system_identifier` values, the exact authority owner role, and the
-   activation routine body hashes from the immutable release. Obtain the two
-   non-secret hashes from the checked-out release without querying the target:
+   Configure release-control with independently captured authority and target
+   database identities: each tuple contains `system_identifier`, the database
+   OID, and `current_database()`. Also configure the exact authority owner role,
+   activation migration-manifest digest, activation namespace fingerprint, and
+   activation routine body hashes from the immutable release. These values are
+   catalog evidence, not credentials or connection strings. Obtain the two
+   routine hashes from the checked-out release without querying the target:
 
    ```bash
    node -e "import('./scripts/run-codex-rotating-release-migration.mjs').then(m => console.log(m.activationRoutineBodyTrustRoots()))"
    ```
 
    Set `REVIEW_ROUTER_RELEASE_AUTHORITY_SYSTEM_IDENTIFIER`,
+   `REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_OID`,
+   `REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_NAME`,
    `REVIEW_ROUTER_ACTIVATION_TARGET_SYSTEM_IDENTIFIER`,
+   `REVIEW_ROUTER_ACTIVATION_TARGET_DATABASE_OID`,
+   `REVIEW_ROUTER_ACTIVATION_TARGET_DATABASE_NAME`,
+   `REVIEW_ROUTER_ACTIVATION_MIGRATION_MANIFEST_SHA256`,
+   `REVIEW_ROUTER_ACTIVATION_NAMESPACE_FINGERPRINT`,
    `REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_ROLE`,
    `REVIEW_ROUTER_ACTIVATION_GUARD_ROLE`,
    `REVIEW_ROUTER_ACTIVATION_INSTALLER_BODY_SHA256`, and
    `REVIEW_ROUTER_ACTIVATION_READER_BODY_SHA256` as one rollout-attested
-   tuple. Never derive either system identifier by comparing the configured
-   database URLs; a restored stale clone can make both URLs agree.
+   tuple. Capture each multi-field tuple in one read-only, repeatable-read
+   transaction. Never derive identity by comparing configured database URLs;
+   two databases on one cluster share a system identifier, and a restored stale
+   clone can make URLs agree.
 
 3. Pre-provision target roles and the `reviewrouter_activation` guard. Role
    bootstrap must prove the guard has no membership edges, installer has only
@@ -303,6 +314,12 @@ authority table, sequence, and routine, schema privilege, object owner, column
 ACL, and type ACL. Extra grantees or ACL-bearing objects, inherited stale access,
 `PUBLIC`, grant options, missing grants, owner drift, and non-empty relevant
 owner defaults make readiness fail even if a catalog digest happens to match.
+Readiness takes every identity, manifest, routine, and catalog fact from one
+pinned PostgreSQL session and bounded repeatable-read transaction. PostgreSQL
+statement and lock timeouts bound catalog work; the application deadline aborts
+the adapter request and expired observations are never cached. Missing legacy
+fields, a mixed-generation manifest, extra namespace objects, changed routine
+bodies, or a stale fingerprint fail closed.
 
 An absent-ledger catalog that matches neither shadow, or matches ambiguously,
 stops before history or forward repairs are written. Preserve the failed

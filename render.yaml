@@ -36,6 +36,18 @@ services:
         sync: false
       - key: REVIEW_ROUTER_ACTIVATION_TARGET_SYSTEM_IDENTIFIER
         sync: false
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_OID
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_NAME
+        sync: false
+      - key: REVIEW_ROUTER_ACTIVATION_TARGET_DATABASE_OID
+        sync: false
+      - key: REVIEW_ROUTER_ACTIVATION_TARGET_DATABASE_NAME
+        sync: false
+      - key: REVIEW_ROUTER_ACTIVATION_MIGRATION_MANIFEST_SHA256
+        sync: false
+      - key: REVIEW_ROUTER_ACTIVATION_NAMESPACE_FINGERPRINT
+        sync: false
       - key: REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_ROLE
         sync: false
       - key: REVIEW_ROUTER_ACTIVATION_GUARD_ROLE
@@ -65,6 +77,12 @@ services:
       - key: REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256
         sync: false
       - key: REVIEW_ROUTER_RELEASE_WITNESS_RENDER_READ_TOKEN
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_SYSTEM_IDENTIFIER
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_OID
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_NAME
         sync: false
 
   - type: web

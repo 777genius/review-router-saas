@@ -728,6 +728,31 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA reviewrouter_activation FROM ${activationR
 REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM ${activationReceiptReaderRoleName};
 GRANT USAGE ON SCHEMA reviewrouter_activation TO ${activationReceiptReaderRoleName};
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_receipt(text) TO ${activationReceiptReaderRoleName};
+CREATE OR REPLACE FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
+RETURNS text LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp AS $read_manifest$
+BEGIN
+  IF session_user NOT IN (
+    '${activationPermitInstallerRoleName}',
+    '${activationReceiptReaderRoleName}'
+  ) THEN
+    RAISE EXCEPTION 'activation migration manifest read request invalid';
+  END IF;
+  RETURN (
+    SELECT 'sha256:' || encode(sha256(convert_to(
+      coalesce(string_agg(migration_name || ':' || checksum, ','
+        ORDER BY migration_name), ''), 'UTF8')), 'hex')
+    FROM public._prisma_migrations
+    WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL
+  );
+END
+$read_manifest$;
+ALTER FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
+  OWNER TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
+  TO ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName};
 COMMIT;
 `;
 }

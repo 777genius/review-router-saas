@@ -113,6 +113,12 @@ describe("target-local PG17 activation permit", () => {
     expect(authority).toContain("current_setting('server_version_num')");
     expect(authority).toContain("FROM public._prisma_migrations");
     expect(authority).toContain(
+      "read_activation_migration_manifest_identity()",
+    );
+    expect(authority).toContain(
+      "TO reviewrouter_activation_permit_installer, reviewrouter_activation_receipt_reader",
+    );
+    expect(authority).toContain(
       "evidence->>'commit' = permit.expected_commit_sha",
     );
     expect(authority).toContain("WITH runtime_roles(role_name, role_kind)");
