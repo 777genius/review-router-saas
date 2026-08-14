@@ -3,17 +3,11 @@ import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
   canonicalActivationSql,
-  canonicalActivatedPrincipalInventoryPreviewSql,
   canonicalActivationRecoverySql,
   resolveReleaseMigrationConfiguration,
 } from "./run-codex-rotating-release-migration.mjs";
 import {
   decomposePostgresConnection,
-  assertEffectivePrincipalInventory,
-  canonicalEffectivePrincipalPolicy,
-  draftEffectivePrincipalPolicy,
-  effectivePrincipalInventorySql,
-  PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
 } from "../packages/features/release-rollout/src/index.ts";
 
@@ -152,81 +146,8 @@ export function executePrivateGenerationActivation(
   } finally {
     recoveryConnection.cleanup();
   }
-  const draftPolicyForDisposableRehearsal =
-    options.draftPolicyForDisposableRehearsal === true;
-  let beforePolicy;
-  let activatedPolicy;
-  if (!draftPolicyForDisposableRehearsal)
-    try {
-      beforePolicy = JSON.parse(
-        required(
-          env,
-          "REVIEW_ROUTER_TARGET_PREACTIVATION_PRINCIPAL_POLICY_JSON",
-        ),
-      );
-      activatedPolicy = JSON.parse(
-        required(env, "REVIEW_ROUTER_TARGET_PRINCIPAL_POLICY_JSON"),
-      );
-    } catch {
-      throw new Error("release_activation_principal_policy_invalid");
-    }
-  const inventory = new PostgreSqlGenerationAdapter(commands);
-  const beforeInventory = inventory.inventoryEffectivePrincipals(
-    configuration.releaseUrl,
-  );
-  beforePolicy ??= draftEffectivePrincipalPolicy(beforeInventory);
-  const beforeDecision = assertEffectivePrincipalInventory(
-    beforeInventory,
-    beforePolicy,
-  );
-  const previewConnection = decomposePostgresConnection(
-    configuration.releaseUrl,
-  );
-  let activatedInventory;
-  try {
-    const previewOutput = commands.execute(
-      "psql",
-      [...previewConnection.args, "--no-psqlrc", "--tuples-only", "--no-align"],
-      {
-        env: previewConnection.env,
-        input: canonicalActivatedPrincipalInventoryPreviewSql(
-          configuration,
-          effectivePrincipalInventorySql,
-        ),
-      },
-    ).stdout;
-    activatedInventory = JSON.parse(
-      previewOutput
-        .split("\n")
-        .map((line) => line.trim())
-        .find((line) => line.startsWith("{")) ?? "null",
-    );
-  } catch (error) {
-    throw new Error("release_activation_principal_preview_failed", {
-      cause: error,
-    });
-  } finally {
-    previewConnection.cleanup();
-  }
-  activatedPolicy ??= draftEffectivePrincipalPolicy(activatedInventory);
-  const activatedDecision = assertEffectivePrincipalInventory(
-    activatedInventory,
-    activatedPolicy,
-  );
-  const canonicalBeforePolicy = canonicalEffectivePrincipalPolicy(beforePolicy);
-  const canonicalActivatedPolicy =
-    canonicalEffectivePrincipalPolicy(activatedPolicy);
   const activation = canonicalActivationSql(configuration, {
     rolloutId,
-    principalInventorySql: effectivePrincipalInventorySql,
-    beforePrincipalInventory: beforeInventory,
-    beforePrincipalPolicy: canonicalBeforePolicy,
-    activatedPrincipalInventory: activatedInventory,
-    activatedPrincipalPolicy: canonicalActivatedPolicy,
-    beforePrincipalInventorySha256: beforeDecision.inventorySha256,
-    beforePrincipalPolicySha256: beforeDecision.policySha256,
-    activatedPrincipalInventorySha256: activatedDecision.inventorySha256,
-    activatedPrincipalPolicySha256: activatedDecision.policySha256,
   });
   options.captureActivationSqlSha256?.(
     `sha256:${createHash("sha256").update(JSON.stringify(activation.sql)).digest("hex")}`,
@@ -252,15 +173,7 @@ export function executePrivateGenerationActivation(
       .map((line) => line.trim())
       .find((line) => line.startsWith("{")) ?? "null",
   );
-  if (
-    !activationReceiptIsStructured(observed, rolloutId) ||
-    observed.beforePrincipalInventorySha256 !==
-      beforeDecision.inventorySha256 ||
-    observed.beforePrincipalPolicySha256 !== beforeDecision.policySha256 ||
-    observed.activatedPrincipalInventorySha256 !==
-      activatedDecision.inventorySha256 ||
-    observed.activatedPrincipalPolicySha256 !== activatedDecision.policySha256
-  )
+  if (!activationReceiptIsStructured(observed, rolloutId))
     throw new Error("release_activation_receipt_unproven");
   return activationObservation(observed);
 }

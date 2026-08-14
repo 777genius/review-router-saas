@@ -98,6 +98,49 @@ export interface EffectivePrincipalDecision {
   >;
 }
 
+export const ActivationPrincipalProjectionKind = Object.freeze({
+  Projection: "reviewrouter-effective-principal-projection",
+  Policy: "reviewrouter-effective-principal-policy",
+} as const);
+export const ActivationPrincipalPolicyPhase = Object.freeze({
+  Preactivation: "preactivation",
+  Activated: "activated",
+} as const);
+export const ActivationPrincipalViolationKind = Object.freeze({
+  UnexpectedLogin: "unexpected_login",
+  UnexpectedEffectiveRole: "unexpected_effective_role",
+  UnexpectedPublicPermission: "unexpected_public_permission",
+  UnexpectedAdministrativeCapability: "unexpected_administrative_capability",
+} as const);
+export type ActivationPrincipalViolationKind =
+  (typeof ActivationPrincipalViolationKind)[keyof typeof ActivationPrincipalViolationKind];
+
+/** Guard-private catalog evidence. Only its canonical digests cross the adapter boundary. */
+export interface ServerDerivedActivationPrincipalProjection {
+  readonly kind: typeof ActivationPrincipalProjectionKind.Projection;
+  readonly version: 2;
+  readonly inventory: EffectivePrincipalInventory;
+  readonly policy: Readonly<{
+    kind: typeof ActivationPrincipalProjectionKind.Policy;
+    version: 2;
+    phase: (typeof ActivationPrincipalPolicyPhase)[keyof typeof ActivationPrincipalPolicyPhase];
+    allowedPrincipals: readonly string[];
+    publicPermissionKinds: readonly PrincipalCapability[];
+    rowSecurity: readonly Readonly<{
+      relation: string;
+      owner: string;
+      enabled: boolean;
+      forced: boolean;
+    }>[];
+    violations: readonly Readonly<{
+      kind: ActivationPrincipalViolationKind;
+      principal: string;
+      capability?: PrincipalCapability;
+      resource?: string;
+    }>[];
+  }>;
+}
+
 const capabilities = new Set<string>(Object.values(PrincipalCapability));
 const safeText = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && !value.includes("\0");

@@ -85,8 +85,9 @@ const observeOnConnection = async (
         FROM (VALUES
           (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)')),'')),
           (2,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')),'')),
-          (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text)')),'')),
-          (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text,jsonb)')),''))
+          (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)')),'')),
+          (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')),'')),
+          (5,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),''))
         ) bodies(ordinal,body_sha256))),'')
         AS "installerRoutineBodySha256",
       coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc
@@ -216,15 +217,35 @@ const observeOnConnection = async (
           FROM pg_namespace n CROSS JOIN pg_roles guard
           WHERE n.nspname='reviewrouter_activation'
             AND guard.rolname='reviewrouter_activation_receipt_guard'),false)
-        AND coalesce((SELECT count(*)=4 AND bool_and(p.prosecdef
-            AND p.proowner=guard.oid AND NOT has_function_privilege('public',p.oid,'EXECUTE'))
+        AND coalesce((SELECT count(*)=5 AND bool_and(p.prosecdef
+            AND p.proowner=guard.oid AND NOT has_function_privilege('public',p.oid,'EXECUTE')
+            AND has_function_privilege('reviewrouter_release_migration',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM (p.oid IN (
+                to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
+                to_regprocedure('reviewrouter_activation.activate_generation(text)')))
+            AND has_function_privilege('reviewrouter_role_bootstrap',p.oid,'EXECUTE')
+              IS NOT DISTINCT FROM
+                (p.oid=to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'))
+            AND NOT EXISTS (SELECT 1
+              FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+              LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
+              WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                AND grantee.rolname IS DISTINCT FROM CASE
+                  WHEN p.oid=to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()')
+                    THEN 'reviewrouter_role_bootstrap'
+                  WHEN p.oid IN (
+                    to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
+                    to_regprocedure('reviewrouter_activation.activate_generation(text)'))
+                    THEN 'reviewrouter_release_migration'
+                  ELSE NULL END))
           FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           CROSS JOIN pg_roles guard WHERE n.nspname='reviewrouter_activation'
             AND guard.rolname='reviewrouter_activation_receipt_guard'
             AND p.oid IN (to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
               to_regprocedure('reviewrouter_activation.canonical_json(jsonb)'),
-              to_regprocedure('reviewrouter_activation.activate_generation(text,jsonb)'),
-              to_regprocedure('reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text)'))),false)
+              to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)'),
+              to_regprocedure('reviewrouter_activation.activate_generation(text)'),
+              to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'))),false)
         AND coalesce((SELECT
           has_table_privilege(guard.oid,
             to_regclass('public."_prisma_migrations"'),'SELECT')

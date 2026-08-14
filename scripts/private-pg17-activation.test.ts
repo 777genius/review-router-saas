@@ -26,16 +26,9 @@ const configuration = {
   ],
   releasePassword: "release-pass",
 };
-const principalEvidence = {
-  principalInventorySql: effectivePrincipalInventorySql,
-  beforePrincipalInventory: { version: 1 },
-  beforePrincipalPolicy: { version: 1 },
-  activatedPrincipalInventory: { version: 1 },
-  activatedPrincipalPolicy: { version: 1 },
+const forgedLegacyPrincipalEvidence = {
+  beforePrincipalInventory: { version: 1, forgedClean: true },
   beforePrincipalInventorySha256: `sha256:${"1".repeat(64)}`,
-  beforePrincipalPolicySha256: `sha256:${"2".repeat(64)}`,
-  activatedPrincipalInventorySha256: `sha256:${"3".repeat(64)}`,
-  activatedPrincipalPolicySha256: `sha256:${"4".repeat(64)}`,
 };
 
 describe("target-local PG17 activation permit", () => {
@@ -52,6 +45,13 @@ describe("target-local PG17 activation permit", () => {
     expect(
       createHash("sha256").update(effectivePrincipalInventorySql).digest("hex"),
     ).toBe(effectivePrincipalInventorySqlSha256);
+    expect(effectivePrincipalInventorySql).toContain(
+      "'default:'||pg_get_userbyid(defaults.defaclrole)",
+    );
+    expect(effectivePrincipalInventorySql).toContain("pg_default_acl defaults");
+    expect(effectivePrincipalInventorySql).toContain("attribute.attacl");
+    expect(effectivePrincipalInventorySql).toContain("routine.proacl");
+    expect(effectivePrincipalInventorySql).toContain("database.datacl");
   });
 
   it("gives the dedicated installer only the permit installation capability", () => {
@@ -125,7 +125,7 @@ describe("target-local PG17 activation permit", () => {
     const authority = activationAuthorityProvisioningSql();
     const activation = canonicalActivationSql(configuration, {
       rolloutId: "rollout-activation-1",
-      ...principalEvidence,
+      ...forgedLegacyPrincipalEvidence,
     });
     expect(authority).toContain(
       "FROM reviewrouter_activation.activation_permit\n  WHERE rollout_id = requested_rollout_id FOR UPDATE",
@@ -175,18 +175,13 @@ describe("target-local PG17 activation permit", () => {
       "reviewrouter_activation.activate_generation(",
     );
     expect(activation.sql.trim().endsWith("COMMIT;")).toBe(true);
-    expect(activation.sql.indexOf("AS before_inventory")).toBeLessThan(
-      activation.sql.indexOf("stage_principal_evidence"),
-    );
     expect(activation.sql.indexOf("stage_principal_evidence")).toBeLessThan(
       activation.sql.indexOf("GRANT CONNECT"),
     );
     expect(activation.sql.indexOf("GRANT CONNECT")).toBeLessThan(
-      activation.sql.indexOf("AS activated_inventory"),
-    );
-    expect(activation.sql.indexOf("AS activated_inventory")).toBeLessThan(
       activation.sql.indexOf("activate_generation"),
     );
+    expect(activation.sql).not.toContain("forgedClean");
   });
 
   it("returns the immutable receipt on crash replay and fails closed on torn consume", () => {
@@ -212,30 +207,28 @@ describe("target-local PG17 activation permit", () => {
       "principal_evidence.transaction_id <> txid_current()",
     );
     expect(sql).toContain(
-      "principal_evidence.activated_inventory IS DISTINCT FROM observed_activated_inventory",
+      "project_effective_principal_authority('preactivation')",
     );
+    expect(sql).toContain("project_effective_principal_authority('activated')");
+    expect(sql).toContain("reviewrouter-effective-principal-projection");
+    expect(sql).toContain("reviewrouter-effective-principal-policy");
+    expect(sql).toContain("unexpected_login");
+    expect(sql).toContain("unexpected_effective_role");
+    expect(sql).toContain("membership_facts.set_option");
     expect(sql).toContain(
-      "observed_before_inventory IS DISTINCT FROM expected_before_inventory",
+      "current_role.role_inherit AND membership_facts.inherit_option",
     );
-    expect(sql).toContain(
-      "reviewrouter_activation.canonical_json(expected_before_inventory)",
-    );
-    expect(sql).toContain(
-      "reviewrouter_activation.canonical_json(expected_before_policy)",
-    );
-    expect(sql).toContain(
-      "reviewrouter_activation.canonical_json(expected_activated_inventory)",
-    );
-    expect(sql).toContain(
-      "reviewrouter_activation.canonical_json(expected_activated_policy)",
-    );
+    expect(sql).toContain("unexpected_public_permission");
+    expect(sql).toContain("relation.relrowsecurity");
+    expect(sql).toContain("relation.relforcerowsecurity");
     expect(sql).toContain("principal evidence invalid or stale");
-    expect(sql).toContain("principal evidence staging conflict");
+    expect(sql).toContain("principal evidence activation update raced");
     expect(sql).toContain(
       "principal evidence is not transaction-bound to activation",
     );
     expect(sql).toContain("activationPrincipalEvidenceContract");
     expect(sql).toContain("principalInventorySqlSha256");
+    expect(sql).toContain("principalProjectorBodySha256");
     expect(sql).toContain("activateGenerationBodySha256");
     expect(sql).toContain("readActivationReceiptBodySha256");
   });
@@ -296,7 +289,7 @@ describe("target-local PG17 activation permit", () => {
   it("rejects authority material from the cutover request surface", () => {
     const activation = canonicalActivationSql(configuration, {
       rolloutId: "rollout-activation-1",
-      ...principalEvidence,
+      ...forgedLegacyPrincipalEvidence,
       permitNonce: "caller-controlled",
       permitEpoch: 999,
     });
@@ -305,26 +298,17 @@ describe("target-local PG17 activation permit", () => {
     expect(activation.sql).not.toContain(
       "requested_canonical_privileges_sha256",
     );
-    expect([
-      ...(
-        activation.sql.match(
-          /reviewrouter_activation\.activate_generation\([\s\S]*?\);/u,
-        )?.[0] ?? ""
-      ).matchAll(/,/gu),
-    ]).toHaveLength(1);
+    expect(activation.sql).not.toContain("forgedClean");
   });
 
-  it.each([
-    ["missing", undefined],
-    ["malformed", "sha256:not-a-digest"],
-  ])("rejects %s principal evidence before emitting SQL", (_label, value) => {
-    expect(() =>
-      canonicalActivationSql(configuration, {
-        rolloutId: "rollout-activation-1",
-        ...principalEvidence,
-        beforePrincipalInventorySha256: value,
-      }),
-    ).toThrow("release_migration_activation_principal_evidence_invalid");
+  it("accepts no caller principal-evidence arguments", () => {
+    const activation = canonicalActivationSql(configuration, {
+      rolloutId: "rollout-activation-1",
+    });
+    expect(activation.sql).toContain(
+      "stage_principal_evidence(\n  'rollout-activation-1'",
+    );
+    expect(activation.sql).not.toContain("::jsonb");
   });
 
   it("derives receipt digests from normalized catalog facts", () => {
@@ -335,7 +319,7 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain("catalog_facts_sha256 := 'sha256:'");
     expect(sql).not.toContain("requested_canonical_privileges_sha256");
     expect(sql).toContain(
-      "ALTER FUNCTION reviewrouter_activation.activate_generation(text,jsonb)",
+      "ALTER FUNCTION reviewrouter_activation.activate_generation(text)",
     );
   });
 
