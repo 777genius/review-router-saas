@@ -65,7 +65,7 @@ var import_node_crypto6 = require("node:crypto");
 var import_node_fs2 = require("node:fs");
 var import_node_http = __toESM(require("node:http"), 1);
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/core/domain/errors.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/domain/errors.js
 var RuntimeConfigurationError = class extends Error {
   constructor(message) {
     super(message);
@@ -79,7 +79,7 @@ var BoundaryViolationError = class extends Error {
   }
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/core/application/policy.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/policy.js
 function negotiateCapabilities(input) {
   const policy = input.requested ?? input.policy;
   if (!policy) {
@@ -249,16 +249,16 @@ function compileRuntimeExecutionPlan(input) {
 function providerMayRotateSession(provider) {
   return provider.sessionRotationMode === "may-rotate" || provider.refreshMayRotateSession;
 }
-function rejected(code, safeMessage, details) {
+function rejected(code, safeMessage2, details) {
   return {
     status: "rejected",
     code,
-    safeMessage,
+    safeMessage: safeMessage2,
     details
   };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/core/application/redactor.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/redactor.js
 var textDecoder = new TextDecoder();
 var DefaultRedactor = class {
   secrets = /* @__PURE__ */ new Map();
@@ -323,7 +323,7 @@ var DeterministicIdGenerator = class {
   }
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/core/domain/generation-hash.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/domain/generation-hash.js
 var import_node_crypto = require("node:crypto");
 function computeSessionGenerationHash(input) {
   const hash2 = (0, import_node_crypto.createHash)("sha256");
@@ -343,7 +343,299 @@ function computeSessionGenerationHash(input) {
   return hash2.digest("base64url");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/domain/types.js
+var AgentRuntimeBudgetMetric;
+(function(AgentRuntimeBudgetMetric2) {
+  AgentRuntimeBudgetMetric2["Usd"] = "usd";
+  AgentRuntimeBudgetMetric2["WeightedTokens"] = "weighted_tokens";
+})(AgentRuntimeBudgetMetric || (AgentRuntimeBudgetMetric = {}));
+var AgentRuntimeBudgetEnforcement;
+(function(AgentRuntimeBudgetEnforcement2) {
+  AgentRuntimeBudgetEnforcement2["ProviderNative"] = "provider_native";
+})(AgentRuntimeBudgetEnforcement || (AgentRuntimeBudgetEnforcement = {}));
+var AgentRuntimeTurnLimitEnforcement;
+(function(AgentRuntimeTurnLimitEnforcement2) {
+  AgentRuntimeTurnLimitEnforcement2["ProviderNative"] = "provider_native";
+  AgentRuntimeTurnLimitEnforcement2["Unsupported"] = "unsupported";
+})(AgentRuntimeTurnLimitEnforcement || (AgentRuntimeTurnLimitEnforcement = {}));
+var AgentRuntimeExecutionMode;
+(function(AgentRuntimeExecutionMode2) {
+  AgentRuntimeExecutionMode2["SingleRun"] = "single_run";
+  AgentRuntimeExecutionMode2["Goal"] = "goal";
+})(AgentRuntimeExecutionMode || (AgentRuntimeExecutionMode = {}));
+var AgentRuntimeFailureCode;
+(function(AgentRuntimeFailureCode2) {
+  AgentRuntimeFailureCode2["NeedsReconnect"] = "needs_reconnect";
+  AgentRuntimeFailureCode2["QuotaLimited"] = "quota_limited";
+  AgentRuntimeFailureCode2["PermissionRequired"] = "permission_required";
+  AgentRuntimeFailureCode2["ProviderSessionInvalid"] = "provider_session_invalid";
+  AgentRuntimeFailureCode2["ProviderOutputInvalid"] = "provider_output_invalid";
+  AgentRuntimeFailureCode2["TaskRequestInvalid"] = "task_request_invalid";
+  AgentRuntimeFailureCode2["TaskModeUnsupported"] = "task_mode_unsupported";
+  AgentRuntimeFailureCode2["TaskCancelled"] = "task_cancelled";
+  AgentRuntimeFailureCode2["TaskTimeout"] = "task_timeout";
+  AgentRuntimeFailureCode2["StaleGeneration"] = "stale_generation";
+  AgentRuntimeFailureCode2["BackendUnavailable"] = "backend_unavailable";
+  AgentRuntimeFailureCode2["InputRequired"] = "input_required";
+  AgentRuntimeFailureCode2["GoalSliceExhausted"] = "goal_slice_exhausted";
+  AgentRuntimeFailureCode2["ModelUnavailable"] = "model_unavailable";
+  AgentRuntimeFailureCode2["BudgetExceeded"] = "budget_exceeded";
+  AgentRuntimeFailureCode2["ProviderRuntimeUnavailable"] = "provider_runtime_unavailable";
+  AgentRuntimeFailureCode2["CleanupUnconfirmed"] = "cleanup_unconfirmed";
+  AgentRuntimeFailureCode2["UnknownRuntimeFailure"] = "unknown_runtime_failure";
+})(AgentRuntimeFailureCode || (AgentRuntimeFailureCode = {}));
+var providerFailureCodes = Object.values(AgentRuntimeFailureCode);
+var AgentRuntimeTaskKind;
+(function(AgentRuntimeTaskKind2) {
+  AgentRuntimeTaskKind2["Review"] = "review";
+  AgentRuntimeTaskKind2["StructuredPrompt"] = "structured-prompt";
+  AgentRuntimeTaskKind2["HealthCheck"] = "health-check";
+})(AgentRuntimeTaskKind || (AgentRuntimeTaskKind = {}));
+var AgentRuntimeTaskResultStatus;
+(function(AgentRuntimeTaskResultStatus2) {
+  AgentRuntimeTaskResultStatus2["Completed"] = "completed";
+  AgentRuntimeTaskResultStatus2["WaitingForInput"] = "waiting_for_input";
+  AgentRuntimeTaskResultStatus2["Failed"] = "failed";
+})(AgentRuntimeTaskResultStatus || (AgentRuntimeTaskResultStatus = {}));
+var AgentRuntimeTaskEventType;
+(function(AgentRuntimeTaskEventType2) {
+  AgentRuntimeTaskEventType2["Started"] = "started";
+  AgentRuntimeTaskEventType2["TextDelta"] = "text_delta";
+  AgentRuntimeTaskEventType2["ToolCall"] = "tool_call";
+  AgentRuntimeTaskEventType2["Usage"] = "usage";
+  AgentRuntimeTaskEventType2["Warning"] = "warning";
+  AgentRuntimeTaskEventType2["Completed"] = "completed";
+})(AgentRuntimeTaskEventType || (AgentRuntimeTaskEventType = {}));
+var AgentRuntimeAccessBoundary;
+(function(AgentRuntimeAccessBoundary2) {
+  AgentRuntimeAccessBoundary2["ReadOnly"] = "read_only";
+  AgentRuntimeAccessBoundary2["IsolatedWorkspaceWrite"] = "isolated_workspace_write";
+  AgentRuntimeAccessBoundary2["ProjectScopedControl"] = "project_scoped_control";
+  AgentRuntimeAccessBoundary2["DangerFullAccess"] = "danger_full_access";
+})(AgentRuntimeAccessBoundary || (AgentRuntimeAccessBoundary = {}));
+var AgentRuntimeEditMode;
+(function(AgentRuntimeEditMode2) {
+  AgentRuntimeEditMode2["ReadOnly"] = "read-only";
+  AgentRuntimeEditMode2["AllowEdits"] = "allow-edits";
+})(AgentRuntimeEditMode || (AgentRuntimeEditMode = {}));
+var AgentRuntimeProviderSandboxMode;
+(function(AgentRuntimeProviderSandboxMode2) {
+  AgentRuntimeProviderSandboxMode2["WorkspaceWrite"] = "workspace-write";
+  AgentRuntimeProviderSandboxMode2["DangerFullAccess"] = "danger-full-access";
+})(AgentRuntimeProviderSandboxMode || (AgentRuntimeProviderSandboxMode = {}));
+var AgentRuntimeResponseFormat;
+(function(AgentRuntimeResponseFormat2) {
+  AgentRuntimeResponseFormat2["Text"] = "text";
+  AgentRuntimeResponseFormat2["Json"] = "json";
+})(AgentRuntimeResponseFormat || (AgentRuntimeResponseFormat = {}));
+var AgentRuntimeUnsupportedControlPolicy;
+(function(AgentRuntimeUnsupportedControlPolicy2) {
+  AgentRuntimeUnsupportedControlPolicy2["Fail"] = "fail";
+  AgentRuntimeUnsupportedControlPolicy2["Warn"] = "warn";
+})(AgentRuntimeUnsupportedControlPolicy || (AgentRuntimeUnsupportedControlPolicy = {}));
+var AgentRuntimeControl;
+(function(AgentRuntimeControl2) {
+  AgentRuntimeControl2["Execution"] = "execution";
+  AgentRuntimeControl2["MaxTurns"] = "maxTurns";
+  AgentRuntimeControl2["AccessBoundary"] = "accessBoundary";
+  AgentRuntimeControl2["ToolPolicy"] = "toolPolicy";
+  AgentRuntimeControl2["Budget"] = "budget";
+})(AgentRuntimeControl || (AgentRuntimeControl = {}));
+var AgentRuntimeCostCurrency;
+(function(AgentRuntimeCostCurrency2) {
+  AgentRuntimeCostCurrency2["Usd"] = "USD";
+})(AgentRuntimeCostCurrency || (AgentRuntimeCostCurrency = {}));
+var AgentRuntimeTool;
+(function(AgentRuntimeTool2) {
+  AgentRuntimeTool2["ReadFile"] = "read_file";
+  AgentRuntimeTool2["EditFile"] = "edit_file";
+  AgentRuntimeTool2["WriteFile"] = "write_file";
+  AgentRuntimeTool2["SearchFiles"] = "search_files";
+  AgentRuntimeTool2["Shell"] = "shell";
+  AgentRuntimeTool2["WebAccess"] = "web_access";
+  AgentRuntimeTool2["DelegateAgent"] = "delegate_agent";
+  AgentRuntimeTool2["WorktreeControl"] = "worktree_control";
+  AgentRuntimeTool2["NotebookEdit"] = "notebook_edit";
+})(AgentRuntimeTool || (AgentRuntimeTool = {}));
+var ProviderLogicalThreadOutcome;
+(function(ProviderLogicalThreadOutcome2) {
+  ProviderLogicalThreadOutcome2["StartedFresh"] = "started_fresh";
+  ProviderLogicalThreadOutcome2["Continued"] = "continued";
+  ProviderLogicalThreadOutcome2["RecoveredFresh"] = "recovered_fresh";
+})(ProviderLogicalThreadOutcome || (ProviderLogicalThreadOutcome = {}));
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime-results.js
+function nextEnvelope(previous, artifact, writeback) {
+  return {
+    ...previous,
+    artifact,
+    generation: writeback.generation,
+    generationHash: writeback.generationHash
+  };
+}
+function sessionForPostRefreshTask(refresh) {
+  if (refresh.status === "ready") {
+    return refresh.session;
+  }
+  if (refresh.status === "skipped" && (refresh.reason === "session_unchanged" || refresh.reason === "refresh_not_required")) {
+    return refresh.session ?? null;
+  }
+  return null;
+}
+function shouldGuardedRefresh(failure) {
+  return failure.code === "needs_reconnect" || failure.causeCategory === "needs_reconnect";
+}
+function blocked(reason, safeMessage2, warnings = []) {
+  return {
+    status: "blocked",
+    reason,
+    safeMessage: safeMessage2,
+    warnings
+  };
+}
+function failedTask(code, safeMessage2) {
+  return {
+    status: "failed",
+    failure: {
+      code,
+      retryable: false,
+      reconnectRequired: code === "needs_reconnect",
+      safeMessage: safeMessage2
+    },
+    warnings: []
+  };
+}
+function missingSessionFailure() {
+  return {
+    code: "needs_reconnect",
+    retryable: false,
+    reconnectRequired: true,
+    safeMessage: "Provider session is missing."
+  };
+}
+function unsupportedTaskFailure(input) {
+  if (!input.agentDriver.capabilities.taskModes.includes(input.task.kind)) {
+    return failedTask("task_mode_unsupported", "Selected agent does not support the requested task mode.");
+  }
+  const execution = input.task.execution ?? {
+    mode: AgentRuntimeExecutionMode.SingleRun
+  };
+  const executionCapabilities = input.agentDriver.capabilities.taskExecutionCapabilities ?? [{
+    mode: AgentRuntimeExecutionMode.SingleRun
+  }];
+  const executionCapability = executionCapabilities.find((capability) => capability.mode === execution.mode);
+  if (!executionCapability) {
+    return failedTask("task_mode_unsupported", "Selected agent does not support the requested execution mode.");
+  }
+  if (execution.mode === AgentRuntimeExecutionMode.Goal && executionCapability.maxCompletionConditionChars !== void 0 && execution.completionCondition.length > executionCapability.maxCompletionConditionChars) {
+    return failedTask("task_request_invalid", "Goal completion condition exceeds provider capability.");
+  }
+  return null;
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime-health.js
+async function runtimeHealthCheck(input) {
+  if (input.executionPlan.kind === "no-session") {
+    return {
+      status: "healthy",
+      failures: [],
+      warnings: []
+    };
+  }
+  const sessionStore = requireSessionStore(input.deps);
+  const sessionDriver = requireSessionDriver(input.deps);
+  const session = await sessionStore.read({
+    providerInstanceId: input.providerInstanceId,
+    expectedProviderId: sessionDriver.providerId,
+    purpose: "health-check"
+  });
+  if (!session) {
+    return {
+      status: "unhealthy",
+      failures: [missingSessionFailure()],
+      warnings: []
+    };
+  }
+  const validation = await sessionDriver.validateSession({
+    session: session.artifact,
+    redactor: input.deps.redactor
+  });
+  if (validation.status === "invalid") {
+    return {
+      status: "unhealthy",
+      failures: [validation.failure],
+      warnings: []
+    };
+  }
+  return {
+    status: "healthy",
+    failures: [],
+    warnings: validation.warnings
+  };
+}
+function requireSessionStore(deps) {
+  if (!deps.sessionStore) {
+    throw new Error("session_store_required");
+  }
+  return deps.sessionStore;
+}
+function requireSessionDriver(deps) {
+  if (!("validateSession" in deps.sessionDriver)) {
+    throw new Error("session_driver_required");
+  }
+  return deps.sessionDriver;
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime-static-session.js
+async function validateStaticRuntimeSession(input) {
+  const sessionStore = requireSessionStore2(input.deps);
+  const sessionDriver = requireSessionDriver2(input.deps);
+  const session = await sessionStore.read({
+    providerInstanceId: input.providerInstanceId,
+    expectedProviderId: sessionDriver.providerId,
+    purpose: "refresh"
+  });
+  if (!session) {
+    input.emitFailure("provider_reconnect_required", input.runContext.runId);
+    return blocked("provider_reconnect_required", "Provider session is missing.");
+  }
+  if (input.executionPlan.refresh === "validate-only") {
+    const validation = await sessionDriver.validateSession({
+      session: session.artifact,
+      redactor: input.deps.redactor
+    });
+    if (validation.status === "invalid") {
+      input.emitFailure(validation.failure.code, input.runContext.runId);
+      return blocked(validation.failure.reconnectRequired ? "provider_reconnect_required" : "permission_required", validation.failure.safeMessage);
+    }
+    return {
+      status: "skipped",
+      reason: "refresh_not_required",
+      session,
+      warnings: validation.warnings
+    };
+  }
+  return {
+    status: "skipped",
+    reason: "refresh_not_required",
+    session,
+    warnings: []
+  };
+}
+function requireSessionStore2(deps) {
+  if (!deps.sessionStore) {
+    throw new Error("session_store_required");
+  }
+  return deps.sessionStore;
+}
+function requireSessionDriver2(deps) {
+  if (!("validateSession" in deps.sessionDriver)) {
+    throw new Error("session_driver_required");
+  }
+  return deps.sessionDriver;
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime.js
 function createSubscriptionRuntime(deps) {
   const decision = negotiateCapabilities({
     requested: deps.policy,
@@ -386,7 +678,13 @@ var RuntimeKernel = class {
       };
     }
     if (this.executionPlan.kind === "static-session") {
-      return this.validateStaticSession(input);
+      return validateStaticRuntimeSession({
+        deps: this.deps,
+        executionPlan: this.executionPlan,
+        providerInstanceId: input.providerInstanceId,
+        runContext: input.runContext,
+        emitFailure: (code, runId) => this.emitFailure(code, runId)
+      });
     }
     const sessionStore = this.requireSessionStore();
     const leaseStore = this.requireLeaseStore();
@@ -800,43 +1098,11 @@ var RuntimeKernel = class {
     };
   }
   async healthCheck(input) {
-    if (this.executionPlan.kind === "no-session") {
-      return {
-        status: "healthy",
-        failures: [],
-        warnings: []
-      };
-    }
-    const sessionStore = this.requireSessionStore();
-    const sessionDriver = this.requireSessionDriver();
-    const session = await sessionStore.read({
-      providerInstanceId: input.providerInstanceId,
-      expectedProviderId: sessionDriver.providerId,
-      purpose: "health-check"
+    return runtimeHealthCheck({
+      deps: this.deps,
+      executionPlan: this.executionPlan,
+      providerInstanceId: input.providerInstanceId
     });
-    if (!session) {
-      return {
-        status: "unhealthy",
-        failures: [missingSessionFailure()],
-        warnings: []
-      };
-    }
-    const validation = await sessionDriver.validateSession({
-      session: session.artifact,
-      redactor: this.deps.redactor
-    });
-    if (validation.status === "invalid") {
-      return {
-        status: "unhealthy",
-        failures: [validation.failure],
-        warnings: []
-      };
-    }
-    return {
-      status: "healthy",
-      failures: [],
-      warnings: validation.warnings
-    };
   }
   async runTaskWithSession(input) {
     if (input.session) {
@@ -848,16 +1114,21 @@ var RuntimeKernel = class {
     });
     try {
       const taskStartedAt = this.deps.clock.monotonicMs();
-      this.emit("provider.task.started", input.runContext.runId, {
-        taskKind: input.task.kind
-      });
       const result = await this.deps.agentDriver.runTask({
         session: input.session,
         task: input.task,
         workspace,
         runner: this.deps.runner,
         redactor: this.deps.redactor,
-        abortSignal: input.runContext.abortSignal
+        abortSignal: input.runContext.abortSignal,
+        onTaskStarted: async () => {
+          await input.runContext.onProviderTaskStarted?.();
+          this.emit("provider.task.started", input.runContext.runId, {
+            taskKind: input.task.kind
+          });
+        },
+        ...input.runContext.onProviderTextDelta === void 0 ? {} : { onTextDelta: input.runContext.onProviderTextDelta },
+        ...input.runContext.logicalThread === void 0 ? {} : { logicalThread: input.runContext.logicalThread }
       });
       this.emit("provider.task.completed", input.runContext.runId, {
         taskKind: input.task.kind,
@@ -1060,45 +1331,10 @@ var RuntimeKernel = class {
     }
   }
   unsupportedTaskFailure(task) {
-    if (this.deps.agentDriver.capabilities.taskModes.includes(task.kind)) {
-      return null;
-    }
-    return failedTask("task_mode_unsupported", "Selected agent does not support the requested task mode.");
-  }
-  async validateStaticSession(input) {
-    const sessionStore = this.requireSessionStore();
-    const sessionDriver = this.requireSessionDriver();
-    const session = await sessionStore.read({
-      providerInstanceId: input.providerInstanceId,
-      expectedProviderId: sessionDriver.providerId,
-      purpose: "refresh"
+    return unsupportedTaskFailure({
+      agentDriver: this.deps.agentDriver,
+      task
     });
-    if (!session) {
-      this.emitFailure("provider_reconnect_required", input.runContext.runId);
-      return blocked("provider_reconnect_required", "Provider session is missing.");
-    }
-    if (this.executionPlan.refresh === "validate-only") {
-      const validation = await sessionDriver.validateSession({
-        session: session.artifact,
-        redactor: this.deps.redactor
-      });
-      if (validation.status === "invalid") {
-        this.emitFailure(validation.failure.code, input.runContext.runId);
-        return blocked(validation.failure.reconnectRequired ? "provider_reconnect_required" : "permission_required", validation.failure.safeMessage);
-      }
-      return {
-        status: "skipped",
-        reason: "refresh_not_required",
-        session,
-        warnings: validation.warnings
-      };
-    }
-    return {
-      status: "skipped",
-      reason: "refresh_not_required",
-      session,
-      warnings: []
-    };
   }
   requireSessionStore() {
     if (!this.deps.sessionStore) {
@@ -1126,56 +1362,8 @@ var RuntimeKernel = class {
     return sessionDriver;
   }
 };
-function nextEnvelope(previous, artifact, writeback) {
-  return {
-    ...previous,
-    artifact,
-    generation: writeback.generation,
-    generationHash: writeback.generationHash
-  };
-}
-function sessionForPostRefreshTask(refresh) {
-  if (refresh.status === "ready") {
-    return refresh.session;
-  }
-  if (refresh.status === "skipped" && (refresh.reason === "session_unchanged" || refresh.reason === "refresh_not_required")) {
-    return refresh.session ?? null;
-  }
-  return null;
-}
-function shouldGuardedRefresh(failure) {
-  return failure.code === "needs_reconnect" || failure.causeCategory === "needs_reconnect";
-}
-function blocked(reason, safeMessage, warnings = []) {
-  return {
-    status: "blocked",
-    reason,
-    safeMessage,
-    warnings
-  };
-}
-function failedTask(code, safeMessage) {
-  return {
-    status: "failed",
-    failure: {
-      code,
-      retryable: false,
-      reconnectRequired: code === "needs_reconnect",
-      safeMessage
-    },
-    warnings: []
-  };
-}
-function missingSessionFailure() {
-  return {
-    code: "needs_reconnect",
-    retryable: false,
-    reconnectRequired: true,
-    safeMessage: "Provider session is missing."
-  };
-}
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/core/domain/task-validation.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/core/domain/task-validation.js
 var providerTaskSystemPromptMaxBytes = 256 * 1024;
 function providerTaskSystemPromptValidationError(value, path = "systemPrompt") {
   if (value === void 0)
@@ -1194,7 +1382,7 @@ function assertProviderTaskSystemPrompt(value, path = "systemPrompt") {
     throw new Error(error51);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/capabilities.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/capabilities.js
 var codexProviderId = "codex";
 var codexAgentId = "codex-cli";
 var codexJsonAgentId = "codex-json";
@@ -1254,7 +1442,9 @@ var codexAgentCapabilities = {
   taskModes: ["review", "structured-prompt", "health-check"],
   historyMode: "none",
   executionModes: ["task"],
-  toolPolicyMode: "provider-enforced",
+  taskExecutionCapabilities: [{ mode: AgentRuntimeExecutionMode.SingleRun }],
+  toolPolicyMode: "unsupported",
+  accessBoundaryMode: "provider-enforced",
   outputModes: ["text", "json", "schema-json"],
   supportsReviewTasks: true,
   supportsStructuredOutput: true,
@@ -1267,6 +1457,7 @@ var codexAgentCapabilities = {
   supportsProviderRunId: false,
   supportsAbort: true,
   supportsCleanup: true,
+  turnLimitEnforcement: AgentRuntimeTurnLimitEnforcement.Unsupported,
   maxRuntimeMs: 6e5
 };
 var codexJsonAgentCapabilities = {
@@ -1274,10 +1465,80 @@ var codexJsonAgentCapabilities = {
   agentId: codexJsonAgentId
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
 var import_node_fs = require("node:fs");
 var import_node_crypto2 = require("node:crypto");
+var import_node_path2 = require("node:path");
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-provider-egress-policy.js
+var codexProviderEgressProfileEnvVar = "SUBSCRIPTION_RUNTIME_CODEX_PROVIDER_EGRESS_PROFILE";
+var codexProviderApiEgressProfileId = "codex-provider-api";
+var codexProviderApiDomains = ["api.openai.com"];
+function codexProviderApiEgressPolicy() {
+  return {
+    profileId: codexProviderApiEgressProfileId,
+    domains: codexProviderApiDomains
+  };
+}
+function codexProviderEgressEnv(policy = codexProviderApiEgressPolicy()) {
+  return { [codexProviderEgressProfileEnvVar]: policy.profileId };
+}
+function codexProviderEgressConfigToml(policy = codexProviderApiEgressPolicy()) {
+  return [
+    "# Provider egress stays constrained to the trusted Codex model API profile.",
+    "[sandbox_workspace_write]",
+    "network_access = true",
+    "",
+    "[features.network_proxy]",
+    "enabled = true",
+    `domains = { ${tomlDomainRules(policy)} }`,
+    ""
+  ].join("\n");
+}
+function codexProviderEgressCliConfigArgs(policy = codexProviderApiEgressPolicy()) {
+  return [
+    "--config",
+    "sandbox_workspace_write.network_access=true",
+    "--config",
+    "features.network_proxy.enabled=true",
+    "--config",
+    `features.network_proxy.domains={ ${tomlDomainRules(policy)} }`
+  ];
+}
+function tomlDomainRules(policy) {
+  return policy.domains.map((domain2) => `${tomlString(domain2)} = "allow"`).join(", ");
+}
+function tomlString(value) {
+  return JSON.stringify(value);
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/app-server-types.js
 var import_node_path = require("node:path");
+var defaultTimeoutMs = 10 * 60 * 1e3;
+var defaultStartupTimeoutMs = 2 * 60 * 1e3;
+var defaultControlRequestTimeoutMs = 30 * 1e3;
+var defaultReconnectGraceMs = 10 * 60 * 1e3;
+var defaultMaxOutputBytes = 512 * 1024;
+function codexAgentTempRootFromEnv(sourceEnv) {
+  const jobRoot = sourceEnv?.SUBSCRIPTION_RUNTIME_JOB_ROOT?.trim();
+  const runtimeTempRoot = sourceEnv?.SUBSCRIPTION_RUNTIME_TMPDIR?.trim();
+  const agentTempRoot = sourceEnv?.TMPDIR?.trim();
+  if (!jobRoot || !runtimeTempRoot || !agentTempRoot)
+    return null;
+  if (!(0, import_node_path.isAbsolute)(jobRoot) || !(0, import_node_path.isAbsolute)(runtimeTempRoot) || !(0, import_node_path.isAbsolute)(agentTempRoot)) {
+    return null;
+  }
+  const resolvedJobRoot = (0, import_node_path.resolve)(jobRoot);
+  const resolvedRuntimeTempRoot = (0, import_node_path.resolve)(runtimeTempRoot);
+  const resolvedAgentTempRoot = (0, import_node_path.resolve)(agentTempRoot);
+  if ((0, import_node_path.relative)(resolvedJobRoot, resolvedRuntimeTempRoot) !== "tmp")
+    return null;
+  if (resolvedAgentTempRoot !== (0, import_node_path.join)(resolvedRuntimeTempRoot, "agent"))
+    return null;
+  return resolvedAgentTempRoot;
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
 var codexAuthJsonMaxBytes = 32 * 1024;
 function validateCodexAuthJsonBytes(input) {
   const maxBytes = input.maxBytes ?? codexAuthJsonMaxBytes;
@@ -1340,6 +1601,9 @@ function classifyCodexRuntimeFailure(message) {
   if (isCodexInvalidOutputFailure(normalized)) {
     return "provider_output_invalid";
   }
+  if (isCodexBudgetExceededFailure(normalized)) {
+    return "budget_exceeded";
+  }
   if (isCodexQuotaOrRateLimitFailure(normalized)) {
     return "quota_limited";
   }
@@ -1360,6 +1624,9 @@ function classifyCodexRuntimeFailure(message) {
   }
   return "unknown_auth_state";
 }
+function isCodexBudgetExceededFailure(normalizedMessage) {
+  return normalizedMessage.includes("sessionbudgetexceeded") || normalizedMessage.includes("session_budget_exceeded") || normalizedMessage.includes("session budget exceeded");
+}
 function isCodexReconnectableAuthShapeFailure(normalizedMessage) {
   return normalizedMessage.includes("missing field") && (normalizedMessage.includes("id_token") || normalizedMessage.includes("access_token") || normalizedMessage.includes("refresh_token") || normalizedMessage.includes("auth.json"));
 }
@@ -1373,7 +1640,7 @@ function isCodexTimeoutFailure(normalizedMessage) {
   return normalizedMessage.includes("node_process_runner_timeout") || normalizedMessage.includes("codex_app_server_request_timeout") || normalizedMessage.includes("codex_app_server_turn_timeout") || /\btimeout\b/.test(normalizedMessage) || /\btimed out\b/.test(normalizedMessage);
 }
 function isCodexInvalidOutputFailure(normalizedMessage) {
-  return normalizedMessage.includes("codex_json_event_invalid") || normalizedMessage.includes("codex_json_final_message_missing") || normalizedMessage.includes("codex_structured_output_invalid") || normalizedMessage.includes("codex_json_output_too_large") || normalizedMessage.includes("codex_app_server_final_message_missing") || normalizedMessage.includes("codex_app_server_goal_turn_output_missing") || normalizedMessage.includes("codex_app_server_structured_output_invalid") || normalizedMessage.includes("codex_app_server_output_too_large");
+  return normalizedMessage.includes("codex_json_event_invalid") || normalizedMessage.includes("codex_json_turn_usage_invalid") || normalizedMessage.includes("codex_json_turn_usage_missing_or_invalid") || normalizedMessage.includes("codex_json_final_message_missing") || normalizedMessage.includes("codex_structured_output_invalid") || normalizedMessage.includes("codex_json_output_too_large") || normalizedMessage.includes("codex_app_server_final_message_missing") || normalizedMessage.includes("codex_app_server_goal_turn_output_missing") || normalizedMessage.includes("codex_app_server_structured_output_invalid") || normalizedMessage.includes("codex_app_server_output_too_large") || normalizedMessage.includes("codex_app_server_effective_selection_mismatch") || normalizedMessage.includes("codex_app_server_model_rerouted") || normalizedMessage.includes("codex_app_server_execution_receipt_missing") || normalizedMessage.includes("codex_app_server_turn_usage_duplicate") || normalizedMessage.includes("codex_app_server_turn_usage_wrong_turn");
 }
 function isCodexQuotaOrRateLimitFailure(normalizedMessage) {
   return normalizedMessage.includes("usagelimitexceeded") || normalizedMessage.includes("ratelimitexceeded") || normalizedMessage.includes("codex_app_server_goal_usagelimited") || /\b(?:429|too many requests|rate[_ -]?limit(?:ed| exceeded)?|rate_limit_exceeded)\b/.test(normalizedMessage) || /\b(?:rate[_ -]?limits?|not enough retry quota|usage[_ -]?limit(?: reached| exceeded)?|limit reached)\b/.test(normalizedMessage) || /\b(?:insufficient_quota|quota_exceeded|exceeded (?:your )?(?:current )?quota|quota (?:limit|exceeded))\b/.test(normalizedMessage) || /\byou(?:'|’)ve hit your usage limit\b/.test(normalizedMessage) || /\b(?:purchase|buy|add|get) more credits\b/.test(normalizedMessage) || /\bout of credits\b/.test(normalizedMessage) || /\b(?:billing_hard_limit|payment required|billing (?:limit|quota|hard limit|not active|required))\b/.test(normalizedMessage);
@@ -1391,14 +1658,21 @@ function pruneCodexChildEnv(env) {
     allowed[key] = value;
   }
   allowed.PATH = codexChildPath(env);
+  const agentTempRoot = codexAgentTempRootFromEnv(env);
+  if (agentTempRoot) {
+    allowed.TMPDIR = agentTempRoot;
+    allowed.TMP = agentTempRoot;
+    allowed.TEMP = agentTempRoot;
+    allowed.PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN = "false";
+  }
   return allowed;
 }
 function codexChildPath(env) {
   return uniquePathEntries([
-    ...(env.PATH ?? "").split(import_node_path.delimiter),
+    ...(env.PATH ?? "").split(import_node_path2.delimiter),
     ...standardHostPathEntries,
     ...availableExecutableDirs(env)
-  ]).join(import_node_path.delimiter);
+  ]).join(import_node_path2.delimiter);
 }
 function buildCodexRefreshBootstrapPlan(input) {
   const model = input.model?.trim();
@@ -1407,6 +1681,7 @@ function buildCodexRefreshBootstrapPlan(input) {
     args: [
       "exec",
       ...model ? ["--model", model] : [],
+      ...codexProviderEgressCliConfigArgs(),
       "--sandbox",
       "read-only",
       "--ignore-rules",
@@ -1535,10 +1810,10 @@ var ghPathCandidates = [
 ];
 function availableExecutableDirs(env) {
   const candidates = [
-    ...explicitGhPathEnvNames.map((name) => env[name]?.trim()).filter((path) => path !== void 0 && path.length > 0 && (0, import_node_path.isAbsolute)(path)),
+    ...explicitGhPathEnvNames.map((name) => env[name]?.trim()).filter((path) => path !== void 0 && path.length > 0 && (0, import_node_path2.isAbsolute)(path)),
     ...ghPathCandidates
   ];
-  return candidates.filter(isExecutable).map((path) => (0, import_node_path.dirname)(path));
+  return candidates.filter(isExecutable).map((path) => (0, import_node_path2.dirname)(path));
 }
 function isExecutable(path) {
   try {
@@ -1564,7 +1839,7 @@ function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-auth-json-codec.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-auth-json-codec.js
 var textDecoder2 = new TextDecoder();
 var textEncoder = new TextEncoder();
 function sessionArtifactFromCodexAuthJson(authJsonBytes) {
@@ -1624,9 +1899,9 @@ function safeCauseCategory(message) {
   return /^[a-z0-9_:-]{1,80}$/i.test(message) ? message : "codex_validation";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-temp-cleanup.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-temp-cleanup.js
 var import_promises = require("node:fs/promises");
-var import_node_path2 = require("node:path");
+var import_node_path3 = require("node:path");
 var transientCleanupErrorCodes = /* @__PURE__ */ new Set([
   "EBUSY",
   "EACCES",
@@ -1662,37 +1937,75 @@ function isTransientCodexTempCleanupError(error51) {
 }
 async function scrubSensitiveCodexHomePaths(codexHome) {
   const results = await Promise.allSettled([
-    (0, import_promises.rm)((0, import_node_path2.join)(codexHome, "auth.json"), { force: true }),
-    (0, import_promises.rm)((0, import_node_path2.join)(codexHome, "accounts"), { recursive: true, force: true })
+    (0, import_promises.rm)((0, import_node_path3.join)(codexHome, "auth.json"), { force: true }),
+    (0, import_promises.rm)((0, import_node_path3.join)(codexHome, "accounts"), { recursive: true, force: true })
   ]);
   return results.every((result) => result.status === "fulfilled");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-runtime-temp.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-runtime-temp.js
 var import_promises2 = require("node:fs/promises");
 var import_node_os = require("node:os");
-var import_node_path3 = require("node:path");
+var import_node_path4 = require("node:path");
 async function createCodexRuntimeTempRoot(input) {
   const env = input.sourceEnv ?? process.env;
   const candidates = uniqueNonEmpty([
     env.SUBSCRIPTION_RUNTIME_TMPDIR,
     env.TMPDIR,
-    env.SUBSCRIPTION_RUNTIME_JOB_ROOT ? (0, import_node_path3.join)(env.SUBSCRIPTION_RUNTIME_JOB_ROOT, "tmp") : void 0,
+    env.SUBSCRIPTION_RUNTIME_JOB_ROOT ? (0, import_node_path4.join)(env.SUBSCRIPTION_RUNTIME_JOB_ROOT, "tmp") : void 0,
     process.env.SUBSCRIPTION_RUNTIME_TMPDIR,
     process.env.TMPDIR,
-    process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT ? (0, import_node_path3.join)(process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT, "tmp") : void 0,
+    process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT ? (0, import_node_path4.join)(process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT, "tmp") : void 0,
     (0, import_node_os.tmpdir)()
   ]);
   let lastError;
   for (const candidate of candidates) {
     try {
       await (0, import_promises2.mkdir)(candidate, { recursive: true, mode: 448 });
-      return await (0, import_promises2.mkdtemp)((0, import_node_path3.join)(candidate, input.prefix));
+      return await (0, import_promises2.mkdtemp)((0, import_node_path4.join)(candidate, input.prefix));
     } catch (error51) {
       lastError = error51;
     }
   }
   throw lastError instanceof Error ? lastError : new Error("codex_runtime_temp_root_unavailable");
+}
+async function createTrustedCodexRuntimeTempRoot(input) {
+  const jobRoot = input.sourceEnv.SUBSCRIPTION_RUNTIME_JOB_ROOT?.trim();
+  const runtimeTempRoot = input.sourceEnv.SUBSCRIPTION_RUNTIME_TMPDIR?.trim();
+  if (!jobRoot || !runtimeTempRoot) {
+    throw new Error("codex_refresh_bootstrap_temp_boundary_missing");
+  }
+  if ((0, import_node_path4.resolve)(runtimeTempRoot) !== (0, import_node_path4.resolve)(jobRoot, "tmp")) {
+    throw new Error("codex_refresh_bootstrap_temp_root_mismatch");
+  }
+  await (0, import_promises2.mkdir)(jobRoot, { recursive: true, mode: 448 });
+  if ((await (0, import_promises2.lstat)(jobRoot)).isSymbolicLink()) {
+    throw new Error("codex_refresh_bootstrap_job_root_symlink");
+  }
+  const realJobRoot = await (0, import_promises2.realpath)(jobRoot);
+  await (0, import_promises2.mkdir)(runtimeTempRoot, { recursive: true, mode: 448 });
+  if ((await (0, import_promises2.lstat)(runtimeTempRoot)).isSymbolicLink()) {
+    throw new Error("codex_refresh_bootstrap_temp_root_symlink");
+  }
+  const realRuntimeTempRoot = await (0, import_promises2.realpath)(runtimeTempRoot);
+  if (realRuntimeTempRoot !== (0, import_node_path4.join)(realJobRoot, "tmp")) {
+    throw new Error("codex_refresh_bootstrap_temp_root_mismatch");
+  }
+  const tempRoot = await (0, import_promises2.mkdtemp)((0, import_node_path4.join)(runtimeTempRoot, input.prefix));
+  try {
+    if ((await (0, import_promises2.lstat)(tempRoot)).isSymbolicLink()) {
+      throw new Error("codex_refresh_bootstrap_temp_symlink");
+    }
+    const realTempRoot = await (0, import_promises2.realpath)(tempRoot);
+    const relativeTempRoot = (0, import_node_path4.relative)(realRuntimeTempRoot, realTempRoot);
+    if (!relativeTempRoot || relativeTempRoot === ".." || relativeTempRoot.startsWith(`..${import_node_path4.sep}`) || (0, import_node_path4.isAbsolute)(relativeTempRoot)) {
+      throw new Error("codex_refresh_bootstrap_temp_outside_job_root");
+    }
+    return tempRoot;
+  } catch (error51) {
+    await (0, import_promises2.rm)(tempRoot, { recursive: true, force: true });
+    throw error51;
+  }
 }
 function uniqueNonEmpty(values) {
   const seen = /* @__PURE__ */ new Set();
@@ -1707,7 +2020,7 @@ function uniqueNonEmpty(values) {
   return result;
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-prompt-composer.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-prompt-composer.js
 var import_node_crypto3 = require("node:crypto");
 function composeCodexPrompt(input) {
   const systemPrompt = input.systemPrompt?.trim();
@@ -1727,173 +2040,16 @@ function composeCodexPrompt(input) {
   ].join("\n");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
 var import_promises3 = require("node:fs/promises");
-var import_node_path4 = require("node:path");
+var import_node_path5 = require("node:path");
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/failure-classifier.js
-function classifyCodexFailure(error51) {
-  const message = codexFailureMessage(error51);
-  const state = classifyCodexRuntimeFailure(message);
-  const details = codexFailureDetails(error51, message);
-  switch (state) {
-    case "task_cancelled":
-      return {
-        code: "task_cancelled",
-        retryable: false,
-        reconnectRequired: false,
-        safeMessage: "Codex task was cancelled.",
-        causeCategory: state
-      };
-    case "task_timeout":
-      return {
-        code: "task_timeout",
-        retryable: true,
-        reconnectRequired: false,
-        safeMessage: "Codex task timed out.",
-        causeCategory: state
-      };
-    case "provider_output_invalid":
-      return {
-        code: "provider_output_invalid",
-        retryable: true,
-        reconnectRequired: false,
-        safeMessage: "Codex provider output was invalid.",
-        causeCategory: state
-      };
-    case "needs_reconnect":
-      return {
-        code: "needs_reconnect",
-        retryable: false,
-        reconnectRequired: true,
-        safeMessage: "Codex session needs reconnect.",
-        causeCategory: state
-      };
-    case "provider_session_invalid":
-      return {
-        code: "provider_session_invalid",
-        retryable: false,
-        reconnectRequired: true,
-        safeMessage: "Codex session is invalid.",
-        causeCategory: state
-      };
-    case "quota_limited":
-      return {
-        code: "quota_limited",
-        retryable: true,
-        reconnectRequired: false,
-        safeMessage: "Codex quota or billing limit was reached.",
-        causeCategory: state
-      };
-    case "backend_unavailable":
-      return {
-        code: "backend_unavailable",
-        retryable: true,
-        reconnectRequired: false,
-        safeMessage: "Codex app-server goal backend is temporarily blocked.",
-        causeCategory: state,
-        ...details === void 0 ? {} : { details }
-      };
-    case "goal_slice_exhausted":
-      return {
-        code: "goal_slice_exhausted",
-        retryable: true,
-        reconnectRequired: false,
-        safeMessage: "Codex app-server goal slice exhausted.",
-        causeCategory: state,
-        ...details === void 0 ? {} : { details }
-      };
-    case "permission_required":
-      return {
-        code: "permission_required",
-        retryable: false,
-        reconnectRequired: false,
-        safeMessage: "Codex permission is required.",
-        causeCategory: state
-      };
-    default:
-      return {
-        code: "unknown_runtime_failure",
-        retryable: true,
-        reconnectRequired: false,
-        safeMessage: "Codex runtime failed.",
-        causeCategory: state,
-        ...details === void 0 ? {} : { details }
-      };
-  }
-}
-function codexFailureMessage(error51) {
-  const process3 = processFailureLike(error51);
-  if (process3)
-    return `${process3.stdout ?? ""}
-${process3.stderr ?? ""}`;
-  return error51 instanceof Error ? error51.message : String(error51);
-}
-function codexFailureDetails(error51, message) {
-  const details = {};
-  const process3 = processFailureLike(error51);
-  if (process3?.exitCode !== void 0) {
-    details.exitCode = String(process3.exitCode);
-  }
-  if (process3?.stderr) {
-    details.stderrTail = safeTail(process3.stderr);
-  }
-  if (process3?.stdout) {
-    details.stdoutTail = safeTail(process3.stdout);
-  }
-  const lastOutputText = lastOutputTextFromError(error51);
-  if (lastOutputText) {
-    details.lastOutputTail = safeTail(lastOutputText);
-  }
-  const parsed = parseProcessFailureMessage(message);
-  if (details.exitCode === void 0 && parsed?.exitCode !== void 0) {
-    details.exitCode = parsed.exitCode;
-  }
-  if (details.stderrTail === void 0 && parsed?.stderrTail) {
-    details.stderrTail = parsed.stderrTail;
-  }
-  if (message.trim()) {
-    details.rawCause = safeTail(message);
-  }
-  return Object.keys(details).length === 0 ? void 0 : details;
-}
-function lastOutputTextFromError(error51) {
-  if (typeof error51 !== "object" || error51 === null)
-    return null;
-  const value = error51.lastOutputText;
-  return typeof value === "string" && value.trim() ? value : null;
-}
-function processFailureLike(error51) {
-  if (typeof error51 !== "object" || error51 === null)
-    return null;
-  const record2 = error51;
-  const exitCode = typeof record2.exitCode === "number" && Number.isInteger(record2.exitCode) ? record2.exitCode : void 0;
-  const stdout = typeof record2.stdout === "string" ? record2.stdout : void 0;
-  const stderr = typeof record2.stderr === "string" ? record2.stderr : void 0;
-  if (exitCode === void 0 && stdout === void 0 && stderr === void 0) {
-    return null;
-  }
-  return {
-    ...exitCode === void 0 ? {} : { exitCode },
-    ...stdout === void 0 ? {} : { stdout },
-    ...stderr === void 0 ? {} : { stderr }
-  };
-}
-function parseProcessFailureMessage(message) {
-  const match = /\b(?:node_process_runner_failed|codex_json_exec_failed|codex_cli_exec_failed):(\d+):(.*)$/s.exec(message);
-  if (!match)
-    return null;
-  return {
-    exitCode: match[1],
-    stderrTail: safeTail(match[2] ?? "")
-  };
-}
-function safeTail(value) {
-  const compact = value.replace(/\s+/g, " ").trim();
-  return compact.length > 1e3 ? compact.slice(-1e3) : compact;
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/app-server-record.js
+function readRecord(value) {
+  return value && typeof value === "object" ? value : null;
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/structured-output.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/structured-output.js
 function parseCodexStructuredOutput(outputText, errorCode) {
   const direct = parseJson(outputText);
   if (direct.ok)
@@ -2061,9 +2217,358 @@ function firstLineEnd(value, start) {
   return { index: carriageReturnIndex, end: lineFeed + 1 };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
-var defaultTimeoutMs = 10 * 60 * 1e3;
-var defaultMaxOutputBytes = 512 * 1024;
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/app-server-errors.js
+var CodexAppServerErrorKind;
+(function(CodexAppServerErrorKind2) {
+  CodexAppServerErrorKind2["SessionBudgetExceeded"] = "session_budget_exceeded";
+  CodexAppServerErrorKind2["Unknown"] = "unknown";
+})(CodexAppServerErrorKind || (CodexAppServerErrorKind = {}));
+var CodexAppServerProviderError = class extends Error {
+  kind;
+  constructor(kind, message) {
+    super(message);
+    this.kind = kind;
+    this.name = "CodexAppServerProviderError";
+  }
+};
+function codexAppServerBudgetExceededError(error51) {
+  const seen = /* @__PURE__ */ new Set();
+  let current = error51;
+  while (current instanceof Error && !seen.has(current)) {
+    if (current instanceof CodexAppServerProviderError && current.kind === CodexAppServerErrorKind.SessionBudgetExceeded) {
+      return current;
+    }
+    seen.add(current);
+    current = current.cause;
+  }
+  return null;
+}
+function safeMessage(error51) {
+  if (error51 instanceof Error)
+    return error51.message.slice(-1e3);
+  if (typeof error51 === "string")
+    return error51.slice(-1e3);
+  const record2 = readRecord(error51);
+  if (typeof record2?.message === "string")
+    return record2.message.slice(-1e3);
+  const nested = record2 ? readRecord(record2.error) : null;
+  if (typeof nested?.message === "string")
+    return nested.message.slice(-1e3);
+  return "unknown";
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/application/app-server-thread-fork-error.js
+var CodexAppServerThreadForkError = class extends Error {
+  sourceThreadUnavailable;
+  constructor(message) {
+    super(`codex_app_server_thread_fork_failed:${message}`);
+    this.name = "CodexAppServerThreadForkError";
+    this.sourceThreadUnavailable = isSourceThreadUnavailableMessage(message);
+  }
+};
+function isSourceThreadUnavailableMessage(message) {
+  const normalized = message.trim().replaceAll(/\s+/gu, " ");
+  return /\b(?:source|requested|specified) thread(?: (?:id )?(?:"[^"]+"|'[^']+'|[A-Za-z0-9._:-]+))? (?:was |is )?(?:not found|does not exist)\b/iu.test(normalized) || /\bthread (?:id )?(?:"[^"]+"|'[^']+'|[A-Za-z0-9][A-Za-z0-9._:-]*) (?:was |is )?(?:not found|does not exist)\b/iu.test(normalized);
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/domain/model-catalog.js
+var CodexModelUnavailableError = class extends Error {
+  code = "codex_model_unavailable";
+  requestedModel;
+  availableModels;
+  constructor(input) {
+    const requestedModel = safeRequestedModel(input.requestedModel);
+    const availableModels = normalizeCatalog(input.availableModels);
+    const availableSummary = formatAvailableModelIds(availableModels);
+    super(`Codex model "${requestedModel}" is unavailable for this account. Available models: ${availableSummary}.`);
+    this.name = "CodexModelUnavailableError";
+    this.requestedModel = requestedModel;
+    this.availableModels = availableModels;
+  }
+  details() {
+    return {
+      requestedModel: this.requestedModel,
+      availableModels: this.availableModels.map((entry) => entry.model).join(","),
+      availableModelProfiles: this.availableModels.map((entry) => entry.supportedReasoningEfforts.length === 0 ? entry.model : `${entry.model}[${entry.supportedReasoningEfforts.join("|")}]`).join(","),
+      catalogSource: "codex_app_server_model_list"
+    };
+  }
+};
+function isCodexModelUnavailableError(error51) {
+  return error51 instanceof CodexModelUnavailableError || typeof error51 === "object" && error51 !== null && error51.code === "codex_model_unavailable" && typeof error51.details === "function" && typeof error51.message === "string";
+}
+function normalizeCatalog(entries) {
+  const byModel = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    if (!byModel.has(entry.model))
+      byModel.set(entry.model, entry);
+  }
+  return [...byModel.values()].sort((left, right) => {
+    if (left.isDefault !== right.isDefault)
+      return left.isDefault ? -1 : 1;
+    if (left.hidden !== right.hidden)
+      return left.hidden ? 1 : -1;
+    return left.model.localeCompare(right.model);
+  });
+}
+function formatAvailableModelIds(entries) {
+  const visible = entries.slice(0, 20).map((entry) => entry.model);
+  const remaining = entries.length - visible.length;
+  if (visible.length === 0)
+    return "none reported by Codex";
+  return `${visible.join(", ")}${remaining > 0 ? ` (+${remaining} more)` : ""}`;
+}
+function safeRequestedModel(value) {
+  const normalized = value.trim();
+  if (/^[\w.:-]{1,128}$/u.test(normalized))
+    return normalized;
+  return "invalid-model-id";
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/app-server/application/app-server-turn-failure.js
+var CodexAppServerTurnError = class extends Error {
+  code = "codex_app_server_turn_error";
+  failureDetails;
+  constructor(input) {
+    const outputCharCount = boundedTurnMetric(input.outputText?.length ?? 0);
+    const failureDetails = {
+      phase: input.phase,
+      turnNumber: boundedTurnNumber(input.turnNumber),
+      outputObserved: outputCharCount > 0,
+      outputCharCount,
+      elapsedMs: boundedTurnMetric(input.elapsedMs)
+    };
+    super(`codex_app_server_turn_error:${safeMessage(input.cause)}:details=${JSON.stringify(failureDetails)}`, { cause: input.cause });
+    this.name = "CodexAppServerTurnError";
+    this.failureDetails = failureDetails;
+  }
+  details() {
+    return {
+      phase: this.failureDetails.phase,
+      turnNumber: String(this.failureDetails.turnNumber),
+      outputObserved: String(this.failureDetails.outputObserved),
+      outputCharCount: String(this.failureDetails.outputCharCount),
+      elapsedMs: String(this.failureDetails.elapsedMs)
+    };
+  }
+};
+function boundedTurnNumber(value) {
+  if (value === void 0 || !Number.isFinite(value))
+    return 1;
+  return Math.max(1, Math.min(1e4, Math.trunc(value)));
+}
+function boundedTurnMetric(value) {
+  if (!Number.isFinite(value))
+    return 0;
+  return Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(value)));
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/failure-classifier.js
+function classifyCodexFailure(error51) {
+  const budgetExceededError = codexAppServerBudgetExceededError(error51);
+  if (budgetExceededError) {
+    return {
+      code: "budget_exceeded",
+      retryable: false,
+      reconnectRequired: false,
+      safeMessage: "Codex task exhausted its weighted-token budget.",
+      causeCategory: budgetExceededError.kind
+    };
+  }
+  if (isCodexModelUnavailableError(error51)) {
+    return {
+      code: "model_unavailable",
+      retryable: true,
+      reconnectRequired: false,
+      safeMessage: error51.message,
+      causeCategory: "model_unavailable",
+      details: error51.details()
+    };
+  }
+  const message = codexFailureMessage(error51);
+  const state = classifyCodexRuntimeFailure(message);
+  const details = codexFailureDetails(error51, message);
+  switch (state) {
+    case "task_cancelled":
+      return {
+        code: "task_cancelled",
+        retryable: false,
+        reconnectRequired: false,
+        safeMessage: "Codex task was cancelled.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    case "task_timeout":
+      return {
+        code: "task_timeout",
+        retryable: true,
+        reconnectRequired: false,
+        safeMessage: "Codex task timed out.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    case "provider_output_invalid":
+      return {
+        code: "provider_output_invalid",
+        retryable: true,
+        reconnectRequired: false,
+        safeMessage: "Codex provider output was invalid.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    case "needs_reconnect":
+      return {
+        code: "needs_reconnect",
+        retryable: false,
+        reconnectRequired: true,
+        safeMessage: "Codex session needs reconnect.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    case "provider_session_invalid":
+      return {
+        code: "provider_session_invalid",
+        retryable: false,
+        reconnectRequired: true,
+        safeMessage: "Codex session is invalid.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    case "quota_limited":
+      return {
+        code: "quota_limited",
+        retryable: true,
+        reconnectRequired: false,
+        safeMessage: "Codex quota or billing limit was reached.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    case "backend_unavailable":
+      return {
+        code: "backend_unavailable",
+        retryable: true,
+        reconnectRequired: false,
+        safeMessage: "Codex app-server goal backend is temporarily blocked.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    case "goal_slice_exhausted":
+      return {
+        code: "goal_slice_exhausted",
+        retryable: true,
+        reconnectRequired: false,
+        safeMessage: "Codex app-server goal slice exhausted.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    case "budget_exceeded":
+      return {
+        code: "budget_exceeded",
+        retryable: false,
+        reconnectRequired: false,
+        safeMessage: "Codex task exhausted its weighted-token budget.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    case "permission_required":
+      return {
+        code: "permission_required",
+        retryable: false,
+        reconnectRequired: false,
+        safeMessage: "Codex permission is required.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    default:
+      return {
+        code: "unknown_runtime_failure",
+        retryable: true,
+        reconnectRequired: false,
+        safeMessage: "Codex runtime failed.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+  }
+}
+function codexFailureMessage(error51) {
+  const process3 = processFailureLike(error51);
+  if (process3)
+    return `${process3.stdout ?? ""}
+${process3.stderr ?? ""}`;
+  return error51 instanceof Error ? error51.message : String(error51);
+}
+function codexFailureDetails(error51, message) {
+  if (error51 instanceof CodexAppServerThreadForkError) {
+    return {
+      sourceThreadUnavailable: String(error51.sourceThreadUnavailable)
+    };
+  }
+  const details = error51 instanceof CodexAppServerTurnError ? { ...error51.details() } : {};
+  const process3 = processFailureLike(error51);
+  if (process3?.exitCode !== void 0) {
+    details.exitCode = String(process3.exitCode);
+  }
+  if (process3?.stderr) {
+    details.stderrTail = safeTail(process3.stderr);
+  }
+  if (process3?.stdout) {
+    details.stdoutTail = safeTail(process3.stdout);
+  }
+  const lastOutputText = lastOutputTextFromError(error51);
+  if (lastOutputText) {
+    details.lastOutputTail = safeTail(lastOutputText);
+  }
+  const parsed = parseProcessFailureMessage(message);
+  if (details.exitCode === void 0 && parsed?.exitCode !== void 0) {
+    details.exitCode = parsed.exitCode;
+  }
+  if (details.stderrTail === void 0 && parsed?.stderrTail) {
+    details.stderrTail = parsed.stderrTail;
+  }
+  if (message.trim()) {
+    details.rawCause = safeTail(message);
+  }
+  return Object.keys(details).length === 0 ? void 0 : details;
+}
+function lastOutputTextFromError(error51) {
+  if (typeof error51 !== "object" || error51 === null)
+    return null;
+  const value = error51.lastOutputText;
+  return typeof value === "string" && value.trim() ? value : null;
+}
+function processFailureLike(error51) {
+  if (typeof error51 !== "object" || error51 === null)
+    return null;
+  const record2 = error51;
+  const exitCode = typeof record2.exitCode === "number" && Number.isInteger(record2.exitCode) ? record2.exitCode : void 0;
+  const stdout = typeof record2.stdout === "string" ? record2.stdout : void 0;
+  const stderr = typeof record2.stderr === "string" ? record2.stderr : void 0;
+  if (exitCode === void 0 && stdout === void 0 && stderr === void 0) {
+    return null;
+  }
+  return {
+    ...exitCode === void 0 ? {} : { exitCode },
+    ...stdout === void 0 ? {} : { stdout },
+    ...stderr === void 0 ? {} : { stderr }
+  };
+}
+function parseProcessFailureMessage(message) {
+  const match = /\b(?:node_process_runner_failed|codex_json_exec_failed|codex_cli_exec_failed):(\d+):(.*)$/s.exec(message);
+  if (!match)
+    return null;
+  return {
+    exitCode: match[1],
+    stderrTail: safeTail(match[2] ?? "")
+  };
+}
+function safeTail(value) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > 1e3 ? compact.slice(-1e3) : compact;
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
+var defaultTimeoutMs2 = 10 * 60 * 1e3;
+var defaultMaxOutputBytes2 = 512 * 1024;
 var PackagedCodexJsonExecutionEngine = class {
   options;
   kind = "packaged-json";
@@ -2103,7 +2608,7 @@ var PackagedCodexJsonExecutionEngine = class {
           prompt: input.prompt,
           systemPrompt: input.systemPrompt
         })),
-        timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
+        timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs2,
         abortSignal: input.abortSignal
       });
       const stdout = input.redactor.redact(result.stdout);
@@ -2121,15 +2626,18 @@ ${stderr}`)}`), {
         });
       }
       const outputText = extractFinalAssistantText(stdout);
+      const usage = extractTurnCompletedUsage(stdout);
       if (input.outputSchema) {
         return {
           outputText,
           structuredOutput: parseStructuredOutput(outputText),
+          ...usage === void 0 ? {} : { usage },
           warnings: []
         };
       }
       return {
         outputText,
+        ...usage === void 0 ? {} : { usage },
         warnings: []
       };
     } finally {
@@ -2161,6 +2669,8 @@ function buildCodexJsonExecArgs(input) {
     "--config",
     'approval_policy="never"',
     "--config",
+    'cli_auth_credentials_store="file"',
+    "--config",
     `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`,
     ...input.serviceTier ? [
       "--config",
@@ -2183,6 +2693,7 @@ function buildCodexJsonExecArgs(input) {
     "features.shell_snapshot=false",
     "--config",
     "features.skill_mcp_dependency_install=false",
+    ...codexProviderEgressCliConfigArgs(),
     ...input.outputSchemaPath ? ["--output-schema", input.outputSchemaPath] : [],
     "--ephemeral",
     "--ignore-user-config",
@@ -2200,7 +2711,7 @@ async function writeOutputSchemaFile(outputSchema) {
   const dir = await createCodexRuntimeTempRoot({
     prefix: "subscription-runtime-codex-schema-"
   });
-  const path = (0, import_node_path4.join)(dir, "schema.json");
+  const path = (0, import_node_path5.join)(dir, "schema.json");
   await (0, import_promises3.writeFile)(path, `${JSON.stringify(schema, null, 2)}
 `, {
     encoding: "utf8",
@@ -2241,10 +2752,22 @@ function assertProviderSandboxModeAllowed(controls) {
   }
   throw new Error("codex_provider_sandbox_mode_requires_allow_edits");
 }
-function codexExecutionFailure(error51) {
+function codexExecutionFailure(error51, redactor) {
+  const failure = classifyCodexFailure(error51);
+  const sanitized = redactor === void 0 ? failure : {
+    ...failure,
+    safeMessage: redactor.redact(failure.safeMessage),
+    ...failure.details === void 0 ? {} : {
+      details: Object.fromEntries(Object.entries(failure.details).map(([key, value]) => [
+        key,
+        redactor.redact(value)
+      ]))
+    }
+  };
+  redactor?.assertNoKnownSecret(JSON.stringify(sanitized), "codex execution failure");
   return {
     status: "failed",
-    failure: classifyCodexFailure(error51),
+    failure: sanitized,
     warnings: []
   };
 }
@@ -2272,6 +2795,65 @@ function extractFinalAssistantText(stdout) {
     throw new Error("codex_json_final_message_missing");
   }
   return finalText;
+}
+function extractTurnCompletedUsage(stdout) {
+  let completedUsage;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed)
+      continue;
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== "object")
+      continue;
+    const record2 = event;
+    if (record2.type !== "turn.completed")
+      continue;
+    if (completedUsage !== void 0) {
+      throw new Error("codex_json_turn_usage_invalid:multiple_turns");
+    }
+    completedUsage = parseTurnUsage(record2.usage);
+  }
+  return completedUsage;
+}
+function parseTurnUsage(value) {
+  if (!value || typeof value !== "object") {
+    throw new Error("codex_json_turn_usage_invalid:missing");
+  }
+  const record2 = value;
+  const inputTokens = parseUsageCount(record2.input_tokens, "input_tokens");
+  const outputTokens = parseUsageCount(record2.output_tokens, "output_tokens");
+  const cachedInputTokens = parseUsageCount(record2.cached_input_tokens, "cached_input_tokens");
+  const cacheWriteInputTokens = parseUsageCount(record2.cache_write_input_tokens ?? 0, "cache_write_input_tokens");
+  const reasoningOutputTokens = parseUsageCount(record2.reasoning_output_tokens, "reasoning_output_tokens");
+  if (cachedInputTokens > inputTokens) {
+    throw new Error("codex_json_turn_usage_invalid:cached_exceeds_input");
+  }
+  if (reasoningOutputTokens > outputTokens) {
+    throw new Error("codex_json_turn_usage_invalid:reasoning_exceeds_output");
+  }
+  const totalTokens = inputTokens + outputTokens;
+  if (!Number.isSafeInteger(totalTokens)) {
+    throw new Error("codex_json_turn_usage_invalid:total_tokens");
+  }
+  return {
+    inputTokens,
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens
+  };
+}
+function parseUsageCount(value, field) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`codex_json_turn_usage_invalid:${field}`);
+  }
+  return value;
 }
 function looksLikeJsonLine(value) {
   return value.startsWith("{") || value.startsWith("[");
@@ -2357,7 +2939,7 @@ function hasAssistantRole(record2) {
 function parseStructuredOutput(outputText) {
   return parseCodexStructuredOutput(outputText, "codex_structured_output_invalid");
 }
-function assertOutputWithinBounds(output, maxOutputBytes = defaultMaxOutputBytes) {
+function assertOutputWithinBounds(output, maxOutputBytes = defaultMaxOutputBytes2) {
   if (Buffer.byteLength(output, "utf8") > maxOutputBytes) {
     throw new Error("codex_json_output_too_large");
   }
@@ -2366,19 +2948,18 @@ function safeTail2(value) {
   return value.slice(-4096);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-execution-profile.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-execution-profile.js
 var statelessCompletionBaseInstructions = [
-  "You are a fast backend inference worker.",
+  "You are a stateless completion worker.",
+  "Follow the developer and user instructions exactly.",
   "Return only the requested final answer.",
-  "Do not inspect files.",
-  "Do not use tools unless explicitly allowed.",
-  "If JSON is requested, return valid JSON only."
+  "When an output schema is provided, satisfy it exactly."
 ].join(" ");
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-session-materializer.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-session-materializer.js
 var import_node_crypto4 = require("node:crypto");
 var import_promises4 = require("node:fs/promises");
-var import_node_path5 = require("node:path");
+var import_node_path6 = require("node:path");
 var CodexEphemeralSessionMaterializer = class {
   mode = "ephemeral";
   async materialize(input) {
@@ -2387,8 +2968,8 @@ var CodexEphemeralSessionMaterializer = class {
     const tempRoot = await createCodexRuntimeTempRoot({
       prefix: "subscription-runtime-codex-"
     });
-    const home = (0, import_node_path5.join)(tempRoot, "home");
-    const codexHome = (0, import_node_path5.join)(tempRoot, "codex-home");
+    const home = (0, import_node_path6.join)(tempRoot, "home");
+    const codexHome = (0, import_node_path6.join)(tempRoot, "codex-home");
     await (0, import_promises4.mkdir)(home, { recursive: true, mode: 448 });
     await (0, import_promises4.mkdir)(codexHome, { recursive: true, mode: 448 });
     await writeCodexJsonHomeSnapshot({ codexHome, authJson });
@@ -2398,7 +2979,8 @@ var CodexEphemeralSessionMaterializer = class {
       sessionHash: sessionArtifactHash(input.session),
       env: {
         HOME: home,
-        CODEX_HOME: codexHome
+        CODEX_HOME: codexHome,
+        ...codexProviderEgressEnv()
       },
       snapshotSession: () => snapshotCodexSession({ codexHome }),
       release: once(async () => {
@@ -2430,7 +3012,24 @@ var CodexEphemeralSessionMaterializer = class {
   }
 };
 async function writeCodexJsonHomeSnapshot(input) {
-  const config2 = [
+  await writeCodexJsonConfig({
+    codexHome: input.codexHome,
+    ...input.configToml === void 0 ? {} : { configToml: input.configToml }
+  });
+  await writeCodexAuthJson(input);
+}
+async function writeCodexJsonConfig(input) {
+  await writeFileAtomic((0, import_node_path6.join)(input.codexHome, "config.toml"), input.configToml ?? codexJsonHomeConfigToml());
+}
+async function writeCodexAuthJson(input) {
+  await writeFileAtomic((0, import_node_path6.join)(input.codexHome, "auth.json"), input.authJson);
+}
+async function snapshotCodexSession(input) {
+  const authJson = await (0, import_promises4.readFile)((0, import_node_path6.join)(input.codexHome, "auth.json"), "utf8");
+  return sessionArtifactFromCodexAuthJson(authJson);
+}
+function codexJsonHomeConfigToml() {
+  return [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
     'sandbox_mode = "read-only"',
@@ -2458,17 +3057,9 @@ async function writeCodexJsonHomeSnapshot(input) {
     "[shell_environment_policy]",
     'inherit = "none"',
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
-    ""
+    "",
+    codexProviderEgressConfigToml()
   ].join("\n");
-  await writeFileAtomic((0, import_node_path5.join)(input.codexHome, "config.toml"), config2);
-  await writeCodexAuthJson(input);
-}
-async function writeCodexAuthJson(input) {
-  await writeFileAtomic((0, import_node_path5.join)(input.codexHome, "auth.json"), input.authJson);
-}
-async function snapshotCodexSession(input) {
-  const authJson = await (0, import_promises4.readFile)((0, import_node_path5.join)(input.codexHome, "auth.json"), "utf8");
-  return sessionArtifactFromCodexAuthJson(authJson);
 }
 function sessionArtifactHash(session) {
   return stableHash(new TextDecoder().decode(session.bytes));
@@ -2491,12 +3082,12 @@ function once(fn) {
   };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-agent-driver.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-agent-driver.js
 var CodexJsonAgentDriver = class {
   options;
   agentId = codexJsonAgentId;
   providerId = codexProviderId;
-  capabilities = codexJsonAgentCapabilities;
+  capabilities;
   engine;
   model;
   reasoningEffort;
@@ -2511,6 +3102,17 @@ var CodexJsonAgentDriver = class {
       ...options.sourceEnv ? { sourceEnv: options.sourceEnv } : {},
       ...options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}
     });
+    const engineCapabilities = this.engine.capabilities;
+    this.capabilities = !engineCapabilities.budgetCapabilities && !engineCapabilities.taskExecutionCapabilities && !engineCapabilities.turnLimitEnforcement ? codexJsonAgentCapabilities : {
+      ...codexJsonAgentCapabilities,
+      ...engineCapabilities.budgetCapabilities ? { budgetCapabilities: engineCapabilities.budgetCapabilities } : {},
+      ...engineCapabilities.taskExecutionCapabilities ? {
+        taskExecutionCapabilities: engineCapabilities.taskExecutionCapabilities
+      } : {},
+      ...engineCapabilities.turnLimitEnforcement ? {
+        turnLimitEnforcement: engineCapabilities.turnLimitEnforcement
+      } : {}
+    };
     this.model = options.model ?? defaultCodexModel;
     this.reasoningEffort = options.reasoningEffort ?? "low";
     this.serviceTier = options.serviceTier;
@@ -2545,7 +3147,7 @@ var CodexJsonAgentDriver = class {
       const outputSchemaName = input.task.controls?.outputSchemaName ?? input.task.outputSchemaName;
       const goalObjective = readTaskGoalObjective(input.task);
       const runId = readTaskManagedRunId(input.task);
-      const result = await this.engine.run({
+      const engineInput = {
         ...runId ? { runId } : {},
         prompt: input.task.prompt,
         ...goalObjective ? { goalObjective } : {},
@@ -2559,8 +3161,22 @@ var CodexJsonAgentDriver = class {
         reasoningEffort: this.reasoningEffort,
         ...this.serviceTier === void 0 ? {} : { serviceTier: this.serviceTier },
         sandboxMode: codexSandboxModeForControls(input.task.controls),
-        abortSignal: input.abortSignal
+        abortSignal: input.abortSignal,
+        ...input.onTextDelta === void 0 ? {} : {
+          onTextDelta: (text) => {
+            const redacted = input.redactor.redact(text);
+            input.redactor.assertNoKnownSecret(redacted, "codex-app-server-text-delta");
+            if (redacted)
+              input.onTextDelta?.(redacted);
+          }
+        }
+      };
+      await input.onTaskStarted?.();
+      const logicalThreadResult = input.logicalThread === void 0 ? void 0 : await this.runLogicalThread({
+        engineInput,
+        logicalThread: input.logicalThread
       });
+      const result = logicalThreadResult === void 0 ? await this.engine.run(engineInput) : logicalThreadResult;
       if (result.status === "waiting_for_input") {
         this.managedRunSessions.set(result.runId, materialized);
         materialized = null;
@@ -2597,7 +3213,7 @@ var CodexJsonAgentDriver = class {
         warnings: [...result.warnings, ...snapshot.warnings]
       };
     } catch (error51) {
-      const failure = codexExecutionFailure(error51);
+      const failure = codexExecutionFailure(error51, input.redactor);
       return {
         ...failure,
         telemetry: {
@@ -2608,6 +3224,23 @@ var CodexJsonAgentDriver = class {
     } finally {
       await materialized?.release();
     }
+  }
+  async runLogicalThread(input) {
+    if (!this.engine.runLogicalThread) {
+      throw new Error("codex_logical_thread_unsupported");
+    }
+    if (input.logicalThread.previousCheckpoint !== void 0) {
+      input.engineInput.redactor.registerSecret(input.logicalThread.previousCheckpoint, "codex-provider-checkpoint");
+    }
+    const result = await this.engine.runLogicalThread({
+      ...input.engineInput,
+      ...input.logicalThread.previousCheckpoint === void 0 ? {} : { previousCheckpoint: input.logicalThread.previousCheckpoint }
+    });
+    await input.logicalThread.onCheckpoint({
+      checkpoint: result.providerCheckpoint,
+      outcome: result.outcome
+    });
+    return result;
   }
   async resumeManagedRun(input) {
     if (!this.engine.resume) {
@@ -2693,7 +3326,7 @@ var CodexJsonAgentDriver = class {
     } catch (error51) {
       this.managedRunSessions.delete(input.runId);
       ownsMaterialized = true;
-      const failure = codexExecutionFailure(error51);
+      const failure = codexExecutionFailure(error51, input.redactor);
       return {
         ...failure,
         telemetry: {
@@ -2810,6 +3443,9 @@ async function snapshotSessionUpdate(input) {
   }
 }
 function readTaskGoalObjective(task) {
+  if (task.execution?.mode === AgentRuntimeExecutionMode.Goal) {
+    return task.execution.completionCondition;
+  }
   const value = task.metadata?.codexGoalObjective;
   if (typeof value !== "string")
     return null;
@@ -2830,19 +3466,14 @@ function finishReasonForFailure(code) {
     return "timeout";
   if (code === "goal_slice_exhausted")
     return "max_turns";
+  if (code === "budget_exceeded")
+    return "budget_exceeded";
   return "provider_error";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-app-server-execution-engine.js
-var defaultTimeoutMs2 = 10 * 60 * 1e3;
-var defaultStartupTimeoutMs = 2 * 60 * 1e3;
-var defaultControlRequestTimeoutMs = 30 * 1e3;
-var defaultReconnectGraceMs = 10 * 60 * 1e3;
-var defaultMaxOutputBytes2 = 512 * 1024;
-
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-session-driver.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-session-driver.js
 var import_promises5 = require("node:fs/promises");
-var import_node_path6 = require("node:path");
+var import_node_path7 = require("node:path");
 var CodexCliSessionDriver = class {
   options;
   providerId = codexProviderId;
@@ -2861,14 +3492,18 @@ var CodexCliSessionDriver = class {
   async refreshSession(input) {
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
-    const tempRoot = await createCodexRuntimeTempRoot({
+    const useTrustedBootstrapRunner = this.options.refreshBootstrapRunner !== void 0 && (this.options.codexBinaryPath ?? "codex") === "codex";
+    const tempRoot = useTrustedBootstrapRunner ? await createTrustedCodexRuntimeTempRoot({
+      prefix: "subscription-runtime-codex-",
+      sourceEnv: this.options.sourceEnv ?? process.env
+    }) : await createCodexRuntimeTempRoot({
       prefix: "subscription-runtime-codex-",
       sourceEnv: this.options.sourceEnv
     });
-    const tempHome = (0, import_node_path6.join)(tempRoot, "home");
-    const tempCodexHome = (0, import_node_path6.join)(tempRoot, "codex-home");
-    const emptyWorkingDirectory = (0, import_node_path6.join)(tempRoot, "empty-workdir");
-    const authJsonPath = (0, import_node_path6.join)(tempCodexHome, "auth.json");
+    const tempHome = (0, import_node_path7.join)(tempRoot, "home");
+    const tempCodexHome = (0, import_node_path7.join)(tempRoot, "codex-home");
+    const emptyWorkingDirectory = (0, import_node_path7.join)(tempRoot, "empty-workdir");
+    const authJsonPath = (0, import_node_path7.join)(tempCodexHome, "auth.json");
     await (0, import_promises5.mkdir)(tempHome, { recursive: true, mode: 448 });
     await (0, import_promises5.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
     await (0, import_promises5.mkdir)(emptyWorkingDirectory, { recursive: true, mode: 448 });
@@ -2882,7 +3517,8 @@ var CodexCliSessionDriver = class {
         authJsonPath,
         model: this.options.model ?? defaultCodexModel
       });
-      await input.runner.run({
+      const refreshRunner = useTrustedBootstrapRunner && this.options.refreshBootstrapRunner ? this.options.refreshBootstrapRunner : input.runner;
+      await refreshRunner.run({
         command: plan.command,
         args: plan.args,
         cwd: plan.cwd,
@@ -3025,17 +3661,18 @@ async function writeCodexHomeSnapshot(input) {
     "[shell_environment_policy]",
     'inherit = "none"',
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
-    ""
+    "",
+    codexProviderEgressConfigToml()
   ].join("\n");
-  await (0, import_promises5.writeFile)((0, import_node_path6.join)(input.codexHome, "config.toml"), config2, {
+  await (0, import_promises5.writeFile)((0, import_node_path7.join)(input.codexHome, "config.toml"), config2, {
     mode: 384
   });
-  await (0, import_promises5.writeFile)((0, import_node_path6.join)(input.codexHome, "auth.json"), input.authJson, {
+  await (0, import_promises5.writeFile)((0, import_node_path7.join)(input.codexHome, "auth.json"), input.authJson, {
     mode: 384
   });
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/capabilities.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/domain/github-action-runner-capabilities.js
 var githubActionRunnerCapabilities = {
   runnerId: "github-action",
   supportsEnvAllowlist: true,
@@ -3048,146 +3685,52 @@ var githubActionRunnerCapabilities = {
   platform: "github-actions"
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_2ba9f3e88515468f90aa7fa7b855fe34/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/github-action-runner.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/adapters/node-runner-process-spawner.js
 var import_node_child_process = require("node:child_process");
-var defaultMaxCapturedOutputBytes = 256e3;
-var defaultKillGraceMs = 5e3;
-var GitHubActionRunner = class {
-  runnerId = githubActionRunnerCapabilities.runnerId;
-  capabilities = githubActionRunnerCapabilities;
-  redactor;
-  maxCapturedOutputBytes;
-  killGraceMs;
-  constructor(options = {}) {
-    this.redactor = options.redactor ?? new DefaultRedactor();
-    this.maxCapturedOutputBytes = options.maxCapturedOutputBytes ?? defaultMaxCapturedOutputBytes;
-    this.killGraceMs = options.killGraceMs ?? defaultKillGraceMs;
-  }
-  run(input) {
-    try {
-      assertSafeProcessInput(input);
-    } catch (error51) {
-      return Promise.reject(error51);
-    }
-    if (input.abortSignal.aborted) {
-      return Promise.reject(new Error("process_aborted"));
-    }
-    return new Promise((resolve, reject) => {
-      const startedAt = Date.now();
-      const stdoutChunks = [];
-      const stderrChunks = [];
-      let capturedBytes = 0;
-      let settled = false;
-      let terminalError = null;
-      let forceKillTimer = null;
-      const child = (0, import_node_child_process.spawn)(input.command, input.args, {
-        cwd: input.cwd,
-        env: input.env,
-        stdio: ["pipe", "pipe", "pipe"]
-      });
-      const cleanup = () => {
-        clearTimeout(timer);
-        if (forceKillTimer)
-          clearTimeout(forceKillTimer);
-        input.abortSignal.removeEventListener("abort", abort);
-      };
-      const settleReject = (error51) => {
-        if (settled)
-          return;
-        settled = true;
-        cleanup();
-        reject(error51);
-      };
-      const terminate = () => {
-        if (child.exitCode !== null || child.signalCode !== null)
-          return;
-        child.kill("SIGTERM");
-        forceKillTimer ??= setTimeout(() => {
-          if (child.exitCode === null && child.signalCode === null) {
-            child.kill("SIGKILL");
-          }
-        }, this.killGraceMs);
-      };
-      const failAfterExit = (error51) => {
-        if (settled || terminalError)
-          return;
-        terminalError = error51;
-        terminate();
-      };
-      const abort = () => {
-        failAfterExit(new Error("process_aborted"));
-      };
-      const timer = setTimeout(() => {
-        failAfterExit(new Error("process_timeout"));
-      }, input.timeoutMs);
-      const failOutputSink = (streamName, error51) => {
-        const message = error51 instanceof Error ? error51.message : String(error51);
-        failAfterExit(new Error(`process_output_sink_failed:${streamName}:${message}`));
-      };
-      const failStdin = (error51) => {
-        const message = error51 instanceof Error ? error51.message : String(error51);
-        failAfterExit(new Error(`process_stdin_failed:${message}`));
-      };
-      input.abortSignal.addEventListener("abort", abort, { once: true });
-      child.stdout.on("data", (chunk) => {
-        const buffer = Buffer.from(chunk);
-        try {
-          writeRedacted(input.stdout, this.redactor, buffer);
-        } catch (error51) {
-          failOutputSink("stdout", error51);
-          return;
-        }
-        capturedBytes = appendCapturedChunk(stdoutChunks, capturedBytes, buffer, this.maxCapturedOutputBytes);
-      });
-      child.stderr.on("data", (chunk) => {
-        const buffer = Buffer.from(chunk);
-        try {
-          writeRedacted(input.stderr, this.redactor, buffer);
-        } catch (error51) {
-          failOutputSink("stderr", error51);
-          return;
-        }
-        capturedBytes = appendCapturedChunk(stderrChunks, capturedBytes, buffer, this.maxCapturedOutputBytes);
-      });
-      child.on("error", (error51) => {
-        if (terminalError)
-          return;
-        settleReject(error51 instanceof Error ? error51 : new Error(String(error51)));
-      });
-      child.stdin.on("error", failStdin);
-      child.on("close", (code) => {
-        if (settled)
-          return;
-        settled = true;
-        cleanup();
-        if (terminalError) {
-          reject(terminalError);
-          return;
-        }
-        const stdout = this.redactor.redact(Buffer.concat(stdoutChunks).toString("utf8"));
-        const stderr = this.redactor.redact(Buffer.concat(stderrChunks).toString("utf8"));
-        const durationMs = Date.now() - startedAt;
-        if (code === 0) {
-          resolve({
-            exitCode: 0,
-            stdout,
-            stderr,
-            durationMs
-          });
-          return;
-        }
-        reject(new Error(`process_failed:${input.command}:${code ?? "signal"}:${safeFailureOutput(`${stdout}
-${stderr}`)}`));
-      });
-      try {
-        child.stdin.end(input.stdin ? Buffer.from(input.stdin) : void 0);
-      } catch (error51) {
-        failStdin(error51);
-      }
-    });
+var NodeRunnerProcessSpawner = class {
+  spawn(input) {
+    return new NodeSpawnedRunnerProcess((0, import_node_child_process.spawn)(input.command, input.args, {
+      cwd: input.cwd,
+      env: input.env,
+      stdio: ["pipe", "pipe", "pipe"]
+    }));
   }
 };
-function assertSafeProcessInput(input) {
+var NodeSpawnedRunnerProcess = class {
+  child;
+  constructor(child) {
+    this.child = child;
+  }
+  get exitCode() {
+    return this.child.exitCode;
+  }
+  get signalCode() {
+    return this.child.signalCode;
+  }
+  onOutput(streamName, listener) {
+    this.child[streamName].on("data", listener);
+  }
+  onError(listener) {
+    this.child.on("error", listener);
+  }
+  onStdinError(listener) {
+    this.child.stdin.on("error", listener);
+  }
+  onClose(listener) {
+    this.child.on("close", (code) => listener(code));
+  }
+  endStdin(input) {
+    this.child.stdin.end(input ? Buffer.from(input) : void 0);
+  }
+  kill(signal) {
+    this.child.kill(signal);
+  }
+};
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/domain/github-action-runner-policy.js
+var defaultMaxCapturedOutputBytes = 256e3;
+var defaultKillGraceMs = 5e3;
+function assertSafeGitHubActionProcessInput(input) {
   if (!input.command || input.command.includes("\0")) {
     throw new Error("runner_invalid_command");
   }
@@ -3203,13 +3746,145 @@ function assertSafeProcessInput(input) {
     }
   }
   for (const key of Object.keys(input.env)) {
-    if (isForbiddenRunnerEnvKey(key)) {
+    if (isForbiddenGitHubActionRunnerEnvKey(key)) {
       throw new Error(`runner_forbidden_env:${key}`);
     }
   }
 }
-function isForbiddenRunnerEnvKey(key) {
+function isForbiddenGitHubActionRunnerEnvKey(key) {
   return key === "GITHUB_TOKEN" || key === "GH_TOKEN" || key === "ACTIONS_ID_TOKEN_REQUEST_URL" || key === "ACTIONS_ID_TOKEN_REQUEST_TOKEN" || key === "GITHUB_ENV" || key === "GITHUB_OUTPUT" || key === "GITHUB_PATH" || key === "GITHUB_STEP_SUMMARY" || key === "GITHUB_STATE" || key === "NODE_OPTIONS" || key === "BASH_ENV" || key === "ENV" || key.startsWith("INPUT_AUTH") || key.includes("AUTH_JSON") || key.includes("OPENAI_API_KEY") || key.includes("CLAUDE_CODE_OAUTH_TOKEN") || key.includes("OPENROUTER_API_KEY");
+}
+function safeGitHubActionFailureOutput(output) {
+  const compact = output.replace(/\s+/g, " ").trim();
+  return compact ? compact.slice(-1e3) : "empty_process_output";
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/application/run-github-action-process.js
+function runGitHubActionProcess(input) {
+  try {
+    assertSafeGitHubActionProcessInput(input);
+  } catch (error51) {
+    return Promise.reject(error51);
+  }
+  if (input.abortSignal.aborted) {
+    return Promise.reject(new Error("process_aborted"));
+  }
+  return new Promise((resolve3, reject) => {
+    const startedAt = Date.now();
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let capturedBytes = 0;
+    let settled = false;
+    let terminalError = null;
+    let timeoutTimer = null;
+    let forceKillTimer = null;
+    const child = input.processSpawner.spawn({
+      command: input.command,
+      args: input.args,
+      cwd: input.cwd,
+      env: input.env
+    });
+    const cleanup = () => {
+      if (timeoutTimer)
+        clearTimeout(timeoutTimer);
+      if (forceKillTimer)
+        clearTimeout(forceKillTimer);
+      input.abortSignal.removeEventListener("abort", abort);
+    };
+    const settleReject = (error51) => {
+      if (settled)
+        return;
+      settled = true;
+      cleanup();
+      reject(error51);
+    };
+    const terminate = () => {
+      if (child.exitCode !== null || child.signalCode !== null)
+        return;
+      child.kill("SIGTERM");
+      forceKillTimer ??= setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+      }, input.killGraceMs);
+    };
+    const failAfterExit = (error51) => {
+      if (settled || terminalError)
+        return;
+      terminalError = error51;
+      terminate();
+    };
+    const abort = () => {
+      failAfterExit(new Error("process_aborted"));
+    };
+    timeoutTimer = setTimeout(() => {
+      failAfterExit(new Error("process_timeout"));
+    }, input.timeoutMs);
+    const failOutputSink = (streamName, error51) => {
+      const message = error51 instanceof Error ? error51.message : String(error51);
+      failAfterExit(new Error(`process_output_sink_failed:${streamName}:${message}`));
+    };
+    const failStdin = (error51) => {
+      const message = error51 instanceof Error ? error51.message : String(error51);
+      failAfterExit(new Error(`process_stdin_failed:${message}`));
+    };
+    input.abortSignal.addEventListener("abort", abort, { once: true });
+    child.onOutput("stdout", (chunk) => {
+      const buffer = Buffer.from(chunk);
+      try {
+        writeRedacted(input.stdout, input.redactor, buffer);
+      } catch (error51) {
+        failOutputSink("stdout", error51);
+        return;
+      }
+      capturedBytes = appendCapturedChunk(stdoutChunks, capturedBytes, buffer, input.maxCapturedOutputBytes);
+    });
+    child.onOutput("stderr", (chunk) => {
+      const buffer = Buffer.from(chunk);
+      try {
+        writeRedacted(input.stderr, input.redactor, buffer);
+      } catch (error51) {
+        failOutputSink("stderr", error51);
+        return;
+      }
+      capturedBytes = appendCapturedChunk(stderrChunks, capturedBytes, buffer, input.maxCapturedOutputBytes);
+    });
+    child.onError((error51) => {
+      if (terminalError)
+        return;
+      settleReject(error51 instanceof Error ? error51 : new Error(String(error51)));
+    });
+    child.onStdinError(failStdin);
+    child.onClose((code) => {
+      if (settled)
+        return;
+      settled = true;
+      cleanup();
+      if (terminalError) {
+        reject(terminalError);
+        return;
+      }
+      const stdout = input.redactor.redact(Buffer.concat(stdoutChunks).toString("utf8"));
+      const stderr = input.redactor.redact(Buffer.concat(stderrChunks).toString("utf8"));
+      const durationMs = Date.now() - startedAt;
+      if (code === 0) {
+        resolve3({
+          exitCode: 0,
+          stdout,
+          stderr,
+          durationMs
+        });
+        return;
+      }
+      reject(new Error(`process_failed:${input.command}:${code ?? "signal"}:${safeGitHubActionFailureOutput(`${stdout}
+${stderr}`)}`));
+    });
+    try {
+      child.endStdin(input.stdin ? Buffer.from(input.stdin) : void 0);
+    } catch (error51) {
+      failStdin(error51);
+    }
+  });
 }
 function writeRedacted(sink, redactor, chunk) {
   if (!sink)
@@ -3224,15 +3899,36 @@ function appendCapturedChunk(chunks, currentBytes, chunk, maxBytes) {
   chunks.push(nextChunk);
   return currentBytes + nextChunk.byteLength;
 }
-function safeFailureOutput(output) {
-  const compact = output.replace(/\s+/g, " ").trim();
-  return compact ? compact.slice(-1e3) : "empty_process_output";
-}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+6467c59a06a2ac_0421105c84de5cb821d4070bffc5e3c3/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/github-action-runner.js
+var GitHubActionRunner = class {
+  runnerId = githubActionRunnerCapabilities.runnerId;
+  capabilities = githubActionRunnerCapabilities;
+  redactor;
+  maxCapturedOutputBytes;
+  killGraceMs;
+  processSpawner;
+  constructor(options = {}) {
+    this.redactor = options.redactor ?? new DefaultRedactor();
+    this.maxCapturedOutputBytes = options.maxCapturedOutputBytes ?? defaultMaxCapturedOutputBytes;
+    this.killGraceMs = options.killGraceMs ?? defaultKillGraceMs;
+    this.processSpawner = options.processSpawner ?? new NodeRunnerProcessSpawner();
+  }
+  run(input) {
+    return runGitHubActionProcess({
+      ...input,
+      redactor: this.redactor,
+      maxCapturedOutputBytes: this.maxCapturedOutputBytes,
+      killGraceMs: this.killGraceMs,
+      processSpawner: this.processSpawner
+    });
+  }
+};
 
 // packages/features/codex-oauth-rotating/src/action/github-action.ts
 var import_promises6 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
-var import_node_path7 = require("node:path");
+var import_node_path8 = require("node:path");
 
 // node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -21922,15 +22618,15 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
         });
         const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
         try {
-          const reviewSnapshotInputPath = (0, import_node_path7.join)(
+          const reviewSnapshotInputPath = (0, import_node_path8.join)(
             reviewHome,
             reviewSnapshotInputFileName
           );
-          const reviewSnapshotOutputPath = (0, import_node_path7.join)(
+          const reviewSnapshotOutputPath = (0, import_node_path8.join)(
             reviewHome,
             reviewSnapshotOutputFileName
           );
-          const reviewCheckpointFinalizationPath = (0, import_node_path7.join)(
+          const reviewCheckpointFinalizationPath = (0, import_node_path8.join)(
             reviewHome,
             reviewCheckpointFinalizationFileName
           );
@@ -23026,7 +23722,7 @@ async function consumeJsonResponse(response) {
   return { response, body: await response.json() };
 }
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve3) => setTimeout(resolve3, ms));
 }
 function assertWritebackAccepted(response) {
   if (!response || response.protocolVersion !== 1) {
@@ -23096,11 +23792,11 @@ async function startCodexLocalProviderProxy(input) {
       }
     })();
   });
-  await new Promise((resolve, reject) => {
+  await new Promise((resolve3, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
       server.off("error", reject);
-      resolve();
+      resolve3();
     });
   });
   const address = server.address();
@@ -23153,7 +23849,7 @@ function getJoinedRequestHeader(headers, name) {
   return value;
 }
 function readProxyRequestBody(req) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve3, reject) => {
     const chunks = [];
     let bytes = 0;
     req.on("data", (chunk) => {
@@ -23166,7 +23862,7 @@ function readProxyRequestBody(req) {
       chunks.push(buffer);
     });
     req.on("error", reject);
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("end", () => resolve3(Buffer.concat(chunks)));
   });
 }
 async function writeProxyUpstreamResponse(res, upstream) {
@@ -23204,20 +23900,20 @@ function writeProxyError(res, status, code) {
   res.end(JSON.stringify({ error: code }));
 }
 function closeHttpServer(server) {
-  return new Promise((resolve, reject) => {
-    server.close((error51) => error51 ? reject(error51) : resolve());
+  return new Promise((resolve3, reject) => {
+    server.close((error51) => error51 ? reject(error51) : resolve3());
   });
 }
 async function resolveCodexBinary(env) {
   const actionPath = resolveGitHubActionPath(env);
-  const bundleRoot = (0, import_node_path7.join)(
+  const bundleRoot = (0, import_node_path8.join)(
     actionPath,
     "action-dist",
     "codex",
     bundledCodexPlatform
   );
-  const archivePath = (0, import_node_path7.join)(bundleRoot, bundledCodexArchiveName);
-  const manifestPath = (0, import_node_path7.join)(bundleRoot, "manifest.json");
+  const archivePath = (0, import_node_path8.join)(bundleRoot, bundledCodexArchiveName);
+  const manifestPath = (0, import_node_path8.join)(bundleRoot, "manifest.json");
   let resolvedBundleRoot;
   let resolvedArchivePath;
   let resolvedManifestPath;
@@ -23251,7 +23947,7 @@ async function resolveCodexBinary(env) {
     throw new Error("codex_bundled_archive_hash_mismatch");
   }
   const extractionRoot = await (0, import_promises6.mkdtemp)(
-    (0, import_node_path7.join)(env.RUNNER_TEMP ?? (0, import_node_os2.tmpdir)(), "reviewrouter-codex-bundle-")
+    (0, import_node_path8.join)(env.RUNNER_TEMP ?? (0, import_node_os2.tmpdir)(), "reviewrouter-codex-bundle-")
   );
   await runProcess({
     command: "tar",
@@ -23262,7 +23958,7 @@ async function resolveCodexBinary(env) {
     },
     timeoutMs: 6e4
   });
-  const extractedBinaryPath = (0, import_node_path7.join)(
+  const extractedBinaryPath = (0, import_node_path8.join)(
     extractionRoot,
     manifest.binaryPathInArchive
   );
@@ -23289,7 +23985,7 @@ function resolveGitHubActionPath(env) {
     return explicitActionPath;
   }
   if (typeof __dirname === "string" && __dirname.endsWith("action-dist")) {
-    return (0, import_node_path7.join)(__dirname, "..");
+    return (0, import_node_path8.join)(__dirname, "..");
   }
   throw new Error("missing_github_action_path");
 }
@@ -23312,12 +24008,12 @@ function validateCodexBinaryManifest(manifest, archiveSize) {
   }
 }
 function sha256File(path) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve3, reject) => {
     const hash2 = (0, import_node_crypto6.createHash)("sha256");
     const stream = (0, import_node_fs2.createReadStream)(path);
     stream.on("data", (chunk) => hash2.update(chunk));
     stream.on("error", reject);
-    stream.on("end", () => resolve(hash2.digest("hex")));
+    stream.on("end", () => resolve3(hash2.digest("hex")));
   });
 }
 async function getAvailableDiskBytes(path) {
@@ -23360,14 +24056,14 @@ async function writeCodexAuthSnapshot(codexHome, authJson) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await (0, import_promises6.writeFile)((0, import_node_path7.join)(codexHome, "config.toml"), config2, {
+  await (0, import_promises6.writeFile)((0, import_node_path8.join)(codexHome, "config.toml"), config2, {
     mode: 384
   });
-  await (0, import_promises6.writeFile)((0, import_node_path7.join)(codexHome, "auth.json"), authJson, { mode: 384 });
+  await (0, import_promises6.writeFile)((0, import_node_path8.join)(codexHome, "auth.json"), authJson, { mode: 384 });
 }
 async function writeCodexProxySnapshot(input) {
   await (0, import_promises6.mkdir)(input.codexHome, { recursive: true, mode: 448 });
-  await (0, import_promises6.rm)((0, import_node_path7.join)(input.codexHome, "auth.json"), { force: true });
+  await (0, import_promises6.rm)((0, import_node_path8.join)(input.codexHome, "auth.json"), { force: true });
   const config2 = [
     `model = ${JSON.stringify(input.model)}`,
     'model_provider = "reviewrouter_proxy"',
@@ -23404,7 +24100,7 @@ async function writeCodexProxySnapshot(input) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await (0, import_promises6.writeFile)((0, import_node_path7.join)(input.codexHome, "config.toml"), config2, {
+  await (0, import_promises6.writeFile)((0, import_node_path8.join)(input.codexHome, "config.toml"), config2, {
     mode: 384
   });
 }
@@ -23435,7 +24131,7 @@ async function refreshCodexAuthJson(input) {
     await writeCodexAuthSnapshot(input.tempCodexHome, input.authJson);
     await runCodexBootstrap(input);
     return {
-      authJson: await (0, import_promises6.readFile)((0, import_node_path7.join)(input.tempCodexHome, "auth.json"), "utf8"),
+      authJson: await (0, import_promises6.readFile)((0, import_node_path8.join)(input.tempCodexHome, "auth.json"), "utf8"),
       writebackCommittedByRuntime: false
     };
   }
@@ -23750,7 +24446,7 @@ function shouldUseSubscriptionRuntimeCodex(env) {
   return value !== "0" && value !== "false";
 }
 async function safeCheckoutPullRequest(input) {
-  const askPass = (0, import_node_path7.join)(input.workspace, ".reviewrouter-askpass.sh");
+  const askPass = (0, import_node_path8.join)(input.workspace, ".reviewrouter-askpass.sh");
   await (0, import_promises6.writeFile)(
     askPass,
     [
@@ -23851,7 +24547,7 @@ function buildSafeCheckoutGitEnv(input) {
   return {
     ...pruneCodexRotatingChildEnv(input.sourceEnv),
     HOME: input.workspace,
-    XDG_CONFIG_HOME: (0, import_node_path7.join)(input.workspace, ".config"),
+    XDG_CONFIG_HOME: (0, import_node_path8.join)(input.workspace, ".config"),
     GIT_ASKPASS: input.askPass,
     GIT_TERMINAL_PROMPT: "0",
     GIT_CONFIG_NOSYSTEM: "1",
@@ -23884,7 +24580,7 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input) {
 async function assertGitConfigDoesNotPersistCredentials(input) {
   let gitConfig;
   try {
-    gitConfig = await (0, import_promises6.readFile)((0, import_node_path7.join)(input.workspace, ".git", "config"), "utf8");
+    gitConfig = await (0, import_promises6.readFile)((0, import_node_path8.join)(input.workspace, ".git", "config"), "utf8");
   } catch (error51) {
     throw new Error("checkout_config_missing", { cause: error51 });
   }
@@ -23925,7 +24621,7 @@ async function makeGitHubWorkspaceCodexHomeDirectory(env) {
     throw new Error("missing_github_workspace");
   }
   const resolvedWorkspaceRoot = await (0, import_promises6.realpath)(githubWorkspace);
-  const codexHomeRoot = (0, import_node_path7.join)(resolvedWorkspaceRoot, ".reviewrouter-codex-home");
+  const codexHomeRoot = (0, import_node_path8.join)(resolvedWorkspaceRoot, ".reviewrouter-codex-home");
   await (0, import_promises6.mkdir)(codexHomeRoot, { recursive: true, mode: 448 });
   const codexHomeRootStats = await (0, import_promises6.lstat)(codexHomeRoot);
   if (!codexHomeRootStats.isDirectory() || codexHomeRootStats.isSymbolicLink()) {
@@ -23935,7 +24631,7 @@ async function makeGitHubWorkspaceCodexHomeDirectory(env) {
   if (resolvedCodexHomeRoot !== codexHomeRoot && !resolvedCodexHomeRoot.startsWith(`${resolvedWorkspaceRoot}/`)) {
     throw new Error("github_workspace_codex_home_root_escape");
   }
-  const codexHome = await (0, import_promises6.mkdtemp)((0, import_node_path7.join)(resolvedCodexHomeRoot, "run-"));
+  const codexHome = await (0, import_promises6.mkdtemp)((0, import_node_path8.join)(resolvedCodexHomeRoot, "run-"));
   await (0, import_promises6.chmod)(codexHome, 448);
   const resolvedCodexHome = await (0, import_promises6.realpath)(codexHome);
   if (!resolvedCodexHome.startsWith(`${resolvedCodexHomeRoot}/`)) {
@@ -23959,7 +24655,7 @@ async function runReviewRuntimeWithinExecutionBudget(input) {
 }
 async function runFullReviewRouterRuntime(input) {
   const actionPath = resolveGitHubActionPath(input.env);
-  const runtimePath = (0, import_node_path7.join)(actionPath, "dist", "index.js");
+  const runtimePath = (0, import_node_path8.join)(actionPath, "dist", "index.js");
   await (0, import_promises6.access)(runtimePath, import_node_fs2.constants.R_OK);
   const reviewThreadLifecycleResolveToken = input.env[reviewThreadLifecycleResolveTokenEnvKey]?.trim() || void 0;
   if (reviewThreadLifecycleResolveToken) {
@@ -24021,7 +24717,7 @@ async function runFullReviewRouterRuntime(input) {
         );
       }
     });
-    await (0, import_promises6.symlink)(input.codexBinaryPath, (0, import_node_path7.join)(codexBinDir, "codex"));
+    await (0, import_promises6.symlink)(input.codexBinaryPath, (0, import_node_path8.join)(codexBinDir, "codex"));
     const childEnv = buildFullReviewRuntimeEnv({
       sourceEnv: input.env,
       inputs: input.inputs,
@@ -24103,8 +24799,8 @@ function buildFullReviewRuntimeEnv(input) {
     CODEX_HOME: input.tempCodexHome,
     GITHUB_WORKSPACE: input.workspace,
     CI: "true",
-    PATH: `${input.codexBinDir}:${(0, import_node_path7.join)(input.tempHome, ".local", "bin")}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
-    GITHUB_OUTPUT: (0, import_node_path7.join)(input.tempHome, "github-output"),
+    PATH: `${input.codexBinDir}:${(0, import_node_path8.join)(input.tempHome, ".local", "bin")}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
+    GITHUB_OUTPUT: (0, import_node_path8.join)(input.tempHome, "github-output"),
     GITHUB_TOKEN: input.commentToken,
     PR_NUMBER: String(input.event.number),
     REVIEW_AUTH_MODE: reviewAuthMode,
@@ -24620,7 +25316,7 @@ function runProcess(input) {
   if (input.abortSignal?.aborted) {
     return Promise.reject(processAbortError(input.abortSignal));
   }
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve3, reject) => {
     const outputChunks = [];
     let outputBytes = 0;
     let settled = false;
@@ -24642,7 +25338,7 @@ function runProcess(input) {
       if (result.error !== void 0) {
         reject(result.error);
       } else {
-        resolve();
+        resolve3();
       }
     };
     const requestTermination = (error51) => {
@@ -24834,7 +25530,7 @@ async function removeTree(path) {
   });
 }
 async function makeTempDirectory(prefix) {
-  return (0, import_promises6.mkdtemp)((0, import_node_path7.join)((0, import_node_os2.tmpdir)(), prefix));
+  return (0, import_promises6.mkdtemp)((0, import_node_path8.join)((0, import_node_os2.tmpdir)(), prefix));
 }
 function buildWritebackIdempotencyKey(env, leaseId) {
   const runId = env.GITHUB_RUN_ID || "local";
