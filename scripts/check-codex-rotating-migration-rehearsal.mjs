@@ -2139,11 +2139,19 @@ function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
       args: args.filter((_, index) => index !== urlIndex),
       input: options.input,
     });
+    const credential = createDatabaseCredentialBoundary(args[urlIndex]);
     executable = psqlBinary;
     childArgs = postgres.args;
-    childEnvironment = postgres.environment;
+    childEnvironment = {
+      ...postgres.environment,
+      REVIEW_ROUTER_DATABASE_URL_FILE:
+        credential.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
+    };
     childInput = postgres.input;
-    cleanup = postgres.cleanup;
+    cleanup = () => {
+      postgres.cleanup();
+      credential.cleanup();
+    };
   } else {
     const databaseUrl = options.env?.DATABASE_URL;
     if (!databaseUrl)
