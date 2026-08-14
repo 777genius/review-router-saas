@@ -686,6 +686,50 @@ describe("ProviderSecretSetupChooser", () => {
     expect(String(body.get("recoveryRequestId"))).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  it("verifies an already merged setup before forcing recovery", async () => {
+    const fetchMock = mockProviderSetupFetch()
+      .mockResolvedValueOnce(
+        setupCommandErrorResponse("codex_rotating_setup_recovery_required"),
+      )
+      .mockResolvedValueOnce(
+        providerSetupResponse({
+          params: {
+            notice: "provider_setup_confirmed",
+            workspace: "workspace_1",
+            section: "repositories",
+            repository: "777genius/plugin-kit-ai-starter-claude-python",
+          },
+        }),
+      );
+
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+
+    expect(
+      await screen.findByText(/setup pull request is already merged/i),
+    ).toBeTruthy();
+    const verifyButton = screen.getByRole("button", {
+      name: "Verify versioned setup",
+    });
+    expect((verifyButton as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(verifyButton);
+
+    expect(
+      await screen.findByText(/Authorized versioned setup is active/i),
+    ).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "/api/dashboard/provider-secret-setup/confirm",
+    );
+  });
+
   it("explains setup lock contention as retryable", async () => {
     vi.stubGlobal(
       "fetch",
