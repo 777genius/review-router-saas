@@ -389,6 +389,10 @@ export async function issueCodexRotatingSetupCommand(input: {
         await tx.codexOAuthProviderInstance.update({
           where: { id: provider.id },
           data: {
+            // A reseed can start from an active `ready` provider. Move the
+            // provider into the setup lifecycle in the same fenced epoch so
+            // confirmation can transition it to `workflow_update_required`.
+            state: "setup_pending",
             mutationEpoch,
             mutationOwner: "setup",
             mutationOwnerId: manifestId,
