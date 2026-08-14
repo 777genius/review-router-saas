@@ -1045,8 +1045,13 @@ function sendActionError(
   format: ActionErrorFormat,
 ): unknown {
   const message = error instanceof Error ? error.message : "unknown_error";
-  const statusCode = statusCodeForActionError(message);
-  const code = safeActionErrorCode(message);
+  const requestValidationFailed = error instanceof z.ZodError;
+  const statusCode = requestValidationFailed
+    ? 400
+    : statusCodeForActionError(message);
+  const code = requestValidationFailed
+    ? "invalid_action_request"
+    : safeActionErrorCode(message);
   if (process.env.REVIEW_ROUTER_DEBUG_ACTION_ERRORS === "1") {
     console.error(
       JSON.stringify({
