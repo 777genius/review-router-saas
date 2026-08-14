@@ -36,6 +36,7 @@ requireGitHubAuth();
 requireFeatureFlag();
 requireSafeReviewMode(reviewMode);
 requireApiUrl();
+requireDatabaseRecoveryWitness();
 requirePinnedActionRef();
 requireAuthInput();
 forbidRawSessionEnv();
@@ -248,6 +249,15 @@ function requireApiUrl() {
   if (isLoopbackHostname(parsed.hostname)) {
     errors.push(
       "Live E2E API URL must not be localhost because GitHub-hosted runners must reach it.",
+    );
+  }
+}
+
+function requireDatabaseRecoveryWitness() {
+  const value = read("REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS");
+  if (!/^[A-Za-z0-9_-]{43,256}$/u.test(value)) {
+    errors.push(
+      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS must be available to live E2E as 43-256 base64url characters.",
     );
   }
 }

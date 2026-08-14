@@ -28,6 +28,7 @@ try {
     REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES:
       "777genius/rr-codex-rotating-e2e-private",
     REVIEW_ROUTER_CODEX_ROTATING_E2E_DISPOSABLE_REPOSITORY_ID: "424242",
+    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "w".repeat(43),
     REVIEW_ROUTER_LIVE_E2E_SMOKE_REPOSITORY_MODE: "existing",
     REVIEW_ROUTER_SUBSCRIPTION_RUNTIME_LIVE_E2E_SKIP_ENV_FILES: "1",
   };
@@ -47,6 +48,21 @@ try {
   }
   if (!prereq.stdout.includes("rr-codex-rotating-e2e-private:private")) {
     fail("check-only output should include private disposable target", prereq);
+  }
+
+  const missingRecoveryWitness = runCheckOnly(env, {
+    REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS: "",
+  });
+  if (
+    missingRecoveryWitness.status === 0 ||
+    !missingRecoveryWitness.stderr.includes(
+      "REVIEW_ROUTER_DATABASE_RECOVERY_WITNESS must be available",
+    )
+  ) {
+    fail(
+      "check-only must require the database recovery witness before mutation",
+      missingRecoveryWitness,
+    );
   }
 
   const existingWithoutId = runCheckOnly(env, {
