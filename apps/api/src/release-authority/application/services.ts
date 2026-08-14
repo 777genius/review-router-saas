@@ -18,8 +18,15 @@ import type {
 import { sha256Canonical } from "@reviewrouter/features-release-rollout";
 
 export type ExecuteFreshReleaseAuthorityMutation = <Result>(
+  target: ReleaseAuthorityMutationTarget,
   mutation: () => Promise<Result> | Result,
 ) => Promise<Result>;
+
+export type ReleaseAuthorityMutationTarget =
+  | "control"
+  | "provider"
+  | "installer"
+  | "reader";
 
 /** Application policy port for exclusive, freshly attested mutation sequences. */
 export interface ReleaseAuthorityHighRiskMutationGate {
@@ -32,7 +39,7 @@ export interface ReleaseAuthorityHighRiskMutationGate {
 
 const withoutHighRiskGate: ReleaseAuthorityHighRiskMutationGate = {
   execute: async (sequence) =>
-    await sequence(async (mutation) => await mutation()),
+    await sequence(async (_target, mutation) => await mutation()),
 };
 
 export class ReleaseAuthorityService {
@@ -56,30 +63,43 @@ export class ReleaseAuthorityService {
       ReleaseAuthorityLedgerPort["recordSourceFreezeMutation"]
     >[0],
   ) => this.repository.recordSourceFreezeMutation(input);
-  cas = (input: Parameters<ReleaseAuthorityLedgerPort["compareAndSet"]>[0]) =>
-    this.repository.compareAndSet(input);
-  markUncertain = (input: RolloutBinding) =>
-    this.repository.markActivationUncertain(input);
-  fenceTargetSwitch = (
+  cas = async (
+    input: Parameters<ReleaseAuthorityLedgerPort["compareAndSet"]>[0],
+  ) =>
+    this.highRiskGate.execute((executeFresh) =>
+      executeFresh("control", () => this.repository.compareAndSet(input)),
+    );
+  markUncertain = async (input: RolloutBinding) =>
+    this.highRiskGate.execute((executeFresh) =>
+      executeFresh("control", () =>
+        this.repository.markActivationUncertain(input),
+      ),
+    );
+  fenceTargetSwitch = async (
     input: RolloutBinding & { previousReceiptSha256: string },
-  ) => this.repository.fenceTargetSwitch(input);
+  ) =>
+    this.highRiskGate.execute((executeFresh) =>
+      executeFresh("control", () => this.repository.fenceTargetSwitch(input)),
+    );
   authorizeActivation = async (
     input: Parameters<ReleaseAuthorityLedgerPort["authorizeActivation"]>[0],
   ) =>
     await this.highRiskGate.execute((executeFresh) =>
-      executeFresh(() => this.repository.authorizeActivation(input)),
+      executeFresh("control", () => this.repository.authorizeActivation(input)),
     );
   authorizeAndInstall = (
     input: Parameters<ReleaseAuthorityLedgerPort["authorizeActivation"]>[0],
   ) =>
     this.highRiskGate.execute(async (executeFresh) => {
-      const authorization = await executeFresh(() =>
+      const authorization = await executeFresh("control", () =>
         this.repository.authorizeActivation(input),
       );
       const permitInstaller = this.permitInstaller;
       if (!permitInstaller)
         throw new Error("activation_permit_installer_unavailable");
-      await executeFresh(() => permitInstaller.install(authorization));
+      await executeFresh("installer", () =>
+        permitInstaller.install(authorization),
+      );
       return authorization;
     });
   finalize = async (
@@ -132,7 +152,7 @@ export class ReleaseAuthorityService {
     )
       throw new Error("target_activation_receipt_mismatch");
     return this.highRiskGate.execute((executeFresh) =>
-      executeFresh(() => this.repository.finalizeActivation(input)),
+      executeFresh("control", () => this.repository.finalizeActivation(input)),
     );
   };
   state = (
@@ -150,10 +170,18 @@ export class ReleaseAuthorityService {
 }
 
 export class ProviderAuthorityDecisionService {
-  constructor(private readonly repository: ReleaseAuthorityLedgerPort) {}
-  decide = (
+  constructor(
+    private readonly repository: ReleaseAuthorityLedgerPort,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate = withoutHighRiskGate,
+  ) {}
+  decide = async (
     input: Parameters<ReleaseAuthorityLedgerPort["decideProviderOperation"]>[0],
-  ) => this.repository.decideProviderOperation(input);
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh("provider", () =>
+        this.repository.decideProviderOperation(input),
+      ),
+    );
 }
 
 export class RunnerOperationsService {
@@ -263,19 +291,19 @@ export class ProviderMutationAuthorityService {
     input: Parameters<ReleaseProviderMutationAuthorityPort["recover"]>[0],
   ) =>
     await this.highRiskGate.execute((executeFresh) =>
-      executeFresh(() => this.repository.recover(input)),
+      executeFresh("control", () => this.repository.recover(input)),
     );
   issue = async (
     input: Parameters<ReleaseProviderMutationAuthorityPort["issue"]>[0],
   ) =>
     await this.highRiskGate.execute((executeFresh) =>
-      executeFresh(() => this.repository.issue(input)),
+      executeFresh("control", () => this.repository.issue(input)),
     );
   consume = async (
     input: Parameters<ReleaseProviderMutationAuthorityPort["consume"]>[0],
   ) =>
     await this.highRiskGate.execute((executeFresh) =>
-      executeFresh(() => this.repository.consume(input)),
+      executeFresh("control", () => this.repository.consume(input)),
     );
   validateExecution = async (
     input: Parameters<
@@ -283,19 +311,19 @@ export class ProviderMutationAuthorityService {
     >[0],
   ) =>
     await this.highRiskGate.execute((executeFresh) =>
-      executeFresh(() => this.repository.validateExecution(input)),
+      executeFresh("control", () => this.repository.validateExecution(input)),
     );
   complete = async (
     input: Parameters<ReleaseProviderMutationAuthorityPort["complete"]>[0],
   ) =>
     await this.highRiskGate.execute((executeFresh) =>
-      executeFresh(() => this.repository.complete(input)),
+      executeFresh("control", () => this.repository.complete(input)),
     );
   reconcile = async (
     input: Parameters<ReleaseProviderMutationAuthorityPort["reconcile"]>[0],
   ) =>
     await this.highRiskGate.execute((executeFresh) =>
-      executeFresh(() => this.repository.reconcile(input)),
+      executeFresh("control", () => this.repository.reconcile(input)),
     );
 }
 
@@ -303,17 +331,25 @@ export class ReleaseRolloutReconciliationService {
   constructor(
     private readonly repository: ReleaseRolloutReconciliationPort,
     private readonly targetReceiptReader?: TargetActivationReceiptReaderPort,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate = withoutHighRiskGate,
   ) {}
+
+  private write = (
+    input: Parameters<ReleaseRolloutReconciliationPort["reconcile"]>[0],
+  ) =>
+    this.highRiskGate.execute((executeFresh) =>
+      executeFresh("control", () => this.repository.reconcile(input)),
+    );
 
   reconcile = async (rolloutId: string) => {
     const context = await this.repository.context(rolloutId);
     if (context.activationBoundary !== "uncertain")
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "not_required" },
       });
     if (!this.targetReceiptReader)
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "target_read_unavailable" },
       });
@@ -322,25 +358,25 @@ export class ReleaseRolloutReconciliationService {
     try {
       target = await this.targetReceiptReader.read(rolloutId);
     } catch {
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "target_read_unavailable" },
       });
     }
     if (target && "receiptAbsent" in target)
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "activation_absent_without_revocation" },
       });
     if (!target)
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "target_receipt_absent" },
       });
 
     const authorization = context.authorization;
     if (!authorization || !targetMatchesAuthorization(target, authorization))
-      return this.repository.reconcile({
+      return this.write({
         rolloutId,
         targetObservation: { kind: "target_receipt_conflict" },
       });
@@ -349,7 +385,7 @@ export class ReleaseRolloutReconciliationService {
       authorization,
       target,
     );
-    return this.repository.reconcile({
+    return this.write({
       rolloutId,
       targetObservation: {
         kind: "matching_activation_receipt",

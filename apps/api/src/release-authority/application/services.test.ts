@@ -6,11 +6,14 @@ import type {
 import { sha256Canonical } from "@reviewrouter/features-release-rollout";
 import {
   ReleaseAuthorityService,
+  ProviderAuthorityDecisionService,
+  ProviderMutationAuthorityService,
   ReleaseRolloutReconciliationService,
   RunnerOperationsService,
   type ActivationPermitInstallerPort,
   type ReleaseAuthorityHighRiskMutationGate,
   type ReleaseAuthorityLedgerPort,
+  type ReleaseProviderMutationAuthorityPort,
   type ReleaseRolloutReconciliationPort,
   type RunnerOperationsLedgerPort,
   type TargetActivationFacts,
@@ -171,6 +174,64 @@ describe("independent target activation receipt verification", () => {
 });
 
 describe("high-risk activation mutation policy", () => {
+  it("places provider-authority decisions inside the high-risk boundary", async () => {
+    const events: string[] = [];
+    const repository = {
+      decideProviderOperation: vi.fn(async () => {
+        events.push("provider-write");
+        return { decision: "allowed" };
+      }),
+    } as unknown as ReleaseAuthorityLedgerPort;
+    const gate: ReleaseAuthorityHighRiskMutationGate = {
+      execute: async (sequence) =>
+        sequence(async (target, mutation) => {
+          events.push(`${target}-attested`);
+          return mutation();
+        }),
+    };
+
+    await new ProviderAuthorityDecisionService(repository, gate).decide(
+      {} as never,
+    );
+
+    expect(events).toEqual(["provider-attested", "provider-write"]);
+  });
+
+  it("places every durable provider mutation authority write inside the control boundary", async () => {
+    const methods = [
+      "recover",
+      "issue",
+      "consume",
+      "validateExecution",
+      "complete",
+      "reconcile",
+    ] as const;
+    const events: string[] = [];
+    const repository = Object.fromEntries(
+      methods.map((method) => [
+        method,
+        vi.fn(async () => {
+          events.push(`${method}-write`);
+          return method === "validateExecution" ? true : {};
+        }),
+      ]),
+    ) as unknown as ReleaseProviderMutationAuthorityPort;
+    const gate: ReleaseAuthorityHighRiskMutationGate = {
+      execute: async (sequence) =>
+        sequence(async (target, mutation) => {
+          events.push(`${target}-attested`);
+          return mutation();
+        }),
+    };
+    const service = new ProviderMutationAuthorityService(repository, gate);
+
+    for (const method of methods) await service[method]({} as never);
+
+    expect(events).toEqual(
+      methods.flatMap((method) => ["control-attested", `${method}-write`]),
+    );
+  });
+
   it("owns one fresh attestation immediately before each authorization and installation write", async () => {
     const events: string[] = [];
     const repository = {
@@ -187,8 +248,8 @@ describe("high-risk activation mutation policy", () => {
     };
     const gate: ReleaseAuthorityHighRiskMutationGate = {
       execute: async (sequence) =>
-        await sequence(async (mutation) => {
-          events.push("attested");
+        await sequence(async (target, mutation) => {
+          events.push(`${target}-attested`);
           return await mutation();
         }),
     };
@@ -201,9 +262,9 @@ describe("high-risk activation mutation policy", () => {
     ).authorizeAndInstall({} as never);
 
     expect(events).toEqual([
-      "attested",
+      "control-attested",
       "authority-write",
-      "attested",
+      "installer-attested",
       "target-write",
     ]);
   });
@@ -224,8 +285,8 @@ describe("high-risk activation mutation policy", () => {
     };
     const gate: ReleaseAuthorityHighRiskMutationGate = {
       execute: async (sequence) =>
-        await sequence(async (mutation) => {
-          events.push("attested");
+        await sequence(async (target, mutation) => {
+          events.push(`${target}-attested`);
           return await mutation();
         }),
     };
@@ -237,7 +298,39 @@ describe("high-risk activation mutation policy", () => {
       gate,
     ).finalize(finalizeInput);
 
-    expect(events).toEqual(["target-read", "attested", "authority-write"]);
+    expect(events).toEqual([
+      "target-read",
+      "control-attested",
+      "authority-write",
+    ]);
+  });
+
+  it("attests activation state transitions through the control authority connection", async () => {
+    const targets: string[] = [];
+    const repository = {
+      compareAndSet: vi.fn().mockResolvedValue(true),
+      markActivationUncertain: vi.fn().mockResolvedValue(true),
+      fenceTargetSwitch: vi.fn().mockResolvedValue({ fenced: true }),
+    } as unknown as ReleaseAuthorityLedgerPort;
+    const gate: ReleaseAuthorityHighRiskMutationGate = {
+      execute: async (sequence) =>
+        sequence(async (target, mutation) => {
+          targets.push(target);
+          return mutation();
+        }),
+    };
+    const authority = new ReleaseAuthorityService(
+      repository,
+      undefined,
+      undefined,
+      gate,
+    );
+
+    await authority.cas({} as never);
+    await authority.markUncertain({} as never);
+    await authority.fenceTargetSwitch({} as never);
+
+    expect(targets).toEqual(["control", "control", "control"]);
   });
 });
 
@@ -268,6 +361,29 @@ describe("target-aware uncertain activation reconciliation", () => {
     );
     return reconcile.mock.calls[0]?.[0];
   };
+
+  it("places the reconciliation write inside the control authority boundary", async () => {
+    const targets: string[] = [];
+    const repository = {
+      context: vi.fn().mockResolvedValue(context),
+      reconcile: vi.fn().mockResolvedValue({ state: "result" }),
+    } as unknown as ReleaseRolloutReconciliationPort;
+    const gate: ReleaseAuthorityHighRiskMutationGate = {
+      execute: async (sequence) =>
+        sequence(async (target, mutation) => {
+          targets.push(target);
+          return mutation();
+        }),
+    };
+
+    await new ReleaseRolloutReconciliationService(
+      repository,
+      { read: vi.fn().mockResolvedValue(null) },
+      gate,
+    ).reconcile(authorization.rolloutId);
+
+    expect(targets).toEqual(["control"]);
+  });
 
   it("reconstructs the exact immutable receipt chain from matching target facts", async () => {
     const input = await reconcileWith(targetFacts);

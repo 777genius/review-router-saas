@@ -230,6 +230,110 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
 fi
 wait "$upgrade_gate_pid"
 
+# The runtime atomic-attestation protocol takes a shared transaction lock on
+# the same key as the migration owner. Exercise both the authority-catalog and
+# activation-catalog keys through independent sessions (the database-visible
+# equivalent of concurrent replicas). A migration that races after evidence
+# is read cannot drift the catalog until the protected mutation commits.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+  "CREATE TABLE public.atomic_attestation_catalog(value text NOT NULL);
+   INSERT INTO public.atomic_attestation_catalog VALUES ('canonical');
+   CREATE TABLE public.atomic_attestation_events(
+     ordinal bigserial PRIMARY KEY, event text NOT NULL
+   );" >/dev/null
+for atomic_lock_objid in 1381258071 1129271120; do
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+    "TRUNCATE public.atomic_attestation_events;
+     UPDATE public.atomic_attestation_catalog SET value='canonical';" >/dev/null
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+    "BEGIN;
+     SET LOCAL lock_timeout='500ms';
+     SET LOCAL statement_timeout='3000ms';
+     SELECT pg_advisory_xact_lock_shared(1381126735,$atomic_lock_objid);
+     DO \$attest\$ BEGIN
+       IF (SELECT value FROM public.atomic_attestation_catalog) <> 'canonical'
+       THEN RAISE EXCEPTION 'stale catalog evidence'; END IF;
+     END \$attest\$;
+     SELECT pg_sleep(0.5);
+     INSERT INTO public.atomic_attestation_events(event) VALUES ('runtime_mutation');
+     COMMIT;" >/dev/null &
+  atomic_runtime_pid=$!
+  for _ in $(seq 1 40); do
+    if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+        "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory'
+         AND classid=1381126735 AND objid=$atomic_lock_objid
+         AND mode='ShareLock' AND granted)")" = t; then
+      break
+    fi
+    sleep 0.05
+  done
+  test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory'
+     AND classid=1381126735 AND objid=$atomic_lock_objid
+     AND mode='ShareLock' AND granted)")" = t
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+    "BEGIN;
+     SET LOCAL lock_timeout='2000ms';
+     SET LOCAL statement_timeout='3000ms';
+     SELECT pg_advisory_xact_lock(1381126735,$atomic_lock_objid);
+     UPDATE public.atomic_attestation_catalog SET value='drifted';
+     INSERT INTO public.atomic_attestation_events(event) VALUES ('migration_drift');
+     COMMIT;" >/dev/null &
+  atomic_migration_pid=$!
+  wait "$atomic_runtime_pid"
+  wait "$atomic_migration_pid"
+  test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+    "SELECT string_agg(event,',' ORDER BY ordinal) FROM public.atomic_attestation_events")" = \
+    runtime_mutation,migration_drift
+
+  # Runtime lock acquisition is bounded and fail-closed while a migration owns
+  # the exclusive side of the protocol; its mutation statement never executes.
+  docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+    "BEGIN; SELECT pg_advisory_xact_lock(1381126735,$atomic_lock_objid);
+     SELECT pg_sleep(1); COMMIT;" >/dev/null &
+  atomic_exclusive_pid=$!
+  for _ in $(seq 1 40); do
+    if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+        "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory'
+         AND classid=1381126735 AND objid=$atomic_lock_objid
+         AND mode='ExclusiveLock' AND granted)")" = t; then
+      break
+    fi
+    sleep 0.05
+  done
+  test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory'
+     AND classid=1381126735 AND objid=$atomic_lock_objid
+     AND mode='ExclusiveLock' AND granted)")" = t
+  if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+    "BEGIN; SET LOCAL lock_timeout='100ms'; SET LOCAL statement_timeout='500ms';
+     SELECT pg_advisory_xact_lock_shared(1381126735,$atomic_lock_objid);
+     INSERT INTO public.atomic_attestation_events(event) VALUES ('forbidden_mutation');
+     COMMIT;" >/dev/null 2>&1; then
+    echo "runtime atomic attestation ignored its bounded migration lock" >&2
+    exit 1
+  fi
+  wait "$atomic_exclusive_pid"
+  test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+    "SELECT count(*) FROM public.atomic_attestation_events WHERE event='forbidden_mutation'")" = 0
+done
+
+# A mutation failure rolls back the callback write and releases its shared
+# transaction lock; no partially authorized event survives.
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+  "BEGIN; SET LOCAL lock_timeout='500ms'; SET LOCAL statement_timeout='1000ms';
+   SELECT pg_advisory_xact_lock_shared(1381126735,1381258071);
+   INSERT INTO public.atomic_attestation_events(event) VALUES ('rolled_back_mutation');
+   DO \$rollback\$ BEGIN RAISE EXCEPTION 'force atomic rollback'; END \$rollback\$;
+   COMMIT;" >/dev/null 2>&1; then
+  echo "failed atomic mutation unexpectedly committed" >&2
+  exit 1
+fi
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+  "SELECT count(*) FROM public.atomic_attestation_events WHERE event='rolled_back_mutation'")" = 0
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+  "DROP TABLE public.atomic_attestation_events, public.atomic_attestation_catalog" >/dev/null
+
 # Schema-scoped defaults are equally noncanonical on upgrade and the failed
 # transaction must leave the installed authority unchanged.
 for default_case in \

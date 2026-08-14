@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   activationAuthorityProvisioningSql,
+  atomicMigrationAndGrantSql,
   activationPrincipalRoleCapabilityMatrix,
   assertCanonicalRoleTopology,
   canonicalRoleTopologyObservationSql,
@@ -58,6 +59,8 @@ describe("application database release-authority isolation", () => {
     expect(sql).toContain("reviewrouter_activation.activation_permit");
     expect(sql).toContain("reviewrouter_activation.activation_receipt");
     expect(sql).toContain("reviewrouter_activation_permit_installer");
+    expect(sql).toContain("SET LOCAL lock_timeout = '5000ms'");
+    expect(sql).toContain("pg_advisory_xact_lock(1381126735, 1129271120)");
     expect(sql).toContain("external activation guard is not pre-provisioned");
     expect(sql).toContain(
       "REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM reviewrouter_activation_permit_installer",
@@ -287,6 +290,30 @@ describe("canonical exclusive release migration caller", () => {
     const provisioning = roleProvisioningSql(configuration);
     const grants = runtimeGrantSql(configuration);
     const activationAuthority = activationAuthorityProvisioningSql();
+    const atomicMigration = atomicMigrationAndGrantSql(configuration);
+    for (const migrationSql of [provisioning, grants, activationAuthority]) {
+      expect(migrationSql).toContain(
+        "pg_advisory_xact_lock(1381126735, 1129271120)",
+      );
+      expect(migrationSql).toContain("SET LOCAL lock_timeout = '5000ms'");
+    }
+    expect(atomicMigration).toContain(
+      "SELECT pg_advisory_lock(1381126735, 1129271120)",
+    );
+    expect(atomicMigration).toContain(
+      "\\! pnpm --filter @reviewrouter/platform-db db:migrate:deploy",
+    );
+    expect(atomicMigration).toContain("\\if :SHELL_ERROR");
+    expect(atomicMigration).toContain("\\quit :SHELL_EXIT_CODE");
+    expect(atomicMigration.indexOf("pg_advisory_lock")).toBeLessThan(
+      atomicMigration.indexOf("db:migrate:deploy"),
+    );
+    expect(atomicMigration.indexOf("db:migrate:deploy")).toBeLessThan(
+      atomicMigration.indexOf("BEGIN;"),
+    );
+    expect(atomicMigration.indexOf("COMMIT;")).toBeLessThan(
+      atomicMigration.indexOf("pg_advisory_unlock"),
+    );
     const observationSql = canonicalRoleTopologyObservationSql();
     const createdRoleIdentities = [
       ...provisioning.matchAll(/CREATE ROLE ([a-z_]+) ([^;]+);/gu),
@@ -702,8 +729,7 @@ describe("canonical exclusive release migration caller", () => {
     expect(calls.map((call) => call.step)).toEqual([
       "verify_release_authority",
       "migration_history_preflight",
-      "deploy_migrations",
-      "converge_runtime_grants",
+      "deploy_migrations_and_converge_grants",
       "verify_roles",
       "verify_database_generation",
     ]);
@@ -711,8 +737,7 @@ describe("canonical exclusive release migration caller", () => {
       calls.every(
         (call) =>
           call.args[0]?.includes("reviewrouter_release_migration") ||
-          call.step === "migration_history_preflight" ||
-          call.step === "deploy_migrations",
+          call.step === "migration_history_preflight",
       ),
     ).toBe(true);
     expect(

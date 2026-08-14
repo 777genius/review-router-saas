@@ -66,16 +66,54 @@ const createReleaseWitnessApp = (
     readinessObserver: input.readinessObserver ?? testReadinessObserver,
   });
 
+const withAtomicTestTransaction = (prisma: PrismaClient): PrismaClient => {
+  if (
+    typeof prisma.$transaction === "function" ||
+    !(prisma.$queryRaw as unknown as { atomicTest?: boolean } | undefined)
+      ?.atomicTest
+  )
+    return prisma;
+  return Object.assign(prisma, {
+    $transaction: async (
+      operation: (connection: {
+        $queryRaw: PrismaClient["$queryRaw"];
+        $executeRawUnsafe: PrismaClient["$executeRawUnsafe"];
+      }) => Promise<unknown>,
+    ) =>
+      operation({
+        $queryRaw: prisma.$queryRaw,
+        $executeRawUnsafe: vi.fn().mockResolvedValue(0),
+      }),
+  });
+};
+
 const createReleaseControlApp = (
   input: Parameters<typeof createReleaseControlAppBase>[0],
 ) =>
   createReleaseControlAppBase({
     ...input,
+    controlPrisma: withAtomicTestTransaction(input.controlPrisma),
+    providerAuthorityPrisma: withAtomicTestTransaction(
+      input.providerAuthorityPrisma,
+    ),
+    permitInstallerPrisma: withAtomicTestTransaction(
+      input.permitInstallerPrisma,
+    ),
+    targetReceiptReaderPrisma: withAtomicTestTransaction(
+      input.targetReceiptReaderPrisma,
+    ),
     deploymentRevision: input.deploymentRevision ?? "0".repeat(40),
     artifactDigest: input.artifactDigest ?? `sha256:${"0".repeat(64)}`,
     trustedDatabaseIdentity:
       input.trustedDatabaseIdentity ?? trustedDatabaseIdentity,
     readinessObserver: input.readinessObserver ?? testReadinessObserver,
+    atomicReadinessObserver:
+      input.atomicReadinessObserver ??
+      (testReadinessObserver as NonNullable<
+        Parameters<
+          typeof createReleaseControlAppBase
+        >[0]["atomicReadinessObserver"]
+      >),
   });
 
 const authorityReadiness = (
@@ -273,9 +311,23 @@ type QueryOperation = (query: { text?: string }) => unknown;
 const readinessQuery = (
   value: readonly unknown[],
   operation: QueryOperation = () => undefined,
-) =>
-  vi.fn((query: { text?: string }) => {
+) => {
+  const query = vi.fn((query: { text?: string }) => {
     const sql = String(query?.text);
+    if (sql.includes("set_config") || sql.includes("pg_advisory_xact_lock"))
+      return Promise.resolve([{ locked: true }]);
+    if (sql.includes('current_user AS "roleName"')) {
+      const readiness = value[0] as ReleaseAuthorityDatabaseReadiness;
+      return Promise.resolve([
+        {
+          roleName: readiness.roleName,
+          serverIdentity: readiness.databaseIdentity.serverIdentity,
+          databaseIdentity: readiness.databaseIdentity.databaseIdentity,
+          databaseName: readiness.databaseIdentity.databaseName,
+          postgresMajor: readiness.postgresMajor,
+        },
+      ]);
+    }
     if (sql.includes('AS "authorityPresent"')) {
       const readiness = value[0] as Record<string, unknown>;
       return Promise.resolve([
@@ -300,6 +352,8 @@ const readinessQuery = (
       ? Promise.resolve(value)
       : operation(query);
   });
+  return Object.assign(query, { atomicTest: true });
+};
 
 const createReleaseControlHealthApp = async (
   controlOverrides: Record<string, unknown> = {},

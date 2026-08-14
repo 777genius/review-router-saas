@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { releaseAuthoritySchemaVersion } from "@reviewrouter/features-release-rollout";
 import {
   releaseControlDatabaseSetIsReady,
+  releaseControlMutationDatabaseIsReady,
   releaseAuthoritySchemaIsReady,
   type ReleaseAuthorityDatabaseReadiness,
 } from "./readiness";
@@ -68,6 +69,45 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
 describe("release authority exact readiness contract", () => {
   it("accepts the canonical contract", () => {
     expect(releaseAuthoritySchemaIsReady(canonical())).toBe(true);
+  });
+
+  it("admits an authority mutation only from its exact role, identity, and catalog", () => {
+    const readiness = canonical();
+    const trusted = {
+      authorityDatabaseIdentity: readiness.databaseIdentity,
+      targetDatabaseIdentity: {
+        serverIdentity: "2",
+        databaseIdentity: "20",
+        databaseName: "target",
+      },
+      authorityOwnerRoleName: readiness.authorityOwnerRoleName,
+      activationGuardRoleName: "reviewrouter_activation_receipt_guard",
+      installerRoutineBodySha256: "a".repeat(64),
+      readerRoutineBodySha256: "b".repeat(64),
+      targetMigrationManifestIdentity: `sha256:${"c".repeat(64)}`,
+      activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
+    };
+    expect(releaseControlMutationDatabaseIsReady(readiness, trusted)).toBe(
+      true,
+    );
+    expect(
+      releaseControlMutationDatabaseIsReady(
+        { ...readiness, catalogExact: false },
+        trusted,
+      ),
+    ).toBe(false);
+    expect(
+      releaseControlMutationDatabaseIsReady(
+        {
+          ...readiness,
+          databaseIdentity: {
+            ...readiness.databaseIdentity,
+            databaseName: "rerouted",
+          },
+        },
+        trusted,
+      ),
+    ).toBe(false);
   });
 
   it("anchors a database set to independent identities and exact activation bodies", () => {

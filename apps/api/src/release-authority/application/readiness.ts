@@ -187,3 +187,60 @@ export function releaseControlDatabaseSetIsReady(
     reader.activationRuntimePrivilegesExact
   );
 }
+
+/** Exact policy for the database connection that performs one high-risk write. */
+export function releaseControlMutationDatabaseIsReady(
+  readiness: ReleaseAuthorityDatabaseReadiness,
+  trusted: TrustedReleaseControlDatabaseIdentity,
+): boolean {
+  if (
+    readiness.postgresMajor !== 17 ||
+    readiness.systemIdentifier !== readiness.databaseIdentity.serverIdentity
+  )
+    return false;
+  switch (readiness.roleName) {
+    case "reviewrouter_release_control":
+    case "reviewrouter_provider_authority":
+      return (
+        runtimeDatabaseIdentityEquals(
+          readiness.databaseIdentity,
+          trusted.authorityDatabaseIdentity,
+        ) &&
+        readiness.authorityOwnerRoleName === trusted.authorityOwnerRoleName &&
+        releaseAuthoritySchemaIsReady(readiness)
+      );
+    case "reviewrouter_activation_permit_installer":
+      return (
+        runtimeDatabaseIdentityEquals(
+          readiness.databaseIdentity,
+          trusted.targetDatabaseIdentity,
+        ) &&
+        readiness.installerRoutine &&
+        readiness.installerRoutineBodySha256 ===
+          trusted.installerRoutineBodySha256 &&
+        readiness.applicationMigrationManifestIdentity ===
+          trusted.targetMigrationManifestIdentity &&
+        readiness.activationNamespaceFingerprint ===
+          trusted.activationNamespaceFingerprint &&
+        readiness.activationGuardExact &&
+        readiness.activationRuntimePrivilegesExact
+      );
+    case "reviewrouter_activation_receipt_reader":
+      return (
+        runtimeDatabaseIdentityEquals(
+          readiness.databaseIdentity,
+          trusted.targetDatabaseIdentity,
+        ) &&
+        readiness.readerRoutine &&
+        readiness.readerRoutineBodySha256 === trusted.readerRoutineBodySha256 &&
+        readiness.applicationMigrationManifestIdentity ===
+          trusted.targetMigrationManifestIdentity &&
+        readiness.activationNamespaceFingerprint ===
+          trusted.activationNamespaceFingerprint &&
+        readiness.activationGuardExact &&
+        readiness.activationRuntimePrivilegesExact
+      );
+    default:
+      return false;
+  }
+}

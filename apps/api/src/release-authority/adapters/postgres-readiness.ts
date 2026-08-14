@@ -10,7 +10,7 @@ import {
   releaseAuthorityFinalAclExactExpression,
 } from "./acl-policy-postgres.mjs";
 
-type ReadinessClient = Pick<
+export type ReleaseAuthorityReadinessConnection = Pick<
   Prisma.TransactionClient,
   "$queryRaw" | "$executeRawUnsafe"
 >;
@@ -62,8 +62,8 @@ const absentAuthorityReadiness = (
   authorityTablesRevoked: false,
 });
 
-const observeOnConnection = async (
-  prisma: ReadinessClient,
+export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
+  prisma: ReleaseAuthorityReadinessConnection,
   signal?: AbortSignal,
 ): Promise<ReleaseAuthorityDatabaseReadiness> => {
   signal?.throwIfAborted();
@@ -598,7 +598,10 @@ export async function observeReleaseAuthorityDatabaseReadiness(
           set_config('statement_timeout', ${`${statementTimeoutMilliseconds}ms`}, true),
           set_config('lock_timeout', ${`${lockTimeoutMilliseconds}ms`}, true)
       `);
-      return observeOnConnection(connection, options.signal);
+      return observeReleaseAuthorityDatabaseReadinessOnConnection(
+        connection,
+        options.signal,
+      );
     },
     {
       maxWait: poolWaitMilliseconds,

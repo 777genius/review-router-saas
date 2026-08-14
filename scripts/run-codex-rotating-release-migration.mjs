@@ -147,10 +147,14 @@ export function isActivationPrincipalRoleCapabilityPermitted(
 export const effectivePrincipalInventorySqlSha256 = createHash("sha256")
   .update(effectivePrincipalInventorySql)
   .digest("hex");
+const activationMigrationExclusionSql = `SET LOCAL lock_timeout = '5000ms';
+SET LOCAL statement_timeout = '120000ms';
+SELECT pg_advisory_xact_lock(1381126735, 1129271120);`;
 
 export function activationAuthorityProvisioningSql() {
   return `\\set ON_ERROR_STOP on
 BEGIN;
+${activationMigrationExclusionSql}
 DO $authority_roles$
 DECLARE guard pg_roles%ROWTYPE;
 DECLARE installer pg_roles%ROWTYPE;
@@ -1859,6 +1863,7 @@ $membership$;
     .join("\n");
   return `\\set ON_ERROR_STOP on
 BEGIN;
+${activationMigrationExclusionSql}
 DO $receipt_guard$
 DECLARE observed record;
 BEGIN
@@ -2554,6 +2559,7 @@ export function runtimeGrantSql(configuration, { gateClosed = false } = {}) {
     .join(",");
   return `\\set ON_ERROR_STOP on
 BEGIN;
+${activationMigrationExclusionSql}
 ${runtimeGrantStatements(configuration)}
 ${gateClosed ? runtimeAclGateStatements(configuration) : ""}
 DO $runtime_connect_acl$
@@ -2574,6 +2580,23 @@ COMMIT;
 `;
 }
 
+export function atomicMigrationAndGrantSql(
+  configuration,
+  { gateClosed = false } = {},
+) {
+  return `\\set ON_ERROR_STOP on
+SET lock_timeout = '5000ms';
+SET statement_timeout = '120000ms';
+SELECT pg_advisory_lock(1381126735, 1129271120);
+\\! pnpm --filter @reviewrouter/platform-db db:migrate:deploy
+\\if :SHELL_ERROR
+  \\quit :SHELL_EXIT_CODE
+\\endif
+${runtimeGrantSql(configuration, { gateClosed })}
+SELECT pg_advisory_unlock(1381126735, 1129271120);
+`;
+}
+
 export function canonicalActivatedPrincipalInventoryPreviewSql(
   configuration,
   principalInventorySql,
@@ -2586,6 +2609,7 @@ export function canonicalActivatedPrincipalInventoryPreviewSql(
     throw new Error("release_migration_principal_inventory_sql_invalid");
   return `\\set ON_ERROR_STOP on
 BEGIN;
+${activationMigrationExclusionSql}
 ${runtimeGrantStatements(configuration)}
 ${principalInventorySql};
 ROLLBACK;
@@ -2609,6 +2633,7 @@ export function canonicalActivationSql(configuration, activation) {
   return {
     sql: `\\set ON_ERROR_STOP on
 BEGIN;
+${activationMigrationExclusionSql}
 SELECT reviewrouter_activation.stage_principal_evidence(
   ${literal(activation.rolloutId)}
 );
@@ -2658,6 +2683,7 @@ export function runReleaseMigrationSubprocess(
         });
       }
       const passfile = join(directory, "pgpass");
+      const credentialPath = join(directory, "database-url");
       const escape = (value) =>
         value.replaceAll("\\", "\\\\").replaceAll(":", "\\:");
       writeFileSync(
@@ -2665,6 +2691,10 @@ export function runReleaseMigrationSubprocess(
         `${escape(url.hostname)}:${escape(url.port || "5432")}:${escape(decodeURIComponent(url.pathname.slice(1)))}:${escape(decodeURIComponent(url.username))}:${escape(decodeURIComponent(url.password))}\n`,
         { mode: 0o600, flag: "wx" },
       );
+      writeFileSync(credentialPath, databaseUrl, {
+        mode: 0o600,
+        flag: "wx",
+      });
       childArgs.splice(
         urlIndex,
         1,
@@ -2684,6 +2714,7 @@ export function runReleaseMigrationSubprocess(
         PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
         LANG: "C.UTF-8",
         PGPASSFILE: passfile,
+        REVIEW_ROUTER_DATABASE_URL_FILE: credentialPath,
         ...(url.searchParams.get("sslmode")
           ? { PGSSLMODE: url.searchParams.get("sslmode") }
           : {}),
@@ -2830,18 +2861,12 @@ export function executeCanonicalReleaseMigration(
     { env: childEnv },
   );
   run(
-    "deploy_migrations",
-    "pnpm",
-    ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"],
-    { env: childEnv },
-  );
-  run(
-    "converge_runtime_grants",
+    "deploy_migrations_and_converge_grants",
     "psql",
     [configuration.releaseUrl, "--no-psqlrc", "--quiet"],
     {
       env: childEnv,
-      input: runtimeGrantSql(configuration, {
+      input: atomicMigrationAndGrantSql(configuration, {
         gateClosed: env.REVIEW_ROUTER_RELEASE_ACL_GATE_MODE === "closed",
       }),
     },
