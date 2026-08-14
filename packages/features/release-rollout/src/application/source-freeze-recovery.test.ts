@@ -98,7 +98,11 @@ function harness() {
     suspended: false,
     configurationSha256: `sha256:${"c".repeat(64)}`,
     environmentSha256: `sha256:${"d".repeat(64)}`,
-    provenance: { kind: "source_revision" as const, revision: "f".repeat(40) },
+    provenance: {
+      kind: "source_revision" as const,
+      revision: "f".repeat(40),
+      deploymentId: "dep-source",
+    },
   };
   const providerIo = vi.fn(async () => observed);
   const provider = {

@@ -78,6 +78,7 @@ export interface ObservedProviderPostcondition {
 }
 
 export type ProviderMutationResultIdentity =
+  | Readonly<{ kind: "service"; id: string }>
   | Readonly<{
       kind: "environment";
       environmentSha256: string;

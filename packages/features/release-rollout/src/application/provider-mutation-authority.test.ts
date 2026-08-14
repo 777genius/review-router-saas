@@ -105,6 +105,7 @@ const execute = (
       .mockResolvedValueOnce(observed(before))
       .mockResolvedValue(observed(after)),
     mutate: vi.fn().mockResolvedValue(undefined),
+    identifyResult: () => ({ kind: "service", id: resource.id }),
     ...overrides,
   });
 
@@ -191,7 +192,10 @@ describe("authority-serialized provider mutation", () => {
 
   it("returns a durable terminal outcome after a lost completion response", async () => {
     const authority = new FakeAuthority();
-    const observation = observed(after);
+    const observation = {
+      ...observed(after),
+      resultIdentity: { kind: "service" as const, id: resource.id },
+    };
     const mutate = vi.fn();
     authority.recovery = {
       status: "terminal",
@@ -211,7 +215,9 @@ describe("authority-serialized provider mutation", () => {
         completedAt: "2026-08-14T00:00:02.000Z",
       },
     };
-    await expect(execute(authority, { mutate })).resolves.toMatchObject({
+    await expect(
+      execute(authority, { mutate, observe: async () => observed(after) }),
+    ).resolves.toMatchObject({
       status: "reconciled",
       observation,
     });

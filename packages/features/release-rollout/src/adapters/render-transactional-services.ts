@@ -10,6 +10,7 @@ import {
 } from "../domain/service-transition";
 import type {
   EnvironmentMutationOutcome,
+  ExpectedSourceDeployment,
   TransactionalServiceProvider,
 } from "../application/service-transition-ports";
 import {
@@ -227,7 +228,11 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
               deploymentId: live.id,
             }
           : live.commit
-            ? { kind: "source_revision", revision: live.commit.id }
+            ? {
+                kind: "source_revision",
+                revision: live.commit.id,
+                deploymentId: live.id,
+              }
             : (() => {
                 throw new Error("service_transition_provenance_unproven");
               })(),
@@ -248,6 +253,7 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
   async resume(
     serviceId: string,
     expected: ObservedServiceState,
+    expectedDeployment: ExpectedSourceDeployment,
   ): Promise<void> {
     if (
       expected.serviceId !== serviceId ||
@@ -256,13 +262,21 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
       !expected.postcondition.suspended
     )
       throw new Error("service_transition_resume_postcondition_invalid");
-    const service = await this.api.getService(serviceId);
-    if (service.suspended !== "not_suspended") {
-      const { mutations, context } = this.mutation(
-        `service_resume:${serviceId}`,
-      );
-      await mutations.resumeExact(context, expected.postcondition);
-    }
+    if (
+      expected.provenance.kind !== "source_revision" ||
+      expectedDeployment.provenance.kind !== "source_revision" ||
+      expected.provenance.deploymentId !== expectedDeployment.deploymentId ||
+      expected.provenance.revision !== expectedDeployment.provenance.revision
+    )
+      throw new Error("service_transition_resume_deployment_invalid");
+    const { mutations, context } = this.mutation(`service_resume:${serviceId}`);
+    await mutations.resumeExact(context, expected.postcondition, {
+      deployId: expectedDeployment.deploymentId,
+      provenance: {
+        kind: "git",
+        commitSha: expectedDeployment.provenance.revision,
+      },
+    });
     const after = await this.observe(serviceId);
     if (
       !after.postcondition ||

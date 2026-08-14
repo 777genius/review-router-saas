@@ -155,6 +155,7 @@ const harness = (fail?: string, failOrdinal = 1) => {
         provenance: {
           kind: "source_revision" as const,
           revision: service.sourceRevision,
+          deploymentId: `source-${service.serviceId}`,
         },
       },
     ]),
@@ -385,6 +386,7 @@ const harness = (fail?: string, failOrdinal = 1) => {
       current.get(id)!.provenance = {
         kind: "source_revision" as const,
         revision,
+        deploymentId: `restore-${id}`,
       };
       return `restore-${id}`;
     }),
@@ -579,6 +581,7 @@ describe("transactional same-service cutover", () => {
       provenance: {
         kind: "source_revision",
         revision: "a".repeat(40),
+        deploymentId: "dep-wrong-environment",
       },
     });
     await expect(
@@ -644,6 +647,22 @@ describe("transactional same-service cutover", () => {
       expect(
         test.provider.resume.mock.calls.map(([serviceId]) => serviceId),
       ).toEqual([...durableServiceIds]);
+      if (durableServiceIds.includes("srv-web"))
+        expect(test.provider.resume).toHaveBeenCalledWith(
+          "srv-web",
+          expect.objectContaining({
+            provenance: expect.objectContaining({
+              deploymentId: "restore-srv-web",
+            }),
+          }),
+          {
+            deploymentId: "restore-srv-web",
+            provenance: {
+              kind: "source_revision",
+              revision: services[0]!.sourceRevision,
+            },
+          },
+        );
       expect(witness.serviceIds).toEqual([...durableServiceIds]);
       expect(witness.deployIds).toHaveLength(durableServiceIds.length);
     },
@@ -691,6 +710,37 @@ describe("transactional same-service cutover", () => {
       }),
     ).rejects.toThrow("service_transition_source_deploy_checkpoint_missing");
     expect(restoreSourceWritesAndVerify).not.toHaveBeenCalled();
+    expect(test.provider.resume).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["same-revision replacement", { deploymentId: "restore-srv-web-replaced" }],
+    ["wrong revision", { revision: "f".repeat(40) }],
+  ])("rejects source resume after %s", async (_name, provenancePatch) => {
+    const test = harness();
+    await test.cutover.stage({ source, protectedEnvironment, target });
+    await test.cutover.recover({ source, protectedEnvironment, target });
+    const observe = test.provider.observe.getMockImplementation()!;
+    test.provider.observe.mockImplementation(async (serviceId: string) => {
+      const value = await observe(serviceId);
+      return serviceId === "srv-web" &&
+        value.provenance.kind === "source_revision"
+        ? {
+            ...value,
+            provenance: { ...value.provenance, ...provenancePatch },
+          }
+        : value;
+    });
+
+    await expect(
+      test.cutover.finalizeAuthorizedSourceRecovery({
+        source,
+        protectedEnvironment,
+        target,
+        sourceWriterServiceIds: ["srv-web"],
+        restoreSourceWritesAndVerify: vi.fn(async () => undefined),
+      }),
+    ).rejects.toThrow("service_transition_source_resume_precondition_drift");
     expect(test.provider.resume).not.toHaveBeenCalled();
   });
 

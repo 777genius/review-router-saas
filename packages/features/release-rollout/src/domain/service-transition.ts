@@ -59,7 +59,11 @@ export type TargetServiceRelease = Readonly<{
 }>;
 
 export type ServiceDeploymentProvenance =
-  | Readonly<{ kind: "source_revision"; revision: string }>
+  | Readonly<{
+      kind: "source_revision";
+      revision: string;
+      deploymentId: string;
+    }>
   | Readonly<{
       kind: "container_image";
       reference: string;

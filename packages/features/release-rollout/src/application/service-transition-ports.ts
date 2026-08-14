@@ -23,10 +23,19 @@ export type EnvironmentMutationOutcome =
       observedEnvironmentSha256?: string;
     }>;
 
+export type ExpectedSourceDeployment = Readonly<{
+  deploymentId: string;
+  provenance: Readonly<{ kind: "source_revision"; revision: string }>;
+}>;
+
 export interface ServiceStatePort {
   observe(serviceId: string): Promise<ObservedServiceState>;
   suspend(serviceId: string): Promise<void>;
-  resume(serviceId: string, expected: ObservedServiceState): Promise<void>;
+  resume(
+    serviceId: string,
+    expected: ObservedServiceState,
+    expectedDeployment: ExpectedSourceDeployment,
+  ): Promise<void>;
   quiesceDeployments(serviceId: string): Promise<void>;
 }
 

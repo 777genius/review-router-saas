@@ -426,7 +426,8 @@ export class TransactionalServiceCutover {
         observed.configurationSha256 !== contract.configuration.sha256 ||
         observed.environmentSha256 !== contract.sourceEnvironmentSha256 ||
         observed.provenance.kind !== "source_revision" ||
-        observed.provenance.revision !== contract.sourceRevision
+        observed.provenance.revision !== contract.sourceRevision ||
+        observed.provenance.deploymentId !== deployId
       )
         throw new Error("service_transition_source_restore_unproven");
       await this.checkpoint(common, contract.serviceId, "source_verified", {
@@ -523,13 +524,21 @@ export class TransactionalServiceCutover {
             beforeResume.environmentSha256 !==
               service.sourceEnvironmentSha256 ||
             beforeResume.provenance.kind !== "source_revision" ||
-            beforeResume.provenance.revision !== service.sourceRevision
+            beforeResume.provenance.revision !== service.sourceRevision ||
+            beforeResume.provenance.deploymentId !==
+              verifiedDeployIds.get(service.serviceId)
           )
             throw new Error(
               "service_transition_source_resume_precondition_drift",
             );
           await executeAuthorized(() =>
-            this.provider.resume(service.serviceId, beforeResume),
+            this.provider.resume(service.serviceId, beforeResume, {
+              deploymentId: verifiedDeployIds.get(service.serviceId)!,
+              provenance: {
+                kind: "source_revision",
+                revision: service.sourceRevision,
+              },
+            }),
           );
           return this.provider.observe(service.serviceId);
         },
@@ -551,7 +560,9 @@ export class TransactionalServiceCutover {
         observed.configurationSha256 !== service.configuration.sha256 ||
         observed.environmentSha256 !== service.sourceEnvironmentSha256 ||
         observed.provenance.kind !== "source_revision" ||
-        observed.provenance.revision !== service.sourceRevision
+        observed.provenance.revision !== service.sourceRevision ||
+        observed.provenance.deploymentId !==
+          verifiedDeployIds.get(service.serviceId)
       )
         throw new Error("service_transition_source_resume_unproven");
       await this.checkpoint(common, service.serviceId, "source_resumed");

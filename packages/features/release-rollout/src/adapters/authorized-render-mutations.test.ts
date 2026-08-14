@@ -10,6 +10,8 @@ import {
   stableRenderMutationOwnerId,
 } from "./authorized-render-mutations";
 import type { RenderApiAdapter, RenderDeploy, RenderJob } from "./render-api";
+import { normalizeRenderServicePostcondition } from "./render-service-contract";
+import { environmentSha256 } from "../domain/service-transition";
 
 const sha = (value: unknown) =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
@@ -39,7 +41,7 @@ const terminalAuthority = (
         epoch: 1,
         permitId: "a".repeat(64),
         receiptId: "b".repeat(64),
-        expected: { fingerprint: sha("durable-pre-state"), version: null },
+        expected: input.expected,
         consumedAt: "2026-08-14T00:00:01.000Z",
         observation,
         completedAt: "2026-08-14T00:00:02.000Z",
@@ -114,7 +116,7 @@ describe("authorized Render typed replay", () => {
       }),
     ).resolves.toEqual({
       status: "applied",
-      previousEnvironmentSha256: sha("durable-pre-state"),
+      previousEnvironmentSha256: sha("before"),
       environmentSha256,
       environmentKeysSha256,
       replayed: true,
@@ -217,5 +219,139 @@ describe("authorized Render typed replay", () => {
         }),
       }),
     );
+  });
+});
+
+describe("authorized Render exact resume recovery", () => {
+  const context = {
+    rolloutId: "rollout-resume",
+    operation: "service_resume:srv-one",
+    ownerId: "random-process-owner",
+  };
+  const environment = [{ key: "SAFE", value: "value" }];
+  const service = (suspended: "suspended" | "not_suspended") => ({
+    id: "srv-one",
+    ownerId: "team-one",
+    type: "web_service",
+    suspended,
+    autoDeploy: "no" as const,
+    autoDeployTrigger: "off" as const,
+    repo: "https://example.test/repo.git",
+    branch: "main",
+    rootDir: "apps/api",
+    serviceDetails: {
+      runtime: "node",
+      region: "oregon",
+      plan: "starter",
+      maxShutdownDelaySeconds: 30,
+      numInstances: 1,
+      preDeployCommand: "",
+      envSpecificDetails: {
+        buildCommand: "pnpm build",
+        startCommand: "pnpm start",
+        healthCheckPath: "/health",
+      },
+    },
+  });
+  const expected = normalizeRenderServicePostcondition(
+    service("suspended"),
+    environmentSha256(environment),
+  );
+  const deployment = {
+    deployId: "dep-expected",
+    provenance: { kind: "git" as const, commitSha: "a".repeat(40) },
+  };
+  const onlineApi = (
+    deployId = deployment.deployId,
+    revision = deployment.provenance.commitSha,
+  ) =>
+    ({
+      getService: vi.fn().mockResolvedValue(service("not_suspended")),
+      listAllEnv: vi.fn().mockResolvedValue(environment),
+      listAllDeploys: vi
+        .fn()
+        .mockResolvedValue([
+          { id: deployId, status: "live", commit: { id: revision } },
+        ]),
+      resume: vi.fn(),
+    }) as unknown as RenderApiAdapter;
+
+  it("uses the stable owner and validates an already-online terminal replay", async () => {
+    const { authority, recover } = terminalAuthority({
+      kind: "service",
+      id: "srv-one",
+    });
+    const api = onlineApi();
+
+    await expect(
+      new AuthorizedRenderMutations(api, authority).resumeExact(
+        context,
+        expected,
+        deployment,
+      ),
+    ).resolves.toBeUndefined();
+    expect(recover.mock.calls[0]?.[0].ownerId).toBe(
+      stableRenderMutationOwnerId(context.rolloutId, context.operation),
+    );
+    expect(api.resume).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "same-revision replacement",
+      "dep-replacement",
+      deployment.provenance.commitSha,
+    ],
+    ["wrong revision", deployment.deployId, "b".repeat(40)],
+  ])("rejects terminal replay after %s", async (_name, deployId, revision) => {
+    const { authority } = terminalAuthority({ kind: "service", id: "srv-one" });
+    await expect(
+      new AuthorizedRenderMutations(
+        onlineApi(deployId, revision),
+        authority,
+      ).resumeExact(context, expected, deployment),
+    ).rejects.toThrow("provider_mutation_terminal_observation_unproven");
+  });
+
+  it("freshly reconciles an executing replay with exact deployment identity", async () => {
+    const reconcile = vi.fn();
+    const authority: ProviderMutationAuthorityPort = {
+      recover: vi.fn(async (input) => ({
+        status: "receipt" as const,
+        phase: "executing" as const,
+        reconciliationOnly: true,
+        receipt: {
+          rolloutId: input.rolloutId,
+          operation: input.operation,
+          resource: input.resource,
+          ownerId: input.ownerId,
+          epoch: 1,
+          permitId: "a".repeat(64),
+          receiptId: "b".repeat(64),
+          expected: input.expected,
+          consumedAt: "2026-08-14T00:00:01.000Z",
+        },
+      })),
+      issue: vi.fn(),
+      consume: vi.fn(),
+      validateExecution: vi.fn(),
+      complete: vi.fn(),
+      reconcile,
+    };
+    const api = onlineApi();
+    await new AuthorizedRenderMutations(api, authority).resumeExact(
+      context,
+      expected,
+      deployment,
+    );
+    expect(reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: "exact_postcondition",
+        observation: expect.objectContaining({
+          resultIdentity: { kind: "service", id: "srv-one" },
+        }),
+      }),
+    );
+    expect(api.resume).not.toHaveBeenCalled();
   });
 });

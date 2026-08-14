@@ -77,6 +77,7 @@ export class AuthoritySerializedMutation {
     identifyResult?: (
       observation: ObservedProviderPostcondition,
       receipt: MutationExecutionReceipt,
+      expectedIdentity?: ProviderMutationResultIdentity,
     ) => ProviderMutationResultIdentity | null;
   }): Promise<AuthorizedMutationOutcome> {
     const request = {
@@ -247,15 +248,16 @@ export class AuthoritySerializedMutation {
     throw new Error("provider_mutation_forward_repair_required");
   }
 
-  private terminalOutcome(
+  private async terminalOutcome(
     outcome: MutationTerminalOutcome,
     input: Parameters<AuthoritySerializedMutation["execute"]>[0],
-  ): AuthorizedMutationOutcome {
+  ): Promise<AuthorizedMutationOutcome> {
     if (
       outcome.rolloutId !== input.rolloutId ||
       outcome.operation !== input.operation ||
       outcome.ownerId !== input.ownerId ||
       !sameProviderResource(outcome.resource, input.resource) ||
+      !sameProviderState(outcome.expected, input.expected) ||
       (outcome.observation !== null &&
         !sameProviderResource(outcome.observation.resource, input.resource))
     )
@@ -268,20 +270,40 @@ export class AuthoritySerializedMutation {
             ? "provider_mutation_execution_not_authorized"
             : "provider_mutation_forward_repair_required",
       );
+    const receipt = {
+      rolloutId: outcome.rolloutId,
+      operation: outcome.operation,
+      resource: outcome.resource,
+      ownerId: outcome.ownerId,
+      epoch: outcome.epoch,
+      permitId: outcome.permitId,
+      receiptId: outcome.receiptId,
+      expected: outcome.expected,
+      consumedAt: outcome.consumedAt,
+    };
+    let observation: ObservedProviderPostcondition;
+    try {
+      observation = this.withResultIdentity(
+        await input.observe(),
+        input,
+        receipt,
+        outcome.observation.resultIdentity,
+      );
+    } catch {
+      throw new Error("provider_mutation_terminal_observation_unproven");
+    }
+    if (
+      !this.matchesPostcondition(observation, input.expectedPostcondition) ||
+      !outcome.observation.resultIdentity ||
+      !observation.resultIdentity ||
+      JSON.stringify(observation.resultIdentity) !==
+        JSON.stringify(outcome.observation.resultIdentity)
+    )
+      throw new Error("provider_mutation_terminal_observation_unproven");
     return {
       status: "reconciled",
-      receipt: {
-        rolloutId: outcome.rolloutId,
-        operation: outcome.operation,
-        resource: outcome.resource,
-        ownerId: outcome.ownerId,
-        epoch: outcome.epoch,
-        permitId: outcome.permitId,
-        receiptId: outcome.receiptId,
-        expected: outcome.expected,
-        consumedAt: outcome.consumedAt,
-      },
-      observation: outcome.observation,
+      receipt,
+      observation,
     };
   }
 
@@ -306,6 +328,7 @@ export class AuthoritySerializedMutation {
       identifyResult?: (
         observation: ObservedProviderPostcondition,
         receipt: MutationExecutionReceipt,
+        expectedIdentity?: ProviderMutationResultIdentity,
       ) => ProviderMutationResultIdentity | null;
     },
     receipt: MutationExecutionReceipt,
@@ -347,11 +370,17 @@ export class AuthoritySerializedMutation {
       identifyResult?: (
         observation: ObservedProviderPostcondition,
         receipt: MutationExecutionReceipt,
+        expectedIdentity?: ProviderMutationResultIdentity,
       ) => ProviderMutationResultIdentity | null;
     },
     receipt: MutationExecutionReceipt,
+    expectedIdentity?: ProviderMutationResultIdentity,
   ): ObservedProviderPostcondition {
-    const resultIdentity = input.identifyResult?.(observation, receipt);
+    const resultIdentity = input.identifyResult?.(
+      observation,
+      receipt,
+      expectedIdentity,
+    );
     return resultIdentity ? { ...observation, resultIdentity } : observation;
   }
 

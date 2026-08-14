@@ -262,6 +262,10 @@ export class AuthorizedRenderMutations {
     let attempted = false;
     await this.serialized.execute({
       ...context,
+      ownerId: stableRenderMutationOwnerId(
+        context.rolloutId,
+        context.operation,
+      ),
       resource: identity,
       expected: state({
         postcondition: expectedSuspended,
@@ -299,6 +303,7 @@ export class AuthorizedRenderMutations {
         attempted = true;
         await this.api.resume(serviceId);
       },
+      identifyResult: () => ({ kind: "service", id: serviceId }),
     });
   }
 
@@ -361,7 +366,7 @@ export class AuthorizedRenderMutations {
         if (result.status !== "applied")
           throw new Error(`render_environment_${result.status}`);
       },
-      identifyResult: (_observation, receipt) => {
+      identifyResult: (_observation, receipt, expectedIdentity) => {
         const env = latestEnvironment;
         if (
           !env ||
@@ -369,11 +374,15 @@ export class AuthorizedRenderMutations {
           environmentSha256(env) !== receipt.expected.version
         )
           return null;
-        return {
+        const identity = {
           kind: "environment",
           environmentSha256: environmentSha256(env),
           environmentKeysSha256: environmentKeysSha256(env),
-        };
+        } as const;
+        return expectedIdentity === undefined ||
+          JSON.stringify(identity) === JSON.stringify(expectedIdentity)
+          ? identity
+          : null;
       },
     });
     if (result?.status === "applied") return result;
@@ -415,10 +424,17 @@ export class AuthorizedRenderMutations {
       mutate: async () => {
         created = await this.api.createPinnedDeploy(serviceId, commitId);
       },
-      identifyResult: (_observation, receipt) => {
-        const match = created
-          ? latest.find((item) => item.id === created?.id)
-          : uniqueDeployAfter(latest, receipt.consumedAt, commitId);
+      identifyResult: (_observation, receipt, expectedIdentity) => {
+        const match =
+          expectedIdentity?.kind === "deploy"
+            ? latest.find(
+                (item) =>
+                  item.id === expectedIdentity.id &&
+                  (commitId === undefined || item.commit?.id === commitId),
+              )
+            : created
+              ? latest.find((item) => item.id === created?.id)
+              : uniqueDeployAfter(latest, receipt.consumedAt, commitId);
         return match ? { kind: "deploy", id: match.id } : null;
       },
     });
@@ -461,10 +477,18 @@ export class AuthorizedRenderMutations {
       mutate: async () => {
         created = await this.api.createJob(serviceId, input);
       },
-      identifyResult: (_observation, receipt) => {
-        const match = created
-          ? latest.find((item) => item.id === created?.id)
-          : uniqueJobAfter(latest, receipt.consumedAt, input);
+      identifyResult: (_observation, receipt, expectedIdentity) => {
+        const match =
+          expectedIdentity?.kind === "job"
+            ? latest.find(
+                (item) =>
+                  item.id === expectedIdentity.id &&
+                  item.startCommand === input.startCommand &&
+                  (item.planId ?? undefined) === input.planId,
+              )
+            : created
+              ? latest.find((item) => item.id === created?.id)
+              : uniqueJobAfter(latest, receipt.consumedAt, input);
         return match ? { kind: "job", id: match.id } : null;
       },
     });
@@ -519,6 +543,7 @@ export class AuthorizedRenderMutations {
         mutationAttempted = true;
         await mutate();
       },
+      identifyResult: () => ({ kind: "service", id: serviceId }),
     });
   }
 }
