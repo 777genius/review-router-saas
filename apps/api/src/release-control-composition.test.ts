@@ -161,11 +161,25 @@ const readinessQuery = (
   value: readonly unknown[],
   operation: QueryOperation = () => undefined,
 ) =>
-  vi.fn((query: { text?: string }) =>
-    String(query?.text).includes("WITH facts AS")
+  vi.fn((query: { text?: string }) => {
+    const sql = String(query?.text);
+    if (sql.includes('AS "authorityPresent"')) {
+      const readiness = value[0] as Record<string, unknown>;
+      return Promise.resolve([
+        {
+          roleName: readiness.roleName,
+          systemIdentifier: readiness.systemIdentifier,
+          postgresMajor: readiness.postgresMajor,
+          authorityPresent: readiness.schemaVersion === 10,
+          installerRoutine: readiness.installerRoutine,
+          readerRoutine: readiness.readerRoutine,
+        },
+      ]);
+    }
+    return sql.includes("WITH facts AS")
       ? Promise.resolve(value)
-      : operation(query),
-  );
+      : operation(query);
+  });
 
 const createReleaseControlHealthApp = (
   controlOverrides: Record<string, unknown> = {},

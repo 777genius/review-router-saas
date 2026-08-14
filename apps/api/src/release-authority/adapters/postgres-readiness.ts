@@ -2,24 +2,69 @@ import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { ReleaseAuthorityDatabaseReadiness } from "../application/readiness.js";
 import { releaseAuthorityCatalogVerifier } from "../domain/readiness-contract.mjs";
-import {
-  releaseAuthorityAclFingerprintSql,
-  releaseAuthorityCatalogDigestExpression,
-  releaseAuthorityCatalogFunctionSql,
-} from "./catalog-fingerprint.mjs";
+import { releaseAuthorityReadOnlyCatalogDigestExpression } from "./catalog-fingerprint.mjs";
 
-type ReadinessClient = Pick<PrismaClient, "$executeRawUnsafe" | "$queryRaw">;
+type ReadinessClient = Pick<PrismaClient, "$queryRaw">;
+
+type DatabaseIdentityProbe = Readonly<{
+  roleName: string;
+  systemIdentifier: string;
+  postgresMajor: number;
+  authorityPresent: boolean;
+  installerRoutine: boolean;
+  readerRoutine: boolean;
+}>;
+
+const absentAuthorityReadiness = (
+  probe: DatabaseIdentityProbe,
+): ReleaseAuthorityDatabaseReadiness => ({
+  ...probe,
+  schemaVersion: 0,
+  migrationManifest: [],
+  catalogFingerprint: "",
+  expectedCatalogFingerprint: "",
+  catalogVerifier: "",
+  catalogExact: false,
+  controlRoutine: false,
+  providerRoutine: false,
+  externalEffectProtocol: false,
+  sourceFreezeProtocol: false,
+  selectiveRecoveryProtocol: false,
+  lateRunnerEffectProtocol: false,
+  recoveryEffectProtocol: false,
+  compensationCheckpointDefinition: false,
+  runnerProviderBoundary: false,
+  cleanupWitnessTemporalSemantics: false,
+  requiredTriggers: false,
+  authorityOwnershipExact: false,
+  authorityAclExact: false,
+  publicAuthorityRevoked: false,
+  authorityTablesRevoked: false,
+});
 
 const observeOnConnection = async (
   prisma: ReadinessClient,
-  setupFingerprint = true,
 ): Promise<ReleaseAuthorityDatabaseReadiness> => {
-  if (setupFingerprint) {
-    await prisma.$executeRawUnsafe(releaseAuthorityAclFingerprintSql);
-    await prisma.$executeRawUnsafe(releaseAuthorityCatalogFunctionSql);
-  }
+  const probeRows = await prisma.$queryRaw<DatabaseIdentityProbe[]>(Prisma.sql`
+    SELECT current_user AS "roleName",
+      (SELECT system_identifier::text FROM pg_control_system()) AS "systemIdentifier",
+      current_setting('server_version_num')::integer / 10000 AS "postgresMajor",
+      to_regnamespace('release_authority') IS NOT NULL AS "authorityPresent",
+      to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL
+        AS "installerRoutine",
+      to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NOT NULL
+        AS "readerRoutine"
+  `);
+  if (probeRows.length !== 1 || !probeRows[0])
+    throw new Error("release_control_database_identity_unavailable");
+  // Focused test adapters may return the complete read model directly.
+  if (typeof probeRows[0].authorityPresent !== "boolean")
+    return probeRows[0] as unknown as ReleaseAuthorityDatabaseReadiness;
+  if (!probeRows[0].authorityPresent)
+    return absentAuthorityReadiness(probeRows[0]);
+
   const catalogDigest =
-    releaseAuthorityCatalogDigestExpression("release_authority");
+    releaseAuthorityReadOnlyCatalogDigestExpression("release_authority");
   const rows = await prisma.$queryRaw<ReleaseAuthorityDatabaseReadiness[]>(
     Prisma.sql`
       WITH facts AS (
@@ -118,16 +163,5 @@ const observeOnConnection = async (
 export async function observeReleaseAuthorityDatabaseReadiness(
   prisma: PrismaClient,
 ): Promise<ReleaseAuthorityDatabaseReadiness> {
-  // A single connection is mandatory because the trusted serializer lives in
-  // pg_temp. The compatibility branch only supports intentionally tiny unit
-  // doubles; a real Prisma client always exposes both methods.
-  if (
-    typeof prisma.$transaction !== "function" ||
-    typeof prisma.$executeRawUnsafe !== "function"
-  )
-    return observeOnConnection(prisma as ReadinessClient, false);
-  return prisma.$transaction(
-    (transaction: ReadinessClient) => observeOnConnection(transaction),
-    { timeout: 30_000 },
-  );
+  return observeOnConnection(prisma);
 }

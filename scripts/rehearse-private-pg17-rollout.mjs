@@ -571,6 +571,11 @@ export async function executeDisposableRehearsal(
           .digest("hex"),
       },
     });
+    releaseControl.addHook("onError", async (_request, _reply, error) => {
+      process.stderr.write(
+        `rehearsal_control_error:${redactedErrorChain(error)}\n`,
+      );
+    });
     await releaseControl.ready();
     const controlFetch = async (input, init) => {
       const requestUrl = new URL(String(input));
@@ -991,7 +996,7 @@ async function verifyProductionPathRehearsal(facts) {
     };
   });
   const stagedServices = new Map(
-    sourceServices.map((service) => [
+    sourceManifest.services.map((service) => [
       service.serviceId,
       {
         serviceId: service.serviceId,
@@ -1019,9 +1024,19 @@ async function verifyProductionPathRehearsal(facts) {
       const contract = targetContracts.find(
         (item) => item.serviceId === serviceId,
       );
+      const previousEnvironmentSha256 =
+        stagedServices.get(serviceId).environmentSha256;
       stagedServices.get(serviceId).environmentSha256 =
         contract.environmentSha256;
-      return contract.environmentSha256;
+      return {
+        status: "applied",
+        previousEnvironmentSha256,
+        environmentSha256: contract.environmentSha256,
+        environmentKeysSha256: environmentKeysSha256(
+          sourceEnvironments.get(serviceId),
+        ),
+        replayed: false,
+      };
     },
     deployArtifact: async (serviceId, reference) => {
       const contract = targetContracts.find(
@@ -1661,30 +1676,84 @@ COMMIT;
     },
     ledger,
   });
-  rollout = await useCases.claimRollout(rollout);
-  rollout = await useCases.verifyProtectedEnvironment(rollout);
-  rollout = await useCases.freezeProviderServices(rollout);
-  ({ rollout } = await useCases.provisionPrivateRunner(rollout));
-  rollout = await useCases.captureSourceBackup(rollout);
-  rollout = await useCases.quiesceSource(rollout);
-  rollout = await useCases.copyDatabaseGeneration(rollout);
-  rollout = await useCases.bootstrapTargetRoles(rollout);
+  const runStage = async (name, operation) => {
+    process.stderr.write(`rehearsal_stage_started:${name}\n`);
+    let timeout;
+    try {
+      const result = await Promise.race([
+        operation(),
+        new Promise((_, reject) => {
+          timeout = setTimeout(
+            () =>
+              reject(new Error(`private_pg17_rehearsal_stage_timeout:${name}`)),
+            120_000,
+          );
+          timeout.unref?.();
+        }),
+      ]);
+      process.stderr.write(`rehearsal_stage_completed:${name}\n`);
+      return result;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+  rollout = await runStage("claim_rollout", () =>
+    useCases.claimRollout(rollout),
+  );
+  rollout = await runStage("verify_protected_environment", () =>
+    useCases.verifyProtectedEnvironment(rollout),
+  );
+  rollout = await runStage("freeze_provider_services", () =>
+    useCases.freezeProviderServices(rollout),
+  );
+  ({ rollout } = await runStage("provision_private_runner", () =>
+    useCases.provisionPrivateRunner(rollout),
+  ));
+  rollout = await runStage("capture_source_backup", () =>
+    useCases.captureSourceBackup(rollout),
+  );
+  rollout = await runStage("quiesce_source", () =>
+    useCases.quiesceSource(rollout),
+  );
+  rollout = await runStage("copy_database_generation", () =>
+    useCases.copyDatabaseGeneration(rollout),
+  );
+  rollout = await runStage("bootstrap_target_roles", () =>
+    useCases.bootstrapTargetRoles(rollout),
+  );
   facts.closeBootstrapGuardRead();
-  rollout = await useCases.verifyDataEquivalence(rollout);
-  rollout = await useCases.cleanupRoleRunner(rollout, roleRunner);
+  rollout = await runStage("verify_data_equivalence", () =>
+    useCases.verifyDataEquivalence(rollout),
+  );
+  rollout = await runStage("cleanup_role_runner", () =>
+    useCases.cleanupRoleRunner(rollout, roleRunner),
+  );
   provision = cutoverRunner;
-  ({ rollout } = await useCases.provisionCutoverRunner(rollout));
-  rollout = await useCases.runReleaseMigration(rollout);
-  rollout = await useCases.stageTargetServices(rollout);
-  rollout = await useCases.activateTargetGeneration(
-    rollout,
-    cutoverRunner.workflowJobId,
+  ({ rollout } = await runStage("provision_cutover_runner", () =>
+    useCases.provisionCutoverRunner(rollout),
+  ));
+  rollout = await runStage("run_release_migration", () =>
+    useCases.runReleaseMigration(rollout),
+  );
+  rollout = await runStage("stage_target_services", () =>
+    useCases.stageTargetServices(rollout),
+  );
+  rollout = await runStage("activate_target_generation", () =>
+    useCases.activateTargetGeneration(rollout, cutoverRunner.workflowJobId),
   );
   cleanupStep = RolloutStep.CleanupCutoverRunner;
-  rollout = await useCases.cleanupCutoverRunner(rollout, cutoverRunner);
-  rollout = await useCases.resumeTargetServices(rollout);
-  rollout = await useCases.verifyLiveCanary(rollout);
-  rollout = await useCases.verifyTrustedRollout(rollout);
+  rollout = await runStage("cleanup_cutover_runner", () =>
+    useCases.cleanupCutoverRunner(rollout, cutoverRunner),
+  );
+  rollout = await runStage("resume_target_services", () =>
+    useCases.resumeTargetServices(rollout),
+  );
+  rollout = await runStage("verify_live_canary", () =>
+    useCases.verifyLiveCanary(rollout),
+  );
+  rollout = await runStage("verify_trusted_rollout", () =>
+    useCases.verifyTrustedRollout(rollout),
+  );
   const authorityState = await ledger.observeActivationState({
     rolloutId: rollout.rolloutId,
     sourceSystemIdentifier: rollout.source.systemIdentifier,
