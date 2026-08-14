@@ -28,7 +28,7 @@ are fixed by
 | ------------------ | ------------------------------------------------------------------ | ----------------------------------------------------- |
 | Control            | `REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_DATABASE_URL`             | Control routines; no direct tables                    |
 | Provider authority | `REVIEW_ROUTER_RELEASE_AUTHORITY_PROVIDER_DATABASE_URL`            | Provider decision routine only                        |
-| Witness            | `REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_DATABASE_URL`             | Cleanup witness routines only                         |
+| Witness            | Dedicated read-only authority, source, and target connections      | Cleanup plus signed release-binding observations      |
 | Permit installer   | `REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_DATABASE_URL` on target | `install_activation_permit` only                      |
 | Receipt guard      | Target-local, no login/membership edges                            | Own permit, activation, and receipt functions         |
 | Release migration  | `REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL`                     | Migrate and invoke activation; cannot install permits |
@@ -51,7 +51,7 @@ Repository variables:
 
 | Group             | Variables                                                                                                                                                                             |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workflow identity | `REVIEW_ROUTER_RELEASE_CONTROL_ORG`, `REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY`                                                                                                       |
+| Workflow identity | `REVIEW_ROUTER_RELEASE_CONTROL_ORG`, `REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY`, release-witness signing key ID and public key                                                        |
 | Service origins   | `REVIEW_ROUTER_RELEASE_CONTROL_URL`, `REVIEW_ROUTER_RELEASE_WITNESS_URL`                                                                                                              |
 | Runners           | `REVIEW_ROUTER_RUNNER_GROUP_ID`, `REVIEW_ROUTER_RUNNER_GROUP_NAME`, `REVIEW_ROUTER_RUNNER_BASE_SERVICE_ID`                                                                            |
 | Provider          | `REVIEW_ROUTER_SOURCE_WRITER_SERVICE_IDS`, `RENDER_OWNER_ID`                                                                                                                          |
@@ -103,7 +103,7 @@ Protected environment secrets:
 | `production-role-bootstrap`     | release-control and provider-authority tokens, provenance key, source compensation/copy URL, reconnect URLs, role-bootstrap/release-migration URLs, target runtime URLs, backup witness |
 | `production-runner-ledger-read` | release-control token                                                                                                                                                                   |
 | `production`                    | release-control and provider-authority tokens, target-switch key, release-migration and target runtime URLs                                                                             |
-| `production-service-switch`     | release-control and provider-authority tokens, suspension key, live-canary token                                                                                                        |
+| `production-service-switch`     | release-control, provider-authority, and release-witness tokens; suspension key and live-canary token                                                                                   |
 
 Every environment in this table must exist, require at least one reviewer,
 prevent self-review, and allow protected branches only. `main` must be a
@@ -112,10 +112,15 @@ bootstrap verifies all of them before checkout, but it never configures them.
 
 Server-only service values:
 
-| Service | Values                                                                                                                                                                                                      |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Control | authority control DB URL, provider-authority DB URL, distinct `REVIEW_ROUTER_RELEASE_CONTROL_TOKEN_SHA256` and `REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256`, permit-installer and receipt-reader DB URLs |
-| Witness | authority witness DB URL, `REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256`, Render read token                                                                                                                   |
+| Service | Values                                                                                                                                                                                                                                                                |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Control | authority control DB URL, provider-authority DB URL, distinct `REVIEW_ROUTER_RELEASE_CONTROL_TOKEN_SHA256` and `REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256`, permit-installer and receipt-reader DB URLs                                                           |
+| Witness | authority/source/target read-only DB URLs; canonical source/authority/target identities and generations; authority catalog/migration and activation routine trust roots; GitHub/Render read tokens; `REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256`; Ed25519 signing key |
+
+The witness private key is server-only. The matching public key, key ID, and
+freshness interval are protected repository variables consumed by the final
+evidence job. Rotate the key pair as one reviewed change; evidence signed by a
+missing or different key, or assembled after its expiry, fails closed.
 
 Actions receives the three scoped plaintext tokens; services store only their
 SHA-256 values. Logs and artifacts may contain IDs/digests, never URLs, tokens,
@@ -145,10 +150,10 @@ The GitHub workflow, ref, GHCR repository, and artifact-attestation rules are
 infrastructure policy owned by the preflight verifier. The domain record stores
 the provider-neutral v2 claim: source repository/revision, OCI image repository
 and digest, build run, artifact identity, identity hash, and the hash of the
-verification policy. Trusted rollout evidence schema 6 is the explicit wire
-migration adding source-fence and principal-inventory attestations; schema 5
-artifacts remain historical records and must not be submitted to the schema 6
-verifier or upgraded without rerunning the current preflight verification.
+verification policy. Trusted rollout evidence schema 7 adds the independently
+signed, freshness-bounded release-witness binding. Schema 6 and earlier
+artifacts remain historical records and must not be submitted to the schema 7
+verifier or upgraded without rerunning the current rollout and witness observation.
 
 ## Fresh authority installation (provision once)
 

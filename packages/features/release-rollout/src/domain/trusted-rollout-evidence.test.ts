@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { generateKeyPairSync, sign } from "node:crypto";
 import {
   createReleaseRollout,
   RolloutStep,
@@ -174,6 +175,92 @@ const trustedImagePolicy = {
   imageRepository,
   verificationPolicySha256: provenancePolicySha256,
 } as const;
+const witnessKeys = generateKeyPairSync("ed25519");
+const trustedWitnessPolicy = {
+  keyId: "release-witness-test",
+  publicKeyPem: witnessKeys.publicKey
+    .export({ type: "spki", format: "pem" })
+    .toString(),
+  maximumAgeMilliseconds: 300_000,
+} as const;
+const releaseWitness = () => {
+  const unsigned = {
+    schemaVersion: 1 as const,
+    rolloutId: base.rolloutId,
+    execution: {
+      repository: base.execution.controlRepository,
+      workflowPath: base.execution.workflowPath,
+      workflowRef: base.execution.workflowRef,
+      commitSha: base.expectedCommitSha,
+      runId: base.execution.runId,
+      runAttempt: base.execution.runAttempt,
+    },
+    sourceDatabaseIdentity: {
+      serverIdentity: base.source.systemIdentifier,
+      databaseIdentity: "16384",
+      databaseName: base.source.databaseName,
+    },
+    authorityDatabaseIdentity: {
+      serverIdentity: "300",
+      databaseIdentity: "16385",
+      databaseName: "release_authority",
+    },
+    targetDatabaseIdentity: {
+      serverIdentity: base.target.systemIdentifier,
+      databaseIdentity: "16386",
+      databaseName: base.target.databaseName,
+    },
+    releaseAuthority: {
+      schemaVersion: 11,
+      migrationManifestIdentity: digest,
+      catalogFingerprint: digest,
+      catalogVerifier: "release-authority-catalog-v1",
+    },
+    activation: {
+      migrationManifestIdentity: digest,
+      namespaceFingerprint: digest,
+      installerRoutineBodySha256: "a".repeat(64),
+      readerRoutineBodySha256: "b".repeat(64),
+    },
+    source: {
+      renderResourceId: base.source.renderResourceId,
+      databaseName: base.source.databaseName,
+      systemIdentifier: base.source.systemIdentifier,
+      majorVersion: base.source.majorVersion,
+      recoveryWitnessSha256: base.source.recoveryWitnessSha256,
+    },
+    target: {
+      renderResourceId: base.target.renderResourceId,
+      databaseName: base.target.databaseName,
+      systemIdentifier: base.target.systemIdentifier,
+      majorVersion: base.target.majorVersion,
+      recoveryWitnessSha256: base.target.recoveryWitnessSha256,
+    },
+    deployments: [
+      {
+        serviceId: "srv-api",
+        deployId: "dep-release",
+        revision: digest,
+      },
+    ],
+    observedAt: "2026-08-12T00:03:30.000Z",
+    expiresAt: "2026-08-12T00:08:30.000Z",
+  };
+  const bindingSha256 = `sha256:${sha256Canonical(unsigned)}`;
+  return {
+    ...unsigned,
+    bindingSha256,
+    signature: {
+      algorithm: "Ed25519" as const,
+      keyId: trustedWitnessPolicy.keyId,
+      value: sign(
+        null,
+        Buffer.from(bindingSha256, "utf8"),
+        witnessKeys.privateKey,
+      ).toString("base64"),
+    },
+  };
+};
 const create = () =>
   assembleTrustedRolloutEvidence(
     {
@@ -326,6 +413,7 @@ const create = () =>
       activation,
       resumedTargetDeployIds: ["dep-release"],
       liveCanarySha256: digest,
+      releaseWitness: releaseWitness(),
       cleanups: [
         {
           renderJobId: "job-role",
@@ -349,13 +437,18 @@ const create = () =>
       assembledAt: "2026-08-12T00:04:00.000Z",
     },
     trustedImagePolicy,
+    trustedWitnessPolicy,
   );
 
 describe("trusted post-cleanup evidence", () => {
   it("verifies the two runner lifecycles, receipt chain, activation, service resume, and canary", () => {
-    expect(assertTrustedRolloutEvidence(create(), trustedImagePolicy)).toEqual(
-      create(),
-    );
+    expect(
+      assertTrustedRolloutEvidence(
+        create(),
+        trustedImagePolicy,
+        trustedWitnessPolicy,
+      ),
+    ).toEqual(create());
   });
   it("rejects a target deploy whose image is not the attested release image", () => {
     const {
@@ -377,6 +470,7 @@ describe("trusted post-cleanup evidence", () => {
           ],
         },
         trustedImagePolicy,
+        trustedWitnessPolicy,
       ),
     ).toThrow("trusted_rollout_evidence_target_image_invalid");
   });
@@ -388,6 +482,7 @@ describe("trusted post-cleanup evidence", () => {
           schemaVersion: 4,
         } as unknown as TrustedRolloutEvidence,
         trustedImagePolicy,
+        trustedWitnessPolicy,
       ),
     ).toThrow("trusted_rollout_evidence_invariant_failed");
   });
@@ -442,11 +537,56 @@ describe("trusted post-cleanup evidence", () => {
         protectedEnvironmentPreflightSha256: `sha256:${"b".repeat(64)}`,
       }),
     ],
+    [
+      "cross-database witness replay",
+      (v: TrustedRolloutEvidence) => ({
+        ...v,
+        releaseWitness: {
+          ...v.releaseWitness,
+          targetDatabaseIdentity: {
+            ...v.releaseWitness.targetDatabaseIdentity,
+            databaseIdentity: "99999",
+          },
+        },
+      }),
+    ],
+    [
+      "stale witness observation",
+      (v: TrustedRolloutEvidence) => ({
+        ...v,
+        releaseWitness: {
+          ...v.releaseWitness,
+          expiresAt: "2026-08-12T00:03:59.000Z",
+        },
+      }),
+    ],
+    [
+      "partial witness evidence",
+      (v: TrustedRolloutEvidence) => {
+        const { activation: _activation, ...partial } = v.releaseWitness;
+        void _activation;
+        return {
+          ...v,
+          releaseWitness: partial as TrustedRolloutEvidence["releaseWitness"],
+        };
+      },
+    ],
+    [
+      "unsigned witness substitution",
+      (v: TrustedRolloutEvidence) => ({
+        ...v,
+        releaseWitness: {
+          ...v.releaseWitness,
+          signature: { ...v.releaseWitness.signature, value: "Zm9yZ2Vk" },
+        },
+      }),
+    ],
   ])("rejects %s", (_name, mutate) =>
     expect(() =>
       assertTrustedRolloutEvidence(
         mutate(create()) as TrustedRolloutEvidence,
         trustedImagePolicy,
+        trustedWitnessPolicy,
       ),
     ).toThrow(),
   );

@@ -25,6 +25,26 @@ const environmentSha256 = (environment: Readonly<Record<string, string>>) =>
     .digest("hex")}`;
 
 describe("Render OpenAPI wrappers", () => {
+  it("observes a provider database identity without exposing connection material", async () => {
+    const fetchImpl = vi.fn(async () =>
+      json({
+        id: "dpg-target",
+        ownerId: "tea-1",
+        name: "reviewrouter-target",
+        version: "17.6",
+        connectionInfo: { externalConnectionString: "must-not-be-returned" },
+      }),
+    );
+    await expect(
+      new RenderApiAdapter("redacted", fetchImpl).getPostgres("dpg-target"),
+    ).resolves.toEqual({
+      id: "dpg-target",
+      ownerId: "tea-1",
+      name: "reviewrouter-target",
+      version: "17.6",
+    });
+  });
+
   it.each([
     ["cycle", ["cursor-a", "cursor-a"], "cursor_cycle"],
     ["malformed", ["cursor with space"], "malformed_cursor"],

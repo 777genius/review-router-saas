@@ -457,6 +457,10 @@ jobs:
           REVIEW_ROUTER_RUNNER_LEDGER_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_CONTROL_TOKEN }}
           RENDER_SERVICE_SUSPENSION_API_KEY: ${{ secrets.RENDER_SERVICE_SUSPENSION_API_KEY }}
           REVIEW_ROUTER_PRIVATE_ROLLOUT_BODY_FILE: artifacts/body/private-rollout-body.json
+          REVIEW_ROUTER_RELEASE_WITNESS_TOKEN: ${{ secrets.REVIEW_ROUTER_RELEASE_WITNESS_TOKEN }}
+          REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_KEY_ID: ${{ vars.REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_KEY_ID }}
+          REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_PUBLIC_KEY_PEM: ${{ vars.REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_PUBLIC_KEY_PEM }}
+          REVIEW_ROUTER_RELEASE_WITNESS_MAXIMUM_AGE_MS: ${{ vars.REVIEW_ROUTER_RELEASE_WITNESS_MAXIMUM_AGE_MS }}
           REVIEW_ROUTER_PROTECTED_ENVIRONMENT_PREFLIGHT_FILE: artifacts/preflight/protected-environment-preflight.json
           REVIEW_ROUTER_RELEASE_IMAGE_PROVENANCE_FILE: artifacts/preflight/verified-release-image-provenance.json
           REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON: ${{ vars.REVIEW_ROUTER_TARGET_SERVICE_EXPECTATIONS_JSON }}
@@ -466,6 +470,9 @@ jobs:
         run: node --import tsx scripts/finalize-private-pg17-rollout.ts > finalized-rollout.json
       - env:
           REVIEW_ROUTER_FINALIZED_ROLLOUT_FILE: finalized-rollout.json
+          REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_KEY_ID: ${{ vars.REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_KEY_ID }}
+          REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_PUBLIC_KEY_PEM: ${{ vars.REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_PUBLIC_KEY_PEM }}
+          REVIEW_ROUTER_RELEASE_WITNESS_MAXIMUM_AGE_MS: ${{ vars.REVIEW_ROUTER_RELEASE_WITNESS_MAXIMUM_AGE_MS }}
         run: node --import tsx scripts/assemble-private-pg17-trusted-evidence.ts > trusted-rollout-evidence.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

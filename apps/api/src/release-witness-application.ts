@@ -3,7 +3,21 @@ import type {
   CleanupObservationSeedPort,
   ReleaseAuthorityMutationReadinessPort,
   RenderCleanupObservationPort,
+  ReleaseWitnessAttestation,
+  ReleaseWitnessDatabasePort,
+  ReleaseWitnessDeploymentPort,
+  ReleaseWitnessExecutionPort,
+  ReleaseWitnessGenerationPort,
+  ReleaseWitnessRequest,
+  ReleaseWitnessSignerPort,
+  TrustedReleaseWitnessPolicy,
 } from "./release-witness-domain.js";
+import {
+  releaseWitnessPolicyIsCanonical,
+  releaseWitnessRequestIsCanonical,
+} from "./release-witness-domain.js";
+import { sha256Canonical } from "@reviewrouter/features-release-rollout";
+import { runtimeDatabaseIdentityEquals } from "./release-authority/domain/database-identity.js";
 
 export class ObserveRunnerCleanup {
   constructor(
@@ -27,5 +41,146 @@ export class ObserveRunnerCleanup {
     // provider read cannot be bypassed by a request admitted while healthy.
     await this.readiness.assertReady();
     await this.evidence.persist(jobId, evidence);
+  }
+}
+
+const digest = (value: unknown): string => `sha256:${sha256Canonical(value)}`;
+
+/**
+ * Independent, read-only decision service. Selectors from the caller never
+ * become facts: GitHub, provider and three database sessions re-observe them.
+ */
+export class AttestReleaseWitnessBinding {
+  constructor(
+    private readonly databases: ReleaseWitnessDatabasePort,
+    private readonly execution: ReleaseWitnessExecutionPort,
+    private readonly deployments: ReleaseWitnessDeploymentPort,
+    private readonly generations: ReleaseWitnessGenerationPort,
+    private readonly signer: ReleaseWitnessSignerPort,
+    private readonly policy: TrustedReleaseWitnessPolicy,
+    private readonly now: () => Date = () => new Date(),
+  ) {
+    if (!releaseWitnessPolicyIsCanonical(policy))
+      throw new Error("release_witness_policy_invalid");
+  }
+
+  async execute(
+    request: ReleaseWitnessRequest,
+  ): Promise<ReleaseWitnessAttestation> {
+    if (!releaseWitnessRequestIsCanonical(request))
+      throw Object.assign(
+        new Error("release_witness_binding_request_invalid"),
+        {
+          statusCode: 400,
+        },
+      );
+    if (
+      request.execution.repository !== this.policy.repository ||
+      request.execution.workflowPath !== this.policy.workflowPath ||
+      digest(request.source) !== digest(this.policy.sourceGeneration) ||
+      digest(request.target) !== digest(this.policy.targetGeneration)
+    )
+      throw new Error("release_witness_execution_policy_mismatch");
+
+    const startedAt = this.now().getTime();
+    const [source, authority, target, execution, deployments, generations] =
+      await Promise.all([
+        this.databases.observeSource(),
+        this.databases.observeAuthority(),
+        this.databases.observeTarget(),
+        this.execution.observe(request.execution, request.rolloutId),
+        this.deployments.observe(request.deployments),
+        this.generations.observe(request.source, request.target),
+      ]);
+    const observedAtMilliseconds = this.now().getTime();
+    if (
+      !Number.isFinite(startedAt) ||
+      !Number.isFinite(observedAtMilliseconds) ||
+      observedAtMilliseconds < startedAt ||
+      observedAtMilliseconds - startedAt > this.policy.maximumAgeMilliseconds
+    )
+      throw new Error("release_witness_observation_stale");
+    if (
+      digest(execution) !== digest(request.execution) ||
+      digest(deployments) !== digest(request.deployments) ||
+      digest(generations) !== digest([request.source, request.target])
+    )
+      throw new Error("release_witness_provider_binding_mismatch");
+    if (
+      source.roleName !== "reviewrouter_release_witness" ||
+      authority.roleName !== "reviewrouter_release_witness" ||
+      target.roleName !== "reviewrouter_activation_receipt_reader" ||
+      !runtimeDatabaseIdentityEquals(
+        source.databaseIdentity,
+        this.policy.sourceDatabaseIdentity,
+      ) ||
+      !runtimeDatabaseIdentityEquals(
+        authority.databaseIdentity,
+        this.policy.authorityDatabaseIdentity,
+      ) ||
+      !runtimeDatabaseIdentityEquals(
+        target.databaseIdentity,
+        this.policy.targetDatabaseIdentity,
+      ) ||
+      source.systemIdentifier !== request.source.systemIdentifier ||
+      source.postgresMajor !== request.source.majorVersion ||
+      source.databaseIdentity.databaseName !== request.source.databaseName ||
+      authority.systemIdentifier !==
+        this.policy.authorityDatabaseIdentity.serverIdentity ||
+      target.systemIdentifier !== request.target.systemIdentifier ||
+      target.postgresMajor !== request.target.majorVersion ||
+      target.databaseIdentity.databaseName !== request.target.databaseName ||
+      !authority.exact ||
+      !target.exact ||
+      authority.catalogFingerprint !==
+        this.policy.authorityCatalogFingerprint ||
+      authority.catalogVerifier !== this.policy.authorityCatalogVerifier ||
+      authority.migrationManifestIdentity !==
+        this.policy.authorityMigrationManifestIdentity ||
+      target.activationMigrationManifestIdentity !==
+        this.policy.activationMigrationManifestIdentity ||
+      target.activationNamespaceFingerprint !==
+        this.policy.activationNamespaceFingerprint ||
+      target.installerRoutineBodySha256 !==
+        this.policy.installerRoutineBodySha256 ||
+      target.readerRoutineBodySha256 !== this.policy.readerRoutineBodySha256
+    )
+      throw new Error("release_witness_database_binding_mismatch");
+
+    const observedAt = new Date(observedAtMilliseconds).toISOString();
+    const expiresAt = new Date(
+      observedAtMilliseconds + this.policy.maximumAgeMilliseconds,
+    ).toISOString();
+    const unsigned = Object.freeze({
+      schemaVersion: 1 as const,
+      rolloutId: request.rolloutId,
+      execution,
+      sourceDatabaseIdentity: source.databaseIdentity,
+      authorityDatabaseIdentity: authority.databaseIdentity,
+      targetDatabaseIdentity: target.databaseIdentity,
+      releaseAuthority: Object.freeze({
+        schemaVersion: authority.schemaVersion,
+        migrationManifestIdentity: authority.migrationManifestIdentity,
+        catalogFingerprint: authority.catalogFingerprint,
+        catalogVerifier: authority.catalogVerifier,
+      }),
+      activation: Object.freeze({
+        migrationManifestIdentity: target.activationMigrationManifestIdentity,
+        namespaceFingerprint: target.activationNamespaceFingerprint,
+        installerRoutineBodySha256: target.installerRoutineBodySha256,
+        readerRoutineBodySha256: target.readerRoutineBodySha256,
+      }),
+      source: request.source,
+      target: request.target,
+      deployments: Object.freeze([...deployments]),
+      observedAt,
+      expiresAt,
+    });
+    const bindingSha256 = digest(unsigned);
+    return Object.freeze({
+      ...unsigned,
+      bindingSha256,
+      signature: Object.freeze(this.signer.sign(bindingSha256)),
+    });
   }
 }

@@ -13,6 +13,68 @@ import {
   type TrustedReleaseImagePolicy,
   type VerifiedReleaseImageProvenance,
 } from "./release-image-provenance";
+import { createPublicKey, verify } from "node:crypto";
+
+export interface TrustedReleaseWitnessVerificationPolicy {
+  readonly keyId: string;
+  readonly publicKeyPem: string;
+  readonly maximumAgeMilliseconds: number;
+}
+
+export interface ReleaseWitnessBindingEvidence {
+  readonly schemaVersion: 1;
+  readonly rolloutId: string;
+  readonly execution: {
+    readonly repository: string;
+    readonly workflowPath: string;
+    readonly workflowRef: string;
+    readonly commitSha: string;
+    readonly runId: string;
+    readonly runAttempt: number;
+  };
+  readonly sourceDatabaseIdentity: {
+    readonly serverIdentity: string;
+    readonly databaseIdentity: string;
+    readonly databaseName: string;
+  };
+  readonly authorityDatabaseIdentity: {
+    readonly serverIdentity: string;
+    readonly databaseIdentity: string;
+    readonly databaseName: string;
+  };
+  readonly targetDatabaseIdentity: {
+    readonly serverIdentity: string;
+    readonly databaseIdentity: string;
+    readonly databaseName: string;
+  };
+  readonly releaseAuthority: {
+    readonly schemaVersion: number;
+    readonly migrationManifestIdentity: string;
+    readonly catalogFingerprint: string;
+    readonly catalogVerifier: string;
+  };
+  readonly activation: {
+    readonly migrationManifestIdentity: string;
+    readonly namespaceFingerprint: string;
+    readonly installerRoutineBodySha256: string;
+    readonly readerRoutineBodySha256: string;
+  };
+  readonly source: Omit<DatabaseGenerationIdentity, "internalHostname">;
+  readonly target: Omit<DatabaseGenerationIdentity, "internalHostname">;
+  readonly deployments: readonly {
+    readonly serviceId: string;
+    readonly deployId: string;
+    readonly revision: string;
+  }[];
+  readonly observedAt: string;
+  readonly expiresAt: string;
+  readonly bindingSha256: string;
+  readonly signature: {
+    readonly algorithm: "Ed25519";
+    readonly keyId: string;
+    readonly value: string;
+  };
+}
 
 export interface BackupIdentity {
   readonly renderResourceId: string;
@@ -126,7 +188,7 @@ export interface LegacyReconciliationEvidence {
   readonly status: "reconciled";
 }
 export interface TrustedRolloutEvidence {
-  readonly schemaVersion: 6;
+  readonly schemaVersion: 7;
   readonly rolloutId: string;
   readonly releaseCommitSha: string;
   readonly releaseImageProvenance: VerifiedReleaseImageProvenance;
@@ -148,6 +210,7 @@ export interface TrustedRolloutEvidence {
   readonly activation: ActivationReceipt;
   readonly resumedTargetDeployIds: readonly string[];
   readonly liveCanarySha256: string;
+  readonly releaseWitness: ReleaseWitnessBindingEvidence;
   readonly cleanups: readonly [CleanupEvidence, CleanupEvidence];
   readonly assembledAt: string;
   readonly evidenceSha256: string;
@@ -169,18 +232,24 @@ const exact = (value: object, keys: readonly string[]): boolean =>
 export function assembleTrustedRolloutEvidence(
   value: Omit<TrustedRolloutEvidence, "schemaVersion" | "evidenceSha256">,
   trustedImagePolicy: TrustedReleaseImagePolicy,
+  trustedWitnessPolicy: TrustedReleaseWitnessVerificationPolicy,
 ): TrustedRolloutEvidence {
-  const unsigned = Object.freeze({ ...value, schemaVersion: 6 as const });
+  const unsigned = Object.freeze({ ...value, schemaVersion: 7 as const });
   const evidence = Object.freeze({
     ...unsigned,
     evidenceSha256: `sha256:${sha256Canonical(unsigned)}`,
   });
-  return assertTrustedRolloutEvidence(evidence, trustedImagePolicy);
+  return assertTrustedRolloutEvidence(
+    evidence,
+    trustedImagePolicy,
+    trustedWitnessPolicy,
+  );
 }
 
 export function assertTrustedRolloutEvidence(
   value: TrustedRolloutEvidence,
   trustedImagePolicy: TrustedReleaseImagePolicy,
+  trustedWitnessPolicy: TrustedReleaseWitnessVerificationPolicy,
 ): TrustedRolloutEvidence {
   if (
     !exact(value, [
@@ -202,11 +271,12 @@ export function assertTrustedRolloutEvidence(
       "activation",
       "resumedTargetDeployIds",
       "liveCanarySha256",
+      "releaseWitness",
       "cleanups",
       "assembledAt",
       "evidenceSha256",
     ]) ||
-    value.schemaVersion !== 6 ||
+    value.schemaVersion !== 7 ||
     !sha.test(value.releaseCommitSha) ||
     value.execution.runAttempt !== 1 ||
     value.execution.event !== "workflow_dispatch" ||
@@ -422,6 +492,170 @@ export function assertTrustedRolloutEvidence(
   );
   if (Date.parse(value.assembledAt) <= latestPrerequisite)
     throw new Error("trusted_rollout_evidence_assembled_too_early");
+  const witness = value.releaseWitness;
+  const witnessUnsigned = witness
+    ? Object.fromEntries(
+        Object.entries(witness).filter(
+          ([key]) => key !== "bindingSha256" && key !== "signature",
+        ),
+      )
+    : undefined;
+  let witnessSignatureValid = false;
+  try {
+    const publicKey = createPublicKey(trustedWitnessPolicy.publicKeyPem);
+    witnessSignatureValid =
+      publicKey.asymmetricKeyType === "ed25519" &&
+      verify(
+        null,
+        Buffer.from(witness.bindingSha256, "utf8"),
+        publicKey,
+        Buffer.from(witness.signature.value, "base64"),
+      );
+  } catch {
+    witnessSignatureValid = false;
+  }
+  if (
+    !witness ||
+    !/^[A-Za-z0-9._:-]{1,128}$/u.test(trustedWitnessPolicy.keyId) ||
+    !Number.isSafeInteger(trustedWitnessPolicy.maximumAgeMilliseconds) ||
+    trustedWitnessPolicy.maximumAgeMilliseconds <= 0 ||
+    !exact(witness, [
+      "schemaVersion",
+      "rolloutId",
+      "execution",
+      "sourceDatabaseIdentity",
+      "authorityDatabaseIdentity",
+      "targetDatabaseIdentity",
+      "releaseAuthority",
+      "activation",
+      "source",
+      "target",
+      "deployments",
+      "observedAt",
+      "expiresAt",
+      "bindingSha256",
+      "signature",
+    ]) ||
+    witness.schemaVersion !== 1 ||
+    witness.rolloutId !== value.rolloutId ||
+    !exact(witness.execution, [
+      "repository",
+      "workflowPath",
+      "workflowRef",
+      "commitSha",
+      "runId",
+      "runAttempt",
+    ]) ||
+    !exact(witness.sourceDatabaseIdentity, [
+      "serverIdentity",
+      "databaseIdentity",
+      "databaseName",
+    ]) ||
+    !exact(witness.authorityDatabaseIdentity, [
+      "serverIdentity",
+      "databaseIdentity",
+      "databaseName",
+    ]) ||
+    !exact(witness.targetDatabaseIdentity, [
+      "serverIdentity",
+      "databaseIdentity",
+      "databaseName",
+    ]) ||
+    !exact(witness.releaseAuthority, [
+      "schemaVersion",
+      "migrationManifestIdentity",
+      "catalogFingerprint",
+      "catalogVerifier",
+    ]) ||
+    !exact(witness.activation, [
+      "migrationManifestIdentity",
+      "namespaceFingerprint",
+      "installerRoutineBodySha256",
+      "readerRoutineBodySha256",
+    ]) ||
+    !exact(witness.source, [
+      "renderResourceId",
+      "databaseName",
+      "systemIdentifier",
+      "majorVersion",
+      "recoveryWitnessSha256",
+    ]) ||
+    !exact(witness.target, [
+      "renderResourceId",
+      "databaseName",
+      "systemIdentifier",
+      "majorVersion",
+      "recoveryWitnessSha256",
+    ]) ||
+    witness.deployments.length === 0 ||
+    new Set(witness.deployments.map((item) => item.serviceId)).size !==
+      witness.deployments.length ||
+    witness.deployments.some(
+      (item) => !exact(item, ["serviceId", "deployId", "revision"]),
+    ) ||
+    !exact(witness.signature, ["algorithm", "keyId", "value"]) ||
+    witness.execution.repository !== value.execution.controlRepository ||
+    witness.execution.workflowPath !== value.execution.workflowPath ||
+    witness.execution.workflowRef !== value.execution.workflowRef ||
+    witness.execution.commitSha !== value.releaseCommitSha ||
+    witness.execution.runId !== value.execution.runId ||
+    witness.execution.runAttempt !== value.execution.runAttempt ||
+    witness.source.renderResourceId !== value.source.renderResourceId ||
+    witness.source.databaseName !== value.source.databaseName ||
+    witness.source.systemIdentifier !== value.source.systemIdentifier ||
+    witness.source.majorVersion !== value.source.majorVersion ||
+    witness.source.recoveryWitnessSha256 !==
+      value.source.recoveryWitnessSha256 ||
+    witness.sourceDatabaseIdentity.serverIdentity !==
+      value.source.systemIdentifier ||
+    witness.sourceDatabaseIdentity.databaseName !== value.source.databaseName ||
+    !/^[A-Za-z0-9._:-]{1,255}$/u.test(
+      witness.sourceDatabaseIdentity.databaseIdentity,
+    ) ||
+    witness.target.renderResourceId !== value.target.renderResourceId ||
+    witness.target.databaseName !== value.target.databaseName ||
+    witness.target.systemIdentifier !== value.target.systemIdentifier ||
+    witness.target.majorVersion !== value.target.majorVersion ||
+    witness.target.recoveryWitnessSha256 !==
+      value.target.recoveryWitnessSha256 ||
+    witness.targetDatabaseIdentity.serverIdentity !==
+      value.target.systemIdentifier ||
+    witness.targetDatabaseIdentity.databaseName !== value.target.databaseName ||
+    !/^[A-Za-z0-9._:-]{1,255}$/u.test(
+      witness.targetDatabaseIdentity.databaseIdentity,
+    ) ||
+    witness.authorityDatabaseIdentity.serverIdentity ===
+      witness.sourceDatabaseIdentity.serverIdentity ||
+    witness.authorityDatabaseIdentity.serverIdentity ===
+      witness.targetDatabaseIdentity.serverIdentity ||
+    canonicalJson(witness.deployments) !==
+      canonicalJson(
+        value.targetDeploys.map(({ serviceId, deployId, imageDigest }) => ({
+          serviceId,
+          deployId,
+          revision: imageDigest,
+        })),
+      ) ||
+    !digest.test(witness.releaseAuthority.migrationManifestIdentity) ||
+    witness.releaseAuthority.schemaVersion !== 11 ||
+    !digest.test(witness.releaseAuthority.catalogFingerprint) ||
+    !witness.releaseAuthority.catalogVerifier ||
+    !digest.test(witness.activation.migrationManifestIdentity) ||
+    !digest.test(witness.activation.namespaceFingerprint) ||
+    !/^[a-f0-9]{64}$/u.test(witness.activation.installerRoutineBodySha256) ||
+    !/^[a-f0-9]{64}$/u.test(witness.activation.readerRoutineBodySha256) ||
+    !timestamp(witness.observedAt) ||
+    !timestamp(witness.expiresAt) ||
+    Date.parse(witness.observedAt) > Date.parse(value.assembledAt) ||
+    Date.parse(value.assembledAt) > Date.parse(witness.expiresAt) ||
+    Date.parse(witness.expiresAt) - Date.parse(witness.observedAt) !==
+      trustedWitnessPolicy.maximumAgeMilliseconds ||
+    witness.bindingSha256 !== `sha256:${sha256Canonical(witnessUnsigned)}` ||
+    witness.signature.algorithm !== "Ed25519" ||
+    witness.signature.keyId !== trustedWitnessPolicy.keyId ||
+    !witnessSignatureValid
+  )
+    throw new Error("trusted_rollout_evidence_release_witness_invalid");
   const { evidenceSha256, ...unsigned } = value;
   if (evidenceSha256 !== `sha256:${sha256Canonical(unsigned)}`)
     throw new Error("trusted_rollout_evidence_digest_mismatch");

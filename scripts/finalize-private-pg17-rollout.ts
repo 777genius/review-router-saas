@@ -15,6 +15,7 @@ import {
   type StepObservation,
   type TargetServiceExpectation,
   type TrustedRolloutEvidence,
+  type ReleaseWitnessBindingEvidence,
   assertVerifiedReleaseImageProvenance,
   sameReleaseImageProvenance,
   type VerifiedReleaseImageProvenance,
@@ -49,6 +50,15 @@ const body = read<{
 const trustedImagePolicy = privatePg17ReleaseImagePolicy({
   sourceRepository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
   sourceRevision: required("REVIEW_ROUTER_EXPECTED_SHA"),
+});
+const trustedWitnessPolicy = Object.freeze({
+  keyId: required("REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_KEY_ID"),
+  publicKeyPem: required(
+    "REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_PUBLIC_KEY_PEM",
+  ),
+  maximumAgeMilliseconds: Number(
+    process.env.REVIEW_ROUTER_RELEASE_WITNESS_MAXIMUM_AGE_MS || "300000",
+  ),
 });
 const releaseImageProvenance = assertVerifiedReleaseImageProvenance(
   body.releaseImageProvenance,
@@ -206,6 +216,53 @@ const useCases = new ReleaseRolloutUseCases({
   },
   evidence: {
     assembleAndVerify: async (current) => {
+      const witnessResponse = await fetch(
+        new URL(
+          "/v1/release-binding-attestations",
+          required("REVIEW_ROUTER_RELEASE_WITNESS_URL"),
+        ),
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${required("REVIEW_ROUTER_RELEASE_WITNESS_TOKEN")}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            rolloutId: current.rolloutId,
+            execution: {
+              repository: current.execution.controlRepository,
+              workflowPath: current.execution.workflowPath,
+              workflowRef: current.execution.workflowRef,
+              commitSha: current.expectedCommitSha,
+              runId: current.execution.runId,
+              runAttempt: current.execution.runAttempt,
+            },
+            source: {
+              renderResourceId: current.source.renderResourceId,
+              databaseName: current.source.databaseName,
+              systemIdentifier: current.source.systemIdentifier,
+              majorVersion: current.source.majorVersion,
+              recoveryWitnessSha256: current.source.recoveryWitnessSha256,
+            },
+            target: {
+              renderResourceId: current.target.renderResourceId,
+              databaseName: current.target.databaseName,
+              systemIdentifier: current.target.systemIdentifier,
+              majorVersion: current.target.majorVersion,
+              recoveryWitnessSha256: current.target.recoveryWitnessSha256,
+            },
+            deployments: targetDeploys.map((deploy) => ({
+              serviceId: deploy.serviceId,
+              deployId: deploy.deployId,
+              revision: deploy.imageDigest,
+            })),
+          }),
+        },
+      );
+      if (!witnessResponse.ok)
+        throw new Error("private_pg17_release_witness_unavailable");
+      const releaseWitness =
+        (await witnessResponse.json()) as ReleaseWitnessBindingEvidence;
       evidence = assembleTrustedRolloutEvidence(
         {
           rolloutId: current.rolloutId,
@@ -226,6 +283,7 @@ const useCases = new ReleaseRolloutUseCases({
           activation: current.activationReceipt!,
           resumedTargetDeployIds: resumed.facts.map((item) => item.deployId),
           liveCanarySha256: `sha256:${sha256Canonical(canary.facts)}`,
+          releaseWitness,
           cleanups: [
             cleanupEvidence(roleCleanupWitness, body.runners[0]),
             cleanupEvidence(cutoverCleanupWitness, body.runners[1]),
@@ -233,6 +291,7 @@ const useCases = new ReleaseRolloutUseCases({
           assembledAt: new Date().toISOString(),
         },
         trustedImagePolicy,
+        trustedWitnessPolicy,
       );
       return {
         step: RolloutStep.VerifyTrustedRollout,

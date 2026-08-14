@@ -31,6 +31,12 @@ export interface RenderService {
   readonly image?: { readonly imagePath: string };
   readonly serviceDetails: Record<string, unknown>;
 }
+export interface RenderPostgres {
+  readonly id: string;
+  readonly ownerId: string;
+  readonly name: string;
+  readonly version: string;
+}
 export interface RenderDeploy {
   readonly id: string;
   readonly status: string;
@@ -138,6 +144,27 @@ export class RenderApiAdapter {
     )
       throw new Error("render_service_response_invalid");
     return value as unknown as RenderService;
+  }
+
+  async getPostgres(id: string): Promise<RenderPostgres> {
+    const value = requireSubset(
+      await body(
+        await this.fetchImpl(`${origin}/postgres/${encodeURIComponent(id)}`, {
+          headers: headers(this.token),
+        }),
+        "postgres",
+      ),
+      ["id", "ownerId", "name", "version"],
+      "render_postgres_response_invalid",
+    );
+    if (![value.id, value.ownerId, value.name, value.version].every(string))
+      throw new Error("render_postgres_response_invalid");
+    return Object.freeze({
+      id: value.id,
+      ownerId: value.ownerId,
+      name: value.name,
+      version: value.version,
+    }) as RenderPostgres;
   }
 
   async listServices(cursor?: string): Promise<CursorPage<RenderService>> {

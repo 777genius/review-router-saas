@@ -20,5 +20,14 @@ assertTrustedRolloutEvidence(
     sourceRepository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
     sourceRevision: required("REVIEW_ROUTER_EXPECTED_SHA"),
   }),
+  {
+    keyId: required("REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_KEY_ID"),
+    publicKeyPem: required(
+      "REVIEW_ROUTER_RELEASE_WITNESS_SIGNING_PUBLIC_KEY_PEM",
+    ),
+    maximumAgeMilliseconds: Number(
+      process.env.REVIEW_ROUTER_RELEASE_WITNESS_MAXIMUM_AGE_MS || "300000",
+    ),
+  },
 );
 process.stdout.write("Private PG17 trusted rollout evidence verified.\n");

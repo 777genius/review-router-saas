@@ -9,14 +9,24 @@ import {
   createBoundedReadinessPolicy,
   type BoundedReadinessPolicyOptions,
 } from "./release-authority/application/bounded-readiness.js";
-import { ObserveRunnerCleanup } from "./release-witness-application.js";
-import type { ReleaseAuthorityMutationReadinessPort } from "./release-witness-domain.js";
+import {
+  AttestReleaseWitnessBinding,
+  ObserveRunnerCleanup,
+} from "./release-witness-application.js";
+import type {
+  ReleaseAuthorityMutationReadinessPort,
+  TrustedReleaseWitnessPolicy,
+} from "./release-witness-domain.js";
 import {
   runtimeDatabaseIdentityEquals,
   type RuntimeDatabaseIdentity,
 } from "./release-authority/domain/database-identity.js";
 import {
   PostgresCleanupObservationAdapter,
+  PostgresReleaseBindingObservationAdapter,
+  GitHubReleaseExecutionObservationAdapter,
+  RenderReleaseDeploymentObservationAdapter,
+  Ed25519ReleaseWitnessSignerAdapter,
   RenderCleanupObservationAdapter,
 } from "./release-witness-adapters.js";
 import { registerReleaseWitnessRoutes } from "./release-witness-routes.js";
@@ -36,6 +46,13 @@ export async function createReleaseWitnessApp(input: {
   readonly readinessPolicy?: Partial<BoundedReadinessPolicyOptions>;
   readonly mutationReadiness?: ReleaseAuthorityMutationReadinessPort;
   readonly trustedDatabaseIdentity?: RuntimeDatabaseIdentity;
+  readonly sourceWitnessPrisma?: PrismaClient;
+  readonly targetWitnessPrisma?: PrismaClient;
+  readonly githubReadToken?: string;
+  readonly githubFetch?: typeof fetch;
+  readonly trustedBindingPolicy?: TrustedReleaseWitnessPolicy;
+  readonly signingKeyId?: string;
+  readonly signingPrivateKeyPem?: string;
 }): Promise<FastifyInstance> {
   if (!/^[a-f0-9]{64}$/u.test(input.triggerTokenSha256))
     throw new Error("release_witness_credential_hash_invalid");
@@ -82,6 +99,51 @@ export async function createReleaseWitnessApp(input: {
     postgres,
     input.mutationReadiness ?? { assertReady: assertAuthorityReady },
   );
+  const bindingInputs = [
+    input.sourceWitnessPrisma,
+    input.targetWitnessPrisma,
+    input.githubReadToken,
+    input.trustedBindingPolicy,
+    input.signingKeyId,
+    input.signingPrivateKeyPem,
+  ];
+  if (
+    bindingInputs.some(Boolean) &&
+    !bindingInputs.every((value) => value !== undefined && value !== "")
+  )
+    throw new Error("release_witness_binding_composition_incomplete");
+  const attestBinding =
+    input.sourceWitnessPrisma &&
+    input.targetWitnessPrisma &&
+    input.githubReadToken &&
+    input.trustedBindingPolicy
+      ? (() => {
+          const providerObservation =
+            new RenderReleaseDeploymentObservationAdapter(
+              input.renderReadToken,
+              input.renderFetch,
+            );
+          return new AttestReleaseWitnessBinding(
+            new PostgresReleaseBindingObservationAdapter(
+              input.sourceWitnessPrisma,
+              input.witnessPrisma,
+              input.targetWitnessPrisma,
+              input.readinessObserver,
+            ),
+            new GitHubReleaseExecutionObservationAdapter(
+              input.githubReadToken,
+              input.githubFetch,
+            ),
+            providerObservation,
+            providerObservation,
+            new Ed25519ReleaseWitnessSignerAdapter(
+              input.signingKeyId!,
+              input.signingPrivateKeyPem!,
+            ),
+            input.trustedBindingPolicy,
+          );
+        })()
+      : undefined;
   const app = Fastify({ logger: false });
   app.get("/health", async (_request, reply) => {
     try {
@@ -97,6 +159,7 @@ export async function createReleaseWitnessApp(input: {
   });
   await registerReleaseWitnessRoutes(app, {
     observeCleanup,
+    ...(attestBinding ? { attestBinding } : {}),
     triggerTokenSha256: input.triggerTokenSha256,
   });
   return app;

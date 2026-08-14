@@ -1,6 +1,10 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { ObserveRunnerCleanup } from "./release-witness-application.js";
+import type {
+  AttestReleaseWitnessBinding,
+  ObserveRunnerCleanup,
+} from "./release-witness-application.js";
+import type { ReleaseWitnessRequest } from "./release-witness-domain.js";
 
 const authorize = (request: FastifyRequest, expected: string): void => {
   const header = request.headers.authorization;
@@ -20,6 +24,7 @@ export async function registerReleaseWitnessRoutes(
   app: FastifyInstance,
   input: {
     observeCleanup: ObserveRunnerCleanup;
+    attestBinding?: AttestReleaseWitnessBinding;
     triggerTokenSha256: string;
   },
 ): Promise<void> {
@@ -45,4 +50,16 @@ export async function registerReleaseWitnessRoutes(
       return reply.code(204).send();
     },
   );
+  if (input.attestBinding)
+    app.post<{ Body: ReleaseWitnessRequest }>(
+      "/v1/release-binding-attestations",
+      {
+        preHandler: async (request) =>
+          authorize(request, input.triggerTokenSha256),
+      },
+      async (request, reply) => {
+        const attestation = await input.attestBinding!.execute(request.body);
+        return reply.code(200).send(attestation);
+      },
+    );
 }

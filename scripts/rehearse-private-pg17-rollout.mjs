@@ -1,5 +1,10 @@
 #!/usr/bin/env node
-import { createHash, randomBytes } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  sign,
+} from "node:crypto";
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1662,6 +1667,97 @@ COMMIT;
           imageRepository: "ghcr.io/777genius/review-router-saas-runtime",
           verificationPolicySha256: `sha256:${"e".repeat(64)}`,
         };
+        const witnessKeys = generateKeyPairSync("ed25519");
+        const witnessPolicy = {
+          keyId: "disposable-rehearsal-witness",
+          publicKeyPem: witnessKeys.publicKey
+            .export({ type: "spki", format: "pem" })
+            .toString(),
+          maximumAgeMilliseconds: 300_000,
+        };
+        const witnessObservedAt = new Date(
+          Date.parse(assembledAt) - 1,
+        ).toISOString();
+        const witnessUnsigned = {
+          schemaVersion: 1,
+          rolloutId: current.rolloutId,
+          execution: {
+            repository: current.execution.controlRepository,
+            workflowPath: current.execution.workflowPath,
+            workflowRef: current.execution.workflowRef,
+            commitSha: current.expectedCommitSha,
+            runId: current.execution.runId,
+            runAttempt: current.execution.runAttempt,
+          },
+          sourceDatabaseIdentity: {
+            serverIdentity: current.source.systemIdentifier,
+            databaseIdentity: "16384",
+            databaseName: current.source.databaseName,
+          },
+          authorityDatabaseIdentity: {
+            serverIdentity: "300",
+            databaseIdentity: "16385",
+            databaseName: "release_authority",
+          },
+          targetDatabaseIdentity: {
+            serverIdentity: current.target.systemIdentifier,
+            databaseIdentity: "16386",
+            databaseName: current.target.databaseName,
+          },
+          releaseAuthority: {
+            schemaVersion: 11,
+            migrationManifestIdentity: digest,
+            catalogFingerprint: digest,
+            catalogVerifier: "disposable-rehearsal",
+          },
+          activation: {
+            migrationManifestIdentity: digest,
+            namespaceFingerprint: digest,
+            installerRoutineBodySha256: "a".repeat(64),
+            readerRoutineBodySha256: "b".repeat(64),
+          },
+          source: {
+            renderResourceId: current.source.renderResourceId,
+            databaseName: current.source.databaseName,
+            systemIdentifier: current.source.systemIdentifier,
+            majorVersion: current.source.majorVersion,
+            recoveryWitnessSha256: current.source.recoveryWitnessSha256,
+          },
+          target: {
+            renderResourceId: current.target.renderResourceId,
+            databaseName: current.target.databaseName,
+            systemIdentifier: current.target.systemIdentifier,
+            majorVersion: current.target.majorVersion,
+            recoveryWitnessSha256: current.target.recoveryWitnessSha256,
+          },
+          deployments: targetContracts.map((contract) => ({
+            serviceId: contract.serviceId,
+            deployId: stagedServices.get(contract.serviceId).provenance
+              .deploymentId,
+            revision: contract.artifact.reference.slice(
+              contract.artifact.reference.indexOf("sha256:"),
+            ),
+          })),
+          observedAt: witnessObservedAt,
+          expiresAt: new Date(
+            Date.parse(witnessObservedAt) +
+              witnessPolicy.maximumAgeMilliseconds,
+          ).toISOString(),
+        };
+        const witnessBindingSha256 = `sha256:${sha256Canonical(witnessUnsigned)}`;
+        const releaseWitness = {
+          ...witnessUnsigned,
+          bindingSha256: witnessBindingSha256,
+          signature: {
+            algorithm: "Ed25519",
+            keyId: witnessPolicy.keyId,
+            value: sign(
+              null,
+              Buffer.from(witnessBindingSha256, "utf8"),
+              witnessKeys.privateKey,
+            ).toString("base64"),
+          },
+        };
         evidence = assembleTrustedRolloutEvidence(
           {
             rolloutId: current.rolloutId,
@@ -1803,6 +1899,7 @@ COMMIT;
                 stagedServices.get(contract.serviceId).provenance.deploymentId,
             ),
             liveCanarySha256: digest,
+            releaseWitness,
             cleanups: [
               {
                 renderJobId: roleRunner.renderJobId,
@@ -1831,6 +1928,7 @@ COMMIT;
             assembledAt,
           },
           trustedImagePolicy,
+          witnessPolicy,
         );
         return observed(RolloutStep.VerifyTrustedRollout, {
           evidenceSha256: evidence.evidenceSha256,
