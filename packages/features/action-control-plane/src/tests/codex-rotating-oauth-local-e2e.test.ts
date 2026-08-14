@@ -701,7 +701,7 @@ describe("Codex rotating OAuth local E2E", () => {
     expect(blockedAbandon.json()).toMatchObject({
       error: { code: "codex_rotating_not_enabled", retryable: false },
     });
-    expect(mutationAdmission.assertEnabled).toHaveBeenCalledTimes(4);
+    expect(mutationAdmission.assertEnabled).toHaveBeenCalledTimes(5);
 
     await app.close();
   });
