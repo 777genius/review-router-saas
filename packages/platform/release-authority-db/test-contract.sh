@@ -85,9 +85,135 @@ docker cp "$root/packages/platform/release-authority-db/migrations/000008_trigge
 # boundaries. Later migrations are applied only after that byte variant is
 # identified, while both mixed pairs and every catalog modification fail
 # before schema_migration exists.
-node -e "import('./scripts/install-release-authority-db.mjs').then(m => process.stdout.write(m.releaseAuthorityMigrationBundle(process.cwd())))" \
+node -e "import('./scripts/install-release-authority-db.mjs').then(m => process.stdout.write(m.releaseAuthorityMigrationBundle('incremental-upgrade',process.cwd())))" \
   > /tmp/release-authority-install-$$.sql
 docker cp "/tmp/release-authority-install-$$.sql" "$name:/tmp/release-authority-install.sql" >/dev/null
+
+# Exercise the production upgrade gate itself, independently of the authority
+# routine contract below. These fixtures cover both explicit modes, concurrent
+# callers, bounded lock waits, atomic failure, drift, and replay.
+node -e "import('./scripts/install-release-authority-db.mjs').then(m => process.stdout.write(m.releaseAuthorityMigrationBundle('fresh-install',process.cwd())))" \
+  > "$contract_tmp/fresh.sql"
+node -e "import('./scripts/install-release-authority-db.mjs').then(m => process.stdout.write(m.releaseAuthorityMigrationBundle('incremental-upgrade',process.cwd(),{lockTimeoutMs:200,statementTimeoutMs:2000})))" \
+  > "$contract_tmp/short-upgrade.sql"
+node -e "import('./scripts/install-release-authority-db.mjs').then(m => process.stdout.write(m.releaseAuthorityMigrationBundle('fresh-install',process.cwd()).replace('\nCOMMIT;\n','\nSELECT definitely_missing_release_authority_probe();\nCOMMIT;\n')))" \
+  > "$contract_tmp/failing-fresh.sql"
+node -e "import('./scripts/install-release-authority-db.mjs').then(m => process.stdout.write(m.releaseAuthorityMigrationBundle('fresh-install',process.cwd()).replace('\n     \$upgrade_gate\$;','\n     \$upgrade_gate\$;\nSELECT pg_sleep(2);')))" \
+  > "$contract_tmp/slow-fresh.sql"
+node -e "import('./scripts/install-release-authority-db.mjs').then(m => process.stdout.write(m.releaseAuthorityMigrationBundle('incremental-upgrade',process.cwd()).replace('\n     \$upgrade_gate\$;','\n     \$upgrade_gate\$;\nSELECT pg_sleep(2);')))" \
+  > "$contract_tmp/slow-upgrade.sql"
+for gate_file in fresh short-upgrade failing-fresh slow-fresh slow-upgrade; do
+  docker cp "$contract_tmp/$gate_file.sql" "$name:/tmp/$gate_file.sql" >/dev/null
+done
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "CREATE DATABASE rr_authority_gate" >/dev/null
+
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+  echo "incremental authority upgrade admitted an absent authority schema" >&2
+  exit 1
+fi
+
+# A failed fresh install is wholly rolled back, and a clean rerun succeeds.
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/failing-fresh.sql >/dev/null 2>&1; then
+  echo "deliberately failed authority fresh install unexpectedly committed" >&2
+  exit 1
+fi
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+  "SELECT to_regnamespace('release_authority') IS NULL")" = t
+
+# A concurrent fresh installer fails closed on the transaction-scoped advisory
+# lock while the winner completes normally.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/slow-fresh.sql >/dev/null &
+fresh_gate_pid=$!
+for _ in $(seq 1 40); do
+  if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+      "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=1381126735 AND objid=1381258071 AND granted)")" = t; then
+    break
+  fi
+  sleep 0.05
+done
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/fresh.sql >/dev/null 2>&1; then
+  echo "concurrent authority fresh installer was admitted" >&2
+  exit 1
+fi
+wait "$fresh_gate_pid"
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/fresh.sql >/dev/null 2>&1; then
+  echo "fresh authority installer admitted an existing authority schema" >&2
+  exit 1
+fi
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 \
+  -U reviewrouter_release_control -d rr_authority_gate \
+  -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+  echo "authority upgrade admitted a non-owner migration caller" >&2
+  exit 1
+fi
+
+# The same advisory gate serializes incremental upgrades. The losing caller
+# cannot observe or alter the winner's in-flight transaction.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/slow-upgrade.sql >/dev/null &
+upgrade_gate_pid=$!
+for _ in $(seq 1 40); do
+  if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+      "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=1381126735 AND objid=1381258071 AND granted)")" = t; then
+    break
+  fi
+  sleep 0.05
+done
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+  echo "concurrent authority incremental upgrade was admitted" >&2
+  exit 1
+fi
+wait "$upgrade_gate_pid"
+
+# A conflicting table lock is bounded by lock_timeout rather than waiting for
+# the process timeout. No migration history changes on the failed attempt.
+gate_manifest=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+  "SELECT release_authority.release_schema_migration_manifest()")
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+  "BEGIN; LOCK TABLE release_authority.schema_migration IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(2); COMMIT" >/dev/null &
+table_lock_pid=$!
+for _ in $(seq 1 40); do
+  if test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+      "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE relation='release_authority.schema_migration'::regclass AND mode='AccessExclusiveLock' AND granted)")" = t; then
+    break
+  fi
+  sleep 0.05
+done
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/short-upgrade.sql >/dev/null 2>&1; then
+  echo "authority upgrade ignored its bounded lock timeout" >&2
+  exit 1
+fi
+wait "$table_lock_pid"
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+  "SELECT release_authority.release_schema_migration_manifest()")" = "$gate_manifest"
+
+# Checksum drift fails before any forward work. Restoring the fixture permits
+# two byte-identical idempotent reruns with unchanged catalog evidence.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:'||repeat('0',64) WHERE position=11" >/dev/null
+if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/release-authority-install.sql >/dev/null 2>&1; then
+  echo "authority upgrade accepted checksum drift" >&2
+  exit 1
+fi
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:5e75a0deb033644c9a418082181dd9f21d65771cd47a7684f7497aa56e157107' WHERE position=11" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/release-authority-install.sql >/dev/null
+first_gate_attestation=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+  "SELECT release_authority.release_schema_migration_manifest()::text||':'||obj_description('release_authority'::regnamespace,'pg_namespace')")
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
+  -f /tmp/release-authority-install.sql >/dev/null
+test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
+  "SELECT release_authority.release_schema_migration_manifest()::text||':'||obj_description('release_authority'::regnamespace,'pg_namespace')")" = "$first_gate_attestation"
 
 # Exercise the canonical ACL serializer directly on PostgreSQL 17. Multiple
 # rows must sort independently of input order, PUBLIC must remain explicit,

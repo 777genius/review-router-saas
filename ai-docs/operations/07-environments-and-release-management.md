@@ -178,6 +178,25 @@ the GitHub Release.
 
 Repository: `777genius/review-router-saas`.
 
+### Release Authority schema ordering
+
+When a candidate adds a migration under
+`packages/platform/release-authority-db/migrations`, database authority moves
+before code authority. After the exact protected `main` SHA passes the
+`Dedicated Release Authority PG17 contract`, keep provider auto-deploy disabled
+and run `.github/workflows/release-authority-migration.yml` at that SHA with
+`operation=incremental-upgrade`. The protected
+`production-release-authority-migration` environment is the sole production
+holder of the direct database-owner migration credential. A successful gate on
+that exact SHA is required before deploying control, witness, or other code
+whose readiness depends on the new authority catalog.
+
+Fresh provisioning is a different operation: use `operation=fresh-install`
+only for a new database with no `release_authority` schema. Neither operation
+falls back to the other. The normative setup, upgrade, failure, and recovery
+procedure is in
+[`docs/operations/private-pg17-release-rollout.md`](../../docs/operations/private-pg17-release-rollout.md).
+
 Before running the workflow:
 
 1. Merge the SaaS/runtime commit to `main`.

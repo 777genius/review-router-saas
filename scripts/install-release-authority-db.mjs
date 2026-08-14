@@ -23,6 +23,39 @@ export {
   releaseAuthorityMigrationPaths,
 };
 
+export const releaseAuthorityMigrationModes = Object.freeze([
+  "fresh-install",
+  "incremental-upgrade",
+]);
+
+const migrationGateDefaults = Object.freeze({
+  lockTimeoutMs: 5_000,
+  statementTimeoutMs: 120_000,
+});
+
+const validateMigrationGateOptions = (mode, options = {}) => {
+  if (!releaseAuthorityMigrationModes.includes(mode))
+    throw new Error("release_authority_migration_mode_required");
+  const lockTimeoutMs =
+    options.lockTimeoutMs ?? migrationGateDefaults.lockTimeoutMs;
+  const statementTimeoutMs =
+    options.statementTimeoutMs ?? migrationGateDefaults.statementTimeoutMs;
+  if (
+    !Number.isSafeInteger(lockTimeoutMs) ||
+    lockTimeoutMs < 100 ||
+    lockTimeoutMs > 30_000
+  )
+    throw new Error("release_authority_lock_timeout_invalid");
+  if (
+    !Number.isSafeInteger(statementTimeoutMs) ||
+    statementTimeoutMs < 1_000 ||
+    statementTimeoutMs > 600_000 ||
+    statementTimeoutMs <= lockTimeoutMs
+  )
+    throw new Error("release_authority_statement_timeout_invalid");
+  return { lockTimeoutMs, statementTimeoutMs };
+};
+
 const migrationBody = (source, path) => {
   const withoutBegin = source.replace(/^(?:--[^\n]*\n)*BEGIN;\s*/u, (header) =>
     header.replace(/BEGIN;\s*$/u, ""),
@@ -55,7 +88,15 @@ const legacyCatalogChecksums = releaseAuthorityMigrationContract
   .slice(0, 2)
   .map((identity) => identity[2]?.replace(/^sha256:/u, ""));
 
-export function releaseAuthorityMigrationBundle(root = process.cwd()) {
+export function releaseAuthorityMigrationBundle(
+  mode,
+  root = process.cwd(),
+  options = {},
+) {
+  const { lockTimeoutMs, statementTimeoutMs } = validateMigrationGateOptions(
+    mode,
+    options,
+  );
   const migrations = releaseAuthorityMigrationPaths.map((path) => ({
     path,
     source: readFileSync(resolve(root, path), "utf8"),
@@ -112,9 +153,39 @@ export function releaseAuthorityMigrationBundle(root = process.cwd()) {
           ${legacyHistoryValues}`;
   return [
     "\\set ON_ERROR_STOP on",
+    "BEGIN;",
+    `SET LOCAL lock_timeout = '${lockTimeoutMs}ms';`,
+    `SET LOCAL statement_timeout = '${statementTimeoutMs}ms';`,
+    `DO $upgrade_gate$
+     DECLARE authority_owner name;
+     BEGIN
+       IF NOT pg_catalog.pg_try_advisory_xact_lock(1381126735, 1381258071) THEN
+         RAISE EXCEPTION 'release authority migration gate is already held';
+       END IF;
+       SELECT pg_catalog.pg_get_userbyid(datdba) INTO STRICT authority_owner
+         FROM pg_catalog.pg_database WHERE datname=current_database();
+       IF current_user IS DISTINCT FROM session_user
+          OR current_user IS DISTINCT FROM authority_owner THEN
+         RAISE EXCEPTION 'release authority migration caller is not the database owner session';
+       END IF;
+       IF '${mode}' = 'fresh-install'
+          AND pg_catalog.to_regnamespace('release_authority') IS NOT NULL THEN
+         RAISE EXCEPTION 'release authority fresh install requires an absent authority schema';
+       END IF;
+       IF '${mode}' = 'incremental-upgrade'
+          AND pg_catalog.to_regnamespace('release_authority') IS NULL THEN
+         RAISE EXCEPTION 'release authority incremental upgrade requires an existing authority schema';
+       END IF;
+       IF '${mode}' = 'incremental-upgrade'
+          AND (SELECT pg_catalog.pg_get_userbyid(nspowner)
+                 FROM pg_catalog.pg_namespace
+                WHERE nspname='release_authority') IS DISTINCT FROM current_user THEN
+         RAISE EXCEPTION 'release authority migration caller does not own the authority schema';
+       END IF;
+     END
+     $upgrade_gate$;`,
     "SELECT (to_regnamespace('release_authority') IS NULL) AS authority_schema_absent,",
     "  (to_regclass('release_authority.schema_migration') IS NOT NULL) AS authority_history_present \\gset",
-    "BEGIN;",
     `CREATE TEMP TABLE release_authority_catalog_verification (
   catalog_fingerprint text NOT NULL,
   byte_variant text NOT NULL CHECK (byte_variant IN ('canonical','legacy_equivalent')),
@@ -302,11 +373,13 @@ export const postgresEnvironment = (encoded, environment = process.env) => {
 };
 
 export function installReleaseAuthorityDatabase(environment = process.env) {
+  const mode = environment.REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE;
+  validateMigrationGateOptions(mode);
   const credentialFile =
-    environment.REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_DATABASE_URL_FILE;
+    environment.REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE;
   if (!credentialFile)
     throw new Error(
-      "release_authority_env_missing:REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_DATABASE_URL_FILE",
+      "release_authority_env_missing:REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE",
     );
   const credential = statSync(credentialFile);
   if (!credential.isFile() || (credential.mode & 0o077) !== 0)
@@ -321,6 +394,7 @@ export function installReleaseAuthorityDatabase(environment = process.env) {
       cwd: new URL("..", import.meta.url),
       encoding: "utf8",
       input: releaseAuthorityMigrationBundle(
+        mode,
         fileURLToPath(new URL("..", import.meta.url)),
       ),
       env: postgresEnvironment(databaseUrl, environment),
@@ -329,12 +403,21 @@ export function installReleaseAuthorityDatabase(environment = process.env) {
     },
   );
   if (result.error?.code === "ETIMEDOUT")
-    throw new Error("release_authority_install_timeout");
+    throw new Error("release_authority_migration_process_timeout");
   if (result.status !== 0)
     throw new Error(
-      `release_authority_install_failed:exit=${result.status ?? "signal"}:${String(result.stderr ?? "").slice(0, 2_000)}`,
+      `release_authority_migration_failed:exit=${result.status ?? "signal"}`,
     );
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  const argumentsAfterScript = process.argv.slice(2);
+  if (argumentsAfterScript.length !== 1)
+    throw new Error("release_authority_migration_mode_required");
+  const mode = argumentsAfterScript[0]?.replace(/^--/u, "");
+  process.env.REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE = mode;
   installReleaseAuthorityDatabase();
+}

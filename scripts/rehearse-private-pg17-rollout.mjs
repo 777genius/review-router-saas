@@ -256,7 +256,7 @@ export async function executeDisposableRehearsal(
         "reviewrouter",
       ],
       {
-        input: releaseAuthorityMigrationBundle(process.cwd()),
+        input: releaseAuthorityMigrationBundle("fresh-install", process.cwd()),
       },
     );
     const preReleasePrisma = join(directory, "pre-release-prisma");

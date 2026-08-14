@@ -12,6 +12,10 @@ const controller = readFileSync(
   "utf8",
 );
 const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
+const authorityMigrationWorkflow = readFileSync(
+  ".github/workflows/release-authority-migration.yml",
+  "utf8",
+);
 const releaseImageVerifier = readFileSync(
   "scripts/verify-private-pg17-release-image-provenance.ts",
   "utf8",
@@ -542,9 +546,9 @@ describe("private-network PG17 workflow security contract", () => {
   });
 
   it("uses only SHA-pinned actions and preserves the opt-in legacy workflow contracts", () => {
-    expect(`${workflow}\n${controller}`).not.toMatch(
-      /uses: [^\n]+@(main|master|v\d+)/u,
-    );
+    expect(
+      `${workflow}\n${controller}\n${authorityMigrationWorkflow}`,
+    ).not.toMatch(/uses: [^\n]+@(main|master|v\d+)/u);
     for (const path of [
       ".github/workflows/codex-rotating-role-bootstrap.yml",
       ".github/workflows/codex-rotating-release-migration.yml",
@@ -556,6 +560,31 @@ describe("private-network PG17 workflow security contract", () => {
       expect(legacy).toContain("runs-on: ubuntu-24.04");
       expect(legacy).not.toContain("private-network-pg17-rollout.yml");
     }
+  });
+
+  it("keeps fresh authority installation separate from the trusted upgrade gate", () => {
+    expect(authorityMigrationWorkflow).toContain(
+      "group: release-authority-database-mutation-production",
+    );
+    expect(authorityMigrationWorkflow).toContain(
+      "environment: production-release-authority-migration",
+    );
+    expect(authorityMigrationWorkflow).toContain(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL",
+    );
+    expect(authorityMigrationWorkflow).toContain(
+      "run: pnpm release-authority:fresh-install",
+    );
+    expect(authorityMigrationWorkflow).toContain(
+      "run: pnpm release-authority:upgrade",
+    );
+    expect(authorityMigrationWorkflow).toContain(
+      'test "$GITHUB_SHA" = "$EXPECTED_SHA"',
+    );
+    expect(authorityMigrationWorkflow).not.toContain("env | ");
+    expect(rolloutRunbook.indexOf("incremental-upgrade")).toBeLessThan(
+      rolloutRunbook.indexOf("## Rehearsal and gates"),
+    );
   });
 
   it("pins base image and runner download, and never supplies the App private key by env", () => {

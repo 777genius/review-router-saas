@@ -104,26 +104,26 @@ migration from schema 4/v1 provenance; schema 4 artifacts remain historical
 records and must not be submitted to the schema 5 verifier or upgraded without
 rerunning the current preflight verification.
 
-## Provision once
+## Fresh authority installation (provision once)
 
 1. Create a fresh dedicated PostgreSQL 17 authority DB and the distinct
    `reviewrouter_release_control`, `reviewrouter_provider_authority`, and
-   `reviewrouter_release_witness` logins. Put the owner connection URL in a
-   mode-0600 credential file, then invoke the one-shot installer exactly once:
+   `reviewrouter_release_witness` logins. Put the direct database-owner
+   connection URL in a mode-0600 credential file. The session must log in as
+   that owner rather than using `SET ROLE`. Invoke only the explicit fresh
+   installation command:
 
    ```bash
-   export REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_DATABASE_URL_FILE=/approved/secret/path/release-authority-owner-url
-   pnpm release-authority:install
+   export REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE=/approved/secret/path/release-authority-migration-url
+   pnpm release-authority:fresh-install
    ```
 
-   The installer applies `000001_release_authority`,
-   `000002_external_effect_protocol`,
-   `000002_transactional_service_transition`,
-   `000003_partial_source_freeze`, `000004_selective_source_recovery`, and
-   `000005_late_runner_effects` in that order, each exactly once in one
-   transaction. It is fresh-install-only: never
-   run it against an existing authority catalog or substitute application
-   Prisma migration tooling. Retain this DB across cutovers.
+   The fresh gate requires the `release_authority` schema to be absent and
+   applies the complete checked-in chain in one transaction. It rejects an
+   existing authority catalog, a non-owner or role-switched session, source
+   checksum mismatch, and a concurrent migration caller. Never use this
+   command for an upgrade and never substitute application Prisma migration
+   tooling. Retain this DB across cutovers.
 
 2. Deploy control and witness from the same immutable release and verify their
    `/health` service identities. Healthy control must observe the 000002
@@ -139,6 +139,41 @@ rerunning the current preflight verification.
    protection. Keep `production` and `production-service-switch` approvals
    separate.
 5. Disable provider auto-deploy for control, witness, API, web, and worker.
+
+## Incremental authority upgrade (before dependent code)
+
+Every release that adds an authority migration uses the protected
+`release-authority-migration.yml` workflow with operation
+`incremental-upgrade`. The workflow is the only production caller authorized
+to receive `REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL`, and its
+connection must be the same direct database-owner login that owns the authority
+schema. Do not place that credential in runtime services, private runners,
+general CI, or an operator shell.
+
+The trusted order is:
+
+1. Merge and pass the dedicated Release Authority PG17 contract on the exact
+   protected `main` SHA.
+2. Keep control, witness, and every readiness-dependent service on the prior
+   compatible image; provider auto-deploy remains disabled.
+3. Dispatch `release-authority-migration.yml` on that exact SHA with
+   `operation=incremental-upgrade`. The protected
+   `production-release-authority-migration` environment supplies the one-use
+   owner credential and requires approval.
+4. Require that workflow to succeed. Its gate takes the PostgreSQL advisory
+   lock, applies bounded lock and statement timeouts, verifies checked-in and
+   recorded checksums/catalog provenance, and commits the valid forward chain
+   atomically. A concurrent caller, timeout, partial statement failure, history
+   drift, or catalog drift is a deploy blocker.
+5. Only after that success may same-SHA control and witness images be deployed
+   and pass health/readiness. Deploy other code that depends on the new
+   authority readiness contract afterward.
+
+The `fresh-install` operation is only for a newly provisioned empty authority
+database. The `incremental-upgrade` operation requires the authority schema to
+already exist. Neither operation guesses intent or falls back to the other. A
+byte-identical incremental rerun is idempotent; never use fresh installation as
+upgrade recovery.
 
 ## Rehearsal and gates
 
@@ -213,7 +248,7 @@ transaction output and take a schema-only dump plus catalog/ACL/owner evidence.
 Do not insert `schema_migration` rows, edit a checksum, or invoke 000009 by
 itself. Recovery requires an audited object-by-object comparison against the
 immutable 000001-000008 sources, an approved forward repair that explains every
-difference, and then a rerun of `pnpm release-authority:install`. If exact
+difference, and then a rerun of the trusted incremental upgrade workflow. If exact
 provenance cannot be established, provision a fresh authority database and
 reconcile through the normal rollout recovery procedure; never bless the
 ambiguous catalog.

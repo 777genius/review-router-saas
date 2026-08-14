@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  installReleaseAuthorityDatabase,
   releaseAuthorityAclFingerprintSql,
   releaseAuthorityCatalogFingerprintSql,
   releaseAuthorityMigrationBundle,
@@ -11,6 +20,50 @@ import {
 } from "./install-release-authority-db.mjs";
 
 describe("release authority database installation", () => {
+  it("requires an explicit fresh-install or incremental-upgrade gate", () => {
+    expect(() => releaseAuthorityMigrationBundle(undefined)).toThrow(
+      "release_authority_migration_mode_required",
+    );
+    const fresh = releaseAuthorityMigrationBundle("fresh-install");
+    const upgrade = releaseAuthorityMigrationBundle("incremental-upgrade");
+    for (const bundle of [fresh, upgrade]) {
+      expect(bundle).toContain(
+        "pg_try_advisory_xact_lock(1381126735, 1381258071)",
+      );
+      expect(bundle).toContain("SET LOCAL lock_timeout = '5000ms'");
+      expect(bundle).toContain("SET LOCAL statement_timeout = '120000ms'");
+      expect(bundle).toContain("current_user IS DISTINCT FROM session_user");
+      expect(bundle).toContain(
+        "release authority migration caller is not the database owner session",
+      );
+      expect(bundle.match(/^BEGIN;$/gmu)).toHaveLength(1);
+      expect(bundle.match(/^COMMIT;$/gmu)).toHaveLength(1);
+    }
+    expect(fresh).toContain(
+      "release authority fresh install requires an absent authority schema",
+    );
+    expect(upgrade).toContain(
+      "release authority incremental upgrade requires an existing authority schema",
+    );
+    expect(upgrade).toContain(
+      "release authority migration caller does not own the authority schema",
+    );
+  });
+
+  it("bounds production timeout configuration", () => {
+    expect(() =>
+      releaseAuthorityMigrationBundle("incremental-upgrade", process.cwd(), {
+        lockTimeoutMs: 99,
+      }),
+    ).toThrow("release_authority_lock_timeout_invalid");
+    expect(() =>
+      releaseAuthorityMigrationBundle("incremental-upgrade", process.cwd(), {
+        lockTimeoutMs: 2_000,
+        statementTimeoutMs: 2_000,
+      }),
+    ).toThrow("release_authority_statement_timeout_invalid");
+  });
+
   it("isolates owner psql from ambient PostgreSQL configuration", () => {
     const environment = postgresEnvironment(
       "postgresql://owner:secret@authority.internal/reviewrouter",
@@ -36,6 +89,48 @@ describe("release authority database installation", () => {
     });
     expect(environment).not.toHaveProperty("PGSERVICE");
     expect(environment).not.toHaveProperty("PGOPTIONS");
+  });
+
+  it("never propagates database URLs or raw subprocess output on failure", () => {
+    const directory = mkdtempSync(join(tmpdir(), "release-authority-gate-"));
+    try {
+      const credentialFile = join(directory, "database-url");
+      const fakePsql = join(directory, "psql");
+      writeFileSync(
+        credentialFile,
+        "postgresql://owner:credential-canary@authority.internal/reviewrouter",
+        { mode: 0o600 },
+      );
+      writeFileSync(
+        fakePsql,
+        "#!/bin/sh\nprintf '%s\\n' 'postgresql://owner:credential-canary@authority.internal/reviewrouter' >&2\nexit 7\n",
+        { mode: 0o700 },
+      );
+      chmodSync(fakePsql, 0o700);
+      expect(() =>
+        installReleaseAuthorityDatabase({
+          PATH: process.env.PATH,
+          REVIEW_ROUTER_PSQL_BINARY: fakePsql,
+          REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE: "incremental-upgrade",
+          REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE:
+            credentialFile,
+        }),
+      ).toThrow("release_authority_migration_failed:exit=7");
+      try {
+        installReleaseAuthorityDatabase({
+          PATH: process.env.PATH,
+          REVIEW_ROUTER_PSQL_BINARY: fakePsql,
+          REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE: "incremental-upgrade",
+          REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE:
+            credentialFile,
+        });
+      } catch (error) {
+        expect(String(error)).not.toContain("credential-canary");
+        expect(String(error)).not.toContain("postgresql://");
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("fails the database compensation gate on unresolved freeze effects", () => {
@@ -131,7 +226,7 @@ describe("release authority database installation", () => {
     );
   });
   it("identifies exact two-file catalogs before later migrations can erase byte evidence", () => {
-    const bundle = releaseAuthorityMigrationBundle();
+    const bundle = releaseAuthorityMigrationBundle("incremental-upgrade");
     expect(bundle).toContain("release_authority_verify_canonical");
     expect(bundle).toContain("release_authority_verify_legacy");
     expect(bundle).toContain("complete_catalog_v1");
@@ -234,7 +329,7 @@ describe("release authority database installation", () => {
     );
   });
   it("emits the complete production catalog fingerprint SQL", () => {
-    const bundle = releaseAuthorityMigrationBundle();
+    const bundle = releaseAuthorityMigrationBundle("incremental-upgrade");
     const fingerprintStart = bundle.indexOf(
       "CREATE TEMP TABLE release_authority_catalog_verification",
     );
@@ -425,7 +520,7 @@ describe("release authority database installation", () => {
       "f1b29f3ff66ef22ed91230f8295b53aaa642fed6e34c081d9c8f6ce3453723f4",
       "5e75a0deb033644c9a418082181dd9f21d65771cd47a7684f7497aa56e157107",
     ]);
-    const bundle = releaseAuthorityMigrationBundle();
+    const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
     const second = bundle.indexOf("ADD COLUMN effect_state");
     const third = bundle.indexOf(
@@ -498,7 +593,7 @@ describe("release authority database installation", () => {
           .digest("hex")}`,
       })),
     );
-    const bundle = releaseAuthorityMigrationBundle();
+    const bundle = releaseAuthorityMigrationBundle("incremental-upgrade");
     expect(bundle).toContain("authority_forward_present");
     expect(bundle).toContain("release authority migration history mismatch");
     expect(bundle).toContain("position=1) IS DISTINCT FROM");

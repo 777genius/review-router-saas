@@ -1,0 +1,84 @@
+name: Trusted Release Authority migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact protected main commit containing the migration chain
+        required: true
+        type: string
+      operation:
+        description: Fresh database installation or existing database upgrade
+        required: true
+        type: choice
+        options:
+          - incremental-upgrade
+          - fresh-install
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-authority-database-mutation-production
+  cancel-in-progress: false
+
+jobs:
+  trusted-release-authority-migration:
+    name: trusted-release-authority-migration
+    environment: production-release-authority-migration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Verify immutable protected main identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          test "${#EXPECTED_SHA}" = 40
+          case "$EXPECTED_SHA" in
+            *[!0-9a-f]*) exit 1 ;;
+          esac
+
+      - name: Checkout immutable migration source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.expected_sha }}
+
+      - name: Install exact package manager and dependencies
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.0 --activate
+          pnpm install --frozen-lockfile
+
+      - name: Materialize one-use migration credential
+        shell: bash
+        env:
+          REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_URL: ${{ secrets.REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_URL"
+          credential_file="$RUNNER_TEMP/release-authority-migration-url"
+          umask 077
+          printf '%s' "$REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_URL" > "$credential_file"
+          echo "REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE=$credential_file" >> "$GITHUB_ENV"
+
+      - name: Run fresh installation gate
+        if: ${{ inputs.operation == 'fresh-install' }}
+        run: pnpm release-authority:fresh-install
+
+      - name: Run incremental upgrade gate
+        if: ${{ inputs.operation == 'incremental-upgrade' }}
+        run: pnpm release-authority:upgrade
+
+      - name: Remove migration credential
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          credential_file="$RUNNER_TEMP/release-authority-migration-url"
+          if test -f "$credential_file"; then
+            shred -u "$credential_file" 2>/dev/null || rm -f "$credential_file"
+          fi
