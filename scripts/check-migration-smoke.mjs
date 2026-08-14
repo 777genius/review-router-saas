@@ -83,16 +83,48 @@ rollbackUrl.pathname = `/${rollbackDbName}`;
 rollbackUrl.search = "";
 const smokeCredential = createDatabaseCredentialBoundary(smokeUrl);
 
-const psql = (
-  sql,
-  url = adminUrl.toString(),
-  stdio = "ignore",
-  extraArgs = [],
-) =>
+const psql = (sql, url = adminUrl.toString(), extraArgs = []) =>
   runSecretSafePostgresCommand({
     databaseUrl: url,
     args: ["-v", "ON_ERROR_STOP=1", ...extraArgs, "-c", sql],
   });
+
+const dropDatabase = (name) => {
+  try {
+    psql(`DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`);
+  } catch (forceError) {
+    try {
+      psql(`DROP DATABASE IF EXISTS ${quoteIdentifier(name)}`);
+    } catch (fallbackError) {
+      throw new AggregateError(
+        [forceError, fallbackError],
+        "migration_smoke_database_cleanup_failed",
+        { cause: fallbackError },
+      );
+    }
+  }
+};
+
+const cleanupResources = (databaseNames, credential) => {
+  const errors = [];
+  for (const name of databaseNames) {
+    try {
+      dropDatabase(name);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  try {
+    credential.cleanup();
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1)
+    throw new AggregateError(errors, "migration_smoke_cleanup_incomplete", {
+      cause: errors.at(-1),
+    });
+};
 
 const prismaRoot = resolve("packages/platform/db/prisma");
 const dispatchMigrationName = "000034_review_request_dispatch_reconciliation";
@@ -225,7 +257,7 @@ try {
        AND indexname = 'ReviewProgressPublicationV1_due_partial_idx')
        AS review_progress_due_index;
   `;
-  const result = psql(invariantSql, smokeUrl.toString(), "pipe", ["-At"]);
+  const result = psql(invariantSql, smokeUrl.toString(), ["-At"]);
   const output = result.stdout.trim();
   if (
     output !==
@@ -303,12 +335,9 @@ try {
       (SELECT count(*) FROM "ReviewRequestedIntent"
        WHERE "requestId" = 'dispatch-rollback-fixture' AND "state" = 'dispatching') AS fixture;
   `;
-  const rollbackResult = psql(
-    rollbackInvariantSql,
-    rollbackUrl.toString(),
-    "pipe",
-    ["-At"],
-  );
+  const rollbackResult = psql(rollbackInvariantSql, rollbackUrl.toString(), [
+    "-At",
+  ]);
   if (
     rollbackResult.stdout.trim() !==
     "pending_dispatch,dispatching,awaiting_authorization,dispatched,superseded|4|0|0|1"
@@ -318,24 +347,11 @@ try {
 
   console.log("Migration smoke test passed.");
 } finally {
-  if (rollbackCreated) {
-    try {
-      psql(
-        `DROP DATABASE IF EXISTS ${quoteIdentifier(rollbackDbName)} WITH (FORCE)`,
-      );
-    } catch {}
-  }
+  const databasesToDrop = [];
+  if (rollbackCreated) databasesToDrop.push(rollbackDbName);
   if (created) {
     console.log("Dropping migration smoke database...");
-    try {
-      psql(
-        `DROP DATABASE IF EXISTS ${quoteIdentifier(smokeDbName)} WITH (FORCE)`,
-      );
-    } catch {
-      try {
-        psql(`DROP DATABASE IF EXISTS ${quoteIdentifier(smokeDbName)}`);
-      } catch {}
-    }
+    databasesToDrop.push(smokeDbName);
   }
-  smokeCredential.cleanup();
+  cleanupResources(databasesToDrop, smokeCredential);
 }

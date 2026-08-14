@@ -2120,7 +2120,7 @@ function prepareCanonicalReleaseRoles(url) {
 }
 
 function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
-  let cleanup = () => undefined;
+  let cleanup;
   let executable;
   let childArgs;
   let childEnvironment;

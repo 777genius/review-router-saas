@@ -11,7 +11,15 @@ export type RuntimeDatabaseIdentity = Readonly<{
 }>;
 
 const opaqueIdentity = /^[A-Za-z0-9._:-]{1,255}$/u;
-const databaseName = /^[^\u0000-\u001f\u007f]{1,63}$/u;
+
+function databaseNameIsCanonical(value: string): boolean {
+  if (value.length < 1 || value.length > 63) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const codePoint = value.codePointAt(index)!;
+    if (codePoint <= 0x1f || codePoint === 0x7f) return false;
+  }
+  return true;
+}
 
 export function runtimeDatabaseIdentityIsCanonical(
   value: RuntimeDatabaseIdentity | null | undefined,
@@ -24,7 +32,7 @@ export function runtimeDatabaseIdentityIsCanonical(
     typeof value.databaseName === "string" &&
     opaqueIdentity.test(value.serverIdentity) &&
     opaqueIdentity.test(value.databaseIdentity) &&
-    databaseName.test(value.databaseName)
+    databaseNameIsCanonical(value.databaseName)
   );
 }
 

@@ -247,7 +247,10 @@ class FakeAuthority implements RecoveryEffectAuthorityPort {
 
 const input = (
   authority: FakeAuthority,
-  effect = vi.fn(async (_permit: unknown) => "ok"),
+  effect = vi.fn(async (permit: unknown) => {
+    void permit;
+    return "ok";
+  }),
 ) => {
   const authorizedEffect = async (
     permit: Readonly<{
@@ -373,7 +376,10 @@ describe("authority-mediated recovery effects", () => {
   });
   it("authorizes only one same-owner concurrent execution", async () => {
     const authority = new FakeAuthority();
-    const effect = vi.fn(async (_permit: unknown) => "ok");
+    const effect = vi.fn(async (permit: unknown) => {
+      void permit;
+      return "ok";
+    });
     const test = input(authority, effect);
     const [first, second] = await Promise.all([
       test.protocol.execute(test.value),
