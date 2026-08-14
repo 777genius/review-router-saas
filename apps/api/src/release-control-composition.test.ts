@@ -442,6 +442,10 @@ describe("release authority process composition", () => {
       receiptSha256: `sha256:${"e".repeat(64)}`,
       canonicalPrivilegesSha256: `sha256:${"1".repeat(64)}`,
       catalogFactsSha256: `sha256:${"2".repeat(64)}`,
+      beforePrincipalInventorySha256: `sha256:${"4".repeat(64)}`,
+      beforePrincipalPolicySha256: `sha256:${"5".repeat(64)}`,
+      activatedPrincipalInventorySha256: `sha256:${"6".repeat(64)}`,
+      activatedPrincipalPolicySha256: `sha256:${"8".repeat(64)}`,
       transactionId: "12345",
       firstWriteReceiptSha256: `sha256:${"3".repeat(64)}`,
       firstWriteBoundary: true as const,
@@ -464,8 +468,19 @@ describe("release authority process composition", () => {
     const readerOperation = vi.fn().mockResolvedValue([
       {
         value: {
+          rolloutId: receipt.rolloutId,
+          expectedCommitSha: receipt.expectedCommitSha,
+          sourceSystemIdentifier: receipt.sourceSystemIdentifier,
+          targetSystemIdentifier: receipt.targetSystemIdentifier,
           canonicalPrivilegesSha256: receipt.canonicalPrivilegesSha256,
           catalogFactsSha256: receipt.catalogFactsSha256,
+          beforePrincipalInventorySha256:
+            receipt.beforePrincipalInventorySha256,
+          beforePrincipalPolicySha256: receipt.beforePrincipalPolicySha256,
+          activatedPrincipalInventorySha256:
+            receipt.activatedPrincipalInventorySha256,
+          activatedPrincipalPolicySha256:
+            receipt.activatedPrincipalPolicySha256,
           transactionId: receipt.transactionId,
           firstWriteReceiptSha256: receipt.firstWriteReceiptSha256,
           firstWriteBoundary: receipt.firstWriteBoundary,
@@ -474,6 +489,7 @@ describe("release authority process composition", () => {
           permitEpoch: receipt.permitEpoch,
           permitNonce: receipt.permitNonce,
           targetDeployIds: receipt.targetDeployIds,
+          activatedAt: receipt.observedAt,
         },
       },
     ]);

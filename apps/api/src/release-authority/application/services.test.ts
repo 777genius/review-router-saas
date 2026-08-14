@@ -3,6 +3,7 @@ import type {
   ActivationAuthorization,
   ActivationReceipt,
 } from "@reviewrouter/features-release-rollout";
+import { sha256Canonical } from "@reviewrouter/features-release-rollout";
 import {
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
@@ -44,6 +45,10 @@ const targetReceipt: ActivationReceipt = {
   receiptSha256: `sha256:${"e".repeat(64)}`,
   canonicalPrivilegesSha256: `sha256:${"1".repeat(64)}`,
   catalogFactsSha256: `sha256:${"2".repeat(64)}`,
+  beforePrincipalInventorySha256: `sha256:${"4".repeat(64)}`,
+  beforePrincipalPolicySha256: `sha256:${"5".repeat(64)}`,
+  activatedPrincipalInventorySha256: `sha256:${"6".repeat(64)}`,
+  activatedPrincipalPolicySha256: `sha256:${"7".repeat(64)}`,
   transactionId: "12345",
   firstWriteReceiptSha256: `sha256:${"3".repeat(64)}`,
   firstWriteBoundary: true,
@@ -61,6 +66,11 @@ const targetFacts: TargetActivationFacts = {
   targetSystemIdentifier: targetReceipt.targetSystemIdentifier,
   canonicalPrivilegesSha256: targetReceipt.canonicalPrivilegesSha256,
   catalogFactsSha256: targetReceipt.catalogFactsSha256,
+  beforePrincipalInventorySha256: targetReceipt.beforePrincipalInventorySha256,
+  beforePrincipalPolicySha256: targetReceipt.beforePrincipalPolicySha256,
+  activatedPrincipalInventorySha256:
+    targetReceipt.activatedPrincipalInventorySha256,
+  activatedPrincipalPolicySha256: targetReceipt.activatedPrincipalPolicySha256,
   transactionId: targetReceipt.transactionId,
   firstWriteReceiptSha256: targetReceipt.firstWriteReceiptSha256,
   firstWriteBoundary: targetReceipt.firstWriteBoundary,
@@ -103,6 +113,23 @@ describe("independent target activation receipt verification", () => {
         activationReceipt: {
           ...targetReceipt,
           transactionId: "forged",
+        },
+      }),
+    ).rejects.toThrow("target_activation_receipt_mismatch");
+    expect(fixture.finalizeActivation).not.toHaveBeenCalled();
+  });
+
+  it("rejects swapped proposed principal evidence", async () => {
+    const fixture = service(targetFacts);
+    await expect(
+      fixture.service.finalize({
+        ...finalizeInput,
+        activationReceipt: {
+          ...targetReceipt,
+          beforePrincipalInventorySha256:
+            targetReceipt.beforePrincipalPolicySha256,
+          beforePrincipalPolicySha256:
+            targetReceipt.beforePrincipalInventorySha256,
         },
       }),
     ).rejects.toThrow("target_activation_receipt_mismatch");
@@ -171,6 +198,66 @@ describe("target-aware uncertain activation reconciliation", () => {
 
   it("reconstructs the exact immutable receipt chain from matching target facts", async () => {
     const input = await reconcileWith(targetFacts);
+    const directFacts = {
+      rolloutId: targetFacts.rolloutId,
+      sourceSystemIdentifier: targetFacts.sourceSystemIdentifier,
+      targetSystemIdentifier: targetFacts.targetSystemIdentifier,
+      postgresMajor: targetFacts.postgresMajor,
+      expectedCommitSha: targetFacts.expectedCommitSha,
+      migrationChecksum: targetFacts.migrationChecksum,
+      targetDeployIds: targetFacts.targetDeployIds,
+      permitEpoch: targetFacts.permitEpoch,
+      permitNonce: targetFacts.permitNonce,
+      canonicalPrivilegesSha256: targetFacts.canonicalPrivilegesSha256,
+      catalogFactsSha256: targetFacts.catalogFactsSha256,
+      beforePrincipalInventorySha256:
+        targetFacts.beforePrincipalInventorySha256,
+      beforePrincipalPolicySha256: targetFacts.beforePrincipalPolicySha256,
+      activatedPrincipalInventorySha256:
+        targetFacts.activatedPrincipalInventorySha256,
+      activatedPrincipalPolicySha256:
+        targetFacts.activatedPrincipalPolicySha256,
+      firstWriteReceiptSha256: targetFacts.firstWriteReceiptSha256,
+      transactionId: targetFacts.transactionId,
+      activatedAt: targetFacts.activatedAt,
+      firstWriteBoundary: true as const,
+      observationSha256: targetFacts.activationObservationSha256,
+    };
+    const directActivationBase = {
+      step: "activate_target_generation" as const,
+      receiptId: `${authorization.rolloutId}:activate_target_generation:14`,
+      observedAt: targetFacts.activatedAt,
+      rolloutId: authorization.rolloutId,
+      expectedCommitSha: authorization.expectedCommitSha,
+      runId: targetReceipt.runId,
+      runAttempt: targetReceipt.runAttempt,
+      sourceSystemIdentifier: authorization.sourceSystemIdentifier,
+      targetSystemIdentifier: authorization.targetSystemIdentifier,
+      provider: undefined,
+      observationSha256: `sha256:${sha256Canonical(directFacts)}`,
+      previousReceiptSha256: authorization.previousReceiptSha256,
+      canonicalPrivilegesSha256: targetFacts.canonicalPrivilegesSha256,
+      catalogFactsSha256: targetFacts.catalogFactsSha256,
+      beforePrincipalInventorySha256:
+        targetFacts.beforePrincipalInventorySha256,
+      beforePrincipalPolicySha256: targetFacts.beforePrincipalPolicySha256,
+      activatedPrincipalInventorySha256:
+        targetFacts.activatedPrincipalInventorySha256,
+      activatedPrincipalPolicySha256:
+        targetFacts.activatedPrincipalPolicySha256,
+      transactionId: targetFacts.transactionId,
+      firstWriteReceiptSha256: targetFacts.firstWriteReceiptSha256,
+      firstWriteBoundary: true as const,
+      postgresMajor: targetFacts.postgresMajor,
+      migrationChecksum: targetFacts.migrationChecksum,
+      permitEpoch: targetFacts.permitEpoch,
+      permitNonce: targetFacts.permitNonce,
+      targetDeployIds: targetFacts.targetDeployIds,
+    };
+    const directReceipt = {
+      ...directActivationBase,
+      receiptSha256: `sha256:${sha256Canonical(directActivationBase)}`,
+    };
     expect(input.targetObservation.kind).toBe("matching_activation_receipt");
     expect(input.targetObservation.authorization).toEqual(authorization);
     expect(input.targetObservation.activationReceipt).toMatchObject({
@@ -184,6 +271,10 @@ describe("target-aware uncertain activation reconciliation", () => {
     });
     expect(input.targetObservation.nextReceiptSha256).toBe(
       input.targetObservation.activationReceipt.receiptSha256,
+    );
+    expect(input.targetObservation.activationReceipt).toEqual(directReceipt);
+    expect(input.targetObservation.nextReceiptSha256).toBe(
+      directReceipt.receiptSha256,
     );
   });
 

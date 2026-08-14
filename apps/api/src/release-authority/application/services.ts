@@ -84,6 +84,14 @@ export class ReleaseAuthorityService {
       proposed.canonicalPrivilegesSha256 !==
         receipt.canonicalPrivilegesSha256 ||
       proposed.catalogFactsSha256 !== receipt.catalogFactsSha256 ||
+      proposed.beforePrincipalInventorySha256 !==
+        receipt.beforePrincipalInventorySha256 ||
+      proposed.beforePrincipalPolicySha256 !==
+        receipt.beforePrincipalPolicySha256 ||
+      proposed.activatedPrincipalInventorySha256 !==
+        receipt.activatedPrincipalInventorySha256 ||
+      proposed.activatedPrincipalPolicySha256 !==
+        receipt.activatedPrincipalPolicySha256 ||
       proposed.transactionId !== receipt.transactionId ||
       proposed.firstWriteReceiptSha256 !== receipt.firstWriteReceiptSha256 ||
       proposed.firstWriteBoundary !== receipt.firstWriteBoundary ||
@@ -324,6 +332,10 @@ function targetMatchesAuthorization(
     target.firstWriteBoundary === true &&
     digest.test(target.canonicalPrivilegesSha256) &&
     digest.test(target.catalogFactsSha256) &&
+    digest.test(target.beforePrincipalInventorySha256) &&
+    digest.test(target.beforePrincipalPolicySha256) &&
+    digest.test(target.activatedPrincipalInventorySha256) &&
+    digest.test(target.activatedPrincipalPolicySha256) &&
     digest.test(target.firstWriteReceiptSha256) &&
     digest.test(target.activationObservationSha256) &&
     /^[0-9]+$/u.test(target.transactionId) &&
@@ -351,6 +363,10 @@ function activationReceiptFromTarget(
     permitNonce: target.permitNonce,
     canonicalPrivilegesSha256: target.canonicalPrivilegesSha256,
     catalogFactsSha256: target.catalogFactsSha256,
+    beforePrincipalInventorySha256: target.beforePrincipalInventorySha256,
+    beforePrincipalPolicySha256: target.beforePrincipalPolicySha256,
+    activatedPrincipalInventorySha256: target.activatedPrincipalInventorySha256,
+    activatedPrincipalPolicySha256: target.activatedPrincipalPolicySha256,
     firstWriteReceiptSha256: target.firstWriteReceiptSha256,
     transactionId: target.transactionId,
     activatedAt: target.activatedAt,
@@ -372,6 +388,10 @@ function activationReceiptFromTarget(
     previousReceiptSha256: authorization.previousReceiptSha256,
     canonicalPrivilegesSha256: target.canonicalPrivilegesSha256,
     catalogFactsSha256: target.catalogFactsSha256,
+    beforePrincipalInventorySha256: target.beforePrincipalInventorySha256,
+    beforePrincipalPolicySha256: target.beforePrincipalPolicySha256,
+    activatedPrincipalInventorySha256: target.activatedPrincipalInventorySha256,
+    activatedPrincipalPolicySha256: target.activatedPrincipalPolicySha256,
     transactionId: target.transactionId,
     firstWriteReceiptSha256: target.firstWriteReceiptSha256,
     firstWriteBoundary: true as const,

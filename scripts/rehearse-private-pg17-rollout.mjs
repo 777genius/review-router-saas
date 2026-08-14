@@ -33,10 +33,10 @@ import { createReleaseControlApp } from "../apps/api/src/release-control-composi
 import { observeReleaseAuthorityDatabaseReadiness } from "../apps/api/src/release-authority/adapters/postgres-readiness.ts";
 import { PostgresCleanupObservationAdapter } from "../apps/api/src/release-witness-adapters.ts";
 import {
-  canonicalActivationSql,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
   activationAuthorityProvisioningSql,
+  activationRoutineBodyTrustRoots,
   roleProvisioningSql,
   runtimeGrantSql,
 } from "./run-codex-rotating-release-migration.mjs";
@@ -606,6 +606,7 @@ ROLLBACK;`,
         target,
         `SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('${signature}')`,
       );
+    const activationTrustRoots = activationRoutineBodyTrustRoots();
     const trustedDatabaseIdentity = {
       authorityDatabaseIdentity: {
         serverIdentity: sql(
@@ -632,9 +633,8 @@ ROLLBACK;`,
         "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='release_authority'",
       ),
       activationGuardRoleName: "reviewrouter_activation_receipt_guard",
-      installerRoutineBodySha256: routineBodySha256(
-        "reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)",
-      ),
+      installerRoutineBodySha256:
+        activationTrustRoots.installerRoutineBodySha256,
       readerRoutineBodySha256: routineBodySha256(
         "reviewrouter_activation.read_activation_receipt(text)",
       ),
@@ -1182,10 +1182,8 @@ async function verifyProductionPathRehearsal(facts) {
   const generated = {
     roleBootstrapSha256: `sha256:${sha256Canonical(roleProvisioningSql(sqlConfiguration))}`,
     migrationSha256: `sha256:${sha256Canonical(runtimeGrantSql(sqlConfiguration, { gateClosed: true }))}`,
-    activation: canonicalActivationSql(sqlConfiguration, {
-      rolloutId: "disposable-rehearsal",
-    }),
   };
+  let activationSqlSha256;
   const catalogSha256 = {
     sequences: digest,
     columnsDefaults: digest,
@@ -1571,11 +1569,17 @@ COMMIT;
         });
       },
       activate: async (rolloutId) => {
-        return executePrivateGenerationActivation(
+        const activation = executePrivateGenerationActivation(
           { ...facts.canonicalEnv, REVIEW_ROUTER_ROLLOUT_ID: rolloutId },
           activationCommands,
-          { draftPolicyForDisposableRehearsal: true },
+          {
+            draftPolicyForDisposableRehearsal: true,
+            captureActivationSqlSha256: (value) => {
+              activationSqlSha256 = value;
+            },
+          },
         );
+        return activation;
       },
       compensateSource: async () =>
         observed(RolloutStep.CompleteCompensation, { aclRestored: true }),
@@ -1961,8 +1965,9 @@ COMMIT;
     generated: {
       roleBootstrapSha256: generated.roleBootstrapSha256,
       migrationSha256: generated.migrationSha256,
-      activationSqlSha256: `sha256:${sha256Canonical(generated.activation.sql)}`,
-      canonicalPrivilegesSha256: generated.activation.canonicalPrivilegesSha256,
+      activationSqlSha256,
+      canonicalPrivilegesSha256:
+        rollout.activationReceipt?.canonicalPrivilegesSha256,
     },
     receiptCount: rollout.receipts.length,
     sourceBanProven,

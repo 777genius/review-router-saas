@@ -81,8 +81,13 @@ const observeOnConnection = async (
       coalesce((SELECT pg_get_userbyid(nspowner) FROM pg_namespace
         WHERE nspname='release_authority'),'') AS "authorityOwnerRoleName",
       to_regnamespace('release_authority') IS NOT NULL AS "authorityPresent",
-      coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc
-        WHERE oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)')),'')
+      coalesce((SELECT encode(sha256(convert_to(string_agg(body_sha256, ':' ORDER BY ordinal),'UTF8')),'hex')
+        FROM (VALUES
+          (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)')),'')),
+          (2,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')),'')),
+          (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text)')),'')),
+          (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text,jsonb)')),''))
+        ) bodies(ordinal,body_sha256))),'')
         AS "installerRoutineBodySha256",
       coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc
         WHERE oid=to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')),'')
@@ -92,13 +97,14 @@ const observeOnConnection = async (
         ELSE 'sha256:' || ${Prisma.raw(activationCatalogDigest)} END
         AS "activationNamespaceFingerprint",
       false AS "authorityRoleTopologyExact",
-      coalesce((SELECT count(*)=2 AND bool_and(c.relkind='r'
+      coalesce((SELECT count(*)=3 AND bool_and(c.relkind='r'
           AND c.relowner=guard.oid
           AND (SELECT count(*) FROM pg_attribute attribute
             WHERE attribute.attrelid=c.oid AND attribute.attnum>0
               AND NOT attribute.attisdropped) = CASE c.relname
                 WHEN 'activation_permit' THEN 11
-                WHEN 'activation_receipt' THEN 14
+                WHEN 'activation_receipt' THEN 18
+                WHEN 'activation_principal_evidence' THEN 19
               END
           AND NOT EXISTS (SELECT 1 FROM unnest(CASE c.relname
               WHEN 'activation_permit' THEN ARRAY['rollout_id','source_system_identifier',
@@ -109,7 +115,17 @@ const observeOnConnection = async (
                 'target_system_identifier','postgres_major','expected_commit_sha',
                 'migration_checksum','target_deploy_ids','permit_epoch','permit_nonce',
                 'canonical_privileges_sha256','catalog_facts_sha256',
+                'before_principal_inventory_sha256','before_principal_policy_sha256',
+                'activated_principal_inventory_sha256','activated_principal_policy_sha256',
                 'first_write_receipt_sha256','transaction_id','activated_at']
+              WHEN 'activation_principal_evidence' THEN ARRAY['rollout_id',
+                'source_system_identifier','target_system_identifier','postgres_major',
+                'expected_commit_sha','migration_checksum','target_deploy_ids',
+                'permit_epoch','permit_nonce','before_inventory','before_policy',
+                'activated_inventory','activated_policy',
+                'before_principal_inventory_sha256','before_principal_policy_sha256',
+                'activated_principal_inventory_sha256','activated_principal_policy_sha256',
+                'transaction_id','staged_at']
               END) expected_column
             WHERE NOT EXISTS (SELECT 1 FROM pg_attribute attribute
               WHERE attribute.attrelid=c.oid AND attribute.attnum>0
@@ -123,15 +139,16 @@ const observeOnConnection = async (
               AND NOT attribute.attisdropped AND (
                 attribute.atttypid IS DISTINCT FROM CASE
                   WHEN attribute.attname IN ('postgres_major') THEN 'integer'::regtype
-                  WHEN attribute.attname IN ('target_deploy_ids') THEN 'jsonb'::regtype
+                  WHEN attribute.attname IN ('target_deploy_ids','before_inventory','before_policy',
+                    'activated_inventory','activated_policy') THEN 'jsonb'::regtype
                   WHEN attribute.attname IN ('permit_epoch','transaction_id') THEN 'bigint'::regtype
-                  WHEN attribute.attname IN ('installed_at','consumed_at','activated_at') THEN 'timestamptz'::regtype
+                  WHEN attribute.attname IN ('installed_at','consumed_at','activated_at','staged_at') THEN 'timestamptz'::regtype
                   ELSE 'text'::regtype END
                 OR attribute.attnotnull IS DISTINCT FROM
                   (attribute.attname<>'consumed_at')
                 OR coalesce(pg_get_expr(default_record.adbin,default_record.adrelid),'')
                   IS DISTINCT FROM CASE
-                    WHEN attribute.attname IN ('installed_at','activated_at')
+                    WHEN attribute.attname IN ('installed_at','activated_at','staged_at')
                       THEN 'transaction_timestamp()'
                     ELSE '' END))
           AND (SELECT jsonb_object_agg(contype,count ORDER BY contype)
@@ -142,7 +159,8 @@ const observeOnConnection = async (
               GROUP BY constraint_record.contype) constraint_counts)
             = CASE c.relname
                 WHEN 'activation_permit' THEN '{"c":10,"p":1,"u":1}'::jsonb
-                WHEN 'activation_receipt' THEN '{"p":1,"u":1}'::jsonb
+                WHEN 'activation_receipt' THEN '{"c":1,"p":1,"u":1}'::jsonb
+                WHEN 'activation_principal_evidence' THEN '{"p":1}'::jsonb
               END
           AND EXISTS (SELECT 1 FROM pg_constraint constraint_record
             WHERE constraint_record.conrelid=c.oid AND constraint_record.contype='p'
@@ -151,7 +169,7 @@ const observeOnConnection = async (
                 JOIN pg_attribute attribute ON attribute.attrelid=c.oid
                   AND attribute.attnum=keyed.attnum ORDER BY keyed.ordinality)
                 = ARRAY['rollout_id'])
-          AND EXISTS (SELECT 1 FROM pg_constraint constraint_record
+          AND (c.relname='activation_principal_evidence' OR EXISTS (SELECT 1 FROM pg_constraint constraint_record
             WHERE constraint_record.conrelid=c.oid AND constraint_record.contype='u'
               AND ARRAY(SELECT attribute.attname::text
                 FROM unnest(constraint_record.conkey) WITH ORDINALITY keyed(attnum,ordinality)
@@ -160,7 +178,7 @@ const observeOnConnection = async (
                 = CASE c.relname
                     WHEN 'activation_permit' THEN ARRAY['permit_epoch','permit_nonce']
                     WHEN 'activation_receipt' THEN ARRAY['target_system_identifier']
-                  END)
+                  END))
           AND NOT EXISTS (
             SELECT 1
             FROM aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) acl
@@ -181,7 +199,7 @@ const observeOnConnection = async (
           AND guard.rolname='reviewrouter_activation_receipt_guard'
           AND installer.rolname='reviewrouter_activation_permit_installer'
           AND reader.rolname='reviewrouter_activation_receipt_reader'
-          AND c.relname IN ('activation_permit','activation_receipt')),false)
+          AND c.relname IN ('activation_permit','activation_receipt','activation_principal_evidence')),false)
         AND coalesce((SELECT n.nspowner=guard.oid AND NOT EXISTS (
             SELECT 1 FROM unnest(ARRAY['USAGE','CREATE']) privilege
             WHERE has_schema_privilege('public',n.oid,privilege))
@@ -198,13 +216,15 @@ const observeOnConnection = async (
           FROM pg_namespace n CROSS JOIN pg_roles guard
           WHERE n.nspname='reviewrouter_activation'
             AND guard.rolname='reviewrouter_activation_receipt_guard'),false)
-        AND coalesce((SELECT count(*)=2 AND bool_and(p.prosecdef
+        AND coalesce((SELECT count(*)=4 AND bool_and(p.prosecdef
             AND p.proowner=guard.oid AND NOT has_function_privilege('public',p.oid,'EXECUTE'))
           FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           CROSS JOIN pg_roles guard WHERE n.nspname='reviewrouter_activation'
             AND guard.rolname='reviewrouter_activation_receipt_guard'
             AND p.oid IN (to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
-              to_regprocedure('reviewrouter_activation.activate_generation(text)'))),false)
+              to_regprocedure('reviewrouter_activation.canonical_json(jsonb)'),
+              to_regprocedure('reviewrouter_activation.activate_generation(text,jsonb)'),
+              to_regprocedure('reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text)'))),false)
         AND coalesce((SELECT
           has_table_privilege(guard.oid,
             to_regclass('public."_prisma_migrations"'),'SELECT')
@@ -314,7 +334,7 @@ const observeOnConnection = async (
             WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
               AND NOT EXISTS (SELECT 1 FROM pg_roles grantee
                 WHERE grantee.oid=acl.grantee
-                  AND grantee.rolname='reviewrouter_activation_receipt_reader'))
+                  AND grantee.rolname IN ('reviewrouter_activation_receipt_reader','reviewrouter_release_migration')))
         FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
         WHERE p.oid=to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')),false)
         AS "readerRoutine"

@@ -73,6 +73,27 @@ Quoted PostgreSQL names are represented literally in JSON. Generate and review
 them from a disposable, production-shaped catalog; never copy live discovery
 output into the allowlist without review.
 
+Activation principal evidence uses a single-session staged transaction. The
+CLI validates the reviewed pre-activation policy against the observed target
+inventory and validates the activated policy against a rollback-only preview
+of the canonical grants. That validator and SQL generator execute from the
+exact release commit named by the independently installed permit; the guard
+also requires the target's consumed migration evidence for that commit before
+it can finalize the attestation. In the committing transaction, the target guard
+locks the one-shot permit, compares a fresh pre-grant inventory with the exact
+validated inventory, and stages both canonical inventories, both canonical
+policies, and their four independently recomputed digests with the permit and
+target identity. After the grants, the guard compares a fresh activated
+inventory with that stage and accepts activation only when the stage's
+transaction ID is the current transaction. The immutable receipt binds those
+digests into its first-write hash beside the migration and catalog facts. A
+rollback removes the stage; a committed receipt can be returned directly on
+replay or reconstructed by the receipt reader without observing the catalogs
+again. Missing, malformed, swapped, or stale evidence therefore fails closed.
+The activation SQL generator also pins the SHA-256 trust root of the exact
+effective-principal catalog projection, so a weaker observation query cannot
+be substituted at either preview or commit time.
+
 Protected environment secrets:
 
 | Environment                     | Secrets                                                                                                                                                                                 |
@@ -184,7 +205,10 @@ verifier or upgraded without rerunning the current preflight verification.
    tuple. Capture each multi-field tuple in one read-only, repeatable-read
    transaction. Never derive identity by comparing configured database URLs;
    two databases on one cluster share a system identifier, and a restored stale
-   clone can make URLs agree.
+   clone can make URLs agree. The installer hash is intentionally an aggregate
+   trust root over permit installation, canonical JSON, principal-evidence
+   staging, and final activation bodies; it is not merely the installer
+   function's body hash.
 
 3. Pre-provision target roles and the `reviewrouter_activation` guard. Role
    bootstrap must prove the guard has no membership edges, installer has only

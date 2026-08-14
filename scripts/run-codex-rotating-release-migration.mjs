@@ -102,6 +102,11 @@ const activationPermitInstallerRoleName =
   "reviewrouter_activation_permit_installer";
 const activationReceiptReaderRoleName =
   "reviewrouter_activation_receipt_reader";
+// Trust root for the exact PostgreSQL catalog projection imported by the
+// activation caller. This prevents a caller from substituting a weaker live
+// observation query while retaining the staged-evidence routine contract.
+export const effectivePrincipalInventorySqlSha256 =
+  "608ff7593acab2a387fce2c11fc4a89615206edaad070f1149200033c61c2743";
 
 export function activationAuthorityProvisioningSql() {
   return `\\set ON_ERROR_STOP on
@@ -314,12 +319,71 @@ CREATE TABLE IF NOT EXISTS reviewrouter_activation.activation_receipt (
   permit_nonce text NOT NULL,
   canonical_privileges_sha256 text NOT NULL,
   catalog_facts_sha256 text NOT NULL,
+  before_principal_inventory_sha256 text NOT NULL,
+  before_principal_policy_sha256 text NOT NULL,
+  activated_principal_inventory_sha256 text NOT NULL,
+  activated_principal_policy_sha256 text NOT NULL,
   first_write_receipt_sha256 text NOT NULL,
   transaction_id bigint NOT NULL,
   activated_at timestamptz NOT NULL DEFAULT transaction_timestamp()
 );
+ALTER TABLE reviewrouter_activation.activation_receipt
+  ADD COLUMN IF NOT EXISTS before_principal_inventory_sha256 text,
+  ADD COLUMN IF NOT EXISTS before_principal_policy_sha256 text,
+  ADD COLUMN IF NOT EXISTS activated_principal_inventory_sha256 text,
+  ADD COLUMN IF NOT EXISTS activated_principal_policy_sha256 text;
+DO $principal_evidence_upgrade$
+BEGIN
+  IF EXISTS (SELECT 1 FROM reviewrouter_activation.activation_receipt WHERE
+    before_principal_inventory_sha256 IS NULL OR before_principal_policy_sha256 IS NULL OR
+    activated_principal_inventory_sha256 IS NULL OR activated_principal_policy_sha256 IS NULL) THEN
+    RAISE EXCEPTION 'legacy activation receipt lacks principal evidence';
+  END IF;
+END
+$principal_evidence_upgrade$;
+ALTER TABLE reviewrouter_activation.activation_receipt
+  ALTER COLUMN before_principal_inventory_sha256 SET NOT NULL,
+  ALTER COLUMN before_principal_policy_sha256 SET NOT NULL,
+  ALTER COLUMN activated_principal_inventory_sha256 SET NOT NULL,
+  ALTER COLUMN activated_principal_policy_sha256 SET NOT NULL;
+DO $principal_evidence_constraint$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE
+    conrelid='reviewrouter_activation.activation_receipt'::regclass
+    AND conname='activation_receipt_principal_evidence_valid') THEN
+    ALTER TABLE reviewrouter_activation.activation_receipt ADD CONSTRAINT
+      activation_receipt_principal_evidence_valid CHECK (
+        before_principal_inventory_sha256 ~ '^sha256:[a-f0-9]{64}$' AND
+        before_principal_policy_sha256 ~ '^sha256:[a-f0-9]{64}$' AND
+        activated_principal_inventory_sha256 ~ '^sha256:[a-f0-9]{64}$' AND
+        activated_principal_policy_sha256 ~ '^sha256:[a-f0-9]{64}$');
+  END IF;
+END
+$principal_evidence_constraint$;
+CREATE TABLE IF NOT EXISTS reviewrouter_activation.activation_principal_evidence (
+  rollout_id text PRIMARY KEY,
+  source_system_identifier text NOT NULL,
+  target_system_identifier text NOT NULL,
+  postgres_major integer NOT NULL,
+  expected_commit_sha text NOT NULL,
+  migration_checksum text NOT NULL,
+  target_deploy_ids jsonb NOT NULL,
+  permit_epoch bigint NOT NULL,
+  permit_nonce text NOT NULL,
+  before_inventory jsonb NOT NULL,
+  before_policy jsonb NOT NULL,
+  activated_inventory jsonb NOT NULL,
+  activated_policy jsonb NOT NULL,
+  before_principal_inventory_sha256 text NOT NULL,
+  before_principal_policy_sha256 text NOT NULL,
+  activated_principal_inventory_sha256 text NOT NULL,
+  activated_principal_policy_sha256 text NOT NULL,
+  transaction_id bigint NOT NULL,
+  staged_at timestamptz NOT NULL DEFAULT transaction_timestamp()
+);
 ALTER TABLE reviewrouter_activation.activation_permit OWNER TO ${activationReceiptGuardRoleName};
 ALTER TABLE reviewrouter_activation.activation_receipt OWNER TO ${activationReceiptGuardRoleName};
+ALTER TABLE reviewrouter_activation.activation_principal_evidence OWNER TO ${activationReceiptGuardRoleName};
 REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM ${activationPermitInstallerRoleName};
 REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM ${activationReceiptReaderRoleName};
@@ -345,6 +409,8 @@ BEGIN
      OR jsonb_typeof(requested_target_deploy_ids) <> 'array'
      OR jsonb_array_length(requested_target_deploy_ids) < 1
      OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(requested_target_deploy_ids) value WHERE value !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$')
+     OR (SELECT count(DISTINCT value) FROM jsonb_array_elements_text(requested_target_deploy_ids) value)
+        <> jsonb_array_length(requested_target_deploy_ids)
      OR requested_permit_epoch < 1
      OR requested_permit_nonce !~ '^[a-f0-9]{32}$' THEN
     RAISE EXCEPTION 'activation permit invalid';
@@ -396,18 +462,147 @@ REVOKE ALL ON FUNCTION reviewrouter_activation.assert_no_activation_receipt() FR
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA reviewrouter_activation FROM ${canonicalBootstrapRoleName};
 GRANT USAGE ON SCHEMA reviewrouter_activation TO ${canonicalBootstrapRoleName};
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.assert_no_activation_receipt() TO ${canonicalBootstrapRoleName};
+CREATE OR REPLACE FUNCTION reviewrouter_activation.canonical_json(value jsonb)
+RETURNS text LANGUAGE sql IMMUTABLE SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp AS $canonical_json$
+SELECT CASE jsonb_typeof(value)
+  WHEN 'object' THEN '{' || coalesce((SELECT string_agg(to_json(key)::text || ':' ||
+    reviewrouter_activation.canonical_json(item), ',' ORDER BY key)
+    FROM jsonb_each(value) entry(key,item)), '') || '}'
+  WHEN 'array' THEN '[' || coalesce((SELECT string_agg(
+    reviewrouter_activation.canonical_json(item), ',' ORDER BY ordinal)
+    FROM jsonb_array_elements(value) WITH ORDINALITY entry(item,ordinal)), '') || ']'
+  ELSE value::text END
+$canonical_json$;
+ALTER FUNCTION reviewrouter_activation.canonical_json(jsonb) OWNER TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.canonical_json(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION reviewrouter_activation.canonical_json(jsonb) FROM ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName}, ${canonicalBootstrapRoleName}, reviewrouter_release_migration;
+CREATE OR REPLACE FUNCTION reviewrouter_activation.stage_principal_evidence(
+  requested_rollout_id text, observed_before_inventory jsonb,
+  expected_before_inventory jsonb, expected_before_policy jsonb,
+  expected_activated_inventory jsonb, expected_activated_policy jsonb,
+  requested_before_inventory_sha256 text, requested_before_policy_sha256 text,
+  requested_activated_inventory_sha256 text, requested_activated_policy_sha256 text
+) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp AS $stage_principal_evidence$
+DECLARE permit reviewrouter_activation.activation_permit%ROWTYPE;
+DECLARE existing reviewrouter_activation.activation_principal_evidence%ROWTYPE;
+DECLARE live_system_identifier text;
+DECLARE live_migration_checksum text;
+BEGIN
+  IF session_user <> 'reviewrouter_release_migration' THEN
+    RAISE EXCEPTION 'principal evidence caller invalid';
+  END IF;
+  SELECT * INTO permit FROM reviewrouter_activation.activation_permit
+  WHERE rollout_id=requested_rollout_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'activation permit absent'; END IF;
+  IF EXISTS (SELECT 1 FROM reviewrouter_activation.activation_receipt
+    WHERE rollout_id=requested_rollout_id) THEN RETURN false; END IF;
+  SELECT system_identifier::text INTO live_system_identifier FROM pg_catalog.pg_control_system();
+  SELECT 'sha256:' || encode(pg_catalog.sha256(convert_to(
+    coalesce(string_agg(migration_name || ':' || checksum, ',' ORDER BY migration_name), ''),
+    'UTF8')), 'hex') INTO live_migration_checksum
+  FROM public._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;
+  IF live_system_identifier <> permit.target_system_identifier
+     OR live_migration_checksum <> permit.migration_checksum
+     OR observed_before_inventory IS DISTINCT FROM expected_before_inventory
+     OR jsonb_typeof(expected_before_inventory) IS DISTINCT FROM 'object'
+     OR expected_before_inventory->>'version' IS DISTINCT FROM '1'
+     OR jsonb_typeof(expected_before_inventory->'roles') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(expected_before_inventory->'memberships') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(expected_before_inventory->'grants') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(expected_before_policy) IS DISTINCT FROM 'object'
+     OR expected_before_policy->>'version' IS DISTINCT FROM '1'
+     OR jsonb_typeof(expected_before_policy->'principals') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(expected_before_policy->'publicPermissions') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(expected_activated_inventory) IS DISTINCT FROM 'object'
+     OR expected_activated_inventory->>'version' IS DISTINCT FROM '1'
+     OR jsonb_typeof(expected_activated_inventory->'roles') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(expected_activated_inventory->'memberships') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(expected_activated_inventory->'grants') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(expected_activated_policy) IS DISTINCT FROM 'object'
+     OR expected_activated_policy->>'version' IS DISTINCT FROM '1'
+     OR jsonb_typeof(expected_activated_policy->'principals') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(expected_activated_policy->'publicPermissions') IS DISTINCT FROM 'array'
+     OR expected_before_inventory->>'database' IS DISTINCT FROM current_database()
+     OR expected_before_inventory->>'sessionPrincipal' IS DISTINCT FROM session_user
+     OR expected_activated_inventory->>'database' IS DISTINCT FROM current_database()
+     OR expected_activated_inventory->>'sessionPrincipal' IS DISTINCT FROM session_user
+     OR requested_before_inventory_sha256 !~ '^sha256:[a-f0-9]{64}$'
+     OR requested_before_policy_sha256 !~ '^sha256:[a-f0-9]{64}$'
+     OR requested_activated_inventory_sha256 !~ '^sha256:[a-f0-9]{64}$'
+     OR requested_activated_policy_sha256 !~ '^sha256:[a-f0-9]{64}$'
+     OR requested_before_inventory_sha256 <> 'sha256:' || encode(pg_catalog.sha256(convert_to(
+       reviewrouter_activation.canonical_json(expected_before_inventory),'UTF8')),'hex')
+     OR requested_before_policy_sha256 <> 'sha256:' || encode(pg_catalog.sha256(convert_to(
+       reviewrouter_activation.canonical_json(expected_before_policy),'UTF8')),'hex')
+     OR requested_activated_inventory_sha256 <> 'sha256:' || encode(pg_catalog.sha256(convert_to(
+       reviewrouter_activation.canonical_json(expected_activated_inventory),'UTF8')),'hex')
+     OR requested_activated_policy_sha256 <> 'sha256:' || encode(pg_catalog.sha256(convert_to(
+       reviewrouter_activation.canonical_json(expected_activated_policy),'UTF8')),'hex') THEN
+    RAISE EXCEPTION 'principal evidence invalid or stale';
+  END IF;
+  INSERT INTO reviewrouter_activation.activation_principal_evidence (
+    rollout_id,source_system_identifier,target_system_identifier,postgres_major,
+    expected_commit_sha,migration_checksum,target_deploy_ids,permit_epoch,permit_nonce,
+    before_inventory,before_policy,activated_inventory,activated_policy,
+    before_principal_inventory_sha256,before_principal_policy_sha256,
+    activated_principal_inventory_sha256,activated_principal_policy_sha256,transaction_id
+  ) VALUES (
+    permit.rollout_id,permit.source_system_identifier,permit.target_system_identifier,
+    permit.postgres_major,permit.expected_commit_sha,permit.migration_checksum,
+    permit.target_deploy_ids,permit.permit_epoch,permit.permit_nonce,
+    expected_before_inventory,expected_before_policy,expected_activated_inventory,
+    expected_activated_policy,requested_before_inventory_sha256,
+    requested_before_policy_sha256,requested_activated_inventory_sha256,
+    requested_activated_policy_sha256,txid_current()
+  ) ON CONFLICT (rollout_id) DO NOTHING;
+  IF FOUND THEN RETURN true; END IF;
+  SELECT * INTO existing FROM reviewrouter_activation.activation_principal_evidence
+  WHERE rollout_id=requested_rollout_id FOR UPDATE;
+  IF existing.source_system_identifier <> permit.source_system_identifier
+     OR existing.target_system_identifier <> permit.target_system_identifier
+     OR existing.postgres_major <> permit.postgres_major
+     OR existing.expected_commit_sha <> permit.expected_commit_sha
+     OR existing.migration_checksum <> permit.migration_checksum
+     OR existing.target_deploy_ids <> permit.target_deploy_ids
+     OR existing.permit_epoch <> permit.permit_epoch
+     OR existing.permit_nonce <> permit.permit_nonce
+     OR existing.before_inventory <> expected_before_inventory
+     OR existing.before_policy <> expected_before_policy
+     OR existing.activated_inventory <> expected_activated_inventory
+     OR existing.activated_policy <> expected_activated_policy
+     OR existing.before_principal_inventory_sha256 <> requested_before_inventory_sha256
+     OR existing.before_principal_policy_sha256 <> requested_before_policy_sha256
+     OR existing.activated_principal_inventory_sha256 <> requested_activated_inventory_sha256
+     OR existing.activated_principal_policy_sha256 <> requested_activated_policy_sha256 THEN
+    RAISE EXCEPTION 'principal evidence staging conflict';
+  END IF;
+  UPDATE reviewrouter_activation.activation_principal_evidence
+  SET transaction_id=txid_current(), staged_at=transaction_timestamp()
+  WHERE rollout_id=requested_rollout_id;
+  RETURN false;
+END
+$stage_principal_evidence$;
+ALTER FUNCTION reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text) OWNER TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text) FROM ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName}, ${canonicalBootstrapRoleName};
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text) TO reviewrouter_release_migration;
+DROP FUNCTION IF EXISTS reviewrouter_activation.activate_generation(text);
 CREATE OR REPLACE FUNCTION reviewrouter_activation.activate_generation(
-  requested_rollout_id text
+  requested_rollout_id text, observed_activated_inventory jsonb
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $activate$
 DECLARE permit reviewrouter_activation.activation_permit%ROWTYPE;
 DECLARE receipt reviewrouter_activation.activation_receipt%ROWTYPE;
+DECLARE principal_evidence reviewrouter_activation.activation_principal_evidence%ROWTYPE;
 DECLARE live_system_identifier text;
 DECLARE live_postgres_major integer;
 DECLARE live_migration_checksum text;
 DECLARE database_binding jsonb;
 DECLARE expected_acl_facts jsonb;
 DECLARE catalog_acl_facts jsonb;
+DECLARE activation_body_facts jsonb;
 DECLARE acl_is_canonical boolean;
 DECLARE canonical_privileges_sha256 text;
 DECLARE catalog_facts_sha256 text;
@@ -436,6 +631,24 @@ BEGIN
   ELSIF permit.consumed_at IS NOT NULL THEN
     RAISE EXCEPTION 'consumed activation permit has no receipt';
   END IF;
+  IF receipt.rollout_id IS NULL THEN
+    SELECT * INTO principal_evidence
+    FROM reviewrouter_activation.activation_principal_evidence
+    WHERE rollout_id=requested_rollout_id FOR UPDATE;
+    IF NOT FOUND
+       OR principal_evidence.transaction_id <> txid_current()
+       OR principal_evidence.source_system_identifier <> permit.source_system_identifier
+       OR principal_evidence.target_system_identifier <> permit.target_system_identifier
+       OR principal_evidence.postgres_major <> permit.postgres_major
+       OR principal_evidence.expected_commit_sha <> permit.expected_commit_sha
+       OR principal_evidence.migration_checksum <> permit.migration_checksum
+       OR principal_evidence.target_deploy_ids <> permit.target_deploy_ids
+       OR principal_evidence.permit_epoch <> permit.permit_epoch
+       OR principal_evidence.permit_nonce <> permit.permit_nonce
+       OR principal_evidence.activated_inventory IS DISTINCT FROM observed_activated_inventory THEN
+      RAISE EXCEPTION 'principal evidence is not transaction-bound to activation';
+    END IF;
+  END IF;
   SELECT system_identifier::text INTO live_system_identifier
     FROM pg_catalog.pg_control_system();
     live_postgres_major := current_setting('server_version_num')::integer / 10000;
@@ -459,7 +672,10 @@ BEGIN
        OR EXISTS (
          SELECT 1 FROM jsonb_array_elements_text(permit.target_deploy_ids) value
          WHERE value !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$'
-       ) THEN
+       )
+       OR (SELECT count(DISTINCT value)
+           FROM jsonb_array_elements_text(permit.target_deploy_ids) value)
+          <> jsonb_array_length(permit.target_deploy_ids) THEN
     RAISE EXCEPTION 'activation permit does not match live target';
   END IF;
   WITH runtime_roles(role_name, role_kind) AS (VALUES
@@ -633,8 +849,26 @@ BEGIN
   END IF;
   canonical_privileges_sha256 := 'sha256:' || encode(pg_catalog.sha256(convert_to(
     jsonb_build_object('policyVersion',1,'facts',expected_acl_facts)::text,'UTF8')),'hex');
+  SELECT jsonb_build_object(
+    'principalInventorySqlSha256','${effectivePrincipalInventorySqlSha256}',
+    'installPermitBodySha256',encode(pg_catalog.sha256(convert_to(installer.prosrc,'UTF8')),'hex'),
+    'canonicalJsonBodySha256',encode(pg_catalog.sha256(convert_to(canonical.prosrc,'UTF8')),'hex'),
+    'stagePrincipalEvidenceBodySha256',encode(pg_catalog.sha256(convert_to(stage.prosrc,'UTF8')),'hex'),
+    'activateGenerationBodySha256',encode(pg_catalog.sha256(convert_to(activate.prosrc,'UTF8')),'hex'),
+    'readActivationReceiptBodySha256',encode(pg_catalog.sha256(convert_to(reader.prosrc,'UTF8')),'hex')
+  ) INTO activation_body_facts
+  FROM pg_proc installer, pg_proc canonical, pg_proc stage, pg_proc activate, pg_proc reader
+  WHERE installer.oid='reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)'::regprocedure
+    AND canonical.oid='reviewrouter_activation.canonical_json(jsonb)'::regprocedure
+    AND stage.oid='reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text)'::regprocedure
+    AND activate.oid='reviewrouter_activation.activate_generation(text,jsonb)'::regprocedure
+    AND reader.oid='reviewrouter_activation.read_activation_receipt(text)'::regprocedure;
+  IF activation_body_facts IS NULL THEN
+    RAISE EXCEPTION 'activation principal evidence body attestation unavailable';
+  END IF;
   catalog_facts_sha256 := 'sha256:' || encode(pg_catalog.sha256(convert_to(
-    jsonb_build_object('policyVersion',1,'facts',catalog_acl_facts)::text,'UTF8')),'hex');
+    jsonb_build_object('policyVersion',1,'facts',catalog_acl_facts,
+      'activationPrincipalEvidenceContract',activation_body_facts)::text,'UTF8')),'hex');
   IF receipt.rollout_id IS NOT NULL THEN
     IF receipt.canonical_privileges_sha256 <> canonical_privileges_sha256
        OR receipt.catalog_facts_sha256 <> catalog_facts_sha256 THEN
@@ -647,18 +881,28 @@ BEGIN
       permit.expected_commit_sha || ':' || permit.migration_checksum || ':' ||
       permit.target_deploy_ids::text || ':' || permit.permit_epoch::text || ':' ||
       permit.permit_nonce || ':' || canonical_privileges_sha256 || ':' ||
-      catalog_facts_sha256, 'UTF8')), 'hex');
+      catalog_facts_sha256 || ':' ||
+      principal_evidence.before_principal_inventory_sha256 || ':' ||
+      principal_evidence.before_principal_policy_sha256 || ':' ||
+      principal_evidence.activated_principal_inventory_sha256 || ':' ||
+      principal_evidence.activated_principal_policy_sha256, 'UTF8')), 'hex');
     INSERT INTO reviewrouter_activation.activation_receipt (
       rollout_id, source_system_identifier, target_system_identifier,
       postgres_major, expected_commit_sha, migration_checksum, target_deploy_ids,
       permit_epoch, permit_nonce, canonical_privileges_sha256,
-      catalog_facts_sha256, first_write_receipt_sha256, transaction_id
+      catalog_facts_sha256, before_principal_inventory_sha256,
+      before_principal_policy_sha256, activated_principal_inventory_sha256,
+      activated_principal_policy_sha256, first_write_receipt_sha256, transaction_id
     ) VALUES (
       permit.rollout_id, permit.source_system_identifier,
       permit.target_system_identifier, permit.postgres_major,
       permit.expected_commit_sha, permit.migration_checksum,
       permit.target_deploy_ids, permit.permit_epoch, permit.permit_nonce,
       canonical_privileges_sha256, catalog_facts_sha256,
+      principal_evidence.before_principal_inventory_sha256,
+      principal_evidence.before_principal_policy_sha256,
+      principal_evidence.activated_principal_inventory_sha256,
+      principal_evidence.activated_principal_policy_sha256,
       first_write_receipt_sha256, txid_current()
     ) RETURNING * INTO receipt;
     UPDATE reviewrouter_activation.activation_permit
@@ -678,6 +922,10 @@ BEGIN
     'permitNonce',receipt.permit_nonce,
     'canonicalPrivilegesSha256',receipt.canonical_privileges_sha256,
     'catalogFactsSha256',receipt.catalog_facts_sha256,
+    'beforePrincipalInventorySha256',receipt.before_principal_inventory_sha256,
+    'beforePrincipalPolicySha256',receipt.before_principal_policy_sha256,
+    'activatedPrincipalInventorySha256',receipt.activated_principal_inventory_sha256,
+    'activatedPrincipalPolicySha256',receipt.activated_principal_policy_sha256,
     'firstWriteReceiptSha256',receipt.first_write_receipt_sha256,
     'transactionId',receipt.transaction_id::text,
     'activatedAt',to_char(receipt.activated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
@@ -685,17 +933,18 @@ BEGIN
   );
 END
 $activate$;
-ALTER FUNCTION reviewrouter_activation.activate_generation(text) OWNER TO ${activationReceiptGuardRoleName};
-REVOKE ALL ON FUNCTION reviewrouter_activation.activate_generation(text) FROM PUBLIC;
+ALTER FUNCTION reviewrouter_activation.activate_generation(text,jsonb) OWNER TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.activate_generation(text,jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION reviewrouter_activation.activate_generation(text,jsonb) FROM ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName}, ${canonicalBootstrapRoleName};
 GRANT USAGE ON SCHEMA reviewrouter_activation TO reviewrouter_release_migration;
-GRANT EXECUTE ON FUNCTION reviewrouter_activation.activate_generation(text) TO reviewrouter_release_migration;
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.activate_generation(text,jsonb) TO reviewrouter_release_migration;
 CREATE OR REPLACE FUNCTION reviewrouter_activation.read_activation_receipt(
   requested_rollout_id text
 ) RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $read_receipt$
 DECLARE receipt reviewrouter_activation.activation_receipt%ROWTYPE;
 BEGIN
-  IF session_user <> '${activationReceiptReaderRoleName}'
+  IF session_user NOT IN ('${activationReceiptReaderRoleName}','reviewrouter_release_migration')
      OR requested_rollout_id !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$' THEN
     RAISE EXCEPTION 'activation receipt read request invalid';
   END IF;
@@ -714,6 +963,10 @@ BEGIN
     'permitNonce',receipt.permit_nonce,
     'canonicalPrivilegesSha256',receipt.canonical_privileges_sha256,
     'catalogFactsSha256',receipt.catalog_facts_sha256,
+    'beforePrincipalInventorySha256',receipt.before_principal_inventory_sha256,
+    'beforePrincipalPolicySha256',receipt.before_principal_policy_sha256,
+    'activatedPrincipalInventorySha256',receipt.activated_principal_inventory_sha256,
+    'activatedPrincipalPolicySha256',receipt.activated_principal_policy_sha256,
     'firstWriteReceiptSha256',receipt.first_write_receipt_sha256,
     'transactionId',receipt.transaction_id::text,
     'activatedAt',to_char(receipt.activated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
@@ -728,6 +981,7 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA reviewrouter_activation FROM ${activationR
 REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM ${activationReceiptReaderRoleName};
 GRANT USAGE ON SCHEMA reviewrouter_activation TO ${activationReceiptReaderRoleName};
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_receipt(text) TO ${activationReceiptReaderRoleName};
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_receipt(text) TO reviewrouter_release_migration;
 CREATE OR REPLACE FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
 RETURNS text LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $read_manifest$
@@ -769,7 +1023,19 @@ export function activationRoutineBodyTrustRoots() {
     return createHash("sha256").update(body).digest("hex");
   };
   return Object.freeze({
-    installerRoutineBodySha256: digestBody("install_permit"),
+    // The installer trust root also commits to the canonicalizer, staged
+    // evidence verifier, and activation routine. Activation is accepted only
+    // when all four bodies match this deployed control-plane contract.
+    installerRoutineBodySha256: createHash("sha256")
+      .update(
+        [
+          digestBody("install_permit"),
+          digestBody("canonical_json"),
+          digestBody("stage_principal_evidence"),
+          digestBody("activate"),
+        ].join(":"),
+      )
+      .digest("hex"),
     readerRoutineBodySha256: digestBody("read_receipt"),
   });
 }
@@ -1378,15 +1644,25 @@ DO $activation_authority_boundary$
 BEGIN
   IF to_regclass('reviewrouter_activation.activation_permit') IS NULL
      OR to_regclass('reviewrouter_activation.activation_receipt') IS NULL
+     OR to_regclass('reviewrouter_activation.activation_principal_evidence') IS NULL
      OR to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.activate_generation(text)') IS NULL
+     OR to_regprocedure('reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text)') IS NULL
+     OR to_regprocedure('reviewrouter_activation.activate_generation(text,jsonb)') IS NULL
      OR to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NULL
      OR to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()') IS NULL
      OR pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_permit'::regclass)) <> '${activationReceiptGuardRoleName}'
      OR pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_receipt'::regclass)) <> '${activationReceiptGuardRoleName}'
+     OR pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_principal_evidence'::regclass)) <> '${activationReceiptGuardRoleName}'
      OR has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)','EXECUTE')
-     OR has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.activate_generation(text)','EXECUTE')
-     OR has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.activate_generation(text)','EXECUTE')
+     OR has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.activate_generation(text,jsonb)','EXECUTE')
+     OR has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.activate_generation(text,jsonb)','EXECUTE')
+     OR has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text)','EXECUTE')
+     OR has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text)','EXECUTE')
+     OR has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.canonical_json(jsonb)','EXECUTE')
+     OR has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.canonical_json(jsonb)','EXECUTE')
+     OR NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.stage_principal_evidence(text,jsonb,jsonb,jsonb,jsonb,jsonb,text,text,text,text)','EXECUTE')
+     OR NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.activate_generation(text,jsonb)','EXECUTE')
+     OR NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.read_activation_receipt(text)','EXECUTE')
      OR has_table_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.activation_receipt','SELECT')
      OR has_table_privilege('${canonicalBootstrapRoleName}','reviewrouter_activation.activation_receipt','SELECT')
      OR NOT has_function_privilege('${canonicalBootstrapRoleName}','reviewrouter_activation.assert_no_activation_receipt()','EXECUTE')
@@ -1796,16 +2072,87 @@ COMMIT;
 `;
 }
 
+export function canonicalActivatedPrincipalInventoryPreviewSql(
+  configuration,
+  principalInventorySql,
+) {
+  if (
+    typeof principalInventorySql !== "string" ||
+    createHash("sha256").update(principalInventorySql).digest("hex") !==
+      effectivePrincipalInventorySqlSha256
+  )
+    throw new Error("release_migration_principal_inventory_sql_invalid");
+  return `\\set ON_ERROR_STOP on
+BEGIN;
+${runtimeGrantStatements(configuration)}
+${principalInventorySql};
+ROLLBACK;
+`;
+}
+
+export function canonicalActivationRecoverySql(rolloutId) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(rolloutId))
+    throw new Error("release_migration_activation_identity_invalid");
+  return `\\set ON_ERROR_STOP on
+SELECT reviewrouter_activation.read_activation_receipt(
+  '${String(rolloutId).replaceAll("'", "''")}'
+);
+`;
+}
+
 export function canonicalActivationSql(configuration, activation) {
   const literal = (value) => `'${String(value).replaceAll("'", "''")}'`;
+  const digest = /^sha256:[a-f0-9]{64}$/u;
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(activation.rolloutId))
     throw new Error("release_migration_activation_identity_invalid");
+  if (
+    typeof activation.principalInventorySql !== "string" ||
+    createHash("sha256")
+      .update(activation.principalInventorySql)
+      .digest("hex") !== effectivePrincipalInventorySqlSha256 ||
+    !activation.beforePrincipalInventory ||
+    !activation.beforePrincipalPolicy ||
+    !activation.activatedPrincipalInventory ||
+    !activation.activatedPrincipalPolicy ||
+    !digest.test(activation.beforePrincipalInventorySha256 ?? "") ||
+    !digest.test(activation.beforePrincipalPolicySha256 ?? "") ||
+    !digest.test(activation.activatedPrincipalInventorySha256 ?? "") ||
+    !digest.test(activation.activatedPrincipalPolicySha256 ?? "")
+  )
+    throw new Error("release_migration_activation_principal_evidence_invalid");
+  const beforeInventory = literal(
+    JSON.stringify(activation.beforePrincipalInventory),
+  );
+  const beforePolicy = literal(
+    JSON.stringify(activation.beforePrincipalPolicy),
+  );
+  const activatedInventory = literal(
+    JSON.stringify(activation.activatedPrincipalInventory),
+  );
+  const activatedPolicy = literal(
+    JSON.stringify(activation.activatedPrincipalPolicy),
+  );
   return {
     sql: `\\set ON_ERROR_STOP on
 BEGIN;
+SELECT inventory::text AS before_inventory FROM (
+${activation.principalInventorySql}
+) observed(inventory) \\gset rr_
+SELECT reviewrouter_activation.stage_principal_evidence(
+  ${literal(activation.rolloutId)}, :'rr_before_inventory'::jsonb,
+  ${beforeInventory}::jsonb, ${beforePolicy}::jsonb,
+  ${activatedInventory}::jsonb, ${activatedPolicy}::jsonb,
+  ${literal(activation.beforePrincipalInventorySha256)},
+  ${literal(activation.beforePrincipalPolicySha256)},
+  ${literal(activation.activatedPrincipalInventorySha256)},
+  ${literal(activation.activatedPrincipalPolicySha256)}
+);
 ${runtimeGrantStatements(configuration)}
+SELECT inventory::text AS activated_inventory FROM (
+${activation.principalInventorySql}
+) observed(inventory) \\gset rr_
 SELECT reviewrouter_activation.activate_generation(
-  ${literal(activation.rolloutId)}
+  ${literal(activation.rolloutId)}, :'rr_activated_inventory'::jsonb
 );
 COMMIT;
 `,

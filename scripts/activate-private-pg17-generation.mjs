@@ -3,12 +3,16 @@ import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
   canonicalActivationSql,
+  canonicalActivatedPrincipalInventoryPreviewSql,
+  canonicalActivationRecoverySql,
   resolveReleaseMigrationConfiguration,
 } from "./run-codex-rotating-release-migration.mjs";
 import {
   decomposePostgresConnection,
   assertEffectivePrincipalInventory,
+  canonicalEffectivePrincipalPolicy,
   draftEffectivePrincipalPolicy,
+  effectivePrincipalInventorySql,
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
 } from "../packages/features/release-rollout/src/index.ts";
@@ -26,6 +30,83 @@ const forbiddenCutoverAuthorityEnvironment = Object.freeze([
   "REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_DATABASE_URL",
   "REVIEW_ROUTER_ACTIVATION_RECEIPT_GUARD_DATABASE_URL",
 ]);
+const activationDigest = /^sha256:[a-f0-9]{64}$/u;
+const activationIdentifier = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u;
+const activationMatches = (value, pattern) =>
+  typeof value === "string" && pattern.test(value);
+const activationReceiptFields = new Set([
+  "rolloutId",
+  "sourceSystemIdentifier",
+  "targetSystemIdentifier",
+  "postgresMajor",
+  "expectedCommitSha",
+  "migrationChecksum",
+  "targetDeployIds",
+  "permitEpoch",
+  "permitNonce",
+  "canonicalPrivilegesSha256",
+  "catalogFactsSha256",
+  "beforePrincipalInventorySha256",
+  "beforePrincipalPolicySha256",
+  "activatedPrincipalInventorySha256",
+  "activatedPrincipalPolicySha256",
+  "firstWriteReceiptSha256",
+  "transactionId",
+  "activatedAt",
+  "firstWriteBoundary",
+]);
+const activationReceiptIsStructured = (observed, rolloutId) =>
+  observed !== null &&
+  typeof observed === "object" &&
+  !Array.isArray(observed) &&
+  Object.keys(observed).length === activationReceiptFields.size &&
+  Object.keys(observed).every((field) => activationReceiptFields.has(field)) &&
+  observed?.rolloutId === rolloutId &&
+  activationMatches(observed?.canonicalPrivilegesSha256, activationDigest) &&
+  activationMatches(observed?.sourceSystemIdentifier, /^[0-9]+$/u) &&
+  activationMatches(observed?.targetSystemIdentifier, /^[0-9]+$/u) &&
+  observed?.sourceSystemIdentifier !== observed?.targetSystemIdentifier &&
+  activationMatches(observed?.expectedCommitSha, /^[a-f0-9]{40}$/u) &&
+  observed?.postgresMajor === 17 &&
+  activationMatches(observed?.migrationChecksum, activationDigest) &&
+  Array.isArray(observed?.targetDeployIds) &&
+  observed.targetDeployIds.length > 0 &&
+  new Set(observed.targetDeployIds).size === observed.targetDeployIds.length &&
+  observed.targetDeployIds.every(
+    (deployId) =>
+      typeof deployId === "string" && activationIdentifier.test(deployId),
+  ) &&
+  Number.isSafeInteger(observed?.permitEpoch) &&
+  observed.permitEpoch > 0 &&
+  activationMatches(observed?.permitNonce, /^[a-f0-9]{32}$/u) &&
+  activationMatches(observed?.catalogFactsSha256, activationDigest) &&
+  activationMatches(observed?.firstWriteReceiptSha256, activationDigest) &&
+  activationMatches(
+    observed?.beforePrincipalInventorySha256,
+    activationDigest,
+  ) &&
+  activationMatches(observed?.beforePrincipalPolicySha256, activationDigest) &&
+  activationMatches(
+    observed?.activatedPrincipalInventorySha256,
+    activationDigest,
+  ) &&
+  activationMatches(
+    observed?.activatedPrincipalPolicySha256,
+    activationDigest,
+  ) &&
+  observed?.firstWriteBoundary === true &&
+  activationMatches(observed?.transactionId, /^[0-9]+$/u) &&
+  typeof observed?.activatedAt === "string" &&
+  !Number.isNaN(Date.parse(observed.activatedAt)) &&
+  new Date(observed.activatedAt).toISOString() === observed.activatedAt;
+const activationObservation = (observed) => ({
+  step: "activate_target_generation",
+  observedAt: observed.activatedAt,
+  facts: {
+    ...observed,
+    observationSha256: `sha256:${createHash("sha256").update(JSON.stringify(observed)).digest("hex")}`,
+  },
+});
 
 export function executePrivateGenerationActivation(
   env = process.env,
@@ -40,6 +121,37 @@ export function executePrivateGenerationActivation(
   }
   const configuration = resolveReleaseMigrationConfiguration(env);
   const rolloutId = required(env, "REVIEW_ROUTER_ROLLOUT_ID");
+  const recoveryConnection = decomposePostgresConnection(
+    configuration.releaseUrl,
+  );
+  try {
+    const recoveryOutput = commands.execute(
+      "psql",
+      [
+        ...recoveryConnection.args,
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+      ],
+      {
+        env: recoveryConnection.env,
+        input: canonicalActivationRecoverySql(rolloutId),
+      },
+    ).stdout;
+    const recovered = JSON.parse(
+      recoveryOutput
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.startsWith("{")) ?? "null",
+    );
+    if (recovered !== null) {
+      if (!activationReceiptIsStructured(recovered, rolloutId))
+        throw new Error("release_activation_receipt_unproven");
+      return activationObservation(recovered);
+    }
+  } finally {
+    recoveryConnection.cleanup();
+  }
   const draftPolicyForDisposableRehearsal =
     options.draftPolicyForDisposableRehearsal === true;
   let beforePolicy;
@@ -67,7 +179,58 @@ export function executePrivateGenerationActivation(
     beforeInventory,
     beforePolicy,
   );
-  const activation = canonicalActivationSql(configuration, { rolloutId });
+  const previewConnection = decomposePostgresConnection(
+    configuration.releaseUrl,
+  );
+  let activatedInventory;
+  try {
+    const previewOutput = commands.execute(
+      "psql",
+      [...previewConnection.args, "--no-psqlrc", "--tuples-only", "--no-align"],
+      {
+        env: previewConnection.env,
+        input: canonicalActivatedPrincipalInventoryPreviewSql(
+          configuration,
+          effectivePrincipalInventorySql,
+        ),
+      },
+    ).stdout;
+    activatedInventory = JSON.parse(
+      previewOutput
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.startsWith("{")) ?? "null",
+    );
+  } catch (error) {
+    throw new Error("release_activation_principal_preview_failed", {
+      cause: error,
+    });
+  } finally {
+    previewConnection.cleanup();
+  }
+  activatedPolicy ??= draftEffectivePrincipalPolicy(activatedInventory);
+  const activatedDecision = assertEffectivePrincipalInventory(
+    activatedInventory,
+    activatedPolicy,
+  );
+  const canonicalBeforePolicy = canonicalEffectivePrincipalPolicy(beforePolicy);
+  const canonicalActivatedPolicy =
+    canonicalEffectivePrincipalPolicy(activatedPolicy);
+  const activation = canonicalActivationSql(configuration, {
+    rolloutId,
+    principalInventorySql: effectivePrincipalInventorySql,
+    beforePrincipalInventory: beforeInventory,
+    beforePrincipalPolicy: canonicalBeforePolicy,
+    activatedPrincipalInventory: activatedInventory,
+    activatedPrincipalPolicy: canonicalActivatedPolicy,
+    beforePrincipalInventorySha256: beforeDecision.inventorySha256,
+    beforePrincipalPolicySha256: beforeDecision.policySha256,
+    activatedPrincipalInventorySha256: activatedDecision.inventorySha256,
+    activatedPrincipalPolicySha256: activatedDecision.policySha256,
+  });
+  options.captureActivationSqlSha256?.(
+    `sha256:${createHash("sha256").update(JSON.stringify(activation.sql)).digest("hex")}`,
+  );
   const connection = decomposePostgresConnection(configuration.releaseUrl);
   let output;
   try {
@@ -90,45 +253,16 @@ export function executePrivateGenerationActivation(
       .find((line) => line.startsWith("{")) ?? "null",
   );
   if (
-    observed?.rolloutId !== rolloutId ||
-    !/^sha256:[a-f0-9]{64}$/u.test(observed?.canonicalPrivilegesSha256 ?? "") ||
-    !/^[0-9]+$/u.test(observed?.sourceSystemIdentifier ?? "") ||
-    !/^[0-9]+$/u.test(observed?.targetSystemIdentifier ?? "") ||
-    observed?.sourceSystemIdentifier === observed?.targetSystemIdentifier ||
-    !/^[a-f0-9]{40}$/u.test(observed?.expectedCommitSha ?? "") ||
-    observed?.postgresMajor !== 17 ||
-    !/^sha256:[a-f0-9]{64}$/u.test(observed?.migrationChecksum ?? "") ||
-    !Array.isArray(observed?.targetDeployIds) ||
-    observed.targetDeployIds.length < 1 ||
-    !Number.isSafeInteger(observed?.permitEpoch) ||
-    observed.permitEpoch < 1 ||
-    !/^[a-f0-9]{32}$/u.test(observed?.permitNonce ?? "") ||
-    !/^sha256:[a-f0-9]{64}$/u.test(observed?.catalogFactsSha256 ?? "") ||
-    !/^sha256:[a-f0-9]{64}$/u.test(observed?.firstWriteReceiptSha256 ?? "") ||
-    observed?.firstWriteBoundary !== true ||
-    !/^[0-9]+$/u.test(observed?.transactionId ?? "")
+    !activationReceiptIsStructured(observed, rolloutId) ||
+    observed.beforePrincipalInventorySha256 !==
+      beforeDecision.inventorySha256 ||
+    observed.beforePrincipalPolicySha256 !== beforeDecision.policySha256 ||
+    observed.activatedPrincipalInventorySha256 !==
+      activatedDecision.inventorySha256 ||
+    observed.activatedPrincipalPolicySha256 !== activatedDecision.policySha256
   )
     throw new Error("release_activation_receipt_unproven");
-  const activatedInventory = inventory.inventoryEffectivePrincipals(
-    configuration.releaseUrl,
-  );
-  activatedPolicy ??= draftEffectivePrincipalPolicy(activatedInventory);
-  const activatedDecision = assertEffectivePrincipalInventory(
-    activatedInventory,
-    activatedPolicy,
-  );
-  return {
-    step: "activate_target_generation",
-    observedAt: observed.activatedAt,
-    facts: {
-      ...observed,
-      beforePrincipalInventorySha256: beforeDecision.inventorySha256,
-      beforePrincipalPolicySha256: beforeDecision.policySha256,
-      activatedPrincipalInventorySha256: activatedDecision.inventorySha256,
-      activatedPrincipalPolicySha256: activatedDecision.policySha256,
-      observationSha256: `sha256:${createHash("sha256").update(JSON.stringify(observed)).digest("hex")}`,
-    },
-  };
+  return activationObservation(observed);
 }
 
 if (

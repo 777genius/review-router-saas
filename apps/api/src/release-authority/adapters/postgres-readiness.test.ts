@@ -88,7 +88,9 @@ describe("release authority ACL readiness observation", () => {
     );
     expect(sql).toContain("installerRoutineBodySha256");
     expect(sql).toContain("readerRoutineBodySha256");
-    expect(sql).toContain("activation_permit','activation_receipt");
+    expect(sql).toContain(
+      "activation_permit','activation_receipt','activation_principal_evidence",
+    );
     expect(sql).toContain("assert_no_activation_receipt");
     expect(sql).toContain("pg_auth_members edge");
     expect(sql).toContain("rolbypassrls");
