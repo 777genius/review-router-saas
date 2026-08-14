@@ -8,6 +8,8 @@ import {
   ReleaseAuthorityService,
   ReleaseRolloutReconciliationService,
   RunnerOperationsService,
+  type ActivationPermitInstallerPort,
+  type ReleaseAuthorityHighRiskMutationGate,
   type ReleaseAuthorityLedgerPort,
   type ReleaseRolloutReconciliationPort,
   type RunnerOperationsLedgerPort,
@@ -165,6 +167,77 @@ describe("independent target activation receipt verification", () => {
       }),
     ).rejects.toThrow("target_activation_receipt_mismatch");
     expect(fixture.finalizeActivation).not.toHaveBeenCalled();
+  });
+});
+
+describe("high-risk activation mutation policy", () => {
+  it("owns one fresh attestation immediately before each authorization and installation write", async () => {
+    const events: string[] = [];
+    const repository = {
+      authorizeActivation: vi.fn(async () => {
+        events.push("authority-write");
+        return authorization;
+      }),
+    } as unknown as ReleaseAuthorityLedgerPort;
+    const installer: ActivationPermitInstallerPort = {
+      install: vi.fn(async () => {
+        events.push("target-write");
+        return "installed" as const;
+      }),
+    };
+    const gate: ReleaseAuthorityHighRiskMutationGate = {
+      execute: async (sequence) =>
+        await sequence(async (mutation) => {
+          events.push("attested");
+          return await mutation();
+        }),
+    };
+
+    await new ReleaseAuthorityService(
+      repository,
+      installer,
+      undefined,
+      gate,
+    ).authorizeAndInstall({} as never);
+
+    expect(events).toEqual([
+      "attested",
+      "authority-write",
+      "attested",
+      "target-write",
+    ]);
+  });
+
+  it("attests finalization after target receipt validation", async () => {
+    const events: string[] = [];
+    const repository = {
+      finalizeActivation: vi.fn(async () => {
+        events.push("authority-write");
+        return true;
+      }),
+    } as unknown as ReleaseAuthorityLedgerPort;
+    const reader: TargetActivationReceiptReaderPort = {
+      read: vi.fn(async () => {
+        events.push("target-read");
+        return targetFacts;
+      }),
+    };
+    const gate: ReleaseAuthorityHighRiskMutationGate = {
+      execute: async (sequence) =>
+        await sequence(async (mutation) => {
+          events.push("attested");
+          return await mutation();
+        }),
+    };
+
+    await new ReleaseAuthorityService(
+      repository,
+      undefined,
+      reader,
+      gate,
+    ).finalize(finalizeInput);
+
+    expect(events).toEqual(["target-read", "attested", "authority-write"]);
   });
 });
 

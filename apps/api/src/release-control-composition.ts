@@ -13,6 +13,7 @@ import {
   RunnerOperationsService,
   ReleaseServiceTransitionService,
   ProviderMutationAuthorityService,
+  type ReleaseAuthorityHighRiskMutationGate,
   type ActivationPermitInstallerPort,
   type ReleaseControlRouteDependencies,
 } from "./release-rollout-ledger.js";
@@ -57,6 +58,7 @@ export function composeReleaseControlDependencies(
   permitInstallerPrisma?: PrismaClient,
   targetReceiptReaderPrisma?: PrismaClient,
   sameConnectionTiming?: SameConnectionTransactionTiming,
+  highRiskMutationGate?: ReleaseAuthorityHighRiskMutationGate,
 ): ReleaseControlRouteDependencies {
   if (
     !credentialSha256.test(credentials.controlTokenSha256) ||
@@ -158,6 +160,7 @@ export function composeReleaseControlDependencies(
       adapter,
       permitInstaller,
       targetReceiptReader,
+      highRiskMutationGate,
     ),
     providerAuthority: new ProviderAuthorityDecisionService(
       providerAuthorityAdapter,
@@ -181,6 +184,7 @@ export function composeReleaseControlDependencies(
           : undefined,
         sameConnectionTiming,
       ),
+      highRiskMutationGate,
     ),
     ...credentials,
   };
@@ -211,15 +215,6 @@ export async function createReleaseControlApp(input: {
     transactionTimeoutMilliseconds:
       readinessPolicyOptions.transactionTimeoutMilliseconds,
   };
-  const dependencies = composeReleaseControlDependencies(
-    input.controlPrisma,
-    input.providerAuthorityPrisma,
-    input.credentials,
-    input.trustedDatabaseIdentity,
-    input.permitInstallerPrisma,
-    input.targetReceiptReaderPrisma,
-    sameConnectionTiming,
-  );
   const readinessObserver =
     input.readinessObserver ?? observeReleaseAuthorityDatabaseReadiness;
   const observeMutationAuthority = async (signal: AbortSignal) => {
@@ -315,6 +310,20 @@ export async function createReleaseControlApp(input: {
     readinessPolicyOptions,
     input.readinessScheduler,
   );
+  const highRiskMutationGate: ReleaseAuthorityHighRiskMutationGate = {
+    execute: (sequence) =>
+      readiness.executeHighRiskMutationSequence(subject, sequence),
+  };
+  const dependencies = composeReleaseControlDependencies(
+    input.controlPrisma,
+    input.providerAuthorityPrisma,
+    input.credentials,
+    input.trustedDatabaseIdentity,
+    input.permitInstallerPrisma,
+    input.targetReceiptReaderPrisma,
+    sameConnectionTiming,
+    highRiskMutationGate,
+  );
   const assertMutationAuthorityReady = () => readiness.assertOrdinary(subject);
   const ordinary =
     <Arguments extends readonly unknown[], Result>(
@@ -340,9 +349,9 @@ export async function createReleaseControlApp(input: {
       cas: ordinary(dependencies.authority.cas),
       markUncertain: ordinary(dependencies.authority.markUncertain),
       fenceTargetSwitch: ordinary(dependencies.authority.fenceTargetSwitch),
-      authorizeActivation: ordinary(dependencies.authority.authorizeActivation),
-      authorizeAndInstall: ordinary(dependencies.authority.authorizeAndInstall),
-      finalize: ordinary(dependencies.authority.finalize),
+      authorizeActivation: dependencies.authority.authorizeActivation,
+      authorizeAndInstall: dependencies.authority.authorizeAndInstall,
+      finalize: dependencies.authority.finalize,
       state: ordinary(dependencies.authority.state),
       authorityState: ordinary(dependencies.authority.authorityState),
       compensationCheckpoint: ordinary(
@@ -424,15 +433,12 @@ export async function createReleaseControlApp(input: {
     ...(dependencies.providerMutationAuthority
       ? {
           providerMutationAuthority: {
-            issue: ordinary(dependencies.providerMutationAuthority.issue),
-            consume: ordinary(dependencies.providerMutationAuthority.consume),
-            validateExecution: ordinary(
+            issue: dependencies.providerMutationAuthority.issue,
+            consume: dependencies.providerMutationAuthority.consume,
+            validateExecution:
               dependencies.providerMutationAuthority.validateExecution,
-            ),
-            complete: ordinary(dependencies.providerMutationAuthority.complete),
-            reconcile: ordinary(
-              dependencies.providerMutationAuthority.reconcile,
-            ),
+            complete: dependencies.providerMutationAuthority.complete,
+            reconcile: dependencies.providerMutationAuthority.reconcile,
           },
         }
       : {}),

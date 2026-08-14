@@ -153,6 +153,118 @@ describe("process-local full-attestation lease", () => {
     await expect(ordinaryA).rejects.toThrow("unavailable");
   });
 
+  it("bypasses a live lease immediately before a high-risk mutation", async () => {
+    const clock = new FakeScheduler();
+    const events: string[] = [];
+    const probe = vi.fn(async () => {
+      events.push("attested");
+    });
+    const gate = new ReleaseAuthorityAttestationCoordinator(
+      probe,
+      unavailable,
+      timing,
+      clock,
+    );
+    await gate.assertOrdinary(subject());
+
+    await gate.executeHighRiskMutation(subject(), async () => {
+      events.push("mutated");
+    });
+
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(events).toEqual(["attested", "attested", "mutated"]);
+    expect(gate.state(subject()).status).toBe("ready");
+  });
+
+  it("freshly attests every write in one exclusive high-risk sequence", async () => {
+    const clock = new FakeScheduler();
+    const events: string[] = [];
+    const gate = new ReleaseAuthorityAttestationCoordinator(
+      vi.fn(async () => {
+        events.push("attested");
+      }),
+      unavailable,
+      timing,
+      clock,
+    );
+
+    await gate.executeHighRiskMutationSequence(
+      subject(),
+      async (executeFresh) => {
+        await executeFresh(async () => {
+          events.push("authority-write");
+        });
+        await executeFresh(async () => {
+          events.push("target-write");
+        });
+      },
+    );
+
+    expect(events).toEqual([
+      "attested",
+      "authority-write",
+      "attested",
+      "target-write",
+    ]);
+  });
+
+  it("gives concurrent high-risk callers distinct fresh evidence and ordered mutation boundaries", async () => {
+    const clock = new FakeScheduler();
+    const observations = [deferred(), deferred()];
+    const events: string[] = [];
+    const probe = vi.fn(() => {
+      const index = probe.mock.calls.length - 1;
+      events.push(`attestation-${index + 1}-started`);
+      return observations[index]!.promise;
+    });
+    const gate = new ReleaseAuthorityAttestationCoordinator(
+      probe,
+      unavailable,
+      timing,
+      clock,
+    );
+
+    const first = gate.executeHighRiskMutation(subject(), async () => {
+      events.push("mutation-1");
+    });
+    const second = gate.executeHighRiskMutation(subject(), async () => {
+      events.push("mutation-2");
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(probe).toHaveBeenCalledOnce();
+    observations[0]!.resolve();
+    await first;
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    expect(probe).toHaveBeenCalledTimes(2);
+    observations[1]!.resolve();
+    await second;
+
+    expect(events).toEqual([
+      "attestation-1-started",
+      "mutation-1",
+      "attestation-2-started",
+      "mutation-2",
+    ]);
+  });
+
+  it("fails a high-risk mutation closed when fresh evidence drifts", async () => {
+    const clock = new FakeScheduler();
+    const mutation = vi.fn();
+    const gate = new ReleaseAuthorityAttestationCoordinator(
+      vi.fn().mockRejectedValue(new DefinitiveAttestationMismatchError()),
+      unavailable,
+      timing,
+      clock,
+    );
+
+    await expect(
+      gate.executeHighRiskMutation(subject(), mutation),
+    ).rejects.toThrow("unavailable");
+    expect(mutation).not.toHaveBeenCalled();
+    expect(gate.state(subject()).status).toBe("unattested");
+  });
+
   it("makes ordinary callers join force-new evidence instead of superseding it", async () => {
     const clock = new FakeScheduler();
     const forcedObservation = deferred();

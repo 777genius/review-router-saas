@@ -428,8 +428,10 @@ describe("release authority process composition", () => {
         .mockResolvedValueOnce([{ value: "claimed" }]),
     };
     const transaction = vi.fn(
-      async (operation: (connection: unknown) => unknown, _options: unknown) =>
-        operation(connection),
+      async (operation: (connection: unknown) => unknown, options: unknown) => {
+        expect(options).toEqual({ maxWait: 123, timeout: 456 });
+        return operation(connection);
+      },
     );
     const dependencies = composeReleaseControlDependencies(
       { $transaction: transaction } as never,
@@ -980,6 +982,82 @@ describe("release authority process composition", () => {
     });
     expect(controlCredentialResponse.statusCode).toBe(401);
     expect(controlOperation).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it("bypasses a healthy lease for provider mutations while retaining it for ordinary control calls", async () => {
+    let catalogDrifted = false;
+    const controlOperation = vi.fn((query: { text?: string }) =>
+      Promise.resolve([
+        {
+          value: String(query.text).includes("release_rollout_claim")
+            ? "claimed"
+            : null,
+        },
+      ]),
+    );
+    const control = { $queryRaw: controlOperation } as never;
+    const provider = { $queryRaw: vi.fn() } as never;
+    const installer = { $queryRaw: vi.fn() } as never;
+    const reader = { $queryRaw: vi.fn() } as never;
+    const observer = vi.fn(async (prisma: PrismaClient) => {
+      if (prisma === control)
+        return {
+          ...authorityReadiness("reviewrouter_release_control")[0]!,
+          catalogExact: !catalogDrifted,
+        };
+      if (prisma === provider)
+        return authorityReadiness("reviewrouter_provider_authority")[0]!;
+      if (prisma === installer) return installerReadiness[0]!;
+      return readerReadiness[0]!;
+    });
+    const app = await createReleaseControlApp({
+      controlPrisma: control,
+      providerAuthorityPrisma: provider,
+      permitInstallerPrisma: installer,
+      targetReceiptReaderPrisma: reader,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+      readinessObserver: observer as never,
+    });
+    const claim = () =>
+      app.inject({
+        method: "POST",
+        url: "/v1/rollouts/claim",
+        headers: { authorization: "Bearer control" },
+        payload: {
+          rolloutId: "rollout-fresh-gate",
+          expectedCommitSha: "a".repeat(40),
+          runId: "1",
+          runAttempt: 1,
+          sourceSystemIdentifier: "100",
+          targetSystemIdentifier: "200",
+        },
+      });
+    expect((await claim()).statusCode).toBe(200);
+    expect(observer).toHaveBeenCalledTimes(4);
+    catalogDrifted = true;
+
+    expect((await claim()).statusCode).toBe(200);
+    expect(observer).toHaveBeenCalledTimes(4);
+    const protectedMutation = await app.inject({
+      method: "POST",
+      url: "/v1/provider-mutations/issue",
+      headers: { authorization: "Bearer provider" },
+      payload: {
+        rolloutId: "rollout-fresh-gate",
+        operation: "freeze:srv-one",
+        resource: { provider: "render", kind: "service", id: "srv-one" },
+        ownerId: "actor-one",
+        expected: { fingerprint: `sha256:${"c".repeat(64)}`, version: null },
+        leaseSeconds: 60,
+      },
+    });
+    expect(protectedMutation.statusCode).toBe(503);
+    expect(observer).toHaveBeenCalledTimes(8);
+    expect(controlOperation).toHaveBeenCalledTimes(2);
     await app.close();
   });
 

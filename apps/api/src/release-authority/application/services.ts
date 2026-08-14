@@ -16,11 +16,31 @@ import type {
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
 import { sha256Canonical } from "@reviewrouter/features-release-rollout";
+
+export type ExecuteFreshReleaseAuthorityMutation = <Result>(
+  mutation: () => Promise<Result> | Result,
+) => Promise<Result>;
+
+/** Application policy port for exclusive, freshly attested mutation sequences. */
+export interface ReleaseAuthorityHighRiskMutationGate {
+  execute<Result>(
+    sequence: (
+      executeFresh: ExecuteFreshReleaseAuthorityMutation,
+    ) => Promise<Result> | Result,
+  ): Promise<Result>;
+}
+
+const withoutHighRiskGate: ReleaseAuthorityHighRiskMutationGate = {
+  execute: async (sequence) =>
+    await sequence(async (mutation) => await mutation()),
+};
+
 export class ReleaseAuthorityService {
   constructor(
     private readonly repository: ReleaseAuthorityLedgerPort,
     private readonly permitInstaller?: ActivationPermitInstallerPort,
     private readonly targetReceiptReader?: TargetActivationReceiptReaderPort,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate = withoutHighRiskGate,
   ) {}
   claim = (input: RolloutBinding) => this.repository.claim(input);
   completeSourceFreeze = (
@@ -43,18 +63,25 @@ export class ReleaseAuthorityService {
   fenceTargetSwitch = (
     input: RolloutBinding & { previousReceiptSha256: string },
   ) => this.repository.fenceTargetSwitch(input);
-  authorizeActivation = (
+  authorizeActivation = async (
     input: Parameters<ReleaseAuthorityLedgerPort["authorizeActivation"]>[0],
-  ) => this.repository.authorizeActivation(input);
-  authorizeAndInstall = async (
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(() => this.repository.authorizeActivation(input)),
+    );
+  authorizeAndInstall = (
     input: Parameters<ReleaseAuthorityLedgerPort["authorizeActivation"]>[0],
-  ) => {
-    const authorization = await this.repository.authorizeActivation(input);
-    if (!this.permitInstaller)
-      throw new Error("activation_permit_installer_unavailable");
-    await this.permitInstaller.install(authorization);
-    return authorization;
-  };
+  ) =>
+    this.highRiskGate.execute(async (executeFresh) => {
+      const authorization = await executeFresh(() =>
+        this.repository.authorizeActivation(input),
+      );
+      const permitInstaller = this.permitInstaller;
+      if (!permitInstaller)
+        throw new Error("activation_permit_installer_unavailable");
+      await executeFresh(() => permitInstaller.install(authorization));
+      return authorization;
+    });
   finalize = async (
     input: Parameters<ReleaseAuthorityLedgerPort["finalizeActivation"]>[0],
   ) => {
@@ -104,7 +131,9 @@ export class ReleaseAuthorityService {
       proposed.receiptSha256 !== input.nextReceiptSha256
     )
       throw new Error("target_activation_receipt_mismatch");
-    return this.repository.finalizeActivation(input);
+    return this.highRiskGate.execute((executeFresh) =>
+      executeFresh(() => this.repository.finalizeActivation(input)),
+    );
   };
   state = (
     input: Parameters<ReleaseAuthorityLedgerPort["activationState"]>[0],
@@ -228,24 +257,40 @@ export class ReleaseServiceTransitionService {
 export class ProviderMutationAuthorityService {
   constructor(
     private readonly repository: ReleaseProviderMutationAuthorityPort,
+    private readonly highRiskGate: ReleaseAuthorityHighRiskMutationGate = withoutHighRiskGate,
   ) {}
-  issue = (
+  issue = async (
     input: Parameters<ReleaseProviderMutationAuthorityPort["issue"]>[0],
-  ) => this.repository.issue(input);
-  consume = (
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(() => this.repository.issue(input)),
+    );
+  consume = async (
     input: Parameters<ReleaseProviderMutationAuthorityPort["consume"]>[0],
-  ) => this.repository.consume(input);
-  validateExecution = (
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(() => this.repository.consume(input)),
+    );
+  validateExecution = async (
     input: Parameters<
       ReleaseProviderMutationAuthorityPort["validateExecution"]
     >[0],
-  ) => this.repository.validateExecution(input);
-  complete = (
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(() => this.repository.validateExecution(input)),
+    );
+  complete = async (
     input: Parameters<ReleaseProviderMutationAuthorityPort["complete"]>[0],
-  ) => this.repository.complete(input);
-  reconcile = (
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(() => this.repository.complete(input)),
+    );
+  reconcile = async (
     input: Parameters<ReleaseProviderMutationAuthorityPort["reconcile"]>[0],
-  ) => this.repository.reconcile(input);
+  ) =>
+    await this.highRiskGate.execute((executeFresh) =>
+      executeFresh(() => this.repository.reconcile(input)),
+    );
 }
 
 export class ReleaseRolloutReconciliationService {

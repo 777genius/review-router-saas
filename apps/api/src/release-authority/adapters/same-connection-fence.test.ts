@@ -40,6 +40,11 @@ describe("same-connection identity fence", () => {
       options: { maxWait: 123, timeout: 456 },
     });
     expect(connection.$queryRaw).toHaveBeenCalledOnce();
+    const identityQuery = connection.$queryRaw.mock.calls[0]?.[0] as {
+      strings?: readonly string[];
+    };
+    expect(identityQuery.strings?.join(" ")).toContain("current_user");
+    expect(identityQuery.strings?.join(" ")).not.toContain("WITH facts AS");
     expect(routine).toHaveBeenCalledOnce();
   });
 

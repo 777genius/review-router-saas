@@ -26,7 +26,11 @@ type FenceRow = Readonly<{
   postgresMajor: number;
 }>;
 
-/** Executes the cheap identity fence and protected routine on one transaction connection. */
+/**
+ * Executes only the runtime-identity fence and routine on one transaction
+ * connection. Complete catalog policy is intentionally owned by the
+ * application attestation gate and must be established separately.
+ */
 export async function executeSameConnectionFenced<T>(
   prisma: PrismaClient,
   expected: SameConnectionIdentityExpectation,

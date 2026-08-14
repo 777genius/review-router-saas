@@ -123,6 +123,10 @@ export type AttestationFreshnessBoundary = Readonly<{
   ordinal: number;
 }>;
 
+export type ExecuteFreshAttestedMutation = <Result>(
+  mutation: () => Promise<Result> | Result,
+) => Promise<Result>;
+
 export class ReleaseAuthorityAttestationCoordinator {
   private lease: Lease | undefined;
   private ordinaryFlight: Flight | undefined;
@@ -134,6 +138,7 @@ export class ReleaseAuthorityAttestationCoordinator {
   private initialSubjectKey: string | undefined;
   private scheduled: { cancel(): void } | undefined;
   private readonly cancelFlights = new Set<() => void>();
+  private highRiskMutationTail: Promise<void> = Promise.resolve();
   private closed = false;
 
   constructor(
@@ -225,6 +230,42 @@ export class ReleaseAuthorityAttestationCoordinator {
       boundary.monotonicTime,
       boundary.ordinal,
     ).promise;
+  }
+
+  /**
+   * Serializes protected mutations and obtains complete evidence after the
+   * preceding protected mutation has settled. A bounded lease is deliberately
+   * ignored: every admitted mutation owns a new observation immediately before
+   * its callback, and a failed observation never invokes the callback.
+   */
+  executeHighRiskMutation<Result>(
+    subject: ReleaseAuthorityAttestationSubject,
+    mutation: () => Promise<Result> | Result,
+  ): Promise<Result> {
+    return this.executeHighRiskMutationSequence(subject, (executeFresh) =>
+      executeFresh(mutation),
+    );
+  }
+
+  /** Keeps a multi-write operation exclusive while freshly attesting each write. */
+  executeHighRiskMutationSequence<Result>(
+    subject: ReleaseAuthorityAttestationSubject,
+    sequence: (
+      executeFresh: ExecuteFreshAttestedMutation,
+    ) => Promise<Result> | Result,
+  ): Promise<Result> {
+    const result = this.highRiskMutationTail.then(() =>
+      sequence(async (mutation) => {
+        const boundary = this.captureFreshnessBoundary();
+        await this.forceNew(subject, boundary);
+        return await mutation();
+      }),
+    );
+    this.highRiskMutationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   private exactLease(
