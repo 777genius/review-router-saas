@@ -372,6 +372,7 @@ function buildSetupSteps({
   readonly onSetupComplete: (params: Record<string, string>) => void;
   readonly onMergeComplete: (params: Record<string, string>) => void;
 }): readonly RepositorySetupProgressStep[] {
+  const workflowRefresh = providerSetupBeforeWorkflow && currentStep === 3;
   const setupPrAction =
     setupStatus === "setup_pr_open" && setupPullRequestUrl ? (
       <LinkButton
@@ -387,7 +388,7 @@ function buildSetupSteps({
           ↗
         </span>
       </LinkButton>
-    ) : currentStep === 1 ? (
+    ) : currentStep === 1 || workflowRefresh ? (
       <RepositorySetupActionButton
         workspaceId={workspaceId}
         repositoryId={repositoryId}
@@ -395,6 +396,7 @@ function buildSetupSteps({
         archived={archived}
         setupStatus={setupStatus}
         workflowCurrent={workflowCurrent}
+        workflowRefresh={workflowRefresh}
         mutationsEnabled={mutationsEnabled}
         onComplete={onSetupComplete}
       />
