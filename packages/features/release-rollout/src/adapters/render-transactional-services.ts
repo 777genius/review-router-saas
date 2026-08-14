@@ -155,6 +155,12 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
             autoDeploy: "no",
             autoDeployTrigger: "off",
             preDeployCommand: String(sourceContract.preDeployCommand),
+            region: String(sourceContract.region),
+            plan: String(sourceContract.plan),
+            maxShutdownDelaySeconds: Number(
+              sourceContract.maxShutdownDelaySeconds,
+            ),
+            numInstances: Number(sourceContract.numInstances),
           })
         : runtime === "node"
           ? new RenderServiceContractMatcher({
@@ -240,6 +246,15 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
   }
 
   async configureTarget(contract: TargetServiceRelease): Promise<void> {
+    const current = await this.api.getService(contract.serviceId);
+    const currentDetails = record(current.serviceDetails);
+    if (
+      typeof currentDetails.region !== "string" ||
+      typeof currentDetails.plan !== "string" ||
+      typeof currentDetails.maxShutdownDelaySeconds !== "number" ||
+      typeof currentDetails.numInstances !== "number"
+    )
+      throw new Error("service_transition_operational_contract_incomplete");
     const expected = new RenderServiceContractMatcher({
       serviceId: contract.serviceId,
       runtime: "image",
@@ -247,6 +262,10 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
       autoDeploy: "no",
       autoDeployTrigger: "off",
       preDeployCommand: "",
+      region: currentDetails.region,
+      plan: currentDetails.plan,
+      maxShutdownDelaySeconds: currentDetails.maxShutdownDelaySeconds,
+      numInstances: currentDetails.numInstances,
     });
     const { mutations, context } = this.mutation(
       `configure_target:${contract.serviceId}`,
@@ -257,7 +276,14 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
       {
         autoDeployTrigger: "off",
         image: { imagePath: contract.artifact.reference },
-        serviceDetails: { runtime: "image", preDeployCommand: "" },
+        serviceDetails: {
+          runtime: "image",
+          preDeployCommand: "",
+          region: currentDetails.region,
+          plan: currentDetails.plan,
+          maxShutdownDelaySeconds: currentDetails.maxShutdownDelaySeconds,
+          numInstances: currentDetails.numInstances,
+        },
       },
       (service) => expected.matches(service),
     );

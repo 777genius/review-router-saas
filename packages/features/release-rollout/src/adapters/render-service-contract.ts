@@ -5,6 +5,10 @@ type SharedContract = Readonly<{
   autoDeploy: "no";
   autoDeployTrigger: "off";
   preDeployCommand: string;
+  region: string;
+  plan: string;
+  maxShutdownDelaySeconds: number;
+  numInstances: number;
 }>;
 
 export type RenderTargetServiceContract = SharedContract &
@@ -23,10 +27,6 @@ export type RenderSourceServiceContract = SharedContract &
     buildCommand: string;
     startCommand: string;
     healthCheckPath: string | null;
-    region: string;
-    plan: string;
-    maxShutdownDelaySeconds: number;
-    numInstances: number;
   }>;
 
 export type RenderServiceContract =
@@ -93,7 +93,11 @@ export class RenderServiceContractMatcher {
     ]);
     if (
       !equalsCanonicalValue(runtime, this.value.runtime) ||
-      !equalsCanonicalValue(preDeployCommand, this.value.preDeployCommand)
+      !equalsCanonicalValue(preDeployCommand, this.value.preDeployCommand) ||
+      details.region !== this.value.region ||
+      details.plan !== this.value.plan ||
+      details.maxShutdownDelaySeconds !== this.value.maxShutdownDelaySeconds ||
+      details.numInstances !== this.value.numInstances
     )
       return false;
 
@@ -129,13 +133,10 @@ export class RenderServiceContractMatcher {
       service.rootDir !== this.value.rootDir ||
       specific.buildCommand !== this.value.buildCommand ||
       specific.startCommand !== this.value.startCommand ||
-      !equalsCanonicalValue(healthCheckPath, this.value.healthCheckPath) ||
-      details.region !== this.value.region ||
-      details.plan !== this.value.plan ||
-      details.maxShutdownDelaySeconds !== this.value.maxShutdownDelaySeconds
+      !equalsCanonicalValue(healthCheckPath, this.value.healthCheckPath)
     )
       return false;
 
-    return details.numInstances === this.value.numInstances;
+    return true;
   }
 }

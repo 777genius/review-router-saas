@@ -46,6 +46,37 @@ const sourceService = (): RenderService => ({
   },
 });
 
+const targetContract = {
+  serviceId: "srv-target",
+  runtime: "image" as const,
+  imagePath: "registry.example.test/app@sha256:digest",
+  autoDeploy: "no" as const,
+  autoDeployTrigger: "off" as const,
+  preDeployCommand: "",
+  region: "oregon",
+  plan: "starter",
+  maxShutdownDelaySeconds: 60,
+  numInstances: 2,
+};
+
+const targetService = (): RenderService => ({
+  id: targetContract.serviceId,
+  ownerId: "tea-owner",
+  type: "web_service",
+  suspended: "suspended",
+  autoDeploy: targetContract.autoDeploy,
+  autoDeployTrigger: targetContract.autoDeployTrigger,
+  image: { imagePath: targetContract.imagePath },
+  serviceDetails: {
+    runtime: targetContract.runtime,
+    preDeployCommand: targetContract.preDeployCommand,
+    region: targetContract.region,
+    plan: targetContract.plan,
+    maxShutdownDelaySeconds: targetContract.maxShutdownDelaySeconds,
+    numInstances: targetContract.numInstances,
+  },
+});
+
 describe("Render service contract postcondition", () => {
   it("accepts a complete source contract with no image aliases", () => {
     expect(
@@ -232,37 +263,127 @@ describe("Render service contract postcondition", () => {
     ).toBe(false);
   });
 
-  it("requires the complete target image contract", () => {
-    const matcher = new RenderServiceContractMatcher({
-      serviceId: "srv-target",
-      runtime: "image",
-      imagePath: "registry.example.test/app@sha256:digest",
-      autoDeploy: "no",
-      autoDeployTrigger: "off",
-      preDeployCommand: "",
-    });
-    const complete: RenderService = {
-      id: "srv-target",
-      ownerId: "tea-owner",
-      type: "web_service",
-      suspended: "suspended",
-      autoDeploy: "no",
-      autoDeployTrigger: "off",
-      image: { imagePath: "registry.example.test/app@sha256:digest" },
-      serviceDetails: { runtime: "image", preDeployCommand: "" },
+  it("accepts the complete target contract through consistent canonical aliases", () => {
+    const service = targetService();
+    service.serviceDetails.envSpecificDetails = {
+      runtime: targetContract.runtime,
+      preDeployCommand: targetContract.preDeployCommand,
     };
-    const { autoDeployTrigger: _omitted, ...missingTrigger } = complete;
+    service.serviceDetails.imagePath = targetContract.imagePath;
+    const mutable = service as unknown as Record<string, unknown>;
+    mutable.imagePath = targetContract.imagePath;
 
-    expect(matcher.matches(complete)).toBe(true);
-    expect(matcher.matches(missingTrigger)).toBe(false);
     expect(
-      matcher.matches({
-        ...complete,
-        serviceDetails: { ...complete.serviceDetails, runtime: "unknown" },
-      }),
+      new RenderServiceContractMatcher(targetContract).matches(service),
+    ).toBe(true);
+  });
+
+  it.each([
+    "region",
+    "plan",
+    "maxShutdownDelaySeconds",
+    "numInstances",
+  ] as const)("fails closed when the target omits %s", (field) => {
+    const service = targetService();
+    delete service.serviceDetails[field];
+
+    expect(
+      new RenderServiceContractMatcher(targetContract).matches(service),
     ).toBe(false);
+  });
+
+  it.each([
+    [
+      "auto deploy trigger",
+      (service: RenderService) => {
+        delete (service as { autoDeployTrigger?: string }).autoDeployTrigger;
+      },
+    ],
+    [
+      "runtime",
+      (service: RenderService) => {
+        delete service.serviceDetails.runtime;
+      },
+    ],
+    [
+      "pre-deploy command",
+      (service: RenderService) => {
+        delete service.serviceDetails.preDeployCommand;
+      },
+    ],
+    [
+      "image path",
+      (service: RenderService) => {
+        delete (service as { image?: { imagePath: string } }).image;
+      },
+    ],
+  ])("fails closed when the target omits %s", (_field, omit) => {
+    const service = targetService();
+    omit(service);
+
     expect(
-      matcher.matches({ ...complete, image: { imagePath: "other" } }),
+      new RenderServiceContractMatcher(targetContract).matches(service),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["region", "virginia"],
+    ["plan", "standard"],
+    ["maxShutdownDelaySeconds", 30],
+    ["numInstances", 1],
+  ] as const)("rejects a target with reset %s", (field, value) => {
+    const service = targetService();
+    service.serviceDetails[field] = value;
+
+    expect(
+      new RenderServiceContractMatcher(targetContract).matches(service),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["runtime", "unknown"],
+    ["auto deploy", "unknown"],
+    ["auto deploy trigger", "unknown"],
+  ])("rejects an unknown target %s value", (field, value) => {
+    const service = targetService();
+    if (field === "runtime") service.serviceDetails.runtime = value;
+    else if (field === "auto deploy")
+      (service as unknown as Record<string, unknown>).autoDeploy = value;
+    else
+      (service as unknown as Record<string, unknown>).autoDeployTrigger = value;
+
+    expect(
+      new RenderServiceContractMatcher(targetContract).matches(service),
+    ).toBe(false);
+  });
+
+  it.each([
+    [
+      "runtime",
+      (service: RenderService) => {
+        service.serviceDetails.envSpecificDetails = { runtime: "node" };
+      },
+    ],
+    [
+      "pre-deploy command",
+      (service: RenderService) => {
+        service.serviceDetails.envSpecificDetails = {
+          preDeployCommand: "other",
+        };
+      },
+    ],
+    [
+      "image path",
+      (service: RenderService) => {
+        service.serviceDetails.imagePath = "other";
+      },
+    ],
+  ])("rejects a conflicting target %s alias", (_field, addConflict) => {
+    const service = targetService();
+    addConflict(service);
+
+    expect(
+      new RenderServiceContractMatcher(targetContract).matches(service),
     ).toBe(false);
   });
 });
