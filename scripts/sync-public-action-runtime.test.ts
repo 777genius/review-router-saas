@@ -211,7 +211,9 @@ describe("public Action runtime sync", () => {
     expect(workflow).toContain(
       "Rotating installer descriptor SHA-256: $INSTALLER_DESCRIPTOR_SHA256",
     );
-    expect(workflow).toContain('runtime_path="release-assets/hosted-runtime-image.json"');
+    expect(workflow).toContain(
+      'runtime_path="release-assets/hosted-runtime-image.json"',
+    );
     expect(workflow).toContain("--draft\n");
     expect(workflow).toContain(
       "Published immutable release $VERSION is missing required assets",
