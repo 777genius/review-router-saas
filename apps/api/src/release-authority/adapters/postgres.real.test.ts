@@ -447,6 +447,17 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       },
     });
     await expect(
+      authority.recover({
+        ...takeoverRequest,
+        // A restarted caller initially observes the already-applied state;
+        // the terminal record's durable precondition remains authoritative.
+        expected: { fingerprint: `sha256:${"7".repeat(64)}`, version: null },
+      }),
+    ).resolves.toMatchObject({
+      status: "terminal",
+      outcome: { result: "exact_postcondition" },
+    });
+    await expect(
       authority.issue({
         ...base,
         operation: `freeze-unrelated:srv-${unique.slice(0, 12)}`,
@@ -457,5 +468,70 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         ownerId: "actor-four",
       }),
     ).resolves.toMatchObject({ epoch: 1 });
+  });
+
+  it("uses resource-first locks during concurrent recovery", async () => {
+    if (!control || !admin) throw new Error("real_postgres_test_unconfigured");
+    const ledger = new RoutineReleaseControlLedgerAdapter(control);
+    const authority = new RoutineProviderMutationAuthorityAdapter(control);
+    const unique = randomUUID().replaceAll("-", "");
+    const request = {
+      rolloutId: `r-lock-order-${unique.slice(0, 16)}`,
+      operation: `lock-order:srv-${unique.slice(0, 12)}`,
+      resource: {
+        provider: "render",
+        kind: "service",
+        id: `srv-lock-order-${unique.slice(0, 12)}`,
+      },
+      ownerId: "rr-provider-lock-order",
+      expected: { fingerprint: `sha256:${"9".repeat(64)}`, version: null },
+      leaseSeconds: 60,
+    } as const;
+    await ledger.claim({
+      rolloutId: request.rolloutId,
+      expectedCommitSha: "8".repeat(40),
+      runId: "904",
+      runAttempt: 1,
+      sourceSystemIdentifier: "194",
+      targetSystemIdentifier: "294",
+    });
+    await authority.issue(request);
+
+    // This transaction deliberately holds resource before requesting mutation.
+    // A mutation-first recover routine forms an actual deadlock with it.
+    const resourceFirst = admin.$transaction(async (transaction) => {
+      await transaction.$queryRawUnsafe(
+        `SELECT 1 FROM release_authority.provider_resource_lease
+         WHERE provider=$1 AND resource_kind=$2 AND resource_id=$3 FOR UPDATE`,
+        request.resource.provider,
+        request.resource.kind,
+        request.resource.id,
+      );
+      await transaction.$queryRawUnsafe(
+        "SELECT pg_sleep(0.2)::text AS slept",
+      );
+      await transaction.$queryRawUnsafe(
+        `SELECT 1 FROM release_authority.provider_mutation
+         WHERE rollout_id=$1 AND operation=$2 AND provider=$3
+           AND resource_kind=$4 AND resource_id=$5 FOR UPDATE`,
+        request.rolloutId,
+        request.operation,
+        request.resource.provider,
+        request.resource.kind,
+        request.resource.id,
+      );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const recovery = authority.recover(request);
+    const results = await Promise.race([
+      Promise.all([resourceFirst, recovery]),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("provider_mutation_lock_order_timeout")),
+          5_000,
+        ),
+      ),
+    ]);
+    expect(results[1]).toMatchObject({ status: "permit" });
   });
 });

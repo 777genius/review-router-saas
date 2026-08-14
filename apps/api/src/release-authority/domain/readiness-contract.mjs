@@ -59,7 +59,7 @@ export const releaseAuthorityMigrationContract = Object.freeze([
   ],
   [
     "000012_provider_mutation_resource_fence",
-    "sha256:097c180272084ca9b33b3e11d9f7b0e7b7ea2dd103f4e2acea0dc87189b5d047",
+    "sha256:45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
   ],
 ]);
 

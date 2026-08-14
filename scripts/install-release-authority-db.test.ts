@@ -454,6 +454,17 @@ describe("release authority database installation", () => {
     expect(migration).toContain("provider_resource_lease");
     expect(migration).toContain("receipt_id");
     expect(migration).toContain("provider mutation terminal replay conflict");
+    const recover = migration.slice(
+      migration.indexOf(
+        "CREATE FUNCTION release_authority.release_provider_mutation_recover",
+      ),
+      migration.indexOf(
+        "CREATE FUNCTION release_authority.release_provider_mutation_consume",
+      ),
+    );
+    expect(
+      recover.indexOf("FROM release_authority.provider_resource_lease"),
+    ).toBeLessThan(recover.indexOf("FROM release_authority.provider_mutation"));
   });
   it("removes implicit PUBLIC usage from the declared authority type", () => {
     const migration = readFileSync(
@@ -497,7 +508,7 @@ describe("release authority database installation", () => {
       "bc2fb62a012ad9676ce696a5652abc8d29f2110243f0072dc75bcdcfb0ac8e25",
       "a7f1f5063b83f53dfd95dda6bf70740fd2e586dbed368903d7098190cf6200fd",
       "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
-      "097c180272084ca9b33b3e11d9f7b0e7b7ea2dd103f4e2acea0dc87189b5d047",
+      "45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
     ]);
     const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const first = bundle.indexOf("CREATE SCHEMA release_authority");

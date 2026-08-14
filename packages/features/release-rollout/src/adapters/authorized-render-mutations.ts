@@ -8,6 +8,10 @@ import type {
   ProviderResourceKind,
 } from "../domain/provider-mutation";
 import {
+  environmentKeysSha256,
+  environmentSha256,
+} from "../domain/service-transition";
+import {
   RenderApiAdapter,
   type RenderDeploy,
   type RenderJob,
@@ -19,6 +23,15 @@ export type RenderMutationContext = Readonly<{
   ownerId: string;
   operation: string;
 }>;
+
+/** Reconstructible across workers; never bind durable authority to a process UUID. */
+export const stableRenderMutationOwnerId = (
+  rolloutId: string,
+  operation: string,
+): string =>
+  `rr-provider-${createHash("sha256")
+    .update(`${rolloutId}\0${operation}`)
+    .digest("hex")}`;
 
 const fingerprint = (value: unknown): string =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
@@ -78,6 +91,55 @@ const jobWitness = (values: readonly RenderJob[]) =>
       status: item.status,
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
+const environmentMatchesPatch = (
+  environment: readonly { key: string; value: string }[],
+  input: { set: Readonly<Record<string, string>>; remove: readonly string[] },
+): boolean => {
+  const values = new Map(environment.map(({ key, value }) => [key, value]));
+  return (
+    input.remove.every((key) => !values.has(key)) &&
+    Object.entries(input.set).every(([key, value]) => values.get(key) === value)
+  );
+};
+const patchedEnvironment = (
+  environment: readonly { key: string; value: string }[],
+  input: { set: Readonly<Record<string, string>>; remove: readonly string[] },
+): readonly { key: string; value: string }[] => {
+  const values = new Map(environment.map(({ key, value }) => [key, value]));
+  for (const key of input.remove) values.delete(key);
+  for (const [key, value] of Object.entries(input.set)) values.set(key, value);
+  return [...values]
+    .map(([key, value]) => ({ key, value }))
+    .sort((left, right) => left.key.localeCompare(right.key));
+};
+const createdAfter = (createdAt: string | undefined, consumedAt: string) =>
+  createdAt !== undefined &&
+  Date.parse(createdAt) >= Date.parse(consumedAt) - 5_000;
+const uniqueDeployAfter = (
+  values: readonly RenderDeploy[],
+  consumedAt: string,
+  commitId?: string,
+): RenderDeploy | undefined => {
+  const candidates = values.filter(
+    (item) =>
+      createdAfter(item.createdAt, consumedAt) &&
+      (commitId === undefined || item.commit?.id === commitId),
+  );
+  return candidates.length === 1 ? candidates[0] : undefined;
+};
+const uniqueJobAfter = (
+  values: readonly RenderJob[],
+  consumedAt: string,
+  input: { startCommand: string; planId?: string },
+): RenderJob | undefined => {
+  const candidates = values.filter(
+    (item) =>
+      createdAfter(item.createdAt, consumedAt) &&
+      item.startCommand === input.startCommand &&
+      (item.planId ?? undefined) === input.planId,
+  );
+  return candidates.length === 1 ? candidates[0] : undefined;
+};
 
 /** The sole Render write gateway. It provides authority serialization and witnesses, not native CAS. */
 export class AuthorizedRenderMutations {
@@ -133,22 +195,38 @@ export class AuthorizedRenderMutations {
   ): ReturnType<RenderApiAdapter["patchEnvPreservingAll"]> {
     const identity = resource("service_environment", input.serviceId);
     const before = await this.api.listAllEnv(input.serviceId);
-    const beforeState = state(before);
+    const desiredEnvironmentSha256 = environmentSha256(
+      patchedEnvironment(before, input),
+    );
+    const beforeState = {
+      fingerprint: input.expectedBeforeSha256 ?? fingerprint(before),
+      // The durable, non-secret postcondition hash makes restart observation
+      // exact even though the environment payload is intentionally not stored.
+      version: input.expectedAfterSha256 ?? desiredEnvironmentSha256,
+    };
     let result:
       | Awaited<ReturnType<RenderApiAdapter["patchEnvPreservingAll"]>>
       | undefined;
-    await this.serialized.execute({
+    let latestEnvironment: readonly { key: string; value: string }[] = before;
+    const outcome = await this.serialized.execute({
       ...context,
+      ownerId: stableRenderMutationOwnerId(
+        context.rolloutId,
+        context.operation,
+      ),
       resource: identity,
       expected: beforeState,
       expectedPostcondition: (observation) =>
-        result?.status === "applied" &&
-        observation.state.fingerprint === result.environmentSha256,
+        observation.resultIdentity?.kind === "environment",
       observe: async () => {
         const env = await this.api.listAllEnv(input.serviceId);
+        latestEnvironment = env;
         return {
           ...observed(identity, env),
-          state: { fingerprint: fingerprint(env), version: null },
+          state: {
+            fingerprint: fingerprint(env),
+            version: input.expectedAfterSha256 ?? desiredEnvironmentSha256,
+          },
         };
       },
       mutate: async () => {
@@ -159,8 +237,32 @@ export class AuthorizedRenderMutations {
         if (result.status !== "applied")
           throw new Error(`render_environment_${result.status}`);
       },
+      identifyResult: (_observation, receipt) => {
+        const env = latestEnvironment;
+        if (
+          !env ||
+          !environmentMatchesPatch(env, input) ||
+          environmentSha256(env) !== receipt.expected.version
+        )
+          return null;
+        return {
+          kind: "environment",
+          environmentSha256: environmentSha256(env),
+          environmentKeysSha256: environmentKeysSha256(env),
+        };
+      },
     });
-    return result!;
+    if (result?.status === "applied") return result;
+    const replayIdentity = outcome.observation.resultIdentity;
+    if (replayIdentity?.kind !== "environment")
+      throw new Error("provider_mutation_typed_replay_missing");
+    return {
+      status: "applied",
+      previousEnvironmentSha256: outcome.receipt.expected.fingerprint,
+      environmentSha256: replayIdentity.environmentSha256,
+      environmentKeysSha256: replayIdentity.environmentKeysSha256,
+      replayed: true,
+    };
   }
 
   async createDeploy(
@@ -172,12 +274,16 @@ export class AuthorizedRenderMutations {
     const before = await this.api.listAllDeploys(serviceId);
     let created: RenderDeploy | undefined;
     let latest: readonly RenderDeploy[] = before;
-    await this.serialized.execute({
+    const outcome = await this.serialized.execute({
       ...context,
+      ownerId: stableRenderMutationOwnerId(
+        context.rolloutId,
+        context.operation,
+      ),
       resource: identity,
       expected: state(deployWitness(before)),
-      expectedPostcondition: () =>
-        created !== undefined && latest.some((item) => item.id === created!.id),
+      expectedPostcondition: (observation) =>
+        observation.resultIdentity?.kind === "deploy",
       observe: async () => {
         latest = await this.api.listAllDeploys(serviceId);
         return observed(identity, deployWitness(latest));
@@ -185,8 +291,20 @@ export class AuthorizedRenderMutations {
       mutate: async () => {
         created = await this.api.createPinnedDeploy(serviceId, commitId);
       },
+      identifyResult: (_observation, receipt) => {
+        const match = created
+          ? latest.find((item) => item.id === created?.id)
+          : uniqueDeployAfter(latest, receipt.consumedAt, commitId);
+        return match ? { kind: "deploy", id: match.id } : null;
+      },
     });
-    return created!;
+    const replayId =
+      outcome.observation.resultIdentity?.kind === "deploy"
+        ? outcome.observation.resultIdentity.id
+        : undefined;
+    const replay = latest.find((item) => item.id === replayId);
+    if (!replay) throw new Error("provider_mutation_typed_replay_missing");
+    return replay;
   }
 
   async createJob(
@@ -202,12 +320,16 @@ export class AuthorizedRenderMutations {
     const before = await this.api.listAllJobs(serviceId);
     let created: RenderJob | undefined;
     let latest: readonly RenderJob[] = before;
-    await this.serialized.execute({
+    const outcome = await this.serialized.execute({
       ...context,
+      ownerId: stableRenderMutationOwnerId(
+        context.rolloutId,
+        context.operation,
+      ),
       resource: identity,
       expected: state(jobWitness(before)),
-      expectedPostcondition: () =>
-        created !== undefined && latest.some((item) => item.id === created!.id),
+      expectedPostcondition: (observation) =>
+        observation.resultIdentity?.kind === "job",
       observe: async () => {
         latest = await this.api.listAllJobs(serviceId);
         return observed(identity, jobWitness(latest));
@@ -215,8 +337,20 @@ export class AuthorizedRenderMutations {
       mutate: async () => {
         created = await this.api.createJob(serviceId, input);
       },
+      identifyResult: (_observation, receipt) => {
+        const match = created
+          ? latest.find((item) => item.id === created?.id)
+          : uniqueJobAfter(latest, receipt.consumedAt, input);
+        return match ? { kind: "job", id: match.id } : null;
+      },
     });
-    return created!;
+    const replayId =
+      outcome.observation.resultIdentity?.kind === "job"
+        ? outcome.observation.resultIdentity.id
+        : undefined;
+    const replay = latest.find((item) => item.id === replayId);
+    if (!replay) throw new Error("provider_mutation_typed_replay_missing");
+    return replay;
   }
 
   private async serviceMutation(
@@ -238,6 +372,10 @@ export class AuthorizedRenderMutations {
     let mutationAttempted = false;
     await this.serialized.execute({
       ...context,
+      ownerId: stableRenderMutationOwnerId(
+        context.rolloutId,
+        context.operation,
+      ),
       resource: identity,
       expected: state(serviceWitness(before)),
       expectedPostcondition: () => latest !== undefined && matches(latest),

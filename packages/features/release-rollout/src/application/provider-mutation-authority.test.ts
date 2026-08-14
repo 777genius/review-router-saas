@@ -218,6 +218,35 @@ describe("authority-serialized provider mutation", () => {
     expect(mutate).not.toHaveBeenCalled();
   });
 
+  it("uses the durable precondition when a restarted process observes the post-state", async () => {
+    const authority = new FakeAuthority();
+    const permit = await authority.issue({
+      rolloutId: "rollout-one",
+      operation: "suspend_service",
+      resource,
+      ownerId: "actor-one",
+      expected: before,
+      leaseSeconds: 60,
+    });
+    const receipt = await authority.consume(permit);
+    await authority.validateExecution(receipt);
+    authority.recovery = {
+      status: "receipt",
+      phase: "executing",
+      reconciliationOnly: true,
+      receipt,
+    };
+    const mutate = vi.fn();
+    await expect(
+      execute(authority, {
+        expected: after,
+        mutate,
+        observe: async () => observed(after),
+      }),
+    ).resolves.toMatchObject({ status: "reconciled" });
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
   it("allows one concurrent actor and rejects the other", async () => {
     const authority = new FakeAuthority();
     let release!: () => void;

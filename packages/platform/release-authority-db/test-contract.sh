@@ -401,7 +401,7 @@ if docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate 
   exit 1
 fi
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -c \
-  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:097c180272084ca9b33b3e11d9f7b0e7b7ea2dd103f4e2acea0dc87189b5d047' WHERE position=13" >/dev/null
+  "UPDATE release_authority.schema_migration SET checksum_sha256='sha256:45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1' WHERE position=13" >/dev/null
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate \
   -f /tmp/release-authority-install.sql >/dev/null
 first_gate_attestation=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_authority_gate -Atc \
@@ -1192,6 +1192,14 @@ if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewro
   exit 1
 fi
 pm_observation='{"resource":{"provider":"render","kind":"service","id":"srv-pm"},"state":{"fingerprint":"sha256:'$(printf '8%.0s' $(seq 1 64))'","version":null},"observedAt":"2026-08-14T00:00:00.000Z"}'
+pm_payload_observation='{"resource":{"provider":"render","kind":"service","id":"srv-pm"},"state":{"fingerprint":"sha256:'$(printf '8%.0s' $(seq 1 64))'","version":null},"observedAt":"2026-08-14T00:00:00.000Z","providerPayload":{"token":"must-not-persist"}}'
+if docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
+  "SELECT release_authority.release_provider_mutation_reconcile(jsonb_build_object(
+    'result','exact_postcondition','receipt','$pm_takeover_receipt'::jsonb,
+    'observation','$pm_payload_observation'::jsonb))" >/dev/null 2>&1; then
+  echo "provider mutation observation unexpectedly persisted provider payload" >&2
+  exit 1
+fi
 docker exec -e PGPASSWORD=control "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_release_control -d postgres -Atc \
   "SELECT release_authority.release_provider_mutation_reconcile(jsonb_build_object(
     'result','exact_postcondition','receipt','$pm_takeover_receipt'::jsonb,

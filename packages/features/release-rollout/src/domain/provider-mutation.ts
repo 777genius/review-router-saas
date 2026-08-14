@@ -73,7 +73,18 @@ export interface ObservedProviderPostcondition {
   readonly resource: ProviderResourceIdentity;
   readonly state: ExpectedProviderState;
   readonly observedAt: string;
+  /** Safe, normalized provider identity used to reconstruct typed replays. */
+  readonly resultIdentity?: ProviderMutationResultIdentity;
 }
+
+export type ProviderMutationResultIdentity =
+  | Readonly<{
+      kind: "environment";
+      environmentSha256: string;
+      environmentKeysSha256: string;
+    }>
+  | Readonly<{ kind: "deploy"; id: string }>
+  | Readonly<{ kind: "job"; id: string }>;
 
 export type ProviderMutationReconciliation = Readonly<{
   result:

@@ -11,6 +11,7 @@ import {
   type ProviderMutationRecovery,
   type ProviderMutationRecoveryRequest,
   type ProviderMutationReconciliation,
+  type ProviderMutationResultIdentity,
   type ProviderResourceIdentity,
 } from "../domain/provider-mutation";
 
@@ -73,6 +74,10 @@ export class AuthoritySerializedMutation {
     leaseSeconds?: number;
     observe: () => Promise<ObservedProviderPostcondition>;
     mutate: () => Promise<void>;
+    identifyResult?: (
+      observation: ObservedProviderPostcondition,
+      receipt: MutationExecutionReceipt,
+    ) => ProviderMutationResultIdentity | null;
   }): Promise<AuthorizedMutationOutcome> {
     const request = {
       rolloutId: input.rolloutId,
@@ -147,7 +152,7 @@ export class AuthoritySerializedMutation {
     }
     let after: ObservedProviderPostcondition;
     try {
-      after = await input.observe();
+      after = this.withResultIdentity(await input.observe(), input, receipt);
     } catch {
       await this.authority.reconcile({
         result: "ambiguous_forward_repair",
@@ -213,7 +218,11 @@ export class AuthoritySerializedMutation {
       throw new Error("provider_mutation_receipt_binding_invalid");
     let observation: ObservedProviderPostcondition;
     try {
-      observation = await input.observe();
+      observation = this.withResultIdentity(
+        await input.observe(),
+        input,
+        receipt,
+      );
     } catch {
       await this.authority.reconcile({
         result: "ambiguous_forward_repair",
@@ -247,7 +256,6 @@ export class AuthoritySerializedMutation {
       outcome.operation !== input.operation ||
       outcome.ownerId !== input.ownerId ||
       !sameProviderResource(outcome.resource, input.resource) ||
-      !sameProviderState(outcome.expected, input.expected) ||
       (outcome.observation !== null &&
         !sameProviderResource(outcome.observation.resource, input.resource))
     )
@@ -285,8 +293,7 @@ export class AuthoritySerializedMutation {
       receipt.rolloutId === input.rolloutId &&
       receipt.operation === input.operation &&
       receipt.ownerId === input.ownerId &&
-      sameProviderResource(receipt.resource, input.resource) &&
-      sameProviderState(receipt.expected, input.expected)
+      sameProviderResource(receipt.resource, input.resource)
     );
   }
 
@@ -296,12 +303,20 @@ export class AuthoritySerializedMutation {
         | ExpectedProviderState
         | ((observation: ObservedProviderPostcondition) => boolean);
       observe: () => Promise<ObservedProviderPostcondition>;
+      identifyResult?: (
+        observation: ObservedProviderPostcondition,
+        receipt: MutationExecutionReceipt,
+      ) => ProviderMutationResultIdentity | null;
     },
     receipt: MutationExecutionReceipt,
   ): Promise<AuthorizedMutationOutcome> {
     let observation: ObservedProviderPostcondition;
     try {
-      observation = await input.observe();
+      observation = this.withResultIdentity(
+        await input.observe(),
+        input,
+        receipt,
+      );
     } catch {
       await this.authority.reconcile({
         result: "ambiguous_forward_repair",
@@ -324,6 +339,20 @@ export class AuthoritySerializedMutation {
       observation,
     });
     throw new Error("provider_mutation_forward_repair_required");
+  }
+
+  private withResultIdentity(
+    observation: ObservedProviderPostcondition,
+    input: {
+      identifyResult?: (
+        observation: ObservedProviderPostcondition,
+        receipt: MutationExecutionReceipt,
+      ) => ProviderMutationResultIdentity | null;
+    },
+    receipt: MutationExecutionReceipt,
+  ): ObservedProviderPostcondition {
+    const resultIdentity = input.identifyResult?.(observation, receipt);
+    return resultIdentity ? { ...observation, resultIdentity } : observation;
   }
 
   private matchesPostcondition(

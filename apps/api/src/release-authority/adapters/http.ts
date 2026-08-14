@@ -12,6 +12,7 @@ import {
   type RecoveryEffectAuthorityPort,
   type MutationExecutionReceipt,
   type ProviderMutationReconciliation,
+  type ProviderMutationResultIdentity,
 } from "@reviewrouter/features-release-rollout";
 import type {
   CreateProvisioningIntent,
@@ -155,18 +156,53 @@ const mutationReceiptRequest = (value: unknown): MutationExecutionReceipt => {
 };
 const mutationObservationRequest = (value: unknown) => {
   const body = record(value);
+  const resultIdentity =
+    body.resultIdentity === undefined ? undefined : record(body.resultIdentity);
+  const resource = mutationResource(body.resource);
   if (
-    !exactKeys(body, ["resource", "state", "observedAt"]) ||
+    !exactKeys(body, [
+      "resource",
+      "state",
+      "observedAt",
+      ...(resultIdentity ? ["resultIdentity"] : []),
+    ]) ||
     !nonemptyString(body.observedAt) ||
-    !Number.isFinite(Date.parse(body.observedAt))
+    !Number.isFinite(Date.parse(body.observedAt)) ||
+    (resultIdentity !== undefined &&
+      !(
+        (exactKeys(resultIdentity, ["kind", "id"]) &&
+          (resultIdentity.kind === "deploy" || resultIdentity.kind === "job") &&
+          nonemptyString(resultIdentity.id) &&
+          resultIdentity.id.length <= 256) ||
+        (exactKeys(resultIdentity, [
+          "kind",
+          "environmentSha256",
+          "environmentKeysSha256",
+        ]) &&
+          resultIdentity.kind === "environment" &&
+          typeof resultIdentity.environmentSha256 === "string" &&
+          /^sha256:[a-f0-9]{64}$/u.test(resultIdentity.environmentSha256) &&
+          typeof resultIdentity.environmentKeysSha256 === "string" &&
+          /^sha256:[a-f0-9]{64}$/u.test(resultIdentity.environmentKeysSha256))
+      )) ||
+    (resultIdentity?.kind === "environment" &&
+      resource.kind !== "service_environment") ||
+    (resultIdentity?.kind === "deploy" &&
+      resource.kind !== "deploy_creation_slot") ||
+    (resultIdentity?.kind === "job" &&
+      resource.kind !== "job_creation_intent") ||
+    (resultIdentity !== undefined && resource.kind === "service")
   )
     throw Object.assign(new Error("provider_mutation_request_invalid"), {
       statusCode: 400,
     });
   return {
-    resource: mutationResource(body.resource),
+    resource,
     state: mutationExpected(body.state),
     observedAt: body.observedAt,
+    ...(resultIdentity
+      ? { resultIdentity: resultIdentity as ProviderMutationResultIdentity }
+      : {}),
   };
 };
 

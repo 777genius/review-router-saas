@@ -731,17 +731,24 @@ BEGIN
     OR (p_input->>'leaseSeconds')::numeric NOT BETWEEN 5 AND 300
   THEN RAISE EXCEPTION 'provider mutation recovery invalid'; END IF;
   seconds := (p_input->>'leaseSeconds')::integer;
-  SELECT * INTO mutation FROM release_authority.provider_mutation
-  WHERE rollout_id=p_input->>'rolloutId' AND operation=p_input->>'operation'
-    AND provider=p_input#>>'{resource,provider}'
+  -- Canonical lock order is resource first in every provider mutation routine.
+  SELECT * INTO resource_lease FROM release_authority.provider_resource_lease
+  WHERE provider=p_input#>>'{resource,provider}'
     AND resource_kind=p_input#>>'{resource,kind}'
     AND resource_id=p_input#>>'{resource,id}' FOR UPDATE;
   IF NOT FOUND THEN RETURN jsonb_build_object('status','absent'); END IF;
-  SELECT * INTO STRICT resource_lease FROM release_authority.provider_resource_lease
-  WHERE provider=mutation.provider AND resource_kind=mutation.resource_kind
-    AND resource_id=mutation.resource_id FOR UPDATE;
-  IF mutation.expected_fingerprint<>p_input#>>'{expected,fingerprint}'
-    OR mutation.expected_version IS DISTINCT FROM nullif(p_input#>>'{expected,version}','')
+  SELECT * INTO mutation FROM release_authority.provider_mutation
+  WHERE rollout_id=p_input->>'rolloutId' AND operation=p_input->>'operation'
+    AND provider=resource_lease.provider
+    AND resource_kind=resource_lease.resource_kind
+    AND resource_id=resource_lease.resource_id FOR UPDATE;
+  IF NOT FOUND THEN RETURN jsonb_build_object('status','absent'); END IF;
+  -- Executing/terminal records carry the authoritative precondition. A
+  -- restarted worker observes today's post-state, so its provisional witness
+  -- must not prevent reconciliation or exact replay.
+  IF ((mutation.completed_at IS NULL AND mutation.state<>'executing') AND (
+      mutation.expected_fingerprint<>p_input#>>'{expected,fingerprint}'
+      OR mutation.expected_version IS DISTINCT FROM nullif(p_input#>>'{expected,version}','')))
     OR (mutation.owner_id<>p_input->>'ownerId' AND (
       mutation.completed_at IS NOT NULL OR mutation.state='executing'
       OR mutation.expires_at>clock_timestamp()))
@@ -906,10 +913,53 @@ BEGIN
     OR result NOT IN ('exact_postcondition','precondition_drift',
       'execution_not_authorized','ambiguous_forward_repair')
     OR (terminal_observation IS NOT NULL AND (
-      terminal_observation#>>'{resource,provider}'<>mutation.provider
+      jsonb_typeof(terminal_observation)<>'object'
+      OR jsonb_array_length(jsonb_path_query_array(
+        terminal_observation,'$.keyvalue()'))
+        <> CASE WHEN terminal_observation ? 'resultIdentity' THEN 4 ELSE 3 END
+      OR NOT terminal_observation ?& ARRAY['resource','state','observedAt']
+      OR jsonb_typeof(terminal_observation->'resource')<>'object'
+      OR jsonb_array_length(jsonb_path_query_array(
+        terminal_observation->'resource','$.keyvalue()'))<>3
+      OR NOT (terminal_observation->'resource') ?& ARRAY['provider','kind','id']
+      OR terminal_observation#>>'{resource,provider}'<>mutation.provider
       OR terminal_observation#>>'{resource,kind}'<>mutation.resource_kind
       OR terminal_observation#>>'{resource,id}'<>mutation.resource_id
-      OR coalesce(terminal_observation#>>'{state,fingerprint}','') !~ '^sha256:[a-f0-9]{64}$'))
+      OR jsonb_typeof(terminal_observation->'state')<>'object'
+      OR jsonb_array_length(jsonb_path_query_array(
+        terminal_observation->'state','$.keyvalue()'))<>2
+      OR NOT (terminal_observation->'state') ?& ARRAY['fingerprint','version']
+      OR coalesce(terminal_observation#>>'{state,fingerprint}','') !~ '^sha256:[a-f0-9]{64}$'
+      OR ((terminal_observation#>'{state,version}') <> 'null'::jsonb
+        AND length(terminal_observation#>>'{state,version}') NOT BETWEEN 1 AND 256)
+      OR coalesce(terminal_observation->>'observedAt','')
+        !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+      OR (terminal_observation ? 'resultIdentity' AND (
+        jsonb_typeof(terminal_observation->'resultIdentity')<>'object'
+        OR NOT (
+          ((terminal_observation#>>'{resultIdentity,kind}')='deploy'
+            AND mutation.resource_kind='deploy_creation_slot'
+            AND jsonb_array_length(jsonb_path_query_array(
+              terminal_observation->'resultIdentity','$.keyvalue()'))=2
+            AND (terminal_observation->'resultIdentity') ?& ARRAY['kind','id']
+            AND length(terminal_observation#>>'{resultIdentity,id}') BETWEEN 1 AND 256)
+          OR ((terminal_observation#>>'{resultIdentity,kind}')='job'
+            AND mutation.resource_kind='job_creation_intent'
+            AND jsonb_array_length(jsonb_path_query_array(
+              terminal_observation->'resultIdentity','$.keyvalue()'))=2
+            AND (terminal_observation->'resultIdentity') ?& ARRAY['kind','id']
+            AND length(terminal_observation#>>'{resultIdentity,id}') BETWEEN 1 AND 256)
+          OR ((terminal_observation#>>'{resultIdentity,kind}')='environment'
+            AND mutation.resource_kind='service_environment'
+            AND jsonb_array_length(jsonb_path_query_array(
+              terminal_observation->'resultIdentity','$.keyvalue()'))=3
+            AND (terminal_observation->'resultIdentity') ?&
+              ARRAY['kind','environmentSha256','environmentKeysSha256']
+            AND coalesce(terminal_observation#>>'{resultIdentity,environmentSha256}','')
+              ~ '^sha256:[a-f0-9]{64}$'
+            AND coalesce(terminal_observation#>>'{resultIdentity,environmentKeysSha256}','')
+              ~ '^sha256:[a-f0-9]{64}$'))))
+    ))
   THEN RAISE EXCEPTION 'provider mutation finish binding conflict'; END IF;
 
   IF mutation.completed_at IS NOT NULL THEN
