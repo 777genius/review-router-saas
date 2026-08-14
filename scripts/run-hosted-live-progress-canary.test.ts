@@ -545,13 +545,13 @@ function releaseAuthority() {
 
 function fixtureFiles() {
   return [
-    ".github/workflows/reviewrouter-codex.yml",
-    ".github/workflows/reviewrouter-interaction.yml",
     ...Array.from({ length: 106 }, (_, index) => {
       const number = index + 1;
       const batch = Math.ceil(number / 22);
       return `src/batch-${String(batch).padStart(2, "0")}/review-entity-${String(number).padStart(3, "0")}.ts`;
     }),
+    "src/canary-fixture-107.ts",
+    "src/canary-fixture-108.ts",
   ].map((filename) => ({ filename }));
 }
 
