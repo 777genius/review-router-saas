@@ -43,7 +43,8 @@ export function isManagedV2SessionBootstrapSource(input: {
   if (
     input.workflowPath === managedCodexWorkflowPath &&
     (input.eventName === "workflow_dispatch" ||
-      input.eventName === "pull_request")
+      input.eventName === "pull_request" ||
+      input.eventName === "pull_request_target")
   ) {
     return true;
   }

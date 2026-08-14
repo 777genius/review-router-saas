@@ -67,6 +67,10 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
           ".github/workflows/reviewrouter-codex.yml",
         ),
         commentTokenInput(
+          "pull_request_target",
+          ".github/workflows/reviewrouter-codex.yml",
+        ),
+        commentTokenInput(
           "issue_comment",
           ".github/workflows/reviewrouter-interaction.yml",
         ),
@@ -130,6 +134,10 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
     ["workflow_dispatch", ".github/workflows/reviewrouter-codex.yml"] as const,
     ["pull_request", ".github/workflows/reviewrouter-codex.yml"] as const,
     [
+      "pull_request_target",
+      ".github/workflows/reviewrouter-codex.yml",
+    ] as const,
+    [
       "issue_comment",
       ".github/workflows/reviewrouter-interaction.yml",
     ] as const,
@@ -161,6 +169,10 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
     ["workflow_dispatch", ".github/workflows/untrusted.yml"] as const,
     ["issue_comment", ".github/workflows/reviewrouter-codex.yml"] as const,
     ["pull_request", ".github/workflows/untrusted.yml"] as const,
+    [
+      "pull_request_target",
+      ".github/workflows/reviewrouter-interaction.yml",
+    ] as const,
   ])(
     "blocks unmanaged session bootstrap for %s from %s",
     async (eventName, workflowPath) => {
