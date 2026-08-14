@@ -132,5 +132,86 @@ ${releaseAuthorityAclFingerprintSql}
 
 ${releaseAuthorityCatalogFunctionSql}`;
 
+const aclFingerprintExpression = (aclExpression) => String.raw`(
+  SELECT coalesce(jsonb_agg(jsonb_build_object(
+    'grantor',CASE WHEN acl.grantor=0 THEN 'PUBLIC'
+      ELSE pg_catalog.pg_get_userbyid(acl.grantor) END,
+    'grantee',CASE WHEN acl.grantee=0 THEN 'PUBLIC'
+      ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
+    'privilege_type',acl.privilege_type,
+    'is_grantable',acl.is_grantable
+  ) ORDER BY
+    CASE WHEN acl.grantor=0 THEN 'PUBLIC'
+      ELSE pg_catalog.pg_get_userbyid(acl.grantor) END,
+    CASE WHEN acl.grantee=0 THEN 'PUBLIC'
+      ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
+    acl.privilege_type,acl.is_grantable),'[]'::jsonb)
+  FROM pg_catalog.aclexplode(CASE
+    WHEN pg_catalog.cardinality(${aclExpression})>0 THEN ${aclExpression}
+    ELSE NULL::aclitem[]
+  END) acl
+)`;
+
+const catalogQuery = releaseAuthorityCatalogFunctionSql.slice(
+  releaseAuthorityCatalogFunctionSql.indexOf("AS $fingerprint$\n") +
+    "AS $fingerprint$\n".length,
+  releaseAuthorityCatalogFunctionSql.lastIndexOf("\n$fingerprint$;"),
+);
+
+const inlineAclCalls = (query) => {
+  const calls = [
+    [
+      String.raw`pg_temp.release_authority_acl_fingerprint(
+          coalesce(nspacl,pg_catalog.acldefault('n',nspowner)))`,
+      String.raw`coalesce(nspacl,pg_catalog.acldefault('n',nspowner))`,
+    ],
+    [
+      String.raw`pg_temp.release_authority_acl_fingerprint(
+          coalesce(relation.relacl,pg_catalog.acldefault(
+            CASE WHEN relation.relkind='S' THEN 'S'::"char" ELSE 'r'::"char" END,
+            relation.relowner)))`,
+      String.raw`coalesce(relation.relacl,pg_catalog.acldefault(
+            CASE WHEN relation.relkind='S' THEN 'S'::"char" ELSE 'r'::"char" END,
+            relation.relowner))`,
+    ],
+    [
+      "pg_temp.release_authority_acl_fingerprint(attribute.attacl)",
+      "attribute.attacl",
+    ],
+    [
+      String.raw`pg_temp.release_authority_acl_fingerprint(
+          coalesce(procedure.proacl,pg_catalog.acldefault('f',procedure.proowner)))`,
+      String.raw`coalesce(procedure.proacl,pg_catalog.acldefault('f',procedure.proowner))`,
+    ],
+    [
+      String.raw`pg_temp.release_authority_acl_fingerprint(
+          coalesce(type_record.typacl,pg_catalog.acldefault('T',type_record.typowner)))`,
+      String.raw`coalesce(type_record.typacl,pg_catalog.acldefault('T',type_record.typowner))`,
+    ],
+  ];
+  let result = query;
+  for (const [call, argument] of calls) {
+    if (!result.includes(call))
+      throw new Error("release_authority_catalog_acl_call_missing");
+    result = result.replace(call, aclFingerprintExpression(argument));
+  }
+  if (result.includes("pg_temp.release_authority_acl_fingerprint"))
+    throw new Error("release_authority_catalog_acl_call_unexpanded");
+  return result;
+};
+
+export const releaseAuthorityReadOnlyCatalogExpression = (schema) => {
+  if (!/^[a-z][a-z0-9_]{0,62}$/u.test(schema))
+    throw new Error("release_authority_catalog_schema_invalid");
+  const query = inlineAclCalls(catalogQuery).replaceAll(
+    /\bp_schema\b/gu,
+    `'${schema}'::text`,
+  );
+  return `(${query})`;
+};
+
+export const releaseAuthorityReadOnlyCatalogDigestExpression = (schema) =>
+  `encode(pg_catalog.sha256(pg_catalog.convert_to(${releaseAuthorityReadOnlyCatalogExpression(schema)},'UTF8')),'hex')`;
+
 export const releaseAuthorityCatalogDigestExpression = (schema) =>
   `encode(pg_catalog.sha256(pg_catalog.convert_to(pg_temp.release_authority_catalog_fingerprint('${schema}'),'UTF8')),'hex')`;

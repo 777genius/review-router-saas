@@ -21,6 +21,8 @@ export type ReleaseControlCredentials = Readonly<{
   providerAuthorityTokenSha256: string;
 }>;
 
+const readinessLeaseMilliseconds = 30_000;
+
 const readinessGate = <Service extends object>(
   service: Service,
   assertReady: () => Promise<void>,
@@ -122,7 +124,7 @@ export async function createReleaseControlApp(input: {
     input.permitInstallerPrisma,
     input.targetReceiptReaderPrisma,
   );
-  const assertMutationAuthorityReady = async () => {
+  const observeMutationAuthority = async () => {
     const [control, provider, installer, reader] = await Promise.all([
       observeReleaseAuthorityDatabaseReadiness(input.controlPrisma),
       observeReleaseAuthorityDatabaseReadiness(input.providerAuthorityPrisma),
@@ -138,6 +140,20 @@ export async function createReleaseControlApp(input: {
       })
     )
       throw new Error("release_control_mutation_authority_degraded");
+  };
+  let readinessLeaseExpiresAt = 0;
+  let readinessObservation: Promise<void> | undefined;
+  const assertMutationAuthorityReady = (): Promise<void> => {
+    if (Date.now() < readinessLeaseExpiresAt) return Promise.resolve();
+    if (readinessObservation) return readinessObservation;
+    readinessObservation = observeMutationAuthority()
+      .then(() => {
+        readinessLeaseExpiresAt = Date.now() + readinessLeaseMilliseconds;
+      })
+      .finally(() => {
+        readinessObservation = undefined;
+      });
+    return readinessObservation;
   };
   const gatedDependencies: ReleaseControlRouteDependencies = {
     ...dependencies,
@@ -172,23 +188,7 @@ export async function createReleaseControlApp(input: {
   };
   app.get("/health", async (_request, reply) => {
     try {
-      const [control, provider, installer, reader] = await Promise.all([
-        observeReleaseAuthorityDatabaseReadiness(input.controlPrisma),
-        observeReleaseAuthorityDatabaseReadiness(input.providerAuthorityPrisma),
-        observeReleaseAuthorityDatabaseReadiness(input.permitInstallerPrisma),
-        observeReleaseAuthorityDatabaseReadiness(
-          input.targetReceiptReaderPrisma,
-        ),
-      ]);
-      if (
-        !releaseControlDatabaseSetIsReady({
-          control,
-          provider,
-          installer,
-          reader,
-        })
-      )
-        throw new Error("release_control_database_identity_invalid");
+      await assertMutationAuthorityReady();
       return { status: "ok", service: "release-control" };
     } catch {
       return reply.code(503).send({
