@@ -100,7 +100,7 @@ describe("target-local PG17 activation permit", () => {
       sql.indexOf("DO $public_routine_acl$"),
       sql.indexOf("DO $installer_database_acl$"),
     );
-    expect(canonicalizer).toContain("FROM pg_proc routine");
+    expect(canonicalizer).toContain("FROM pg_proc catalog_routine");
     expect(canonicalizer).toContain("namespace.nspname = 'public'");
     expect(canonicalizer).toContain(
       "REVOKE ALL PRIVILEGES ON ROUTINE %s FROM reviewrouter_activation_receipt_reader",

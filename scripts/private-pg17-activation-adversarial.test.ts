@@ -243,7 +243,18 @@ WHERE namespace.nspname = 'public'
 GRANT CONNECT ON DATABASE postgres TO rr_unexpected_direct;
 GRANT SELECT ON public.activation_attack_target TO rr_unexpected_direct;`);
     const legacy = docker(
-      ["exec", "-i", container, "psql", "-U", "postgres", "-d", "postgres"],
+      [
+        "exec",
+        "-i",
+        container,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "postgres",
+        "--set",
+        "ON_ERROR_STOP=1",
+      ],
       `SET SESSION AUTHORIZATION reviewrouter_release_migration;
 SELECT reviewrouter_activation.stage_principal_evidence(
   'direct-acl-attack','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,
@@ -255,7 +266,11 @@ SELECT reviewrouter_activation.stage_principal_evidence(
   });
 
   it("rejects nested INHERIT/SET ROLE privilege reachability", () => {
-    psql("DROP OWNED BY rr_unexpected_direct; DROP ROLE rr_unexpected_direct;");
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+REVOKE SELECT ON public.activation_attack_target FROM rr_unexpected_direct;
+REVOKE CONNECT ON DATABASE postgres FROM rr_unexpected_direct;
+RESET SESSION AUTHORIZATION;
+DROP ROLE rr_unexpected_direct;`);
     installPermit("membership-attack", 2);
     psql(`CREATE ROLE rr_attack_parent NOLOGIN;
 CREATE ROLE rr_attack_grandparent NOLOGIN;
@@ -266,7 +281,9 @@ GRANT SELECT ON public.activation_attack_target TO rr_attack_grandparent;`);
   });
 
   it("rejects PUBLIC and unexpected-owner paths", () => {
-    psql(`DROP OWNED BY rr_attack_grandparent;
+    psql(`REVOKE rr_attack_parent FROM reviewrouter_api;
+REVOKE rr_attack_grandparent FROM rr_attack_parent;
+REVOKE SELECT ON public.activation_attack_target FROM rr_attack_grandparent;
 DROP ROLE rr_attack_grandparent;
 DROP ROLE rr_attack_parent;
 `);
@@ -280,6 +297,7 @@ REVOKE SELECT ON public.activation_attack_target FROM PUBLIC;`);
     psql(`CREATE ROLE rr_unexpected_owner LOGIN;
 GRANT rr_unexpected_owner TO reviewrouter_release_migration WITH SET TRUE;`);
     psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+GRANT CREATE ON SCHEMA public TO rr_unexpected_owner;
 ALTER TABLE public.activation_attack_target OWNER TO rr_unexpected_owner;`);
     rejectedWithoutWrite("ownership-attack");
   });
@@ -318,7 +336,18 @@ ALTER TABLE public.activation_attack_target OWNER TO rr_unexpected_owner;`);
       '${digest}',1
     );`);
     const rejected = docker(
-      ["exec", "-i", container, "psql", "-U", "postgres", "-d", "postgres"],
+      [
+        "exec",
+        "-i",
+        container,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "postgres",
+        "--set",
+        "ON_ERROR_STOP=1",
+      ],
       `SET SESSION AUTHORIZATION reviewrouter_activation_receipt_reader;
 SELECT reviewrouter_activation.read_activation_receipt('legacy-evidence');`,
     );
