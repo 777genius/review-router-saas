@@ -4,7 +4,10 @@ import { describe, expect, it } from "vitest";
 describe("dashboard rotating namespace activation contract", () => {
   it("detects rotating providers with the canonical persisted auth mode", () => {
     const source = readFileSync(
-      new URL("./actions.ts", import.meta.url),
+      new URL(
+        "../../src/server/codex-rotating-workflow-activation.ts",
+        import.meta.url,
+      ),
       "utf8",
     );
 
@@ -14,14 +17,16 @@ describe("dashboard rotating namespace activation contract", () => {
 
   it("uses the witness-bound namespace inspector without a latest-claim fallback", () => {
     const source = readFileSync(
-      new URL("./actions.ts", import.meta.url),
+      new URL(
+        "../../src/server/codex-rotating-workflow-activation.ts",
+        import.meta.url,
+      ),
       "utf8",
     );
-    const activation = source.slice(
-      source.indexOf(
-        "async function activateConfirmedCodexNamespaceAfterWorkflowMerge",
-      ),
-      source.indexOf("function readGitHubRepositoryIdentity"),
+    const activation = sliceBetween(
+      source,
+      "export async function activateConfirmedCodexNamespaceAfterWorkflowMerge",
+      "function readGitHubRepositoryIdentity",
     );
 
     expect(activation).toContain("inspectCodexRotatingWorkflowNamespace");
@@ -35,13 +40,10 @@ describe("dashboard rotating namespace activation contract", () => {
       new URL("./actions.ts", import.meta.url),
       "utf8",
     );
-    const helper = source.slice(
-      source.indexOf(
-        "async function resolveCodexRotatingProvisioningActionRef",
-      ),
-      source.indexOf(
-        "async function activateConfirmedCodexNamespaceAfterWorkflowMerge",
-      ),
+    const helper = sliceBetween(
+      source,
+      "async function resolveCodexRotatingProvisioningActionRef",
+      "function readGitHubRepositoryIdentity",
     );
 
     expect(helper).toContain(
@@ -64,3 +66,11 @@ describe("dashboard rotating namespace activation contract", () => {
     expect(helper).not.toContain("resolveReviewRouterActionRef");
   });
 });
+
+function sliceBetween(source: string, startAnchor: string, endAnchor: string) {
+  const start = source.indexOf(startAnchor);
+  const end = source.indexOf(endAnchor, start + startAnchor.length);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}

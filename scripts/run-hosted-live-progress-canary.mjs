@@ -13,7 +13,7 @@ const pinnedTarget = Object.freeze({
   changedFiles: 108,
   branch: "test/context-gateway-v103-batches-20260811",
   fixturePathsSha256:
-    "b66509de865391f460c874fc02f65b5e527aa4d08521e1f1c6d5b57f8087b69b",
+    "7c079f131db644556b0f311713bf47af3866ad33f0dc617559bc872d51c612ad",
   expectedReviewUnits: 72,
   expectedReviewedFiles: 108,
   expectedExcludedFiles: 0,
@@ -81,11 +81,12 @@ export async function triggerHostedProgressCanary(config, github, nowIso) {
   const triggeredAt = nowIso();
   await github.rerunWorkflow(config.repository, config.sourceRunId);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     repositoryId: config.repositoryId,
     repositoryNodeId: config.repositoryNodeId,
     pullRequest: config.pullRequest,
-    headSha: source.head_sha,
+    pullHeadSha,
+    sourceWorkflowCommitSha: source.head_sha,
     sourceRunId: source.id,
     sourceRunAttempt: source.run_attempt,
     producerSha: authority.producerSha,
@@ -104,11 +105,11 @@ export async function verifyHostedProgressCanary(
 ) {
   assertPinned(config);
   assertReceipt(receipt, config);
-  await assertFixture(github, config, receipt.headSha);
+  await assertFixture(github, config, receipt.pullHeadSha);
   const sourceWorkflow = await github.getFile(
     config.repository,
     config.sourceWorkflowPath,
-    receipt.headSha,
+    receipt.sourceWorkflowCommitSha,
   );
   const authority = deriveWorkflowAuthority(sourceWorkflow);
   if (
@@ -208,9 +209,14 @@ export function assertRerunAttempt(run, receipt, config) {
   if (
     run.id !== config.sourceRunId ||
     run.run_attempt !== receipt.sourceRunAttempt + 1 ||
-    run.event !== "pull_request" ||
-    run.head_sha !== receipt.headSha ||
+    run.event !== "pull_request_target" ||
+    run.head_sha !== receipt.sourceWorkflowCommitSha ||
     run.path !== config.sourceWorkflowPath ||
+    !run.pull_requests?.some(
+      (pull) =>
+        pull.number === config.pullRequest &&
+        pull.head?.sha === receipt.pullHeadSha,
+    ) ||
     !hasExactReferencedProducer(run.referenced_workflows, config)
   )
     throw new Error("hosted_progress_canary_rerun_attempt_contract_mismatch");
@@ -452,22 +458,24 @@ async function assertFixture(github, config, expectedHead) {
 function assertSourceRun(run, config, currentHeadSha) {
   if (
     run.id !== config.sourceRunId ||
-    run.event !== "pull_request" ||
+    run.event !== "pull_request_target" ||
     run.status !== "completed" ||
     run.conclusion !== "success" ||
-    run.head_sha !== currentHeadSha ||
     !/^[0-9a-f]{40}$/u.test(run.head_sha) ||
     !Number.isSafeInteger(run.run_attempt) ||
     run.run_attempt < 1 ||
     run.path !== config.sourceWorkflowPath ||
-    !run.pull_requests?.some((pull) => pull.number === config.pullRequest) ||
+    !run.pull_requests?.some(
+      (pull) =>
+        pull.number === config.pullRequest && pull.head?.sha === currentHeadSha,
+    ) ||
     !hasExactReferencedProducer(run.referenced_workflows, config)
   )
     throw new Error("hosted_progress_canary_source_run_contract_mismatch");
 }
 function assertReceipt(receipt, config) {
   if (
-    receipt.schemaVersion !== 1 ||
+    receipt.schemaVersion !== 2 ||
     receipt.repositoryId !== config.repositoryId ||
     receipt.repositoryNodeId !== config.repositoryNodeId ||
     receipt.pullRequest !== config.pullRequest ||
@@ -486,7 +494,8 @@ function assertReceipt(receipt, config) {
     !Number.isFinite(Date.parse(receipt.triggeredAt))
   )
     throw new Error("hosted_progress_canary_receipt_invalid");
-  sha(receipt.headSha);
+  sha(receipt.pullHeadSha);
+  sha(receipt.sourceWorkflowCommitSha);
   positive(receipt.sourceRunAttempt);
 }
 function assertPinned(config) {

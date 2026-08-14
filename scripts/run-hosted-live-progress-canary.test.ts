@@ -13,6 +13,7 @@ import {
 const repo = "777genius/review-router-saas-e2e";
 const repoId = 1228051727;
 const head = "a".repeat(40);
+const sourceWorkflowCommit = "d".repeat(40);
 const producer = "b".repeat(40);
 const workflowBlob = "c".repeat(40);
 
@@ -45,7 +46,8 @@ describe("hosted live-progress canary", () => {
     );
     expect(github.rerunWorkflow).toHaveBeenCalledWith(repo, 123);
     expect(receipt).toMatchObject({
-      headSha: head,
+      pullHeadSha: head,
+      sourceWorkflowCommitSha: sourceWorkflowCommit,
       sourceRunAttempt: 1,
       producerSha: producer,
       sourceWorkflowBlobSha: workflowBlob,
@@ -86,7 +88,7 @@ describe("hosted live-progress canary", () => {
     const detached = fakeGitHub();
     detached.getWorkflowRun.mockResolvedValue({
       ...sourceRun(),
-      head_sha: "d".repeat(40),
+      pull_requests: [{ number: 37, head: { sha: "e".repeat(40) } }],
     });
     await expect(
       triggerHostedProgressCanary(
@@ -193,7 +195,7 @@ describe("hosted live-progress canary", () => {
     ).not.toThrow();
     expect(() =>
       assertRerunAttempt(
-        { ...rerunAttempt(), head_sha: "d".repeat(40) },
+        { ...rerunAttempt(), head_sha: "e".repeat(40) },
         receipt(),
         effectiveConfig(),
       ),
@@ -382,11 +384,12 @@ function effectiveConfig() {
 }
 function receipt() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     repositoryId: repoId,
     repositoryNodeId: "R_kgDOSTKVDw",
     pullRequest: 37,
-    headSha: head,
+    pullHeadSha: head,
+    sourceWorkflowCommitSha: sourceWorkflowCommit,
     sourceRunId: 123,
     sourceRunAttempt: 1,
     producerSha: producer,
@@ -448,12 +451,12 @@ function readyVerifierGitHub() {
 function sourceRun() {
   return {
     id: 123,
-    event: "pull_request",
+    event: "pull_request_target",
     status: "completed",
     conclusion: "success",
-    head_sha: head,
+    head_sha: sourceWorkflowCommit,
     path: ".github/workflows/reviewrouter-codex.yml",
-    pull_requests: [{ number: 37 }],
+    pull_requests: [{ number: 37, head: { sha: head } }],
     referenced_workflows: [referencedProducer()],
     run_attempt: 1,
   };
@@ -462,9 +465,10 @@ function rerunAttempt() {
   return {
     id: 123,
     run_attempt: 2,
-    event: "pull_request",
-    head_sha: head,
+    event: "pull_request_target",
+    head_sha: sourceWorkflowCommit,
     path: ".github/workflows/reviewrouter-codex.yml",
+    pull_requests: [{ number: 37, head: { sha: head } }],
     referenced_workflows: [referencedProducer()],
     status: "queued",
     conclusion: null,
@@ -541,13 +545,13 @@ function releaseAuthority() {
 
 function fixtureFiles() {
   return [
-    ".github/workflows/reviewrouter-codex.yml",
-    ".github/workflows/reviewrouter-interaction.yml",
     ...Array.from({ length: 106 }, (_, index) => {
       const number = index + 1;
       const batch = Math.ceil(number / 22);
       return `src/batch-${String(batch).padStart(2, "0")}/review-entity-${String(number).padStart(3, "0")}.ts`;
     }),
+    "src/canary-fixture-107.ts",
+    "src/canary-fixture-108.ts",
   ].map((filename) => ({ filename }));
 }
 
