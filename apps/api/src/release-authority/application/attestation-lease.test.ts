@@ -65,6 +65,10 @@ const subject = () =>
     },
     migrationManifestIdentity: `sha256:${"e".repeat(64)}`,
     activationFingerprint: `sha256:${"f".repeat(64)}`,
+    activationCatalogPolicies: {
+      preactivationCatalogPolicySha256: `sha256:${"1".repeat(64)}`,
+      activatedCatalogPolicySha256: `sha256:${"2".repeat(64)}`,
+    },
   });
 const unavailable = () =>
   Object.assign(new Error("unavailable"), { statusCode: 503 });

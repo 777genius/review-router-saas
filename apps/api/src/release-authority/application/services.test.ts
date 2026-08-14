@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { canonicalActivationCatalogPolicyDigests } from "@reviewrouter/features-release-rollout";
 import type {
   ActivationAuthorization,
   ActivationReceipt,
@@ -50,8 +51,7 @@ const targetReceipt: ActivationReceipt = {
   receiptSha256: `sha256:${"e".repeat(64)}`,
   canonicalPrivilegesSha256: `sha256:${"1".repeat(64)}`,
   catalogFactsSha256: `sha256:${"2".repeat(64)}`,
-  preactivationCatalogPolicySha256: `sha256:${"8".repeat(64)}`,
-  activatedCatalogPolicySha256: `sha256:${"9".repeat(64)}`,
+  ...canonicalActivationCatalogPolicyDigests,
   beforePrincipalInventorySha256: `sha256:${"4".repeat(64)}`,
   beforePrincipalPolicySha256: `sha256:${"5".repeat(64)}`,
   activatedPrincipalInventorySha256: `sha256:${"6".repeat(64)}`,

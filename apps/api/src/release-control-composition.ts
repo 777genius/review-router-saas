@@ -47,6 +47,12 @@ import {
   type SameConnectionTransactionTiming,
 } from "./release-authority/adapters/same-connection-fence.js";
 import type { TrustedActivationCatalogPolicy } from "./release-authority/domain/activation-catalog-policy.js";
+import {
+  activationCatalogPolicyDigestsEqual,
+  canonicalActivationCatalogPolicies,
+  canonicalActivationCatalogPolicyDigests,
+  canonicalJson,
+} from "@reviewrouter/features-release-rollout";
 
 export type TrustedActivationCatalogPolicies = Readonly<{
   preactivation: TrustedActivationCatalogPolicy;
@@ -69,7 +75,6 @@ export function composeReleaseControlDependencies(
   targetReceiptReaderPrisma?: PrismaClient,
   sameConnectionTiming?: SameConnectionTransactionTiming,
   highRiskMutationGate?: ReleaseAuthorityHighRiskMutationGate,
-  trustedActivationCatalogPolicies?: TrustedActivationCatalogPolicies,
 ): ReleaseControlRouteDependencies {
   if (
     !credentialSha256.test(credentials.controlTokenSha256) ||
@@ -103,8 +108,6 @@ export function composeReleaseControlDependencies(
     permitInstallerPrisma
       ? {
           install: async (authorization) => {
-            if (!trustedActivationCatalogPolicies)
-              throw new Error("trusted_activation_catalog_policy_missing");
             const query = (connection: Prisma.TransactionClient) =>
               connection.$queryRaw<{ result: boolean }[]>(Prisma.sql`
             SELECT reviewrouter_activation.install_activation_permit(
@@ -117,10 +120,10 @@ export function composeReleaseControlDependencies(
               ${JSON.stringify(authorization.targetDeployIds)}::jsonb,
               ${authorization.epoch},
               ${authorization.nonce}
-              ,${JSON.stringify(trustedActivationCatalogPolicies.preactivation.policy)}::jsonb
-              ,${trustedActivationCatalogPolicies.preactivation.sha256}
-              ,${JSON.stringify(trustedActivationCatalogPolicies.activated.policy)}::jsonb
-              ,${trustedActivationCatalogPolicies.activated.sha256}
+              ,${JSON.stringify(canonicalActivationCatalogPolicies.preactivation.policy)}::jsonb
+              ,${canonicalActivationCatalogPolicies.preactivation.sha256}
+              ,${JSON.stringify(canonicalActivationCatalogPolicies.activated.policy)}::jsonb
+              ,${canonicalActivationCatalogPolicies.activated.sha256}
             ) AS result
           `);
             const rows =
@@ -146,10 +149,10 @@ export function composeReleaseControlDependencies(
                     ${authorization.expectedCommitSha}, ${authorization.migrationChecksum},
                     ${JSON.stringify(authorization.targetDeployIds)}::jsonb,
                     ${authorization.epoch}, ${authorization.nonce},
-                    ${JSON.stringify(trustedActivationCatalogPolicies.preactivation.policy)}::jsonb,
-                    ${trustedActivationCatalogPolicies.preactivation.sha256},
-                    ${JSON.stringify(trustedActivationCatalogPolicies.activated.policy)}::jsonb,
-                    ${trustedActivationCatalogPolicies.activated.sha256}) AS result
+                    ${JSON.stringify(canonicalActivationCatalogPolicies.preactivation.policy)}::jsonb,
+                    ${canonicalActivationCatalogPolicies.preactivation.sha256},
+                    ${JSON.stringify(canonicalActivationCatalogPolicies.activated.policy)}::jsonb,
+                    ${canonicalActivationCatalogPolicies.activated.sha256}) AS result
                 `);
             if (
               rows.length !== 1 ||
@@ -232,6 +235,21 @@ export async function createReleaseControlApp(input: {
     throw new Error("release_control_trusted_database_identity_missing");
   if (!input.trustedActivationCatalogPolicies)
     throw new Error("trusted_activation_catalog_policy_missing");
+  if (
+    !activationCatalogPolicyDigestsEqual({
+      preactivationCatalogPolicySha256:
+        input.trustedActivationCatalogPolicies.preactivation.sha256,
+      activatedCatalogPolicySha256:
+        input.trustedActivationCatalogPolicies.activated.sha256,
+    }) ||
+    canonicalJson(
+      input.trustedActivationCatalogPolicies.preactivation.policy,
+    ) !==
+      canonicalJson(canonicalActivationCatalogPolicies.preactivation.policy) ||
+    canonicalJson(input.trustedActivationCatalogPolicies.activated.policy) !==
+      canonicalJson(canonicalActivationCatalogPolicies.activated.policy)
+  )
+    throw new Error("trusted_activation_catalog_policy_mismatch");
   const app = Fastify({ logger: false });
   const readinessPolicyOptions = validateReadinessTimingPolicy({
     ...defaultReadinessTimingPolicy,
@@ -333,6 +351,7 @@ export async function createReleaseControlApp(input: {
     migrationManifestIdentity: manifestIdentity,
     activationFingerprint:
       input.trustedDatabaseIdentity.activationNamespaceFingerprint,
+    activationCatalogPolicies: canonicalActivationCatalogPolicyDigests,
   });
   const readiness = new ReleaseAuthorityAttestationCoordinator(
     (_subject, signal) => observeMutationAuthority(signal),
@@ -411,7 +430,6 @@ export async function createReleaseControlApp(input: {
     input.targetReceiptReaderPrisma,
     sameConnectionTiming,
     highRiskMutationGate,
-    input.trustedActivationCatalogPolicies,
   );
   const assertMutationAuthorityReady = () => readiness.assertOrdinary(subject);
   const ordinary =

@@ -191,7 +191,7 @@ export class AttestReleaseWitnessBinding {
       recoveryWitnessSha256: targetGeneration.recoveryWitnessSha256,
     });
     const unsigned = Object.freeze({
-      schemaVersion: 2 as const,
+      schemaVersion: 3 as const,
       rolloutId: request.rolloutId,
       deploymentRevision: this.runtimeIdentity.deploymentRevision,
       artifactDigest: this.runtimeIdentity.artifactDigest,
@@ -210,6 +210,9 @@ export class AttestReleaseWitnessBinding {
         namespaceFingerprint: target.activationNamespaceFingerprint,
         installerRoutineBodySha256: target.installerRoutineBodySha256,
         readerRoutineBodySha256: target.readerRoutineBodySha256,
+        preactivationCatalogPolicySha256:
+          this.policy.preactivationCatalogPolicySha256,
+        activatedCatalogPolicySha256: this.policy.activatedCatalogPolicySha256,
       }),
       source: observedSourceGeneration,
       target: observedTargetGeneration,

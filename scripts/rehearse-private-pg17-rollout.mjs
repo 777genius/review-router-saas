@@ -37,6 +37,8 @@ import {
   draftEffectivePrincipalPolicy,
   effectivePrincipalInventorySql,
   evaluateEffectivePrincipalInventory,
+  canonicalActivationCatalogPolicies,
+  canonicalActivationCatalogPolicyDigests,
 } from "../packages/features/release-rollout/src/index.ts";
 import { createPrismaClient } from "../packages/platform/db/src/index.ts";
 import { createReleaseControlApp } from "../apps/api/src/release-control-composition.ts";
@@ -833,6 +835,7 @@ ROLLBACK;`,
         activationNamespaceFingerprint:
           activationAttestation.activationNamespaceFingerprint,
       },
+      trustedActivationCatalogPolicies: canonicalActivationCatalogPolicies,
     });
     releaseControl.addHook("onError", async (_request, _reply, error) => {
       process.stderr.write(
@@ -1828,7 +1831,7 @@ COMMIT;
           Date.parse(assembledAt) - 1,
         ).toISOString();
         const witnessUnsigned = {
-          schemaVersion: 2,
+          schemaVersion: 3,
           rolloutId: current.rolloutId,
           deploymentRevision: current.expectedCommitSha,
           artifactDigest: facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST,
@@ -1866,6 +1869,7 @@ COMMIT;
             namespaceFingerprint: digest,
             installerRoutineBodySha256: "a".repeat(64),
             readerRoutineBodySha256: "b".repeat(64),
+            ...canonicalActivationCatalogPolicyDigests,
           },
           source: {
             renderResourceId: current.source.renderResourceId,

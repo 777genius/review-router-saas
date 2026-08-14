@@ -14,6 +14,7 @@ import {
   type TrustedRolloutEvidence,
 } from "./trusted-rollout-evidence";
 import { releaseAuthoritySchemaVersion } from "./release-authority-contract";
+import { canonicalActivationCatalogPolicyDigests } from "./activation-catalog-policy-contract";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const base = createReleaseRollout({
@@ -146,8 +147,7 @@ const receipts = steps.map((step, index) => {
           activatedPrincipalInventorySha256: digest,
           activatedPrincipalPolicySha256: digest,
           catalogFactsSha256: digest,
-          preactivationCatalogPolicySha256: digest,
-          activatedCatalogPolicySha256: digest,
+          ...canonicalActivationCatalogPolicyDigests,
           transactionId: "42",
           firstWriteReceiptSha256: digest,
           firstWriteBoundary: true as const,
@@ -190,7 +190,7 @@ const releaseWitness = (
   schemaVersion: number = releaseAuthoritySchemaVersion,
 ) => {
   const unsigned = {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     rolloutId: base.rolloutId,
     deploymentRevision: base.expectedCommitSha,
     artifactDigest: releaseImageIdentity.imageDigest,
@@ -228,6 +228,7 @@ const releaseWitness = (
       namespaceFingerprint: digest,
       installerRoutineBodySha256: "a".repeat(64),
       readerRoutineBodySha256: "b".repeat(64),
+      ...canonicalActivationCatalogPolicyDigests,
     },
     source: {
       renderResourceId: base.source.renderResourceId,
@@ -499,6 +500,42 @@ describe("trusted post-cleanup evidence", () => {
         trustedWitnessPolicy,
       ),
     ).toThrow("trusted_rollout_evidence_target_image_invalid");
+  });
+  it("rejects final evidence whose activation receipt substitutes a policy digest", () => {
+    const evidence = create();
+    expect(() =>
+      assertTrustedRolloutEvidence(
+        {
+          ...evidence,
+          activation: {
+            ...evidence.activation,
+            activatedCatalogPolicySha256: `sha256:${"f".repeat(64)}`,
+          },
+        },
+        trustedImagePolicy,
+        trustedWitnessPolicy,
+      ),
+    ).toThrow("trusted_rollout_evidence_activation_invalid");
+  });
+
+  it("rejects signed witness evidence whose policy binding mismatches final evidence", () => {
+    const evidence = create();
+    expect(() =>
+      assertTrustedRolloutEvidence(
+        {
+          ...evidence,
+          releaseWitness: {
+            ...evidence.releaseWitness,
+            activation: {
+              ...evidence.releaseWitness.activation,
+              preactivationCatalogPolicySha256: `sha256:${"f".repeat(64)}`,
+            },
+          },
+        },
+        trustedImagePolicy,
+        trustedWitnessPolicy,
+      ),
+    ).toThrow("trusted_rollout_evidence_release_witness_invalid");
   });
   it("rejects legacy schema 4 evidence instead of implicitly upgrading v1 provenance", () => {
     expect(() =>

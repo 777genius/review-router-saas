@@ -79,10 +79,14 @@ them from a disposable, production-shaped catalog; never copy live discovery
 output into the allowlist without review.
 
 Activation principal evidence uses a single-session staged transaction. The
-release-control service reads the two reviewed target contracts from its own
-protected configuration, normalizes and hashes them, and installs the facts and
-digests through its dedicated permit-installer connection. The cutover runner
-does not send policy JSON. In the committing transaction, the target guard
+versioned `canonicalActivationCatalogPolicyArtifact` in the release-rollout
+domain is the sole trust root for both reviewed target contracts and their
+deterministic hashes. The two Render JSON values remain required deployment
+inputs, but release-control requires canonical-equivalent content before
+it becomes ready; changing Render configuration cannot change the pinned
+policy. Release-control installs only the artifact policies and hashes through
+its dedicated permit-installer connection. The cutover runner does not send
+policy JSON. In the committing transaction, the target guard
 locks that one-shot permit, independently projects the live PG17 catalogs, and
 requires byte-exact normalized equality with the permit-bound preactivation
 contract. It stages the reviewed contracts, live inventories, derived policies,
@@ -97,6 +101,12 @@ again. Missing, malformed, swapped, or stale evidence therefore fails closed.
 The activation SQL generator also pins the SHA-256 trust root of the exact
 effective-principal catalog projection, so a weaker observation query cannot
 be substituted at either preview or commit time.
+
+The release-control readiness attestation and release-witness schema 3 bind
+both artifact policy hashes. Final trusted-rollout evidence schema 8 requires
+the permit receipt and signed witness to equal those pinned values. A policy
+artifact update therefore requires one coherent control/witness/finalizer
+release and matching Render JSON inputs; mixed versions fail closed.
 
 Protected environment secrets:
 

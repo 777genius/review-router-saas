@@ -43,6 +43,7 @@ import {
   runtimeDatabaseIdentityIsCanonical,
   type RuntimeDatabaseIdentity,
 } from "./release-authority/domain/database-identity.js";
+import { activationCatalogPolicyDigestsEqual } from "@reviewrouter/features-release-rollout";
 
 export type ReleaseWitnessGeneration = Readonly<{
   renderResourceId: string;
@@ -101,7 +102,7 @@ export type ReleaseWitnessGenerationObservation = Readonly<{
 }>;
 
 export type ReleaseWitnessAttestation = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 3;
   rolloutId: string;
   deploymentRevision: string;
   artifactDigest: string;
@@ -120,6 +121,8 @@ export type ReleaseWitnessAttestation = Readonly<{
     namespaceFingerprint: string;
     installerRoutineBodySha256: string;
     readerRoutineBodySha256: string;
+    preactivationCatalogPolicySha256: string;
+    activatedCatalogPolicySha256: string;
   }>;
   source: ReleaseWitnessGeneration;
   target: ReleaseWitnessGeneration;
@@ -189,6 +192,8 @@ export type TrustedReleaseWitnessPolicy = Readonly<{
   activationNamespaceFingerprint: string;
   installerRoutineBodySha256: string;
   readerRoutineBodySha256: string;
+  preactivationCatalogPolicySha256: string;
+  activatedCatalogPolicySha256: string;
   maximumAgeMilliseconds: number;
 }>;
 
@@ -273,6 +278,9 @@ export function releaseWitnessPolicyIsCanonical(
     sha256Prefixed.test(value.activationNamespaceFingerprint) &&
     sha256.test(value.installerRoutineBodySha256) &&
     sha256.test(value.readerRoutineBodySha256) &&
+    sha256Prefixed.test(value.preactivationCatalogPolicySha256) &&
+    sha256Prefixed.test(value.activatedCatalogPolicySha256) &&
+    activationCatalogPolicyDigestsEqual(value) &&
     Number.isSafeInteger(value.maximumAgeMilliseconds) &&
     value.maximumAgeMilliseconds > 0
   );

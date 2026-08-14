@@ -2,6 +2,7 @@ import { config as loadDotenv } from "dotenv";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import { createReleaseWitnessApp } from "./release-witness-composition.js";
 import { readinessTimingPolicyFromEnvironment } from "./release-authority/adapters/readiness-config.js";
+import { canonicalActivationCatalogPolicyDigests } from "@reviewrouter/features-release-rollout";
 
 for (const path of ["../../.env.local", "../../.env", ".env.local", ".env"])
   loadDotenv({ path, override: false });
@@ -108,6 +109,7 @@ const app = await createReleaseWitnessApp({
     readerRoutineBodySha256: required(
       "REVIEW_ROUTER_ACTIVATION_READER_BODY_SHA256",
     ),
+    ...canonicalActivationCatalogPolicyDigests,
     maximumAgeMilliseconds: Number(
       process.env.REVIEW_ROUTER_RELEASE_WITNESS_MAXIMUM_AGE_MS || "300000",
     ),

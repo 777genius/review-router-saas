@@ -30,9 +30,27 @@ const canonical = () =>
     },
     migrationManifestIdentity: `sha256:${"e".repeat(64)}`,
     activationFingerprint: `sha256:${"f".repeat(64)}`,
+    activationCatalogPolicies: {
+      preactivationCatalogPolicySha256: `sha256:${"1".repeat(64)}`,
+      activatedCatalogPolicySha256: `sha256:${"2".repeat(64)}`,
+    },
   });
 
 describe("exact immutable attestation subject", () => {
+  it("rejects an attestation lease key produced for mismatched policy digests", () => {
+    const expected = canonical();
+    const substituted = createReleaseAuthorityAttestationSubject({
+      ...expected,
+      activationCatalogPolicies: {
+        ...expected.activationCatalogPolicies,
+        preactivationCatalogPolicySha256: `sha256:${"9".repeat(64)}`,
+      },
+    });
+    expect(attestationSubjectKey(substituted)).not.toBe(
+      attestationSubjectKey(expected),
+    );
+  });
+
   it("rejects runtime strings outside the strict service enum", () => {
     expect(() =>
       createReleaseAuthorityAttestationSubject({
@@ -110,6 +128,13 @@ describe("exact immutable attestation subject", () => {
       },
       { ...base, migrationManifestIdentity: `sha256:${"1".repeat(64)}` },
       { ...base, activationFingerprint: `sha256:${"1".repeat(64)}` },
+      {
+        ...base,
+        activationCatalogPolicies: {
+          ...base.activationCatalogPolicies,
+          activatedCatalogPolicySha256: `sha256:${"3".repeat(64)}`,
+        },
+      },
     ];
     expect(
       variants.every(

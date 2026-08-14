@@ -15,7 +15,10 @@ import type {
   RunnerIdentity,
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
-import { sha256Canonical } from "@reviewrouter/features-release-rollout";
+import {
+  activationCatalogPolicyDigestsEqual,
+  sha256Canonical,
+} from "@reviewrouter/features-release-rollout";
 
 export type ExecuteFreshReleaseAuthorityMutation = <Result>(
   target: ReleaseAuthorityMutationTarget,
@@ -135,6 +138,8 @@ export class ReleaseAuthorityService {
         receipt.preactivationCatalogPolicySha256 ||
       proposed.activatedCatalogPolicySha256 !==
         receipt.activatedCatalogPolicySha256 ||
+      !activationCatalogPolicyDigestsEqual(proposed) ||
+      !activationCatalogPolicyDigestsEqual(receipt) ||
       proposed.beforePrincipalInventorySha256 !==
         receipt.beforePrincipalInventorySha256 ||
       proposed.beforePrincipalPolicySha256 !==
@@ -425,6 +430,7 @@ function targetMatchesAuthorization(
     digest.test(target.catalogFactsSha256) &&
     digest.test(target.preactivationCatalogPolicySha256) &&
     digest.test(target.activatedCatalogPolicySha256) &&
+    activationCatalogPolicyDigestsEqual(target) &&
     digest.test(target.beforePrincipalInventorySha256) &&
     digest.test(target.beforePrincipalPolicySha256) &&
     digest.test(target.activatedPrincipalInventorySha256) &&

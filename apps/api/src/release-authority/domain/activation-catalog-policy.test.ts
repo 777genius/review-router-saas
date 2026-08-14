@@ -1,18 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { trustedActivationCatalogPolicy } from "./activation-catalog-policy.js";
+import { canonicalActivationCatalogPolicyArtifact } from "@reviewrouter/features-release-rollout";
 
-const policy = (phase: "preactivation" | "activated") => ({
-  kind: "reviewrouter-activation-catalog-policy",
-  version: 1,
-  phase,
-  database: "review_router",
-  roles: [],
-  memberships: [],
-  roleReachability: [],
-  rowSecurity: [],
-  grants: [],
-  effectivePermissions: [],
-});
+const policy = (phase: "preactivation" | "activated") =>
+  canonicalActivationCatalogPolicyArtifact.policies[phase];
 
 describe("trusted activation catalog policy", () => {
   it("normalizes object keys and produces a deterministic digest", () => {
@@ -44,5 +35,40 @@ describe("trusted activation catalog policy", () => {
         "activated",
       ),
     ).toThrow("activation_catalog_policy_contract_invalid:activated");
+  });
+
+  it("rejects policy substitution even when the substituted policy is self-consistent", () => {
+    expect(() =>
+      trustedActivationCatalogPolicy(
+        JSON.stringify({
+          ...policy("preactivation"),
+          database: "attacker_database",
+        }),
+        "preactivation",
+      ),
+    ).toThrow(
+      "activation_catalog_policy_deployment_input_mismatch:preactivation",
+    );
+  });
+
+  it("rejects direct-grant laundering hidden behind unchanged effective permissions", () => {
+    expect(() =>
+      trustedActivationCatalogPolicy(
+        JSON.stringify({
+          ...policy("activated"),
+          grants: [
+            {
+              principal: "reviewrouter_api",
+              capability: "table:update",
+              resource: "table:review_router.subscription",
+              source: "privilege",
+              grantable: true,
+              grantor: "attacker",
+            },
+          ],
+        }),
+        "activated",
+      ),
+    ).toThrow("activation_catalog_policy_deployment_input_mismatch:activated");
   });
 });

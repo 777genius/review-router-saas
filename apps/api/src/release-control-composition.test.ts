@@ -8,6 +8,10 @@ import {
   createReleaseControlApp as createReleaseControlAppBase,
 } from "./release-control-composition";
 import { createReleaseWitnessApp as createReleaseWitnessAppBase } from "./release-witness-composition";
+import {
+  canonicalActivationCatalogPolicies,
+  canonicalActivationCatalogPolicyDigests,
+} from "@reviewrouter/features-release-rollout";
 
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -34,28 +38,7 @@ const trustedDatabaseIdentity = {
   targetMigrationManifestIdentity: `sha256:${"c".repeat(64)}`,
   activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
 } as const;
-const catalogPolicy = (phase: "preactivation" | "activated") => {
-  const policy = {
-    kind: "reviewrouter-activation-catalog-policy",
-    version: 1,
-    phase,
-    database: "target",
-    roles: [],
-    memberships: [],
-    roleReachability: [],
-    rowSecurity: [],
-    grants: [],
-    effectivePermissions: [],
-  } as const;
-  return {
-    policy,
-    sha256: `sha256:${digest(JSON.stringify(policy))}`,
-  } as const;
-};
-const trustedActivationCatalogPolicies = {
-  preactivation: catalogPolicy("preactivation"),
-  activated: catalogPolicy("activated"),
-} as const;
+const trustedActivationCatalogPolicies = canonicalActivationCatalogPolicies;
 
 const testReadinessObserver = async (
   prisma: PrismaClient,
@@ -594,7 +577,6 @@ describe("release authority process composition", () => {
       undefined,
       undefined,
       undefined,
-      trustedActivationCatalogPolicies,
     );
     await expect(
       dependencies.authority.authorizeAndInstall({
@@ -662,8 +644,7 @@ describe("release authority process composition", () => {
       receiptSha256: `sha256:${"e".repeat(64)}`,
       canonicalPrivilegesSha256: `sha256:${"1".repeat(64)}`,
       catalogFactsSha256: `sha256:${"2".repeat(64)}`,
-      preactivationCatalogPolicySha256: `sha256:${"9".repeat(64)}`,
-      activatedCatalogPolicySha256: `sha256:${"a".repeat(64)}`,
+      ...canonicalActivationCatalogPolicyDigests,
       beforePrincipalInventorySha256: `sha256:${"4".repeat(64)}`,
       beforePrincipalPolicySha256: `sha256:${"5".repeat(64)}`,
       activatedPrincipalInventorySha256: `sha256:${"6".repeat(64)}`,

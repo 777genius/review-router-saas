@@ -15,6 +15,7 @@ import {
 } from "./release-image-provenance";
 import { releaseAuthoritySchemaVersion } from "./release-authority-contract";
 import { createPublicKey, verify } from "node:crypto";
+import { activationCatalogPolicyDigestsEqual } from "./activation-catalog-policy-contract";
 
 export interface TrustedReleaseWitnessVerificationPolicy {
   readonly keyId: string;
@@ -23,7 +24,7 @@ export interface TrustedReleaseWitnessVerificationPolicy {
 }
 
 export interface ReleaseWitnessBindingEvidence {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 3;
   readonly rolloutId: string;
   readonly deploymentRevision: string;
   readonly artifactDigest: string;
@@ -61,6 +62,8 @@ export interface ReleaseWitnessBindingEvidence {
     readonly namespaceFingerprint: string;
     readonly installerRoutineBodySha256: string;
     readonly readerRoutineBodySha256: string;
+    readonly preactivationCatalogPolicySha256: string;
+    readonly activatedCatalogPolicySha256: string;
   };
   readonly source: Omit<DatabaseGenerationIdentity, "internalHostname">;
   readonly target: Omit<DatabaseGenerationIdentity, "internalHostname">;
@@ -191,7 +194,7 @@ export interface LegacyReconciliationEvidence {
   readonly status: "reconciled";
 }
 export interface TrustedRolloutEvidence {
-  readonly schemaVersion: 7;
+  readonly schemaVersion: 8;
   readonly rolloutId: string;
   readonly releaseCommitSha: string;
   readonly releaseImageProvenance: VerifiedReleaseImageProvenance;
@@ -237,7 +240,7 @@ export function assembleTrustedRolloutEvidence(
   trustedImagePolicy: TrustedReleaseImagePolicy,
   trustedWitnessPolicy: TrustedReleaseWitnessVerificationPolicy,
 ): TrustedRolloutEvidence {
-  const unsigned = Object.freeze({ ...value, schemaVersion: 7 as const });
+  const unsigned = Object.freeze({ ...value, schemaVersion: 8 as const });
   const evidence = Object.freeze({
     ...unsigned,
     evidenceSha256: `sha256:${sha256Canonical(unsigned)}`,
@@ -279,7 +282,7 @@ export function assertTrustedRolloutEvidence(
       "assembledAt",
       "evidenceSha256",
     ]) ||
-    value.schemaVersion !== 7 ||
+    value.schemaVersion !== 8 ||
     !sha.test(value.releaseCommitSha) ||
     value.execution.runAttempt !== 1 ||
     value.execution.event !== "workflow_dispatch" ||
@@ -467,6 +470,7 @@ export function assertTrustedRolloutEvidence(
     !digest.test(value.activation.catalogFactsSha256) ||
     !digest.test(value.activation.preactivationCatalogPolicySha256) ||
     !digest.test(value.activation.activatedCatalogPolicySha256) ||
+    !activationCatalogPolicyDigestsEqual(value.activation) ||
     !digest.test(value.activation.beforePrincipalInventorySha256) ||
     !digest.test(value.activation.beforePrincipalPolicySha256) ||
     !digest.test(value.activation.activatedPrincipalInventorySha256) ||
@@ -545,7 +549,7 @@ export function assertTrustedRolloutEvidence(
       "bindingSha256",
       "signature",
     ]) ||
-    witness.schemaVersion !== 2 ||
+    witness.schemaVersion !== 3 ||
     witness.rolloutId !== value.rolloutId ||
     witness.deploymentRevision !== value.releaseCommitSha ||
     witness.artifactDigest !==
@@ -584,6 +588,8 @@ export function assertTrustedRolloutEvidence(
       "namespaceFingerprint",
       "installerRoutineBodySha256",
       "readerRoutineBodySha256",
+      "preactivationCatalogPolicySha256",
+      "activatedCatalogPolicySha256",
     ]) ||
     !exact(witness.source, [
       "renderResourceId",
@@ -656,6 +662,11 @@ export function assertTrustedRolloutEvidence(
     !digest.test(witness.activation.namespaceFingerprint) ||
     !/^[a-f0-9]{64}$/u.test(witness.activation.installerRoutineBodySha256) ||
     !/^[a-f0-9]{64}$/u.test(witness.activation.readerRoutineBodySha256) ||
+    !activationCatalogPolicyDigestsEqual(witness.activation) ||
+    witness.activation.preactivationCatalogPolicySha256 !==
+      value.activation.preactivationCatalogPolicySha256 ||
+    witness.activation.activatedCatalogPolicySha256 !==
+      value.activation.activatedCatalogPolicySha256 ||
     !timestamp(witness.observedAt) ||
     !timestamp(witness.expiresAt) ||
     Date.parse(witness.observedAt) > Date.parse(value.assembledAt) ||

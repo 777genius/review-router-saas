@@ -40,6 +40,7 @@ import {
   RenderCleanupObservationAdapter,
 } from "./release-witness-adapters.js";
 import { registerReleaseWitnessRoutes } from "./release-witness-routes.js";
+import { canonicalActivationCatalogPolicyDigests } from "@reviewrouter/features-release-rollout";
 
 export async function createReleaseWitnessApp(input: {
   readonly witnessPrisma: PrismaClient;
@@ -164,6 +165,7 @@ export async function createReleaseWitnessApp(input: {
       : `sha256:${createHash("sha256").update(releaseAuthorityCatalogVerifier).digest("hex")}`,
     activationFingerprint:
       policy?.activationNamespaceFingerprint ?? `sha256:${"0".repeat(64)}`,
+    activationCatalogPolicies: canonicalActivationCatalogPolicyDigests,
   });
   const readiness = new ReleaseAuthorityAttestationCoordinator(
     (_subject, signal) => observeAuthority(signal),

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AttestReleaseWitnessBinding } from "./release-witness-application";
 import {
+  canonicalActivationCatalogPolicyDigests,
   releaseAuthoritySchemaVersion,
   sha256Canonical,
 } from "@reviewrouter/features-release-rollout";
@@ -80,6 +81,7 @@ const policy: TrustedReleaseWitnessPolicy = {
   activationNamespaceFingerprint: digest("4"),
   installerRoutineBodySha256: hex("5"),
   readerRoutineBodySha256: hex("6"),
+  ...canonicalActivationCatalogPolicyDigests,
   maximumAgeMilliseconds: 300_000,
 };
 const observation = (

@@ -26,6 +26,10 @@ export type ReleaseAuthorityAttestationSubject = Readonly<{
   }>;
   migrationManifestIdentity: string;
   activationFingerprint: string;
+  activationCatalogPolicies: Readonly<{
+    preactivationCatalogPolicySha256: string;
+    activatedCatalogPolicySha256: string;
+  }>;
 }>;
 
 const role = /^[a-z_][a-z0-9_]{0,62}$/u;
@@ -49,6 +53,12 @@ export function createReleaseAuthorityAttestationSubject(
     !sha256.test(input.routineBodyRoots.readerSha256) ||
     !sha256.test(input.migrationManifestIdentity) ||
     !sha256.test(input.activationFingerprint) ||
+    !sha256.test(
+      input.activationCatalogPolicies.preactivationCatalogPolicySha256,
+    ) ||
+    !sha256.test(
+      input.activationCatalogPolicies.activatedCatalogPolicySha256,
+    ) ||
     input.expectedDatabases.length === 0 ||
     input.requiredRoles.length === 0 ||
     new Set(input.requiredRoles).size !== input.requiredRoles.length ||
@@ -76,6 +86,9 @@ export function createReleaseAuthorityAttestationSubject(
     ),
     requiredRoles: Object.freeze([...input.requiredRoles]),
     routineBodyRoots: Object.freeze({ ...input.routineBodyRoots }),
+    activationCatalogPolicies: Object.freeze({
+      ...input.activationCatalogPolicies,
+    }),
   });
 }
 
