@@ -732,6 +732,23 @@ COMMIT;
 `;
 }
 
+export function activationRoutineBodyTrustRoots() {
+  const sql = activationAuthorityProvisioningSql();
+  const digestBody = (delimiter) => {
+    const marker = `AS $${delimiter}$`;
+    const start = sql.indexOf(marker);
+    const end = sql.indexOf(`\n$${delimiter}$;`, start + marker.length);
+    if (start < 0 || end < 0)
+      throw new Error(`activation_routine_body_missing:${delimiter}`);
+    const body = sql.slice(start + marker.length, end + 1);
+    return createHash("sha256").update(body).digest("hex");
+  };
+  return Object.freeze({
+    installerRoutineBodySha256: digestBody("install_permit"),
+    readerRoutineBodySha256: digestBody("read_receipt"),
+  });
+}
+
 export function canonicalRoleTopologyObservationSql() {
   return `SELECT json_build_object(
     'callerCount', 1,

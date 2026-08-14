@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activationAuthorityProvisioningSql,
+  activationRoutineBodyTrustRoots,
   canonicalActivationSql,
   roleProvisioningSql,
 } from "./run-codex-rotating-release-migration.mjs";
@@ -24,6 +25,15 @@ const configuration = {
 };
 
 describe("target-local PG17 activation permit", () => {
+  it("publishes deterministic non-secret routine-body trust roots", () => {
+    const roots = activationRoutineBodyTrustRoots();
+    expect(roots.installerRoutineBodySha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(roots.readerRoutineBodySha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(roots.installerRoutineBodySha256).not.toBe(
+      roots.readerRoutineBodySha256,
+    );
+  });
+
   it("gives the dedicated installer only the permit installation capability", () => {
     const sql = activationAuthorityProvisioningSql();
     expect(sql).toContain("reviewrouter_activation.install_activation_permit");

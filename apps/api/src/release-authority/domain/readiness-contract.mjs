@@ -4,7 +4,7 @@
  * Keep catalog identities here, outside PostgreSQL adapters, so installation
  * and runtime readiness cannot silently accept different migration histories.
  */
-export const releaseAuthorityCatalogVerifier = "complete_catalog_v1";
+export const releaseAuthorityCatalogVerifier = "complete_catalog_v2";
 
 export const releaseAuthorityMigrationContract = Object.freeze([
   [

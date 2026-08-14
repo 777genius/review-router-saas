@@ -42,6 +42,24 @@ const app = await createReleaseControlApp({
       "REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256",
     ),
   },
+  trustedDatabaseIdentity: {
+    authoritySystemIdentifier: required(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_SYSTEM_IDENTIFIER",
+    ),
+    targetSystemIdentifier: required(
+      "REVIEW_ROUTER_ACTIVATION_TARGET_SYSTEM_IDENTIFIER",
+    ),
+    authorityOwnerRoleName: required(
+      "REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_ROLE",
+    ),
+    activationGuardRoleName: required("REVIEW_ROUTER_ACTIVATION_GUARD_ROLE"),
+    installerRoutineBodySha256: required(
+      "REVIEW_ROUTER_ACTIVATION_INSTALLER_BODY_SHA256",
+    ),
+    readerRoutineBodySha256: required(
+      "REVIEW_ROUTER_ACTIVATION_READER_BODY_SHA256",
+    ),
+  },
 });
 
 app.addHook("onClose", async () => {

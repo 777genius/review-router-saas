@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   composeReleaseControlDependencies,
-  createReleaseControlApp,
+  createReleaseControlApp as createReleaseControlAppBase,
 } from "./release-control-composition";
 import { createReleaseWitnessApp } from "./release-witness-composition";
 
@@ -14,6 +14,24 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const trustedDatabaseIdentity = {
+  authoritySystemIdentifier: "1",
+  targetSystemIdentifier: "2",
+  authorityOwnerRoleName: "reviewrouter_release_authority_owner",
+  activationGuardRoleName: "reviewrouter_activation_receipt_guard",
+  installerRoutineBodySha256: "a".repeat(64),
+  readerRoutineBodySha256: "b".repeat(64),
+} as const;
+
+const createReleaseControlApp = (
+  input: Parameters<typeof createReleaseControlAppBase>[0],
+) =>
+  createReleaseControlAppBase({
+    ...input,
+    trustedDatabaseIdentity:
+      input.trustedDatabaseIdentity ?? trustedDatabaseIdentity,
+  });
+
 const authorityReadiness = (
   roleName:
     | "reviewrouter_release_control"
@@ -22,12 +40,13 @@ const authorityReadiness = (
 ) => [
   {
     roleName,
-    systemIdentifier: "authority-system",
+    authorityOwnerRoleName: trustedDatabaseIdentity.authorityOwnerRoleName,
+    systemIdentifier: "1",
     postgresMajor: 17,
     schemaVersion: 10,
     catalogFingerprint: "sha256:canonical-catalog",
     expectedCatalogFingerprint: "sha256:canonical-catalog",
-    catalogVerifier: "complete_catalog_v1",
+    catalogVerifier: "complete_catalog_v2",
     catalogExact: true,
     migrationManifest: [
       [
@@ -84,6 +103,11 @@ const authorityReadiness = (
     providerRoutine: true,
     installerRoutine: false,
     readerRoutine: false,
+    installerRoutineBodySha256: "",
+    readerRoutineBodySha256: "",
+    authorityRoleTopologyExact: true,
+    activationGuardExact: false,
+    activationRuntimePrivilegesExact: false,
     externalEffectProtocol: true,
     sourceFreezeProtocol: true,
     selectiveRecoveryProtocol: true,
@@ -102,7 +126,8 @@ const authorityReadiness = (
 const installerReadiness = [
   {
     roleName: "reviewrouter_activation_permit_installer",
-    systemIdentifier: "target-system",
+    authorityOwnerRoleName: "",
+    systemIdentifier: "2",
     postgresMajor: 17,
     schemaVersion: 0,
     catalogFingerprint: "sha256:empty-catalog",
@@ -114,6 +139,11 @@ const installerReadiness = [
     providerRoutine: false,
     installerRoutine: true,
     readerRoutine: true,
+    installerRoutineBodySha256: "a".repeat(64),
+    readerRoutineBodySha256: "b".repeat(64),
+    authorityRoleTopologyExact: false,
+    activationGuardExact: true,
+    activationRuntimePrivilegesExact: true,
     externalEffectProtocol: false,
     sourceFreezeProtocol: false,
     selectiveRecoveryProtocol: false,
@@ -132,7 +162,8 @@ const installerReadiness = [
 const readerReadiness = [
   {
     roleName: "reviewrouter_activation_receipt_reader",
-    systemIdentifier: "target-system",
+    authorityOwnerRoleName: "",
+    systemIdentifier: "2",
     postgresMajor: 17,
     schemaVersion: 0,
     catalogFingerprint: "sha256:empty-catalog",
@@ -144,6 +175,11 @@ const readerReadiness = [
     providerRoutine: false,
     installerRoutine: false,
     readerRoutine: true,
+    installerRoutineBodySha256: "a".repeat(64),
+    readerRoutineBodySha256: "b".repeat(64),
+    authorityRoleTopologyExact: false,
+    activationGuardExact: true,
+    activationRuntimePrivilegesExact: true,
     externalEffectProtocol: false,
     sourceFreezeProtocol: false,
     selectiveRecoveryProtocol: false,
@@ -172,11 +208,18 @@ const readinessQuery = (
       return Promise.resolve([
         {
           roleName: readiness.roleName,
+          authorityOwnerRoleName: readiness.authorityOwnerRoleName,
           systemIdentifier: readiness.systemIdentifier,
           postgresMajor: readiness.postgresMajor,
           authorityPresent: readiness.schemaVersion === 10,
           installerRoutine: readiness.installerRoutine,
           readerRoutine: readiness.readerRoutine,
+          installerRoutineBodySha256: readiness.installerRoutineBodySha256,
+          readerRoutineBodySha256: readiness.readerRoutineBodySha256,
+          authorityRoleTopologyExact: readiness.authorityRoleTopologyExact,
+          activationGuardExact: readiness.activationGuardExact,
+          activationRuntimePrivilegesExact:
+            readiness.activationRuntimePrivilegesExact,
         },
       ]);
     }
@@ -214,6 +257,7 @@ const createReleaseControlHealthApp = (
       controlTokenSha256: digest("control"),
       providerAuthorityTokenSha256: digest("provider"),
     },
+    trustedDatabaseIdentity,
   });
 
 describe("release authority process composition", () => {

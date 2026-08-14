@@ -132,6 +132,24 @@ rerunning the current preflight verification.
    routines; healthy witness must observe the 000002 effect snapshot routine.
    Healthy control must also expose the 000003 source-freeze prepare, record,
    complete, and compensation-checkpoint routines before rollout use.
+   Configure release-control with the independently captured authority and
+   target `system_identifier` values, the exact authority owner role, and the
+   activation routine body hashes from the immutable release. Obtain the two
+   non-secret hashes from the checked-out release without querying the target:
+
+   ```bash
+   node -e "import('./scripts/run-codex-rotating-release-migration.mjs').then(m => console.log(m.activationRoutineBodyTrustRoots()))"
+   ```
+
+   Set `REVIEW_ROUTER_RELEASE_AUTHORITY_SYSTEM_IDENTIFIER`,
+   `REVIEW_ROUTER_ACTIVATION_TARGET_SYSTEM_IDENTIFIER`,
+   `REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_ROLE`,
+   `REVIEW_ROUTER_ACTIVATION_GUARD_ROLE`,
+   `REVIEW_ROUTER_ACTIVATION_INSTALLER_BODY_SHA256`, and
+   `REVIEW_ROUTER_ACTIVATION_READER_BODY_SHA256` as one rollout-attested
+   tuple. Never derive either system identifier by comparing the configured
+   database URLs; a restored stale clone can make both URLs agree.
+
 3. Pre-provision target roles and the `reviewrouter_activation` guard. Role
    bootstrap must prove the guard has no membership edges, installer has only
    its function, and release migration cannot install permits.

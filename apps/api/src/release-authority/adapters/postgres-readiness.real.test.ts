@@ -29,6 +29,9 @@ realDescribe("release authority exact catalog readiness", () => {
     await admin.$executeRawUnsafe(
       "CREATE ROLE reviewrouter_owner_membership_probe NOLOGIN",
     );
+    await admin.$executeRawUnsafe(
+      "CREATE ROLE reviewrouter_inbound_membership_probe LOGIN",
+    );
     const owners = await admin.$queryRawUnsafe<{ owner: string }[]>(
       "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname='release_authority'",
     );
@@ -55,6 +58,12 @@ realDescribe("release authority exact catalog readiness", () => {
       await admin.$executeRawUnsafe(
         "DROP ROLE IF EXISTS reviewrouter_owner_membership_probe",
       );
+      await admin.$executeRawUnsafe(
+        "DROP OWNED BY reviewrouter_inbound_membership_probe",
+      );
+      await admin.$executeRawUnsafe(
+        "DROP ROLE IF EXISTS reviewrouter_inbound_membership_probe",
+      );
     }
     await Promise.all(
       [admin, control, legacyControl]
@@ -78,7 +87,7 @@ realDescribe("release authority exact catalog readiness", () => {
     expect(observed).toMatchObject({
       postgresMajor: 17,
       schemaVersion: 10,
-      catalogVerifier: "complete_catalog_v1",
+      catalogVerifier: "complete_catalog_v2",
       catalogExact: true,
     });
     expect(observed.catalogFingerprint).toBe(
@@ -164,37 +173,39 @@ realDescribe("release authority exact catalog readiness", () => {
     }
   });
 
-  it("rejects excessive, PUBLIC, grant-option, and missing grants", async () => {
+  it.each([
+    [
+      "an unexpected function grantee",
+      "GRANT EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) TO reviewrouter_unexpected_acl_probe",
+      "REVOKE ALL ON FUNCTION release_authority.observe_state(text,text,text) FROM reviewrouter_unexpected_acl_probe",
+    ],
+    [
+      "PUBLIC schema CREATE",
+      "GRANT CREATE ON SCHEMA release_authority TO PUBLIC",
+      "REVOKE CREATE ON SCHEMA release_authority FROM PUBLIC",
+    ],
+    [
+      "PUBLIC function EXECUTE",
+      "GRANT EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) TO PUBLIC",
+      "REVOKE EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) FROM PUBLIC",
+    ],
+    [
+      "a function grant option",
+      "GRANT EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) TO reviewrouter_release_control WITH GRANT OPTION",
+      "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) FROM reviewrouter_release_control",
+    ],
+    [
+      "a missing required function grant",
+      "REVOKE EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) FROM reviewrouter_release_control",
+      "GRANT EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) TO reviewrouter_release_control",
+    ],
+  ] as const)("rejects %s", async (_case, mutate, restore) => {
     if (!admin) throw new Error("real_postgres_test_unconfigured");
-    const cases = [
-      [
-        "GRANT EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) TO reviewrouter_unexpected_acl_probe",
-        "REVOKE ALL ON FUNCTION release_authority.observe_state(text,text,text) FROM reviewrouter_unexpected_acl_probe",
-      ],
-      [
-        "GRANT CREATE ON SCHEMA release_authority TO PUBLIC",
-        "REVOKE CREATE ON SCHEMA release_authority FROM PUBLIC",
-      ],
-      [
-        "GRANT EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) TO PUBLIC",
-        "REVOKE EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) FROM PUBLIC",
-      ],
-      [
-        "GRANT EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) TO reviewrouter_release_control WITH GRANT OPTION",
-        "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) FROM reviewrouter_release_control",
-      ],
-      [
-        "REVOKE EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) FROM reviewrouter_release_control",
-        "GRANT EXECUTE ON FUNCTION release_authority.observe_state(text,text,text) TO reviewrouter_release_control",
-      ],
-    ] as const;
-    for (const [mutate, restore] of cases) {
-      await admin.$executeRawUnsafe(mutate);
-      try {
-        await expectCatalogRejected();
-      } finally {
-        await admin.$executeRawUnsafe(restore);
-      }
+    await admin.$executeRawUnsafe(mutate);
+    try {
+      await expectCatalogRejected();
+    } finally {
+      await admin.$executeRawUnsafe(restore);
     }
   });
 
@@ -225,6 +236,36 @@ realDescribe("release authority exact catalog readiness", () => {
       await admin.$executeRawUnsafe(
         `REVOKE ${quotedOwner} FROM reviewrouter_owner_membership_probe`,
       );
+    }
+  });
+
+  it("rejects elevated runtime attributes and inbound or cross-role membership", async () => {
+    if (!admin) throw new Error("real_postgres_test_unconfigured");
+    const cases = [
+      [
+        "ALTER ROLE reviewrouter_release_control CREATEDB",
+        "ALTER ROLE reviewrouter_release_control NOCREATEDB",
+      ],
+      [
+        "GRANT reviewrouter_release_control TO reviewrouter_inbound_membership_probe",
+        "REVOKE reviewrouter_release_control FROM reviewrouter_inbound_membership_probe",
+      ],
+      [
+        "GRANT reviewrouter_provider_authority TO reviewrouter_release_control",
+        "REVOKE reviewrouter_provider_authority FROM reviewrouter_release_control",
+      ],
+      [
+        "GRANT reviewrouter_owner_membership_probe TO reviewrouter_release_control",
+        "REVOKE reviewrouter_owner_membership_probe FROM reviewrouter_release_control",
+      ],
+    ] as const;
+    for (const [mutate, restore] of cases) {
+      await admin.$executeRawUnsafe(mutate);
+      try {
+        await expectCatalogRejected();
+      } finally {
+        await admin.$executeRawUnsafe(restore);
+      }
     }
   });
 
@@ -304,6 +345,37 @@ realDescribe("release authority exact catalog readiness", () => {
     }
   });
 
+  it.each([
+    [
+      "inheritance",
+      "CREATE TABLE release_authority.readiness_parent_probe (LIKE release_authority.rollout INCLUDING ALL); ALTER TABLE release_authority.rollout INHERIT release_authority.readiness_parent_probe",
+      "ALTER TABLE release_authority.rollout NO INHERIT release_authority.readiness_parent_probe; DROP TABLE release_authority.readiness_parent_probe",
+    ],
+    [
+      "rewrite rule",
+      "CREATE RULE readiness_rewrite_probe AS ON DELETE TO release_authority.rollout DO ALSO NOTHING",
+      "DROP RULE readiness_rewrite_probe ON release_authority.rollout",
+    ],
+    [
+      "row-level security policy",
+      "ALTER TABLE release_authority.rollout ENABLE ROW LEVEL SECURITY; CREATE POLICY readiness_policy_probe ON release_authority.rollout USING (true)",
+      "DROP POLICY readiness_policy_probe ON release_authority.rollout; ALTER TABLE release_authority.rollout DISABLE ROW LEVEL SECURITY",
+    ],
+  ] as const)(
+    "rejects adversarial %s semantics",
+    async (_kind, mutate, restore) => {
+      if (!admin) throw new Error("real_postgres_test_unconfigured");
+      for (const statement of mutate.split("; "))
+        await admin.$executeRawUnsafe(statement);
+      try {
+        await expectCatalogRejected();
+      } finally {
+        for (const statement of restore.split("; "))
+          await admin.$executeRawUnsafe(statement);
+      }
+    },
+  );
+
   it("rejects mixed, partial, and mismatched migration history", async () => {
     if (!admin) throw new Error("real_postgres_test_unconfigured");
     const cases = [
@@ -341,7 +413,7 @@ realDescribe("release authority exact catalog readiness", () => {
     const comment = comments[0]?.comment;
     if (!comment) throw new Error("real_postgres_catalog_attestation_missing");
     await admin.$executeRawUnsafe(
-      'COMMENT ON SCHEMA release_authority IS \'{"verifier":"complete_catalog_v1","catalogFingerprint":"sha256:0000"}\'',
+      'COMMENT ON SCHEMA release_authority IS \'{"verifier":"complete_catalog_v2","catalogFingerprint":"sha256:0000"}\'',
     );
     try {
       await expectCatalogRejected();
@@ -349,6 +421,220 @@ realDescribe("release authority exact catalog readiness", () => {
       await admin.$executeRawUnsafe(
         `COMMENT ON SCHEMA release_authority IS '${comment.replaceAll("'", "''")}'`,
       );
+    }
+  });
+});
+
+const activationAdminUrl =
+  process.env.REVIEW_ROUTER_ACTIVATION_TARGET_ADMIN_TEST_URL;
+const activationInstallerUrl =
+  process.env.REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_TEST_URL;
+const activationReaderUrl =
+  process.env.REVIEW_ROUTER_ACTIVATION_RECEIPT_READER_TEST_URL;
+const activationDescribe =
+  activationAdminUrl && activationInstallerUrl && activationReaderUrl
+    ? describe.sequential
+    : describe.skip;
+
+activationDescribe("activation target semantic readiness", () => {
+  const admin = activationAdminUrl
+    ? createPrismaClient({ databaseUrl: activationAdminUrl })
+    : null;
+  const installer = activationInstallerUrl
+    ? createPrismaClient({ databaseUrl: activationInstallerUrl })
+    : null;
+  const reader = activationReaderUrl
+    ? createPrismaClient({ databaseUrl: activationReaderUrl })
+    : null;
+  let installerDefinition = "";
+  let readerDefinition = "";
+  let installerBodySha256 = "";
+  let readerBodySha256 = "";
+
+  beforeAll(async () => {
+    if (!admin || !installer || !reader)
+      throw new Error("real_postgres_activation_test_unconfigured");
+    await admin.$executeRawUnsafe(
+      "CREATE ROLE reviewrouter_activation_readiness_probe LOGIN",
+    );
+    const definitions = await admin.$queryRawUnsafe<
+      { installer: string; reader: string }[]
+    >(`SELECT
+      pg_get_functiondef(
+        'reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)'::regprocedure
+      ) AS installer,
+      pg_get_functiondef(
+        'reviewrouter_activation.read_activation_receipt(text)'::regprocedure
+      ) AS reader`);
+    installerDefinition = definitions[0]?.installer ?? "";
+    readerDefinition = definitions[0]?.reader ?? "";
+    if (!installerDefinition || !readerDefinition)
+      throw new Error("real_postgres_activation_definition_missing");
+    const installerReadiness =
+      await observeReleaseAuthorityDatabaseReadiness(installer);
+    const readerReadiness =
+      await observeReleaseAuthorityDatabaseReadiness(reader);
+    installerBodySha256 = installerReadiness.installerRoutineBodySha256;
+    readerBodySha256 = readerReadiness.readerRoutineBodySha256;
+  });
+
+  afterAll(async () => {
+    if (admin) {
+      await admin.$executeRawUnsafe(
+        "DROP OWNED BY reviewrouter_activation_readiness_probe",
+      );
+      await admin.$executeRawUnsafe(
+        "DROP ROLE IF EXISTS reviewrouter_activation_readiness_probe",
+      );
+    }
+    await Promise.all(
+      [admin, installer, reader]
+        .filter((client) => client !== null)
+        .map((client) => client.$disconnect()),
+    );
+  });
+
+  const installerReadiness = async () => {
+    if (!installer)
+      throw new Error("real_postgres_activation_test_unconfigured");
+    return observeReleaseAuthorityDatabaseReadiness(installer);
+  };
+  const readerReadiness = async () => {
+    if (!reader) throw new Error("real_postgres_activation_test_unconfigured");
+    return observeReleaseAuthorityDatabaseReadiness(reader);
+  };
+
+  it("accepts exact installer, reader, guard, and runtime privilege semantics", async () => {
+    const observedInstaller = await installerReadiness();
+    const observedReader = await readerReadiness();
+    expect(observedInstaller).toMatchObject({
+      installerRoutine: true,
+      activationGuardExact: true,
+      activationRuntimePrivilegesExact: true,
+    });
+    expect(observedReader).toMatchObject({
+      readerRoutine: true,
+      activationGuardExact: true,
+      activationRuntimePrivilegesExact: true,
+    });
+    expect(installerBodySha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(readerBodySha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(installerBodySha256).not.toBe(readerBodySha256);
+  });
+
+  it("rejects installer body, config, owner, and EXECUTE ACL drift", async () => {
+    if (!admin) throw new Error("real_postgres_activation_test_unconfigured");
+    const cases = [
+      {
+        mutate:
+          "CREATE OR REPLACE FUNCTION reviewrouter_activation.install_activation_permit(requested_rollout_id text,requested_source_system_identifier text,requested_target_system_identifier text,requested_postgres_major integer,requested_expected_commit_sha text,requested_migration_checksum text,requested_target_deploy_ids jsonb,requested_permit_epoch bigint,requested_permit_nonce text) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS 'BEGIN RETURN true; END'",
+        rejected: async () => {
+          const observed = await installerReadiness();
+          expect(observed.installerRoutineBodySha256).not.toBe(
+            installerBodySha256,
+          );
+        },
+        restore: () => admin.$executeRawUnsafe(installerDefinition),
+      },
+      {
+        mutate:
+          "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) RESET ALL",
+        rejected: async () => {
+          expect((await installerReadiness()).installerRoutine).toBe(false);
+        },
+        restore: () =>
+          admin.$executeRawUnsafe(
+            "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) SET search_path=pg_catalog,pg_temp",
+          ),
+      },
+      {
+        mutate:
+          "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) OWNER TO reviewrouter_activation_readiness_probe",
+        rejected: async () => {
+          expect((await installerReadiness()).installerRoutine).toBe(false);
+        },
+        restore: () =>
+          admin.$executeRawUnsafe(
+            "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) OWNER TO reviewrouter_activation_receipt_guard",
+          ),
+      },
+      {
+        mutate:
+          "GRANT EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) TO reviewrouter_activation_readiness_probe",
+        rejected: async () => {
+          expect((await installerReadiness()).installerRoutine).toBe(false);
+        },
+        restore: () =>
+          admin.$executeRawUnsafe(
+            "REVOKE EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) FROM reviewrouter_activation_readiness_probe",
+          ),
+      },
+    ];
+    for (const { mutate, rejected, restore } of cases) {
+      await admin.$executeRawUnsafe(mutate);
+      try {
+        await rejected();
+      } finally {
+        await restore();
+      }
+    }
+  });
+
+  it("rejects reader body drift", async () => {
+    if (!admin) throw new Error("real_postgres_activation_test_unconfigured");
+    await admin.$executeRawUnsafe(
+      "CREATE OR REPLACE FUNCTION reviewrouter_activation.read_activation_receipt(requested_rollout_id text) RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS 'BEGIN RETURN NULL; END'",
+    );
+    try {
+      expect((await readerReadiness()).readerRoutineBodySha256).not.toBe(
+        readerBodySha256,
+      );
+    } finally {
+      await admin.$executeRawUnsafe(readerDefinition);
+    }
+  });
+
+  it("rejects guard shape, guard ACL, inbound membership, and runtime elevation", async () => {
+    if (!admin) throw new Error("real_postgres_activation_test_unconfigured");
+    const cases = [
+      [
+        "ALTER TABLE reviewrouter_activation.activation_permit ADD COLUMN readiness_probe text",
+        "ALTER TABLE reviewrouter_activation.activation_permit DROP COLUMN readiness_probe",
+        "activationGuardExact",
+      ],
+      [
+        "GRANT SELECT ON TABLE reviewrouter_activation.activation_permit TO reviewrouter_activation_readiness_probe",
+        "REVOKE SELECT ON TABLE reviewrouter_activation.activation_permit FROM reviewrouter_activation_readiness_probe",
+        "activationGuardExact",
+      ],
+      [
+        'GRANT UPDATE ON TABLE public."_prisma_migrations" TO reviewrouter_activation_receipt_guard',
+        'REVOKE UPDATE ON TABLE public."_prisma_migrations" FROM reviewrouter_activation_receipt_guard',
+        "activationGuardExact",
+      ],
+      [
+        'GRANT SELECT ON TABLE public."_prisma_migrations" TO reviewrouter_activation_permit_installer',
+        'REVOKE SELECT ON TABLE public."_prisma_migrations" FROM reviewrouter_activation_permit_installer',
+        "activationRuntimePrivilegesExact",
+      ],
+      [
+        "GRANT reviewrouter_activation_permit_installer TO reviewrouter_activation_readiness_probe",
+        "REVOKE reviewrouter_activation_permit_installer FROM reviewrouter_activation_readiness_probe",
+        "activationRuntimePrivilegesExact",
+      ],
+      [
+        "ALTER ROLE reviewrouter_api CREATEDB",
+        "ALTER ROLE reviewrouter_api NOCREATEDB",
+        "activationRuntimePrivilegesExact",
+      ],
+    ] as const;
+    for (const [mutate, restore, field] of cases) {
+      await admin.$executeRawUnsafe(mutate);
+      try {
+        expect((await installerReadiness())[field]).toBe(false);
+      } finally {
+        await admin.$executeRawUnsafe(restore);
+      }
     }
   });
 });

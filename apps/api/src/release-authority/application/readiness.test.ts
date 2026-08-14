@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  releaseControlDatabaseSetIsReady,
   releaseAuthoritySchemaIsReady,
   type ReleaseAuthorityDatabaseReadiness,
 } from "./readiness";
@@ -10,6 +11,7 @@ import {
 
 const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
   roleName: "reviewrouter_release_control",
+  authorityOwnerRoleName: "reviewrouter_release_authority_owner",
   systemIdentifier: "1",
   postgresMajor: 17,
   schemaVersion: 10,
@@ -33,6 +35,11 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
   providerRoutine: true,
   installerRoutine: false,
   readerRoutine: false,
+  installerRoutineBodySha256: "",
+  readerRoutineBodySha256: "",
+  authorityRoleTopologyExact: true,
+  activationGuardExact: false,
+  activationRuntimePrivilegesExact: false,
   externalEffectProtocol: true,
   sourceFreezeProtocol: true,
   selectiveRecoveryProtocol: true,
@@ -51,6 +58,69 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
 describe("release authority exact readiness contract", () => {
   it("accepts the canonical contract", () => {
     expect(releaseAuthoritySchemaIsReady(canonical())).toBe(true);
+  });
+
+  it("anchors a database set to independent identities and exact activation bodies", () => {
+    const control = canonical();
+    const provider = {
+      ...canonical(),
+      roleName: "reviewrouter_provider_authority",
+    };
+    const activation = {
+      ...canonical(),
+      schemaVersion: 0,
+      roleName: "reviewrouter_activation_permit_installer",
+      systemIdentifier: "2",
+      installerRoutine: true,
+      readerRoutine: true,
+      installerRoutineBodySha256: "a".repeat(64),
+      readerRoutineBodySha256: "b".repeat(64),
+      activationGuardExact: true,
+      activationRuntimePrivilegesExact: true,
+    };
+    const reader = {
+      ...activation,
+      roleName: "reviewrouter_activation_receipt_reader",
+    };
+    const trusted = {
+      authoritySystemIdentifier: "1",
+      targetSystemIdentifier: "2",
+      authorityOwnerRoleName: "reviewrouter_release_authority_owner",
+      activationGuardRoleName: "reviewrouter_activation_receipt_guard",
+      installerRoutineBodySha256: "a".repeat(64),
+      readerRoutineBodySha256: "b".repeat(64),
+    };
+    expect(
+      releaseControlDatabaseSetIsReady(
+        { control, provider, installer: activation, reader },
+        trusted,
+      ),
+    ).toBe(true);
+    expect(
+      releaseControlDatabaseSetIsReady(
+        {
+          control: { ...control, systemIdentifier: "stale" },
+          provider: { ...provider, systemIdentifier: "stale" },
+          installer: activation,
+          reader,
+        },
+        trusted,
+      ),
+    ).toBe(false);
+    expect(
+      releaseControlDatabaseSetIsReady(
+        {
+          control,
+          provider,
+          installer: {
+            ...activation,
+            installerRoutineBodySha256: "mutated",
+          },
+          reader,
+        },
+        trusted,
+      ),
+    ).toBe(false);
   });
 
   it.each([

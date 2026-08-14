@@ -189,7 +189,7 @@ export function releaseAuthorityMigrationBundle(
     `CREATE TEMP TABLE release_authority_catalog_verification (
   catalog_fingerprint text NOT NULL,
   byte_variant text NOT NULL CHECK (byte_variant IN ('canonical','legacy_equivalent')),
-  verifier text NOT NULL CHECK (verifier = '${releaseAuthorityCatalogVerifier}')
+  verifier text NOT NULL CHECK (verifier IN ('complete_catalog_v1','${releaseAuthorityCatalogVerifier}'))
 ) ON COMMIT DROP;`,
     releaseAuthorityCatalogFingerprintSql,
     "\\if :authority_schema_absent",
@@ -225,8 +225,8 @@ export function releaseAuthorityMigrationBundle(
        END IF;
        INSERT INTO release_authority_catalog_verification
          (catalog_fingerprint,byte_variant,verifier)
-       VALUES (live,CASE WHEN live=canonical THEN 'canonical' ELSE 'legacy_equivalent' END,
-         'complete_catalog_v1');
+      VALUES (live,CASE WHEN live=canonical THEN 'canonical' ELSE 'legacy_equivalent' END,
+        'complete_catalog_v1');
      END
      $catalog_verification$;`,
     "DROP SCHEMA release_authority_verify_canonical CASCADE;",
@@ -303,7 +303,7 @@ export function releaseAuthorityMigrationBundle(
     `INSERT INTO release_authority_catalog_verification
        (catalog_fingerprint,byte_variant,verifier)
      VALUES (pg_temp.release_authority_catalog_fingerprint(
-       'release_authority_verify_final'),'canonical','${releaseAuthorityCatalogVerifier}');`,
+       'release_authority_verify_final'),'canonical','complete_catalog_v1');`,
     migrationBody(
       rewriteAuthoritySchema(
         bootstrapMigration.source,

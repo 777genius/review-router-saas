@@ -14,11 +14,14 @@ import {
   type ReleaseControlRouteDependencies,
 } from "./release-rollout-ledger.js";
 import { observeReleaseAuthorityDatabaseReadiness } from "./release-authority/adapters/postgres-readiness.js";
-import { releaseControlDatabaseSetIsReady } from "./release-authority/application/readiness.js";
 import {
   createBoundedReadinessPolicy,
   type BoundedReadinessPolicyOptions,
 } from "./release-authority/application/bounded-readiness.js";
+import {
+  releaseControlDatabaseSetIsReady,
+  type TrustedReleaseControlDatabaseIdentity,
+} from "./release-authority/application/readiness.js";
 
 export type ReleaseControlCredentials = Readonly<{
   controlTokenSha256: string;
@@ -123,6 +126,7 @@ export async function createReleaseControlApp(input: {
   readonly targetReceiptReaderPrisma: PrismaClient;
   readonly credentials: ReleaseControlCredentials;
   readonly readinessPolicy?: Partial<BoundedReadinessPolicyOptions>;
+  readonly trustedDatabaseIdentity?: TrustedReleaseControlDatabaseIdentity;
 }): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   const dependencies = composeReleaseControlDependencies(
@@ -140,12 +144,16 @@ export async function createReleaseControlApp(input: {
       observeReleaseAuthorityDatabaseReadiness(input.targetReceiptReaderPrisma),
     ]);
     if (
-      !releaseControlDatabaseSetIsReady({
-        control,
-        provider,
-        installer,
-        reader,
-      })
+      !input.trustedDatabaseIdentity ||
+      !releaseControlDatabaseSetIsReady(
+        {
+          control,
+          provider,
+          installer,
+          reader,
+        },
+        input.trustedDatabaseIdentity,
+      )
     )
       throw new Error("release_control_mutation_authority_degraded");
   };

@@ -19,9 +19,40 @@ describe("release authority ACL readiness observation", () => {
     expect(sql).toContain("authority_namespace.nspowner, 'MEMBER'");
     expect(sql).toContain("authority_namespace.nspowner, 'USAGE'");
     expect(sql).toContain("authority_namespace.nspowner, 'SET'");
+    expect(sql).toContain("pg_auth_members edge");
+    expect(sql).toContain("granted.rolname=ANY");
+    expect(sql).toContain("member.rolname=ANY");
+    expect(sql).toContain("role.rolbypassrls");
+    expect(sql).toContain('AS "authorityRoleTopologyExact"');
     expect(sql).toContain('AS "catalogExact"');
     expect(sql).not.toContain("pg_get_functiondef");
     expect(sql).not.toContain(" LIKE ");
+  });
+
+  it("attests activation routines, guard objects, inbound role edges, and runtime bounds", async () => {
+    const queryRaw = vi.fn().mockResolvedValue([
+      {
+        authorityPresent: false,
+        installerRoutine: false,
+        readerRoutine: false,
+      },
+    ]);
+
+    await observeReleaseAuthorityDatabaseReadiness({
+      $queryRaw: queryRaw,
+    } as never);
+
+    const sql = String(queryRaw.mock.calls[0]?.[0]?.text);
+    expect(sql).toContain("p.prosecdef");
+    expect(sql).toContain(
+      "p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']",
+    );
+    expect(sql).toContain("installerRoutineBodySha256");
+    expect(sql).toContain("readerRoutineBodySha256");
+    expect(sql).toContain("activation_permit','activation_receipt");
+    expect(sql).toContain("assert_no_activation_receipt");
+    expect(sql).toContain("pg_auth_members edge");
+    expect(sql).toContain("rolbypassrls");
   });
 
   it("observes the exact catalog without DDL, TEMP privileges, or connection affinity", async () => {

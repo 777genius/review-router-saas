@@ -105,6 +105,34 @@ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog AS $fingerprint$
     JOIN pg_catalog.pg_class relation ON relation.oid=trigger.tgrelid
     JOIN target ON target.oid=relation.relnamespace WHERE NOT trigger.tgisinternal
     UNION ALL
+    SELECT 'inheritance', child.oid::regclass::text||'>'||parent.oid::regclass::text,
+      jsonb_build_object('sequence',inheritance.inhseqno,'detachPending',inheritance.inhdetachpending)
+    FROM pg_catalog.pg_inherits inheritance
+    JOIN pg_catalog.pg_class child ON child.oid=inheritance.inhrelid
+    JOIN pg_catalog.pg_class parent ON parent.oid=inheritance.inhparent
+    JOIN target ON target.oid=child.relnamespace OR target.oid=parent.relnamespace
+    UNION ALL
+    SELECT 'rewrite', relation.relname||'.'||rewrite.rulename,
+      jsonb_build_object('event',rewrite.ev_type,'instead',rewrite.is_instead,
+        'enabled',rewrite.ev_enabled,
+        'definition',replace(pg_catalog.pg_get_ruledef(rewrite.oid,true),p_schema,'release_authority'))
+    FROM pg_catalog.pg_rewrite rewrite
+    JOIN pg_catalog.pg_class relation ON relation.oid=rewrite.ev_class
+    JOIN target ON target.oid=relation.relnamespace
+    UNION ALL
+    SELECT 'policy', relation.relname||'.'||policy.polname,
+      jsonb_build_object('command',policy.polcmd,'permissive',policy.polpermissive,
+        'roles',(SELECT coalesce(jsonb_agg(CASE WHEN role_oid=0 THEN 'PUBLIC'
+            ELSE pg_catalog.pg_get_userbyid(role_oid) END
+          ORDER BY CASE WHEN role_oid=0 THEN 'PUBLIC'
+            ELSE pg_catalog.pg_get_userbyid(role_oid) END),'[]'::jsonb)
+          FROM unnest(policy.polroles) role_oid),
+        'using',replace(coalesce(pg_catalog.pg_get_expr(policy.polqual,policy.polrelid),''),p_schema,'release_authority'),
+        'check',replace(coalesce(pg_catalog.pg_get_expr(policy.polwithcheck,policy.polrelid),''),p_schema,'release_authority'))
+    FROM pg_catalog.pg_policy policy
+    JOIN pg_catalog.pg_class relation ON relation.oid=policy.polrelid
+    JOIN target ON target.oid=relation.relnamespace
+    UNION ALL
     SELECT 'type', type_record.typname,
       jsonb_build_object(
         'kind',type_record.typtype,'category',type_record.typcategory,

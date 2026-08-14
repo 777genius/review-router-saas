@@ -387,11 +387,42 @@ fi
 test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_mixed_ledger -Atc \
   "SELECT release_authority.release_schema_migration_manifest()")" = "$mixed_ledger_before"
 
+# Build a separate activation target in the same disposable cluster. The
+# system identifier is shared only because this contract tests catalog and role
+# adversaries; application tests independently prove configured generation
+# identity must differ and match its trusted value.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN;
+   CREATE ROLE reviewrouter_activation_permit_installer LOGIN PASSWORD 'installer';
+   CREATE ROLE reviewrouter_activation_receipt_reader LOGIN PASSWORD 'reader';
+   CREATE ROLE reviewrouter_api LOGIN PASSWORD 'api';
+   CREATE ROLE reviewrouter_web LOGIN PASSWORD 'web';
+   CREATE ROLE reviewrouter_worker LOGIN PASSWORD 'worker';
+   CREATE ROLE reviewrouter_codex_effect_authority LOGIN PASSWORD 'effect';
+   CREATE ROLE reviewrouter_release_migration LOGIN PASSWORD 'migration';
+   CREATE ROLE reviewrouter_role_bootstrap LOGIN PASSWORD 'bootstrap'" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "CREATE DATABASE rr_activation_target" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_activation_target -c \
+  'CREATE TABLE public."_prisma_migrations" (
+     migration_name text NOT NULL, checksum text NOT NULL,
+     finished_at timestamptz, rolled_back_at timestamptz
+   )' >/dev/null
+node -e "import('./scripts/run-codex-rotating-release-migration.mjs').then(m => process.stdout.write(m.activationAuthorityProvisioningSql()))" \
+  > "$contract_tmp/activation-authority.sql"
+docker cp "$contract_tmp/activation-authority.sql" \
+  "$name:/tmp/activation-authority.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_activation_target \
+  -f /tmp/activation-authority.sql >/dev/null
+
 postgres_port=$(docker port "$name" 5432/tcp | sed 's/.*://')
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
 REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_TEST_URL="postgresql://reviewrouter_release_witness:witness@127.0.0.1:$postgres_port/postgres" \
 REVIEW_ROUTER_RELEASE_AUTHORITY_ADMIN_TEST_URL="postgresql://postgres:test@127.0.0.1:$postgres_port/postgres" \
 REVIEW_ROUTER_RELEASE_AUTHORITY_LEGACY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/rr_supported_legacy" \
+REVIEW_ROUTER_ACTIVATION_TARGET_ADMIN_TEST_URL="postgresql://postgres:test@127.0.0.1:$postgres_port/rr_activation_target" \
+REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_TEST_URL="postgresql://reviewrouter_activation_permit_installer:installer@127.0.0.1:$postgres_port/rr_activation_target" \
+REVIEW_ROUTER_ACTIVATION_RECEIPT_READER_TEST_URL="postgresql://reviewrouter_activation_receipt_reader:reader@127.0.0.1:$postgres_port/rr_activation_target" \
   pnpm exec vitest --configLoader runner run \
     apps/api/src/release-authority/adapters/postgres.real.test.ts \
     apps/api/src/release-authority/adapters/postgres-readiness.real.test.ts
