@@ -108,6 +108,40 @@ const activationPermitInstallerRoleName =
   "reviewrouter_activation_permit_installer";
 const activationReceiptReaderRoleName =
   "reviewrouter_activation_receipt_reader";
+const activationPrincipalLoginNames = Object.freeze([
+  ...canonicalRoleNames,
+  canonicalBootstrapRoleName,
+  activationPermitInstallerRoleName,
+  activationReceiptReaderRoleName,
+]);
+const activationPrincipalRoleNames = Object.freeze([
+  ...activationPrincipalLoginNames,
+  activationReceiptGuardRoleName,
+]);
+export const activationPrincipalRoleCapabilityMatrix = Object.freeze(
+  activationPrincipalLoginNames.flatMap((login) =>
+    activationPrincipalRoleNames.map((role) =>
+      Object.freeze({
+        login,
+        role,
+        usage: login === role,
+        set: login === role,
+      }),
+    ),
+  ),
+);
+
+export function isActivationPrincipalRoleCapabilityPermitted(
+  login,
+  role,
+  capability,
+) {
+  if (capability !== "usage" && capability !== "set") return false;
+  const contract = activationPrincipalRoleCapabilityMatrix.find(
+    (entry) => entry.login === login && entry.role === role,
+  );
+  return contract?.[capability] === true;
+}
 // Trust root for the one PostgreSQL catalog projection embedded in the
 // guard-owned activation projector and reused by the read-only adapter.
 export const effectivePrincipalInventorySqlSha256 = createHash("sha256")
@@ -491,6 +525,7 @@ DECLARE projected_inventory jsonb;
 DECLARE projected_policy jsonb;
 DECLARE policy_violations jsonb;
 DECLARE allowed_principal_contract jsonb;
+DECLARE role_capability_matrix_contract jsonb;
 BEGIN
   IF requested_phase NOT IN ('preactivation','activated') THEN
     RAISE EXCEPTION 'activation principal projection phase invalid';
@@ -503,10 +538,11 @@ ${effectivePrincipalInventorySql}
       'reviewrouter_api','reviewrouter_web','reviewrouter_worker',
       'reviewrouter_codex_effect_authority','reviewrouter_release_migration',
       '${canonicalBootstrapRoleName}','${activationReceiptGuardRoleName}',
-      '${activationPermitInstallerRoleName}','${activationReceiptReaderRoleName}',
-      pg_get_userbyid((SELECT datdba FROM pg_database WHERE datname=current_database()))
+      '${activationPermitInstallerRoleName}','${activationReceiptReaderRoleName}'
     ]) AS name
   ) allowed;
+  role_capability_matrix_contract :=
+    ${quoted(JSON.stringify(activationPrincipalRoleCapabilityMatrix))}::jsonb;
   WITH
   role_facts AS (
     SELECT role->>'name' AS name,
@@ -514,12 +550,23 @@ ${effectivePrincipalInventorySql}
     FROM jsonb_array_elements(projected_inventory->'roles') role
   ), allowed_principals(name) AS (
     SELECT jsonb_array_elements_text(allowed_principal_contract)
+  ), permitted_reachability(login_name, role_name, allow_usage, allow_set) AS (
+    SELECT capability->>'login', capability->>'role',
+      (capability->>'usage')::boolean, (capability->>'set')::boolean
+    FROM jsonb_array_elements(role_capability_matrix_contract) capability
   ), reachable(login_name, role_name, via_usage, via_set) AS (
     SELECT reachability->>'principal', reachability->>'role',
       (reachability->>'usage')::boolean, (reachability->>'set')::boolean
     FROM jsonb_array_elements(projected_inventory->'roleReachability') reachability
     WHERE (reachability->>'usage')::boolean OR (reachability->>'set')::boolean
   ), violations(code, principal, capability, resource) AS (
+    SELECT 'database_owner_contract_mismatch',
+      pg_get_userbyid((SELECT datdba FROM pg_database
+        WHERE datname=current_database())),
+      'owner:database', 'database:'||current_database()
+    WHERE pg_get_userbyid((SELECT datdba FROM pg_database
+      WHERE datname=current_database())) <> '${canonicalBootstrapRoleName}'
+    UNION ALL
     SELECT 'unexpected_login', role_facts.name, NULL::text, NULL::text
     FROM role_facts
     WHERE role_facts.can_login
@@ -528,32 +575,70 @@ ${effectivePrincipalInventorySql}
     SELECT 'principal_login_contract_mismatch', role_facts.name,
       NULL::text, NULL::text
     FROM role_facts
-    WHERE role_facts.name <> pg_get_userbyid(
-        (SELECT datdba FROM pg_database WHERE datname=current_database()))
-      AND role_facts.can_login IS DISTINCT FROM (role_facts.name IN (
+    WHERE role_facts.can_login IS DISTINCT FROM (role_facts.name IN (
         'reviewrouter_api','reviewrouter_web','reviewrouter_worker',
         'reviewrouter_codex_effect_authority','reviewrouter_release_migration',
+        '${canonicalBootstrapRoleName}',
         '${activationPermitInstallerRoleName}','${activationReceiptReaderRoleName}'))
       AND EXISTS (SELECT 1 FROM allowed_principals WHERE name=role_facts.name)
     UNION ALL
-    SELECT 'unexpected_effective_role', reachable.login_name,
-      'admin:role-membership', 'role:'||reachable.role_name
+    SELECT CASE capability.kind
+        WHEN 'usage' THEN 'unexpected_role_usage'
+        ELSE 'unexpected_role_set' END,
+      reachable.login_name, 'admin:role-membership',
+      'role:'||reachable.role_name
     FROM reachable
-    WHERE reachable.login_name <> pg_get_userbyid(
-        (SELECT datdba FROM pg_database WHERE datname=current_database()))
-      AND NOT EXISTS (SELECT 1 FROM allowed_principals WHERE name=reachable.role_name)
+    CROSS JOIN LATERAL (VALUES
+      ('usage',reachable.via_usage),('set',reachable.via_set)
+    ) capability(kind,enabled)
+    LEFT JOIN permitted_reachability permitted
+      ON permitted.login_name=reachable.login_name
+     AND permitted.role_name=reachable.role_name
+    WHERE capability.enabled AND NOT coalesce(
+      CASE capability.kind WHEN 'usage' THEN permitted.allow_usage
+        ELSE permitted.allow_set END, false)
+    UNION ALL
+    SELECT CASE capability.kind
+        WHEN 'usage' THEN 'missing_role_usage'
+        ELSE 'missing_role_set' END,
+      permitted.login_name, 'admin:role-membership',
+      'role:'||permitted.role_name
+    FROM permitted_reachability permitted
+    CROSS JOIN LATERAL (VALUES
+      ('usage',permitted.allow_usage),('set',permitted.allow_set)
+    ) capability(kind,required)
+    LEFT JOIN reachable
+      ON reachable.login_name=permitted.login_name
+     AND reachable.role_name=permitted.role_name
+    WHERE capability.required AND NOT coalesce(
+      CASE capability.kind WHEN 'usage' THEN reachable.via_usage
+        ELSE reachable.via_set END, false)
+    UNION ALL
+    SELECT CASE capability.kind WHEN 'inherit'
+        THEN 'unexpected_inherited_permission'
+        ELSE 'unexpected_set_permission' END,
+      membership_record->>'member', 'admin:role-membership',
+      'role:'||(membership_record->>'role')
+    FROM jsonb_array_elements(projected_inventory->'memberships') membership_record
+    CROSS JOIN LATERAL (VALUES
+      ('inherit',(membership_record->>'inheritOption')::boolean),
+      ('set',(membership_record->>'setOption')::boolean)
+    ) capability(kind,enabled)
+    WHERE capability.enabled
+      AND (EXISTS (SELECT 1 FROM allowed_principals
+             WHERE name=membership_record->>'member')
+        OR EXISTS (SELECT 1 FROM allowed_principals
+             WHERE name=membership_record->>'role'))
     UNION ALL
     SELECT 'unexpected_effective_permission', reachable.login_name,
       grant_record->>'capability', grant_record->>'resource'
     FROM reachable
     JOIN jsonb_array_elements(projected_inventory->'grants') grant_record
       ON grant_record->>'principal'=reachable.role_name
-    WHERE reachable.login_name <> pg_get_userbyid(
-        (SELECT datdba FROM pg_database WHERE datname=current_database()))
-      AND (NOT EXISTS (SELECT 1 FROM allowed_principals
-             WHERE name=reachable.login_name)
-        OR NOT EXISTS (SELECT 1 FROM allowed_principals
-             WHERE name=reachable.role_name))
+    LEFT JOIN permitted_reachability permitted
+      ON permitted.login_name=reachable.login_name
+     AND permitted.role_name=reachable.role_name
+    WHERE reachable.via_usage AND NOT coalesce(permitted.allow_usage,false)
     UNION ALL
     SELECT 'unexpected_public_permission', 'PUBLIC', grant_record->>'capability',
       grant_record->>'resource'
@@ -572,8 +657,7 @@ ${effectivePrincipalInventorySql}
       grant_record->>'capability', grant_record->>'resource'
     FROM jsonb_array_elements(projected_inventory->'grants') grant_record
     WHERE grant_record->>'capability' LIKE 'admin:%'
-      AND grant_record->>'principal' <> pg_get_userbyid(
-        (SELECT datdba FROM pg_database WHERE datname=current_database()))
+      AND grant_record->>'principal' <> '${canonicalBootstrapRoleName}'
     UNION ALL
     SELECT 'unexpected_row_security_principal', policy_role,
       NULL::text, relation_record->>'relation'
@@ -592,6 +676,7 @@ ${effectivePrincipalInventorySql}
     'version',2,
     'phase',requested_phase,
     'allowedPrincipals',allowed_principal_contract,
+    'roleCapabilityMatrix',role_capability_matrix_contract,
     'publicPermissionKinds',jsonb_build_array('schema:usage','type:usage'),
     'rowSecurity',projected_inventory->'rowSecurity',
     'violations',policy_violations
@@ -661,6 +746,11 @@ BEGIN
      OR jsonb_typeof(evidence.before_policy->'allowedPrincipals') IS DISTINCT FROM 'array'
      OR evidence.before_policy->'allowedPrincipals' IS DISTINCT FROM
         evidence.activated_policy->'allowedPrincipals'
+     OR jsonb_typeof(evidence.before_policy->'roleCapabilityMatrix') IS DISTINCT FROM 'array'
+     OR evidence.before_policy->'roleCapabilityMatrix' IS DISTINCT FROM
+        ${quoted(JSON.stringify(activationPrincipalRoleCapabilityMatrix))}::jsonb
+     OR evidence.before_policy->'roleCapabilityMatrix' IS DISTINCT FROM
+        evidence.activated_policy->'roleCapabilityMatrix'
      OR jsonb_typeof(evidence.before_policy->'publicPermissionKinds') IS DISTINCT FROM 'array'
      OR evidence.before_policy->'publicPermissionKinds' IS DISTINCT FROM
         evidence.activated_policy->'publicPermissionKinds'
@@ -745,6 +835,7 @@ BEGIN
      OR policy->>'kind' IS DISTINCT FROM 'reviewrouter-effective-principal-policy'
      OR policy->>'version' IS DISTINCT FROM '2'
      OR policy->>'phase' IS DISTINCT FROM 'preactivation'
+     OR jsonb_typeof(policy->'roleCapabilityMatrix') IS DISTINCT FROM 'array'
      OR policy->'rowSecurity' IS DISTINCT FROM inventory->'rowSecurity'
      OR jsonb_typeof(policy->'violations') IS DISTINCT FROM 'array'
      OR jsonb_array_length(policy->'violations') <> 0 THEN
@@ -876,6 +967,8 @@ BEGIN
           'reviewrouter-effective-principal-policy'
        OR principal_evidence.before_policy->>'version' IS DISTINCT FROM '2'
        OR principal_evidence.before_policy->>'phase' IS DISTINCT FROM 'preactivation'
+       OR jsonb_typeof(principal_evidence.before_policy->'roleCapabilityMatrix')
+          IS DISTINCT FROM 'array'
        OR principal_evidence.before_policy->'violations' IS DISTINCT FROM '[]'::jsonb THEN
       RAISE EXCEPTION 'principal evidence is not transaction-bound to activation';
     END IF;
@@ -895,6 +988,8 @@ BEGIN
        OR live_activated_policy->>'kind' IS DISTINCT FROM 'reviewrouter-effective-principal-policy'
        OR live_activated_policy->>'version' IS DISTINCT FROM '2'
        OR live_activated_policy->>'phase' IS DISTINCT FROM 'activated'
+       OR jsonb_typeof(live_activated_policy->'roleCapabilityMatrix')
+          IS DISTINCT FROM 'array'
        OR live_activated_policy->'rowSecurity' IS DISTINCT FROM
           live_activated_inventory->'rowSecurity'
        OR live_activated_policy->'violations' IS DISTINCT FROM '[]'::jsonb THEN

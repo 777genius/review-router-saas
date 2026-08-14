@@ -221,7 +221,8 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain("reviewrouter-effective-principal-projection");
     expect(sql).toContain("reviewrouter-effective-principal-policy");
     expect(sql).toContain("unexpected_login");
-    expect(sql).toContain("unexpected_effective_role");
+    expect(sql).toContain("unexpected_role_usage");
+    expect(sql).toContain("unexpected_role_set");
     expect(sql).toContain("unexpected_effective_permission");
     expect(sql).toContain("unexpected_ownership");
     expect(sql).toContain("unexpected_row_security_principal");

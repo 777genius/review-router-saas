@@ -2,11 +2,13 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   activationAuthorityProvisioningSql,
+  activationPrincipalRoleCapabilityMatrix,
   assertCanonicalRoleTopology,
   canonicalRoleTopologyObservationSql,
   canonicalDatabaseGenerationObservationSql,
   executeCanonicalReleaseMigration,
   executeCanonicalRoleBootstrap,
+  isActivationPrincipalRoleCapabilityPermitted,
   resolveReleaseMigrationConfiguration,
   resolveRoleBootstrapConfiguration,
   roleProvisioningSql,
@@ -74,6 +76,96 @@ describe("application database release-authority isolation", () => {
     );
     expect(sql).not.toMatch(/reviewrouter_release_(?:control|witness)/u);
     expect(sql).not.toMatch(/public\."release_(?:rollout|runner)_/u);
+  });
+
+  it("rejects runtime reachability to the activation guard and distinct roles", () => {
+    for (const capability of ["usage", "set"] as const) {
+      expect(
+        isActivationPrincipalRoleCapabilityPermitted(
+          "reviewrouter_api",
+          "reviewrouter_activation_receipt_guard",
+          capability,
+        ),
+      ).toBe(false);
+      expect(
+        isActivationPrincipalRoleCapabilityPermitted(
+          "reviewrouter_api",
+          "reviewrouter_web",
+          capability,
+        ),
+      ).toBe(false);
+      expect(
+        isActivationPrincipalRoleCapabilityPermitted(
+          "reviewrouter_worker",
+          "reviewrouter_release_migration",
+          capability,
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it("keeps only intended identity reachability for every activation principal", () => {
+    const loginNames = new Set(
+      activationPrincipalRoleCapabilityMatrix.map(({ login }) => login),
+    );
+    const roleNames = new Set(
+      activationPrincipalRoleCapabilityMatrix.map(({ role }) => role),
+    );
+    expect(loginNames).toEqual(
+      new Set([
+        "reviewrouter_api",
+        "reviewrouter_web",
+        "reviewrouter_worker",
+        "reviewrouter_codex_effect_authority",
+        "reviewrouter_release_migration",
+        "reviewrouter_role_bootstrap",
+        "reviewrouter_activation_permit_installer",
+        "reviewrouter_activation_receipt_reader",
+      ]),
+    );
+    expect(roleNames).toEqual(
+      new Set([...loginNames, "reviewrouter_activation_receipt_guard"]),
+    );
+    expect(activationPrincipalRoleCapabilityMatrix).toHaveLength(
+      loginNames.size * roleNames.size,
+    );
+    for (const edge of activationPrincipalRoleCapabilityMatrix) {
+      expect(edge.usage).toBe(edge.login === edge.role);
+      expect(edge.set).toBe(edge.login === edge.role);
+    }
+    for (const login of loginNames) {
+      expect(
+        isActivationPrincipalRoleCapabilityPermitted(login, login, "usage"),
+      ).toBe(true);
+      expect(
+        isActivationPrincipalRoleCapabilityPermitted(login, login, "set"),
+      ).toBe(true);
+    }
+    expect(
+      isActivationPrincipalRoleCapabilityPermitted(
+        "reviewrouter_activation_receipt_guard",
+        "reviewrouter_activation_receipt_guard",
+        "usage",
+      ),
+    ).toBe(false);
+  });
+
+  it("embeds the exact matrix and fail-closed SET and USAGE proof", () => {
+    const sql = activationAuthorityProvisioningSql();
+    expect(sql).toContain(
+      "'roleCapabilityMatrix',role_capability_matrix_contract",
+    );
+    expect(sql).toContain("unexpected_role_usage");
+    expect(sql).toContain("unexpected_role_set");
+    expect(sql).toContain("unexpected_inherited_permission");
+    expect(sql).toContain("unexpected_set_permission");
+    expect(sql).toContain("database_owner_contract_mismatch");
+    expect(sql).toContain(
+      "WHERE capability.enabled AND NOT coalesce(\n      CASE capability.kind",
+    );
+    expect(sql).toContain(
+      '"login":"reviewrouter_api","role":"reviewrouter_activation_receipt_guard","usage":false,"set":false',
+    );
   });
 });
 
