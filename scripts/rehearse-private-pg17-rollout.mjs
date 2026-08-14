@@ -152,6 +152,16 @@ export function normalizeRehearsalDockerInvocation(args, input) {
         break;
       }
     }
+    const execIndex = safeArgs.lastIndexOf("exec", psqlIndex);
+    if (
+      safeInput !== undefined &&
+      execIndex >= 0 &&
+      !safeArgs
+        .slice(execIndex + 1, psqlIndex)
+        .some((arg) => arg === "-i" || arg === "--interactive")
+    ) {
+      safeArgs.splice(execIndex + 1, 0, "--interactive");
+    }
   }
   if (
     safeArgs.some(
@@ -166,6 +176,47 @@ export function normalizeRehearsalDockerInvocation(args, input) {
       phase: "process_boundary",
     });
   return Object.freeze({ args: Object.freeze(safeArgs), input: safeInput });
+}
+
+export function waitForFinalPostgresServer(
+  execute,
+  container,
+  { maxAttempts = 30 } = {},
+) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      const output = execute(
+        [
+          "exec",
+          container,
+          "psql",
+          "--host",
+          "127.0.0.1",
+          "--username",
+          "postgres",
+          "--dbname",
+          "reviewrouter",
+          "--no-psqlrc",
+          "--tuples-only",
+          "--no-align",
+          "--quiet",
+        ],
+        { input: "SELECT 1;\n", timeout: 2_000 },
+      );
+      if (output.trim() === "1") return;
+    } catch {
+      // The official image's temporary init server is deliberately ignored:
+      // only the final server accepts this loopback TCP connection.
+    }
+    if (attempt + 1 < maxAttempts) {
+      try {
+        execute(["exec", container, "sleep", "1"], { timeout: 2_000 });
+      } catch {
+        // Preserve the bounded readiness retry and its secret-safe diagnostic.
+      }
+    }
+  }
+  throw new Error("private_pg17_rehearsal_database_timeout");
 }
 
 export async function executeDisposableRehearsal(
@@ -253,25 +304,7 @@ export async function executeDisposableRehearsal(
       createdContainers.push(name);
     }
     for (const name of [source, target, authority]) {
-      let ready = false;
-      for (let attempt = 0; attempt < 30; attempt += 1) {
-        try {
-          docker(
-            "exec",
-            name,
-            "pg_isready",
-            "-U",
-            "postgres",
-            "-d",
-            "reviewrouter",
-          );
-          ready = true;
-          break;
-        } catch {
-          docker("exec", name, "sh", "-c", "sleep 1");
-        }
-      }
-      if (!ready) throw new Error("private_pg17_rehearsal_database_timeout");
+      waitForFinalPostgresServer(execute, name);
     }
     if (
       !sql(source, "SHOW server_version_num").startsWith("160") ||

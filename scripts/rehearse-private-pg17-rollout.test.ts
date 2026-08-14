@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   createRehearsalRunnerJobBinding,
+  normalizeRehearsalDockerInvocation,
   validateRehearsalConfiguration,
+  waitForFinalPostgresServer,
 } from "./rehearse-private-pg17-rollout.mjs";
 
 const digest = "d".repeat(64);
@@ -30,6 +32,146 @@ describe("disposable dual-version rehearsal", () => {
     expect(() => validateRehearsalConfiguration({})).toThrow(
       "private_pg17_rehearsal_explicit_opt_in_required",
     );
+  });
+  it("adds Docker exec interactive mode when psql reads SQL from stdin", () => {
+    expect(
+      normalizeRehearsalDockerInvocation(
+        ["exec", "rr-pg17-disposable", "psql", "-U", "postgres"],
+        "SELECT 1;\n",
+      ),
+    ).toEqual({
+      args: [
+        "exec",
+        "--interactive",
+        "rr-pg17-disposable",
+        "psql",
+        "-U",
+        "postgres",
+      ],
+      input: "SELECT 1;\n",
+    });
+  });
+  it.each(["-i", "--interactive"])(
+    "does not duplicate an existing Docker exec %s flag",
+    (interactiveFlag) => {
+      expect(
+        normalizeRehearsalDockerInvocation(
+          [
+            "exec",
+            interactiveFlag,
+            "rr-pg17-disposable",
+            "psql",
+            "-U",
+            "postgres",
+          ],
+          "SELECT 1;\n",
+        ).args,
+      ).toEqual([
+        "exec",
+        interactiveFlag,
+        "rr-pg17-disposable",
+        "psql",
+        "-U",
+        "postgres",
+      ]);
+    },
+  );
+  it("moves psql command SQL to interactive stdin and keeps it out of argv", () => {
+    const sql =
+      "SELECT 'postgresql://postgres:secret-canary@127.0.0.1/reviewrouter';";
+    const invocation = normalizeRehearsalDockerInvocation(
+      ["exec", "rr-pg17-disposable", "psql", "-U", "postgres", "-Atqc", sql],
+      undefined,
+    );
+
+    expect(invocation.args).toEqual([
+      "exec",
+      "--interactive",
+      "rr-pg17-disposable",
+      "psql",
+      "-U",
+      "postgres",
+      "-Atq",
+    ]);
+    expect(invocation.args.join(" ")).not.toContain("SELECT");
+    expect(invocation.args.join(" ")).not.toContain("secret-canary");
+    expect(invocation.input).toBe(sql);
+  });
+  it("waits for the final PostgreSQL server over loopback TCP", () => {
+    const calls: Array<{
+      args: string[];
+      options?: { input?: string; timeout?: number };
+    }> = [];
+    waitForFinalPostgresServer((args, options) => {
+      calls.push({ args, options });
+      return "1\n";
+    }, "rr-pg17-disposable");
+
+    expect(calls).toEqual([
+      {
+        args: [
+          "exec",
+          "rr-pg17-disposable",
+          "psql",
+          "--host",
+          "127.0.0.1",
+          "--username",
+          "postgres",
+          "--dbname",
+          "reviewrouter",
+          "--no-psqlrc",
+          "--tuples-only",
+          "--no-align",
+          "--quiet",
+        ],
+        options: { input: "SELECT 1;\n", timeout: 2_000 },
+      },
+    ]);
+  });
+  it("retries final-server readiness only up to the configured bound", () => {
+    let probes = 0;
+    let sleeps = 0;
+    expect(() =>
+      waitForFinalPostgresServer(
+        (args) => {
+          if (args.includes("psql")) {
+            probes += 1;
+            throw new Error("not ready");
+          }
+          sleeps += 1;
+          return "";
+        },
+        "rr-pg17-disposable",
+        { maxAttempts: 3 },
+      ),
+    ).toThrow("private_pg17_rehearsal_database_timeout");
+    expect({ probes, sleeps }).toEqual({ probes: 3, sleeps: 2 });
+  });
+  it("keeps probe SQL and failed-command secrets out of argv and diagnostics", () => {
+    const argv: string[][] = [];
+    let diagnostic: Error | undefined;
+    try {
+      waitForFinalPostgresServer(
+        (args) => {
+          argv.push(args);
+          if (args.includes("psql"))
+            throw new Error(
+              "SELECT 1; postgresql://postgres:secret-canary@127.0.0.1/reviewrouter",
+            );
+          return "";
+        },
+        "rr-pg17-disposable",
+        { maxAttempts: 2 },
+      );
+    } catch (error) {
+      diagnostic = error as Error;
+    }
+
+    expect(argv.flat().join(" ")).not.toContain("SELECT 1");
+    expect(argv.flat().join(" ")).not.toContain("secret-canary");
+    expect(diagnostic?.message).toBe("private_pg17_rehearsal_database_timeout");
+    expect(diagnostic?.message).not.toContain("SELECT 1");
+    expect(diagnostic?.message).not.toContain("secret-canary");
   });
   it("binds the persisted runner job to the authority-owned pre-dispatch time", () => {
     const providerCreationNotBefore = "2026-08-12T00:00:00.000Z";
