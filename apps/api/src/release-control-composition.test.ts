@@ -628,20 +628,16 @@ describe("release authority process composition", () => {
       targetDeployIds: ["deploy-1"],
       authorizedAt: "2026-08-12T00:00:00.000Z",
     };
-    const receipt = {
-      step: "activate_target_generation" as const,
-      receiptId: "receipt-1",
-      observedAt: "2026-08-12T00:01:00.000Z",
+    const targetReceipt = {
       rolloutId: authorization.rolloutId,
       expectedCommitSha: authorization.expectedCommitSha,
-      runId: "run-1",
-      runAttempt: 1,
       sourceSystemIdentifier: authorization.sourceSystemIdentifier,
       targetSystemIdentifier: authorization.targetSystemIdentifier,
-      provider: { renderDeployIds: ["deploy-1"] },
-      observationSha256: `sha256:${"d".repeat(64)}`,
-      previousReceiptSha256: authorization.previousReceiptSha256,
-      receiptSha256: `sha256:${"e".repeat(64)}`,
+      postgresMajor: 17 as const,
+      migrationChecksum: authorization.migrationChecksum,
+      targetDeployIds: authorization.targetDeployIds,
+      permitEpoch: authorization.epoch,
+      permitNonce: authorization.nonce,
       canonicalPrivilegesSha256: `sha256:${"1".repeat(64)}`,
       catalogFactsSha256: `sha256:${"2".repeat(64)}`,
       ...canonicalActivationCatalogPolicyDigests,
@@ -652,11 +648,42 @@ describe("release authority process composition", () => {
       transactionId: "12345",
       firstWriteReceiptSha256: `sha256:${"3".repeat(64)}`,
       firstWriteBoundary: true as const,
-      postgresMajor: 17 as const,
-      migrationChecksum: authorization.migrationChecksum,
-      permitEpoch: authorization.epoch,
-      permitNonce: authorization.nonce,
-      targetDeployIds: authorization.targetDeployIds,
+      activatedAt: "2026-08-12T00:01:00.000Z",
+    };
+    const receipt = {
+      step: "activate_target_generation" as const,
+      receiptId: "receipt-1",
+      observedAt: targetReceipt.activatedAt,
+      rolloutId: targetReceipt.rolloutId,
+      expectedCommitSha: targetReceipt.expectedCommitSha,
+      runId: "run-1",
+      runAttempt: 1,
+      sourceSystemIdentifier: targetReceipt.sourceSystemIdentifier,
+      targetSystemIdentifier: targetReceipt.targetSystemIdentifier,
+      provider: { renderDeployIds: ["deploy-1"] },
+      observationSha256: `sha256:${digest(JSON.stringify(targetReceipt))}`,
+      previousReceiptSha256: authorization.previousReceiptSha256,
+      receiptSha256: `sha256:${"e".repeat(64)}`,
+      canonicalPrivilegesSha256: targetReceipt.canonicalPrivilegesSha256,
+      catalogFactsSha256: targetReceipt.catalogFactsSha256,
+      preactivationCatalogPolicySha256:
+        targetReceipt.preactivationCatalogPolicySha256,
+      activatedCatalogPolicySha256: targetReceipt.activatedCatalogPolicySha256,
+      beforePrincipalInventorySha256:
+        targetReceipt.beforePrincipalInventorySha256,
+      beforePrincipalPolicySha256: targetReceipt.beforePrincipalPolicySha256,
+      activatedPrincipalInventorySha256:
+        targetReceipt.activatedPrincipalInventorySha256,
+      activatedPrincipalPolicySha256:
+        targetReceipt.activatedPrincipalPolicySha256,
+      transactionId: targetReceipt.transactionId,
+      firstWriteReceiptSha256: targetReceipt.firstWriteReceiptSha256,
+      firstWriteBoundary: targetReceipt.firstWriteBoundary,
+      postgresMajor: targetReceipt.postgresMajor,
+      migrationChecksum: targetReceipt.migrationChecksum,
+      permitEpoch: targetReceipt.permitEpoch,
+      permitNonce: targetReceipt.permitNonce,
+      targetDeployIds: targetReceipt.targetDeployIds,
     };
     const authorityOperation = vi.fn().mockResolvedValue([{ value: true }]);
     const authorityQuery = readinessQuery(
@@ -670,33 +697,7 @@ describe("release authority process composition", () => {
     );
     const readerOperation = vi.fn().mockResolvedValue([
       {
-        value: {
-          rolloutId: receipt.rolloutId,
-          expectedCommitSha: receipt.expectedCommitSha,
-          sourceSystemIdentifier: receipt.sourceSystemIdentifier,
-          targetSystemIdentifier: receipt.targetSystemIdentifier,
-          canonicalPrivilegesSha256: receipt.canonicalPrivilegesSha256,
-          catalogFactsSha256: receipt.catalogFactsSha256,
-          preactivationCatalogPolicySha256:
-            receipt.preactivationCatalogPolicySha256,
-          activatedCatalogPolicySha256: receipt.activatedCatalogPolicySha256,
-          beforePrincipalInventorySha256:
-            receipt.beforePrincipalInventorySha256,
-          beforePrincipalPolicySha256: receipt.beforePrincipalPolicySha256,
-          activatedPrincipalInventorySha256:
-            receipt.activatedPrincipalInventorySha256,
-          activatedPrincipalPolicySha256:
-            receipt.activatedPrincipalPolicySha256,
-          transactionId: receipt.transactionId,
-          firstWriteReceiptSha256: receipt.firstWriteReceiptSha256,
-          firstWriteBoundary: receipt.firstWriteBoundary,
-          postgresMajor: receipt.postgresMajor,
-          migrationChecksum: receipt.migrationChecksum,
-          permitEpoch: receipt.permitEpoch,
-          permitNonce: receipt.permitNonce,
-          targetDeployIds: receipt.targetDeployIds,
-          activatedAt: receipt.observedAt,
-        },
+        value: targetReceipt,
       },
     ]);
     const readerQuery = readinessQuery(readerReadiness, readerOperation);
@@ -728,8 +729,12 @@ describe("release authority process composition", () => {
       });
 
     expect(
-      (await finalize({ ...receipt, transactionId: "forged" })).statusCode,
-    ).toBe(500);
+      (await finalize({ ...receipt, transactionId: "forged" })).json(),
+    ).toEqual({
+      statusCode: 500,
+      error: "Internal Server Error",
+      message: "target_activation_receipt_mismatch",
+    });
     expect(authorityOperation).not.toHaveBeenCalled();
 
     expect((await finalize(receipt)).json()).toEqual({ changed: true });
