@@ -230,6 +230,22 @@ describe("Codex rotating CLI workflow activation route", () => {
       error: "codex_oauth_setup_recovery_evidence_immutable",
     });
   });
+
+  it.each([
+    "prefix_codex_oauth_setup_recovery_evidence_immutable",
+    "codex_oauth_setup_recovery_evidence_immutable_suffix",
+  ])("does not classify allowlisted substrings in %s", async (wrappedCode) => {
+    mocks.activate.mockRejectedValueOnce(
+      new Error(`Raw query failed with ${wrappedCode}`),
+    );
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "invalid_request",
+    });
+  });
 });
 
 function request(repository = "777genius/review-router-saas-e2e"): Request {

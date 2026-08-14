@@ -151,6 +151,7 @@ function safeErrorCode(error: unknown): string {
   ]);
   if (allowed.has(code)) return code;
 
+  const messageTokens = new Set(message.split(/[^A-Za-z0-9_]+/u));
   const embeddedSafeCode = [
     "codex_rotating_retryable_uncommitted",
     "codex_rotating_setup_confirmation_stale_epoch",
@@ -183,7 +184,7 @@ function safeErrorCode(error: unknown): string {
     "codex_oauth_setup_manifest_promotion_evidence_invalid",
     "codex_oauth_setup_manifest_terminal_evidence_immutable",
     "codex_oauth_setup_recovery_evidence_immutable",
-  ].find((candidate) => message.includes(candidate));
+  ].find((candidate) => messageTokens.has(candidate));
   return embeddedSafeCode ?? "invalid_request";
 }
 
