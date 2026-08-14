@@ -1,4 +1,5 @@
 export * from "./domain/release-rollout";
+export * from "./domain/release-authority-contract";
 export * from "./domain/sanitized-diagnostic.js";
 export * from "./domain/trusted-rollout-evidence";
 export * from "./domain/release-image-provenance";

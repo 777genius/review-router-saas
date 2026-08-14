@@ -2,6 +2,7 @@ import {
   releaseAuthorityCatalogVerifier,
   releaseAuthorityMigrationManifestIsExact,
 } from "../domain/readiness-contract.mjs";
+import { releaseAuthoritySchemaVersion } from "@reviewrouter/features-release-rollout";
 import {
   runtimeDatabaseIdentityEquals,
   runtimeDatabaseIdentityIsCanonical,
@@ -74,7 +75,7 @@ export type TrustedReleaseControlDatabaseIdentity = Readonly<{
 export const releaseAuthoritySchemaIsReady = (
   readiness: ReleaseAuthorityDatabaseReadiness,
 ): boolean =>
-  readiness.schemaVersion === 12 &&
+  readiness.schemaVersion === releaseAuthoritySchemaVersion &&
   readiness.catalogExact &&
   readiness.defaultAclExact &&
   readiness.finalAclExact &&

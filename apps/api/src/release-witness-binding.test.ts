@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { AttestReleaseWitnessBinding } from "./release-witness-application";
-import { sha256Canonical } from "@reviewrouter/features-release-rollout";
+import {
+  releaseAuthoritySchemaVersion,
+  sha256Canonical,
+} from "@reviewrouter/features-release-rollout";
 import {
   GitHubReleaseExecutionObservationAdapter,
   PostgresReleaseBindingObservationAdapter,
@@ -87,7 +90,7 @@ const observation = (
   databaseIdentity: kind === "authority" ? authorityIdentity : targetIdentity,
   systemIdentifier: kind === "authority" ? "300" : "200",
   postgresMajor: 17,
-  schemaVersion: kind === "authority" ? 11 : 0,
+  schemaVersion: kind === "authority" ? releaseAuthoritySchemaVersion : 0,
   migrationManifestIdentity: policy.authorityMigrationManifestIdentity,
   catalogFingerprint: policy.authorityCatalogFingerprint,
   catalogVerifier: policy.authorityCatalogVerifier,

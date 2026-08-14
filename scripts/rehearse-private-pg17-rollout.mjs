@@ -31,6 +31,7 @@ import {
   fromRenderSourceRecoveryManifestV1,
   renderSourceRecoveryManifestSha256,
   renderSourceServiceContractSha256,
+  releaseAuthoritySchemaVersion,
   targetServiceConfigurationSha256,
   transitionFailure,
   draftEffectivePrincipalPolicy,
@@ -1786,7 +1787,7 @@ COMMIT;
             databaseName: current.target.databaseName,
           },
           releaseAuthority: {
-            schemaVersion: 12,
+            schemaVersion: releaseAuthoritySchemaVersion,
             migrationManifestIdentity: digest,
             catalogFingerprint: digest,
             catalogVerifier: "disposable-rehearsal",

@@ -13,6 +13,7 @@ import {
   type TrustedReleaseImagePolicy,
   type VerifiedReleaseImageProvenance,
 } from "./release-image-provenance";
+import { releaseAuthoritySchemaVersion } from "./release-authority-contract";
 import { createPublicKey, verify } from "node:crypto";
 
 export interface TrustedReleaseWitnessVerificationPolicy {
@@ -644,7 +645,7 @@ export function assertTrustedRolloutEvidence(
         })),
       ) ||
     !digest.test(witness.releaseAuthority.migrationManifestIdentity) ||
-    witness.releaseAuthority.schemaVersion !== 11 ||
+    witness.releaseAuthority.schemaVersion !== releaseAuthoritySchemaVersion ||
     !digest.test(witness.releaseAuthority.catalogFingerprint) ||
     !witness.releaseAuthority.catalogVerifier ||
     !digest.test(witness.activation.migrationManifestIdentity) ||

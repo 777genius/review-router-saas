@@ -13,6 +13,7 @@ import {
   assertTrustedRolloutEvidence,
   type TrustedRolloutEvidence,
 } from "./trusted-rollout-evidence";
+import { releaseAuthoritySchemaVersion } from "./release-authority-contract";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const base = createReleaseRollout({
@@ -183,7 +184,9 @@ const trustedWitnessPolicy = {
     .toString(),
   maximumAgeMilliseconds: 300_000,
 } as const;
-const releaseWitness = () => {
+const releaseWitness = (
+  schemaVersion: number = releaseAuthoritySchemaVersion,
+) => {
   const unsigned = {
     schemaVersion: 2 as const,
     rolloutId: base.rolloutId,
@@ -213,7 +216,7 @@ const releaseWitness = () => {
       databaseName: base.target.databaseName,
     },
     releaseAuthority: {
-      schemaVersion: 11,
+      schemaVersion,
       migrationManifestIdentity: digest,
       catalogFingerprint: digest,
       catalogVerifier: "release-authority-catalog-v1",
@@ -443,7 +446,10 @@ const create = () =>
   );
 
 describe("trusted post-cleanup evidence", () => {
-  it("verifies the two runner lifecycles, receipt chain, activation, service resume, and canary", () => {
+  it("assembles and verifies full schema-12 evidence", () => {
+    expect(create().releaseWitness.releaseAuthority.schemaVersion).toBe(
+      releaseAuthoritySchemaVersion,
+    );
     expect(
       assertTrustedRolloutEvidence(
         create(),
@@ -451,6 +457,22 @@ describe("trusted post-cleanup evidence", () => {
         trustedWitnessPolicy,
       ),
     ).toEqual(create());
+  });
+  it("rejects evidence signed for stale release-authority schema 11", () => {
+    const {
+      schemaVersion: _schemaVersion,
+      evidenceSha256: _hash,
+      ...unsigned
+    } = create();
+    void _schemaVersion;
+    void _hash;
+    expect(() =>
+      assembleTrustedRolloutEvidence(
+        { ...unsigned, releaseWitness: releaseWitness(11) },
+        trustedImagePolicy,
+        trustedWitnessPolicy,
+      ),
+    ).toThrow("trusted_rollout_evidence_release_witness_invalid");
   });
   it("rejects a target deploy whose image is not the attested release image", () => {
     const {

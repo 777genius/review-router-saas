@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { releaseAuthoritySchemaVersion } from "@reviewrouter/features-release-rollout";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { ReleaseAuthorityDatabaseReadiness } from "../application/readiness.js";
 import type { RuntimeDatabaseIdentity } from "../domain/database-identity.js";
@@ -539,7 +540,10 @@ const observeOnConnection = async (
   if (rows.length !== 1 || !rows[0])
     throw new Error("release_control_database_identity_unavailable");
   const readiness = rows[0];
-  if (readiness.schemaVersion !== 12 || readiness.migrationManifest.length > 0)
+  if (
+    readiness.schemaVersion !== releaseAuthoritySchemaVersion ||
+    readiness.migrationManifest.length > 0
+  )
     return readiness;
   const manifestRows = await prisma.$queryRaw<
     Pick<ReleaseAuthorityDatabaseReadiness, "migrationManifest">[]

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { releaseAuthoritySchemaVersion } from "@reviewrouter/features-release-rollout";
 import {
   releaseControlDatabaseSetIsReady,
   releaseAuthoritySchemaIsReady,
@@ -19,7 +20,7 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
     databaseName: "authority",
   },
   postgresMajor: 17,
-  schemaVersion: 12,
+  schemaVersion: releaseAuthoritySchemaVersion,
   migrationManifest: releaseAuthorityMigrationContract.map(
     ([migrationName, checksumSha256], index) => {
       if (!migrationName || !checksumSha256)
