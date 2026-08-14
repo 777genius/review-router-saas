@@ -323,6 +323,27 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).not.toContain(
       "aclexplode(coalesce(attribute.attacl,'{}'::aclitem[]))",
     );
+    expect(provisioning).toContain(
+      "SET LOCAL ROLE reviewrouter_release_migration;",
+    );
+    expect(provisioning).toContain("DO $transferred_public_routine_acl$");
+    expect(provisioning).toContain("REVOKE EXECUTE ON ROUTINE %s FROM PUBLIC");
+    expect(provisioning).toContain(
+      "'reviewrouter_activation_receipt_reader', routine.oid, 'EXECUTE'",
+    );
+    expect(provisioning).toContain(
+      "transferred public routine ACL is non-canonical",
+    );
+    expect(provisioning.indexOf("DO $transfer_public_ownership$")).toBeLessThan(
+      provisioning.indexOf("DO $transferred_public_routine_acl$"),
+    );
+    expect(
+      provisioning.indexOf("DO $transferred_public_routine_acl_gate$"),
+    ).toBeLessThan(
+      provisioning.indexOf(
+        "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap",
+      ),
+    );
     expect(provisioning).toContain("OR observed.rolcanlogin");
     expect(provisioning).toContain("OR observed.rolsuper");
     expect(provisioning).toContain("OR observed.rolcreatedb");

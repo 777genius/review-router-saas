@@ -202,8 +202,31 @@ SELECT format(
 REVOKE ALL ON SCHEMA public FROM ${activationReceiptReaderRoleName};
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ${activationReceiptReaderRoleName};
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM ${activationReceiptReaderRoleName};
-REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM ${activationReceiptReaderRoleName};
-REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
+DO $public_routine_acl$
+DECLARE routine record;
+BEGIN
+  -- Canonicalize exact pg_proc identities. Each dynamic command advances the
+  -- transaction's command counter, so the following DO gate observes these
+  -- ACLs even though a later failure would roll the whole transaction back.
+  -- ROUTINE covers functions, aggregates, procedures, and window functions.
+  FOR routine IN
+    SELECT routine.oid
+    FROM pg_proc routine
+    JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+    WHERE namespace.nspname = 'public'
+    ORDER BY routine.oid
+  LOOP
+    EXECUTE format(
+      'REVOKE ALL PRIVILEGES ON ROUTINE %s FROM ${activationReceiptReaderRoleName}',
+      routine.oid::regprocedure
+    );
+    EXECUTE format(
+      'REVOKE EXECUTE ON ROUTINE %s FROM PUBLIC',
+      routine.oid::regprocedure
+    );
+  END LOOP;
+END
+$public_routine_acl$;
 DO $installer_database_acl$
 BEGIN
   IF NOT has_database_privilege(
@@ -269,6 +292,17 @@ BEGIN
          AND has_function_privilege(
            '${activationReceiptReaderRoleName}', routine.oid, 'EXECUTE'
          )
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM pg_proc routine
+       JOIN pg_namespace namespace ON namespace.oid=routine.pronamespace
+       CROSS JOIN LATERAL aclexplode(
+         coalesce(routine.proacl, acldefault('f', routine.proowner))
+       ) acl
+       WHERE namespace.nspname='public'
+         AND acl.grantee = 0
+         AND acl.privilege_type = 'EXECUTE'
      ) THEN
     RAISE EXCEPTION 'activation receipt reader database ACL is non-canonical';
   END IF;
@@ -2041,6 +2075,58 @@ $transfer_public_ownership$;
 SELECT 'ALTER SCHEMA public OWNER TO reviewrouter_release_migration'
 WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'public') <> 'reviewrouter_release_migration'
 \\gexec
+-- Routine ownership changes and ACL changes are both immediately visible to
+-- later commands in this transaction. Canonicalize as the final owner before
+-- dropping bootstrap's temporary SET edge; a later exception would roll this
+-- convergence back together with the ownership transfer.
+SET LOCAL ROLE reviewrouter_release_migration;
+DO $transferred_public_routine_acl$
+DECLARE routine record;
+BEGIN
+  FOR routine IN
+    SELECT routine.oid
+    FROM pg_proc routine
+    JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+    WHERE namespace.nspname = 'public'
+    ORDER BY routine.oid
+  LOOP
+    EXECUTE format(
+      'REVOKE ALL PRIVILEGES ON ROUTINE %s FROM ${activationReceiptReaderRoleName}',
+      routine.oid::regprocedure
+    );
+    EXECUTE format(
+      'REVOKE EXECUTE ON ROUTINE %s FROM PUBLIC',
+      routine.oid::regprocedure
+    );
+  END LOOP;
+END
+$transferred_public_routine_acl$;
+DO $transferred_public_routine_acl_gate$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_proc routine
+    JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+    WHERE namespace.nspname = 'public'
+      AND has_function_privilege(
+        '${activationReceiptReaderRoleName}', routine.oid, 'EXECUTE'
+      )
+  ) OR EXISTS (
+    SELECT 1
+    FROM pg_proc routine
+    JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+    CROSS JOIN LATERAL aclexplode(
+      coalesce(routine.proacl, acldefault('f', routine.proowner))
+    ) acl
+    WHERE namespace.nspname = 'public'
+      AND acl.grantee = 0
+      AND acl.privilege_type = 'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'transferred public routine ACL is non-canonical';
+  END IF;
+END
+$transferred_public_routine_acl_gate$;
+RESET ROLE;
 REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE;
 CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap;
 DO $bootstrap_schema$

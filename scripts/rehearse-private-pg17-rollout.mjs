@@ -713,6 +713,45 @@ ROLLBACK;`,
       ],
       { input: activationAuthorityProvisioningSql() },
     );
+    const assertCanonicalPgcryptoAcl = () => {
+      const pgcryptoAclObservation = JSON.parse(
+        sql(
+          target,
+          `SELECT json_build_object(
+           'routineNames', coalesce(json_agg(DISTINCT routine.proname), '[]'::json),
+           'readerExecuteCount', count(*) FILTER (WHERE has_function_privilege(
+             'reviewrouter_activation_receipt_reader', routine.oid, 'EXECUTE'
+           )),
+           'publicExecuteCount', count(*) FILTER (WHERE EXISTS (
+             SELECT 1
+             FROM aclexplode(coalesce(
+               routine.proacl, acldefault('f', routine.proowner)
+             )) acl
+             WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+           ))
+         )
+         FROM pg_proc routine
+         JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+         JOIN pg_depend dependency
+           ON dependency.classid = 'pg_proc'::regclass
+          AND dependency.objid = routine.oid
+          AND dependency.refclassid = 'pg_extension'::regclass
+          AND dependency.deptype = 'e'
+         JOIN pg_extension extension ON extension.oid = dependency.refobjid
+         WHERE namespace.nspname = 'public'
+           AND extension.extname = 'pgcrypto'`,
+        ),
+      );
+      if (
+        !["armor", "crypt", "digest"].every((routineName) =>
+          pgcryptoAclObservation.routineNames?.includes(routineName),
+        ) ||
+        pgcryptoAclObservation.readerExecuteCount !== 0 ||
+        pgcryptoAclObservation.publicExecuteCount !== 0
+      )
+        throw new Error("private_pg17_rehearsal_pgcrypto_acl_failed");
+    };
+    assertCanonicalPgcryptoAcl();
     sql(
       target,
       "GRANT USAGE ON SCHEMA reviewrouter_activation TO reviewrouter_role_bootstrap",
@@ -875,6 +914,7 @@ ROLLBACK;`,
       authorityContainer: authority,
       targetContainer: target,
       sql,
+      assertCanonicalPgcryptoAcl,
       closeBootstrapGuardRead: () =>
         sql(
           target,
@@ -1591,11 +1631,14 @@ async function verifyProductionPathRehearsal(facts) {
             stable: true,
           },
         }),
-      bootstrapTargetRoles: async () =>
-        observed(
-          RolloutStep.BootstrapTargetRoles,
-          executeCanonicalRoleBootstrap(facts.canonicalEnv, canonicalRun),
-        ),
+      bootstrapTargetRoles: async () => {
+        const result = executeCanonicalRoleBootstrap(
+          facts.canonicalEnv,
+          canonicalRun,
+        );
+        facts.assertCanonicalPgcryptoAcl();
+        return observed(RolloutStep.BootstrapTargetRoles, result);
+      },
       runReleaseMigration: async () => {
         const migration = executeCanonicalReleaseMigration(
           {

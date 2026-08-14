@@ -94,6 +94,31 @@ describe("target-local PG17 activation permit", () => {
     );
   });
 
+  it("canonicalizes every public routine before checking reader privileges", () => {
+    const sql = activationAuthorityProvisioningSql();
+    const canonicalizer = sql.slice(
+      sql.indexOf("DO $public_routine_acl$"),
+      sql.indexOf("DO $installer_database_acl$"),
+    );
+    expect(canonicalizer).toContain("FROM pg_proc routine");
+    expect(canonicalizer).toContain("namespace.nspname = 'public'");
+    expect(canonicalizer).toContain(
+      "REVOKE ALL PRIVILEGES ON ROUTINE %s FROM reviewrouter_activation_receipt_reader",
+    );
+    expect(canonicalizer).toContain("REVOKE EXECUTE ON ROUTINE %s FROM PUBLIC");
+    expect(sql.indexOf("DO $public_routine_acl$")).toBeLessThan(
+      sql.indexOf("DO $installer_database_acl$"),
+    );
+    expect(sql).toContain(
+      "has_function_privilege(\n           'reviewrouter_activation_receipt_reader', routine.oid, 'EXECUTE'",
+    );
+    expect(sql).toContain(
+      "coalesce(routine.proacl, acldefault('f', routine.proowner))",
+    );
+    expect(sql).toContain("acl.grantee = 0");
+    expect(sql).toContain("acl.privilege_type = 'EXECUTE'");
+  });
+
   it("makes exact install replay idempotent and rejects a conflicting tuple", () => {
     const sql = activationAuthorityProvisioningSql();
     expect(sql).toContain("ON CONFLICT (rollout_id) DO NOTHING");

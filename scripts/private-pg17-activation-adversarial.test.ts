@@ -116,6 +116,7 @@ CREATE ROLE reviewrouter_api LOGIN;
 CREATE ROLE reviewrouter_web LOGIN;
 CREATE ROLE reviewrouter_worker LOGIN;
 CREATE ROLE reviewrouter_codex_effect_authority LOGIN;
+CREATE EXTENSION pgcrypto;
 REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
 CREATE TABLE public._prisma_migrations (
   migration_name text NOT NULL, checksum text NOT NULL,
@@ -128,6 +129,25 @@ ALTER TABLE public.activation_attack_target OWNER TO reviewrouter_release_migrat
 ALTER SCHEMA public OWNER TO reviewrouter_release_migration;
 GRANT CONNECT ON DATABASE postgres TO reviewrouter_release_migration WITH GRANT OPTION;
 `);
+    expect(
+      Number(
+        psql(`SELECT count(*)
+FROM pg_proc routine
+JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+JOIN pg_depend dependency
+  ON dependency.classid = 'pg_proc'::regclass
+ AND dependency.objid = routine.oid
+ AND dependency.refclassid = 'pg_extension'::regclass
+ AND dependency.deptype = 'e'
+JOIN pg_extension extension ON extension.oid = dependency.refobjid
+WHERE namespace.nspname = 'public'
+  AND extension.extname = 'pgcrypto'
+  AND routine.proname IN ('armor', 'crypt', 'digest')
+  AND has_function_privilege(
+    'reviewrouter_activation_receipt_reader', routine.oid, 'EXECUTE'
+  );`),
+      ),
+    ).toBeGreaterThan(0);
     psql(activationAuthorityProvisioningSql());
     systemIdentifier = psql(
       "SELECT system_identifier::text FROM pg_catalog.pg_control_system();",
@@ -178,6 +198,43 @@ SELECT reviewrouter_activation.install_activation_permit(
       );`),
     ).toBe("[0, 0, 0]");
   };
+
+  it("removes effective reader and PUBLIC EXECUTE from real PG17 pgcrypto routines", () => {
+    const observation = JSON.parse(
+      psql(`SELECT json_build_object(
+  'routineNames', coalesce(json_agg(DISTINCT routine.proname), '[]'::json),
+  'readerExecuteCount', count(*) FILTER (WHERE has_function_privilege(
+    'reviewrouter_activation_receipt_reader', routine.oid, 'EXECUTE'
+  )),
+  'publicExecuteCount', count(*) FILTER (WHERE EXISTS (
+    SELECT 1
+    FROM aclexplode(coalesce(
+      routine.proacl, acldefault('f', routine.proowner)
+    )) acl
+    WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+  ))
+)
+FROM pg_proc routine
+JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+JOIN pg_depend dependency
+  ON dependency.classid = 'pg_proc'::regclass
+ AND dependency.objid = routine.oid
+ AND dependency.refclassid = 'pg_extension'::regclass
+ AND dependency.deptype = 'e'
+JOIN pg_extension extension ON extension.oid = dependency.refobjid
+WHERE namespace.nspname = 'public'
+  AND extension.extname = 'pgcrypto';`),
+    ) as {
+      routineNames: string[];
+      readerExecuteCount: number;
+      publicExecuteCount: number;
+    };
+    expect(observation.routineNames).toEqual(
+      expect.arrayContaining(["armor", "crypt", "digest"]),
+    );
+    expect(observation.readerExecuteCount).toBe(0);
+    expect(observation.publicExecuteCount).toBe(0);
+  });
 
   it("rejects an unexpected login with direct CONNECT/table ACL and legacy forged JSON", () => {
     installPermit("direct-acl-attack", 1);
