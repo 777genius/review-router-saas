@@ -448,6 +448,28 @@ describe("Codex rotating OAuth local E2E", () => {
     expect(preflight.statusCode).toBe(200);
     expect(preflight.json()).toEqual({ protocolVersion: 1, status: "ready" });
 
+    const invalidWriteback = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/writeback",
+      payload: {
+        protocolVersion: 1,
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        generation: finalizeBody.nextGeneration,
+        latestGenerationHash: encrypted.latestGenerationHash,
+        encryptedValue: encrypted.encryptedValue,
+        keyId: encrypted.keyId,
+        idempotencyKey: "idem:http-invalid-schema",
+      },
+    });
+    expect(invalidWriteback.statusCode).toBe(400);
+    expect(invalidWriteback.json()).toMatchObject({
+      error: {
+        code: "invalid_action_request",
+        retryable: false,
+      },
+    });
+
     const writeback = await app.inject({
       method: "POST",
       url: "/api/action/v1/codex-oauth/writeback",
@@ -469,7 +491,7 @@ describe("Codex rotating OAuth local E2E", () => {
       protocolVersion: 1,
       status: "accepted",
     });
-    expect(mutationAdmission.assertEnabled).toHaveBeenCalledTimes(3);
+    expect(mutationAdmission.assertEnabled).toHaveBeenCalledTimes(4);
     expect(
       JSON.stringify(
         tokenFakes.codexRotatingSecretWriter.putEncryptedRepositorySecret.mock
