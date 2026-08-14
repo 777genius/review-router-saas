@@ -146,6 +146,8 @@ const receipts = steps.map((step, index) => {
           activatedPrincipalInventorySha256: digest,
           activatedPrincipalPolicySha256: digest,
           catalogFactsSha256: digest,
+          preactivationCatalogPolicySha256: digest,
+          activatedCatalogPolicySha256: digest,
           transactionId: "42",
           firstWriteReceiptSha256: digest,
           firstWriteBoundary: true as const,

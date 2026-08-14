@@ -60,6 +60,13 @@ services:
         sync: false
       - key: REVIEW_ROUTER_ACTIVATION_READER_BODY_SHA256
         sync: false
+      # Reviewed exact catalog contracts. The control plane normalizes and
+      # binds these into every target-local permit; cutover runners cannot
+      # replace them.
+      - key: REVIEW_ROUTER_TARGET_PREACTIVATION_PRINCIPAL_POLICY_JSON
+        sync: false
+      - key: REVIEW_ROUTER_TARGET_PRINCIPAL_POLICY_JSON
+        sync: false
 
   - type: web
     name: reviewrouter-release-witness

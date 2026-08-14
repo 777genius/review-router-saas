@@ -50,6 +50,8 @@ const targetReceipt: ActivationReceipt = {
   receiptSha256: `sha256:${"e".repeat(64)}`,
   canonicalPrivilegesSha256: `sha256:${"1".repeat(64)}`,
   catalogFactsSha256: `sha256:${"2".repeat(64)}`,
+  preactivationCatalogPolicySha256: `sha256:${"8".repeat(64)}`,
+  activatedCatalogPolicySha256: `sha256:${"9".repeat(64)}`,
   beforePrincipalInventorySha256: `sha256:${"4".repeat(64)}`,
   beforePrincipalPolicySha256: `sha256:${"5".repeat(64)}`,
   activatedPrincipalInventorySha256: `sha256:${"6".repeat(64)}`,
@@ -71,6 +73,9 @@ const targetFacts: TargetActivationFacts = {
   targetSystemIdentifier: targetReceipt.targetSystemIdentifier,
   canonicalPrivilegesSha256: targetReceipt.canonicalPrivilegesSha256,
   catalogFactsSha256: targetReceipt.catalogFactsSha256,
+  preactivationCatalogPolicySha256:
+    targetReceipt.preactivationCatalogPolicySha256,
+  activatedCatalogPolicySha256: targetReceipt.activatedCatalogPolicySha256,
   beforePrincipalInventorySha256: targetReceipt.beforePrincipalInventorySha256,
   beforePrincipalPolicySha256: targetReceipt.beforePrincipalPolicySha256,
   activatedPrincipalInventorySha256:
@@ -399,6 +404,9 @@ describe("target-aware uncertain activation reconciliation", () => {
       permitNonce: targetFacts.permitNonce,
       canonicalPrivilegesSha256: targetFacts.canonicalPrivilegesSha256,
       catalogFactsSha256: targetFacts.catalogFactsSha256,
+      preactivationCatalogPolicySha256:
+        targetFacts.preactivationCatalogPolicySha256,
+      activatedCatalogPolicySha256: targetFacts.activatedCatalogPolicySha256,
       beforePrincipalInventorySha256:
         targetFacts.beforePrincipalInventorySha256,
       beforePrincipalPolicySha256: targetFacts.beforePrincipalPolicySha256,
@@ -427,6 +435,9 @@ describe("target-aware uncertain activation reconciliation", () => {
       previousReceiptSha256: authorization.previousReceiptSha256,
       canonicalPrivilegesSha256: targetFacts.canonicalPrivilegesSha256,
       catalogFactsSha256: targetFacts.catalogFactsSha256,
+      preactivationCatalogPolicySha256:
+        targetFacts.preactivationCatalogPolicySha256,
+      activatedCatalogPolicySha256: targetFacts.activatedCatalogPolicySha256,
       beforePrincipalInventorySha256:
         targetFacts.beforePrincipalInventorySha256,
       beforePrincipalPolicySha256: targetFacts.beforePrincipalPolicySha256,

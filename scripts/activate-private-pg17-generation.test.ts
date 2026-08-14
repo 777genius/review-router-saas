@@ -57,6 +57,8 @@ const receipt = {
   permitNonce: "d".repeat(32),
   canonicalPrivilegesSha256: `sha256:${"9".repeat(64)}`,
   catalogFactsSha256: `sha256:${"e".repeat(64)}`,
+  preactivationCatalogPolicySha256: `sha256:${"1".repeat(64)}`,
+  activatedCatalogPolicySha256: `sha256:${"2".repeat(64)}`,
   beforePrincipalInventorySha256: `sha256:${"4".repeat(64)}`,
   beforePrincipalPolicySha256: `sha256:${"5".repeat(64)}`,
   activatedPrincipalInventorySha256: `sha256:${"6".repeat(64)}`,

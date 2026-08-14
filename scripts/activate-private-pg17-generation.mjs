@@ -40,6 +40,8 @@ const activationReceiptFields = new Set([
   "permitNonce",
   "canonicalPrivilegesSha256",
   "catalogFactsSha256",
+  "preactivationCatalogPolicySha256",
+  "activatedCatalogPolicySha256",
   "beforePrincipalInventorySha256",
   "beforePrincipalPolicySha256",
   "activatedPrincipalInventorySha256",
@@ -74,6 +76,11 @@ const activationReceiptIsStructured = (observed, rolloutId) =>
   observed.permitEpoch > 0 &&
   activationMatches(observed?.permitNonce, /^[a-f0-9]{32}$/u) &&
   activationMatches(observed?.catalogFactsSha256, activationDigest) &&
+  activationMatches(
+    observed?.preactivationCatalogPolicySha256,
+    activationDigest,
+  ) &&
+  activationMatches(observed?.activatedCatalogPolicySha256, activationDigest) &&
   activationMatches(observed?.firstWriteReceiptSha256, activationDigest) &&
   activationMatches(
     observed?.beforePrincipalInventorySha256,

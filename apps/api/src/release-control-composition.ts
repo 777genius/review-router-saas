@@ -46,6 +46,12 @@ import {
   executeSameConnectionFenced,
   type SameConnectionTransactionTiming,
 } from "./release-authority/adapters/same-connection-fence.js";
+import type { TrustedActivationCatalogPolicy } from "./release-authority/domain/activation-catalog-policy.js";
+
+export type TrustedActivationCatalogPolicies = Readonly<{
+  preactivation: TrustedActivationCatalogPolicy;
+  activated: TrustedActivationCatalogPolicy;
+}>;
 
 export type ReleaseControlCredentials = Readonly<{
   controlTokenSha256: string;
@@ -63,6 +69,7 @@ export function composeReleaseControlDependencies(
   targetReceiptReaderPrisma?: PrismaClient,
   sameConnectionTiming?: SameConnectionTransactionTiming,
   highRiskMutationGate?: ReleaseAuthorityHighRiskMutationGate,
+  trustedActivationCatalogPolicies?: TrustedActivationCatalogPolicies,
 ): ReleaseControlRouteDependencies {
   if (
     !credentialSha256.test(credentials.controlTokenSha256) ||
@@ -96,6 +103,8 @@ export function composeReleaseControlDependencies(
     permitInstallerPrisma
       ? {
           install: async (authorization) => {
+            if (!trustedActivationCatalogPolicies)
+              throw new Error("trusted_activation_catalog_policy_missing");
             const query = (connection: Prisma.TransactionClient) =>
               connection.$queryRaw<{ result: boolean }[]>(Prisma.sql`
             SELECT reviewrouter_activation.install_activation_permit(
@@ -108,6 +117,10 @@ export function composeReleaseControlDependencies(
               ${JSON.stringify(authorization.targetDeployIds)}::jsonb,
               ${authorization.epoch},
               ${authorization.nonce}
+              ,${JSON.stringify(trustedActivationCatalogPolicies.preactivation.policy)}::jsonb
+              ,${trustedActivationCatalogPolicies.preactivation.sha256}
+              ,${JSON.stringify(trustedActivationCatalogPolicies.activated.policy)}::jsonb
+              ,${trustedActivationCatalogPolicies.activated.sha256}
             ) AS result
           `);
             const rows =
@@ -132,7 +145,11 @@ export function composeReleaseControlDependencies(
                     ${authorization.targetSystemIdentifier}, ${authorization.postgresMajor},
                     ${authorization.expectedCommitSha}, ${authorization.migrationChecksum},
                     ${JSON.stringify(authorization.targetDeployIds)}::jsonb,
-                    ${authorization.epoch}, ${authorization.nonce}) AS result
+                    ${authorization.epoch}, ${authorization.nonce},
+                    ${JSON.stringify(trustedActivationCatalogPolicies.preactivation.policy)}::jsonb,
+                    ${trustedActivationCatalogPolicies.preactivation.sha256},
+                    ${JSON.stringify(trustedActivationCatalogPolicies.activated.policy)}::jsonb,
+                    ${trustedActivationCatalogPolicies.activated.sha256}) AS result
                 `);
             if (
               rows.length !== 1 ||
@@ -209,9 +226,12 @@ export async function createReleaseControlApp(input: {
   readonly trustedDatabaseIdentity?: TrustedReleaseControlDatabaseIdentity;
   readonly readinessObserver?: typeof observeReleaseAuthorityDatabaseReadiness;
   readonly atomicReadinessObserver?: typeof observeReleaseAuthorityDatabaseReadinessOnConnection;
+  readonly trustedActivationCatalogPolicies?: TrustedActivationCatalogPolicies;
 }): Promise<FastifyInstance> {
   if (!input.trustedDatabaseIdentity)
     throw new Error("release_control_trusted_database_identity_missing");
+  if (!input.trustedActivationCatalogPolicies)
+    throw new Error("trusted_activation_catalog_policy_missing");
   const app = Fastify({ logger: false });
   const readinessPolicyOptions = validateReadinessTimingPolicy({
     ...defaultReadinessTimingPolicy,
@@ -391,6 +411,7 @@ export async function createReleaseControlApp(input: {
     input.targetReceiptReaderPrisma,
     sameConnectionTiming,
     highRiskMutationGate,
+    input.trustedActivationCatalogPolicies,
   );
   const assertMutationAuthorityReady = () => readiness.assertOrdinary(subject);
   const ordinary =

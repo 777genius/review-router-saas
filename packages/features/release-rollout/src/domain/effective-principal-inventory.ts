@@ -22,6 +22,8 @@ export const PrincipalCapability = Object.freeze({
   SequenceUpdate: "sequence:update",
   RoutineExecute: "routine:execute",
   TypeUsage: "type:usage",
+  LargeObjectRead: "large-object:read",
+  LargeObjectWrite: "large-object:write",
   OwnDatabase: "owner:database",
   OwnSchema: "owner:schema",
   OwnObject: "owner:object",
@@ -84,6 +86,8 @@ export interface EffectivePrincipalRowSecurity {
     name: string;
     command: string;
     permissive: boolean;
+    using: string | null;
+    withCheck: string | null;
     roles: readonly string[];
   }>[];
 }
@@ -115,6 +119,25 @@ export interface EffectivePrincipalPolicy {
   readonly version: 1;
   readonly publicPermissions: readonly EffectivePrincipalPermission[];
   readonly principals: readonly EffectivePrincipalRule[];
+}
+/**
+ * Reviewed, phase-specific exact catalog contract consumed by target-local
+ * activation. Array ordering is canonical and is part of the digest.
+ */
+export interface ActivationCatalogPolicy {
+  readonly kind: "reviewrouter-activation-catalog-policy";
+  readonly version: 1;
+  readonly phase: "preactivation" | "activated";
+  readonly database: string;
+  readonly roles: readonly EffectivePrincipalRole[];
+  readonly memberships: readonly EffectivePrincipalMembership[];
+  readonly roleReachability: readonly EffectivePrincipalRoleReachability[];
+  readonly rowSecurity: readonly EffectivePrincipalRowSecurity[];
+  readonly grants: readonly EffectivePrincipalGrant[];
+  readonly effectivePermissions: readonly Readonly<{
+    principal: string;
+    permissions: readonly EffectivePrincipalPermission[];
+  }>[];
 }
 export interface EffectivePrincipalDecision {
   readonly accepted: boolean;
@@ -152,6 +175,7 @@ export interface ServerDerivedActivationPrincipalProjection {
   readonly kind: typeof ActivationPrincipalProjectionKind.Projection;
   readonly version: 2;
   readonly inventory: EffectivePrincipalInventory;
+  readonly catalogPolicy: ActivationCatalogPolicy;
   readonly policy: Readonly<{
     kind: typeof ActivationPrincipalProjectionKind.Policy;
     version: 2;

@@ -363,6 +363,8 @@ const observe = (step: (typeof steps)[number], index: number) => {
           activatedPrincipalInventorySha256: digest,
           activatedPrincipalPolicySha256: digest,
           catalogFactsSha256: digest,
+          preactivationCatalogPolicySha256: digest,
+          activatedCatalogPolicySha256: digest,
           firstWriteReceiptSha256: digest,
           observationSha256: digest,
           transactionId: "42",

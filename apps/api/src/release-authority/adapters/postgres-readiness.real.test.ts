@@ -426,7 +426,7 @@ realDescribe("release authority exact catalog readiness", () => {
         await admin.$executeRawUnsafe(restore);
       }
     }
-  });
+  }, 60_000);
 
   it("rejects missing and disabled triggers and a missing guard routine", async () => {
     if (!admin) throw new Error("real_postgres_test_unconfigured");
@@ -644,7 +644,7 @@ activationDescribe("activation target semantic readiness", () => {
       { installer: string; reader: string }[]
     >(`SELECT
       pg_get_functiondef(
-        'reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)'::regprocedure
+        'reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)'::regprocedure
       ) AS installer,
       pg_get_functiondef(
         'reviewrouter_activation.read_activation_receipt(text)'::regprocedure
@@ -714,7 +714,7 @@ activationDescribe("activation target semantic readiness", () => {
     const cases = [
       {
         mutate:
-          "CREATE OR REPLACE FUNCTION reviewrouter_activation.install_activation_permit(requested_rollout_id text,requested_source_system_identifier text,requested_target_system_identifier text,requested_postgres_major integer,requested_expected_commit_sha text,requested_migration_checksum text,requested_target_deploy_ids jsonb,requested_permit_epoch bigint,requested_permit_nonce text) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS 'BEGIN RETURN true; END'",
+          "CREATE OR REPLACE FUNCTION reviewrouter_activation.install_activation_permit(requested_rollout_id text,requested_source_system_identifier text,requested_target_system_identifier text,requested_postgres_major integer,requested_expected_commit_sha text,requested_migration_checksum text,requested_target_deploy_ids jsonb,requested_permit_epoch bigint,requested_permit_nonce text,requested_preactivation_catalog_policy jsonb,requested_preactivation_catalog_policy_sha256 text,requested_activated_catalog_policy jsonb,requested_activated_catalog_policy_sha256 text) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS 'BEGIN RETURN true; END'",
         rejected: async () => {
           const observed = await installerReadiness();
           expect(observed.installerRoutineBodySha256).not.toBe(
@@ -728,35 +728,35 @@ activationDescribe("activation target semantic readiness", () => {
       },
       {
         mutate:
-          "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) RESET ALL",
+          "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text) RESET ALL",
         rejected: async () => {
           expect((await installerReadiness()).installerRoutine).toBe(false);
         },
         restore: () =>
           admin.$executeRawUnsafe(
-            "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) SET search_path=pg_catalog,pg_temp",
+            "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text) SET search_path=pg_catalog,pg_temp",
           ),
       },
       {
         mutate:
-          "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) OWNER TO reviewrouter_activation_readiness_probe",
+          "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text) OWNER TO reviewrouter_activation_readiness_probe",
         rejected: async () => {
           expect((await installerReadiness()).installerRoutine).toBe(false);
         },
         restore: () =>
           admin.$executeRawUnsafe(
-            "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) OWNER TO reviewrouter_activation_receipt_guard",
+            "ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text) OWNER TO reviewrouter_activation_receipt_guard",
           ),
       },
       {
         mutate:
-          "GRANT EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) TO reviewrouter_activation_readiness_probe",
+          "GRANT EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text) TO reviewrouter_activation_readiness_probe",
         rejected: async () => {
           expect((await installerReadiness()).installerRoutine).toBe(false);
         },
         restore: () =>
           admin.$executeRawUnsafe(
-            "REVOKE EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) FROM reviewrouter_activation_readiness_probe",
+            "REVOKE EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text) FROM reviewrouter_activation_readiness_probe",
           ),
       },
     ];

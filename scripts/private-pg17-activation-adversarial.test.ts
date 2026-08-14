@@ -32,6 +32,7 @@ if (requiredProof && !dockerReady)
   throw new Error("pg17_adversarial_digest_pinned_image_unavailable");
 const describePg17 = dockerReady ? describe : describe.skip;
 const container = `rr-activation-principal-${process.pid}`;
+const adminUsername = "reviewrouter_role_bootstrap";
 const configuration = {
   roles: [
     { role: "api", username: "reviewrouter_api", password: "unused" },
@@ -54,7 +55,7 @@ const psql = (sql: string, expectedStatus = 0) => {
       container,
       "psql",
       "--username",
-      "postgres",
+      adminUsername,
       "--dbname",
       "postgres",
       "--no-psqlrc",
@@ -82,6 +83,10 @@ describePg17("disposable PG17 activation-principal adversarial proof", () => {
       container,
       "--env",
       "POSTGRES_PASSWORD=disposable",
+      "--env",
+      `POSTGRES_USER=${adminUsername}`,
+      "--env",
+      "POSTGRES_DB=postgres",
       inspectedImage.stdout.trim(),
     ]);
     expect(started.status, started.stderr).toBe(0);
@@ -96,7 +101,7 @@ describePg17("disposable PG17 activation-principal adversarial proof", () => {
         "--host",
         "127.0.0.1",
         "--username",
-        "postgres",
+        adminUsername,
         "--dbname",
         "postgres",
         "--no-psqlrc",
@@ -118,7 +123,6 @@ describePg17("disposable PG17 activation-principal adversarial proof", () => {
 CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN;
 CREATE ROLE reviewrouter_activation_permit_installer LOGIN;
 CREATE ROLE reviewrouter_activation_receipt_reader LOGIN;
-CREATE ROLE reviewrouter_role_bootstrap NOLOGIN;
 CREATE ROLE reviewrouter_release_migration LOGIN;
 CREATE ROLE reviewrouter_api LOGIN;
 CREATE ROLE reviewrouter_web LOGIN;
@@ -171,14 +175,32 @@ WHERE namespace.nspname = 'public'
   });
 
   const installPermit = (rolloutId: string, epoch: number) => {
+    const policies = JSON.parse(
+      psql(`WITH policies AS (
+  SELECT
+    reviewrouter_activation.project_effective_principal_authority('preactivation')->'catalogPolicy' AS before_policy,
+    reviewrouter_activation.project_effective_principal_authority('activated')->'catalogPolicy' AS activated_policy
+)
+SELECT json_build_object('before',before_policy,'activated',activated_policy,
+  'beforeSha256','sha256:'||encode(sha256(convert_to(reviewrouter_activation.canonical_json(before_policy),'UTF8')),'hex'),
+  'activatedSha256','sha256:'||encode(sha256(convert_to(reviewrouter_activation.canonical_json(activated_policy),'UTF8')),'hex'))
+FROM policies;`),
+    ) as Record<string, unknown>;
+    const before = JSON.stringify(policies.before).replaceAll("'", "''");
+    const activated = JSON.stringify(policies.activated).replaceAll("'", "''");
     psql(`SET SESSION AUTHORIZATION reviewrouter_activation_permit_installer;
 SELECT reviewrouter_activation.install_activation_permit(
   '${rolloutId}','1','${systemIdentifier}',17,'${"b".repeat(40)}',
   '${migrationChecksum}'::text,'["dep-disposable"]'::jsonb,${epoch},
-  '${epoch.toString(16).padStart(32, "0")}'
+  '${epoch.toString(16).padStart(32, "0")}', '${before}'::jsonb,
+  '${String(policies.beforeSha256)}', '${activated}'::jsonb,
+  '${String(policies.activatedSha256)}'
 );`);
   };
-  const rejectedWithoutWrite = (rolloutId: string) => {
+  const rejectedWithoutWrite = (
+    rolloutId: string,
+    expectedError = "principal evidence invalid or stale",
+  ) => {
     const activation = canonicalActivationSql(configuration, { rolloutId });
     const rejected = docker(
       [
@@ -187,7 +209,7 @@ SELECT reviewrouter_activation.install_activation_permit(
         container,
         "psql",
         "--username",
-        "postgres",
+        adminUsername,
         "--dbname",
         "postgres",
         "--no-psqlrc",
@@ -197,7 +219,7 @@ SELECT reviewrouter_activation.install_activation_permit(
       `SET SESSION AUTHORIZATION reviewrouter_release_migration;\n${activation.sql}`,
     );
     expect(rejected.status).not.toBe(0);
-    expect(rejected.stderr).toContain("principal evidence invalid or stale");
+    expect(rejected.stderr).toContain(expectedError);
     expect(
       psql(`SELECT json_build_array(
         (SELECT count(*) FROM public.activation_attack_target),
@@ -244,6 +266,21 @@ WHERE namespace.nspname = 'public'
     expect(observation.publicExecuteCount).toBe(0);
   });
 
+  it("accepts the exact clean preactivation catalog projection", () => {
+    installPermit("exact-clean-stage", 11);
+    const staged = psql(`BEGIN;
+CREATE TEMP TABLE ignored_ephemeral_activation_object(id integer);
+SET SESSION AUTHORIZATION reviewrouter_release_migration;
+SELECT reviewrouter_activation.stage_principal_evidence('exact-clean-stage');
+ROLLBACK;`);
+    expect(staged.split("\n")).toContain("t");
+    expect(
+      psql(
+        "SELECT count(*) FROM reviewrouter_activation.activation_principal_evidence WHERE rollout_id='exact-clean-stage';",
+      ),
+    ).toBe("0");
+  });
+
   it("rejects an unexpected login with direct CONNECT/table ACL and legacy forged JSON", () => {
     installPermit("direct-acl-attack", 1);
     psql("CREATE ROLE rr_unexpected_direct LOGIN;");
@@ -257,7 +294,7 @@ GRANT SELECT ON public.activation_attack_target TO rr_unexpected_direct;`);
         container,
         "psql",
         "-U",
-        "postgres",
+        adminUsername,
         "-d",
         "postgres",
         "--set",
@@ -308,6 +345,99 @@ GRANT rr_unexpected_owner TO reviewrouter_release_migration WITH SET TRUE;`);
 GRANT CREATE ON SCHEMA public TO rr_unexpected_owner;
 ALTER TABLE public.activation_attack_target OWNER TO rr_unexpected_owner;`);
     rejectedWithoutWrite("ownership-attack");
+    psql(`GRANT rr_unexpected_owner TO reviewrouter_release_migration WITH SET TRUE;
+SET SESSION AUTHORIZATION reviewrouter_release_migration;
+ALTER TABLE public.activation_attack_target OWNER TO reviewrouter_release_migration;
+RESET SESSION AUTHORIZATION;
+REVOKE CREATE ON SCHEMA public FROM rr_unexpected_owner;
+REVOKE rr_unexpected_owner FROM reviewrouter_release_migration;
+DROP ROLE rr_unexpected_owner;`);
+  });
+
+  it("rejects an unauthorized direct grant to an approved runtime login", () => {
+    installPermit("approved-direct-grant", 6);
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+GRANT TRUNCATE ON public.activation_attack_target TO reviewrouter_api;`);
+    rejectedWithoutWrite(
+      "approved-direct-grant",
+      "activation catalog policy mismatch",
+    );
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+REVOKE TRUNCATE ON public.activation_attack_target FROM reviewrouter_api;`);
+  });
+
+  it("rejects an approved login owning an unexpected object", () => {
+    installPermit("approved-owner-drift", 7);
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+CREATE TABLE public.unexpected_owned_object(id integer);
+RESET SESSION AUTHORIZATION;
+ALTER TABLE public.unexpected_owned_object OWNER TO reviewrouter_api;`);
+    rejectedWithoutWrite(
+      "approved-owner-drift",
+      "activation catalog policy mismatch",
+    );
+    psql(`DROP TABLE public.unexpected_owned_object;`);
+  });
+
+  it("rejects exact ACL drift in a non-public schema", () => {
+    psql(`CREATE SCHEMA private_sensitive AUTHORIZATION reviewrouter_release_migration;`);
+    installPermit("non-public-schema-grant", 8);
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+GRANT USAGE ON SCHEMA private_sensitive TO reviewrouter_api;`);
+    rejectedWithoutWrite(
+      "non-public-schema-grant",
+      "activation catalog policy mismatch",
+    );
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+DROP SCHEMA private_sensitive;`);
+  });
+
+  it("rejects default ACL drift", () => {
+    installPermit("default-acl-drift", 9);
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_migration IN SCHEMA public
+GRANT SELECT ON TABLES TO reviewrouter_api;`);
+    rejectedWithoutWrite(
+      "default-acl-drift",
+      "activation catalog policy mismatch",
+    );
+    psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
+ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_migration IN SCHEMA public
+REVOKE SELECT ON TABLES FROM reviewrouter_api;`);
+  });
+
+  it("rejects a reviewed policy digest mismatch at permit installation", () => {
+    const policy = psql(
+      "SELECT reviewrouter_activation.project_effective_principal_authority('preactivation')->'catalogPolicy';",
+    ).replaceAll("'", "''");
+    const rejected = docker(
+      [
+        "exec",
+        "-i",
+        container,
+        "psql",
+        "-U",
+        adminUsername,
+        "-d",
+        "postgres",
+        "--set",
+        "ON_ERROR_STOP=1",
+      ],
+      `SET SESSION AUTHORIZATION reviewrouter_activation_permit_installer;
+SELECT reviewrouter_activation.install_activation_permit(
+  'policy-digest-mismatch','1','${systemIdentifier}',17,'${"b".repeat(40)}',
+  '${migrationChecksum}','["dep-disposable"]'::jsonb,10,'${"a".repeat(32)}',
+  '${policy}'::jsonb,'sha256:${"0".repeat(64)}',
+  jsonb_set('${policy}'::jsonb,'{phase}','"activated"'::jsonb),
+  'sha256:${"0".repeat(64)}');`,
+    );
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain("activation permit invalid");
+    expect(
+      psql(
+        "SELECT count(*) FROM reviewrouter_activation.activation_permit WHERE rollout_id='policy-digest-mismatch';",
+      ),
+    ).toBe("0");
   });
 
   it("fails closed when recovery encounters caller-attested legacy evidence", () => {
@@ -316,6 +446,8 @@ ALTER TABLE public.activation_attack_target OWNER TO rr_unexpected_owner;`);
     psql(`INSERT INTO reviewrouter_activation.activation_principal_evidence (
       rollout_id,source_system_identifier,target_system_identifier,postgres_major,
       expected_commit_sha,migration_checksum,target_deploy_ids,permit_epoch,permit_nonce,
+      preactivation_catalog_policy,preactivation_catalog_policy_sha256,
+      activated_catalog_policy,activated_catalog_policy_sha256,
       before_inventory,before_policy,activated_inventory,activated_policy,
       before_principal_inventory_sha256,before_principal_policy_sha256,
       activated_principal_inventory_sha256,activated_principal_policy_sha256,transaction_id
@@ -323,6 +455,14 @@ ALTER TABLE public.activation_attack_target OWNER TO rr_unexpected_owner;`);
       'legacy-evidence','1','${systemIdentifier}',17,'${"b".repeat(40)}',
       '${migrationChecksum}','["dep-disposable"]'::jsonb,5,
       '${"5".padStart(32, "0")}',
+      (SELECT preactivation_catalog_policy FROM reviewrouter_activation.activation_permit
+        WHERE rollout_id='legacy-evidence'),
+      (SELECT preactivation_catalog_policy_sha256 FROM reviewrouter_activation.activation_permit
+        WHERE rollout_id='legacy-evidence'),
+      (SELECT activated_catalog_policy FROM reviewrouter_activation.activation_permit
+        WHERE rollout_id='legacy-evidence'),
+      (SELECT activated_catalog_policy_sha256 FROM reviewrouter_activation.activation_permit
+        WHERE rollout_id='legacy-evidence'),
       '{"version":1,"forgedClean":true}'::jsonb,
       '{"version":1,"forgedClean":true}'::jsonb,
       '{"version":1,"forgedClean":true}'::jsonb,
@@ -333,6 +473,8 @@ ALTER TABLE public.activation_attack_target OWNER TO rr_unexpected_owner;`);
       rollout_id,source_system_identifier,target_system_identifier,postgres_major,
       expected_commit_sha,migration_checksum,target_deploy_ids,permit_epoch,permit_nonce,
       canonical_privileges_sha256,catalog_facts_sha256,
+      preactivation_catalog_policy,preactivation_catalog_policy_sha256,
+      activated_catalog_policy,activated_catalog_policy_sha256,
       before_principal_inventory_sha256,before_principal_policy_sha256,
       activated_principal_inventory_sha256,activated_principal_policy_sha256,
       first_write_receipt_sha256,transaction_id
@@ -340,7 +482,16 @@ ALTER TABLE public.activation_attack_target OWNER TO rr_unexpected_owner;`);
       'legacy-evidence','1','${systemIdentifier}',17,'${"b".repeat(40)}',
       '${migrationChecksum}','["dep-disposable"]'::jsonb,5,
       '${"5".padStart(32, "0")}',
-      '${digest}','${digest}','${digest}','${digest}','${digest}','${digest}',
+      '${digest}','${digest}',
+      (SELECT preactivation_catalog_policy FROM reviewrouter_activation.activation_permit
+        WHERE rollout_id='legacy-evidence'),
+      (SELECT preactivation_catalog_policy_sha256 FROM reviewrouter_activation.activation_permit
+        WHERE rollout_id='legacy-evidence'),
+      (SELECT activated_catalog_policy FROM reviewrouter_activation.activation_permit
+        WHERE rollout_id='legacy-evidence'),
+      (SELECT activated_catalog_policy_sha256 FROM reviewrouter_activation.activation_permit
+        WHERE rollout_id='legacy-evidence'),
+      '${digest}','${digest}','${digest}','${digest}',
       '${digest}',1
     );`);
     const rejected = docker(
@@ -350,7 +501,7 @@ ALTER TABLE public.activation_attack_target OWNER TO rr_unexpected_owner;`);
         container,
         "psql",
         "-U",
-        "postgres",
+        adminUsername,
         "-d",
         "postgres",
         "--set",

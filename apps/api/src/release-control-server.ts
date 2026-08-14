@@ -2,6 +2,7 @@ import { config as loadDotenv } from "dotenv";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import { createReleaseControlApp } from "./release-control-composition.js";
 import { readinessTimingPolicyFromEnvironment } from "./release-authority/adapters/readiness-config.js";
+import { trustedActivationCatalogPolicy } from "./release-authority/domain/activation-catalog-policy.js";
 
 for (const path of ["../../.env.local", "../../.env", ".env.local", ".env"])
   loadDotenv({ path, override: false });
@@ -80,6 +81,16 @@ const app = await createReleaseControlApp({
     ),
     activationNamespaceFingerprint: required(
       "REVIEW_ROUTER_ACTIVATION_NAMESPACE_FINGERPRINT",
+    ),
+  },
+  trustedActivationCatalogPolicies: {
+    preactivation: trustedActivationCatalogPolicy(
+      required("REVIEW_ROUTER_TARGET_PREACTIVATION_PRINCIPAL_POLICY_JSON"),
+      "preactivation",
+    ),
+    activated: trustedActivationCatalogPolicy(
+      required("REVIEW_ROUTER_TARGET_PRINCIPAL_POLICY_JSON"),
+      "activated",
     ),
   },
 });

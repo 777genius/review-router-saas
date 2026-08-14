@@ -223,6 +223,8 @@ export type TargetActivationFacts = Readonly<
     | "targetSystemIdentifier"
     | "canonicalPrivilegesSha256"
     | "catalogFactsSha256"
+    | "preactivationCatalogPolicySha256"
+    | "activatedCatalogPolicySha256"
     | "beforePrincipalInventorySha256"
     | "beforePrincipalPolicySha256"
     | "activatedPrincipalInventorySha256"

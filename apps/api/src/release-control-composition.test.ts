@@ -34,6 +34,28 @@ const trustedDatabaseIdentity = {
   targetMigrationManifestIdentity: `sha256:${"c".repeat(64)}`,
   activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
 } as const;
+const catalogPolicy = (phase: "preactivation" | "activated") => {
+  const policy = {
+    kind: "reviewrouter-activation-catalog-policy",
+    version: 1,
+    phase,
+    database: "target",
+    roles: [],
+    memberships: [],
+    roleReachability: [],
+    rowSecurity: [],
+    grants: [],
+    effectivePermissions: [],
+  } as const;
+  return {
+    policy,
+    sha256: `sha256:${digest(JSON.stringify(policy))}`,
+  } as const;
+};
+const trustedActivationCatalogPolicies = {
+  preactivation: catalogPolicy("preactivation"),
+  activated: catalogPolicy("activated"),
+} as const;
 
 const testReadinessObserver = async (
   prisma: PrismaClient,
@@ -114,6 +136,9 @@ const createReleaseControlApp = (
           typeof createReleaseControlAppBase
         >[0]["atomicReadinessObserver"]
       >),
+    trustedActivationCatalogPolicies:
+      input.trustedActivationCatalogPolicies ??
+      trustedActivationCatalogPolicies,
   });
 
 const authorityReadiness = (
@@ -566,6 +591,10 @@ describe("release authority process composition", () => {
       },
       trustedDatabaseIdentity,
       { $queryRaw: installerQuery } as never,
+      undefined,
+      undefined,
+      undefined,
+      trustedActivationCatalogPolicies,
     );
     await expect(
       dependencies.authority.authorizeAndInstall({
@@ -595,6 +624,10 @@ describe("release authority process composition", () => {
         authorization.expectedCommitSha,
         authorization.postgresMajor,
         authorization.migrationChecksum,
+        trustedActivationCatalogPolicies.preactivation.sha256,
+        trustedActivationCatalogPolicies.activated.sha256,
+        JSON.stringify(trustedActivationCatalogPolicies.preactivation.policy),
+        JSON.stringify(trustedActivationCatalogPolicies.activated.policy),
       ]),
     );
   });
@@ -629,6 +662,8 @@ describe("release authority process composition", () => {
       receiptSha256: `sha256:${"e".repeat(64)}`,
       canonicalPrivilegesSha256: `sha256:${"1".repeat(64)}`,
       catalogFactsSha256: `sha256:${"2".repeat(64)}`,
+      preactivationCatalogPolicySha256: `sha256:${"9".repeat(64)}`,
+      activatedCatalogPolicySha256: `sha256:${"a".repeat(64)}`,
       beforePrincipalInventorySha256: `sha256:${"4".repeat(64)}`,
       beforePrincipalPolicySha256: `sha256:${"5".repeat(64)}`,
       activatedPrincipalInventorySha256: `sha256:${"6".repeat(64)}`,
@@ -661,6 +696,9 @@ describe("release authority process composition", () => {
           targetSystemIdentifier: receipt.targetSystemIdentifier,
           canonicalPrivilegesSha256: receipt.canonicalPrivilegesSha256,
           catalogFactsSha256: receipt.catalogFactsSha256,
+          preactivationCatalogPolicySha256:
+            receipt.preactivationCatalogPolicySha256,
+          activatedCatalogPolicySha256: receipt.activatedCatalogPolicySha256,
           beforePrincipalInventorySha256:
             receipt.beforePrincipalInventorySha256,
           beforePrincipalPolicySha256: receipt.beforePrincipalPolicySha256,

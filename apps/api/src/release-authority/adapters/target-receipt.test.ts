@@ -15,6 +15,8 @@ const receipt = {
   permitNonce: "b".repeat(32),
   canonicalPrivilegesSha256: digest("2"),
   catalogFactsSha256: digest("3"),
+  preactivationCatalogPolicySha256: digest("9"),
+  activatedCatalogPolicySha256: digest("a"),
   beforePrincipalInventorySha256: digest("4"),
   beforePrincipalPolicySha256: digest("5"),
   activatedPrincipalInventorySha256: digest("6"),
@@ -43,6 +45,8 @@ describe("target activation receipt reader", () => {
 
   it.each([
     "beforePrincipalInventorySha256",
+    "preactivationCatalogPolicySha256",
+    "activatedCatalogPolicySha256",
     "beforePrincipalPolicySha256",
     "activatedPrincipalInventorySha256",
     "activatedPrincipalPolicySha256",

@@ -65,28 +65,32 @@ phase: a compact JSON array of unique Render service IDs, for example
 `srv-` IDs with no whitespace, duplicate entries, CSV encoding, or surrounding object.
 Freeze, cutover, and compensation all fail closed on any other value.
 
-The five principal-policy variables are canonical `EffectivePrincipalPolicy`
-version 1 documents, not discovered allowlists. They name every approved login
-and non-login role plus the exact database, schema, relation, column, sequence,
-routine, ownership, and administrative capabilities allowed in that phase.
+The source, source-fenced, and target-equivalence variables are canonical
+`EffectivePrincipalPolicy` version 1 documents. The target-preactivation and
+target activation variables are `reviewrouter-activation-catalog-policy`
+version 1 documents. Those two exact catalog contracts contain the database,
+all relevant role attributes, membership/reachability edges, schema/object
+ownership and grants (including grantor and grant option), default ACL facts,
+large-object ownership/ACLs, complete RLS policy predicates, and the normalized
+effective permissions of every principal. Ephemeral `pg_temp_*` namespaces are
+excluded so connection history cannot change the reviewed contract.
 Quoted PostgreSQL names are represented literally in JSON. Generate and review
 them from a disposable, production-shaped catalog; never copy live discovery
 output into the allowlist without review.
 
 Activation principal evidence uses a single-session staged transaction. The
-CLI validates the reviewed pre-activation policy against the observed target
-inventory and validates the activated policy against a rollback-only preview
-of the canonical grants. That validator and SQL generator execute from the
-exact release commit named by the independently installed permit; the guard
-also requires the target's consumed migration evidence for that commit before
-it can finalize the attestation. In the committing transaction, the target guard
-locks the one-shot permit, compares a fresh pre-grant inventory with the exact
-validated inventory, and stages both canonical inventories, both canonical
-policies, and their four independently recomputed digests with the permit and
-target identity. After the grants, the guard compares a fresh activated
-inventory with that stage and accepts activation only when the stage's
-transaction ID is the current transaction. The immutable receipt binds those
-digests into its first-write hash beside the migration and catalog facts. A
+release-control service reads the two reviewed target contracts from its own
+protected configuration, normalizes and hashes them, and installs the facts and
+digests through its dedicated permit-installer connection. The cutover runner
+does not send policy JSON. In the committing transaction, the target guard
+locks that one-shot permit, independently projects the live PG17 catalogs, and
+requires byte-exact normalized equality with the permit-bound preactivation
+contract. It stages the reviewed contracts, live inventories, derived policies,
+and all digests with the permit and target identity. After canonical grants, it
+projects again and requires exact equality with the permit-bound activated
+contract. The immutable receipt binds both reviewed-policy digests and all four
+principal evidence digests into its first-write hash beside the migration and
+catalog facts. A
 rollback removes the stage; a committed receipt can be returned directly on
 replay or reconstructed by the receipt reader without observing the catalogs
 again. Missing, malformed, swapped, or stale evidence therefore fails closed.

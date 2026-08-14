@@ -84,7 +84,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
       to_regnamespace('release_authority') IS NOT NULL AS "authorityPresent",
       coalesce((SELECT encode(sha256(convert_to(string_agg(body_sha256, ':' ORDER BY ordinal),'UTF8')),'hex')
         FROM (VALUES
-          (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)')),'')),
+          (1,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)')),'')),
           (2,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.canonical_json(jsonb)')),'')),
           (3,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)')),'')),
           (4,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
@@ -109,27 +109,33 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AND (SELECT count(*) FROM pg_attribute attribute
             WHERE attribute.attrelid=c.oid AND attribute.attnum>0
               AND NOT attribute.attisdropped) = CASE c.relname
-                WHEN 'activation_permit' THEN 11
-                WHEN 'activation_receipt' THEN 18
-                WHEN 'activation_principal_evidence' THEN 19
+                WHEN 'activation_permit' THEN 15
+                WHEN 'activation_receipt' THEN 22
+                WHEN 'activation_principal_evidence' THEN 23
               END
           AND NOT EXISTS (SELECT 1 FROM unnest(CASE c.relname
               WHEN 'activation_permit' THEN ARRAY['rollout_id','source_system_identifier',
                 'target_system_identifier','postgres_major','expected_commit_sha',
                 'migration_checksum','target_deploy_ids','permit_epoch','permit_nonce',
+                'preactivation_catalog_policy','preactivation_catalog_policy_sha256',
+                'activated_catalog_policy','activated_catalog_policy_sha256',
                 'installed_at','consumed_at']
               WHEN 'activation_receipt' THEN ARRAY['rollout_id','source_system_identifier',
                 'target_system_identifier','postgres_major','expected_commit_sha',
                 'migration_checksum','target_deploy_ids','permit_epoch','permit_nonce',
                 'canonical_privileges_sha256','catalog_facts_sha256',
+                'preactivation_catalog_policy','preactivation_catalog_policy_sha256',
+                'activated_catalog_policy','activated_catalog_policy_sha256',
                 'before_principal_inventory_sha256','before_principal_policy_sha256',
                 'activated_principal_inventory_sha256','activated_principal_policy_sha256',
                 'first_write_receipt_sha256','transaction_id','activated_at']
               WHEN 'activation_principal_evidence' THEN ARRAY['rollout_id',
                 'source_system_identifier','target_system_identifier','postgres_major',
                 'expected_commit_sha','migration_checksum','target_deploy_ids',
-                'permit_epoch','permit_nonce','before_inventory','before_policy',
-                'activated_inventory','activated_policy',
+                'permit_epoch','permit_nonce',
+                'preactivation_catalog_policy','preactivation_catalog_policy_sha256',
+                'activated_catalog_policy','activated_catalog_policy_sha256',
+                'before_inventory','before_policy','activated_inventory','activated_policy',
                 'before_principal_inventory_sha256','before_principal_policy_sha256',
                 'activated_principal_inventory_sha256','activated_principal_policy_sha256',
                 'transaction_id','staged_at']
@@ -146,7 +152,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               AND NOT attribute.attisdropped AND (
                 attribute.atttypid IS DISTINCT FROM CASE
                   WHEN attribute.attname IN ('postgres_major') THEN 'integer'::regtype
-                  WHEN attribute.attname IN ('target_deploy_ids','before_inventory','before_policy',
+                  WHEN attribute.attname IN ('target_deploy_ids','preactivation_catalog_policy',
+                    'activated_catalog_policy','before_inventory','before_policy',
                     'activated_inventory','activated_policy') THEN 'jsonb'::regtype
                   WHEN attribute.attname IN ('permit_epoch','transaction_id') THEN 'bigint'::regtype
                   WHEN attribute.attname IN ('installed_at','consumed_at','activated_at','staged_at') THEN 'timestamptz'::regtype
@@ -165,7 +172,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 AND constraint_record.convalidated
               GROUP BY constraint_record.contype) constraint_counts)
             = CASE c.relname
-                WHEN 'activation_permit' THEN '{"c":10,"p":1,"u":1}'::jsonb
+                WHEN 'activation_permit' THEN '{"c":12,"p":1,"u":1}'::jsonb
                 WHEN 'activation_receipt' THEN '{"c":1,"p":1,"u":1}'::jsonb
                 WHEN 'activation_principal_evidence' THEN '{"p":1}'::jsonb
               END
@@ -339,7 +346,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 AND p.oid NOT IN (
                   CASE role.rolname
                     WHEN 'reviewrouter_activation_permit_installer' THEN
-                      to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)')
+                      to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)')
                     WHEN 'reviewrouter_activation_receipt_reader' THEN
                       to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')
                   END,
@@ -373,7 +380,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 WHERE grantee.oid=acl.grantee
                   AND grantee.rolname='reviewrouter_activation_permit_installer'))
         FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
-        WHERE p.oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)')),false)
+        WHERE p.oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)')),false)
         AS "installerRoutine",
       coalesce((SELECT p.prosecdef AND p.prokind='f' AND p.prorettype='jsonb'::regtype
           AND p.provolatile='s' AND l.lanname='plpgsql'
@@ -507,7 +514,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
         final_acl_exact AS "finalAclExact",
         catalog_exact AND owner_membership_exact AS "controlRoutine",
         catalog_exact AND owner_membership_exact AS "providerRoutine",
-        to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NOT NULL
+        to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)') IS NOT NULL
           AS "installerRoutine",
         to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NOT NULL
           AS "readerRoutine",

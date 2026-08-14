@@ -465,6 +465,8 @@ export function assertTrustedRolloutEvidence(
     value.activation.targetSystemIdentifier !== value.target.systemIdentifier ||
     !digest.test(value.activation.firstWriteReceiptSha256) ||
     !digest.test(value.activation.catalogFactsSha256) ||
+    !digest.test(value.activation.preactivationCatalogPolicySha256) ||
+    !digest.test(value.activation.activatedCatalogPolicySha256) ||
     !digest.test(value.activation.beforePrincipalInventorySha256) ||
     !digest.test(value.activation.beforePrincipalPolicySha256) ||
     !digest.test(value.activation.activatedPrincipalInventorySha256) ||

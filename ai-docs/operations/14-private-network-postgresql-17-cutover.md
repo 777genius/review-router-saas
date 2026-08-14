@@ -243,14 +243,17 @@ Equivalence is restricted to `REVIEW_ROUTER_APPLICATION_SCHEMAS_JSON`, streams
 each table/materialized view through a hash with an 8 MiB process ceiling, and
 also binds sequence `last_value`/`is_called`/owner/dependency, columns/defaults,
 constraints/indexes/triggers, policies and RLS, functions/views/schemas,
-ACL/default privileges/ownership, and migration history. Activation rejects an
-unclassified application schema, any unlisted login or SET ROLE path,
-privileged/bypass-RLS role, unapproved owner, or unsafe PUBLIC/table/column/
-sequence/routine privilege. The same provider-neutral inventory and exact
-policy matrix are attested at source freeze, both sides of equivalence,
-activation, production-writer capture, and compensation. Canonical grants, catalog-fact hash,
-and immutable first-write receipt share one transaction. Duplicate activation,
-including an identical replay, is rejected.
+ACL/default privileges/ownership, and migration history. Activation independently
+projects every relevant schema/object/owner/grant/default ACL, membership and
+effective privilege inside its transaction (including large objects and full
+RLS predicates, but excluding ephemeral `pg_temp_*` state) and compares the normalized facts
+exactly with the reviewed contracts bound by release-control into the one-shot
+permit. Extra direct grants to approved roles, approved-role ownership drift,
+non-public schema paths, PUBLIC paths, default-ACL drift, role reachability and
+policy digest mismatch all fail closed. The principal evidence and immutable
+receipt bind both reviewed policy digests and both live catalog projections.
+Byte-identical activation replay returns the durable receipt without mutating
+catalog state.
 
 ## Workflow completion
 

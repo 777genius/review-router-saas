@@ -131,6 +131,10 @@ export class ReleaseAuthorityService {
       proposed.canonicalPrivilegesSha256 !==
         receipt.canonicalPrivilegesSha256 ||
       proposed.catalogFactsSha256 !== receipt.catalogFactsSha256 ||
+      proposed.preactivationCatalogPolicySha256 !==
+        receipt.preactivationCatalogPolicySha256 ||
+      proposed.activatedCatalogPolicySha256 !==
+        receipt.activatedCatalogPolicySha256 ||
       proposed.beforePrincipalInventorySha256 !==
         receipt.beforePrincipalInventorySha256 ||
       proposed.beforePrincipalPolicySha256 !==
@@ -419,6 +423,8 @@ function targetMatchesAuthorization(
     target.firstWriteBoundary === true &&
     digest.test(target.canonicalPrivilegesSha256) &&
     digest.test(target.catalogFactsSha256) &&
+    digest.test(target.preactivationCatalogPolicySha256) &&
+    digest.test(target.activatedCatalogPolicySha256) &&
     digest.test(target.beforePrincipalInventorySha256) &&
     digest.test(target.beforePrincipalPolicySha256) &&
     digest.test(target.activatedPrincipalInventorySha256) &&
@@ -450,6 +456,8 @@ function activationReceiptFromTarget(
     permitNonce: target.permitNonce,
     canonicalPrivilegesSha256: target.canonicalPrivilegesSha256,
     catalogFactsSha256: target.catalogFactsSha256,
+    preactivationCatalogPolicySha256: target.preactivationCatalogPolicySha256,
+    activatedCatalogPolicySha256: target.activatedCatalogPolicySha256,
     beforePrincipalInventorySha256: target.beforePrincipalInventorySha256,
     beforePrincipalPolicySha256: target.beforePrincipalPolicySha256,
     activatedPrincipalInventorySha256: target.activatedPrincipalInventorySha256,
@@ -475,6 +483,8 @@ function activationReceiptFromTarget(
     previousReceiptSha256: authorization.previousReceiptSha256,
     canonicalPrivilegesSha256: target.canonicalPrivilegesSha256,
     catalogFactsSha256: target.catalogFactsSha256,
+    preactivationCatalogPolicySha256: target.preactivationCatalogPolicySha256,
+    activatedCatalogPolicySha256: target.activatedCatalogPolicySha256,
     beforePrincipalInventorySha256: target.beforePrincipalInventorySha256,
     beforePrincipalPolicySha256: target.beforePrincipalPolicySha256,
     activatedPrincipalInventorySha256: target.activatedPrincipalInventorySha256,

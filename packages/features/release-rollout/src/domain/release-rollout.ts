@@ -279,6 +279,8 @@ export interface ActivationReceipt extends StepReceipt {
   readonly step: typeof RolloutStep.ActivateTargetGeneration;
   readonly canonicalPrivilegesSha256: string;
   readonly catalogFactsSha256: string;
+  readonly preactivationCatalogPolicySha256: string;
+  readonly activatedCatalogPolicySha256: string;
   readonly transactionId: string;
   readonly firstWriteReceiptSha256: string;
   readonly firstWriteBoundary: true;
@@ -838,6 +840,8 @@ function assertStepFacts(
       for (const key of [
         "canonicalPrivilegesSha256",
         "catalogFactsSha256",
+        "preactivationCatalogPolicySha256",
+        "activatedCatalogPolicySha256",
         "firstWriteReceiptSha256",
         "observationSha256",
         "beforePrincipalInventorySha256",
@@ -1057,6 +1061,8 @@ export function transitionFromObservation(
       facts.firstWriteBoundary !== true ||
       !digestPattern.test(String(facts.canonicalPrivilegesSha256)) ||
       !digestPattern.test(String(facts.catalogFactsSha256)) ||
+      !digestPattern.test(String(facts.preactivationCatalogPolicySha256)) ||
+      !digestPattern.test(String(facts.activatedCatalogPolicySha256)) ||
       !digestPattern.test(String(facts.firstWriteReceiptSha256)) ||
       !/^[0-9]+$/u.test(String(facts.transactionId)) ||
       facts.postgresMajor !== 17 ||
@@ -1073,6 +1079,10 @@ export function transitionFromObservation(
       step: RolloutStep.ActivateTargetGeneration,
       canonicalPrivilegesSha256: String(facts.canonicalPrivilegesSha256),
       catalogFactsSha256: String(facts.catalogFactsSha256),
+      preactivationCatalogPolicySha256: String(
+        facts.preactivationCatalogPolicySha256,
+      ),
+      activatedCatalogPolicySha256: String(facts.activatedCatalogPolicySha256),
       transactionId: String(facts.transactionId),
       firstWriteReceiptSha256: String(facts.firstWriteReceiptSha256),
       firstWriteBoundary: true as const,

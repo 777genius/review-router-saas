@@ -49,6 +49,7 @@ describe("target-local PG17 activation permit", () => {
       "'default:'||pg_get_userbyid(defaults.defaclrole)",
     );
     expect(effectivePrincipalInventorySql).toContain("pg_default_acl defaults");
+    expect(effectivePrincipalInventorySql).toContain("pg_largeobject_metadata");
     expect(effectivePrincipalInventorySql).toContain("attribute.attacl");
     expect(effectivePrincipalInventorySql).toContain("routine.proacl");
     expect(effectivePrincipalInventorySql).toContain("database.datacl");
@@ -60,6 +61,11 @@ describe("target-local PG17 activation permit", () => {
     expect(effectivePrincipalInventorySql).toContain("pg_has_role(");
     expect(effectivePrincipalInventorySql).toContain("'rowSecurity'");
     expect(effectivePrincipalInventorySql).toContain("policy.polroles");
+    expect(effectivePrincipalInventorySql).toContain("policy.polqual");
+    expect(effectivePrincipalInventorySql).toContain("policy.polwithcheck");
+    expect(effectivePrincipalInventorySql).toContain(
+      "namespace.nspname !~ '^pg_temp_'",
+    );
   });
 
   it("gives the dedicated installer only the permit installation capability", () => {
@@ -126,6 +132,33 @@ describe("target-local PG17 activation permit", () => {
     expect(sql).toContain("RETURN false;");
     expect(sql).toContain("activation permit conflicts with installed tuple");
     expect(sql).toContain("UNIQUE (permit_epoch, permit_nonce)");
+    expect(sql).toContain("preactivation_catalog_policy_sha256");
+    expect(sql).toContain("activated_catalog_policy_sha256");
+    expect(sql).toContain("reviewrouter-activation-catalog-policy");
+    expect(sql).toContain(
+      "existing.preactivation_catalog_policy = requested_preactivation_catalog_policy",
+    );
+  });
+
+  it("compares independently projected exact catalog and effective facts", () => {
+    const sql = activationAuthorityProvisioningSql();
+    expect(sql).toContain("'catalogPolicy',projected_catalog_policy");
+    expect(sql).toContain("'memberships',projected_inventory->'memberships'");
+    expect(sql).toContain("'grants',projected_inventory->'grants'");
+    expect(sql).toContain("'rowSecurity',projected_inventory->'rowSecurity'");
+    expect(sql).toContain("'effectivePermissions'");
+    expect(
+      sql.match(/reachable\.login_name <> 'reviewrouter_role_bootstrap'/gu),
+    ).toHaveLength(2);
+    expect(sql).toContain(
+      "catalog_policy IS DISTINCT FROM permit.preactivation_catalog_policy",
+    );
+    expect(sql).toContain(
+      "live_activated_catalog_policy IS DISTINCT FROM permit.activated_catalog_policy",
+    );
+    expect(sql).toContain(
+      "RAISE EXCEPTION 'activation catalog policy mismatch'",
+    );
   });
 
   it("gives the guard read-only migration history and no other public table access", () => {
@@ -273,13 +306,15 @@ describe("target-local PG17 activation permit", () => {
     );
   });
 
-  it("emits all four durable digests on direct and reconstructed receipt paths", () => {
+  it("emits all durable policy and inventory digests on direct and reconstructed receipt paths", () => {
     const sql = activationAuthorityProvisioningSql();
     for (const field of [
       "beforePrincipalInventorySha256",
       "beforePrincipalPolicySha256",
       "activatedPrincipalInventorySha256",
       "activatedPrincipalPolicySha256",
+      "preactivationCatalogPolicySha256",
+      "activatedCatalogPolicySha256",
     ]) {
       expect(sql.match(new RegExp(`'${field}'`, "gu"))).toHaveLength(2);
     }

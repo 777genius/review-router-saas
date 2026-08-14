@@ -380,6 +380,10 @@ CREATE TABLE IF NOT EXISTS reviewrouter_activation.activation_permit (
   ),
   permit_epoch bigint NOT NULL CHECK (permit_epoch > 0),
   permit_nonce text NOT NULL CHECK (permit_nonce ~ '^[a-f0-9]{32}$'),
+  preactivation_catalog_policy jsonb NOT NULL,
+  preactivation_catalog_policy_sha256 text NOT NULL CHECK (preactivation_catalog_policy_sha256 ~ '^sha256:[a-f0-9]{64}$'),
+  activated_catalog_policy jsonb NOT NULL,
+  activated_catalog_policy_sha256 text NOT NULL CHECK (activated_catalog_policy_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   installed_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
   consumed_at timestamptz,
   CHECK (source_system_identifier <> target_system_identifier),
@@ -397,6 +401,10 @@ CREATE TABLE IF NOT EXISTS reviewrouter_activation.activation_receipt (
   permit_nonce text NOT NULL,
   canonical_privileges_sha256 text NOT NULL,
   catalog_facts_sha256 text NOT NULL,
+  preactivation_catalog_policy jsonb NOT NULL,
+  preactivation_catalog_policy_sha256 text NOT NULL,
+  activated_catalog_policy jsonb NOT NULL,
+  activated_catalog_policy_sha256 text NOT NULL,
   before_principal_inventory_sha256 text NOT NULL,
   before_principal_policy_sha256 text NOT NULL,
   activated_principal_inventory_sha256 text NOT NULL,
@@ -448,6 +456,10 @@ CREATE TABLE IF NOT EXISTS reviewrouter_activation.activation_principal_evidence
   target_deploy_ids jsonb NOT NULL,
   permit_epoch bigint NOT NULL,
   permit_nonce text NOT NULL,
+  preactivation_catalog_policy jsonb NOT NULL,
+  preactivation_catalog_policy_sha256 text NOT NULL,
+  activated_catalog_policy jsonb NOT NULL,
+  activated_catalog_policy_sha256 text NOT NULL,
   before_inventory jsonb NOT NULL,
   before_policy jsonb NOT NULL,
   activated_inventory jsonb NOT NULL,
@@ -459,6 +471,51 @@ CREATE TABLE IF NOT EXISTS reviewrouter_activation.activation_principal_evidence
   transaction_id bigint NOT NULL,
   staged_at timestamptz NOT NULL DEFAULT transaction_timestamp()
 );
+ALTER TABLE reviewrouter_activation.activation_permit
+  ADD COLUMN IF NOT EXISTS preactivation_catalog_policy jsonb,
+  ADD COLUMN IF NOT EXISTS preactivation_catalog_policy_sha256 text,
+  ADD COLUMN IF NOT EXISTS activated_catalog_policy jsonb,
+  ADD COLUMN IF NOT EXISTS activated_catalog_policy_sha256 text;
+ALTER TABLE reviewrouter_activation.activation_receipt
+  ADD COLUMN IF NOT EXISTS preactivation_catalog_policy jsonb,
+  ADD COLUMN IF NOT EXISTS preactivation_catalog_policy_sha256 text,
+  ADD COLUMN IF NOT EXISTS activated_catalog_policy jsonb,
+  ADD COLUMN IF NOT EXISTS activated_catalog_policy_sha256 text;
+ALTER TABLE reviewrouter_activation.activation_principal_evidence
+  ADD COLUMN IF NOT EXISTS preactivation_catalog_policy jsonb,
+  ADD COLUMN IF NOT EXISTS preactivation_catalog_policy_sha256 text,
+  ADD COLUMN IF NOT EXISTS activated_catalog_policy jsonb,
+  ADD COLUMN IF NOT EXISTS activated_catalog_policy_sha256 text;
+DO $catalog_policy_upgrade$
+BEGIN
+  IF EXISTS (SELECT 1 FROM reviewrouter_activation.activation_permit WHERE
+       preactivation_catalog_policy IS NULL OR preactivation_catalog_policy_sha256 IS NULL
+       OR activated_catalog_policy IS NULL OR activated_catalog_policy_sha256 IS NULL)
+     OR EXISTS (SELECT 1 FROM reviewrouter_activation.activation_receipt WHERE
+       preactivation_catalog_policy IS NULL OR preactivation_catalog_policy_sha256 IS NULL
+       OR activated_catalog_policy IS NULL OR activated_catalog_policy_sha256 IS NULL)
+     OR EXISTS (SELECT 1 FROM reviewrouter_activation.activation_principal_evidence WHERE
+       preactivation_catalog_policy IS NULL OR preactivation_catalog_policy_sha256 IS NULL
+       OR activated_catalog_policy IS NULL OR activated_catalog_policy_sha256 IS NULL) THEN
+    RAISE EXCEPTION 'legacy activation state lacks reviewed catalog policy';
+  END IF;
+END
+$catalog_policy_upgrade$;
+ALTER TABLE reviewrouter_activation.activation_permit
+  ALTER COLUMN preactivation_catalog_policy SET NOT NULL,
+  ALTER COLUMN preactivation_catalog_policy_sha256 SET NOT NULL,
+  ALTER COLUMN activated_catalog_policy SET NOT NULL,
+  ALTER COLUMN activated_catalog_policy_sha256 SET NOT NULL;
+ALTER TABLE reviewrouter_activation.activation_receipt
+  ALTER COLUMN preactivation_catalog_policy SET NOT NULL,
+  ALTER COLUMN preactivation_catalog_policy_sha256 SET NOT NULL,
+  ALTER COLUMN activated_catalog_policy SET NOT NULL,
+  ALTER COLUMN activated_catalog_policy_sha256 SET NOT NULL;
+ALTER TABLE reviewrouter_activation.activation_principal_evidence
+  ALTER COLUMN preactivation_catalog_policy SET NOT NULL,
+  ALTER COLUMN preactivation_catalog_policy_sha256 SET NOT NULL,
+  ALTER COLUMN activated_catalog_policy SET NOT NULL,
+  ALTER COLUMN activated_catalog_policy_sha256 SET NOT NULL;
 ALTER TABLE reviewrouter_activation.activation_permit OWNER TO ${activationReceiptGuardRoleName};
 ALTER TABLE reviewrouter_activation.activation_receipt OWNER TO ${activationReceiptGuardRoleName};
 ALTER TABLE reviewrouter_activation.activation_principal_evidence OWNER TO ${activationReceiptGuardRoleName};
@@ -466,12 +523,16 @@ REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM ${activationPermitInstallerRoleName};
 REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM ${activationReceiptReaderRoleName};
 REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM ${canonicalBootstrapRoleName};
+DROP FUNCTION IF EXISTS reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text);
 CREATE OR REPLACE FUNCTION reviewrouter_activation.install_activation_permit(
   requested_rollout_id text, requested_source_system_identifier text,
   requested_target_system_identifier text, requested_postgres_major integer,
   requested_expected_commit_sha text, requested_migration_checksum text,
   requested_target_deploy_ids jsonb, requested_permit_epoch bigint,
-  requested_permit_nonce text
+  requested_permit_nonce text, requested_preactivation_catalog_policy jsonb,
+  requested_preactivation_catalog_policy_sha256 text,
+  requested_activated_catalog_policy jsonb,
+  requested_activated_catalog_policy_sha256 text
 ) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $install_permit$
 DECLARE existing reviewrouter_activation.activation_permit%ROWTYPE;
@@ -490,18 +551,41 @@ BEGIN
      OR (SELECT count(DISTINCT value) FROM jsonb_array_elements_text(requested_target_deploy_ids) value)
         <> jsonb_array_length(requested_target_deploy_ids)
      OR requested_permit_epoch < 1
-     OR requested_permit_nonce !~ '^[a-f0-9]{32}$' THEN
+     OR requested_permit_nonce !~ '^[a-f0-9]{32}$'
+     OR requested_preactivation_catalog_policy_sha256 !~ '^sha256:[a-f0-9]{64}$'
+     OR requested_activated_catalog_policy_sha256 !~ '^sha256:[a-f0-9]{64}$'
+     OR requested_preactivation_catalog_policy->>'kind' IS DISTINCT FROM 'reviewrouter-activation-catalog-policy'
+     OR requested_activated_catalog_policy->>'kind' IS DISTINCT FROM 'reviewrouter-activation-catalog-policy'
+     OR requested_preactivation_catalog_policy->>'version' IS DISTINCT FROM '1'
+     OR requested_activated_catalog_policy->>'version' IS DISTINCT FROM '1'
+     OR requested_preactivation_catalog_policy->>'phase' IS DISTINCT FROM 'preactivation'
+     OR requested_activated_catalog_policy->>'phase' IS DISTINCT FROM 'activated'
+     OR (SELECT count(*) FROM jsonb_object_keys(requested_preactivation_catalog_policy)) <> 10
+     OR (SELECT count(*) FROM jsonb_object_keys(requested_activated_catalog_policy)) <> 10
+     OR NOT requested_preactivation_catalog_policy ?& ARRAY['kind','version','phase','database','roles','memberships','roleReachability','rowSecurity','grants','effectivePermissions']
+     OR NOT requested_activated_catalog_policy ?& ARRAY['kind','version','phase','database','roles','memberships','roleReachability','rowSecurity','grants','effectivePermissions']
+     OR EXISTS (SELECT 1 FROM unnest(ARRAY['roles','memberships','roleReachability','rowSecurity','grants','effectivePermissions']) field
+       WHERE jsonb_typeof(requested_preactivation_catalog_policy->field) IS DISTINCT FROM 'array'
+          OR jsonb_typeof(requested_activated_catalog_policy->field) IS DISTINCT FROM 'array')
+     OR requested_preactivation_catalog_policy_sha256 <> 'sha256:' || encode(sha256(convert_to(
+          reviewrouter_activation.canonical_json(requested_preactivation_catalog_policy),'UTF8')),'hex')
+     OR requested_activated_catalog_policy_sha256 <> 'sha256:' || encode(sha256(convert_to(
+          reviewrouter_activation.canonical_json(requested_activated_catalog_policy),'UTF8')),'hex') THEN
     RAISE EXCEPTION 'activation permit invalid';
   END IF;
   INSERT INTO reviewrouter_activation.activation_permit (
     rollout_id, source_system_identifier, target_system_identifier,
     postgres_major, expected_commit_sha, migration_checksum,
-    target_deploy_ids, permit_epoch, permit_nonce
+    target_deploy_ids, permit_epoch, permit_nonce,
+    preactivation_catalog_policy,preactivation_catalog_policy_sha256,
+    activated_catalog_policy,activated_catalog_policy_sha256
   ) VALUES (
     requested_rollout_id, requested_source_system_identifier,
     requested_target_system_identifier, requested_postgres_major,
     requested_expected_commit_sha, requested_migration_checksum,
-    requested_target_deploy_ids, requested_permit_epoch, requested_permit_nonce
+    requested_target_deploy_ids, requested_permit_epoch, requested_permit_nonce,
+    requested_preactivation_catalog_policy,requested_preactivation_catalog_policy_sha256,
+    requested_activated_catalog_policy,requested_activated_catalog_policy_sha256
   ) ON CONFLICT (rollout_id) DO NOTHING;
   IF FOUND THEN RETURN true; END IF;
   SELECT * INTO existing FROM reviewrouter_activation.activation_permit
@@ -513,16 +597,20 @@ BEGIN
      AND existing.migration_checksum = requested_migration_checksum
      AND existing.target_deploy_ids = requested_target_deploy_ids
      AND existing.permit_epoch = requested_permit_epoch
-     AND existing.permit_nonce = requested_permit_nonce THEN
+     AND existing.permit_nonce = requested_permit_nonce
+     AND existing.preactivation_catalog_policy = requested_preactivation_catalog_policy
+     AND existing.preactivation_catalog_policy_sha256 = requested_preactivation_catalog_policy_sha256
+     AND existing.activated_catalog_policy = requested_activated_catalog_policy
+     AND existing.activated_catalog_policy_sha256 = requested_activated_catalog_policy_sha256 THEN
     RETURN false;
   END IF;
   RAISE EXCEPTION 'activation permit conflicts with installed tuple';
 END
 $install_permit$;
-ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) OWNER TO ${activationReceiptGuardRoleName};
-REVOKE ALL ON FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) FROM PUBLIC;
+ALTER FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text) OWNER TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text) FROM PUBLIC;
 GRANT USAGE ON SCHEMA reviewrouter_activation TO ${activationPermitInstallerRoleName};
-GRANT EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text) TO ${activationPermitInstallerRoleName};
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text) TO ${activationPermitInstallerRoleName};
 CREATE OR REPLACE FUNCTION reviewrouter_activation.assert_no_activation_receipt()
 RETURNS void LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $assert_no_receipt$
@@ -561,6 +649,7 @@ CREATE OR REPLACE FUNCTION reviewrouter_activation.project_effective_principal_a
 SET search_path = pg_catalog, pg_temp AS $project_effective_principal_authority$
 DECLARE projected_inventory jsonb;
 DECLARE projected_policy jsonb;
+DECLARE projected_catalog_policy jsonb;
 DECLARE policy_violations jsonb;
 DECLARE allowed_principal_contract jsonb;
 DECLARE role_capability_matrix_contract jsonb;
@@ -632,7 +721,11 @@ ${effectivePrincipalInventorySql}
     LEFT JOIN permitted_reachability permitted
       ON permitted.login_name=reachable.login_name
      AND permitted.role_name=reachable.role_name
-    WHERE capability.enabled AND NOT coalesce(
+    -- Bootstrap reachability is administrative and can be universal for a
+    -- provider superuser. Its complete facts are still exact in catalogPolicy.
+    WHERE capability.enabled
+      AND reachable.login_name <> '${canonicalBootstrapRoleName}'
+      AND NOT coalesce(
       CASE capability.kind WHEN 'usage' THEN permitted.allow_usage
         ELSE permitted.allow_set END, false)
     UNION ALL
@@ -676,7 +769,8 @@ ${effectivePrincipalInventorySql}
     LEFT JOIN permitted_reachability permitted
       ON permitted.login_name=reachable.login_name
      AND permitted.role_name=reachable.role_name
-    WHERE reachable.via_usage AND NOT coalesce(permitted.allow_usage,false)
+    WHERE reachable.login_name <> '${canonicalBootstrapRoleName}'
+      AND reachable.via_usage AND NOT coalesce(permitted.allow_usage,false)
     UNION ALL
     SELECT 'unexpected_public_permission', 'PUBLIC', grant_record->>'capability',
       grant_record->>'resource'
@@ -719,11 +813,48 @@ ${effectivePrincipalInventorySql}
     'rowSecurity',projected_inventory->'rowSecurity',
     'violations',policy_violations
   ) INTO projected_policy;
+  WITH role_names AS (
+    SELECT role->>'name' AS principal
+    FROM jsonb_array_elements(projected_inventory->'roles') role
+  ), effective AS (
+    SELECT role_names.principal, grant_record->>'capability' AS capability,
+      grant_record->>'resource' AS resource
+    FROM role_names
+    CROSS JOIN LATERAL jsonb_array_elements(projected_inventory->'grants') grant_record
+    WHERE grant_record->>'principal' IN ('PUBLIC',role_names.principal)
+       OR EXISTS (
+         SELECT 1 FROM jsonb_array_elements(projected_inventory->'roleReachability') reachability
+         WHERE reachability->>'principal'=role_names.principal
+           AND reachability->>'role'=grant_record->>'principal'
+           AND ((reachability->>'usage')::boolean OR (reachability->>'set')::boolean)
+       )
+  ), effective_contract AS (
+    SELECT role_names.principal, coalesce(jsonb_agg(DISTINCT jsonb_build_object(
+      'capability',effective.capability,'resource',effective.resource)
+      ORDER BY jsonb_build_object('capability',effective.capability,'resource',effective.resource))
+      FILTER (WHERE effective.capability IS NOT NULL),
+      '[]'::jsonb) AS permissions
+    FROM role_names LEFT JOIN effective USING (principal)
+    GROUP BY role_names.principal
+  )
+  SELECT jsonb_build_object(
+    'kind','reviewrouter-activation-catalog-policy','version',1,
+    'phase',requested_phase,'database',projected_inventory->'database',
+    'roles',projected_inventory->'roles',
+    'memberships',projected_inventory->'memberships',
+    'roleReachability',projected_inventory->'roleReachability',
+    'rowSecurity',projected_inventory->'rowSecurity',
+    'grants',projected_inventory->'grants',
+    'effectivePermissions',(SELECT jsonb_agg(jsonb_build_object(
+      'principal',principal,'permissions',permissions) ORDER BY principal)
+      FROM effective_contract)
+  ) INTO projected_catalog_policy;
   RETURN jsonb_build_object(
     'kind','reviewrouter-effective-principal-projection',
     'version',2,
     'inventory',projected_inventory,
-    'policy',projected_policy
+    'policy',projected_policy,
+    'catalogPolicy',projected_catalog_policy
   );
 END
 $project_effective_principal_authority$;
@@ -798,6 +929,14 @@ BEGIN
         evidence.activated_inventory->'rowSecurity'
      OR evidence.before_policy->'violations' IS DISTINCT FROM '[]'::jsonb
      OR evidence.activated_policy->'violations' IS DISTINCT FROM '[]'::jsonb
+     OR evidence.preactivation_catalog_policy->>'kind' IS DISTINCT FROM 'reviewrouter-activation-catalog-policy'
+     OR evidence.activated_catalog_policy->>'kind' IS DISTINCT FROM 'reviewrouter-activation-catalog-policy'
+     OR evidence.preactivation_catalog_policy->>'phase' IS DISTINCT FROM 'preactivation'
+     OR evidence.activated_catalog_policy->>'phase' IS DISTINCT FROM 'activated'
+     OR evidence.preactivation_catalog_policy_sha256 <> 'sha256:' || encode(sha256(convert_to(
+          reviewrouter_activation.canonical_json(evidence.preactivation_catalog_policy),'UTF8')),'hex')
+     OR evidence.activated_catalog_policy_sha256 <> 'sha256:' || encode(sha256(convert_to(
+          reviewrouter_activation.canonical_json(evidence.activated_catalog_policy),'UTF8')),'hex')
      OR evidence.before_principal_inventory_sha256 !~ '^sha256:[a-f0-9]{64}$'
      OR evidence.before_principal_policy_sha256 !~ '^sha256:[a-f0-9]{64}$'
      OR evidence.activated_principal_inventory_sha256 !~ '^sha256:[a-f0-9]{64}$'
@@ -835,6 +974,7 @@ DECLARE live_migration_checksum text;
 DECLARE projection jsonb;
 DECLARE inventory jsonb;
 DECLARE policy jsonb;
+DECLARE catalog_policy jsonb;
 DECLARE inventory_sha256 text;
 DECLARE policy_sha256 text;
 BEGIN
@@ -854,6 +994,7 @@ BEGIN
   projection := reviewrouter_activation.project_effective_principal_authority('preactivation');
   inventory := projection->'inventory';
   policy := projection->'policy';
+  catalog_policy := projection->'catalogPolicy';
   inventory_sha256 := 'sha256:' || encode(pg_catalog.sha256(convert_to(
     reviewrouter_activation.canonical_json(inventory),'UTF8')),'hex');
   policy_sha256 := 'sha256:' || encode(pg_catalog.sha256(convert_to(
@@ -879,9 +1020,16 @@ BEGIN
      OR jsonb_array_length(policy->'violations') <> 0 THEN
     RAISE EXCEPTION 'principal evidence invalid or stale';
   END IF;
+  IF catalog_policy IS DISTINCT FROM permit.preactivation_catalog_policy
+     OR permit.preactivation_catalog_policy_sha256 <> 'sha256:' || encode(pg_catalog.sha256(convert_to(
+       reviewrouter_activation.canonical_json(catalog_policy),'UTF8')),'hex') THEN
+    RAISE EXCEPTION 'activation catalog policy mismatch';
+  END IF;
   INSERT INTO reviewrouter_activation.activation_principal_evidence (
     rollout_id,source_system_identifier,target_system_identifier,postgres_major,
     expected_commit_sha,migration_checksum,target_deploy_ids,permit_epoch,permit_nonce,
+    preactivation_catalog_policy,preactivation_catalog_policy_sha256,
+    activated_catalog_policy,activated_catalog_policy_sha256,
     before_inventory,before_policy,activated_inventory,activated_policy,
     before_principal_inventory_sha256,before_principal_policy_sha256,
     activated_principal_inventory_sha256,activated_principal_policy_sha256,transaction_id
@@ -889,6 +1037,8 @@ BEGIN
     permit.rollout_id,permit.source_system_identifier,permit.target_system_identifier,
     permit.postgres_major,permit.expected_commit_sha,permit.migration_checksum,
     permit.target_deploy_ids,permit.permit_epoch,permit.permit_nonce,
+    permit.preactivation_catalog_policy,permit.preactivation_catalog_policy_sha256,
+    permit.activated_catalog_policy,permit.activated_catalog_policy_sha256,
     inventory,policy,inventory,policy,inventory_sha256,policy_sha256,
     inventory_sha256,policy_sha256,txid_current()
   ) ON CONFLICT (rollout_id) DO UPDATE SET
@@ -900,6 +1050,10 @@ BEGIN
     target_deploy_ids=EXCLUDED.target_deploy_ids,
     permit_epoch=EXCLUDED.permit_epoch,
     permit_nonce=EXCLUDED.permit_nonce,
+    preactivation_catalog_policy=EXCLUDED.preactivation_catalog_policy,
+    preactivation_catalog_policy_sha256=EXCLUDED.preactivation_catalog_policy_sha256,
+    activated_catalog_policy=EXCLUDED.activated_catalog_policy,
+    activated_catalog_policy_sha256=EXCLUDED.activated_catalog_policy_sha256,
     before_inventory=EXCLUDED.before_inventory,
     before_policy=EXCLUDED.before_policy,
     activated_inventory=EXCLUDED.activated_inventory,
@@ -936,6 +1090,7 @@ DECLARE activation_body_facts jsonb;
 DECLARE activated_projection jsonb;
 DECLARE live_activated_inventory jsonb;
 DECLARE live_activated_policy jsonb;
+DECLARE live_activated_catalog_policy jsonb;
 DECLARE acl_is_canonical boolean;
 DECLARE canonical_privileges_sha256 text;
 DECLARE catalog_facts_sha256 text;
@@ -958,7 +1113,11 @@ BEGIN
        OR receipt.migration_checksum <> permit.migration_checksum
        OR receipt.target_deploy_ids <> permit.target_deploy_ids
        OR receipt.permit_epoch <> permit.permit_epoch
-       OR receipt.permit_nonce <> permit.permit_nonce THEN
+       OR receipt.permit_nonce <> permit.permit_nonce
+       OR receipt.preactivation_catalog_policy <> permit.preactivation_catalog_policy
+       OR receipt.preactivation_catalog_policy_sha256 <> permit.preactivation_catalog_policy_sha256
+       OR receipt.activated_catalog_policy <> permit.activated_catalog_policy
+       OR receipt.activated_catalog_policy_sha256 <> permit.activated_catalog_policy_sha256 THEN
       RAISE EXCEPTION 'activation receipt conflicts with permit replay';
     END IF;
   ELSIF permit.consumed_at IS NOT NULL THEN
@@ -976,6 +1135,10 @@ BEGIN
        OR principal_evidence.target_deploy_ids <> permit.target_deploy_ids
        OR principal_evidence.permit_epoch <> permit.permit_epoch
        OR principal_evidence.permit_nonce <> permit.permit_nonce
+       OR principal_evidence.preactivation_catalog_policy <> permit.preactivation_catalog_policy
+       OR principal_evidence.preactivation_catalog_policy_sha256 <> permit.preactivation_catalog_policy_sha256
+       OR principal_evidence.activated_catalog_policy <> permit.activated_catalog_policy
+       OR principal_evidence.activated_catalog_policy_sha256 <> permit.activated_catalog_policy_sha256
        OR receipt.before_principal_inventory_sha256 <>
           principal_evidence.before_principal_inventory_sha256
        OR receipt.before_principal_policy_sha256 <>
@@ -1013,6 +1176,7 @@ BEGIN
     activated_projection := reviewrouter_activation.project_effective_principal_authority('activated');
     live_activated_inventory := activated_projection->'inventory';
     live_activated_policy := activated_projection->'policy';
+    live_activated_catalog_policy := activated_projection->'catalogPolicy';
     IF activated_projection->>'kind' IS DISTINCT FROM 'reviewrouter-effective-principal-projection'
        OR activated_projection->>'version' IS DISTINCT FROM '2'
        OR live_activated_inventory->>'version' IS DISTINCT FROM '1'
@@ -1032,6 +1196,11 @@ BEGIN
           live_activated_inventory->'rowSecurity'
        OR live_activated_policy->'violations' IS DISTINCT FROM '[]'::jsonb THEN
       RAISE EXCEPTION 'activated principal authority policy rejected';
+    END IF;
+    IF live_activated_catalog_policy IS DISTINCT FROM permit.activated_catalog_policy
+       OR permit.activated_catalog_policy_sha256 <> 'sha256:' || encode(pg_catalog.sha256(convert_to(
+         reviewrouter_activation.canonical_json(live_activated_catalog_policy),'UTF8')),'hex') THEN
+      RAISE EXCEPTION 'activated catalog policy mismatch';
     END IF;
     UPDATE reviewrouter_activation.activation_principal_evidence SET
       activated_inventory=live_activated_inventory,
@@ -1261,7 +1430,7 @@ BEGIN
   ) INTO activation_body_facts
   FROM pg_proc installer, pg_proc canonical, pg_proc projector, pg_proc validator,
     pg_proc stage, pg_proc activate, pg_proc reader
-  WHERE installer.oid='reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)'::regprocedure
+  WHERE installer.oid='reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)'::regprocedure
     AND canonical.oid='reviewrouter_activation.canonical_json(jsonb)'::regprocedure
     AND projector.oid='reviewrouter_activation.project_effective_principal_authority(text)'::regprocedure
     AND validator.oid='reviewrouter_activation.validate_principal_evidence(text,bigint)'::regprocedure
@@ -1277,6 +1446,10 @@ BEGIN
   IF receipt.rollout_id IS NOT NULL THEN
     IF receipt.canonical_privileges_sha256 <> canonical_privileges_sha256
        OR receipt.catalog_facts_sha256 <> catalog_facts_sha256
+       OR receipt.preactivation_catalog_policy_sha256 <>
+          principal_evidence.preactivation_catalog_policy_sha256
+       OR receipt.activated_catalog_policy_sha256 <>
+          principal_evidence.activated_catalog_policy_sha256
        OR receipt.before_principal_inventory_sha256 <>
           principal_evidence.before_principal_inventory_sha256
        OR receipt.before_principal_policy_sha256 <>
@@ -1295,6 +1468,8 @@ BEGIN
       permit.target_deploy_ids::text || ':' || permit.permit_epoch::text || ':' ||
       permit.permit_nonce || ':' || canonical_privileges_sha256 || ':' ||
       catalog_facts_sha256 || ':' ||
+      permit.preactivation_catalog_policy_sha256 || ':' ||
+      permit.activated_catalog_policy_sha256 || ':' ||
       principal_evidence.before_principal_inventory_sha256 || ':' ||
       principal_evidence.before_principal_policy_sha256 || ':' ||
       principal_evidence.activated_principal_inventory_sha256 || ':' ||
@@ -1303,7 +1478,9 @@ BEGIN
       rollout_id, source_system_identifier, target_system_identifier,
       postgres_major, expected_commit_sha, migration_checksum, target_deploy_ids,
       permit_epoch, permit_nonce, canonical_privileges_sha256,
-      catalog_facts_sha256, before_principal_inventory_sha256,
+      catalog_facts_sha256, preactivation_catalog_policy,
+      preactivation_catalog_policy_sha256, activated_catalog_policy,
+      activated_catalog_policy_sha256, before_principal_inventory_sha256,
       before_principal_policy_sha256, activated_principal_inventory_sha256,
       activated_principal_policy_sha256, first_write_receipt_sha256, transaction_id
     ) VALUES (
@@ -1312,6 +1489,10 @@ BEGIN
       permit.expected_commit_sha, permit.migration_checksum,
       permit.target_deploy_ids, permit.permit_epoch, permit.permit_nonce,
       canonical_privileges_sha256, catalog_facts_sha256,
+      permit.preactivation_catalog_policy,
+      permit.preactivation_catalog_policy_sha256,
+      permit.activated_catalog_policy,
+      permit.activated_catalog_policy_sha256,
       principal_evidence.before_principal_inventory_sha256,
       principal_evidence.before_principal_policy_sha256,
       principal_evidence.activated_principal_inventory_sha256,
@@ -1335,6 +1516,8 @@ BEGIN
     'permitNonce',receipt.permit_nonce,
     'canonicalPrivilegesSha256',receipt.canonical_privileges_sha256,
     'catalogFactsSha256',receipt.catalog_facts_sha256,
+    'preactivationCatalogPolicySha256',receipt.preactivation_catalog_policy_sha256,
+    'activatedCatalogPolicySha256',receipt.activated_catalog_policy_sha256,
     'beforePrincipalInventorySha256',receipt.before_principal_inventory_sha256,
     'beforePrincipalPolicySha256',receipt.before_principal_policy_sha256,
     'activatedPrincipalInventorySha256',receipt.activated_principal_inventory_sha256,
@@ -1376,12 +1559,22 @@ BEGIN
     receipt.target_deploy_ids::text || ':' || receipt.permit_epoch::text || ':' ||
     receipt.permit_nonce || ':' || receipt.canonical_privileges_sha256 || ':' ||
     receipt.catalog_facts_sha256 || ':' ||
+    receipt.preactivation_catalog_policy_sha256 || ':' ||
+    receipt.activated_catalog_policy_sha256 || ':' ||
     principal_evidence.before_principal_inventory_sha256 || ':' ||
     principal_evidence.before_principal_policy_sha256 || ':' ||
     principal_evidence.activated_principal_inventory_sha256 || ':' ||
     principal_evidence.activated_principal_policy_sha256,'UTF8')),'hex');
   IF receipt.before_principal_inventory_sha256 <>
        principal_evidence.before_principal_inventory_sha256
+     OR receipt.preactivation_catalog_policy <>
+       principal_evidence.preactivation_catalog_policy
+     OR receipt.preactivation_catalog_policy_sha256 <>
+       principal_evidence.preactivation_catalog_policy_sha256
+     OR receipt.activated_catalog_policy <>
+       principal_evidence.activated_catalog_policy
+     OR receipt.activated_catalog_policy_sha256 <>
+       principal_evidence.activated_catalog_policy_sha256
      OR receipt.before_principal_policy_sha256 <>
        principal_evidence.before_principal_policy_sha256
      OR receipt.activated_principal_inventory_sha256 <>
@@ -1403,6 +1596,8 @@ BEGIN
     'permitNonce',receipt.permit_nonce,
     'canonicalPrivilegesSha256',receipt.canonical_privileges_sha256,
     'catalogFactsSha256',receipt.catalog_facts_sha256,
+    'preactivationCatalogPolicySha256',receipt.preactivation_catalog_policy_sha256,
+    'activatedCatalogPolicySha256',receipt.activated_catalog_policy_sha256,
     'beforePrincipalInventorySha256',receipt.before_principal_inventory_sha256,
     'beforePrincipalPolicySha256',receipt.before_principal_policy_sha256,
     'activatedPrincipalInventorySha256',receipt.activated_principal_inventory_sha256,
@@ -2148,7 +2343,7 @@ BEGIN
   IF to_regclass('reviewrouter_activation.activation_permit') IS NULL
      OR to_regclass('reviewrouter_activation.activation_receipt') IS NULL
      OR to_regclass('reviewrouter_activation.activation_principal_evidence') IS NULL
-     OR to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)') IS NULL
+     OR to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)') IS NULL
      OR to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)') IS NULL
      OR to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)') IS NULL
      OR to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)') IS NULL
@@ -2158,7 +2353,7 @@ BEGIN
      OR pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_permit'::regclass)) <> '${activationReceiptGuardRoleName}'
      OR pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_receipt'::regclass)) <> '${activationReceiptGuardRoleName}'
      OR pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_principal_evidence'::regclass)) <> '${activationReceiptGuardRoleName}'
-     OR has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text)','EXECUTE')
+     OR has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)','EXECUTE')
      OR has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.activate_generation(text)','EXECUTE')
      OR has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.activate_generation(text)','EXECUTE')
      OR has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.stage_principal_evidence(text)','EXECUTE')

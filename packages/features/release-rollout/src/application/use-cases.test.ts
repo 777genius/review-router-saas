@@ -120,6 +120,8 @@ const activationObservation: StepObservation = {
     activatedPrincipalInventorySha256: `sha256:${"a".repeat(64)}`,
     activatedPrincipalPolicySha256: `sha256:${"b".repeat(64)}`,
     catalogFactsSha256: `sha256:${"4".repeat(64)}`,
+    preactivationCatalogPolicySha256: `sha256:${"c".repeat(64)}`,
+    activatedCatalogPolicySha256: `sha256:${"d".repeat(64)}`,
     firstWriteReceiptSha256: `sha256:${"5".repeat(64)}`,
     observationSha256: `sha256:${"6".repeat(64)}`,
     transactionId: "42",
