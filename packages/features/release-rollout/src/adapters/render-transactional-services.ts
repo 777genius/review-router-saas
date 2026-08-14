@@ -24,6 +24,7 @@ import {
 import { RenderApiAdapter, type RenderFetch } from "./render-api";
 import type { ProviderMutationAuthorityPort } from "../application/provider-mutation-authority";
 import { AuthorizedRenderMutations } from "./authorized-render-mutations";
+import { RenderServiceContractMatcher } from "./render-service-contract";
 
 const active = new Set([
   "created",
@@ -119,13 +120,16 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
       region: details.region,
       plan: details.plan,
       maxShutdownDelaySeconds: details.maxShutdownDelaySeconds,
+      numInstances: details.numInstances,
       autoDeploy: service.autoDeploy,
     };
     if (
       (runtime !== "node" && runtime !== "image") ||
       typeof details.region !== "string" ||
       typeof details.plan !== "string" ||
-      typeof details.maxShutdownDelaySeconds !== "number"
+      typeof details.maxShutdownDelaySeconds !== "number" ||
+      typeof details.numInstances !== "number" ||
+      service.autoDeployTrigger !== "off"
     )
       throw new Error("service_transition_provider_contract_incomplete");
     if (
@@ -136,9 +140,46 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
         typeof specific.buildCommand !== "string" ||
         typeof specific.startCommand !== "string" ||
         typeof (specific.preDeployCommand ?? details.preDeployCommand) !==
-          "string")
+          "string" ||
+        ![specific.healthCheckPath ?? details.healthCheckPath].every(
+          (item) => item === null || typeof item === "string",
+        ))
     )
       throw new Error("service_transition_native_contract_incomplete");
+    const observedContract =
+      runtime === "image" && typeof imagePath === "string"
+        ? new RenderServiceContractMatcher({
+            serviceId,
+            runtime,
+            imagePath,
+            autoDeploy: "no",
+            autoDeployTrigger: "off",
+            preDeployCommand: String(sourceContract.preDeployCommand),
+          })
+        : runtime === "node"
+          ? new RenderServiceContractMatcher({
+              serviceId,
+              runtime,
+              imagePath: null,
+              repository: String(sourceContract.repository),
+              branch: String(sourceContract.branch),
+              rootDir: String(sourceContract.rootDir),
+              buildCommand: String(sourceContract.buildCommand),
+              startCommand: String(sourceContract.startCommand),
+              preDeployCommand: String(sourceContract.preDeployCommand),
+              healthCheckPath: sourceContract.healthCheckPath as string | null,
+              region: String(sourceContract.region),
+              plan: String(sourceContract.plan),
+              maxShutdownDelaySeconds: Number(
+                sourceContract.maxShutdownDelaySeconds,
+              ),
+              numInstances: Number(sourceContract.numInstances),
+              autoDeploy: "no",
+              autoDeployTrigger: "off",
+            })
+          : undefined;
+    if (!observedContract?.matches(service))
+      throw new Error("service_transition_provider_contract_incomplete");
     const configurationSha256 =
       runtime === "image" && typeof imagePath === "string"
         ? targetServiceConfigurationSha256({
@@ -199,6 +240,14 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
   }
 
   async configureTarget(contract: TargetServiceRelease): Promise<void> {
+    const expected = new RenderServiceContractMatcher({
+      serviceId: contract.serviceId,
+      runtime: "image",
+      imagePath: contract.artifact.reference,
+      autoDeploy: "no",
+      autoDeployTrigger: "off",
+      preDeployCommand: "",
+    });
     const { mutations, context } = this.mutation(
       `configure_target:${contract.serviceId}`,
     );
@@ -210,17 +259,44 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
         image: { imagePath: contract.artifact.reference },
         serviceDetails: { runtime: "image", preDeployCommand: "" },
       },
-      (service) =>
-        (service.imagePath ?? service.image?.imagePath) ===
-        contract.artifact.reference,
+      (service) => expected.matches(service),
     );
-    await this.waitForTargetConfiguration(contract);
+    await this.waitForServiceContract(
+      expected,
+      "service_transition_target_configuration_unproven",
+    );
   }
 
   async configureSource(contract: SourceServiceSnapshot): Promise<void> {
     if (contract.configuration.format !== RENDER_SOURCE_CONFIGURATION_FORMAT)
       throw new Error("render_service_transition_configuration_format_invalid");
     const configuration = renderSourceConfigurationV1(contract);
+    let numInstances = configuration.numInstances;
+    if (numInstances === undefined) {
+      const current = await this.api.getService(contract.serviceId);
+      const currentDetails = record(current.serviceDetails);
+      if (typeof currentDetails.numInstances !== "number")
+        throw new Error("service_transition_instance_count_unobserved");
+      numInstances = currentDetails.numInstances;
+    }
+    const expected = new RenderServiceContractMatcher({
+      serviceId: contract.serviceId,
+      runtime: "node",
+      imagePath: null,
+      repository: configuration.repository,
+      branch: configuration.branch,
+      rootDir: configuration.rootDir,
+      buildCommand: configuration.buildCommand,
+      startCommand: configuration.startCommand,
+      preDeployCommand: configuration.preDeployCommand,
+      healthCheckPath: configuration.healthCheckPath,
+      region: configuration.region,
+      plan: configuration.plan,
+      maxShutdownDelaySeconds: configuration.maxShutdownDelaySeconds,
+      numInstances,
+      autoDeploy: "no",
+      autoDeployTrigger: "off",
+    });
     const { mutations, context } = this.mutation(
       `configure_source:${contract.serviceId}`,
     );
@@ -245,15 +321,16 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
           maxShutdownDelaySeconds: Number(
             configuration.maxShutdownDelaySeconds,
           ),
+          ...(configuration.numInstances === undefined
+            ? {}
+            : { numInstances: Number(configuration.numInstances) }),
         },
       },
-      (service) =>
-        service.repo === configuration.repository &&
-        service.branch === configuration.branch,
+      (service) => expected.matches(service),
     );
-    await this.waitForContract(
-      contract.serviceId,
-      contract.configuration.sha256,
+    await this.waitForServiceContract(
+      expected,
+      "service_transition_configuration_unproven",
     );
   }
 
@@ -339,13 +416,19 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
         (details.runtime ?? specific.runtime) !== "node" ||
         typeof service.repo !== "string" ||
         typeof service.branch !== "string" ||
+        typeof service.rootDir !== "string" ||
         typeof specific.buildCommand !== "string" ||
         typeof specific.startCommand !== "string" ||
         typeof (specific.preDeployCommand ?? details.preDeployCommand) !==
           "string" ||
+        ![specific.healthCheckPath ?? details.healthCheckPath].every(
+          (item) => item === null || typeof item === "string",
+        ) ||
         typeof details.region !== "string" ||
         typeof details.plan !== "string" ||
-        typeof details.maxShutdownDelaySeconds !== "number"
+        typeof details.maxShutdownDelaySeconds !== "number" ||
+        typeof details.numInstances !== "number" ||
+        service.autoDeployTrigger !== "off"
       )
         throw new Error("service_transition_source_capture_incomplete");
       const value = {
@@ -367,6 +450,7 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
         region: details.region,
         plan: details.plan,
         maxShutdownDelaySeconds: details.maxShutdownDelaySeconds,
+        numInstances: details.numInstances,
         autoDeploy: "no" as const,
         databaseEnvKey: expected.databaseEnvKey,
         databaseRole: expected.databaseRole,
@@ -491,46 +575,15 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
     throw new Error("service_transition_suspension_unproven");
   }
 
-  private async waitForContract(
-    serviceId: string,
-    expected: string,
+  private async waitForServiceContract(
+    expected: RenderServiceContractMatcher,
+    error: string,
   ): Promise<void> {
     for (let attempt = 0; attempt < 30; attempt += 1) {
-      try {
-        if ((await this.observe(serviceId)).configurationSha256 === expected)
-          return;
-      } catch (error) {
-        if (
-          !(error instanceof Error) ||
-          error.message !== "service_transition_active_deploy_present"
-        )
-          throw error;
-      }
+      const service = await this.api.getService(expected.value.serviceId);
+      if (expected.matches(service)) return;
       await this.sleep(2_000);
     }
-    throw new Error("service_transition_configuration_unproven");
-  }
-
-  private async waitForTargetConfiguration(
-    contract: TargetServiceRelease,
-  ): Promise<void> {
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      const service = await this.api.getService(contract.serviceId);
-      const details = record(service.serviceDetails);
-      const specific = record(details.envSpecificDetails);
-      const runtime = details.runtime ?? specific.runtime;
-      const imagePath =
-        service.imagePath ?? service.image?.imagePath ?? details.imagePath;
-      if (
-        service.id === contract.serviceId &&
-        service.autoDeploy === "no" &&
-        runtime === "image" &&
-        imagePath === contract.artifact.reference &&
-        (specific.preDeployCommand ?? details.preDeployCommand ?? "") === ""
-      )
-        return;
-      await this.sleep(2_000);
-    }
-    throw new Error("service_transition_target_configuration_unproven");
+    throw new Error(error);
   }
 }

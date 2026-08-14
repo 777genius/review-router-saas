@@ -27,6 +27,8 @@ export type RenderSourceServiceContractV1 = Readonly<{
   region: string;
   plan: string;
   maxShutdownDelaySeconds: number;
+  /** Added to newly captured v1 values; absent legacy evidence remains readable. */
+  numInstances?: number;
   autoDeploy: "no";
   databaseEnvKey: string;
   databaseRole: string;
@@ -71,6 +73,9 @@ export const renderSourceServiceContractSha256 = (
     region: value.region,
     plan: value.plan,
     maxShutdownDelaySeconds: value.maxShutdownDelaySeconds,
+    ...(value.numInstances === undefined
+      ? {}
+      : { numInstances: value.numInstances }),
     autoDeploy: value.autoDeploy,
   });
 
@@ -94,6 +99,9 @@ const configurationPayload = (
   region: source.region,
   plan: source.plan,
   maxShutdownDelaySeconds: source.maxShutdownDelaySeconds,
+  ...(source.numInstances === undefined
+    ? {}
+    : { numInstances: source.numInstances }),
   autoDeploy: source.autoDeploy,
 });
 
@@ -158,6 +166,8 @@ export const renderSourceConfigurationV1 = (
     typeof payload.region !== "string" ||
     typeof payload.plan !== "string" ||
     typeof payload.maxShutdownDelaySeconds !== "number" ||
+    (payload.numInstances !== undefined &&
+      typeof payload.numInstances !== "number") ||
     payload.autoDeploy !== "no"
   )
     throw new Error("render_service_transition_configuration_invalid");
@@ -190,6 +200,9 @@ export function toRenderSourceRecoveryManifestV1(
         region: configuration.region,
         plan: configuration.plan,
         maxShutdownDelaySeconds: configuration.maxShutdownDelaySeconds,
+        ...(configuration.numInstances === undefined
+          ? {}
+          : { numInstances: configuration.numInstances }),
         autoDeploy: configuration.autoDeploy,
         databaseEnvKey: source.databaseEnvKey,
         databaseRole: source.databaseRole,
