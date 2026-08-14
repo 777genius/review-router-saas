@@ -5,6 +5,10 @@ import {
   releaseAuthoritySchemaIsReady,
   type ReleaseAuthorityDatabaseReadiness,
 } from "./release-authority/application/readiness.js";
+import {
+  createBoundedReadinessPolicy,
+  type BoundedReadinessPolicyOptions,
+} from "./release-authority/application/bounded-readiness.js";
 import { ObserveRunnerCleanup } from "./release-witness-application.js";
 import type { ReleaseAuthorityMutationReadinessPort } from "./release-witness-domain.js";
 import {
@@ -21,12 +25,13 @@ export async function createReleaseWitnessApp(input: {
   readonly readinessObserver?: (
     prisma: PrismaClient,
   ) => Promise<ReleaseAuthorityDatabaseReadiness>;
+  readonly readinessPolicy?: Partial<BoundedReadinessPolicyOptions>;
   readonly mutationReadiness?: ReleaseAuthorityMutationReadinessPort;
 }): Promise<FastifyInstance> {
   if (!/^[a-f0-9]{64}$/u.test(input.triggerTokenSha256))
     throw new Error("release_witness_credential_hash_invalid");
   const postgres = new PostgresCleanupObservationAdapter(input.witnessPrisma);
-  const assertAuthorityReady = async (): Promise<void> => {
+  const observeAuthority = async (): Promise<void> => {
     const readiness = await (
       input.readinessObserver ?? observeReleaseAuthorityDatabaseReadiness
     )(input.witnessPrisma);
@@ -35,11 +40,21 @@ export async function createReleaseWitnessApp(input: {
       readiness.postgresMajor !== 17 ||
       !releaseAuthoritySchemaIsReady(readiness)
     )
-      throw Object.assign(
-        new Error("release_witness_authority_readiness_degraded"),
-        { statusCode: 503 },
-      );
+      throw new Error("release_witness_authority_readiness_degraded");
   };
+  const readiness = createBoundedReadinessPolicy(
+    observeAuthority,
+    () =>
+      Object.assign(new Error("release_witness_readiness_unavailable"), {
+        statusCode: 503,
+      }),
+    {
+      deadlineMilliseconds: 5_000,
+      successfulLeaseMilliseconds: 0,
+      ...input.readinessPolicy,
+    },
+  );
+  const assertAuthorityReady = () => readiness.assertReady();
   const observeCleanup = new ObserveRunnerCleanup(
     postgres,
     new RenderCleanupObservationAdapter(

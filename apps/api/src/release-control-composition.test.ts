@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   composeReleaseControlDependencies,
   createReleaseControlApp,
@@ -9,6 +9,10 @@ import { createReleaseWitnessApp } from "./release-witness-composition";
 
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const authorityReadiness = (
   roleName:
@@ -717,6 +721,31 @@ describe("release authority process composition", () => {
     await app.close();
   });
 
+  it("bounds a hung witness readiness observation", async () => {
+    vi.useFakeTimers();
+    const app = await createReleaseWitnessApp({
+      witnessPrisma: {} as never,
+      triggerTokenSha256: digest("witness"),
+      renderReadToken: "read-only",
+      readinessObserver: () => new Promise<never>(() => undefined),
+      readinessPolicy: { deadlineMilliseconds: 25 },
+    });
+
+    const responsePromise = app.inject({ method: "GET", url: "/health" });
+    await vi.advanceTimersByTimeAsync(25);
+    const response = await responsePromise;
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      status: "degraded",
+      service: "release-witness",
+      reason: "database_unavailable",
+    });
+    expect(response.body).not.toContain(
+      "release_witness_readiness_unavailable",
+    );
+    await app.close();
+  });
+
   it("reports degraded readiness without leaking database failures", async () => {
     const app = await createReleaseControlApp({
       controlPrisma: {
@@ -751,6 +780,50 @@ describe("release authority process composition", () => {
       reason: "database_unavailable",
     });
     expect(response.body).not.toContain("secret database detail");
+    await app.close();
+  });
+
+  it("keeps health responsive and sanitized when a database probe hangs", async () => {
+    vi.useFakeTimers();
+    const never = new Promise<never>(() => undefined);
+    const app = await createReleaseControlApp({
+      controlPrisma: {
+        $queryRaw: vi.fn(() => never),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_provider_authority"),
+          ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+      } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+      readinessPolicy: {
+        deadlineMilliseconds: 25,
+      },
+    });
+
+    const responsePromise = app.inject({ method: "GET", url: "/health" });
+    await vi.advanceTimersByTimeAsync(25);
+    const response = await responsePromise;
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      status: "degraded",
+      service: "release-control",
+      reason: "database_unavailable",
+    });
+    expect(response.body).not.toContain(
+      "release_control_readiness_unavailable",
+    );
     await app.close();
   });
 
@@ -797,8 +870,53 @@ describe("release authority process composition", () => {
         targetSystemIdentifier: "200",
       },
     });
-    expect(response.statusCode).toBe(500);
+    expect(response.statusCode).toBe(503);
     expect(mutation).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("returns a sanitized unavailable response for mutation readiness failures", async () => {
+    const app = await createReleaseControlApp({
+      controlPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockRejectedValue(new Error("secret database connection detail")),
+      } as never,
+      providerAuthorityPrisma: {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValue(
+            authorityReadiness("reviewrouter_provider_authority"),
+          ),
+      } as never,
+      permitInstallerPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(installerReadiness),
+      } as never,
+      targetReceiptReaderPrisma: {
+        $queryRaw: vi.fn().mockResolvedValue(readerReadiness),
+      } as never,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/rollouts/claim",
+      headers: { authorization: "Bearer control" },
+      payload: {
+        rolloutId: "rollout-readiness-failure",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "100",
+        targetSystemIdentifier: "200",
+      },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.body).toContain("release_control_readiness_unavailable");
+    expect(response.body).not.toContain("secret database connection detail");
     await app.close();
   });
 

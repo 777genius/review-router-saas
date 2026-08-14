@@ -15,13 +15,20 @@ import {
 } from "./release-rollout-ledger.js";
 import { observeReleaseAuthorityDatabaseReadiness } from "./release-authority/adapters/postgres-readiness.js";
 import { releaseControlDatabaseSetIsReady } from "./release-authority/application/readiness.js";
+import {
+  createBoundedReadinessPolicy,
+  type BoundedReadinessPolicyOptions,
+} from "./release-authority/application/bounded-readiness.js";
 
 export type ReleaseControlCredentials = Readonly<{
   controlTokenSha256: string;
   providerAuthorityTokenSha256: string;
 }>;
 
-const readinessLeaseMilliseconds = 30_000;
+const defaultReadinessPolicy: BoundedReadinessPolicyOptions = {
+  deadlineMilliseconds: 5_000,
+  successfulLeaseMilliseconds: 30_000,
+};
 
 const readinessGate = <Service extends object>(
   service: Service,
@@ -115,6 +122,7 @@ export async function createReleaseControlApp(input: {
   readonly permitInstallerPrisma: PrismaClient;
   readonly targetReceiptReaderPrisma: PrismaClient;
   readonly credentials: ReleaseControlCredentials;
+  readonly readinessPolicy?: Partial<BoundedReadinessPolicyOptions>;
 }): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   const dependencies = composeReleaseControlDependencies(
@@ -141,20 +149,15 @@ export async function createReleaseControlApp(input: {
     )
       throw new Error("release_control_mutation_authority_degraded");
   };
-  let readinessLeaseExpiresAt = 0;
-  let readinessObservation: Promise<void> | undefined;
-  const assertMutationAuthorityReady = (): Promise<void> => {
-    if (Date.now() < readinessLeaseExpiresAt) return Promise.resolve();
-    if (readinessObservation) return readinessObservation;
-    readinessObservation = observeMutationAuthority()
-      .then(() => {
-        readinessLeaseExpiresAt = Date.now() + readinessLeaseMilliseconds;
-      })
-      .finally(() => {
-        readinessObservation = undefined;
-      });
-    return readinessObservation;
-  };
+  const readiness = createBoundedReadinessPolicy(
+    observeMutationAuthority,
+    () =>
+      Object.assign(new Error("release_control_readiness_unavailable"), {
+        statusCode: 503,
+      }),
+    { ...defaultReadinessPolicy, ...input.readinessPolicy },
+  );
+  const assertMutationAuthorityReady = () => readiness.assertReady();
   const gatedDependencies: ReleaseControlRouteDependencies = {
     ...dependencies,
     authority: readinessGate(
