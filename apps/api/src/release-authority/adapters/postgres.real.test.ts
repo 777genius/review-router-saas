@@ -507,9 +507,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         request.resource.kind,
         request.resource.id,
       );
-      await transaction.$queryRawUnsafe(
-        "SELECT pg_sleep(0.2)::text AS slept",
-      );
+      await transaction.$queryRawUnsafe("SELECT pg_sleep(0.2)::text AS slept");
       await transaction.$queryRawUnsafe(
         `SELECT 1 FROM release_authority.provider_mutation
          WHERE rollout_id=$1 AND operation=$2 AND provider=$3

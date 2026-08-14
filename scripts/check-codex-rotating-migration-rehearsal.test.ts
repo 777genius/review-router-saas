@@ -570,8 +570,12 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "Codex OAuth child identity fence guard execution contract mismatch",
     );
     expect(source).toContain("Codex OAuth runtime least privilege mismatch");
-    expect(source).toMatch(/relation\.relname NOT IN \([\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof/u);
-    expect(source).toMatch(/relation\.relname IN \([\s\S]+?CodexOAuthDatabaseAuthorityReceipt[\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof[\s\S]+?has_table_privilege/u);
+    expect(source).toMatch(
+      /relation\.relname NOT IN \([\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof/u,
+    );
+    expect(source).toMatch(
+      /relation\.relname IN \([\s\S]+?CodexOAuthDatabaseAuthorityReceipt[\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof[\s\S]+?has_table_privilege/u,
+    );
     expect(source).toContain(
       "Codex OAuth release migration privilege mismatch",
     );

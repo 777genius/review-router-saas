@@ -380,7 +380,9 @@ ALTER TABLE public.unexpected_owned_object OWNER TO reviewrouter_api;`);
   });
 
   it("rejects exact ACL drift in a non-public schema", () => {
-    psql(`CREATE SCHEMA private_sensitive AUTHORIZATION reviewrouter_release_migration;`);
+    psql(
+      `CREATE SCHEMA private_sensitive AUTHORIZATION reviewrouter_release_migration;`,
+    );
     installPermit("non-public-schema-grant", 8);
     psql(`SET SESSION AUTHORIZATION reviewrouter_release_migration;
 GRANT USAGE ON SCHEMA private_sensitive TO reviewrouter_api;`);
