@@ -511,6 +511,13 @@ describe("trusted post-cleanup evidence", () => {
             ...evidence.activation,
             activatedCatalogPolicySha256: `sha256:${"f".repeat(64)}`,
           },
+        },
+        trustedImagePolicy,
+        trustedWitnessPolicy,
+      ),
+    ).toThrow("trusted_rollout_evidence_activation_invalid");
+  });
+
   it("rejects a rehashed live-canary digest not observed by its receipt", () => {
     const {
       schemaVersion: _schemaVersion,
@@ -528,7 +535,7 @@ describe("trusted post-cleanup evidence", () => {
         trustedImagePolicy,
         trustedWitnessPolicy,
       ),
-    ).toThrow("trusted_rollout_evidence_activation_invalid");
+    ).toThrow("trusted_rollout_evidence_live_canary_binding_invalid");
   });
 
   it("rejects signed witness evidence whose policy binding mismatches final evidence", () => {
@@ -549,7 +556,6 @@ describe("trusted post-cleanup evidence", () => {
         trustedWitnessPolicy,
       ),
     ).toThrow("trusted_rollout_evidence_release_witness_invalid");
-    ).toThrow("trusted_rollout_evidence_live_canary_binding_invalid");
   });
   it("rejects legacy schema 4 evidence instead of implicitly upgrading v1 provenance", () => {
     expect(() =>

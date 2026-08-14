@@ -314,7 +314,7 @@ describe("Render target switch and live canary", () => {
     ).toHaveLength(1);
   });
 
-  it("accepts an exact durable resume replay without issuing provider I/O", async () => {
+  it("accepts an exact durable resume replay after fresh read-only observation without replaying resume", async () => {
     const environment = [{ key: "DATABASE_URL", value: "redacted" }];
     const fetchImpl = vi.fn(async (url: string) => {
       const pathname = new URL(url).pathname;
@@ -354,6 +354,10 @@ describe("Render target switch and live canary", () => {
             resource: request.resource,
             state: request.expected,
             observedAt: "2026-08-12T00:00:01.000Z",
+            resultIdentity: {
+              kind: "service" as const,
+              id: request.resource.id,
+            },
           },
         },
       })),
@@ -385,6 +389,7 @@ describe("Render target switch and live canary", () => {
     expect(
       fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/resume")),
     ).toHaveLength(0);
+    expect(fetchImpl).toHaveBeenCalled();
     expect(authority.issue).not.toHaveBeenCalled();
   });
 

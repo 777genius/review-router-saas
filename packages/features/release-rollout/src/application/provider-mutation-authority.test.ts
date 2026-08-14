@@ -224,6 +224,41 @@ describe("authority-serialized provider mutation", () => {
     expect(mutate).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["kind", { kind: "deploy" as const, id: resource.id }],
+    ["id", { kind: "service" as const, id: "srv-other" }],
+  ])(
+    "rejects a durable terminal outcome with a mismatched result identity %s",
+    async (_mismatch, resultIdentity) => {
+      const authority = new FakeAuthority();
+      authority.recovery = {
+        status: "terminal",
+        outcome: {
+          status: "terminal",
+          result: "exact_postcondition",
+          rolloutId: "rollout-one",
+          operation: "suspend_service",
+          resource,
+          ownerId: "actor-one",
+          epoch: 1,
+          permitId: "permit-1",
+          receiptId: "receipt-1",
+          expected: before,
+          consumedAt: "2026-08-14T00:00:01.000Z",
+          observation: {
+            ...observed(after),
+            resultIdentity,
+          },
+          completedAt: "2026-08-14T00:00:02.000Z",
+        },
+      };
+
+      await expect(
+        execute(authority, { observe: async () => observed(after) }),
+      ).rejects.toThrow("provider_mutation_terminal_observation_unproven");
+    },
+  );
+
   it("uses the durable precondition when a restarted process observes the post-state", async () => {
     const authority = new FakeAuthority();
     const permit = await authority.issue({

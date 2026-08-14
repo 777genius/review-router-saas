@@ -52,6 +52,32 @@ export type AuthorizedMutationOutcome =
       observation: ObservedProviderPostcondition;
     }>;
 
+const sameProviderMutationResultIdentity = (
+  left: ProviderMutationResultIdentity,
+  right: ProviderMutationResultIdentity,
+): boolean => {
+  if (left.kind !== right.kind) return false;
+  switch (left.kind) {
+    case "service":
+      return right.kind === "service" && left.id === right.id;
+    case "environment":
+      return (
+        right.kind === "environment" &&
+        left.environmentSha256 === right.environmentSha256 &&
+        left.environmentKeysSha256 === right.environmentKeysSha256
+      );
+    case "deploy":
+      return right.kind === "deploy" && left.id === right.id;
+    case "job":
+      return right.kind === "job" && left.id === right.id;
+    default: {
+      const exhaustive: never = left;
+      void exhaustive;
+      return false;
+    }
+  }
+};
+
 /**
  * Serializes a mutation at authority and proves pre/post state around one I/O.
  * Providers without conditional writes (including Render) do not gain native CAS.
@@ -296,8 +322,10 @@ export class AuthoritySerializedMutation {
       !this.matchesPostcondition(observation, input.expectedPostcondition) ||
       !outcome.observation.resultIdentity ||
       !observation.resultIdentity ||
-      JSON.stringify(observation.resultIdentity) !==
-        JSON.stringify(outcome.observation.resultIdentity)
+      !sameProviderMutationResultIdentity(
+        observation.resultIdentity,
+        outcome.observation.resultIdentity,
+      )
     )
       throw new Error("provider_mutation_terminal_observation_unproven");
     return {
