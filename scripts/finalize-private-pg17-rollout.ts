@@ -14,6 +14,7 @@ import {
   type RunnerIdentity,
   type StepObservation,
   type TargetServiceExpectation,
+  type StagedTargetService,
   type TrustedRolloutEvidence,
   type ReleaseWitnessBindingEvidence,
   assertVerifiedReleaseImageProvenance,
@@ -37,11 +38,9 @@ const body = read<{
   quiescence: TrustedRolloutEvidence["quiescence"];
   equivalence: TrustedRolloutEvidence["equivalence"];
   staged: StepObservation<
-    readonly {
-      serviceId: string;
-      deployId: string;
+    readonly (Omit<StagedTargetService, "provenance"> & {
       provenance: { kind: "image"; imageSha: string };
-    }[]
+    })[]
   >;
   migration: {
     legacyReconciliation: TrustedRolloutEvidence["legacyReconciliation"];
@@ -82,6 +81,14 @@ const targetDeploys = body.staged.facts.map((deploy) => ({
   deployId: deploy.deployId,
   imageDigest: deploy.provenance.imageSha,
 }));
+const stagedReceipt = body.rollout.receipts.find(
+  (receipt) => receipt.step === RolloutStep.StageTargetServices,
+);
+if (
+  !stagedReceipt ||
+  stagedReceipt.observationSha256 !== `sha256:${sha256Canonical(body.staged)}`
+)
+  throw new Error("private_pg17_staged_observation_receipt_mismatch");
 if (
   targetDeploys.length === 0 ||
   targetDeploys.some(
@@ -144,7 +151,12 @@ if (
 )
   throw new Error("private_pg17_preflight_receipt_binding_invalid");
 let resumed: StepObservation<
-  readonly { serviceId: string; deployId: string; resumed: true }[]
+  readonly {
+    serviceId: string;
+    deployId: string;
+    resumed: true;
+    servicePostcondition: StagedTargetService["servicePostcondition"];
+  }[]
 >;
 let canary: StepObservation;
 let evidence: TrustedRolloutEvidence;
@@ -197,6 +209,7 @@ const useCases = new ReleaseRolloutUseCases({
         expectedReceiptSha256: rollout.receipts.at(-1)!.receiptSha256,
         decision,
         mutationOwnerId: `finalize-${rollout.execution.runId}-${rollout.execution.runAttempt}`,
+        stagedServices: body.staged.facts,
       })) as typeof resumed;
       return resumed;
     },
@@ -210,6 +223,30 @@ const useCases = new ReleaseRolloutUseCases({
         ),
         rolloutId: rollout.rolloutId,
         bearerToken: required("REVIEW_ROUTER_LIVE_CANARY_TOKEN"),
+        expectedServices: resumed.facts
+          .map((service) => {
+            const expectation = expectations.find(
+              (item) => item.serviceId === service.serviceId,
+            );
+            if (!expectation)
+              throw new Error("private_pg17_canary_service_unexpected");
+            const runtimeRole = expectation.databaseRole.replace(
+              /^reviewrouter_/u,
+              "",
+            );
+            if (!["api", "web", "worker"].includes(runtimeRole))
+              throw new Error("private_pg17_canary_runtime_role_invalid");
+            return {
+              runtimeRole: runtimeRole as "api" | "web" | "worker",
+              serviceId: service.serviceId,
+              deployId: service.deployId,
+              provenance: expectation.provenance,
+              servicePostcondition: service.servicePostcondition,
+            };
+          })
+          .sort((left, right) =>
+            left.runtimeRole.localeCompare(right.runtimeRole),
+          ),
       });
       return canary;
     },

@@ -2523,6 +2523,8 @@ REVOKE UPDATE ON TABLE public."CodexOAuthProviderInstance" FROM ${username};
 GRANT UPDATE (${providerUpdateColumnList}) ON TABLE public."CodexOAuthProviderInstance" TO ${username};
 REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityKey" FROM ${username};
 REVOKE ALL ON TABLE public."CodexOAuthDatabaseAuthorityReceipt" FROM ${username};
+REVOKE ALL ON TABLE public."RuntimeCanaryChallenge" FROM ${username};
+REVOKE ALL ON TABLE public."RuntimeCanaryChallengeProof" FROM ${username};
 REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM ${username};
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO ${username};
 ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_migration IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${username};
@@ -2532,6 +2534,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_migration IN SCHEMA publi
 GRANT EXECUTE ON FUNCTION public.reviewrouter_record_runtime_generation_witness_proof(TEXT, TEXT, TEXT, TEXT) TO reviewrouter_web, reviewrouter_api, reviewrouter_worker;
 GRANT EXECUTE ON FUNCTION public.reviewrouter_read_runtime_generation_witness_proofs(TEXT, TEXT) TO reviewrouter_api;
 GRANT EXECUTE ON FUNCTION public.reviewrouter_runtime_generation_write_read_canary(TEXT, TEXT) TO reviewrouter_api;
+GRANT EXECUTE ON FUNCTION public.reviewrouter_request_runtime_canary_challenge(TEXT, TEXT, TIMESTAMPTZ, TEXT, TEXT, TEXT, JSONB) TO reviewrouter_api;
+GRANT EXECUTE ON FUNCTION public.reviewrouter_read_runtime_canary_challenge_proofs(TEXT) TO reviewrouter_api;
+GRANT EXECUTE ON FUNCTION public.reviewrouter_answer_runtime_canary_challenge(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) TO reviewrouter_web, reviewrouter_api, reviewrouter_worker;
 GRANT CONNECT ON DATABASE ${databaseTarget} TO reviewrouter_codex_effect_authority;
 GRANT USAGE ON SCHEMA public TO reviewrouter_codex_effect_authority;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM reviewrouter_codex_effect_authority;

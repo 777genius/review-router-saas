@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isNormalizedServicePostcondition } from "./service-transition";
 
 /** Authority-owned evidence captured before dispatching provider creation. */
 export type ProviderCreationBoundary = Readonly<{
@@ -785,11 +786,16 @@ function assertStepFacts(
             service.provenance,
             "target_stage_observation_invalid",
           );
+          const postcondition = service.servicePostcondition;
           return (
             service.suspended !== true ||
             typeof service.deployId !== "string" ||
             !digestPattern.test(String(service.envSha256)) ||
             !/^[a-f0-9]{64}$/u.test(String(service.recoveryWitnessSha256)) ||
+            !isNormalizedServicePostcondition(postcondition) ||
+            postcondition.serviceId !== service.serviceId ||
+            postcondition.suspended !== true ||
+            postcondition.environmentSha256 !== service.envSha256 ||
             (provenance.kind === "git"
               ? provenance.commitSha !== rollout.expectedCommitSha
               : provenance.kind !== "image" ||
@@ -850,8 +856,13 @@ function assertStepFacts(
         services.length === 0 ||
         services.some((item) => {
           const service = record(item, "target_resume_observation_invalid");
+          const postcondition = service.servicePostcondition;
           return (
-            service.resumed !== true || typeof service.deployId !== "string"
+            service.resumed !== true ||
+            typeof service.deployId !== "string" ||
+            !isNormalizedServicePostcondition(postcondition) ||
+            postcondition.serviceId !== service.serviceId ||
+            postcondition.suspended !== false
           );
         }) ||
         canonicalJson(observation.provider?.renderServiceIds) !==
@@ -873,15 +884,63 @@ function assertStepFacts(
       break;
     }
     case RolloutStep.VerifyLiveCanary:
-      if (
-        facts.commitSha !== rollout.expectedCommitSha ||
-        facts.databaseSystemIdentifier !== rollout.target.systemIdentifier ||
-        !/^[a-f0-9]{64}$/u.test(String(facts.recoveryWitnessSha256)) ||
-        !Array.isArray(facts.runtimeWitnessProofs) ||
-        facts.runtimeWitnessProofs.length !== 3 ||
-        facts.writeReadRoundTrip !== true
-      )
-        throw new Error("live_canary_observation_invalid");
+      {
+        const proofs = Array.isArray(facts.runtimeWitnessProofs)
+          ? facts.runtimeWitnessProofs
+          : [];
+        const serviceFacts = Array.isArray(facts.serviceFacts)
+          ? facts.serviceFacts
+          : [];
+        const requestedAt = Date.parse(String(facts.requestedAt));
+        const observedAt = Date.parse(String(facts.observedAt));
+        const generation = record(
+          facts.expectedGeneration,
+          "live_canary_observation_invalid",
+        );
+        if (
+          facts.commitSha !== rollout.expectedCommitSha ||
+          facts.databaseSystemIdentifier !== rollout.target.systemIdentifier ||
+          !/^[a-f0-9]{64}$/u.test(String(facts.recoveryWitnessSha256)) ||
+          !/^[a-f0-9]{48}$/u.test(String(facts.nonce)) ||
+          !Number.isFinite(requestedAt) ||
+          !Number.isFinite(observedAt) ||
+          observedAt < requestedAt ||
+          observedAt > requestedAt + 10_000 ||
+          proofs.length !== 3 ||
+          serviceFacts.length !== 3 ||
+          generation.systemIdentifier !== rollout.target.systemIdentifier ||
+          generation.recoveryWitnessSha256 !== facts.recoveryWitnessSha256 ||
+          proofs.some((item, index) => {
+            const proof = record(item, "live_canary_observation_invalid");
+            const service = record(
+              serviceFacts[index],
+              "live_canary_observation_invalid",
+            );
+            const provedAt = Date.parse(String(proof.provedAt));
+            return (
+              proof.runtimeRole !== ["api", "web", "worker"][index] ||
+              service.runtimeRole !== ["api", "web", "worker"][index] ||
+              typeof service.deployId !== "string" ||
+              !/^[a-f0-9]{40,64}$/u.test(
+                String(service.deploymentProvenance),
+              ) ||
+              !digestPattern.test(String(service.servicePostconditionSha256)) ||
+              proof.nonce !== facts.nonce ||
+              proof.requestedAt !== facts.requestedAt ||
+              proof.serviceId !== service.serviceId ||
+              proof.deploymentProvenance !== service.deploymentProvenance ||
+              proof.systemIdentifier !== rollout.target.systemIdentifier ||
+              proof.releaseCommitSha !== rollout.expectedCommitSha ||
+              proof.recoveryWitnessSha256 !== facts.recoveryWitnessSha256 ||
+              !Number.isFinite(provedAt) ||
+              provedAt < requestedAt ||
+              provedAt > requestedAt + 10_000
+            );
+          }) ||
+          facts.writeReadRoundTrip !== true
+        )
+          throw new Error("live_canary_observation_invalid");
+      }
       break;
     case RolloutStep.VerifyTrustedRollout:
       assertDigest(

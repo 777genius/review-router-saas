@@ -9,6 +9,29 @@ import {
 import { ReleaseRolloutUseCases } from "./use-cases";
 import { ProviderAuthorityOperation } from "./ports";
 
+const resumedPostcondition = {
+  serviceId: "srv-target",
+  ownerId: "tea-owner",
+  serviceType: "web_service",
+  suspended: false,
+  region: "frankfurt",
+  plan: "starter",
+  runtime: "image" as const,
+  image: `registry.example.test/app@sha256:${"a".repeat(64)}`,
+  repository: null,
+  branch: null,
+  rootDirectory: null,
+  buildCommand: null,
+  startCommand: null,
+  preDeployCommand: "",
+  healthPath: "/health",
+  automaticDeployments: false as const,
+  automaticDeployTrigger: "off" as const,
+  shutdownDelaySeconds: 60,
+  instanceCount: 1,
+  environmentSha256: `sha256:${"b".repeat(64)}`,
+};
+
 const rollout = createReleaseRollout({
   rolloutId: "rollout-app-test",
   expectedCommitSha: "d".repeat(40),
@@ -415,7 +438,12 @@ describe("release rollout application boundary", () => {
         step: RolloutStep.ResumeTargetServices,
         observedAt: "2026-08-12T00:00:02.000Z",
         facts: [
-          { serviceId: "srv-target", deployId: "dep-target", resumed: true },
+          {
+            serviceId: "srv-target",
+            deployId: "dep-target",
+            resumed: true,
+            servicePostcondition: resumedPostcondition,
+          },
         ],
         provider: {
           renderServiceIds: ["srv-target"],

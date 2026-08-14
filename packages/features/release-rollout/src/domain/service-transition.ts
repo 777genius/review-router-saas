@@ -72,7 +72,77 @@ export type ObservedServiceState = Readonly<{
   configurationSha256: string;
   environmentSha256: string;
   provenance: ServiceDeploymentProvenance;
+  postcondition?: NormalizedServicePostcondition;
 }>;
+
+/**
+ * Provider-neutral, secret-safe service postcondition.  This is the complete
+ * value that is carried from staging to the final online transition; adapters
+ * may not substitute a provider response or a partial set of fields for it.
+ */
+export type NormalizedServicePostcondition = Readonly<{
+  serviceId: string;
+  ownerId: string;
+  serviceType: string;
+  suspended: boolean;
+  region: string;
+  plan: string;
+  runtime: "node" | "image";
+  image: string | null;
+  repository: string | null;
+  branch: string | null;
+  rootDirectory: string | null;
+  buildCommand: string | null;
+  startCommand: string | null;
+  preDeployCommand: string;
+  healthPath: string | null;
+  automaticDeployments: false;
+  automaticDeployTrigger: "off";
+  shutdownDelaySeconds: number;
+  instanceCount: number;
+  /** SHA-256 over sorted key/value pairs; environment values never leave the adapter. */
+  environmentSha256: string;
+}>;
+
+export const normalizedServicePostconditionSha256 = (
+  value: NormalizedServicePostcondition,
+): string => sha256(value);
+
+export const sameNormalizedServicePostcondition = (
+  left: NormalizedServicePostcondition,
+  right: NormalizedServicePostcondition,
+): boolean =>
+  normalizedServicePostconditionSha256(left) ===
+  normalizedServicePostconditionSha256(right);
+
+export const isNormalizedServicePostcondition = (
+  value: unknown,
+): value is NormalizedServicePostcondition => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.serviceId === "string" &&
+    typeof item.ownerId === "string" &&
+    typeof item.serviceType === "string" &&
+    typeof item.suspended === "boolean" &&
+    typeof item.region === "string" &&
+    typeof item.plan === "string" &&
+    (item.runtime === "node" || item.runtime === "image") &&
+    (item.image === null || typeof item.image === "string") &&
+    (item.repository === null || typeof item.repository === "string") &&
+    (item.branch === null || typeof item.branch === "string") &&
+    (item.rootDirectory === null || typeof item.rootDirectory === "string") &&
+    (item.buildCommand === null || typeof item.buildCommand === "string") &&
+    (item.startCommand === null || typeof item.startCommand === "string") &&
+    typeof item.preDeployCommand === "string" &&
+    (item.healthPath === null || typeof item.healthPath === "string") &&
+    item.automaticDeployments === false &&
+    item.automaticDeployTrigger === "off" &&
+    Number.isSafeInteger(item.shutdownDelaySeconds) &&
+    Number.isSafeInteger(item.instanceCount) &&
+    /^sha256:[a-f0-9]{64}$/u.test(String(item.environmentSha256))
+  );
+};
 
 const sha256 = (value: unknown): string =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
@@ -212,6 +282,8 @@ export class ServiceTransitionPolicy {
         "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
         "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
         "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+        "REVIEW_ROUTER_RUNTIME_SERVICE_ID",
+        "REVIEW_ROUTER_RUNTIME_DEPLOYMENT_PROVENANCE",
         ...(requiresEffectAuthority
           ? ["REVIEW_ROUTER_CODEX_EFFECT_AUTHORITY_DATABASE_URL"]
           : []),
@@ -226,6 +298,11 @@ export class ServiceTransitionPolicy {
       if (
         service.artifact.kind !== "container_image" ||
         !pinnedContainerImage.test(service.artifact.reference) ||
+        service.environmentDelta["REVIEW_ROUTER_RUNTIME_SERVICE_ID"] !==
+          service.serviceId ||
+        service.environmentDelta[
+          "REVIEW_ROUTER_RUNTIME_DEPLOYMENT_PROVENANCE"
+        ] !== service.artifact.reference.slice(-64) ||
         !digest.test(service.environmentSha256) ||
         Object.keys(service.environmentDelta).sort().join("\0") !==
           expectedSet.sort().join("\0") ||

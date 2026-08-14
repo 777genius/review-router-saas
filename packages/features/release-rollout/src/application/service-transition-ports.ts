@@ -26,7 +26,7 @@ export type EnvironmentMutationOutcome =
 export interface ServiceStatePort {
   observe(serviceId: string): Promise<ObservedServiceState>;
   suspend(serviceId: string): Promise<void>;
-  resume(serviceId: string): Promise<void>;
+  resume(serviceId: string, expected: ObservedServiceState): Promise<void>;
   quiesceDeployments(serviceId: string): Promise<void>;
 }
 

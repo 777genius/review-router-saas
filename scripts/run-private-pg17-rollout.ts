@@ -201,6 +201,9 @@ for (const expectation of serviceExpectations) {
     REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: rollout.expectedCommitSha,
     REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: rollout.rolloutId,
     REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: rolloutStartedAt,
+    REVIEW_ROUTER_RUNTIME_SERVICE_ID: expectation.serviceId,
+    REVIEW_ROUTER_RUNTIME_DEPLOYMENT_PROVENANCE:
+      releaseImageProvenance.identity.imageDigest.replace(/^sha256:/u, ""),
   };
   if (!environmentDelta.DATABASE_URL)
     throw new Error("private_pg17_target_database_url_missing");
@@ -345,6 +348,23 @@ const useCases = new ReleaseRolloutUseCases({
         protectedEnvironment: protectedSourceEnvironment,
         target: targetServiceContracts,
       });
+      const stagedPostconditions = await Promise.all(
+        targetServiceContracts.map((contract) =>
+          renderServices.observe(contract.serviceId),
+        ),
+      );
+      if (
+        stagedPostconditions.some(
+          (observed, index) =>
+            !observed.suspended ||
+            !observed.postcondition ||
+            observed.postcondition.serviceId !==
+              targetServiceContracts[index]?.serviceId ||
+            observed.environmentSha256 !==
+              targetServiceContracts[index]?.environmentSha256,
+        )
+      )
+        throw new Error("private_pg17_target_postcondition_unproven");
       staged = {
         step: "stage_target_services" as never,
         observedAt: new Date().toISOString(),
@@ -364,6 +384,7 @@ const useCases = new ReleaseRolloutUseCases({
             "REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256",
           ),
           suspended: true,
+          servicePostcondition: stagedPostconditions[index]!.postcondition!,
         })),
         provider: {
           renderServiceIds: targetServiceContracts.map(

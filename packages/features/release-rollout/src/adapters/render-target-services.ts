@@ -16,6 +16,13 @@ import {
 } from "./bounded-provider-io";
 import type { ProviderMutationAuthorityPort } from "../application/provider-mutation-authority";
 import { AuthorizedRenderMutations } from "./authorized-render-mutations";
+import {
+  environmentSha256,
+  normalizedServicePostconditionSha256,
+  sameNormalizedServicePostcondition,
+  type NormalizedServicePostcondition,
+} from "../domain/service-transition";
+import { normalizeRenderServicePostcondition } from "./render-service-contract";
 
 export type TargetServiceExpectation = {
   readonly serviceId: string;
@@ -26,6 +33,12 @@ export type TargetServiceExpectation = {
   readonly databaseName: string;
   readonly databaseRole: string;
 };
+export type StagedTargetService = Readonly<{
+  serviceId: string;
+  deployId: string;
+  provenance: TargetServiceExpectation["provenance"];
+  servicePostcondition: NormalizedServicePostcondition;
+}>;
 const active = new Set([
   "created",
   "queued",
@@ -169,6 +182,11 @@ export class RenderTargetServicesAdapter {
             REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: input.fence.rolloutId,
             REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: input.releaseCommitSha,
             REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: input.fence.fencedAt,
+            REVIEW_ROUTER_RUNTIME_SERVICE_ID: expected.serviceId,
+            REVIEW_ROUTER_RUNTIME_DEPLOYMENT_PROVENANCE:
+              expected.provenance.kind === "git"
+                ? expected.provenance.commitSha
+                : expected.provenance.imageSha.replace(/^sha256:/u, ""),
           },
           remove: [],
         },
@@ -205,6 +223,20 @@ export class RenderTargetServicesAdapter {
             pinned.commit !== undefined)
       )
         throw new Error("render_target_deploy_race_detected");
+      const [stagedService, stagedEnvironment] = await Promise.all([
+        api.getService(expected.serviceId),
+        api.listAllEnv(expected.serviceId),
+      ]);
+      const servicePostcondition = normalizeRenderServicePostcondition(
+        stagedService,
+        environmentSha256(stagedEnvironment),
+      );
+      if (
+        !servicePostcondition.suspended ||
+        servicePostcondition.environmentSha256 !==
+          envReplacement.environmentSha256
+      )
+        throw new Error("render_target_stage_postcondition_unproven");
       facts.push({
         serviceId: expected.serviceId,
         deployId: created.id,
@@ -219,6 +251,7 @@ export class RenderTargetServicesAdapter {
         suspended: true,
         targetSwitchFenceNonce: input.fence.nonce,
         targetSwitchFenceVersion: input.fence.version,
+        servicePostcondition,
       });
     }
     return {
@@ -243,9 +276,11 @@ export class RenderTargetServicesAdapter {
     expectedReceiptSha256: string;
     decision: ProviderAuthorityDecision;
     mutationOwnerId: string;
+    stagedServices: readonly StagedTargetService[];
   }): Promise<StepObservation> {
     if (
       !input.services.length ||
+      input.stagedServices.length !== input.services.length ||
       input.decision.decision !== "allow" ||
       input.decision.operation !== ProviderAuthorityOperation.ResumeTarget ||
       input.decision.rolloutId !== input.rolloutId ||
@@ -265,24 +300,48 @@ export class RenderTargetServicesAdapter {
     );
     const facts = [];
     for (const expected of input.services) {
-      await mutations.resume(
+      const staged = input.stagedServices.find(
+        (item) => item.serviceId === expected.serviceId,
+      );
+      if (
+        !staged ||
+        staged.deployId.length === 0 ||
+        JSON.stringify(staged.provenance) !==
+          JSON.stringify(expected.provenance) ||
+        staged.servicePostcondition.serviceId !== expected.serviceId ||
+        !staged.servicePostcondition.suspended
+      )
+        throw new Error("render_target_staged_postcondition_invalid");
+      const beforeDeploys = await api.listAllDeploys(expected.serviceId);
+      if (
+        beforeDeploys.some((deploy) => active.has(deploy.status)) ||
+        beforeDeploys.find((deploy) => deploy.status === "live")?.id !==
+          staged.deployId
+      )
+        throw new Error("render_target_resume_deploy_drift");
+      await mutations.resumeExact(
         {
           rolloutId: input.rolloutId,
           ownerId: input.mutationOwnerId,
           operation: `target_resume:${expected.serviceId}`,
         },
-        expected.serviceId,
+        staged.servicePostcondition,
+        { deployId: staged.deployId, provenance: staged.provenance },
       );
-      let service = await api.getService(expected.serviceId);
-      for (
-        let poll = 0;
-        service.suspended !== "not_suspended" && poll < 29;
-        poll += 1
-      ) {
-        await this.sleep(2_000);
-        service = await api.getService(expected.serviceId);
-      }
-      if (service.suspended !== "not_suspended" || service.autoDeploy !== "no")
+      const [service, environment] = await Promise.all([
+        api.getService(expected.serviceId),
+        api.listAllEnv(expected.serviceId),
+      ]);
+      const finalPostcondition = normalizeRenderServicePostcondition(
+        service,
+        environmentSha256(environment),
+      );
+      if (
+        !sameNormalizedServicePostcondition(finalPostcondition, {
+          ...staged.servicePostcondition,
+          suspended: false,
+        })
+      )
         throw new Error("render_target_resume_unproven");
       const deploys = await api.listAllDeploys(expected.serviceId);
       if (deploys.some((deploy) => active.has(deploy.status)))
@@ -302,6 +361,7 @@ export class RenderTargetServicesAdapter {
         deployId: latest.id,
         resumed: true,
         authorityDecisionId: input.decision.decisionId,
+        servicePostcondition: finalPostcondition,
       });
     }
     return {
@@ -323,16 +383,38 @@ export class RenderTargetServicesAdapter {
     rolloutId: string;
     bearerToken: string;
     fetchImpl?: RenderFetch;
+    expectedServices: readonly Readonly<{
+      runtimeRole: "api" | "web" | "worker";
+      serviceId: string;
+      deployId: string;
+      provenance: TargetServiceExpectation["provenance"];
+      servicePostcondition: NormalizedServicePostcondition;
+    }>[];
   }): Promise<StepObservation> {
     if (
       !input.url.startsWith("https://") ||
       !input.bearerToken ||
+      input.expectedServices.length !== 3 ||
+      input.expectedServices.map((item) => item.runtimeRole).join("\0") !==
+        "api\0web\0worker" ||
       !/^[a-f0-9]{64}$/u.test(input.expectedRecoveryWitnessSha256) ||
       !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/u.test(input.rolloutId)
     )
       throw new Error("render_target_canary_url_invalid");
     const nonce = randomBytes(24).toString("hex");
     const requestedAt = this.now().toISOString();
+    const serviceFacts = input.expectedServices.map((service) => ({
+      runtimeRole: service.runtimeRole,
+      serviceId: service.serviceId,
+      deployId: service.deployId,
+      deploymentProvenance:
+        service.provenance.kind === "git"
+          ? service.provenance.commitSha
+          : service.provenance.imageSha.replace(/^sha256:/u, ""),
+      servicePostconditionSha256: normalizedServicePostconditionSha256(
+        service.servicePostcondition,
+      ),
+    }));
     const response = await new BoundedProviderHttpClient(
       input.fetchImpl ?? this.fetchImpl,
     ).request("target_canary", input.url, {
@@ -347,6 +429,11 @@ export class RenderTargetServicesAdapter {
         rolloutId: input.rolloutId,
         nonce,
         requestedAt,
+        expectedGeneration: {
+          systemIdentifier: input.expectedSystemIdentifier,
+          recoveryWitnessSha256: input.expectedRecoveryWitnessSha256,
+        },
+        serviceFacts,
       }),
     });
     if (!response.ok)
@@ -382,6 +469,17 @@ export class RenderTargetServicesAdapter {
           proof.runtimeRole !== role ||
           proof.databaseRole !== `reviewrouter_${role}` ||
           proof.recoveryWitnessSha256 !== input.expectedRecoveryWitnessSha256 ||
+          proof.systemIdentifier !== input.expectedSystemIdentifier ||
+          proof.releaseCommitSha !== input.expectedCommitSha ||
+          proof.serviceId !== serviceFacts[index]?.serviceId ||
+          proof.deploymentProvenance !==
+            serviceFacts[index]?.deploymentProvenance ||
+          proof.nonce !== nonce ||
+          proof.requestedAt !== requestedAt ||
+          !Number.isFinite(Date.parse(String(proof.provedAt))) ||
+          Date.parse(String(proof.provedAt)) < Date.parse(requestedAt) ||
+          Date.parse(String(proof.provedAt)) >
+            Date.parse(requestedAt) + 10_000 ||
           typeof proof.provedAt !== "string"
         );
       }) ||
@@ -389,6 +487,12 @@ export class RenderTargetServicesAdapter {
       value.rolloutId !== input.rolloutId ||
       value.nonce !== nonce ||
       value.requestedAt !== requestedAt ||
+      JSON.stringify(value.expectedGeneration) !==
+        JSON.stringify({
+          systemIdentifier: input.expectedSystemIdentifier,
+          recoveryWitnessSha256: input.expectedRecoveryWitnessSha256,
+        }) ||
+      JSON.stringify(value.serviceFacts) !== JSON.stringify(serviceFacts) ||
       typeof value.observedAt !== "string" ||
       !response.headers.get("cache-control")?.includes("no-store") ||
       this.consumedCanaryNonces.has(nonce) ||
@@ -410,6 +514,8 @@ export class RenderTargetServicesAdapter {
         nonce,
         requestedAt,
         observedAt: value.observedAt,
+        expectedGeneration: value.expectedGeneration,
+        serviceFacts,
       },
     };
   }

@@ -119,6 +119,8 @@ const target = ["web", "api", "worker"].map((role) => {
     REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA: "a".repeat(40),
     REVIEW_ROUTER_RUNTIME_ROLLOUT_ID: "rollout-1",
     REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT: "2026-08-13T00:00:00.000Z",
+    REVIEW_ROUTER_RUNTIME_SERVICE_ID: `srv-${role}`,
+    REVIEW_ROUTER_RUNTIME_DEPLOYMENT_PROVENANCE: "b".repeat(64),
   };
   const environment = [
     ...Object.entries(environmentDelta).map(([key, value]) => ({ key, value })),

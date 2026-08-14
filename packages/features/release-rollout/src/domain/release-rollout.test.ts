@@ -11,6 +11,28 @@ import {
 } from "./release-rollout";
 
 const digest = `sha256:${"a".repeat(64)}`;
+const servicePostcondition = (suspended: boolean) => ({
+  serviceId: "srv-target",
+  ownerId: "tea-owner",
+  serviceType: "web_service",
+  suspended,
+  region: "frankfurt",
+  plan: "starter",
+  runtime: "image" as const,
+  image: `registry.example.test/app@sha256:${"a".repeat(64)}`,
+  repository: null,
+  branch: null,
+  rootDirectory: null,
+  buildCommand: null,
+  startCommand: null,
+  preDeployCommand: "",
+  healthPath: "/health",
+  automaticDeployments: false as const,
+  automaticDeployTrigger: "off" as const,
+  shutdownDelaySeconds: 60,
+  instanceCount: 1,
+  environmentSha256: digest,
+});
 const create = () =>
   createReleaseRollout({
     rolloutId: "rollout-2026-08-12",
@@ -317,6 +339,7 @@ const observe = (step: (typeof steps)[number], index: number) => {
             envSha256: digest,
             recoveryWitnessSha256: "a".repeat(64),
             suspended: true,
+            servicePostcondition: servicePostcondition(true),
           },
         ],
         provider: {
@@ -354,29 +377,59 @@ const observe = (step: (typeof steps)[number], index: number) => {
       return {
         ...base,
         facts: [
-          { serviceId: "srv-target", deployId: "dep-target", resumed: true },
+          {
+            serviceId: "srv-target",
+            deployId: "dep-target",
+            resumed: true,
+            servicePostcondition: servicePostcondition(false),
+          },
         ],
         provider: {
           renderServiceIds: ["srv-target"],
           renderDeployIds: ["dep-target"],
         },
       };
-    case RolloutStep.VerifyLiveCanary:
+    case RolloutStep.VerifyLiveCanary: {
+      const nonce = "f".repeat(48);
+      const serviceFacts = ["api", "web", "worker"].map((runtimeRole) => ({
+        runtimeRole,
+        serviceId: `srv-${runtimeRole}`,
+        deployId: `dep-${runtimeRole}`,
+        deploymentProvenance: "d".repeat(40),
+        servicePostconditionSha256: digest,
+      }));
       return {
         ...base,
         facts: {
           commitSha: "d".repeat(40),
           databaseSystemIdentifier: "200",
           recoveryWitnessSha256: "b".repeat(64),
-          runtimeWitnessProofs: ["api", "web", "worker"].map((runtimeRole) => ({
-            runtimeRole,
-            databaseRole: `reviewrouter_${runtimeRole}`,
+          runtimeWitnessProofs: ["api", "web", "worker"].map(
+            (runtimeRole, index) => ({
+              runtimeRole,
+              databaseRole: `reviewrouter_${runtimeRole}`,
+              recoveryWitnessSha256: "b".repeat(64),
+              provedAt: observedAt,
+              nonce,
+              requestedAt: observedAt,
+              serviceId: serviceFacts[index]!.serviceId,
+              deploymentProvenance: serviceFacts[index]!.deploymentProvenance,
+              systemIdentifier: "200",
+              releaseCommitSha: "d".repeat(40),
+            }),
+          ),
+          nonce,
+          requestedAt: observedAt,
+          observedAt,
+          serviceFacts,
+          expectedGeneration: {
+            systemIdentifier: "200",
             recoveryWitnessSha256: "b".repeat(64),
-            provedAt: observedAt,
-          })),
+          },
           writeReadRoundTrip: true,
         },
       };
+    }
     case RolloutStep.VerifyTrustedRollout:
       return { ...base, facts: { evidenceSha256: digest } };
   }

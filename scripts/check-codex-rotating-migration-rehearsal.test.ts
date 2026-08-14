@@ -42,7 +42,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses every canonical migration from 000060 through 000071 in order", () => {
+  it("rehearses every canonical migration from 000060 through 000072 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,
@@ -66,6 +66,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration69Name",
       "migration70Name",
       "migration71Name",
+      "migration72Name",
     ]);
     expect(source).toContain(
       'const migration67Name = "000067_review_live_progress"',
@@ -81,6 +82,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain(
       'const migration71Name = "000071_transactional_service_transition"',
+    );
+    expect(source).toContain(
+      'const migration72Name = "000072_runtime_canary_challenge"',
     );
     expect(source).not.toContain("000067_release_rollout_ledger");
   });
@@ -566,6 +570,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "Codex OAuth child identity fence guard execution contract mismatch",
     );
     expect(source).toContain("Codex OAuth runtime least privilege mismatch");
+    expect(source).toMatch(/relation\.relname NOT IN \([\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof/u);
+    expect(source).toMatch(/relation\.relname IN \([\s\S]+?CodexOAuthDatabaseAuthorityReceipt[\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof[\s\S]+?has_table_privilege/u);
     expect(source).toContain(
       "Codex OAuth release migration privilege mismatch",
     );

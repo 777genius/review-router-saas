@@ -10,6 +10,8 @@ import type {
 import {
   environmentKeysSha256,
   environmentSha256,
+  sameNormalizedServicePostcondition,
+  type NormalizedServicePostcondition,
 } from "../domain/service-transition";
 import {
   RenderApiAdapter,
@@ -17,6 +19,15 @@ import {
   type RenderJob,
   type RenderService,
 } from "./render-api";
+import { normalizeRenderServicePostcondition } from "./render-service-contract";
+
+const activeDeployStatuses = new Set([
+  "created",
+  "queued",
+  "build_in_progress",
+  "update_in_progress",
+  "pre_deploy_in_progress",
+]);
 
 export type RenderMutationContext = Readonly<{
   rolloutId: string;
@@ -176,6 +187,119 @@ export class AuthorizedRenderMutations {
       { suspended: "not_suspended" },
       () => this.api.resume(serviceId),
     );
+  }
+
+  async resumeExact(
+    context: RenderMutationContext,
+    expectedSuspended: NormalizedServicePostcondition,
+    expectedDeployment?: Readonly<{
+      deployId: string;
+      provenance:
+        | Readonly<{ kind: "git"; commitSha: string }>
+        | Readonly<{ kind: "image"; imageSha: string }>;
+    }>,
+  ): Promise<void> {
+    if (!expectedSuspended.suspended)
+      throw new Error("render_resume_postcondition_not_suspended");
+    const serviceId = expectedSuspended.serviceId;
+    const identity = resource("service", serviceId);
+    const read = async (): Promise<{
+      postcondition: NormalizedServicePostcondition;
+      deployment?: Readonly<{
+        deployId: string;
+        provenance:
+          | Readonly<{ kind: "git"; commitSha: string }>
+          | Readonly<{ kind: "image"; imageSha: string }>;
+      }>;
+    }> => {
+      const [service, environment, deploys] = await Promise.all([
+        this.api.getService(serviceId),
+        this.api.listAllEnv(serviceId),
+        expectedDeployment
+          ? this.api.listAllDeploys(serviceId)
+          : Promise.resolve([]),
+      ]);
+      const live = deploys.find((deploy) => deploy.status === "live");
+      if (
+        expectedDeployment &&
+        deploys.some((deploy) => activeDeployStatuses.has(deploy.status))
+      )
+        throw new Error("render_resume_active_deploy_present");
+      const deployment = live
+        ? live.commit
+          ? {
+              deployId: live.id,
+              provenance: {
+                kind: "git" as const,
+                commitSha: live.commit.id,
+              },
+            }
+          : live.image
+            ? {
+                deployId: live.id,
+                provenance: {
+                  kind: "image" as const,
+                  imageSha: live.image.sha,
+                },
+              }
+            : undefined
+        : undefined;
+      if (expectedDeployment && !deployment)
+        throw new Error("render_resume_live_deploy_missing");
+      return {
+        postcondition: normalizeRenderServicePostcondition(
+          service,
+          environmentSha256(environment),
+        ),
+        ...(expectedDeployment ? { deployment: deployment! } : {}),
+      };
+    };
+    const expectedOnline = Object.freeze({
+      ...expectedSuspended,
+      suspended: false,
+    });
+    let latest: Awaited<ReturnType<typeof read>> | undefined;
+    let attempted = false;
+    await this.serialized.execute({
+      ...context,
+      resource: identity,
+      expected: state({
+        postcondition: expectedSuspended,
+        ...(expectedDeployment ? { deployment: expectedDeployment } : {}),
+      }),
+      expectedPostcondition: () =>
+        latest !== undefined &&
+        sameNormalizedServicePostcondition(
+          latest.postcondition,
+          expectedOnline,
+        ) &&
+        JSON.stringify(latest.deployment) ===
+          JSON.stringify(expectedDeployment),
+      observe: async () => {
+        for (let poll = 0; poll < (attempted ? 30 : 1); poll += 1) {
+          latest = await read();
+          if (
+            !attempted ||
+            (sameNormalizedServicePostcondition(
+              latest.postcondition,
+              expectedOnline,
+            ) &&
+              JSON.stringify(latest.deployment) ===
+                JSON.stringify(expectedDeployment))
+          )
+            break;
+          await this.sleep(2_000);
+        }
+        return observed(identity, {
+          postcondition: latest!.postcondition,
+          ...(expectedDeployment ? { deployment: latest!.deployment } : {}),
+        });
+      },
+      mutate: async () => {
+        attempted = true;
+        await this.api.resume(serviceId);
+      },
+    });
   }
 
   async patchService(

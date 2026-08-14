@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { RenderService } from "./render-api";
-import { RenderServiceContractMatcher } from "./render-service-contract";
+import {
+  normalizeRenderServicePostcondition,
+  RenderServiceContractMatcher,
+} from "./render-service-contract";
+import { sameNormalizedServicePostcondition } from "../domain/service-transition";
 
 const sourceContract = {
   serviceId: "srv-source",
+  ownerId: "tea-owner",
+  serviceType: "web_service",
   runtime: "node" as const,
   imagePath: null,
   repository: "https://example.test/reviewrouter.git",
@@ -48,6 +54,8 @@ const sourceService = (): RenderService => ({
 
 const targetContract = {
   serviceId: "srv-target",
+  ownerId: "tea-owner",
+  serviceType: "web_service",
   runtime: "image" as const,
   imagePath: "registry.example.test/app@sha256:digest",
   autoDeploy: "no" as const,
@@ -85,6 +93,14 @@ describe("Render service contract postcondition", () => {
   });
 
   it.each([
+    [
+      "owner",
+      (service: RenderService) => ({ ...service, ownerId: "attacker" }),
+    ],
+    [
+      "service type",
+      (service: RenderService) => ({ ...service, type: "background_worker" }),
+    ],
     [
       "image",
       (service: RenderService) => ({ ...service, imagePath: "stale-image" }),
@@ -223,6 +239,46 @@ describe("Render service contract postcondition", () => {
       ).toBe(false);
     },
   );
+
+  it("binds the secret-safe environment fingerprint into the canonical postcondition", () => {
+    const first = normalizeRenderServicePostcondition(
+      sourceService(),
+      `sha256:${"a".repeat(64)}`,
+    );
+    const drifted = normalizeRenderServicePostcondition(
+      sourceService(),
+      `sha256:${"b".repeat(64)}`,
+    );
+    expect(sameNormalizedServicePostcondition(first, drifted)).toBe(false);
+  });
+
+  it.each([
+    ["owner", { ownerId: "attacker" }],
+    ["service type", { serviceType: "background_worker" }],
+    ["region", { region: "virginia" }],
+    ["plan", { plan: "standard" }],
+    ["runtime", { runtime: "image" as const }],
+    ["image", { image: "registry.invalid/attacker@sha256:bad" }],
+    ["start command", { startCommand: "attacker" }],
+    ["build command", { buildCommand: "attacker" }],
+    ["health path", { healthPath: "/attacker" }],
+    ["automatic deploy", { automaticDeployments: true as never }],
+    ["automatic deploy trigger", { automaticDeployTrigger: "commit" as never }],
+    ["shutdown delay", { shutdownDelaySeconds: 1 }],
+    ["instance count", { instanceCount: 99 }],
+    ["environment", { environmentSha256: `sha256:${"f".repeat(64)}` }],
+  ])("rejects canonical final-resume drift in %s", (_name, change) => {
+    const expected = normalizeRenderServicePostcondition(
+      sourceService(),
+      `sha256:${"a".repeat(64)}`,
+    );
+    expect(
+      sameNormalizedServicePostcondition(expected, {
+        ...expected,
+        ...change,
+      }),
+    ).toBe(false);
+  });
 
   it.each([
     [

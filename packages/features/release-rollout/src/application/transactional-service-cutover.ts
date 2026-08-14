@@ -318,6 +318,8 @@ export class TransactionalServiceCutover {
                       "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
                       "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
                       "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+                      "REVIEW_ROUTER_RUNTIME_SERVICE_ID",
+                      "REVIEW_ROUTER_RUNTIME_DEPLOYMENT_PROVENANCE",
                     ],
                     expectedBeforeSha256: target.environmentSha256,
                     expectedAfterSha256: contract.sourceEnvironmentSha256,
@@ -514,8 +516,20 @@ export class TransactionalServiceCutover {
         serviceId: service.serviceId,
         ownerId: this.recoveryOwnerId,
         effect: async (_permit, executeAuthorized) => {
+          const beforeResume = await this.provider.observe(service.serviceId);
+          if (
+            !beforeResume.suspended ||
+            beforeResume.configurationSha256 !== service.configuration.sha256 ||
+            beforeResume.environmentSha256 !==
+              service.sourceEnvironmentSha256 ||
+            beforeResume.provenance.kind !== "source_revision" ||
+            beforeResume.provenance.revision !== service.sourceRevision
+          )
+            throw new Error(
+              "service_transition_source_resume_precondition_drift",
+            );
           await executeAuthorized(() =>
-            this.provider.resume(service.serviceId),
+            this.provider.resume(service.serviceId, beforeResume),
           );
           return this.provider.observe(service.serviceId);
         },

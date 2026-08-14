@@ -24,7 +24,10 @@ import {
 import { RenderApiAdapter, type RenderFetch } from "./render-api";
 import type { ProviderMutationAuthorityPort } from "../application/provider-mutation-authority";
 import { AuthorizedRenderMutations } from "./authorized-render-mutations";
-import { RenderServiceContractMatcher } from "./render-service-contract";
+import {
+  normalizeRenderServicePostcondition,
+  RenderServiceContractMatcher,
+} from "./render-service-contract";
 
 const active = new Set([
   "created",
@@ -150,6 +153,8 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
       runtime === "image" && typeof imagePath === "string"
         ? new RenderServiceContractMatcher({
             serviceId,
+            ownerId: service.ownerId,
+            serviceType: service.type,
             runtime,
             imagePath,
             autoDeploy: "no",
@@ -165,6 +170,8 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
         : runtime === "node"
           ? new RenderServiceContractMatcher({
               serviceId,
+              ownerId: service.ownerId,
+              serviceType: service.type,
               runtime,
               imagePath: null,
               repository: String(sourceContract.repository),
@@ -208,6 +215,10 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
       suspended: service.suspended === "suspended",
       configurationSha256,
       environmentSha256: environmentSha256(environment),
+      postcondition: normalizeRenderServicePostcondition(
+        service,
+        environmentSha256(environment),
+      ),
       provenance:
         runtime === "image" && typeof imagePath === "string" && live.image
           ? {
@@ -234,15 +245,32 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
     await this.waitForSuspension(serviceId, true);
   }
 
-  async resume(serviceId: string): Promise<void> {
+  async resume(
+    serviceId: string,
+    expected: ObservedServiceState,
+  ): Promise<void> {
+    if (
+      expected.serviceId !== serviceId ||
+      !expected.suspended ||
+      !expected.postcondition ||
+      !expected.postcondition.suspended
+    )
+      throw new Error("service_transition_resume_postcondition_invalid");
     const service = await this.api.getService(serviceId);
     if (service.suspended !== "not_suspended") {
       const { mutations, context } = this.mutation(
         `service_resume:${serviceId}`,
       );
-      await mutations.resume(context, serviceId);
+      await mutations.resumeExact(context, expected.postcondition);
     }
-    await this.waitForSuspension(serviceId, false);
+    const after = await this.observe(serviceId);
+    if (
+      !after.postcondition ||
+      after.postcondition.suspended ||
+      JSON.stringify(after.postcondition) !==
+        JSON.stringify({ ...expected.postcondition, suspended: false })
+    )
+      throw new Error("service_transition_resume_postcondition_unproven");
   }
 
   async configureTarget(contract: TargetServiceRelease): Promise<void> {
@@ -257,6 +285,8 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
       throw new Error("service_transition_operational_contract_incomplete");
     const expected = new RenderServiceContractMatcher({
       serviceId: contract.serviceId,
+      ownerId: current.ownerId,
+      serviceType: current.type,
       runtime: "image",
       imagePath: contract.artifact.reference,
       autoDeploy: "no",
@@ -307,6 +337,8 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
     }
     const expected = new RenderServiceContractMatcher({
       serviceId: contract.serviceId,
+      ownerId: configuration.ownerId,
+      serviceType: configuration.type,
       runtime: "node",
       imagePath: null,
       repository: configuration.repository,
@@ -433,6 +465,8 @@ export class RenderTransactionalServicesAdapter implements TransactionalServiceP
           "REVIEW_ROUTER_RUNTIME_RELEASE_COMMIT_SHA",
           "REVIEW_ROUTER_RUNTIME_ROLLOUT_ID",
           "REVIEW_ROUTER_RUNTIME_ROLLOUT_STARTED_AT",
+          "REVIEW_ROUTER_RUNTIME_SERVICE_ID",
+          "REVIEW_ROUTER_RUNTIME_DEPLOYMENT_PROVENANCE",
         ].some((key) => env.has(key))
       )
         throw new Error("service_transition_source_capture_mismatch");

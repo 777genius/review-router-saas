@@ -3,6 +3,8 @@ import { RenderTargetServicesAdapter as ProductionRenderTargetServicesAdapter } 
 import { ProviderAuthorityOperation } from "../application/ports";
 import { fingerprintRuntimeRecoveryWitness } from "./runtime-generation-witness";
 import { TestProviderMutationAuthority } from "../test-provider-mutation-authority";
+import { environmentSha256 } from "../domain/service-transition";
+import { normalizeRenderServicePostcondition } from "./render-service-contract";
 
 class RenderTargetServicesAdapter extends ProductionRenderTargetServicesAdapter {
   constructor(...args: any[]) {
@@ -63,14 +65,60 @@ const stageDecision = {
   decisionId: "decision-stage",
   decidedAt: "2026-08-12T00:00:00.000Z",
 };
+const resumeDecision = {
+  ...stageDecision,
+  operation: ProviderAuthorityOperation.ResumeTarget,
+  activationBoundary: "activated" as const,
+  decisionId: "decision-resume",
+};
 const service = {
   id: expected.serviceId,
   ownerId: "tea-owner",
   type: "web_service",
   suspended: "suspended",
   autoDeploy: "no",
-  serviceDetails: {},
+  autoDeployTrigger: "off",
+  image: { imagePath: `registry.example.test/app@sha256:${"d".repeat(64)}` },
+  serviceDetails: {
+    runtime: "image",
+    preDeployCommand: "",
+    region: "frankfurt",
+    plan: "starter",
+    maxShutdownDelaySeconds: 60,
+    numInstances: 1,
+  },
 };
+const expectedCanaryServices = ["api", "web", "worker"].map((runtimeRole) => ({
+  runtimeRole: runtimeRole as "api" | "web" | "worker",
+  serviceId: `srv-${runtimeRole}`,
+  deployId: `dep-${runtimeRole}`,
+  provenance: {
+    kind: "git" as const,
+    commitSha: "a".repeat(40),
+  },
+  servicePostcondition: {
+    serviceId: `srv-${runtimeRole}`,
+    ownerId: "tea-owner",
+    serviceType: runtimeRole === "worker" ? "background_worker" : "web_service",
+    suspended: false,
+    region: "frankfurt",
+    plan: "starter",
+    runtime: "image" as const,
+    image: `registry.example.test/app@sha256:${"d".repeat(64)}`,
+    repository: null,
+    branch: null,
+    rootDirectory: null,
+    buildCommand: null,
+    startCommand: null,
+    preDeployCommand: "",
+    healthPath: runtimeRole === "worker" ? null : "/health",
+    automaticDeployments: false as const,
+    automaticDeployTrigger: "off" as const,
+    shutdownDelaySeconds: 60,
+    instanceCount: 1,
+    environmentSha256: `sha256:${"e".repeat(64)}`,
+  },
+}));
 const deploy = (id: string, status: string) => [
   {
     deploy: { id, status, commit: { id: expected.provenance.commitSha } },
@@ -205,9 +253,129 @@ describe("Render target switch and live canary", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("reconciles a lost resume response without replaying the unsafe write", async () => {
+    let suspended: "suspended" | "not_suspended" = "suspended";
+    const environment = [{ key: "DATABASE_URL", value: "redacted" }];
+    const fetchImpl = vi.fn(async (url: string) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith("/resume")) {
+        suspended = "not_suspended";
+        throw new Error("lost provider response");
+      }
+      if (pathname.endsWith("/env-vars"))
+        return json(environment.map((envVar) => ({ envVar, cursor: null })));
+      if (pathname.endsWith("/deploys")) return json(deploy("dep-new", "live"));
+      return json({ ...service, suspended });
+    });
+    const stagedService = {
+      serviceId: expected.serviceId,
+      deployId: "dep-new",
+      provenance: expected.provenance,
+      servicePostcondition: normalizeRenderServicePostcondition(
+        service as never,
+        environmentSha256(environment),
+      ),
+    };
+    const adapter = new RenderTargetServicesAdapter(
+      fetchImpl,
+      async () => undefined,
+    );
+    const input = {
+      apiKey: "redacted",
+      services: [expected],
+      stagedServices: [stagedService],
+      rolloutId: fence.rolloutId,
+      sourceSystemIdentifier: fence.sourceSystemIdentifier,
+      targetSystemIdentifier: fence.targetSystemIdentifier,
+      expectedReceiptSha256: fence.previousReceiptSha256,
+      decision: resumeDecision,
+    };
+    await expect(adapter.resumeDeployAndObserve(input)).resolves.toMatchObject({
+      facts: [{ serviceId: expected.serviceId, resumed: true }],
+    });
+    expect(
+      fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/resume")),
+    ).toHaveLength(1);
+  });
+
+  it("accepts an exact durable resume replay without issuing provider I/O", async () => {
+    const environment = [{ key: "DATABASE_URL", value: "redacted" }];
+    const fetchImpl = vi.fn(async (url: string) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith("/env-vars"))
+        return json(environment.map((envVar) => ({ envVar, cursor: null })));
+      if (pathname.endsWith("/deploys")) return json(deploy("dep-new", "live"));
+      if (pathname.endsWith("/resume"))
+        throw new Error("resume replay issued provider I/O");
+      return json({ ...service, suspended: "not_suspended" });
+    });
+    const stagedService = {
+      serviceId: expected.serviceId,
+      deployId: "dep-new",
+      provenance: expected.provenance,
+      servicePostcondition: normalizeRenderServicePostcondition(
+        service as never,
+        environmentSha256(environment),
+      ),
+    };
+    const authority = {
+      recover: vi.fn(async (request: any) => ({
+        status: "terminal" as const,
+        outcome: {
+          status: "terminal" as const,
+          result: "exact_postcondition" as const,
+          rolloutId: request.rolloutId,
+          operation: request.operation,
+          resource: request.resource,
+          ownerId: request.ownerId,
+          epoch: 1,
+          permitId: "permit-replay",
+          receiptId: "receipt-replay",
+          expected: request.expected,
+          consumedAt: "2026-08-12T00:00:00.000Z",
+          completedAt: "2026-08-12T00:00:01.000Z",
+          observation: {
+            resource: request.resource,
+            state: request.expected,
+            observedAt: "2026-08-12T00:00:01.000Z",
+          },
+        },
+      })),
+      issue: vi.fn(),
+      consume: vi.fn(),
+      validateExecution: vi.fn(),
+      complete: vi.fn(),
+      reconcile: vi.fn(),
+    };
+    const observation = await new ProductionRenderTargetServicesAdapter(
+      fetchImpl,
+      async () => undefined,
+      undefined,
+      authority as never,
+    ).resumeDeployAndObserve({
+      apiKey: "redacted",
+      services: [expected],
+      stagedServices: [stagedService],
+      rolloutId: fence.rolloutId,
+      sourceSystemIdentifier: fence.sourceSystemIdentifier,
+      targetSystemIdentifier: fence.targetSystemIdentifier,
+      expectedReceiptSha256: fence.previousReceiptSha256,
+      decision: resumeDecision,
+      mutationOwnerId: "test-owner",
+    });
+    expect(observation.facts).toEqual([
+      expect.objectContaining({ serviceId: expected.serviceId, resumed: true }),
+    ]);
+    expect(
+      fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/resume")),
+    ).toHaveLength(0);
+    expect(authority.issue).not.toHaveBeenCalled();
+  });
+
   it("uses an authenticated unique no-store POST and binds the write/read response", async () => {
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const serviceFacts = body.serviceFacts as Array<Record<string, unknown>>;
       expect(init?.method).toBe("POST");
       expect((init?.headers as Record<string, string>).Authorization).toBe(
         "Bearer canary-secret",
@@ -219,10 +387,15 @@ describe("Render target switch and live canary", () => {
           databaseSystemIdentifier: "200",
           recoveryWitnessSha256: recoveryWitnessSha256,
           runtimeWitnessProofs: ["api", "web", "worker"].map((runtimeRole) => ({
+            ...serviceFacts.find((item) => item.runtimeRole === runtimeRole),
             runtimeRole,
             databaseRole: `reviewrouter_${runtimeRole}`,
             recoveryWitnessSha256: recoveryWitnessSha256,
             provedAt: "2026-08-12T00:00:00.500Z",
+            systemIdentifier: "200",
+            releaseCommitSha: "a".repeat(40),
+            nonce: body.nonce,
+            requestedAt: body.requestedAt,
           })),
           writeReadRoundTrip: true,
           observedAt: "2026-08-12T00:00:01.000Z",
@@ -242,6 +415,7 @@ describe("Render target switch and live canary", () => {
       expectedRecoveryWitnessSha256: recoveryWitnessSha256,
       rolloutId: "rollout-target-1",
       bearerToken: "canary-secret",
+      expectedServices: expectedCanaryServices,
     });
     expect(observation.facts).toMatchObject({
       rolloutId: "rollout-target-1",
@@ -249,6 +423,72 @@ describe("Render target switch and live canary", () => {
       writeReadRoundTrip: true,
     });
   });
+
+  it.each([
+    [
+      "wrong nonce",
+      (proof: Record<string, unknown>) => ({ ...proof, nonce: "f".repeat(48) }),
+    ],
+    [
+      "stale proof",
+      (proof: Record<string, unknown>) => ({
+        ...proof,
+        provedAt: "2026-08-11T23:59:59.999Z",
+      }),
+    ],
+  ])(
+    "rejects %s reuse for the current canary challenge",
+    async (_name, mutate) => {
+      const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const serviceFacts = body.serviceFacts as Array<
+          Record<string, unknown>
+        >;
+        return json(
+          {
+            ...body,
+            commitSha: "a".repeat(40),
+            databaseSystemIdentifier: "200",
+            recoveryWitnessSha256,
+            runtimeWitnessProofs: ["api", "web", "worker"].map((runtimeRole) =>
+              mutate({
+                ...serviceFacts.find(
+                  (item) => item.runtimeRole === runtimeRole,
+                ),
+                runtimeRole,
+                databaseRole: `reviewrouter_${runtimeRole}`,
+                recoveryWitnessSha256,
+                systemIdentifier: "200",
+                releaseCommitSha: "a".repeat(40),
+                nonce: body.nonce,
+                requestedAt: body.requestedAt,
+                provedAt: "2026-08-12T00:00:00.500Z",
+              }),
+            ),
+            writeReadRoundTrip: true,
+            observedAt: "2026-08-12T00:00:01.000Z",
+          },
+          200,
+          { "cache-control": "private, no-store" },
+        );
+      });
+      await expect(
+        new RenderTargetServicesAdapter(
+          fetchImpl,
+          async () => undefined,
+          () => new Date("2026-08-12T00:00:00.000Z"),
+        ).verifyLiveCanary({
+          url: "https://api.example.test/internal/release-canary",
+          expectedCommitSha: "a".repeat(40),
+          expectedSystemIdentifier: "200",
+          expectedRecoveryWitnessSha256: recoveryWitnessSha256,
+          rolloutId: "rollout-target-1",
+          bearerToken: "canary-secret",
+          expectedServices: expectedCanaryServices,
+        }),
+      ).rejects.toThrow("render_target_canary_identity_mismatch");
+    },
+  );
 
   it("does not expose target canary bodies, cookies, or bearer tokens", async () => {
     const error = await new RenderTargetServicesAdapter(
@@ -266,6 +506,7 @@ describe("Render target switch and live canary", () => {
         expectedRecoveryWitnessSha256: recoveryWitnessSha256,
         rolloutId: "rollout-target-1",
         bearerToken: "target-bearer-canary",
+        expectedServices: expectedCanaryServices,
       })
       .catch((value: unknown) => value);
     const output = `${String(error)}${JSON.stringify(error)}`;
