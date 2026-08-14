@@ -4,10 +4,16 @@ import { describe, expect, it } from "vitest";
 import type {
   ActivationAuthorization,
   ExternalEffectRecord,
+  MutationExecutionReceipt,
+  OneShotMutationPermit,
   ProviderAuthorityRequest,
   StepObservation,
 } from "@reviewrouter/features-release-rollout";
-import { assertOneShotMutationPermit } from "@reviewrouter/features-release-rollout";
+import {
+  assertOneShotMutationPermit,
+  ProviderIdentifier,
+  ProviderResourceKind,
+} from "@reviewrouter/features-release-rollout";
 import { registerReleaseRolloutLedgerRoutes } from "./release-authority/adapters/http";
 import {
   ReleaseAuthorityService,
@@ -308,8 +314,12 @@ describe("release rollout ledger internal API", () => {
   it("exposes the authenticated one-shot provider mutation authority protocol", async () => {
     let state: "fresh" | "consumed" | "executing" | "completed" = "fresh";
     const expected = { fingerprint: `sha256:${"b".repeat(64)}`, version: null };
-    const resource = { provider: "render", kind: "service", id: "srv-one" };
-    const permit = {
+    const resource = {
+      provider: ProviderIdentifier.Render,
+      kind: ProviderResourceKind.Service,
+      id: "srv-one",
+    };
+    const permit: OneShotMutationPermit = {
       rolloutId: binding.rolloutId,
       operation: "freeze:srv-one",
       resource,
@@ -322,7 +332,7 @@ describe("release rollout ledger internal API", () => {
       expiresAt: "2099-01-01T00:00:00.000Z",
       singleUse: true as const,
     };
-    const receipt = {
+    const receipt: MutationExecutionReceipt = {
       rolloutId: permit.rolloutId,
       operation: permit.operation,
       resource,
