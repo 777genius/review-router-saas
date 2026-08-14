@@ -86,7 +86,8 @@ const stagedReceipt = body.rollout.receipts.find(
 );
 if (
   !stagedReceipt ||
-  stagedReceipt.observationSha256 !== `sha256:${sha256Canonical(body.staged)}`
+  stagedReceipt.observationSha256 !==
+    `sha256:${sha256Canonical(body.staged.facts)}`
 )
   throw new Error("private_pg17_staged_observation_receipt_mismatch");
 if (
@@ -133,11 +134,17 @@ const cutoverCleanupObservation: StepObservation = {
   step: RolloutStep.CleanupCutoverRunner,
   observedAt: cutoverCleanupWitness.observedAt,
   facts: {
-    providerStatus: cutoverCleanupWitness.providerStatus,
-    listenerStopped: cutoverCleanupWitness.listenerStopped,
-    workspaceRemoved: cutoverCleanupWitness.workspaceRemoved,
-    credentialProcessGone: cutoverCleanupWitness.credentialProcessGone,
-    canary: cutoverCleanupWitness.canary,
+    provider: {
+      id: body.runners[1].renderJobId,
+      status: cutoverCleanupWitness.providerStatus,
+    },
+    runner: {
+      listenerStopped: cutoverCleanupWitness.listenerStopped,
+      workspaceRemoved: cutoverCleanupWitness.workspaceRemoved,
+      credentialProcessGone: cutoverCleanupWitness.credentialProcessGone,
+      canary: cutoverCleanupWitness.canary,
+      observedAt: cutoverCleanupWitness.observedAt,
+    },
   },
   provider: { renderJobId: body.runners[1].renderJobId },
 };
