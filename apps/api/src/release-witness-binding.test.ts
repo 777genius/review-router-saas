@@ -110,42 +110,101 @@ const create = (
       ReleaseWitnessRequest["target"],
     ];
     now?: () => Date;
+    events?: string[];
+    forceNew?: () => Promise<void>;
   } = {},
 ) =>
   new AttestReleaseWitnessBinding(
     {
-      observeSource: async () => ({
-        roleName: "reviewrouter_release_witness",
-        databaseIdentity: sourceIdentity,
-        systemIdentifier: "100",
-        postgresMajor: 16,
-      }),
-      observeAuthority: async () =>
-        overrides.authority ?? observation("authority"),
-      observeTarget: async () => overrides.target ?? observation("target"),
+      observeSource: async () => {
+        overrides.events?.push("database");
+        return {
+          roleName: "reviewrouter_release_witness",
+          databaseIdentity: sourceIdentity,
+          systemIdentifier: "100",
+          postgresMajor: 16,
+        };
+      },
+      observeAuthority: async () => {
+        overrides.events?.push("database");
+        return overrides.authority ?? observation("authority");
+      },
+      observeTarget: async () => {
+        overrides.events?.push("database");
+        return overrides.target ?? observation("target");
+      },
     },
     {
-      observe: async () => overrides.observedExecution ?? request.execution,
+      observe: async () => {
+        overrides.events?.push("provider");
+        return overrides.observedExecution ?? request.execution;
+      },
     },
     {
-      observe: async () => overrides.observedDeployments ?? request.deployments,
+      observe: async () => {
+        overrides.events?.push("provider");
+        return overrides.observedDeployments ?? request.deployments;
+      },
     },
     {
-      observe: async () =>
-        overrides.observedGenerations ?? [request.source, request.target],
+      observe: async () => {
+        overrides.events?.push("provider");
+        return (
+          overrides.observedGenerations ?? [request.source, request.target]
+        );
+      },
     },
     {
-      sign: (bindingSha256) => ({
-        algorithm: "Ed25519",
-        keyId: "test-key",
-        value: Buffer.from(bindingSha256).toString("base64"),
-      }),
+      sign: (bindingSha256) => {
+        overrides.events?.push("sign");
+        return {
+          algorithm: "Ed25519",
+          keyId: "test-key",
+          value: Buffer.from(bindingSha256).toString("base64"),
+        };
+      },
     },
     policy,
+    {
+      deploymentRevision: request.execution.commitSha,
+      artifactDigest: digest("9"),
+    },
     overrides.now ?? (() => new Date("2026-08-14T00:00:00.000Z")),
+    overrides.forceNew
+      ? {
+          assertOrdinary: async () => undefined,
+          assertForceNew: overrides.forceNew,
+        }
+      : undefined,
   );
 
 describe("release witness binding policy", () => {
+  it("forces a post-provider full observation before database evidence and signing", async () => {
+    const events: string[] = [];
+    await create({
+      events,
+      forceNew: async () => {
+        events.push("force-new");
+      },
+    }).execute(request);
+    expect(events.slice(0, 3)).toEqual(["provider", "provider", "provider"]);
+    expect(events[3]).toBe("force-new");
+    expect(events.slice(4, 7)).toEqual(["database", "database", "database"]);
+    expect(events.at(-1)).toBe("sign");
+
+    const denied: string[] = [];
+    await expect(
+      create({
+        events: denied,
+        forceNew: async () => {
+          denied.push("force-new");
+          throw new Error("drift");
+        },
+      }).execute(request),
+    ).rejects.toThrow("drift");
+    expect(denied).not.toContain("database");
+    expect(denied).not.toContain("sign");
+  });
   it("attests one exact database, deployment, revision, rollout, run and generation", async () => {
     const result = await create().execute(request);
     const {
@@ -156,6 +215,8 @@ describe("release witness binding policy", () => {
     expect(result.bindingSha256).toBe(`sha256:${sha256Canonical(unsigned)}`);
     expect(result).toMatchObject({
       rolloutId: "rollout-1",
+      deploymentRevision: request.execution.commitSha,
+      artifactDigest: digest("9"),
       execution: request.execution,
       sourceDatabaseIdentity: sourceIdentity,
       authorityDatabaseIdentity: authorityIdentity,
@@ -165,6 +226,28 @@ describe("release witness binding policy", () => {
       deployments: request.deployments,
       bindingSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
     });
+  });
+
+  it("includes runtime deployment revision and artifact digest in the signed hash", async () => {
+    const result = await create().execute(request);
+    const {
+      bindingSha256: _binding,
+      signature: _signature,
+      ...unsigned
+    } = result;
+    expect(result.bindingSha256).toBe(`sha256:${sha256Canonical(unsigned)}`);
+    expect(
+      `sha256:${sha256Canonical({
+        ...unsigned,
+        deploymentRevision: "f".repeat(40),
+      })}`,
+    ).not.toBe(result.bindingSha256);
+    expect(
+      `sha256:${sha256Canonical({
+        ...unsigned,
+        artifactDigest: digest("8"),
+      })}`,
+    ).not.toBe(result.bindingSha256);
   });
 
   it.each([

@@ -4,16 +4,18 @@ import { observeReleaseAuthorityDatabaseReadiness } from "./postgres-readiness";
 const transactionHarness = (queryRaw: ReturnType<typeof vi.fn>) => {
   const executeRawUnsafe = vi.fn().mockResolvedValue(0);
   let released = false;
-  const transaction = vi.fn(async (operation: (client: unknown) => unknown) => {
-    try {
-      return await operation({
-        $queryRaw: queryRaw,
-        $executeRawUnsafe: executeRawUnsafe,
-      });
-    } finally {
-      released = true;
-    }
-  });
+  const transaction = vi.fn(
+    async (operation: (client: unknown) => unknown, _options?: unknown) => {
+      try {
+        return await operation({
+          $queryRaw: queryRaw,
+          $executeRawUnsafe: executeRawUnsafe,
+        });
+      } finally {
+        released = true;
+      }
+    },
+  );
   return {
     prisma: { $transaction: transaction, $queryRaw: vi.fn() },
     executeRawUnsafe,
@@ -114,7 +116,10 @@ describe("release authority ACL readiness observation", () => {
     const harness = transactionHarness(queryRaw);
 
     await observeReleaseAuthorityDatabaseReadiness(harness.prisma as never, {
-      statementTimeoutMilliseconds: 321,
+      poolWaitMilliseconds: 123,
+      lockTimeoutMilliseconds: 321,
+      statementTimeoutMilliseconds: 432,
+      transactionTimeoutMilliseconds: 543,
     });
 
     expect(harness.transaction).toHaveBeenCalledOnce();
@@ -124,7 +129,11 @@ describe("release authority ACL readiness observation", () => {
     );
     expect(harness.released()).toBe(true);
     const sql = sqlText(queryRaw);
-    expect(queryRaw.mock.calls[0]?.[0]?.values).toEqual(["321ms", "321ms"]);
+    expect(queryRaw.mock.calls[0]?.[0]?.values).toEqual(["432ms", "321ms"]);
+    expect(harness.transaction.mock.calls[0]?.[1]).toEqual({
+      maxWait: 123,
+      timeout: 543,
+    });
     expect(sql).toContain("pg_catalog.aclexplode");
     expect(sql).toContain("'release_authority'::text");
     expect(sql).not.toContain("CREATE ");

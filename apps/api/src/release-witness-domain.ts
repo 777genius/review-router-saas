@@ -35,7 +35,8 @@ export interface RenderCleanupObservationPort {
 
 /** Application-facing authority fence; infrastructure owns how readiness is observed. */
 export interface ReleaseAuthorityMutationReadinessPort {
-  assertReady(): Promise<void>;
+  assertOrdinary(): Promise<void>;
+  assertForceNew(): Promise<void>;
 }
 
 import {
@@ -99,8 +100,10 @@ export type ReleaseWitnessGenerationObservation = Readonly<{
 }>;
 
 export type ReleaseWitnessAttestation = Readonly<{
-  schemaVersion: 1;
+  schemaVersion: 2;
   rolloutId: string;
+  deploymentRevision: string;
+  artifactDigest: string;
   execution: ReleaseWitnessExecution;
   sourceDatabaseIdentity: RuntimeDatabaseIdentity;
   authorityDatabaseIdentity: RuntimeDatabaseIdentity;
@@ -163,6 +166,11 @@ export interface ReleaseWitnessSignerPort {
     value: string;
   }>;
 }
+
+export type ReleaseWitnessRuntimeIdentity = Readonly<{
+  deploymentRevision: string;
+  artifactDigest: string;
+}>;
 
 export type TrustedReleaseWitnessPolicy = Readonly<{
   repository: string;

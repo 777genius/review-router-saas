@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { createReleaseWitnessApp } from "./release-witness-composition";
+import { createReleaseWitnessApp as createReleaseWitnessAppBase } from "./release-witness-composition";
 import { RenderCleanupObservationAdapter } from "./release-witness-adapters";
 
 const digest = (value: string) =>
@@ -17,7 +17,27 @@ const json = (value: unknown) =>
     status: 200,
     headers: { "content-type": "application/json" },
   });
-const readyMutation = () => ({ assertReady: vi.fn(async () => undefined) });
+const readyMutation = () => ({
+  assertOrdinary: vi.fn(async () => undefined),
+  assertForceNew: vi.fn(async () => undefined),
+});
+const createReleaseWitnessApp = (
+  input: Parameters<typeof createReleaseWitnessAppBase>[0],
+) =>
+  createReleaseWitnessAppBase({
+    ...input,
+    deploymentRevision: input.deploymentRevision ?? "0".repeat(40),
+    artifactDigest: input.artifactDigest ?? `sha256:${"0".repeat(64)}`,
+    authorityOwnerRoleName:
+      input.authorityOwnerRoleName ?? "reviewrouter_release_authority_owner",
+    activationGuardRoleName:
+      input.activationGuardRoleName ?? "reviewrouter_activation_receipt_guard",
+    trustedDatabaseIdentity: input.trustedDatabaseIdentity ?? {
+      serverIdentity: "1",
+      databaseIdentity: "2",
+      databaseName: "authority",
+    },
+  });
 
 const renderJob = (status: string) => ({
   id: seed.jobId,
@@ -166,7 +186,10 @@ describe("release witness observation", () => {
       triggerTokenSha256: digest("trigger"),
       renderReadToken: "render-read-only",
       renderFetch: degradesBeforePersistFetch,
-      mutationReadiness: { assertReady },
+      mutationReadiness: {
+        assertOrdinary: assertReady,
+        assertForceNew: assertReady,
+      },
     });
     const fenced = await degradesBeforePersist.inject({
       method: "POST",

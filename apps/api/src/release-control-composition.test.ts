@@ -54,6 +54,12 @@ const createReleaseWitnessApp = (
 ) =>
   createReleaseWitnessAppBase({
     ...input,
+    deploymentRevision: input.deploymentRevision ?? "0".repeat(40),
+    artifactDigest: input.artifactDigest ?? `sha256:${"0".repeat(64)}`,
+    authorityOwnerRoleName:
+      input.authorityOwnerRoleName ?? "reviewrouter_release_authority_owner",
+    activationGuardRoleName:
+      input.activationGuardRoleName ?? "reviewrouter_activation_receipt_guard",
     trustedDatabaseIdentity:
       input.trustedDatabaseIdentity ??
       trustedDatabaseIdentity.authorityDatabaseIdentity,
@@ -65,6 +71,8 @@ const createReleaseControlApp = (
 ) =>
   createReleaseControlAppBase({
     ...input,
+    deploymentRevision: input.deploymentRevision ?? "0".repeat(40),
+    artifactDigest: input.artifactDigest ?? `sha256:${"0".repeat(64)}`,
     trustedDatabaseIdentity:
       input.trustedDatabaseIdentity ?? trustedDatabaseIdentity,
     readinessObserver: input.readinessObserver ?? testReadinessObserver,
@@ -293,10 +301,10 @@ const readinessQuery = (
       : operation(query);
   });
 
-const createReleaseControlHealthApp = (
+const createReleaseControlHealthApp = async (
   controlOverrides: Record<string, unknown> = {},
-) =>
-  createReleaseControlApp({
+) => {
+  const app = await createReleaseControlApp({
     controlPrisma: {
       $queryRaw: vi.fn().mockResolvedValue([
         {
@@ -324,8 +332,72 @@ const createReleaseControlHealthApp = (
     },
     trustedDatabaseIdentity,
   });
+  await app.inject({
+    method: "POST",
+    url: "/v1/rollouts/claim",
+    headers: { authorization: "Bearer control" },
+    payload: {
+      rolloutId: "health-warmup",
+      expectedCommitSha: "a".repeat(40),
+      runId: "1",
+      runAttempt: 1,
+      sourceSystemIdentifier: "1",
+      targetSystemIdentifier: "2",
+    },
+  });
+  return app;
+};
 
 describe("release authority process composition", () => {
+  it("health reports cached lease state without amplifying catalog observations", async () => {
+    const control = {
+      $queryRaw: vi.fn().mockResolvedValue([{ value: "claimed" }]),
+    } as never;
+    const provider = { $queryRaw: vi.fn() } as never;
+    const installer = { $queryRaw: vi.fn() } as never;
+    const reader = { $queryRaw: vi.fn() } as never;
+    let releaseInitial!: () => void;
+    const initialPending = new Promise<void>((resolve) => {
+      releaseInitial = resolve;
+    });
+    const observer = vi.fn(async (prisma: PrismaClient) => {
+      await initialPending;
+      return prisma === control
+        ? authorityReadiness("reviewrouter_release_control")[0]!
+        : prisma === provider
+          ? authorityReadiness("reviewrouter_provider_authority")[0]!
+          : prisma === installer
+            ? installerReadiness[0]!
+            : readerReadiness[0]!;
+    });
+    const app = await createReleaseControlApp({
+      controlPrisma: control,
+      providerAuthorityPrisma: provider,
+      permitInstallerPrisma: installer,
+      targetReceiptReaderPrisma: reader,
+      credentials: {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+      readinessObserver: observer as never,
+    });
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    expect(observer).toHaveBeenCalledTimes(4);
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
+    expect(observer).toHaveBeenCalledTimes(4);
+    releaseInitial();
+    for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    expect(
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(200);
+    expect(observer).toHaveBeenCalledTimes(4);
+    await app.close();
+  });
+
   it("builds focused use cases from distinct control and provider connections", () => {
     const dependencies = composeReleaseControlDependencies(
       {} as never,
@@ -334,6 +406,7 @@ describe("release authority process composition", () => {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
       },
+      trustedDatabaseIdentity,
     );
     expect(dependencies.authority).not.toBe(dependencies.runnerOperations);
     expect(dependencies.runnerOperations).not.toBe(dependencies.reconciliation);
@@ -341,12 +414,65 @@ describe("release authority process composition", () => {
     expect(dependencies).not.toHaveProperty("witnessTokenSha256");
   });
 
+  it("threads configured pool wait and transaction timeout into routine fences", async () => {
+    const connection = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            roleName: "reviewrouter_release_control",
+            ...trustedDatabaseIdentity.authorityDatabaseIdentity,
+            postgresMajor: 17,
+          },
+        ])
+        .mockResolvedValueOnce([{ value: "claimed" }]),
+    };
+    const transaction = vi.fn(
+      async (operation: (connection: unknown) => unknown, _options: unknown) =>
+        operation(connection),
+    );
+    const dependencies = composeReleaseControlDependencies(
+      { $transaction: transaction } as never,
+      {} as never,
+      {
+        controlTokenSha256: digest("control"),
+        providerAuthorityTokenSha256: digest("provider"),
+      },
+      trustedDatabaseIdentity,
+      undefined,
+      undefined,
+      {
+        maxWaitMilliseconds: 123,
+        transactionTimeoutMilliseconds: 456,
+      },
+    );
+    await expect(
+      dependencies.authority.claim({
+        rolloutId: "fence-timing",
+        expectedCommitSha: "a".repeat(40),
+        runId: "1",
+        runAttempt: 1,
+        sourceSystemIdentifier: "1",
+        targetSystemIdentifier: "2",
+      }),
+    ).resolves.toBe("claimed");
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      maxWait: 123,
+      timeout: 456,
+    });
+  });
+
   it("rejects malformed process credentials independently", async () => {
     expect(() =>
-      composeReleaseControlDependencies({} as never, {} as never, {
-        controlTokenSha256: "invalid",
-        providerAuthorityTokenSha256: digest("provider"),
-      }),
+      composeReleaseControlDependencies(
+        {} as never,
+        {} as never,
+        {
+          controlTokenSha256: "invalid",
+          providerAuthorityTokenSha256: digest("provider"),
+        },
+        trustedDatabaseIdentity,
+      ),
     ).toThrow("release_control_credential_hash_invalid");
     await expect(
       createReleaseWitnessApp({
@@ -382,6 +508,7 @@ describe("release authority process composition", () => {
         controlTokenSha256: digest("control"),
         providerAuthorityTokenSha256: digest("provider"),
       },
+      trustedDatabaseIdentity,
       { $queryRaw: installerQuery } as never,
     );
     await expect(
@@ -646,11 +773,8 @@ describe("release authority process composition", () => {
       },
     });
     expect(
-      (await app.inject({ method: "GET", url: "/health" })).json(),
-    ).toEqual({
-      status: "ok",
-      service: "release-control",
-    });
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
     expect(
       (
         await app.inject({
@@ -664,10 +788,15 @@ describe("release authority process composition", () => {
 
   it("keeps control and provider authority credentials mutually exclusive", async () => {
     expect(() =>
-      composeReleaseControlDependencies({} as never, {} as never, {
-        controlTokenSha256: digest("same"),
-        providerAuthorityTokenSha256: digest("same"),
-      }),
+      composeReleaseControlDependencies(
+        {} as never,
+        {} as never,
+        {
+          controlTokenSha256: digest("same"),
+          providerAuthorityTokenSha256: digest("same"),
+        },
+        trustedDatabaseIdentity,
+      ),
     ).toThrow("release_control_credential_hash_invalid");
 
     const app = await createReleaseControlApp({
@@ -913,11 +1042,8 @@ describe("release authority process composition", () => {
       renderReadToken: "read-only",
     });
     expect(
-      (await app.inject({ method: "GET", url: "/health" })).json(),
-    ).toEqual({
-      status: "ok",
-      service: "release-witness",
-    });
+      (await app.inject({ method: "GET", url: "/health" })).statusCode,
+    ).toBe(503);
     expect(
       (await app.inject({ method: "POST", url: "/v1/rollouts/claim" }))
         .statusCode,
@@ -932,12 +1058,16 @@ describe("release authority process composition", () => {
       triggerTokenSha256: digest("witness"),
       renderReadToken: "read-only",
       readinessObserver: () => new Promise<never>(() => undefined),
-      readinessPolicy: { deadlineMilliseconds: 25 },
+      readinessPolicy: {
+        observationDeadlineMilliseconds: 25,
+        transactionTimeoutMilliseconds: 20,
+        statementTimeoutMilliseconds: 15,
+        lockTimeoutMilliseconds: 2,
+        poolWaitMilliseconds: 2,
+      },
     });
 
-    const responsePromise = app.inject({ method: "GET", url: "/health" });
-    await vi.advanceTimersByTimeAsync(25);
-    const response = await responsePromise;
+    const response = await app.inject({ method: "GET", url: "/health" });
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({
       status: "degraded",
@@ -1012,13 +1142,15 @@ describe("release authority process composition", () => {
         providerAuthorityTokenSha256: digest("provider"),
       },
       readinessPolicy: {
-        deadlineMilliseconds: 25,
+        observationDeadlineMilliseconds: 25,
+        transactionTimeoutMilliseconds: 20,
+        statementTimeoutMilliseconds: 15,
+        lockTimeoutMilliseconds: 2,
+        poolWaitMilliseconds: 2,
       },
     });
 
-    const responsePromise = app.inject({ method: "GET", url: "/health" });
-    await vi.advanceTimersByTimeAsync(25);
-    const response = await responsePromise;
+    const response = await app.inject({ method: "GET", url: "/health" });
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({
       status: "degraded",

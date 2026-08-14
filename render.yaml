@@ -26,6 +26,10 @@ services:
         sync: false
       - key: REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256
         sync: false
+      - key: REVIEW_ROUTER_RELEASE_COMMIT_SHA
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_IMAGE_DIGEST
+        sync: false
       - key: REVIEW_ROUTER_ACTIVATION_PERMIT_INSTALLER_DATABASE_URL
         sync: false
       - key: REVIEW_ROUTER_ACTIVATION_RECEIPT_READER_DATABASE_URL
@@ -78,6 +82,10 @@ services:
         sync: false
       - key: REVIEW_ROUTER_RELEASE_WITNESS_RENDER_READ_TOKEN
         sync: false
+      - key: REVIEW_ROUTER_RELEASE_COMMIT_SHA
+        sync: false
+      - key: REVIEW_ROUTER_RELEASE_IMAGE_DIGEST
+        sync: false
       - key: REVIEW_ROUTER_RELEASE_AUTHORITY_SYSTEM_IDENTIFIER
         sync: false
       - key: REVIEW_ROUTER_RELEASE_AUTHORITY_DATABASE_OID
@@ -124,6 +132,10 @@ services:
         sync: false
       - key: REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MANIFEST_IDENTITY
         sync: false
+      - key: REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_ROLE
+        sync: false
+      - key: REVIEW_ROUTER_ACTIVATION_GUARD_ROLE
+        value: reviewrouter_activation_receipt_guard
       - key: REVIEW_ROUTER_ACTIVATION_MIGRATION_MANIFEST_SHA256
         sync: false
       - key: REVIEW_ROUTER_ACTIVATION_NAMESPACE_FINGERPRINT

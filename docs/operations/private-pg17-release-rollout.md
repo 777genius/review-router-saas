@@ -203,6 +203,8 @@ verifier or upgraded without rerunning the current rollout and witness observati
    `REVIEW_ROUTER_ACTIVATION_TARGET_DATABASE_NAME`,
    `REVIEW_ROUTER_ACTIVATION_MIGRATION_MANIFEST_SHA256`,
    `REVIEW_ROUTER_ACTIVATION_NAMESPACE_FINGERPRINT`,
+   `REVIEW_ROUTER_RELEASE_COMMIT_SHA`,
+   `REVIEW_ROUTER_RELEASE_IMAGE_DIGEST`,
    `REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_ROLE`,
    `REVIEW_ROUTER_ACTIVATION_GUARD_ROLE`,
    `REVIEW_ROUTER_ACTIVATION_INSTALLER_BODY_SHA256`, and
@@ -344,11 +346,28 @@ ACL, and type ACL. Extra grantees or ACL-bearing objects, inherited stale access
 `PUBLIC`, grant options, missing grants, owner drift, and non-empty relevant
 owner defaults make readiness fail even if a catalog digest happens to match.
 Readiness takes every identity, manifest, routine, and catalog fact from one
-pinned PostgreSQL session and bounded repeatable-read transaction. PostgreSQL
-statement and lock timeouts bound catalog work; the application deadline aborts
-the adapter request and expired observations are never cached. Missing legacy
-fields, a mixed-generation manifest, extra namespace objects, changed routine
-bodies, or a stale fingerprint fail closed.
+pinned PostgreSQL session and bounded repeatable-read transaction. Pool wait
+(2s), lock (2s), statement (15s), transaction (17s), and application observation
+(20s) limits are independent. A successful full observation has a process-local
+60-second hard lease measured from its earliest start, refreshes ahead at 40
+seconds with bounded singleflight retry, and is usable only for its exact
+service/revision/artifact/catalog/database/role/body/manifest subject. Equality
+at expiry is expired; failures never extend evidence and definitive mismatches
+revoke it. Process startup begins the observation in the background with bounded
+retry, and shutdown cancels its timer and in-flight observation. `/health`
+reports this cached state without starting catalog work.
+Every protected routine also checks the cheap PG17 role and database identity
+fence on the routine's own transaction connection. Witness publication forces a
+new full observation after its provider read. The schema-v2 signed witness also
+binds the running deployment revision and immutable artifact digest, which the
+trusted-evidence verifier matches to release commit and image provenance.
+Missing legacy fields, a mixed-generation manifest, extra namespace objects,
+changed routine bodies, or a stale fingerprint fail closed.
+
+The five database/application bounds may be overridden only with the matching
+`REVIEW_ROUTER_READINESS_{POOL_WAIT,LOCK_TIMEOUT,STATEMENT_TIMEOUT,TRANSACTION_TIMEOUT,OBSERVATION_DEADLINE}_MS`
+variables. Startup rejects malformed values and unsafe ordering. The 60-second
+lease and 40-second refresh point are not environment-configurable.
 
 An absent-ledger catalog that matches neither shadow, or matches ambiguously,
 stops before history or forward repairs are written. Preserve the failed

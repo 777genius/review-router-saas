@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import { observeReleaseAuthorityDatabaseReadiness } from "./release-authority/adapters/postgres-readiness.js";
 import {
@@ -6,9 +7,18 @@ import {
   type ReleaseAuthorityDatabaseReadiness,
 } from "./release-authority/application/readiness.js";
 import {
-  createBoundedReadinessPolicy,
-  type BoundedReadinessPolicyOptions,
-} from "./release-authority/application/bounded-readiness.js";
+  defaultReadinessTimingPolicy,
+  DefinitiveAttestationMismatchError,
+  ReleaseAuthorityAttestationCoordinator,
+  validateReadinessTimingPolicy,
+  type MonotonicScheduler,
+  type ReadinessTimingPolicy,
+} from "./release-authority/application/attestation-lease.js";
+import {
+  createReleaseAuthorityAttestationSubject,
+  ReleaseAuthorityServiceKind,
+} from "./release-authority/domain/attestation-subject.js";
+import { releaseAuthorityCatalogVerifier } from "./release-authority/domain/readiness-contract.mjs";
 import {
   AttestReleaseWitnessBinding,
   ObserveRunnerCleanup,
@@ -40,10 +50,18 @@ export async function createReleaseWitnessApp(input: {
     prisma: PrismaClient,
     options?: Readonly<{
       signal?: AbortSignal;
+      poolWaitMilliseconds?: number;
+      lockTimeoutMilliseconds?: number;
       statementTimeoutMilliseconds?: number;
+      transactionTimeoutMilliseconds?: number;
     }>,
   ) => Promise<ReleaseAuthorityDatabaseReadiness>;
-  readonly readinessPolicy?: Partial<BoundedReadinessPolicyOptions>;
+  readonly readinessPolicy?: Partial<ReadinessTimingPolicy>;
+  readonly readinessScheduler?: MonotonicScheduler;
+  readonly deploymentRevision?: string;
+  readonly artifactDigest?: string;
+  readonly authorityOwnerRoleName?: string;
+  readonly activationGuardRoleName?: string;
   readonly mutationReadiness?: ReleaseAuthorityMutationReadinessPort;
   readonly trustedDatabaseIdentity?: RuntimeDatabaseIdentity;
   readonly sourceWitnessPrisma?: PrismaClient;
@@ -56,18 +74,36 @@ export async function createReleaseWitnessApp(input: {
 }): Promise<FastifyInstance> {
   if (!/^[a-f0-9]{64}$/u.test(input.triggerTokenSha256))
     throw new Error("release_witness_credential_hash_invalid");
-  const postgres = new PostgresCleanupObservationAdapter(input.witnessPrisma);
-  const readinessPolicyOptions = {
-    deadlineMilliseconds: 5_000,
-    successfulLeaseMilliseconds: 0,
+  const readinessPolicyOptions = validateReadinessTimingPolicy({
+    ...defaultReadinessTimingPolicy,
     ...input.readinessPolicy,
-  };
+  });
+  const postgres = new PostgresCleanupObservationAdapter(
+    input.witnessPrisma,
+    input.trustedDatabaseIdentity
+      ? {
+          roleName: "reviewrouter_release_witness",
+          databaseIdentity: input.trustedDatabaseIdentity,
+          postgresMajor: 17,
+        }
+      : undefined,
+    {
+      maxWaitMilliseconds: readinessPolicyOptions.poolWaitMilliseconds,
+      transactionTimeoutMilliseconds:
+        readinessPolicyOptions.transactionTimeoutMilliseconds,
+    },
+  );
   const observeAuthority = async (signal: AbortSignal): Promise<void> => {
     const readiness = await (
       input.readinessObserver ?? observeReleaseAuthorityDatabaseReadiness
     )(input.witnessPrisma, {
       signal,
-      statementTimeoutMilliseconds: readinessPolicyOptions.deadlineMilliseconds,
+      poolWaitMilliseconds: readinessPolicyOptions.poolWaitMilliseconds,
+      lockTimeoutMilliseconds: readinessPolicyOptions.lockTimeoutMilliseconds,
+      statementTimeoutMilliseconds:
+        readinessPolicyOptions.statementTimeoutMilliseconds,
+      transactionTimeoutMilliseconds:
+        readinessPolicyOptions.transactionTimeoutMilliseconds,
     });
     if (
       readiness.roleName !== "reviewrouter_release_witness" ||
@@ -79,17 +115,67 @@ export async function createReleaseWitnessApp(input: {
       ) ||
       !releaseAuthoritySchemaIsReady(readiness)
     )
-      throw new Error("release_witness_authority_readiness_degraded");
+      throw new DefinitiveAttestationMismatchError();
   };
-  const readiness = createBoundedReadinessPolicy(
-    observeAuthority,
+  const trustedDatabaseIdentity = input.trustedDatabaseIdentity;
+  if (!trustedDatabaseIdentity)
+    throw new Error("release_witness_trusted_database_identity_missing");
+  const policy = input.trustedBindingPolicy;
+  const subject = createReleaseAuthorityAttestationSubject({
+    serviceKind: ReleaseAuthorityServiceKind.Witness,
+    deploymentRevision: input.deploymentRevision ?? "",
+    artifactDigest: input.artifactDigest ?? "",
+    catalogContractId:
+      policy?.authorityCatalogVerifier ?? releaseAuthorityCatalogVerifier,
+    expectedDatabases: [
+      {
+        roleName: "reviewrouter_release_witness",
+        identity: trustedDatabaseIdentity,
+      },
+    ],
+    requiredRoles: [
+      "reviewrouter_release_control",
+      "reviewrouter_provider_authority",
+      "reviewrouter_release_witness",
+      input.authorityOwnerRoleName ?? "",
+      "reviewrouter_activation_permit_installer",
+      "reviewrouter_activation_receipt_reader",
+      input.activationGuardRoleName ?? "",
+    ],
+    authorityOwnerRoleName: input.authorityOwnerRoleName ?? "",
+    activationGuardRoleName: input.activationGuardRoleName ?? "",
+    routineBodyRoots: {
+      installerSha256: policy?.installerRoutineBodySha256
+        ? `sha256:${policy.installerRoutineBodySha256}`
+        : `sha256:${"0".repeat(64)}`,
+      readerSha256: policy?.readerRoutineBodySha256
+        ? `sha256:${policy.readerRoutineBodySha256}`
+        : `sha256:${"0".repeat(64)}`,
+    },
+    migrationManifestIdentity: policy
+      ? `sha256:${createHash("sha256")
+          .update(
+            JSON.stringify([
+              policy.authorityMigrationManifestIdentity,
+              policy.activationMigrationManifestIdentity,
+            ]),
+          )
+          .digest("hex")}`
+      : `sha256:${createHash("sha256").update(releaseAuthorityCatalogVerifier).digest("hex")}`,
+    activationFingerprint:
+      policy?.activationNamespaceFingerprint ?? `sha256:${"0".repeat(64)}`,
+  });
+  const readiness = new ReleaseAuthorityAttestationCoordinator(
+    (_subject, signal) => observeAuthority(signal),
     () =>
       Object.assign(new Error("release_witness_readiness_unavailable"), {
         statusCode: 503,
       }),
     readinessPolicyOptions,
+    input.readinessScheduler,
   );
-  const assertAuthorityReady = () => readiness.assertReady();
+  const assertAuthorityReady = () => readiness.assertOrdinary(subject);
+  const forceNewAuthority = () => readiness.forceNew(subject);
   const observeCleanup = new ObserveRunnerCleanup(
     postgres,
     new RenderCleanupObservationAdapter(
@@ -97,7 +183,10 @@ export async function createReleaseWitnessApp(input: {
       input.renderFetch,
     ),
     postgres,
-    input.mutationReadiness ?? { assertReady: assertAuthorityReady },
+    input.mutationReadiness ?? {
+      assertOrdinary: assertAuthorityReady,
+      assertForceNew: forceNewAuthority,
+    },
   );
   const bindingInputs = [
     input.sourceWitnessPrisma,
@@ -141,22 +230,30 @@ export async function createReleaseWitnessApp(input: {
               input.signingPrivateKeyPem!,
             ),
             input.trustedBindingPolicy,
+            {
+              deploymentRevision: input.deploymentRevision ?? "",
+              artifactDigest: input.artifactDigest ?? "",
+            },
+            undefined,
+            {
+              assertOrdinary: assertAuthorityReady,
+              assertForceNew: forceNewAuthority,
+            },
           );
         })()
       : undefined;
   const app = Fastify({ logger: false });
   app.get("/health", async (_request, reply) => {
-    try {
-      await assertAuthorityReady();
+    if (readiness.state(subject).status === "ready")
       return { status: "ok", service: "release-witness" };
-    } catch {
-      return reply.code(503).send({
-        status: "degraded",
-        service: "release-witness",
-        reason: "database_unavailable",
-      });
-    }
+    return reply.code(503).send({
+      status: "degraded",
+      service: "release-witness",
+      reason: "database_unavailable",
+    });
   });
+  app.addHook("onReady", () => readiness.startInitial(subject));
+  app.addHook("onClose", () => readiness.close());
   await registerReleaseWitnessRoutes(app, {
     observeCleanup,
     ...(attestBinding ? { attestBinding } : {}),

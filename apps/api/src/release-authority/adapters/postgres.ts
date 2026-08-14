@@ -43,6 +43,11 @@ import {
   ReleaseAuthorityAdapterConflictError,
   ReleaseAuthorityAdapterUnexpectedError,
 } from "./routine-errors.js";
+import {
+  executeSameConnectionFenced,
+  type SameConnectionIdentityExpectation,
+  type SameConnectionTransactionTiming,
+} from "./same-connection-fence.js";
 
 export {
   ReleaseAuthorityAdapterConflictError,
@@ -51,8 +56,10 @@ export {
 
 type JsonRow = { value: unknown };
 
+type RoutineQueryClient = Pick<PrismaClient, "$queryRaw">;
+
 const firstValue = async (
-  prisma: PrismaClient,
+  prisma: RoutineQueryClient,
   query: Prisma.Sql,
 ): Promise<unknown> => {
   let rows: JsonRow[] | undefined;
@@ -88,7 +95,26 @@ export class RoutineReleaseControlLedgerAdapter
     ReleaseRolloutReconciliationPort,
     ReleaseServiceTransitionLedgerPort
 {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly prisma: RoutineQueryClient;
+
+  constructor(
+    prisma: PrismaClient,
+    fence?: SameConnectionIdentityExpectation,
+    timing?: SameConnectionTransactionTiming,
+  ) {
+    this.prisma =
+      fence && typeof prisma.$transaction === "function"
+        ? {
+            $queryRaw: (<T>(query: Prisma.Sql) =>
+              executeSameConnectionFenced(
+                prisma,
+                fence,
+                (connection) => connection.$queryRaw<T>(query),
+                timing,
+              )) as PrismaClient["$queryRaw"],
+          }
+        : prisma;
+  }
 
   async claim(input: RolloutBinding): Promise<"claimed" | "duplicate"> {
     const value = await firstValue(
@@ -622,7 +648,25 @@ export class RoutineReleaseControlLedgerAdapter
 }
 
 export class RoutineProviderMutationAuthorityAdapter implements ReleaseProviderMutationAuthorityPort {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly prisma: RoutineQueryClient;
+  constructor(
+    prisma: PrismaClient,
+    fence?: SameConnectionIdentityExpectation,
+    timing?: SameConnectionTransactionTiming,
+  ) {
+    this.prisma =
+      fence && typeof prisma.$transaction === "function"
+        ? {
+            $queryRaw: (<T>(query: Prisma.Sql) =>
+              executeSameConnectionFenced(
+                prisma,
+                fence,
+                (connection) => connection.$queryRaw<T>(query),
+                timing,
+              )) as PrismaClient["$queryRaw"],
+          }
+        : prisma;
+  }
   async issue(
     input: Parameters<ReleaseProviderMutationAuthorityPort["issue"]>[0],
   ): ReturnType<ReleaseProviderMutationAuthorityPort["issue"]> {
@@ -686,7 +730,25 @@ export class RoutineProviderMutationAuthorityAdapter implements ReleaseProviderM
 }
 
 export class RoutineRunnerCleanupWitnessAdapter implements RunnerCleanupWitnessPort {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly prisma: RoutineQueryClient;
+  constructor(
+    prisma: PrismaClient,
+    fence?: SameConnectionIdentityExpectation,
+    timing?: SameConnectionTransactionTiming,
+  ) {
+    this.prisma =
+      fence && typeof prisma.$transaction === "function"
+        ? {
+            $queryRaw: (<T>(query: Prisma.Sql) =>
+              executeSameConnectionFenced(
+                prisma,
+                fence,
+                (connection) => connection.$queryRaw<T>(query),
+                timing,
+              )) as PrismaClient["$queryRaw"],
+          }
+        : prisma;
+  }
 
   async persistProviderWitness(
     jobId: string,

@@ -1714,8 +1714,10 @@ COMMIT;
           Date.parse(assembledAt) - 1,
         ).toISOString();
         const witnessUnsigned = {
-          schemaVersion: 1,
+          schemaVersion: 2,
           rolloutId: current.rolloutId,
+          deploymentRevision: current.expectedCommitSha,
+          artifactDigest: facts.canonicalEnv.REVIEW_ROUTER_RELEASE_IMAGE_DIGEST,
           execution: {
             repository: current.execution.controlRepository,
             workflowPath: current.execution.workflowPath,

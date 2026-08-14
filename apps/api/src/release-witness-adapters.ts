@@ -1,5 +1,10 @@
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import { Prisma } from "@prisma/client";
+import {
+  executeSameConnectionFenced,
+  type SameConnectionIdentityExpectation,
+  type SameConnectionTransactionTiming,
+} from "./release-authority/adapters/same-connection-fence.js";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
   RenderApiAdapter,
@@ -59,11 +64,26 @@ const firstValue = (rows: unknown): unknown =>
 export class PostgresCleanupObservationAdapter
   implements CleanupObservationSeedPort, CleanupEvidencePort
 {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly fence?: SameConnectionIdentityExpectation,
+    private readonly timing?: SameConnectionTransactionTiming,
+  ) {}
+
+  private query<T>(query: Prisma.Sql): Promise<T> {
+    return this.fence && typeof this.prisma.$transaction === "function"
+      ? executeSameConnectionFenced(
+          this.prisma,
+          this.fence,
+          (connection) => connection.$queryRaw<T>(query),
+          this.timing,
+        )
+      : this.prisma.$queryRaw<T>(query);
+  }
 
   async load(jobId: string): Promise<CleanupObservationSeed> {
     const value = firstValue(
-      await this.prisma.$queryRaw(
+      await this.query(
         Prisma.sql`SELECT release_authority.release_runner_cleanup_observation_seed(${jobId}) AS value`,
       ),
     );
@@ -86,7 +106,7 @@ export class PostgresCleanupObservationAdapter
     evidence: NormalizedCleanupEvidence,
   ): Promise<void> {
     const value = firstValue(
-      await this.prisma.$queryRaw(
+      await this.query(
         Prisma.sql`SELECT release_authority.release_runner_persist_cleanup_witness(
           ${jobId}, ${JSON.stringify(evidence)}::jsonb
         ) AS value`,

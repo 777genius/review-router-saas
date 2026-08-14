@@ -185,8 +185,10 @@ const trustedWitnessPolicy = {
 } as const;
 const releaseWitness = () => {
   const unsigned = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     rolloutId: base.rolloutId,
+    deploymentRevision: base.expectedCommitSha,
+    artifactDigest: releaseImageIdentity.imageDigest,
     execution: {
       repository: base.execution.controlRepository,
       workflowPath: base.execution.workflowPath,
@@ -547,6 +549,26 @@ describe("trusted post-cleanup evidence", () => {
             ...v.releaseWitness.targetDatabaseIdentity,
             databaseIdentity: "99999",
           },
+        },
+      }),
+    ],
+    [
+      "witness deployment revision substitution",
+      (v: TrustedRolloutEvidence) => ({
+        ...v,
+        releaseWitness: {
+          ...v.releaseWitness,
+          deploymentRevision: "f".repeat(40),
+        },
+      }),
+    ],
+    [
+      "witness artifact digest substitution",
+      (v: TrustedRolloutEvidence) => ({
+        ...v,
+        releaseWitness: {
+          ...v.releaseWitness,
+          artifactDigest: `sha256:${"f".repeat(64)}`,
         },
       }),
     ],

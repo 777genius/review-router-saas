@@ -1,6 +1,7 @@
 import { config as loadDotenv } from "dotenv";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import { createReleaseControlApp } from "./release-control-composition.js";
+import { readinessTimingPolicyFromEnvironment } from "./release-authority/adapters/readiness-config.js";
 
 for (const path of ["../../.env.local", "../../.env", ".env.local", ".env"])
   loadDotenv({ path, override: false });
@@ -42,6 +43,9 @@ const app = await createReleaseControlApp({
       "REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN_SHA256",
     ),
   },
+  deploymentRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+  artifactDigest: required("REVIEW_ROUTER_RELEASE_IMAGE_DIGEST"),
+  readinessPolicy: readinessTimingPolicyFromEnvironment(process.env),
   trustedDatabaseIdentity: {
     authorityDatabaseIdentity: {
       serverIdentity: required(

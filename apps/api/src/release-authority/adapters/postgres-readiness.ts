@@ -557,15 +557,28 @@ export async function observeReleaseAuthorityDatabaseReadiness(
   prisma: PrismaClient,
   options: Readonly<{
     signal?: AbortSignal;
+    poolWaitMilliseconds?: number;
+    lockTimeoutMilliseconds?: number;
     statementTimeoutMilliseconds?: number;
+    transactionTimeoutMilliseconds?: number;
   }> = {},
 ): Promise<ReleaseAuthorityDatabaseReadiness> {
+  const poolWaitMilliseconds = options.poolWaitMilliseconds ?? 2_000;
+  const lockTimeoutMilliseconds = options.lockTimeoutMilliseconds ?? 2_000;
   const statementTimeoutMilliseconds =
-    options.statementTimeoutMilliseconds ?? 5_000;
+    options.statementTimeoutMilliseconds ?? 15_000;
+  const transactionTimeoutMilliseconds =
+    options.transactionTimeoutMilliseconds ?? 17_000;
   if (
-    !Number.isSafeInteger(statementTimeoutMilliseconds) ||
-    statementTimeoutMilliseconds < 1 ||
-    statementTimeoutMilliseconds > 60_000
+    ![
+      poolWaitMilliseconds,
+      lockTimeoutMilliseconds,
+      statementTimeoutMilliseconds,
+      transactionTimeoutMilliseconds,
+    ].every(
+      (value) => Number.isSafeInteger(value) && value >= 1 && value <= 60_000,
+    ) ||
+    transactionTimeoutMilliseconds <= statementTimeoutMilliseconds
   )
     throw new Error("release_control_readiness_timeout_invalid");
   options.signal?.throwIfAborted();
@@ -579,13 +592,13 @@ export async function observeReleaseAuthorityDatabaseReadiness(
       await connection.$queryRaw(Prisma.sql`
         SELECT
           set_config('statement_timeout', ${`${statementTimeoutMilliseconds}ms`}, true),
-          set_config('lock_timeout', ${`${statementTimeoutMilliseconds}ms`}, true)
+          set_config('lock_timeout', ${`${lockTimeoutMilliseconds}ms`}, true)
       `);
       return observeOnConnection(connection, options.signal);
     },
     {
-      maxWait: statementTimeoutMilliseconds,
-      timeout: statementTimeoutMilliseconds + 1_000,
+      maxWait: poolWaitMilliseconds,
+      timeout: transactionTimeoutMilliseconds,
     },
   );
 }

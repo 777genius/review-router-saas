@@ -31,13 +31,15 @@ import {
   serviceTransitionAppendRequest,
   serviceTransitionBeginRequest,
 } from "./service-transition-http-validation.js";
+type PublicService<Service> = Pick<Service, keyof Service>;
+
 export type ReleaseRolloutLedgerRouteDependencies = {
-  authority: ReleaseAuthorityService;
-  runnerOperations: RunnerOperationsService;
-  reconciliation: ReleaseRolloutReconciliationService;
-  serviceTransition?: ReleaseServiceTransitionService;
-  providerAuthority?: ProviderAuthorityDecisionService;
-  providerMutationAuthority?: ProviderMutationAuthorityService;
+  authority: PublicService<ReleaseAuthorityService>;
+  runnerOperations: PublicService<RunnerOperationsService>;
+  reconciliation: PublicService<ReleaseRolloutReconciliationService>;
+  serviceTransition?: PublicService<ReleaseServiceTransitionService>;
+  providerAuthority?: PublicService<ProviderAuthorityDecisionService>;
+  providerMutationAuthority?: PublicService<ProviderMutationAuthorityService>;
   providerAuthorityTokenSha256?: string;
   controlTokenSha256: string;
 };
@@ -672,21 +674,26 @@ export async function registerReleaseRolloutLedgerRoutes(
 ): Promise<void> {
   const control = async (request: FastifyRequest) =>
     authorize(request, dependencies.controlTokenSha256);
-  const serviceTransition = (): ReleaseServiceTransitionService => {
-    if (!dependencies.serviceTransition)
-      throw Object.assign(new Error("release_service_transition_unavailable"), {
-        statusCode: 503,
-      });
-    return dependencies.serviceTransition;
-  };
-  const providerMutationAuthority = (): ProviderMutationAuthorityService => {
-    if (!dependencies.providerMutationAuthority)
-      throw Object.assign(
-        new Error("provider_mutation_authority_unavailable"),
-        { statusCode: 503 },
-      );
-    return dependencies.providerMutationAuthority;
-  };
+  const serviceTransition =
+    (): PublicService<ReleaseServiceTransitionService> => {
+      if (!dependencies.serviceTransition)
+        throw Object.assign(
+          new Error("release_service_transition_unavailable"),
+          {
+            statusCode: 503,
+          },
+        );
+      return dependencies.serviceTransition;
+    };
+  const providerMutationAuthority =
+    (): PublicService<ProviderMutationAuthorityService> => {
+      if (!dependencies.providerMutationAuthority)
+        throw Object.assign(
+          new Error("provider_mutation_authority_unavailable"),
+          { statusCode: 503 },
+        );
+      return dependencies.providerMutationAuthority;
+    };
   const providerMutationControl = async (request: FastifyRequest) => {
     if (!dependencies.providerAuthorityTokenSha256)
       throw Object.assign(

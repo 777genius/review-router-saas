@@ -5,14 +5,34 @@ import type {
   TargetActivationFacts,
   TargetActivationReceiptReaderPort,
 } from "../domain/model.js";
+import {
+  executeSameConnectionFenced,
+  type SameConnectionIdentityExpectation,
+  type SameConnectionTransactionTiming,
+} from "./same-connection-fence.js";
 
 export class RoutineTargetActivationReceiptReaderAdapter implements TargetActivationReceiptReaderPort {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly fence?: SameConnectionIdentityExpectation,
+    private readonly timing?: SameConnectionTransactionTiming,
+  ) {}
 
   async read(rolloutId: string): Promise<TargetActivationFacts | null> {
-    const rows = await this.prisma.$queryRaw<{ value: unknown }[]>(Prisma.sql`
-      SELECT reviewrouter_activation.read_activation_receipt(${rolloutId}) AS value
-    `);
+    const query = (connection: Prisma.TransactionClient) =>
+      connection.$queryRaw<{ value: unknown }[]>(Prisma.sql`
+        SELECT reviewrouter_activation.read_activation_receipt(${rolloutId}) AS value
+      `);
+    const rows = this.fence
+      ? await executeSameConnectionFenced(
+          this.prisma,
+          this.fence,
+          query,
+          this.timing,
+        )
+      : await this.prisma.$queryRaw<{ value: unknown }[]>(Prisma.sql`
+          SELECT reviewrouter_activation.read_activation_receipt(${rolloutId}) AS value
+        `);
     if (rows.length !== 1)
       throw new Error("target_activation_receipt_result_invalid");
     const value = rows[0]?.value;

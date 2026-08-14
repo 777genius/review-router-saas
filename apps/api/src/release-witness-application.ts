@@ -9,6 +9,7 @@ import type {
   ReleaseWitnessExecutionPort,
   ReleaseWitnessGenerationPort,
   ReleaseWitnessRequest,
+  ReleaseWitnessRuntimeIdentity,
   ReleaseWitnessSignerPort,
   TrustedReleaseWitnessPolicy,
 } from "./release-witness-domain.js";
@@ -32,14 +33,14 @@ export class ObserveRunnerCleanup {
       throw Object.assign(new Error("release_witness_job_identity_invalid"), {
         statusCode: 400,
       });
-    await this.readiness.assertReady();
+    await this.readiness.assertOrdinary();
     const seed = await this.seeds.load(jobId);
     if (seed.jobId !== jobId)
       throw new Error("release_witness_seed_identity_mismatch");
     const evidence = await this.render.observe(seed);
     // Re-observe immediately before the mutation so degradation during the
     // provider read cannot be bypassed by a request admitted while healthy.
-    await this.readiness.assertReady();
+    await this.readiness.assertForceNew();
     await this.evidence.persist(jobId, evidence);
   }
 }
@@ -51,6 +52,8 @@ const digest = (value: unknown): string => `sha256:${sha256Canonical(value)}`;
  * become facts: GitHub, provider and three database sessions re-observe them.
  */
 export class AttestReleaseWitnessBinding {
+  private readonly runtimeIdentity: ReleaseWitnessRuntimeIdentity;
+
   constructor(
     private readonly databases: ReleaseWitnessDatabasePort,
     private readonly execution: ReleaseWitnessExecutionPort,
@@ -58,10 +61,18 @@ export class AttestReleaseWitnessBinding {
     private readonly generations: ReleaseWitnessGenerationPort,
     private readonly signer: ReleaseWitnessSignerPort,
     private readonly policy: TrustedReleaseWitnessPolicy,
+    runtimeIdentity: ReleaseWitnessRuntimeIdentity,
     private readonly now: () => Date = () => new Date(),
+    private readonly readiness?: ReleaseAuthorityMutationReadinessPort,
   ) {
     if (!releaseWitnessPolicyIsCanonical(policy))
       throw new Error("release_witness_policy_invalid");
+    if (
+      !/^[a-f0-9]{40}$/u.test(runtimeIdentity.deploymentRevision) ||
+      !/^sha256:[a-f0-9]{64}$/u.test(runtimeIdentity.artifactDigest)
+    )
+      throw new Error("release_witness_runtime_identity_invalid");
+    this.runtimeIdentity = Object.freeze({ ...runtimeIdentity });
   }
 
   async execute(
@@ -83,15 +94,19 @@ export class AttestReleaseWitnessBinding {
       throw new Error("release_witness_execution_policy_mismatch");
 
     const startedAt = this.now().getTime();
-    const [source, authority, target, execution, deployments, generations] =
-      await Promise.all([
-        this.databases.observeSource(),
-        this.databases.observeAuthority(),
-        this.databases.observeTarget(),
-        this.execution.observe(request.execution, request.rolloutId),
-        this.deployments.observe(request.deployments),
-        this.generations.observe(request.source, request.target),
-      ]);
+    const [execution, deployments, generations] = await Promise.all([
+      this.execution.observe(request.execution, request.rolloutId),
+      this.deployments.observe(request.deployments),
+      this.generations.observe(request.source, request.target),
+    ]);
+    // This is the publication boundary: the independent witness gate may not
+    // reuse evidence which began before the provider facts above were read.
+    await this.readiness?.assertForceNew();
+    const [source, authority, target] = await Promise.all([
+      this.databases.observeSource(),
+      this.databases.observeAuthority(),
+      this.databases.observeTarget(),
+    ]);
     const observedAtMilliseconds = this.now().getTime();
     if (
       !Number.isFinite(startedAt) ||
@@ -152,8 +167,10 @@ export class AttestReleaseWitnessBinding {
       observedAtMilliseconds + this.policy.maximumAgeMilliseconds,
     ).toISOString();
     const unsigned = Object.freeze({
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       rolloutId: request.rolloutId,
+      deploymentRevision: this.runtimeIdentity.deploymentRevision,
+      artifactDigest: this.runtimeIdentity.artifactDigest,
       execution,
       sourceDatabaseIdentity: source.databaseIdentity,
       authorityDatabaseIdentity: authority.databaseIdentity,

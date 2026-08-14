@@ -1,6 +1,7 @@
 import { config as loadDotenv } from "dotenv";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import { createReleaseWitnessApp } from "./release-witness-composition.js";
+import { readinessTimingPolicyFromEnvironment } from "./release-authority/adapters/readiness-config.js";
 
 for (const path of ["../../.env.local", "../../.env", ".env.local", ".env"])
   loadDotenv({ path, override: false });
@@ -30,6 +31,13 @@ const identity = (prefix: string) => ({
 const app = await createReleaseWitnessApp({
   witnessPrisma,
   triggerTokenSha256: required("REVIEW_ROUTER_RELEASE_WITNESS_TOKEN_SHA256"),
+  deploymentRevision: required("REVIEW_ROUTER_RELEASE_COMMIT_SHA"),
+  artifactDigest: required("REVIEW_ROUTER_RELEASE_IMAGE_DIGEST"),
+  authorityOwnerRoleName: required(
+    "REVIEW_ROUTER_RELEASE_AUTHORITY_OWNER_ROLE",
+  ),
+  activationGuardRoleName: required("REVIEW_ROUTER_ACTIVATION_GUARD_ROLE"),
+  readinessPolicy: readinessTimingPolicyFromEnvironment(process.env),
   renderReadToken: required("REVIEW_ROUTER_RELEASE_WITNESS_RENDER_READ_TOKEN"),
   sourceWitnessPrisma,
   targetWitnessPrisma,

@@ -22,8 +22,10 @@ export interface TrustedReleaseWitnessVerificationPolicy {
 }
 
 export interface ReleaseWitnessBindingEvidence {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly rolloutId: string;
+  readonly deploymentRevision: string;
+  readonly artifactDigest: string;
   readonly execution: {
     readonly repository: string;
     readonly workflowPath: string;
@@ -522,6 +524,8 @@ export function assertTrustedRolloutEvidence(
     !exact(witness, [
       "schemaVersion",
       "rolloutId",
+      "deploymentRevision",
+      "artifactDigest",
       "execution",
       "sourceDatabaseIdentity",
       "authorityDatabaseIdentity",
@@ -536,8 +540,11 @@ export function assertTrustedRolloutEvidence(
       "bindingSha256",
       "signature",
     ]) ||
-    witness.schemaVersion !== 1 ||
+    witness.schemaVersion !== 2 ||
     witness.rolloutId !== value.rolloutId ||
+    witness.deploymentRevision !== value.releaseCommitSha ||
+    witness.artifactDigest !==
+      value.releaseImageProvenance.identity.imageDigest ||
     !exact(witness.execution, [
       "repository",
       "workflowPath",
