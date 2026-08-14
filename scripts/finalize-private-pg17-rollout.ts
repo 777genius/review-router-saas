@@ -150,7 +150,6 @@ const useCases = new ReleaseRolloutUseCases({
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: unavailable,
-    compensateAndObserve: unavailable,
   },
   runner: {
     provision: unavailable,
@@ -165,7 +164,6 @@ const useCases = new ReleaseRolloutUseCases({
     bootstrapTargetRoles: unavailable,
     runReleaseMigration: unavailable,
     activate: unavailable,
-    compensateSource: unavailable,
   },
   services: {
     stageTarget: unavailable,

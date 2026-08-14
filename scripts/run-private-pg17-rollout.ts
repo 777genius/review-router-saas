@@ -7,6 +7,7 @@ import {
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
   ReleaseRolloutUseCases,
+  ReleaseCompensationReconciliationUseCase,
   RenderTransactionalServicesAdapter,
   TransactionalServiceCutover,
   RolloutPhase,
@@ -23,6 +24,7 @@ import {
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
 import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
+import { createPrivatePg17SourceFreezeRecovery } from "./lib/private-pg17-source-freeze-recovery";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -225,34 +227,51 @@ const unavailable = async (): Promise<never> => {
 let migration: unknown;
 let activation!: StepObservation;
 let staged!: StepObservation;
+const compensation = new ReleaseCompensationReconciliationUseCase({
+  recoveryOwnerId: `recovery-${randomUUID()}`,
+  authority,
+  ledger,
+  compensateDatabase: async () =>
+    generation.compensateSource({
+      adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+      source: rollout.source,
+      reconnectUrls: sourceUrls,
+    }),
+  observeDatabaseCompensation: async () =>
+    generation.observeCompensatedSource({
+      adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+      source: rollout.source,
+      reconnectUrls: sourceUrls,
+    }),
+  provider: createPrivatePg17SourceFreezeRecovery({
+    ledger,
+    ownerId: `recovery-${randomUUID()}`,
+    apiKey: required("RENDER_TARGET_SWITCH_API_KEY"),
+    sourceSystemIdentifier: rollout.source.systemIdentifier,
+    beforeResume: async () => {
+      if ((await ledger.read(rollout.rolloutId)).length === 0) return;
+      await transactionalServices.recover({
+        source: sourceRecoveryManifest,
+        protectedEnvironment: protectedSourceEnvironment,
+        target: targetServiceContracts,
+      });
+      return await transactionalServices.finalizeAuthorizedSourceRecovery({
+        source: sourceRecoveryManifest,
+        protectedEnvironment: protectedSourceEnvironment,
+        target: targetServiceContracts,
+        sourceWriterServiceIds: sourceRecoveryManifest.services.map(
+          (service) => service.serviceId,
+        ),
+        restoreSourceWritesAndVerify: async () => undefined,
+      });
+    },
+  }),
+});
 const useCases = new ReleaseRolloutUseCases({
   authority,
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: unavailable,
-    compensateAndObserve: async ({
-      decision,
-      databaseWitness,
-      sourceWriterServiceIds,
-    }) => {
-      if (
-        decision.decision !== "allow" ||
-        decision.operation !== "resume_source" ||
-        decision.activationBoundary !== "before" ||
-        decision.sourceSystemIdentifier !== rollout.source.systemIdentifier ||
-        databaseWitness.systemIdentifier !== rollout.source.systemIdentifier ||
-        !/^sha256:[a-f0-9]{64}$/u.test(databaseWitness.aclSha256) ||
-        databaseWitness.sourceWritesRestored !== true
-      )
-        throw new Error("private_pg17_service_recovery_authority_invalid");
-      return await transactionalServices.finalizeAuthorizedSourceRecovery({
-        source: sourceRecoveryManifest,
-        protectedEnvironment: protectedSourceEnvironment,
-        target: targetServiceContracts,
-        sourceWriterServiceIds,
-        restoreSourceWritesAndVerify: async () => undefined,
-      });
-    },
   },
   runner: {
     provision: async () => ({
@@ -284,21 +303,6 @@ const useCases = new ReleaseRolloutUseCases({
         rolloutId,
       );
       return activation;
-    },
-    compensateSource: async () => {
-      if ((await ledger.read(rollout.rolloutId)).length > 0)
-        await transactionalServices.recover({
-          source: sourceRecoveryManifest,
-          protectedEnvironment: protectedSourceEnvironment,
-          target: targetServiceContracts,
-        });
-      return generation.compensateSource({
-        adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
-        source: rollout.source,
-        reconnectUrls: JSON.parse(
-          required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
-        ) as Record<string, string>,
-      });
     },
   },
   services: {
@@ -364,6 +368,7 @@ const useCases = new ReleaseRolloutUseCases({
   },
   evidence: { assembleAndVerify: unavailable },
   ledger,
+  compensation,
 });
 try {
   rollout = await useCases.cleanupRoleRunner(rollout, copy.roleBootstrapRunner);

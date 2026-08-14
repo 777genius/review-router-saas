@@ -5,7 +5,6 @@ import {
   ProviderAuthorityOperation,
   type DatabaseAclWitness,
   type ProviderAuthorityDecision,
-  type ProviderStateWitness,
 } from "../application/ports";
 import { sourceWriterServiceIdsAreValid } from "../domain/source-writer-service-ids";
 
@@ -150,59 +149,91 @@ export class RenderProviderFreezeAdapter {
     });
   }
 
-  async compensateAndObserve(input: {
+  async resumeFrozenServiceAndObserve(input: {
     apiKey: string;
-    sourceWriterServiceIds: readonly string[];
+    serviceId: string;
     sourceSystemIdentifier: string;
+    expectedDeployId: string;
     decision: ProviderAuthorityDecision;
     databaseWitness: DatabaseAclWitness;
-  }): Promise<ProviderStateWitness> {
+    executionPermit: Readonly<{
+      epoch: number;
+      token: string;
+      executionReceipt: string;
+    }>;
+  }): Promise<{
+    serviceId: string;
+    deployId: string;
+    resumed: true;
+    observedAt: string;
+  }> {
     if (
       !input.apiKey ||
-      !sourceWriterServiceIdsAreValid(input.sourceWriterServiceIds) ||
       input.decision.decision !== "allow" ||
       input.decision.operation !== ProviderAuthorityOperation.ResumeSource ||
       input.decision.sourceSystemIdentifier !== input.sourceSystemIdentifier ||
       input.decision.activationBoundary !== "before" ||
       input.databaseWitness.systemIdentifier !== input.sourceSystemIdentifier ||
       input.databaseWitness.sourceWritesRestored !== true ||
-      !/^sha256:[a-f0-9]{64}$/u.test(input.databaseWitness.aclSha256)
+      !/^sha256:[a-f0-9]{64}$/u.test(input.databaseWitness.aclSha256) ||
+      !Number.isSafeInteger(input.executionPermit.epoch) ||
+      input.executionPermit.epoch < 1 ||
+      !/^[a-f0-9]{64}$/u.test(input.executionPermit.token) ||
+      !/^[a-f0-9]{64}$/u.test(input.executionPermit.executionReceipt)
     )
       throw new Error("render_source_compensation_authority_invalid");
     const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
-    const deployIds: string[] = [];
-    for (const serviceId of input.sourceWriterServiceIds) {
-      const before = await api.getService(serviceId);
-      if (
-        !["suspended", "not_suspended"].includes(before.suspended) ||
-        before.autoDeploy !== "no"
-      )
-        throw new Error("render_source_compensation_precondition_invalid");
-      const deploys = await api.listAllDeploys(serviceId);
-      if (deploys.some((deploy) => active.has(deploy.status)))
-        throw new Error("render_source_compensation_deploy_state_unsafe");
-      const latest = deploys.find((deploy) => deploy.status === "live");
-      if (!latest)
-        throw new Error("render_source_compensation_live_deploy_missing");
-      if (before.suspended === "suspended") await api.resume(serviceId);
-      let after = await api.getService(serviceId);
-      for (
-        let poll = 0;
-        after.suspended !== "not_suspended" && poll < 29;
-        poll += 1
-      ) {
-        await this.sleep(2_000);
-        after = await api.getService(serviceId);
-      }
-      if (after.suspended !== "not_suspended" || after.autoDeploy !== "no")
-        throw new Error("render_source_compensation_resume_unproven");
-      deployIds.push(latest.id);
+    const serviceId = input.serviceId;
+    const before = await api.getService(serviceId);
+    if (
+      !["suspended", "not_suspended"].includes(before.suspended) ||
+      before.autoDeploy !== "no"
+    )
+      throw new Error("render_source_compensation_precondition_invalid");
+    const deploys = await api.listAllDeploys(serviceId);
+    if (deploys.some((deploy) => active.has(deploy.status)))
+      throw new Error("render_source_compensation_deploy_state_unsafe");
+    const latest = deploys.find((deploy) => deploy.status === "live");
+    if (!latest)
+      throw new Error("render_source_compensation_live_deploy_missing");
+    if (latest.id !== input.expectedDeployId)
+      throw new Error("render_source_compensation_deploy_identity_changed");
+    if (before.suspended === "suspended") await api.resume(serviceId);
+    let after = await api.getService(serviceId);
+    for (
+      let poll = 0;
+      after.suspended !== "not_suspended" && poll < 29;
+      poll += 1
+    ) {
+      await this.sleep(2_000);
+      after = await api.getService(serviceId);
     }
+    if (after.suspended !== "not_suspended" || after.autoDeploy !== "no")
+      throw new Error("render_source_compensation_resume_unproven");
     return Object.freeze({
-      serviceIds: Object.freeze([...input.sourceWriterServiceIds]),
-      deployIds: Object.freeze(deployIds),
+      serviceId,
+      deployId: latest.id,
       observedAt: new Date().toISOString(),
       resumed: true as const,
     });
+  }
+
+  async observeFrozenServiceRecovery(input: {
+    apiKey: string;
+    serviceId: string;
+    expectedDeployId: string;
+  }): Promise<boolean> {
+    const api = new RenderApiAdapter(input.apiKey, this.fetchImpl);
+    const [service, deploys] = await Promise.all([
+      api.getService(input.serviceId),
+      api.listAllDeploys(input.serviceId),
+    ]);
+    if (deploys.some((deploy) => active.has(deploy.status))) return false;
+    return (
+      service.suspended === "not_suspended" &&
+      service.autoDeploy === "no" &&
+      deploys.find((deploy) => deploy.status === "live")?.id ===
+        input.expectedDeployId
+    );
   }
 }

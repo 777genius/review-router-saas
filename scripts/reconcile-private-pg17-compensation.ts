@@ -17,6 +17,7 @@ import {
   type ReleaseRollout,
 } from "../packages/features/release-rollout/src/index";
 import { parseCompensationSourceWriterServiceIds } from "./reconcile-private-pg17-compensation-config";
+import { createPrivatePg17SourceFreezeRecovery } from "./lib/private-pg17-source-freeze-recovery";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -180,60 +181,43 @@ export async function reconcilePrivatePg17Compensation(): Promise<void> {
       ))
   )
     throw new Error("private_pg17_reconcile_transition_contract_missing");
-  let sourceServicesRestored = false;
   const useCase = new ReleaseCompensationReconciliationUseCase({
     recoveryOwnerId: `recovery-${randomUUID()}`,
     authority,
     ledger,
-    compensateDatabase: async () => {
-      if (checkpoints.length > 0 && !sourceServicesRestored) {
+    compensateDatabase: async () =>
+      database.compensateSource({
+        adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+        source: rollout.source,
+        reconnectUrls: sourceUrls,
+      }),
+    observeDatabaseCompensation: async () =>
+      database.observeCompensatedSource({
+        adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
+        source: rollout.source,
+        reconnectUrls: sourceUrls,
+      }),
+    provider: createPrivatePg17SourceFreezeRecovery({
+      ledger,
+      ownerId: `recovery-${randomUUID()}`,
+      apiKey: required("RENDER_TARGET_SWITCH_API_KEY"),
+      sourceSystemIdentifier: rollout.source.systemIdentifier,
+      beforeResume: async () => {
+        if (checkpoints.length === 0) return;
         await serviceTransition.recover({
           source: sourceRecoveryManifest!,
           protectedEnvironment: protectedSourceEnvironment,
           target: targetServiceContracts!,
         });
-        sourceServicesRestored = true;
-      }
-      return database.compensateSource({
-        adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
-        source: rollout.source,
-        reconnectUrls: JSON.parse(
-          required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
-        ) as Record<string, string>,
-      });
-    },
-    observeDatabaseCompensation: async () =>
-      database.observeCompensatedSource({
-        adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
-        source: rollout.source,
-        reconnectUrls: JSON.parse(
-          required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
-        ) as Record<string, string>,
-      }),
-    provider: {
-      recoveryEffectsAreAuthorityMediated: true as const,
-      compensateAndObserve: async ({
-        decision,
-        databaseWitness,
-        sourceWriterServiceIds: durableFreezeServiceIds,
-      }) => {
-        if (
-          decision.decision !== "allow" ||
-          decision.operation !== "resume_source" ||
-          databaseWitness.sourceWritesRestored !== true
-        )
-          throw new Error("private_pg17_service_recovery_authority_invalid");
-        if (checkpoints.length === 0)
-          throw new Error("legacy_provider_compensation_path_disabled");
         return await serviceTransition.finalizeAuthorizedSourceRecovery({
           source: sourceRecoveryManifest!,
           protectedEnvironment: protectedSourceEnvironment,
           target: targetServiceContracts!,
-          sourceWriterServiceIds: durableFreezeServiceIds,
+          sourceWriterServiceIds,
           restoreSourceWritesAndVerify: async () => undefined,
         });
       },
-    },
+    }),
   });
   const result = await useCase.execute(rollout);
   process.stdout.write(`${JSON.stringify(result)}\n`);

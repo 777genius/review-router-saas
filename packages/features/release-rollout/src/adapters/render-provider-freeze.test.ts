@@ -246,9 +246,10 @@ describe("Render provider writer inventory", () => {
     const witness = await new RenderProviderFreezeAdapter(
       fetchImpl,
       async () => undefined,
-    ).compensateAndObserve({
+    ).resumeFrozenServiceAndObserve({
       apiKey: "redacted",
-      sourceWriterServiceIds: [service.id],
+      serviceId: service.id,
+      expectedDeployId: "dep-live",
       sourceSystemIdentifier: "100",
       databaseWitness: {
         systemIdentifier: "100",
@@ -267,61 +268,31 @@ describe("Render provider writer inventory", () => {
         decisionId: "decision-1",
         decidedAt: "2026-08-12T00:00:00.000Z",
       },
+      executionPermit: {
+        epoch: 1,
+        token: "c".repeat(64),
+        executionReceipt: "d".repeat(64),
+      },
     });
     expect(witness).toMatchObject({
-      serviceIds: [service.id],
-      deployIds: ["dep-live"],
+      serviceId: service.id,
+      deployId: "dep-live",
       resumed: true,
     });
   });
 
-  it("keeps source suspended when activation boundary is authorized", async () => {
-    const fetchImpl = vi.fn();
-    await expect(
-      new RenderProviderFreezeAdapter(fetchImpl).compensateAndObserve({
-        apiKey: "redacted",
-        sourceWriterServiceIds: [service.id],
-        sourceSystemIdentifier: "100",
-        databaseWitness: {
-          systemIdentifier: "100",
-          aclSha256: `sha256:${"a".repeat(64)}`,
-          observedAt: "2026-08-12T00:00:00.000Z",
-          sourceWritesRestored: true,
-        },
-        decision: {
-          rolloutId: "rollout-1",
-          operation: ProviderAuthorityOperation.ResumeSource,
-          sourceSystemIdentifier: "100",
-          targetSystemIdentifier: "200",
-          expectedReceiptSha256: `sha256:${"b".repeat(64)}`,
-          activationBoundary: "activated",
-          decision: "allow",
-          decisionId: "decision-1",
-          decidedAt: "2026-08-12T00:00:00.000Z",
-        },
-      }),
-    ).rejects.toThrow("render_source_compensation_authority_invalid");
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it("re-observes an already resumed source after a compensation crash", async () => {
+  it("does not resume when durable freeze deployment identity changed", async () => {
     const fetchImpl = vi
       .fn()
+      .mockResolvedValueOnce(response(service))
       .mockResolvedValueOnce(
-        response({ ...service, suspended: "not_suspended" }),
-      )
-      .mockResolvedValueOnce(
-        response([
-          { deploy: { id: "dep-live", status: "live", commit: { id: "a" } } },
-        ]),
-      )
-      .mockResolvedValueOnce(
-        response({ ...service, suspended: "not_suspended" }),
+        response([{ deploy: { id: "dep-other", status: "live" } }]),
       );
     await expect(
-      new RenderProviderFreezeAdapter(fetchImpl).compensateAndObserve({
+      new RenderProviderFreezeAdapter(fetchImpl).resumeFrozenServiceAndObserve({
         apiKey: "redacted",
-        sourceWriterServiceIds: [service.id],
+        serviceId: service.id,
+        expectedDeployId: "dep-frozen",
         sourceSystemIdentifier: "100",
         databaseWitness: {
           systemIdentifier: "100",
@@ -340,61 +311,106 @@ describe("Render provider writer inventory", () => {
           decisionId: "decision-1",
           decidedAt: "2026-08-12T00:00:00.000Z",
         },
+        executionPermit: {
+          epoch: 1,
+          token: "c".repeat(64),
+          executionReceipt: "d".repeat(64),
+        },
       }),
-    ).resolves.toMatchObject({ resumed: true, deployIds: ["dep-live"] });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    ).rejects.toThrow("render_source_compensation_deploy_identity_changed");
+    expect(
+      fetchImpl.mock.calls.some(([url]) => String(url).endsWith("/resume")),
+    ).toBe(false);
   });
 
-  it("safely retries a definite resume failure", async () => {
-    let resumeAttempts = 0;
-    let resumed = false;
-    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.includes("/deploys"))
-        return response([{ deploy: { id: "dep-live", status: "live" } }]);
-      if (url.endsWith("/resume") && init?.method === "POST") {
-        resumeAttempts += 1;
-        if (resumeAttempts === 1) return new Response(null, { status: 503 });
-        resumed = true;
-        return new Response(null, { status: 202 });
-      }
-      return response({
-        ...service,
-        suspended: resumed ? "not_suspended" : "suspended",
-      });
-    });
-    const adapter = new RenderProviderFreezeAdapter(
-      fetchImpl,
-      async () => undefined,
-    );
-    const input = {
-      apiKey: "redacted",
-      sourceWriterServiceIds: [service.id],
-      sourceSystemIdentifier: "100",
-      databaseWitness: {
-        systemIdentifier: "100",
-        aclSha256: `sha256:${"a".repeat(64)}`,
-        observedAt: "2026-08-12T00:00:00.000Z",
-        sourceWritesRestored: true as const,
-      },
-      decision: {
-        rolloutId: "rollout-1",
-        operation: ProviderAuthorityOperation.ResumeSource,
+  it("keeps source suspended when activation boundary is authorized", async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      new RenderProviderFreezeAdapter(fetchImpl).resumeFrozenServiceAndObserve({
+        apiKey: "redacted",
+        serviceId: service.id,
+        expectedDeployId: "dep-live",
         sourceSystemIdentifier: "100",
-        targetSystemIdentifier: "200",
-        expectedReceiptSha256: `sha256:${"b".repeat(64)}`,
-        activationBoundary: "before" as const,
-        decision: "allow" as const,
-        decisionId: "decision-1",
-        decidedAt: "2026-08-12T00:00:00.000Z",
-      },
-    };
-    await expect(adapter.compensateAndObserve(input)).rejects.toThrow(
-      "render_api_resume_failed:503",
-    );
-    await expect(adapter.compensateAndObserve(input)).resolves.toMatchObject({
-      serviceIds: [service.id],
-      resumed: true,
-    });
-    expect(resumeAttempts).toBe(2);
+        databaseWitness: {
+          systemIdentifier: "100",
+          aclSha256: `sha256:${"a".repeat(64)}`,
+          observedAt: "2026-08-12T00:00:00.000Z",
+          sourceWritesRestored: true,
+        },
+        decision: {
+          rolloutId: "rollout-1",
+          operation: ProviderAuthorityOperation.ResumeSource,
+          sourceSystemIdentifier: "100",
+          targetSystemIdentifier: "200",
+          expectedReceiptSha256: `sha256:${"b".repeat(64)}`,
+          activationBoundary: "activated",
+          decision: "allow",
+          decisionId: "decision-1",
+          decidedAt: "2026-08-12T00:00:00.000Z",
+        },
+        executionPermit: {
+          epoch: 1,
+          token: "c".repeat(64),
+          executionReceipt: "d".repeat(64),
+        },
+      }),
+    ).rejects.toThrow("render_source_compensation_authority_invalid");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("re-observes exact recovery after a compensation response loss", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({ ...service, suspended: "not_suspended" }),
+      )
+      .mockResolvedValueOnce(
+        response([
+          { deploy: { id: "dep-live", status: "live", commit: { id: "a" } } },
+        ]),
+      );
+    await expect(
+      new RenderProviderFreezeAdapter(fetchImpl).observeFrozenServiceRecovery({
+        apiKey: "redacted",
+        serviceId: service.id,
+        expectedDeployId: "dep-live",
+      }),
+    ).resolves.toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a malformed execution permit before provider I/O", async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      new RenderProviderFreezeAdapter(fetchImpl).resumeFrozenServiceAndObserve({
+        apiKey: "redacted",
+        serviceId: service.id,
+        expectedDeployId: "dep-live",
+        sourceSystemIdentifier: "100",
+        databaseWitness: {
+          systemIdentifier: "100",
+          aclSha256: `sha256:${"a".repeat(64)}`,
+          observedAt: "2026-08-12T00:00:00.000Z",
+          sourceWritesRestored: true,
+        },
+        decision: {
+          rolloutId: "rollout-1",
+          operation: ProviderAuthorityOperation.ResumeSource,
+          sourceSystemIdentifier: "100",
+          targetSystemIdentifier: "200",
+          expectedReceiptSha256: `sha256:${"b".repeat(64)}`,
+          activationBoundary: "before",
+          decision: "allow",
+          decisionId: "decision-1",
+          decidedAt: "2026-08-12T00:00:00.000Z",
+        },
+        executionPermit: {
+          epoch: 0,
+          token: "invalid",
+          executionReceipt: "d".repeat(64),
+        },
+      }),
+    ).rejects.toThrow("render_source_compensation_authority_invalid");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

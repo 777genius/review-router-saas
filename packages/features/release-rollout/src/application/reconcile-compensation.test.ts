@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createReleaseRollout, RolloutStep } from "../domain/release-rollout";
+import {
+  createReleaseRollout,
+  RolloutPhase,
+  RolloutStep,
+  transitionFailure,
+} from "../domain/release-rollout";
 import {
   ReleaseCompensationReconciliationUseCase,
   reconcileCompensationSafety,
@@ -199,12 +204,67 @@ function ports(initial: {
     observeDatabaseCompensation: vi.fn().mockResolvedValue(null),
     provider: {
       recoveryEffectsAreAuthorityMediated: true as const,
-      compensateAndObserve: vi.fn().mockResolvedValue(providerWitness),
+      recoverSourceFreeze: vi.fn().mockResolvedValue(providerWitness),
     },
   };
 }
 
 describe("release compensation reconciliation", () => {
+  it.each([
+    {
+      stage: "freeze",
+      phase: RolloutPhase.ProviderFrozen,
+      lastStep: RolloutStep.FreezeProviderServices,
+    },
+    {
+      stage: "quiesce",
+      phase: RolloutPhase.SourceQuiesced,
+      lastStep: RolloutStep.QuiesceSource,
+    },
+    {
+      stage: "copy",
+      phase: RolloutPhase.GenerationCopied,
+      lastStep: RolloutStep.CopyDatabaseGeneration,
+    },
+    {
+      stage: "bootstrap",
+      phase: RolloutPhase.TargetRolesBootstrapped,
+      lastStep: RolloutStep.BootstrapTargetRoles,
+    },
+    {
+      stage: "release migration",
+      phase: RolloutPhase.MigrationApplied,
+      lastStep: RolloutStep.RunReleaseMigration,
+    },
+    {
+      stage: "transition preflight",
+      phase: RolloutPhase.MigrationApplied,
+      lastStep: RolloutStep.RunReleaseMigration,
+    },
+    {
+      stage: "partial transition",
+      phase: RolloutPhase.MigrationApplied,
+      lastStep: RolloutStep.StageTargetServices,
+    },
+  ] as const)(
+    "returns the compensated aggregate after a $stage fault",
+    async ({ phase, lastStep }) => {
+      const dependencies = ports({
+        activationBoundary: "before",
+        state: "pre_activation",
+        lastStep,
+        receiptCount: 3,
+      });
+      const recovered = await new ReleaseCompensationReconciliationUseCase(
+        dependencies,
+      ).recover(
+        transitionFailure({ ...rollout, phase }, "definite_pre_activation"),
+      );
+      expect(recovered.phase).toBe(RolloutPhase.RecoveryCompensated);
+      expect(dependencies.provider.recoverSourceFreeze).toHaveBeenCalledOnce();
+    },
+  );
+
   it("compensates a crash after freeze and appends complete receipts", async () => {
     const dependencies = ports({
       activationBoundary: "before",
@@ -237,7 +297,7 @@ describe("release compensation reconciliation", () => {
     );
     expect(dependencies.ledger.compareAndSet).not.toHaveBeenCalled();
     expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
-    expect(dependencies.provider.compensateAndObserve).not.toHaveBeenCalled();
+    expect(dependencies.provider.recoverSourceFreeze).not.toHaveBeenCalled();
   });
 
   it("stays forward-only after activation", async () => {
@@ -358,7 +418,7 @@ describe("release compensation reconciliation", () => {
       outcome: "compensated",
       externalEffects: { intentCount: 0 },
     });
-    expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledWith(
+    expect(dependencies.provider.recoverSourceFreeze).toHaveBeenCalledWith(
       expect.objectContaining({ sourceWriterServiceIds: ["srv-source"] }),
     );
     expect(
@@ -370,7 +430,7 @@ describe("release compensation reconciliation", () => {
     expect(
       dependencies.ledger.listProvisioningIntents.mock.invocationCallOrder[0],
     ).toBeLessThan(
-      dependencies.provider.compensateAndObserve.mock.invocationCallOrder[0]!,
+      dependencies.provider.recoverSourceFreeze.mock.invocationCallOrder[0]!,
     );
   });
 
@@ -399,7 +459,7 @@ describe("release compensation reconciliation", () => {
       await new ReleaseCompensationReconciliationUseCase(dependencies).execute(
         rollout,
       );
-      expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledWith(
+      expect(dependencies.provider.recoverSourceFreeze).toHaveBeenCalledWith(
         expect.objectContaining({ sourceWriterServiceIds: [...serviceIds] }),
       );
     },
@@ -427,13 +487,13 @@ describe("release compensation reconciliation", () => {
       rollout,
     );
 
-    expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledWith(
+    expect(dependencies.provider.recoverSourceFreeze).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceWriterServiceIds: ["srv-mutated-a", "srv-mutated-b"],
       }),
     );
     expect(
-      dependencies.provider.compensateAndObserve.mock.calls[0]?.[0]
+      dependencies.provider.recoverSourceFreeze.mock.calls[0]?.[0]
         .sourceWriterServiceIds,
     ).not.toContain("srv-pre-suspended");
   });
@@ -525,7 +585,7 @@ describe("release compensation reconciliation", () => {
       ),
     ).resolves.toMatchObject({ outcome: "no_op" });
     expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
-    expect(dependencies.provider.compensateAndObserve).not.toHaveBeenCalled();
+    expect(dependencies.provider.recoverSourceFreeze).not.toHaveBeenCalled();
     expect(dependencies.ledger.reconcileRollout).not.toHaveBeenCalled();
   });
 
@@ -603,7 +663,7 @@ describe("release compensation reconciliation", () => {
     expect(dependencies.ledger.compareAndSet).toHaveBeenCalledTimes(1);
     expect(dependencies.authority.decide).not.toHaveBeenCalled();
     expect(dependencies.compensateDatabase).not.toHaveBeenCalled();
-    expect(dependencies.provider.compensateAndObserve).not.toHaveBeenCalled();
+    expect(dependencies.provider.recoverSourceFreeze).not.toHaveBeenCalled();
   });
 
   it("does not complete when a late unsafe identity follows the recovery effect", async () => {
@@ -648,7 +708,7 @@ describe("release compensation reconciliation", () => {
       externalEffects: { reason: "duplicate", safeForCompensation: false },
     });
     expect(dependencies.compensateDatabase).toHaveBeenCalledTimes(1);
-    expect(dependencies.provider.compensateAndObserve).toHaveBeenCalledTimes(1);
+    expect(dependencies.provider.recoverSourceFreeze).toHaveBeenCalledTimes(1);
     expect(dependencies.ledger.compareAndSet).toHaveBeenCalledTimes(1);
     expect(dependencies.ledger.compareAndSet).toHaveBeenCalledWith(
       expect.objectContaining({ step: RolloutStep.EffectCompensation }),

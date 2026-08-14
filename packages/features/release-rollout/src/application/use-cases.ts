@@ -457,7 +457,7 @@ export class ReleaseRolloutUseCases {
       return failed;
     }
     if (!this.ports.compensation)
-      throw new Error("legacy_compensation_path_disabled");
+      throw new Error("authority_mediated_compensation_not_configured");
     return this.ports.compensation.recover(failed);
   }
 }

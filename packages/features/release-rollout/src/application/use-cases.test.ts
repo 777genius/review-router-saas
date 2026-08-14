@@ -3,6 +3,7 @@ import {
   createReleaseRollout,
   RolloutPhase,
   RolloutStep,
+  type ReleaseRollout,
   type StepObservation,
 } from "../domain/release-rollout";
 import { ReleaseRolloutUseCases } from "./use-cases";
@@ -112,7 +113,7 @@ const basePorts = () => ({
     })),
   },
   preflight: { observeProtectedEnvironment: vi.fn() },
-  provider: { freezeAndObserve: vi.fn(), compensateAndObserve: vi.fn() },
+  provider: { freezeAndObserve: vi.fn() },
   runner: {
     provision: vi.fn(),
     cleanup: vi.fn(),
@@ -152,6 +153,51 @@ const basePorts = () => ({
 });
 
 describe("release rollout application boundary", () => {
+  it.each([
+    { stage: "freeze", phase: RolloutPhase.ProviderFrozen },
+    { stage: "quiesce", phase: RolloutPhase.SourceQuiesced },
+    { stage: "copy", phase: RolloutPhase.GenerationCopied },
+    { stage: "bootstrap", phase: RolloutPhase.TargetRolesBootstrapped },
+    { stage: "release migration", phase: RolloutPhase.MigrationApplied },
+    { stage: "transition preflight", phase: RolloutPhase.MigrationApplied },
+    { stage: "partial transition", phase: RolloutPhase.MigrationApplied },
+  ])(
+    "routes a definite failure after $stage through unified recovery",
+    async ({ phase }) => {
+      const ports = basePorts();
+      const recover = vi.fn(async (failed: ReleaseRollout) => ({
+        ...failed,
+        phase: RolloutPhase.RecoveryCompensated,
+      }));
+      const useCases = new ReleaseRolloutUseCases({
+        ...ports,
+        compensation: { recover },
+      });
+      const result = await useCases.recoverFromFailure(
+        { ...rollout, phase },
+        "definite_pre_activation",
+      );
+      expect(result.phase).toBe(RolloutPhase.RecoveryCompensated);
+      expect(recover).toHaveBeenCalledWith(
+        expect.objectContaining({ phase: RolloutPhase.PreActivationFailed }),
+      );
+    },
+  );
+
+  it.each(["uncertain", "activated"] as const)(
+    "never invokes source recovery when durable activation state is %s",
+    async (state) => {
+      const ports = basePorts();
+      ports.ledger.observeActivationState.mockResolvedValue(state);
+      const recover = vi.fn();
+      await new ReleaseRolloutUseCases({
+        ...ports,
+        compensation: { recover },
+      }).recoverFromFailure(rollout, "definite_pre_activation");
+      expect(recover).not.toHaveBeenCalled();
+      expect(ports.ledger.markActivationUncertain).toHaveBeenCalledOnce();
+    },
+  );
   it("is the only transition path and rejects an adapter observation for another step", async () => {
     const ports = basePorts();
     ports.provider.freezeAndObserve.mockResolvedValue(

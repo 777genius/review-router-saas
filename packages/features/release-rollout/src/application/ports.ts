@@ -9,12 +9,6 @@ import type {
 
 export interface ProviderControlPort {
   freezeAndObserve(): Promise<StepObservation>;
-  compensateAndObserve(input: {
-    decision: ProviderAuthorityDecision;
-    databaseWitness: DatabaseAclWitness;
-    /** Exact authority-ledger IDs whose suspension was caused by this rollout. */
-    sourceWriterServiceIds: readonly string[];
-  }): Promise<ProviderStateWitness>;
 }
 
 export const ProviderAuthorityOperation = Object.freeze({
@@ -109,9 +103,6 @@ export interface DatabaseRolloutPort {
     target: DatabaseGenerationIdentity,
   ): Promise<StepObservation>;
   activate(rolloutId: string): Promise<StepObservation>;
-  compensateSource(
-    source: DatabaseGenerationIdentity,
-  ): Promise<DatabaseAclWitness>;
 }
 
 export interface TargetServicesPort {

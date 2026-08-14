@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -7,8 +8,8 @@ import {
   PostgreSqlGenerationAdapter,
   RedactedProcessCommandAdapter,
   ReleaseRolloutUseCases,
+  ReleaseCompensationReconciliationUseCase,
   RenderBackupIdentityAdapter,
-  RenderProviderFreezeAdapter,
   type DatabaseGenerationIdentity,
   type ReleaseRollout,
   type RunnerIdentity,
@@ -20,6 +21,7 @@ import {
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
 import { executePrivatePg17GenerationBinding } from "./initialize-private-pg17-generation-binding.mjs";
 import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
+import { createPrivatePg17SourceFreezeRecovery } from "./lib/private-pg17-source-freeze-recovery";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -105,7 +107,6 @@ const authority = new HttpProviderAuthorityDecisionAdapter(
   required("REVIEW_ROUTER_PROVIDER_AUTHORITY_URL"),
   required("REVIEW_ROUTER_PROVIDER_AUTHORITY_TOKEN"),
 );
-const provider = new RenderProviderFreezeAdapter();
 const currentRunner = await ledger.currentRunner(rollout.rolloutId, "role");
 const canonical = new PrivatePg17CanonicalAdapter();
 const runner: RunnerIdentity = currentRunner.identity;
@@ -113,23 +114,37 @@ const dumpDirectory = mkdtempSync(join(required("RUNNER_TEMP"), "rr-dump-"));
 chmodSync(dumpDirectory, 0o700);
 const dumpPath = join(dumpDirectory, "source.dump");
 const runnerObservation: StepObservation = currentRunner.observation;
+const reconnectUrls = JSON.parse(
+  required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
+) as Record<string, string>;
+const compensation = new ReleaseCompensationReconciliationUseCase({
+  recoveryOwnerId: `recovery-${randomUUID()}`,
+  authority,
+  ledger,
+  compensateDatabase: async () =>
+    database.compensateSource({
+      adminUrl: sourceUrl,
+      source,
+      reconnectUrls,
+    }),
+  observeDatabaseCompensation: async () =>
+    database.observeCompensatedSource({
+      adminUrl: sourceUrl,
+      source,
+      reconnectUrls,
+    }),
+  provider: createPrivatePg17SourceFreezeRecovery({
+    ledger,
+    ownerId: `recovery-${randomUUID()}`,
+    apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
+    sourceSystemIdentifier: source.systemIdentifier,
+  }),
+});
 const useCases = new ReleaseRolloutUseCases({
   authority,
   preflight: { observeProtectedEnvironment: unavailable },
   provider: {
     freezeAndObserve: async () => freezeObservation,
-    compensateAndObserve: async ({
-      decision,
-      databaseWitness,
-      sourceWriterServiceIds,
-    }) =>
-      await provider.compensateAndObserve({
-        apiKey: required("RENDER_SERVICE_SUSPENSION_API_KEY"),
-        sourceWriterServiceIds,
-        sourceSystemIdentifier: source.systemIdentifier,
-        decision,
-        databaseWitness,
-      }),
   },
   runner: {
     provision: async () => ({
@@ -166,9 +181,7 @@ const useCases = new ReleaseRolloutUseCases({
           services: freezeObservation.facts.services,
           complete: true,
         },
-        reconnectUrls: JSON.parse(
-          required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
-        ),
+        reconnectUrls,
       });
       return quiescence.observation;
     },
@@ -200,14 +213,6 @@ const useCases = new ReleaseRolloutUseCases({
     },
     runReleaseMigration: unavailable,
     activate: unavailable,
-    compensateSource: async () =>
-      database.compensateSource({
-        adminUrl: sourceUrl,
-        source,
-        reconnectUrls: JSON.parse(
-          required("REVIEW_ROUTER_SOURCE_RECONNECT_URLS_JSON"),
-        ) as Record<string, string>,
-      }),
   },
   services: {
     stageTarget: unavailable,
@@ -216,6 +221,7 @@ const useCases = new ReleaseRolloutUseCases({
   },
   evidence: { assembleAndVerify: unavailable },
   ledger,
+  compensation,
 });
 try {
   rollout = await useCases.freezeProviderServices(rollout);
