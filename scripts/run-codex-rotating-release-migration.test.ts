@@ -724,7 +724,7 @@ describe("canonical exclusive release migration caller", () => {
           },
         },
       ),
-    ).toThrow("release_migration_step_failed:redaction_regression");
+    ).toThrow('"code":"release_migration_step_failed"');
     try {
       runReleaseMigrationSubprocess("redaction_regression", process.execPath, [
         "-e",
@@ -734,6 +734,8 @@ describe("canonical exclusive release migration caller", () => {
     } catch (error) {
       expect(String(error)).not.toContain(credential);
       expect(String(error)).not.toContain("postgresql://");
+      expect(JSON.stringify(error)).not.toContain(credential);
+      expect(String(error).length).toBeLessThan(768);
     }
   });
 });

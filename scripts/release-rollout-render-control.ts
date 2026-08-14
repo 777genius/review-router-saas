@@ -4,6 +4,7 @@ import {
   AuthenticatedRunnerLedgerAdapter,
   AuthenticatedProviderWitnessAdapter,
   BoundedProviderHttpClient,
+  ProviderHttpError,
   PrivateRunnerControlUseCases,
   RenderPrivateRunnerAdapter,
   RenderProviderFreezeAdapter,
@@ -61,6 +62,32 @@ type WorkflowJob = {
   run_id?: number;
   run_attempt?: number;
   head_sha?: string;
+};
+const providerJson = async <T>(
+  response: Response,
+  operation: string,
+  ambiguousWrite = false,
+): Promise<T> => {
+  if (!response.ok)
+    throw new ProviderHttpError(
+      operation,
+      "response_status",
+      response.status,
+      ambiguousWrite,
+    );
+  try {
+    const value: unknown = await response.json();
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error();
+    return value as T;
+  } catch {
+    throw new ProviderHttpError(
+      operation,
+      "response_invalid",
+      response.status,
+      ambiguousWrite,
+    );
+  }
 };
 const positiveInteger = (name: string, fallback: number): number => {
   const value = Number(process.env[name] ?? fallback);
@@ -127,18 +154,20 @@ export const resolveWorkflowJobId = async (
         },
       },
     );
-    if (!response.ok)
-      throw new Error(`release_rollout_job_lookup_failed:${response.status}`);
-    const value = (await response.json()) as {
+    const value = await providerJson<{
       total_count?: number;
       jobs?: WorkflowJob[];
-    };
+    }>(response, "github_job_inventory");
     if (
       !Array.isArray(value.jobs) ||
       !Number.isSafeInteger(value.total_count) ||
       value.total_count! > value.jobs.length
     )
-      throw new Error("release_rollout_target_job_list_ambiguous");
+      throw new ProviderHttpError(
+        "github_job_inventory",
+        "response_invalid",
+        response.status,
+      );
     const named = value.jobs.filter((job) => job.name === name);
     const matches = named.filter(
       (job) =>
@@ -245,17 +274,13 @@ if (mode === "freeze") {
       },
     },
   );
-  if (!runResponse.ok)
-    throw new Error(
-      `release_rollout_target_run_lookup_failed:${runResponse.status}`,
-    );
-  const targetRun = (await runResponse.json()) as {
+  const targetRun = await providerJson<{
     actor?: { login?: string };
     event?: string;
     head_sha?: string;
     path?: string;
     run_attempt?: number;
-  };
+  }>(runResponse, "github_run");
   if (
     targetRun.event !== "workflow_dispatch" ||
     targetRun.head_sha !== expectedSha ||

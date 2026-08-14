@@ -47,6 +47,27 @@ describe("HTTP provider authority decision", () => {
         "secret",
         vi.fn().mockResolvedValue(new Response(null, { status: 503 })),
       ).decide(request),
-    ).rejects.toThrow("provider_authority_decision_denied:503");
+    ).rejects.toThrow('"code":"provider_http_response_rejected"');
+  });
+
+  it("never forwards provider response bodies or headers", async () => {
+    const canaries = ["body-secret-canary", "cookie-secret-canary"];
+    const error = await new HttpProviderAuthorityDecisionAdapter(
+      "https://authority.example.test",
+      "request-token-canary",
+      vi.fn().mockResolvedValue(
+        new Response(canaries[0], {
+          status: 503,
+          headers: { "set-cookie": `session=${canaries[1]}` },
+        }),
+      ),
+    )
+      .decide(request)
+      .catch((value: unknown) => value);
+    for (const output of [String(error), JSON.stringify(error)]) {
+      expect(output.length).toBeLessThan(768);
+      for (const canary of [...canaries, "request-token-canary"])
+        expect(output).not.toContain(canary);
+    }
   });
 });

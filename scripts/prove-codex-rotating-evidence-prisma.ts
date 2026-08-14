@@ -1,6 +1,12 @@
+import { readFileSync } from "node:fs";
 import { createPrismaClient } from "../packages/platform/db/src/index";
 
-const databaseUrl = process.env.REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL;
+const databaseUrl = process.env.REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL_FILE
+  ? readFileSync(
+      process.env.REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL_FILE,
+      "utf8",
+    ).trim()
+  : process.env.REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL is required");
 }

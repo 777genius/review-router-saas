@@ -1,3 +1,8 @@
+import {
+  SanitizedDiagnosticError,
+  createSanitizedDiagnostic,
+} from "../domain/sanitized-diagnostic.js";
+
 export type InventoryIncompleteReason =
   | "cursor_cycle"
   | "malformed_cursor"
@@ -86,15 +91,29 @@ export type ProviderHttpErrorCategory =
   | "response_status"
   | "response_invalid";
 
-export class ProviderHttpError extends Error {
+export class ProviderHttpError extends SanitizedDiagnosticError {
   constructor(
-    readonly operation: string,
+    _operation: string,
     readonly category: ProviderHttpErrorCategory,
     readonly status?: number,
     readonly ambiguousWrite = false,
   ) {
     super(
-      `provider_http_${operation}_${category}${status === undefined ? "" : `:${status}`}`,
+      createSanitizedDiagnostic({
+        code:
+          category === "response_status"
+            ? "provider_http_response_rejected"
+            : category === "response_invalid"
+              ? "provider_http_response_invalid"
+              : "provider_http_request_failed",
+        phase:
+          category === "response_status" || category === "response_invalid"
+            ? "provider_response"
+            : "provider_request",
+        httpStatus: status,
+        timedOut: category === "deadline",
+        ambiguousWrite,
+      }),
     );
     this.name = "ProviderHttpError";
   }

@@ -10,7 +10,10 @@ import {
   type ProviderAuthorityDecision,
 } from "../application/ports";
 import { runtimeGenerationWitnessReplacement } from "./runtime-generation-witness";
-import { BoundedProviderHttpClient } from "./bounded-provider-io";
+import {
+  BoundedProviderHttpClient,
+  ProviderHttpError,
+} from "./bounded-provider-io";
 import type { ProviderMutationAuthorityPort } from "../application/provider-mutation-authority";
 import { AuthorizedRenderMutations } from "./authorized-render-mutations";
 
@@ -347,8 +350,23 @@ export class RenderTargetServicesAdapter {
       }),
     });
     if (!response.ok)
-      throw new Error(`render_target_canary_failed:${response.status}`);
-    const value = (await response.json()) as Record<string, unknown>;
+      throw new ProviderHttpError(
+        "target_canary",
+        "response_status",
+        response.status,
+        true,
+      );
+    let value: Record<string, unknown>;
+    try {
+      value = (await response.json()) as Record<string, unknown>;
+    } catch {
+      throw new ProviderHttpError(
+        "target_canary",
+        "response_invalid",
+        response.status,
+        true,
+      );
+    }
     if (
       value.commitSha !== input.expectedCommitSha ||
       value.databaseSystemIdentifier !== input.expectedSystemIdentifier ||

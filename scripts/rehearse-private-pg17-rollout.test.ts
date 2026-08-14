@@ -99,8 +99,8 @@ describe("disposable dual-version rehearsal", () => {
       "assertPromotionAllowed",
       "REVIEW_ROUTER_DATABASE_URL_FILE",
       '"000069_release_rollout_ledger"',
-      "private_pg17_rehearsal_source_migration_failed:exit=",
-      "[redacted-database-url]",
+      "private_pg17_rehearsal_command_failed",
+      "sanitizedDiagnosticError",
       "redactedErrorChain",
     ])
       expect(source).toContain(required);

@@ -5,6 +5,11 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  isSanitizedDiagnosticError,
+  sanitizedDiagnosticError,
+} from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import { normalizeSecretSafePostgresArguments } from "./lib/secret-safe-command-boundary.mjs";
 
 const runtimeRoles = [
   ["api", "reviewrouter_api", "REVIEW_ROUTER_API_DATABASE_URL"],
@@ -2167,7 +2172,10 @@ export function runReleaseMigrationSubprocess(
 ) {
   const databaseUrl = env?.DATABASE_URL;
   if (!databaseUrl)
-    throw new Error(`release_migration_step_failed:${step}:credential_missing`);
+    throw sanitizedDiagnosticError({
+      code: "release_migration_step_failed",
+      phase: "release_migration",
+    });
   const directory = mkdtempSync(join(tmpdir(), "rr-canonical-db-"));
   chmodSync(directory, 0o700);
   try {
@@ -2179,12 +2187,18 @@ export function runReleaseMigrationSubprocess(
           arg.startsWith("postgres://") || arg.startsWith("postgresql://"),
       );
       if (urlIndex < 0)
-        throw new Error(`release_migration_step_failed:${step}:url_missing`);
+        throw sanitizedDiagnosticError({
+          code: "release_migration_step_failed",
+          phase: "release_migration",
+        });
       let url;
       try {
         url = new URL(childArgs[urlIndex]);
       } catch {
-        throw new Error(`release_migration_step_failed:${step}:url_invalid`);
+        throw sanitizedDiagnosticError({
+          code: "release_migration_step_failed",
+          phase: "release_migration",
+        });
       }
       const passfile = join(directory, "pgpass");
       const escape = (value) =>
@@ -2206,6 +2220,9 @@ export function runReleaseMigrationSubprocess(
         "--dbname",
         decodeURIComponent(url.pathname.slice(1)),
       );
+      const normalized = normalizeSecretSafePostgresArguments(childArgs, input);
+      childArgs = [...normalized.args];
+      input = normalized.input;
       childEnv = {
         PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
         LANG: "C.UTF-8",
@@ -2215,6 +2232,26 @@ export function runReleaseMigrationSubprocess(
           : {}),
       };
     } else if (command === "node" || command === "pnpm") {
+      const allowed =
+        (command === "node" &&
+          JSON.stringify(childArgs) ===
+            JSON.stringify([
+              "--import",
+              "tsx",
+              "scripts/preflight-codex-rotating-migration-history.ts",
+            ])) ||
+        (command === "pnpm" &&
+          JSON.stringify(childArgs) ===
+            JSON.stringify([
+              "--filter",
+              "@reviewrouter/platform-db",
+              "db:migrate:deploy",
+            ]));
+      if (!allowed)
+        throw sanitizedDiagnosticError({
+          code: "release_migration_step_failed",
+          phase: "process_boundary",
+        });
       const credentialPath = join(directory, "database-url");
       writeFileSync(credentialPath, databaseUrl, { mode: 0o600, flag: "wx" });
       childEnv = {
@@ -2223,9 +2260,10 @@ export function runReleaseMigrationSubprocess(
         REVIEW_ROUTER_DATABASE_URL_FILE: credentialPath,
       };
     } else {
-      throw new Error(
-        `release_migration_step_failed:${step}:command_forbidden`,
-      );
+      throw sanitizedDiagnosticError({
+        code: "release_migration_step_failed",
+        phase: "release_migration",
+      });
     }
     const result = spawnSync(command, childArgs, {
       cwd: new URL("..", import.meta.url),
@@ -2233,9 +2271,16 @@ export function runReleaseMigrationSubprocess(
       env: childEnv,
       input,
       maxBuffer: 16 * 1024 * 1024,
+      timeout: 600_000,
     });
-    if (result.status !== 0)
-      throw new Error(`release_migration_step_failed:${step}`);
+    if (result.status !== 0 || result.error)
+      throw sanitizedDiagnosticError({
+        code: "release_migration_step_failed",
+        phase: "release_migration",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut: result.error?.code === "ETIMEDOUT",
+      });
     return result.stdout;
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -2383,9 +2428,13 @@ if (
       `${JSON.stringify(executeCanonicalReleaseMigration())}\n`,
     );
   } catch (error) {
-    process.stderr.write(
-      `FAIL: ${error instanceof Error ? error.message : "release_migration_failed"}\n`,
-    );
+    const safeError = isSanitizedDiagnosticError(error)
+      ? error
+      : sanitizedDiagnosticError({
+          code: "release_migration_step_failed",
+          phase: "release_migration",
+        });
+    process.stderr.write(`FAIL: ${JSON.stringify(safeError)}\n`);
     process.exitCode = 1;
   }
 }

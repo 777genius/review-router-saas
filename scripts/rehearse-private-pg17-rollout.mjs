@@ -11,6 +11,10 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import {
+  isSanitizedDiagnosticError,
+  sanitizedDiagnosticError,
+} from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import {
   assembleTrustedRolloutEvidence,
   assertPromotionAllowed,
   beginCompensation,
@@ -49,6 +53,10 @@ import { releaseAuthorityMigrationBundle } from "./install-release-authority-db.
 import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
 import { createSecureCanonicalRun } from "./private-pg17-secure-canonical.ts";
 import { reconcileLegacyAmbiguity } from "./reconcile-codex-rotating-legacy-ambiguity.mjs";
+import {
+  createSecretSafePostgresInvocation,
+  normalizeSecretSafePostgresArguments,
+} from "./lib/secret-safe-command-boundary.mjs";
 
 const imagePattern =
   /^postgres:(16\.13|17(?:\.[0-9]+)?)-bookworm@sha256:[a-f0-9]{64}$/u;
@@ -95,17 +103,13 @@ function sha256(value) {
 }
 
 function redactedErrorChain(error) {
-  const messages = [];
-  let current = error;
-  while (current instanceof Error && messages.length < 5) {
-    messages.push(current.message);
-    current = current.cause;
-  }
-  return messages
-    .join(":")
-    .replace(/PASSWORD\s+'[^']*'/giu, "PASSWORD '[redacted]'")
-    .replace(/postgres(?:ql)?:\/\/[^\s]+/giu, "[redacted-database-url]")
-    .slice(0, 2_000);
+  const safe = isSanitizedDiagnosticError(error)
+    ? error
+    : sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+      });
+  return JSON.stringify(safe);
 }
 
 const disposableSqlConfiguration = () => ({
@@ -126,24 +130,62 @@ const disposableSqlConfiguration = () => ({
   releasePassword: "disposable-release",
 });
 
+export function normalizeRehearsalDockerInvocation(args, input) {
+  const safeArgs = [...args];
+  let safeInput = input;
+  const psqlIndex = safeArgs.indexOf("psql");
+  if (psqlIndex >= 0) {
+    for (let index = psqlIndex + 1; index < safeArgs.length; index += 1) {
+      const arg = safeArgs[index];
+      if (arg === "-c" || /^-[A-Za-z]*c$/u.test(arg)) {
+        if (safeInput !== undefined || index + 1 >= safeArgs.length)
+          throw sanitizedDiagnosticError({
+            code: "private_pg17_rehearsal_command_failed",
+            phase: "process_boundary",
+          });
+        safeInput = safeArgs[index + 1];
+        safeArgs.splice(index, 2);
+        if (arg !== "-c") {
+          const remaining = arg.slice(0, -1);
+          if (remaining !== "-") safeArgs.splice(index, 0, remaining);
+        }
+        break;
+      }
+    }
+  }
+  if (
+    safeArgs.some(
+      (arg) =>
+        arg.startsWith("postgres://") ||
+        arg.startsWith("postgresql://") ||
+        /(?:password|token|private[_-]?key)=/iu.test(arg),
+    )
+  )
+    throw sanitizedDiagnosticError({
+      code: "private_pg17_rehearsal_command_failed",
+      phase: "process_boundary",
+    });
+  return Object.freeze({ args: Object.freeze(safeArgs), input: safeInput });
+}
+
 export async function executeDisposableRehearsal(
   env = process.env,
   execute = (args, options = {}) => {
-    const result = spawnSync("docker", args, {
+    const invocation = normalizeRehearsalDockerInvocation(args, options.input);
+    const result = spawnSync("docker", invocation.args, {
       encoding: options.encoding ?? "utf8",
-      input: options.input,
+      input: invocation.input,
       maxBuffer: 32 * 1024 * 1024,
+      timeout: options.timeout ?? 120_000,
     });
-    if (result.status !== 0) {
-      const diagnostic = String(result.stderr ?? "")
-        .replace(/PASSWORD\s+'[^']*'/giu, "PASSWORD '[redacted]'")
-        .replace(/postgres(?:ql)?:\/\/[^\s]+/giu, "[redacted-database-url]")
-        .slice(0, 2_000)
-        .trim();
-      throw new Error(
-        `private_pg17_rehearsal_docker_failed:${args[0]}${diagnostic ? `:${diagnostic}` : ""}`,
-      );
-    }
+    if (result.status !== 0 || result.error)
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut: result.error?.code === "ETIMEDOUT",
+      });
     return result.stdout;
   },
 ) {
@@ -322,19 +364,17 @@ export async function executeDisposableRehearsal(
           REVIEW_ROUTER_DATABASE_URL_FILE: sourceDatabaseCredential,
         },
         maxBuffer: 16 * 1024 * 1024,
+        timeout: 600_000,
       },
     );
-    if (sourceMigration.status !== 0) {
-      const diagnostic = String(sourceMigration.stderr ?? "")
-        .replace(/PASSWORD\s+'[^']*'/giu, "PASSWORD '[redacted]'")
-        .replace(/postgres(?:ql)?:\/\/[^\s]+/giu, "[redacted-database-url]")
-        .replaceAll(password, "[redacted]")
-        .slice(0, 2_000)
-        .trim();
-      throw new Error(
-        `private_pg17_rehearsal_source_migration_failed:exit=${sourceMigration.status ?? "signal"}${diagnostic ? `:${diagnostic}` : ""}`,
-      );
-    }
+    if (sourceMigration.status !== 0 || sourceMigration.error)
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+        exitCode: sourceMigration.status,
+        signal: sourceMigration.signal,
+        timedOut: sourceMigration.error?.code === "ETIMEDOUT",
+      });
     sql(
       source,
       `COMMENT ON DATABASE reviewrouter IS '{"recoveryWitnessSha256":"${"a".repeat(64)}"}'; CREATE ROLE rehearsal_writer LOGIN; GRANT CONNECT ON DATABASE reviewrouter TO rehearsal_writer; CREATE TABLE rehearsal_items(id bigserial PRIMARY KEY, value text NOT NULL UNIQUE); INSERT INTO rehearsal_items(value) VALUES ('one'),('two'),('three'); CREATE SCHEMA app_private; CREATE TABLE app_private.rehearsal_private(id integer PRIMARY KEY, value text); INSERT INTO app_private.rehearsal_private VALUES (1,'private'); CREATE SEQUENCE app_private.called_sequence; SELECT nextval('app_private.called_sequence'); CREATE SEQUENCE app_private.uncalled_sequence;`,
@@ -845,10 +885,11 @@ async function verifyProductionPathRehearsal(facts) {
       : value;
   const connectCanonicalRun = createSecureCanonicalRun(
     () => "127.0.0.1",
-    (step, detail) => {
-      throw new Error(
-        `private_pg17_rehearsal_canonical_failed:${step}:${detail}`,
-      );
+    () => {
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+      });
     },
   );
   const canonicalProcessRun = (step, command, args, options = {}) => {
@@ -861,64 +902,65 @@ async function verifyProductionPathRehearsal(facts) {
       const hostIndex = args.indexOf("--host");
       if (hostIndex < 0 || args[hostIndex + 1] !== "target.internal")
         throw new Error("rehearsal_psql_target_invalid");
-      const result = spawnSync("psql", [...args], {
+      const normalized = normalizeSecretSafePostgresArguments(
+        args,
+        options.input,
+      );
+      const allowedEnvironment = Object.fromEntries(
+        Object.entries(options.env ?? {}).filter(([key]) =>
+          ["PGPASSFILE", "PGAPPNAME", "PGCONNECT_TIMEOUT"].includes(key),
+        ),
+      );
+      const result = spawnSync("psql", [...normalized.args], {
         encoding: "utf8",
         env: {
-          ...options.env,
-          PATH: process.env.PATH,
+          ...allowedEnvironment,
+          PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
           LANG: "C.UTF-8",
+          LC_ALL: "C.UTF-8",
           PGHOSTADDR: "127.0.0.1",
           PGSSLMODE: "disable",
         },
-        input: options.input,
+        input: normalized.input,
         maxBuffer: 8 * 1024 * 1024,
+        timeout: 600_000,
       });
-      if (result.status !== 0)
-        throw new Error(
-          `private_pg17_rehearsal_canonical_failed:${step}:${String(result.stderr).slice(0, 2_000)}`,
-        );
+      if (result.status !== 0 || result.error)
+        throw sanitizedDiagnosticError({
+          code: "private_pg17_rehearsal_command_failed",
+          phase: "rehearsal",
+          exitCode: result.status,
+          signal: result.signal,
+          timedOut: result.error?.code === "ETIMEDOUT",
+        });
       return result.stdout;
     }
-    const url = new URL(args[urlIndex]);
-    const passDirectory = mkdtempSync(join(tmpdir(), "rr-rehearsal-pass-"));
-    const passfile = join(passDirectory, "pgpass");
-    writeFileSync(
-      passfile,
-      `${url.hostname}:${url.port}:${url.pathname.slice(1)}:${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}\n`,
-      { mode: 0o600 },
-    );
-    const result = spawnSync(
-      "psql",
-      [
-        "--host",
-        url.hostname,
-        "--port",
-        url.port,
-        "--username",
-        decodeURIComponent(url.username),
-        "--dbname",
-        url.pathname.slice(1),
-        ...args.filter((_, index) => index !== urlIndex),
-      ],
-      {
+    const invocation = createSecretSafePostgresInvocation({
+      databaseUrl: args[urlIndex],
+      args: args.filter((_, index) => index !== urlIndex),
+      input: options.input,
+      pgHostAddress: "127.0.0.1",
+    });
+    try {
+      const result = spawnSync("psql", invocation.args, {
         encoding: "utf8",
-        env: {
-          PATH: process.env.PATH,
-          LANG: "C.UTF-8",
-          PGPASSFILE: passfile,
-          PGHOSTADDR: "127.0.0.1",
-          PGSSLMODE: "disable",
-        },
-        input: options.input,
+        env: { ...invocation.environment, PGSSLMODE: "disable" },
+        input: invocation.input,
         maxBuffer: 8 * 1024 * 1024,
-      },
-    );
-    rmSync(passDirectory, { force: true, recursive: true });
-    if (result.status !== 0)
-      throw new Error(
-        `private_pg17_rehearsal_canonical_failed:${step}:${String(result.stderr).slice(0, 2_000)}`,
-      );
-    return result.stdout;
+        timeout: 600_000,
+      });
+      if (result.status !== 0 || result.error)
+        throw sanitizedDiagnosticError({
+          code: "private_pg17_rehearsal_command_failed",
+          phase: "rehearsal",
+          exitCode: result.status,
+          signal: result.signal,
+          timedOut: result.error?.code === "ETIMEDOUT",
+        });
+      return result.stdout;
+    } finally {
+      invocation.cleanup();
+    }
   };
   const canonicalRun = (step, command, args, options = {}) =>
     canonicalProcessRun(step, command, args, {

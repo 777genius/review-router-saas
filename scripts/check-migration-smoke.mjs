@@ -3,6 +3,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import dotenv from "dotenv";
+import { sanitizedDiagnosticError } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import {
+  createDatabaseCredentialBoundary,
+  runSecretSafePostgresCommand,
+} from "./lib/secret-safe-command-boundary.mjs";
 
 if (existsSync(".env.local")) {
   dotenv.config({ path: ".env.local", override: false });
@@ -29,12 +34,20 @@ const requireCommand = (command) => {
 
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
-    stdio: options.stdio ?? "inherit",
-    env: options.env ?? process.env,
+    stdio: options.stdio ?? "ignore",
+    env: options.env,
     encoding: "utf8",
+    timeout: 600_000,
+    maxBuffer: 16 * 1024 * 1024,
   });
   if (result.status !== 0) {
-    fail(`${command} ${args.join(" ")} failed with exit code ${result.status}`);
+    throw sanitizedDiagnosticError({
+      code: "release_migration_step_failed",
+      phase: "release_migration",
+      exitCode: result.status,
+      signal: result.signal,
+      timedOut: result.error?.code === "ETIMEDOUT",
+    });
   }
   return result;
 };
@@ -68,15 +81,17 @@ smokeUrl.search = "";
 const rollbackUrl = new URL(baseUrl);
 rollbackUrl.pathname = `/${rollbackDbName}`;
 rollbackUrl.search = "";
+const smokeCredential = createDatabaseCredentialBoundary(smokeUrl);
 
 const psql = (
   sql,
   url = adminUrl.toString(),
-  stdio = "inherit",
+  stdio = "ignore",
   extraArgs = [],
 ) =>
-  run("psql", [url, "-v", "ON_ERROR_STOP=1", ...extraArgs, "-c", sql], {
-    stdio,
+  runSecretSafePostgresCommand({
+    databaseUrl: url,
+    args: ["-v", "ON_ERROR_STOP=1", ...extraArgs, "-c", sql],
   });
 
 const prismaRoot = resolve("packages/platform/db/prisma");
@@ -84,13 +99,13 @@ const dispatchMigrationName = "000034_review_request_dispatch_reconciliation";
 let created = false;
 let rollbackCreated = false;
 try {
-  console.log(`Creating migration smoke database from ${sourceDbName}...`);
+  console.log("Creating migration smoke database...");
   psql(`CREATE DATABASE ${quoteIdentifier(smokeDbName)}`);
   created = true;
 
   console.log("Applying Prisma migrations to fresh database...");
   run("pnpm", ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"], {
-    env: { ...process.env, DATABASE_URL: smokeUrl.toString() },
+    env: smokeCredential.environment,
   });
 
   console.log("Verifying migrated schema invariants...");
@@ -216,7 +231,6 @@ try {
     output !==
     "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43|4|2|1|5|6|3|2|1|3|3|6|1"
   ) {
-    console.error(output);
     fail("Migrated schema invariants failed");
   }
 
@@ -225,14 +239,16 @@ try {
   rollbackCreated = true;
   for (const entry of readdirSync(join(prismaRoot, "migrations")).sort()) {
     if (!/^\d{6}_/.test(entry) || entry >= dispatchMigrationName) continue;
-    run("psql", [
-      rollbackUrl.toString(),
-      "-q",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-f",
-      join(prismaRoot, "migrations", entry, "migration.sql"),
-    ]);
+    runSecretSafePostgresCommand({
+      databaseUrl: rollbackUrl,
+      args: [
+        "-q",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-f",
+        join(prismaRoot, "migrations", entry, "migration.sql"),
+      ],
+    });
   }
   const hash = "a".repeat(64);
   const sha = "b".repeat(40);
@@ -256,26 +272,16 @@ try {
     `,
     rollbackUrl.toString(),
   );
-  const migrationAttempt = spawnSync(
-    "psql",
-    [
-      rollbackUrl.toString(),
+  runSecretSafePostgresCommand({
+    databaseUrl: rollbackUrl,
+    args: [
       "-v",
       "ON_ERROR_STOP=1",
       "-f",
       join(prismaRoot, "migrations", dispatchMigrationName, "migration.sql"),
     ],
-    { encoding: "utf8" },
-  );
-  if (migrationAttempt.status === 0) {
-    fail("Dispatch migration unexpectedly accepted a dispatching intent");
-  }
-  const migrationError = `${migrationAttempt.stdout ?? ""}\n${migrationAttempt.stderr ?? ""}`;
-  if (
-    !migrationError.includes("review_requested_dispatching_migration_preflight")
-  ) {
-    fail("Dispatch migration failed for an unexpected reason");
-  }
+    expectFailureContaining: "review_requested_dispatching_migration_preflight",
+  });
   const rollbackInvariantSql = `
     SELECT
       (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
@@ -307,50 +313,29 @@ try {
     rollbackResult.stdout.trim() !==
     "pending_dispatch,dispatching,awaiting_authorization,dispatched,superseded|4|0|0|1"
   ) {
-    console.error(rollbackResult.stdout.trim());
     fail("Dispatch migration preflight did not roll back atomically");
   }
 
   console.log("Migration smoke test passed.");
 } finally {
   if (rollbackCreated) {
-    spawnSync(
-      "psql",
-      [
-        adminUrl.toString(),
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-c",
+    try {
+      psql(
         `DROP DATABASE IF EXISTS ${quoteIdentifier(rollbackDbName)} WITH (FORCE)`,
-      ],
-      { stdio: "inherit" },
-    );
+      );
+    } catch {}
   }
   if (created) {
     console.log("Dropping migration smoke database...");
-    const forcedDrop = spawnSync(
-      "psql",
-      [
-        adminUrl.toString(),
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-c",
+    try {
+      psql(
         `DROP DATABASE IF EXISTS ${quoteIdentifier(smokeDbName)} WITH (FORCE)`,
-      ],
-      { stdio: "inherit" },
-    );
-    if (forcedDrop.status !== 0) {
-      spawnSync(
-        "psql",
-        [
-          adminUrl.toString(),
-          "-v",
-          "ON_ERROR_STOP=1",
-          "-c",
-          `DROP DATABASE IF EXISTS ${quoteIdentifier(smokeDbName)}`,
-        ],
-        { stdio: "inherit" },
       );
+    } catch {
+      try {
+        psql(`DROP DATABASE IF EXISTS ${quoteIdentifier(smokeDbName)}`);
+      } catch {}
     }
   }
+  smokeCredential.cleanup();
 }

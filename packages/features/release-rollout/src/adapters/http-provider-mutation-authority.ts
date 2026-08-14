@@ -3,7 +3,10 @@ import type {
   MutationExecutionReceipt,
   OneShotMutationPermit,
 } from "../domain/provider-mutation";
-import { BoundedProviderHttpClient } from "./bounded-provider-io";
+import {
+  BoundedProviderHttpClient,
+  ProviderHttpError,
+} from "./bounded-provider-io";
 import type { RenderFetch } from "./render-api";
 
 export class HttpProviderMutationAuthorityAdapter implements ProviderMutationAuthorityPort {
@@ -61,11 +64,21 @@ export class HttpProviderMutationAuthorityAdapter implements ProviderMutationAut
       },
     );
     if (!response.ok)
-      throw new Error(`provider_mutation_authority_denied:${response.status}`);
+      throw new ProviderHttpError(
+        `mutation_authority_${operation}`,
+        "response_status",
+        response.status,
+        true,
+      );
     try {
       return (response.status === 204 ? undefined : await response.json()) as T;
     } catch {
-      throw new Error("provider_mutation_authority_response_invalid");
+      throw new ProviderHttpError(
+        `mutation_authority_${operation}`,
+        "response_invalid",
+        response.status,
+        true,
+      );
     }
   }
 }

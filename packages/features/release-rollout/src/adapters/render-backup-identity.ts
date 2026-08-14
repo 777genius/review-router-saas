@@ -1,5 +1,9 @@
 import type { BackupIdentity } from "../domain/trusted-rollout-evidence";
 import type { RenderFetch } from "./render-api";
+import {
+  BoundedProviderHttpClient,
+  ProviderHttpError,
+} from "./bounded-provider-io";
 
 const digest = /^sha256:[a-f0-9]{64}$/u;
 const timestamp = (value: string): boolean => {
@@ -22,7 +26,12 @@ export interface ExternalBackupWitness {
 }
 
 export class RenderBackupIdentityAdapter {
-  constructor(private readonly fetchImpl: RenderFetch = fetch) {}
+  private readonly fetchImpl: RenderFetch;
+  constructor(fetchImpl: RenderFetch = fetch) {
+    const http = new BoundedProviderHttpClient(fetchImpl);
+    this.fetchImpl = (url, init) =>
+      http.request("render_recovery_lookup", url, init);
+  }
   async capture(input: {
     apiKey: string;
     sourceDatabaseId: string;
@@ -53,8 +62,21 @@ export class RenderBackupIdentityAdapter {
       },
     );
     if (!response.ok)
-      throw new Error(`render_recovery_lookup_failed:${response.status}`);
-    const value = (await response.json()) as Record<string, unknown>;
+      throw new ProviderHttpError(
+        "render_recovery_lookup",
+        "response_status",
+        response.status,
+      );
+    let value: Record<string, unknown>;
+    try {
+      value = (await response.json()) as Record<string, unknown>;
+    } catch {
+      throw new ProviderHttpError(
+        "render_recovery_lookup",
+        "response_invalid",
+        response.status,
+      );
+    }
     if (
       typeof value !== "object" ||
       typeof value.recoveryStatus !== "string" ||
@@ -64,7 +86,11 @@ export class RenderBackupIdentityAdapter {
       (value.startsAt !== undefined &&
         (typeof value.startsAt !== "string" || !timestamp(value.startsAt)))
     )
-      throw new Error("render_recovery_response_invalid");
+      throw new ProviderHttpError(
+        "render_recovery_lookup",
+        "response_invalid",
+        response.status,
+      );
     if (value.recoveryStatus !== "AVAILABLE")
       throw new Error("render_recovery_not_available");
     if (

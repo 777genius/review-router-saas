@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   createPrismaClient,
   type PrismaClient,
@@ -74,7 +75,10 @@ const attestationFor = (
   });
 
 function requiredUrl(name: string): string {
-  const value = process.env[name]?.trim();
+  const file = process.env[`${name}_FILE`]?.trim();
+  const value = file
+    ? readFileSync(file, "utf8").trim()
+    : process.env[name]?.trim();
   if (!value)
     throw new Error(`runtime versioned writeback proof URL required:${name}`);
   return value;

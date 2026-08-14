@@ -1,9 +1,17 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { sanitizedDiagnosticError } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
 import {
   releaseAuthorityCatalogVerifier,
   releaseAuthorityMigrationContract,
@@ -378,7 +386,11 @@ export function releaseAuthorityMigrationBundle(
   ].join("\n");
 }
 
-export const postgresEnvironment = (encoded, environment = process.env) => {
+export const postgresEnvironment = (
+  encoded,
+  environment = process.env,
+  passfile = "/run/reviewrouter/release-authority.pgpass",
+) => {
   const url = new URL(encoded);
   if (url.protocol !== "postgres:" && url.protocol !== "postgresql:")
     throw new Error("release_authority_owner_database_url_invalid");
@@ -390,7 +402,7 @@ export const postgresEnvironment = (encoded, environment = process.env) => {
   for (const key of url.searchParams.keys())
     if (!allowed.has(key))
       throw new Error(
-        `release_authority_owner_database_url_parameter_unsupported:${key}`,
+        "release_authority_owner_database_url_parameter_unsupported",
       );
   return {
     PATH: environment.PATH ?? "/usr/local/bin:/usr/bin:/bin",
@@ -402,9 +414,16 @@ export const postgresEnvironment = (encoded, environment = process.env) => {
     PGPORT: url.port || "5432",
     PGDATABASE: database,
     PGUSER: user,
-    PGPASSWORD: decodeURIComponent(url.password),
+    PGPASSFILE: passfile,
   };
 };
+
+function postgresPassfileLine(encoded) {
+  const url = new URL(encoded);
+  const escape = (value) =>
+    value.replaceAll("\\", "\\\\").replaceAll(":", "\\:");
+  return `${escape(url.hostname)}:${escape(url.port || "5432")}:${escape(decodeURIComponent(url.pathname.slice(1)))}:${escape(decodeURIComponent(url.username))}:${escape(decodeURIComponent(url.password))}\n`;
+}
 
 export function installReleaseAuthorityDatabase(environment = process.env) {
   const mode = environment.REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_MODE;
@@ -421,27 +440,38 @@ export function installReleaseAuthorityDatabase(environment = process.env) {
       "release_authority_owner_database_url_file_permissions_invalid",
     );
   const databaseUrl = readFileSync(credentialFile, "utf8").trim();
-  const result = spawnSync(
-    environment.REVIEW_ROUTER_PSQL_BINARY ?? "psql",
-    ["--no-psqlrc", "--quiet"],
-    {
+  const psqlBinary = environment.REVIEW_ROUTER_PSQL_BINARY ?? "psql";
+  if (!/^(?:psql|\/[A-Za-z0-9._+/-]{1,1023})$/u.test(psqlBinary))
+    throw new Error("release_authority_psql_binary_invalid");
+  const directory = mkdtempSync(join(tmpdir(), "rr-authority-migration-"));
+  const passfile = join(directory, "pgpass");
+  writeFileSync(passfile, postgresPassfileLine(databaseUrl), {
+    mode: 0o600,
+    flag: "wx",
+  });
+  try {
+    const result = spawnSync(psqlBinary, ["--no-psqlrc", "--quiet"], {
       cwd: new URL("..", import.meta.url),
       encoding: "utf8",
       input: releaseAuthorityMigrationBundle(
         mode,
         fileURLToPath(new URL("..", import.meta.url)),
       ),
-      env: postgresEnvironment(databaseUrl, environment),
+      env: postgresEnvironment(databaseUrl, environment, passfile),
       maxBuffer: 16 * 1024 * 1024,
       timeout: 600_000,
-    },
-  );
-  if (result.error?.code === "ETIMEDOUT")
-    throw new Error("release_authority_migration_process_timeout");
-  if (result.status !== 0)
-    throw new Error(
-      `release_authority_migration_failed:exit=${result.status ?? "signal"}`,
-    );
+    });
+    if (result.status !== 0 || result.error)
+      throw sanitizedDiagnosticError({
+        code: "release_authority_migration_process_failed",
+        phase: "authority_migration",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut: result.error?.code === "ETIMEDOUT",
+      });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 if (

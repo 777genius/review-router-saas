@@ -634,7 +634,12 @@ export class RenderApiAdapter {
     if (response.status !== 200) {
       if (response.status >= 500)
         return this.observeAmbiguousEnvironment(input.serviceId);
-      throw new Error(`render_api_env_mutation_failed:${response.status}`);
+      throw new ProviderHttpError(
+        "environment_mutation",
+        "response_status",
+        response.status,
+        false,
+      );
     }
     let verified: readonly { key: string; value: string }[];
     try {

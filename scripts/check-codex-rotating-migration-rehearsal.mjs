@@ -13,6 +13,14 @@ import {
   runtimeGrantStatements,
 } from "./run-codex-rotating-release-migration.mjs";
 import { verifyCodexRotatingDatabaseCatalog } from "./verify-codex-rotating-rollout.mjs";
+import {
+  createSanitizedDiagnostic,
+  sanitizedDiagnosticError,
+} from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import {
+  createDatabaseCredentialBoundary,
+  createSecretSafePostgresInvocation,
+} from "./lib/secret-safe-command-boundary.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const dbDirectory = join(root, "packages/platform/db");
@@ -421,18 +429,21 @@ function seedDirtyFixtures(url) {
 async function proveMigration60LockTimeout(url) {
   const applicationName = `rr_setup_lock_${process.pid}`;
   const holderUrl = withApplicationName(url, applicationName);
-  const holder = spawn(
-    psqlBinary,
-    [
-      holderUrl,
+  const holderInvocation = createSecretSafePostgresInvocation({
+    databaseUrl: holderUrl,
+    args: [
       "-X",
       "-v",
       "ON_ERROR_STOP=1",
       "-c",
       'BEGIN; LOCK TABLE "CodexOAuthSetupManifest" IN ACCESS SHARE MODE; SELECT pg_sleep(60);',
     ],
-    { stdio: "ignore", env: process.env },
-  );
+  });
+  const holder = spawn(psqlBinary, holderInvocation.args, {
+    stdio: ["pipe", "ignore", "ignore"],
+    env: holderInvocation.environment,
+  });
+  holder.stdin.end(holderInvocation.input);
   try {
     await waitForLock(url, applicationName, '"CodexOAuthSetupManifest"');
     const directStartedAt = Date.now();
@@ -445,7 +456,7 @@ async function proveMigration60LockTimeout(url) {
     );
     assert(
       directOutput.toLowerCase().includes("lock timeout"),
-      `direct 000060 must expose lock timeout: ${directOutput}`,
+      "direct_000060_lock_timeout_not_observed",
     );
     assert(
       directElapsedMs >= 14_000 && directElapsedMs < 30_000,
@@ -455,14 +466,13 @@ async function proveMigration60LockTimeout(url) {
     const runnerStartedAt = Date.now();
     const runnerFailure = migrateDeploy(url, false);
     const runnerElapsedMs = Date.now() - runnerStartedAt;
-    const runnerOutput = `${runnerFailure.stdout}${runnerFailure.stderr}`;
     assert(
       runnerFailure.status !== 0,
       "held manifest lock must reject runner 000060",
     );
     assert(
       runnerElapsedMs >= 14_000 && runnerElapsedMs < 30_000,
-      `Prisma 000060 lock timeout was not bounded near 15s (${runnerElapsedMs}ms): ${runnerOutput}`,
+      `prisma_000060_lock_timeout_unbounded:${runnerElapsedMs}`,
     );
     proveMigrationRunnerHistory(url, migration60Name, false);
     psql(url, [
@@ -477,6 +487,7 @@ async function proveMigration60LockTimeout(url) {
     ]);
   } finally {
     await terminateChild(holder);
+    holderInvocation.cleanup();
     psql(
       url,
       [
@@ -491,18 +502,21 @@ async function proveMigration60LockTimeout(url) {
 async function proveCombinedLockTimeout(url) {
   const applicationName = `rr_fence_lock_${process.pid}`;
   const holderUrl = withApplicationName(url, applicationName);
-  const holder = spawn(
-    psqlBinary,
-    [
-      holderUrl,
+  const holderInvocation = createSecretSafePostgresInvocation({
+    databaseUrl: holderUrl,
+    args: [
       "-X",
       "-v",
       "ON_ERROR_STOP=1",
       "-c",
       'BEGIN; LOCK TABLE "CodexOAuthProviderInstance" IN ACCESS SHARE MODE; SELECT pg_sleep(60);',
     ],
-    { stdio: "ignore", env: process.env },
-  );
+  });
+  const holder = spawn(psqlBinary, holderInvocation.args, {
+    stdio: ["pipe", "ignore", "ignore"],
+    env: holderInvocation.environment,
+  });
+  holder.stdin.end(holderInvocation.input);
   try {
     await waitForLock(url, applicationName, '"CodexOAuthProviderInstance"');
     const directStartedAt = Date.now();
@@ -515,7 +529,7 @@ async function proveCombinedLockTimeout(url) {
     );
     assert(
       directFailureOutput.toLowerCase().includes("lock timeout"),
-      `direct 000061 execution must expose lock timeout: ${directFailureOutput}`,
+      "direct_000061_lock_timeout_not_observed",
     );
     assert(
       directElapsedMs >= 14_000 && directElapsedMs < 30_000,
@@ -525,14 +539,13 @@ async function proveCombinedLockTimeout(url) {
     const startedAt = Date.now();
     const failed = migrateDeploy(url, false);
     const elapsedMs = Date.now() - startedAt;
-    const failedOutput = `${failed.stdout}${failed.stderr}`;
     assert(
       failed.status !== 0,
       "held provider lock must reject combined runner release",
     );
     assert(
       elapsedMs >= 14_000 && elapsedMs < 30_000,
-      `Prisma 000061 lock failure was not bounded near 15s (${elapsedMs}ms): ${failedOutput}`,
+      `prisma_000061_lock_timeout_unbounded:${elapsedMs}`,
     );
     proveMigrationRunnerHistory(url, migration60Name, true);
     proveMigrationRunnerHistory(url, migration61Name, false);
@@ -552,6 +565,7 @@ async function proveCombinedLockTimeout(url) {
     ]);
   } finally {
     await terminateChild(holder);
+    holderInvocation.cleanup();
     psql(
       url,
       [
@@ -578,7 +592,7 @@ function proveInjected61Rollback(url) {
   );
   assert(
     directFailureOutput.toLowerCase().includes("already exists"),
-    `direct injected failure did not reach the late 000061 index: ${directFailureOutput}`,
+    "direct_000061_injected_failure_not_observed",
   );
   assert(
     databaseFingerprintBefore61(url) === before,
@@ -667,7 +681,7 @@ function proveStatementTimeoutConfiguration(url) {
   assert(failed.status !== 0, "statement-timeout observer must abort 000061");
   assert(
     output.includes("rr_000061_statement_timeout_observed_5min"),
-    `000061 did not expose its transaction-local 5m statement timeout: ${output}`,
+    "migration_000061_statement_timeout_not_observed",
   );
   assert(
     databaseFingerprintBefore61(url) === before,
@@ -1087,7 +1101,7 @@ function proveVersionedNamespaceLedger(url) {
     assert(
       rejected.status !== 0 &&
         `${rejected.stdout}${rejected.stderr}`.includes(expectedError),
-      `fence-critical mutation unexpectedly succeeded: ${statement}`,
+      "fence_critical_mutation_not_rejected",
     );
   }
   for (const [table, id, expectedError] of [
@@ -1223,67 +1237,92 @@ function assertVersionedNamespaceEvidenceRetained(
   ]).stdout.trim();
   assert(
     retained === "1:1:1:1:1:1:1:1:1:1",
-    `${attemptedTable} cleanup changed the exact runtime evidence chain (${retained})`,
+    `${attemptedTable}_cleanup_changed_runtime_evidence_chain`,
   );
 }
 
 function provePrismaCleanupRetention(url, evidence) {
-  const result = spawnSync(
-    process.execPath,
-    [
-      "--import",
-      "tsx",
-      join(root, "scripts/prove-codex-rotating-evidence-prisma.ts"),
-    ],
-    {
-      cwd: root,
-      env: {
-        ...process.env,
-        REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL: url.toString(),
-        REVIEW_ROUTER_PRISMA_EVIDENCE_IDENTITIES: JSON.stringify({
-          claimId: evidence.recoverySetupTombstone.claimId,
-          attemptId: evidence.recoverySetupTombstone.attemptId,
-          namespaceId: evidence.initialSetupTombstone.namespaceId,
-          providerId: evidence.provider.id,
-          repositoryId: evidence.provider.repositoryId,
-          workspaceId: evidence.provider.workspaceId,
-        }),
+  const credential = createDatabaseCredentialBoundary(url);
+  let result;
+  try {
+    result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        join(root, "scripts/prove-codex-rotating-evidence-prisma.ts"),
+      ],
+      {
+        cwd: root,
+        env: {
+          ...credential.environment,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_DATABASE_URL_FILE:
+            credential.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_IDENTITIES: JSON.stringify({
+            claimId: evidence.recoverySetupTombstone.claimId,
+            attemptId: evidence.recoverySetupTombstone.attemptId,
+            namespaceId: evidence.initialSetupTombstone.namespaceId,
+            providerId: evidence.provider.id,
+            repositoryId: evidence.provider.repositoryId,
+            workspaceId: evidence.provider.workspaceId,
+          }),
+        },
+        encoding: "utf8",
+        timeout: 600_000,
+        maxBuffer: 16 * 1024 * 1024,
       },
-      encoding: "utf8",
-    },
-  );
+    );
+  } finally {
+    credential.cleanup();
+  }
   assert(
     result.status === 0,
-    `Prisma evidence cleanup proof failed (${result.status}): ${result.stderr || result.stdout}`,
+    JSON.stringify(rehearsalProcessDiagnostic(result)),
   );
   assertVersionedNamespaceEvidenceRetained(url, evidence, "Prisma");
 }
 
 function proveRuntimeVersionedWriteback(url, clients) {
-  const result = spawnSync(
-    process.execPath,
-    [
-      "--import",
-      "tsx",
-      join(root, "scripts/prove-codex-runtime-versioned-writeback-prisma.ts"),
-    ],
-    {
-      cwd: root,
-      env: {
-        ...process.env,
-        REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL:
-          clients.release.toString(),
-        REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL: clients.api.toString(),
-        REVIEW_ROUTER_PRISMA_EVIDENCE_WEB_DATABASE_URL: clients.web.toString(),
-        REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL:
-          clients.effectAuthority.toString(),
+  const credentials = {
+    release: createDatabaseCredentialBoundary(clients.release),
+    api: createDatabaseCredentialBoundary(clients.api),
+    web: createDatabaseCredentialBoundary(clients.web),
+    effectAuthority: createDatabaseCredentialBoundary(clients.effectAuthority),
+  };
+  let result;
+  try {
+    result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        join(root, "scripts/prove-codex-runtime-versioned-writeback-prisma.ts"),
+      ],
+      {
+        cwd: root,
+        env: {
+          ...credentials.release.environment,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_RELEASE_DATABASE_URL_FILE:
+            credentials.release.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_API_DATABASE_URL_FILE:
+            credentials.api.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_WEB_DATABASE_URL_FILE:
+            credentials.web.environment.REVIEW_ROUTER_DATABASE_URL_FILE,
+          REVIEW_ROUTER_PRISMA_EVIDENCE_EFFECT_AUTHORITY_DATABASE_URL_FILE:
+            credentials.effectAuthority.environment
+              .REVIEW_ROUTER_DATABASE_URL_FILE,
+        },
+        encoding: "utf8",
+        timeout: 600_000,
+        maxBuffer: 16 * 1024 * 1024,
       },
-      encoding: "utf8",
-    },
-  );
+    );
+  } finally {
+    for (const credential of Object.values(credentials)) credential.cleanup();
+  }
   assert(
     result.status === 0,
-    `runtime versioned Prisma proof failed (${result.status}): ${result.stderr || result.stdout}`,
+    JSON.stringify(rehearsalProcessDiagnostic(result)),
   );
   assert(
     !/already connected.*deprecated|deprecated.*already connected/iu.test(
@@ -1303,10 +1342,7 @@ function proveExactProductionCatalogContract(url) {
   const result = verifyCodexRotatingDatabaseCatalog(observation.catalog, {
     verifyPrivileges: false,
   });
-  assert(
-    result.ok,
-    `production catalog verifier rejected the PostgreSQL 17 rehearsal: ${result.failures.join(", ")}`,
-  );
+  assert(result.ok, "production_catalog_verifier_rejected_rehearsal");
 }
 
 function proveDatabasePrivileges(url) {
@@ -2087,27 +2123,70 @@ function prepareCanonicalReleaseRoles(url) {
 }
 
 function runRehearsalReleaseSubprocess(step, command, args, options = {}) {
-  const invocation =
-    command === "psql"
-      ? { executable: psqlBinary, args }
-      : command === "pnpm" && process.env.npm_execpath
-        ? {
-            executable: process.execPath,
-            args: [process.env.npm_execpath, ...args],
-          }
-        : { executable: command, args };
-  const result = spawnSync(invocation.executable, invocation.args, {
-    cwd: root,
-    encoding: "utf8",
-    env: options.env,
-    input: options.input,
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.status !== 0)
-    throw new Error(
-      `rehearsal release helper failed at ${step}: ${result.stderr || result.stdout}`,
+  let cleanup = () => undefined;
+  let executable;
+  let childArgs;
+  let childEnvironment;
+  let childInput = options.input;
+  if (command === "psql") {
+    const urlIndex = args.findIndex(
+      (arg) => arg.startsWith("postgres://") || arg.startsWith("postgresql://"),
     );
-  return result.stdout;
+    if (urlIndex < 0)
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+      });
+    const postgres = createSecretSafePostgresInvocation({
+      databaseUrl: args[urlIndex],
+      args: args.filter((_, index) => index !== urlIndex),
+      input: options.input,
+    });
+    executable = psqlBinary;
+    childArgs = postgres.args;
+    childEnvironment = postgres.environment;
+    childInput = postgres.input;
+    cleanup = postgres.cleanup;
+  } else {
+    const databaseUrl = options.env?.DATABASE_URL;
+    if (!databaseUrl)
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+      });
+    const credential = createDatabaseCredentialBoundary(databaseUrl);
+    executable =
+      command === "pnpm" && process.env.npm_execpath
+        ? process.execPath
+        : command;
+    childArgs =
+      command === "pnpm" && process.env.npm_execpath
+        ? [process.env.npm_execpath, ...args]
+        : args;
+    childEnvironment = credential.environment;
+    cleanup = credential.cleanup;
+  }
+  try {
+    const result = spawnSync(executable, childArgs, {
+      cwd: root,
+      encoding: "utf8",
+      env: childEnvironment,
+      input: childInput,
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 600_000,
+    });
+    if (result.status !== 0 || result.error)
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut: result.error?.code === "ETIMEDOUT",
+      });
+    return result.stdout;
+  } finally {
+    cleanup();
+  }
 }
 
 function markCanonicalRehearsalRoles(url) {
@@ -2641,22 +2720,22 @@ async function proveProviderRepairAuthorityV2(adminUrl, clients) {
     "900006",
   ];
   const args = repairArgs.join(",");
-  const web = spawn(
-    psqlBinary,
-    [clients.web.toString(), "-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
-  const lines = createInterface({ input: web.stdout })[Symbol.asyncIterator]();
-  let stderr = "";
-  web.stderr.setEncoding("utf8");
-  web.stderr.on("data", (chunk) => {
-    stderr += chunk;
+  const webInvocation = createSecretSafePostgresInvocation({
+    databaseUrl: clients.web,
+    args: ["-X", "-qAt", "-v", "ON_ERROR_STOP=1"],
   });
+  const web = spawn(psqlBinary, webInvocation.args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: webInvocation.environment,
+  });
+  web.once("close", () => webInvocation.cleanup());
+  const lines = createInterface({ input: web.stdout })[Symbol.asyncIterator]();
+  web.stderr.resume();
   web.stdin.write(
     `BEGIN; SELECT "codex_oauth_provider_identity_repair_challenge"(${args});\n`,
   );
   const challengeLine = await lines.next();
-  assert(!challengeLine.done, `repair challenge missing: ${stderr}`);
+  assert(!challengeLine.done, "provider_repair_challenge_missing");
   const signature = psql(clients.effectAuthority, [
     "-Atc",
     `SELECT "codex_oauth_sign_database_authority"(${quoteLiteral(challengeLine.value)})`,
@@ -2719,16 +2798,13 @@ async function proveProviderRepairAuthorityV2(adminUrl, clients) {
   const terminal = await lines.next();
   assert(
     !terminal.done && terminal.value === "provider-repair-v2-passed",
-    `provider repair v2 proof failed: ${stderr}`,
+    "provider_repair_v2_proof_failed",
   );
   web.stdin.end("\\q\n");
   const status = await new Promise((resolveExit) =>
     web.once("close", resolveExit),
   );
-  assert(
-    status === 0,
-    `provider repair v2 client failed (${status}): ${stderr}`,
-  );
+  assert(status === 0, "provider_repair_v2_client_failed");
   const receiptsAfter = Number(
     psql(adminUrl, [
       "-Atc",
@@ -3284,7 +3360,7 @@ function proveMigrationRunnerHistory(url, name, successful) {
   const [total, current] = row.split(":").map(Number);
   assert(
     total >= 1 && current === (successful ? 1 : 0),
-    `${name} runner history does not prove expected state (${row})`,
+    `${name}_runner_history_state_invalid`,
   );
 }
 
@@ -3302,7 +3378,7 @@ function discardRehearsalOnlyRolledBackMigrationHistory(url) {
       total >= 2 &&
         successful === expectedSuccessful &&
         current === expectedSuccessful,
-      `rehearsal-only rolled-back history contract mismatch for ${migrationName} (${observation})`,
+      `rehearsal_rolled_back_history_contract_mismatch:${migrationName}`,
     );
     psql(url, [
       "-c",
@@ -3314,7 +3390,7 @@ function discardRehearsalOnlyRolledBackMigrationHistory(url) {
     ]).stdout.trim();
     assert(
       remaining === `${expectedSuccessful}:${expectedSuccessful}`,
-      `rehearsal-only rolled-back history reset failed for ${migrationName} (${remaining})`,
+      `rehearsal_rolled_back_history_reset_failed:${migrationName}`,
     );
   }
 }
@@ -3394,16 +3470,27 @@ function prisma(url, args, requireSuccess = true) {
         args: [process.env.npm_execpath, "exec", "prisma", ...args],
       }
     : { executable: "pnpm", args: ["exec", "prisma", ...args] };
-  const result = spawnSync(command.executable, command.args, {
-    cwd: dbDirectory,
-    env: { ...process.env, DATABASE_URL: url.toString() },
-    encoding: "utf8",
-  });
-  if (requireSuccess && result.status !== 0)
-    throw new Error(
-      `Prisma migration runner failed (${result.status}): ${result.stderr || result.stdout}`,
-    );
-  return result;
+  const credential = createDatabaseCredentialBoundary(url);
+  try {
+    const result = spawnSync(command.executable, command.args, {
+      cwd: dbDirectory,
+      env: credential.environment,
+      encoding: "utf8",
+      timeout: 600_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (requireSuccess && (result.status !== 0 || result.error))
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut: result.error?.code === "ETIMEDOUT",
+      });
+    return result;
+  } finally {
+    credential.cleanup();
+  }
 }
 
 function requireLocalPostgres(value) {
@@ -3432,29 +3519,42 @@ function requirePostgres17() {
     "/usr/lib/postgresql/17/bin/psql",
     "psql",
   ].filter(Boolean);
-  const diagnostics = [];
   for (const candidate of candidates) {
     const result = spawnSync(candidate, ["--version"], { encoding: "utf8" });
     if (result.status === 0 && /\b17\.\d+/u.test(result.stdout))
       return candidate;
-    diagnostics.push(`${candidate}: ${psqlResultDiagnostic(result)}`);
   }
-  throw new Error(
-    `PostgreSQL 17 psql is required; the rehearsal never skips or falls back to another major: ${diagnostics.join(" | ")}`,
-  );
+  throw sanitizedDiagnosticError({
+    code: "private_pg17_rehearsal_command_failed",
+    phase: "rehearsal",
+  });
 }
 
 function psql(url, args, requireSuccess = true) {
-  const result = spawnSync(
-    psqlBinary,
-    [url.toString(), "-X", "-v", "ON_ERROR_STOP=1", ...args],
-    { encoding: "utf8" },
-  );
-  if (requireSuccess && result.status !== 0)
-    throw new Error(
-      `psql failed (${result.status}): ${result.stderr || result.stdout}`,
-    );
-  return result;
+  const invocation = createSecretSafePostgresInvocation({
+    databaseUrl: url,
+    args: ["-X", "-v", "ON_ERROR_STOP=1", ...args],
+  });
+  try {
+    const result = spawnSync(psqlBinary, invocation.args, {
+      encoding: "utf8",
+      env: invocation.environment,
+      input: invocation.input,
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 600_000,
+    });
+    if (requireSuccess && (result.status !== 0 || result.error))
+      throw sanitizedDiagnosticError({
+        code: "private_pg17_rehearsal_command_failed",
+        phase: "rehearsal",
+        exitCode: result.status,
+        signal: result.signal,
+        timedOut: result.error?.code === "ETIMEDOUT",
+      });
+    return result;
+  } finally {
+    invocation.cleanup();
+  }
 }
 
 function databaseUrl(base, name) {
@@ -3470,7 +3570,16 @@ function quoteLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
 function psqlResultDiagnostic(result) {
-  return `status=${result.status}; signal=${result.signal ?? "none"}; error=${JSON.stringify(result.error?.message ?? null)}; stdout=${JSON.stringify(result.stdout)}; stderr=${JSON.stringify(result.stderr)}`;
+  return JSON.stringify(rehearsalProcessDiagnostic(result));
+}
+function rehearsalProcessDiagnostic(result) {
+  return createSanitizedDiagnostic({
+    code: "private_pg17_rehearsal_command_failed",
+    phase: "rehearsal",
+    exitCode: result.status,
+    signal: result.signal,
+    timedOut: result.error?.code === "ETIMEDOUT",
+  });
 }
 function assertPsqlFailedWithExactMessage(result, expectedFailure, message) {
   assert(

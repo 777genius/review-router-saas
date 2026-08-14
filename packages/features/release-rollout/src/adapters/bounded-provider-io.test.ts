@@ -96,4 +96,37 @@ describe("bounded provider HTTP", () => {
     expect(error).toMatchObject({ category: "deadline", ambiguousWrite: true });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  it("drops adversarial URL, request, nested error, and abort secrets", async () => {
+    const canaries = [
+      "url-secret-canary",
+      "request-header-canary",
+      "nested-network-canary",
+      "abort-reason-canary",
+    ];
+    const controller = new AbortController();
+    controller.abort(new Error(canaries[3]));
+    const client = new BoundedProviderHttpClient(
+      vi.fn().mockRejectedValue(
+        new Error(canaries[2], {
+          cause: new Error("postgresql://user:dsn-secret@db.invalid/app"),
+        }),
+      ),
+      { deadlineMs: 5, safeReadAttempts: 1 },
+    );
+    const error = await client
+      .request("mutate", `https://provider.invalid/?token=${canaries[0]}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${canaries[1]}` },
+        body: JSON.stringify({ auth: "auth-json-canary" }),
+        signal: controller.signal,
+      })
+      .catch((value: unknown) => value);
+    const outputs = [String(error), JSON.stringify(error)];
+    for (const output of outputs) {
+      expect(output.length).toBeLessThan(768);
+      for (const canary of [...canaries, "dsn-secret", "auth-json-canary"])
+        expect(output).not.toContain(canary);
+    }
+  });
 });

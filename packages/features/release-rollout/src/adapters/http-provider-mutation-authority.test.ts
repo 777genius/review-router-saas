@@ -82,7 +82,34 @@ describe("HTTP provider mutation authority", () => {
         expected: permit.expected,
         leaseSeconds: 60,
       }),
-    ).rejects.toThrow("provider_http_mutation_authority_issue_network");
+    ).rejects.toThrow('"code":"provider_http_request_failed"');
     expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("drops invalid JSON bodies, response headers, and request tokens", async () => {
+    const response = new Response("response-auth-json-canary", {
+      status: 200,
+      headers: { "set-cookie": "cookie-canary" },
+    });
+    const error = await new HttpProviderMutationAuthorityAdapter(
+      "https://authority.invalid",
+      "render-token-canary",
+      vi.fn().mockResolvedValue(response),
+    )
+      .issue({
+        rolloutId: permit.rolloutId,
+        operation: permit.operation,
+        resource: permit.resource,
+        ownerId: permit.ownerId,
+        expected: permit.expected,
+        leaseSeconds: 60,
+      })
+      .catch((value: unknown) => value);
+    for (const output of [String(error), JSON.stringify(error)]) {
+      expect(output.length).toBeLessThan(768);
+      expect(output).not.toMatch(
+        /response-auth-json-canary|cookie-canary|render-token-canary/u,
+      );
+    }
   });
 });

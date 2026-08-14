@@ -147,6 +147,7 @@ describe("release authority database installation", () => {
         PGOPTIONS: "-c search_path=attacker",
         PGSSLMODE: "disable",
       },
+      "/tmp/rr-authority-test/pgpass",
     );
     expect(environment).toEqual({
       PATH: "/custom/bin",
@@ -158,7 +159,7 @@ describe("release authority database installation", () => {
       PGPORT: "5432",
       PGDATABASE: "reviewrouter",
       PGUSER: "owner",
-      PGPASSWORD: "secret",
+      PGPASSFILE: "/tmp/rr-authority-test/pgpass",
     });
     expect(environment).not.toHaveProperty("PGSERVICE");
     expect(environment).not.toHaveProperty("PGOPTIONS");
@@ -188,7 +189,7 @@ describe("release authority database installation", () => {
           REVIEW_ROUTER_RELEASE_AUTHORITY_MIGRATION_DATABASE_URL_FILE:
             credentialFile,
         }),
-      ).toThrow("release_authority_migration_failed:exit=7");
+      ).toThrow('"code":"release_authority_migration_process_failed"');
       try {
         installReleaseAuthorityDatabase({
           PATH: process.env.PATH,
@@ -200,6 +201,8 @@ describe("release authority database installation", () => {
       } catch (error) {
         expect(String(error)).not.toContain("credential-canary");
         expect(String(error)).not.toContain("postgresql://");
+        expect(JSON.stringify(error)).not.toContain("credential-canary");
+        expect(String(error).length).toBeLessThan(768);
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });

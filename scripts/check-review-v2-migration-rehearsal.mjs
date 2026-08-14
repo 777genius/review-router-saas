@@ -4,6 +4,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import dotenv from "dotenv";
+import { sanitizedDiagnosticError } from "../packages/features/release-rollout/src/domain/sanitized-diagnostic.js";
+import {
+  createDatabaseCredentialBoundary,
+  runSecretSafePostgresCommand,
+} from "./lib/secret-safe-command-boundary.mjs";
 import {
   reviewV2ForeignKeyValuesSql,
   reviewV2LegacyAuthorityFenceBackfillStep,
@@ -31,6 +36,8 @@ adminUrl.search = "";
 const databaseUrl = new URL(baseUrl);
 databaseUrl.pathname = `/${databaseName}`;
 databaseUrl.search = "";
+const databaseCredential = createDatabaseCredentialBoundary(databaseUrl);
+const childEnvironment = databaseCredential.environment;
 const migrationPaths = reviewV2MigrationDirectories.map((directory) =>
   fileURLToPath(
     new URL(
@@ -58,10 +65,11 @@ let created = false;
 try {
   psql(adminUrl, `CREATE DATABASE ${quoteIdentifier(databaseName)}`);
   created = true;
-  run("pnpm", ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"], {
-    ...process.env,
-    DATABASE_URL: databaseUrl.toString(),
-  });
+  run(
+    "pnpm",
+    ["--filter", "@reviewrouter/platform-db", "db:migrate:deploy"],
+    childEnvironment,
+  );
   psql(
     databaseUrl,
     `
@@ -143,7 +151,7 @@ try {
   runExpectFailure(
     "node",
     ["scripts/review-v2-migrate.mjs", "--apply", "--actor=rehearsal-invalid"],
-    { ...process.env, DATABASE_URL: databaseUrl.toString() },
+    childEnvironment,
   );
   psql(
     databaseUrl,
@@ -166,7 +174,7 @@ try {
       "--apply",
       "--actor=rehearsal-worker-safety-index",
     ],
-    { ...process.env, DATABASE_URL: databaseUrl.toString() },
+    childEnvironment,
   );
   psql(
     databaseUrl,
@@ -190,7 +198,7 @@ try {
   runExpectFailure(
     "node",
     ["scripts/review-v2-migrate.mjs", "--apply", "--actor=rehearsal-wrong-fk"],
-    { ...process.env, DATABASE_URL: databaseUrl.toString() },
+    childEnvironment,
   );
   psql(
     databaseUrl,
@@ -213,7 +221,7 @@ try {
       `--backfill-page-size=${pageSize}`,
       `--stop-after-backfill-pages=${interruptedPageCount}`,
     ],
-    { ...process.env, DATABASE_URL: databaseUrl.toString() },
+    childEnvironment,
     75,
   );
 
@@ -237,7 +245,7 @@ try {
   );
   const expectedInterruptedState = `running|${interruptedPageCount}|${pageSize * interruptedPageCount}|false|match|present|present`;
   if (interruptedState !== expectedInterruptedState) {
-    fail(`Unexpected interrupted checkpoint: ${interruptedState}`);
+    fail("review_v2_interrupted_checkpoint_invalid");
   }
 
   runExpectFailure(
@@ -248,7 +256,7 @@ try {
       "--actor=rehearsal-collision",
       `--backfill-page-size=${pageSize}`,
     ],
-    { ...process.env, DATABASE_URL: databaseUrl.toString() },
+    childEnvironment,
   );
 
   const collisionState = psql(
@@ -274,7 +282,7 @@ try {
     collisionState !==
     `failed|repository_identity_collision_quarantined|${totalRepositoryCount - 1}|1|1`
   ) {
-    fail(`Unexpected collision checkpoint: ${collisionState}`);
+    fail("review_v2_collision_checkpoint_invalid");
   }
 
   psql(
@@ -308,7 +316,7 @@ try {
       "--actor=rehearsal-resume",
       `--backfill-page-size=${pageSize}`,
     ],
-    { ...process.env, DATABASE_URL: databaseUrl.toString() },
+    childEnvironment,
   );
 
   const authorityFenceCompletedAt = psql(
@@ -356,7 +364,7 @@ try {
       "--actor=rehearsal-idempotent-retry",
       `--backfill-page-size=${pageSize}`,
     ],
-    { ...process.env, DATABASE_URL: databaseUrl.toString() },
+    childEnvironment,
   );
 
   const authorityFenceCompletedAtAfterRetry = psql(
@@ -425,7 +433,7 @@ try {
     result !==
     `${totalRepositoryCount + 1}|${totalRepositoryCount + 1}|${completedMigrationSteps}|0|1|0|1|${totalRepositoryCount + 1}|1|${totalRepositoryCount}|0`
   ) {
-    fail(`Unexpected rehearsal state: ${result}`);
+    fail("review_v2_rehearsal_state_invalid");
   }
   console.log(
     `Review v2 migration rehearsal passed for ${totalRepositoryCount} repositories; checkpoint resume, collision quarantine, FK definition validation, and unrelated NOT VALID isolation were verified.`,
@@ -437,41 +445,57 @@ try {
       `DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)} WITH (FORCE)`,
     );
   }
+  databaseCredential.cleanup();
 }
 
 function psql(url, sql, capture = false) {
-  const result = spawnSync(
-    "psql",
-    [url.toString(), "-v", "ON_ERROR_STOP=1", "-X", "-At", "-c", sql],
-    capture
-      ? { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }
-      : { stdio: "inherit" },
-  );
-  if (result.error) fail(`Unable to start psql: ${result.error.message}`);
-  if (result.status !== 0) fail(`psql exited with ${result.status}`);
+  const result = runSecretSafePostgresCommand({
+    databaseUrl: url,
+    args: ["-v", "ON_ERROR_STOP=1", "-X", "-At", "-c", sql],
+    kind: "rehearsal",
+  });
   return capture ? result.stdout.trim() : "";
 }
 
 function run(command, args, env) {
-  const result = spawnSync(command, args, { env, stdio: "inherit" });
-  if (result.error) fail(`Unable to start ${command}: ${result.error.message}`);
-  if (result.status !== 0) fail(`${command} exited with ${result.status}`);
+  const result = spawnSync(command, args, {
+    env,
+    stdio: "ignore",
+    timeout: 600_000,
+  });
+  if (result.error || result.status !== 0) subprocessFailure(result);
 }
 
 function runExpectFailure(command, args, env) {
-  const result = spawnSync(command, args, { env, stdio: "ignore" });
-  if (result.error) fail(`Unable to start ${command}: ${result.error.message}`);
+  const result = spawnSync(command, args, {
+    env,
+    stdio: "ignore",
+    timeout: 600_000,
+  });
+  if (result.error) subprocessFailure(result);
   if (result.status === 0) fail(`${command} unexpectedly succeeded`);
 }
 
 function runExpectExitCode(command, args, env, expectedExitCode) {
-  const result = spawnSync(command, args, { env, stdio: "inherit" });
-  if (result.error) fail(`Unable to start ${command}: ${result.error.message}`);
+  const result = spawnSync(command, args, {
+    env,
+    stdio: "ignore",
+    timeout: 600_000,
+  });
+  if (result.error) subprocessFailure(result);
   if (result.status !== expectedExitCode) {
-    fail(
-      `${command} exited with ${result.status}; expected ${expectedExitCode}`,
-    );
+    subprocessFailure(result);
   }
+}
+
+function subprocessFailure(result) {
+  throw sanitizedDiagnosticError({
+    code: "private_pg17_rehearsal_command_failed",
+    phase: "rehearsal",
+    exitCode: result.status,
+    signal: result.signal,
+    timedOut: result.error?.code === "ETIMEDOUT",
+  });
 }
 
 function quoteIdentifier(value) {

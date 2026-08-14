@@ -1397,6 +1397,24 @@ describe("organization-scoped JIT isolation", () => {
       requestJitConfiguration(jit, "token", jitFetch(override) as typeof fetch),
     ).rejects.toThrow();
   });
+
+  it("does not expose GitHub response or authorization secrets", async () => {
+    const error = await requestJitConfiguration(
+      jit,
+      "github-auth-canary",
+      vi.fn().mockResolvedValue(
+        new Response("github-body-canary", {
+          status: 503,
+          headers: { "set-cookie": "github-cookie-canary" },
+        }),
+      ) as typeof fetch,
+    ).catch((value: unknown) => value);
+    const output = `${String(error)}${JSON.stringify(error)}`;
+    expect(output.length).toBeLessThan(1_536);
+    expect(output).not.toMatch(
+      /github-auth-canary|github-body-canary|github-cookie-canary/u,
+    );
+  });
 });
 
 describe("process and runner secret boundary", () => {
@@ -1412,13 +1430,13 @@ describe("process and runner secret boundary", () => {
       assertSafeProcessBoundary("psql", ["postgresql://u:p@h/d"], {
         PATH: "/bin",
       }),
-    ).toThrow("release_rollout_secret_in_argv");
+    ).toThrow("release_rollout_process_boundary_rejected");
     expect(() =>
       assertSafeProcessBoundary("psql", [], {
         PATH: "/bin",
         PGPASSWORD: "secret",
       }),
-    ).toThrow("release_rollout_broad_child_environment");
+    ).toThrow("release_rollout_process_boundary_rejected");
   });
   it("invokes only Runner.Listener run --jitconfig", async () => {
     const child = {
@@ -1445,6 +1463,8 @@ describe("process and runner secret boundary", () => {
 
   it("cancels only the no-job timer when assignment begins", async () => {
     vi.useFakeTimers();
+    const stdout = vi.spyOn(process.stdout, "write");
+    const stderr = vi.spyOn(process.stderr, "write");
     const child = new EventEmitter() as EventEmitter & {
       stdout: PassThrough;
       stderr: PassThrough;
@@ -1462,11 +1482,22 @@ describe("process and runner secret boundary", () => {
       environment: { PATH: "/bin" },
     });
     await vi.advanceTimersByTimeAsync(900);
-    child.stdout.write("2026-08-12: Running job: private-cutover\n");
+    child.stdout.write(
+      "2026-08-12: Running job: private-cutover stdout-secret-canary\n",
+    );
+    child.stderr.write("runner-stderr-secret-canary\n");
     await vi.advanceTimersByTimeAsync(10_000);
     child.emit("exit", 0);
     await expect(running).resolves.toBeUndefined();
     expect(child.kill).not.toHaveBeenCalled();
+    expect(JSON.stringify(stdout.mock.calls)).not.toContain(
+      "stdout-secret-canary",
+    );
+    expect(JSON.stringify(stderr.mock.calls)).not.toContain(
+      "stderr-secret-canary",
+    );
+    stdout.mockRestore();
+    stderr.mockRestore();
     vi.useRealTimers();
   });
 
@@ -1490,7 +1521,7 @@ describe("process and runner secret boundary", () => {
     });
     await vi.advanceTimersByTimeAsync(1000);
     child.emit("exit", null);
-    await expect(running).rejects.toThrow("github_jit_no_job_timeout");
+    await expect(running).rejects.toThrow("release_rollout_process_failed");
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     vi.useRealTimers();
   });
@@ -1531,5 +1562,38 @@ describe("Render recovery plus external backup witness", () => {
         "/postgres/dpg-source/recovery",
       ),
     ).toBe(true);
+  });
+
+  it("does not expose Render recovery bodies or authorization secrets", async () => {
+    const externalWitness = {
+      witnessSha256: `sha256:${"a".repeat(64)}`,
+      sourceResourceId: "dpg-source",
+      internalHostname: "source.internal",
+      databaseName: "reviewrouter",
+      systemIdentifier: "100",
+      lsn: "0/16B6C50",
+      capturedAt: "2026-08-12T00:00:00.000Z",
+      recoveryWindowEndsAt: "2026-08-13T00:00:00.000Z",
+      dumpSha256: `sha256:${"b".repeat(64)}`,
+    };
+    const error = await new RenderBackupIdentityAdapter(
+      vi.fn().mockResolvedValue(
+        new Response("render-recovery-body-canary", {
+          status: 200,
+          headers: { "set-cookie": "render-recovery-cookie-canary" },
+        }),
+      ),
+    )
+      .capture({
+        apiKey: "render-recovery-auth-canary",
+        sourceDatabaseId: "dpg-source",
+        externalWitness,
+      })
+      .catch((value: unknown) => value);
+    const output = `${String(error)}${JSON.stringify(error)}`;
+    expect(output.length).toBeLessThan(1_536);
+    expect(output).not.toMatch(
+      /render-recovery-body-canary|render-recovery-cookie-canary|render-recovery-auth-canary/u,
+    );
   });
 });

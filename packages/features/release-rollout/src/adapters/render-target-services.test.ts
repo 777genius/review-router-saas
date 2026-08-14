@@ -249,4 +249,29 @@ describe("Render target switch and live canary", () => {
       writeReadRoundTrip: true,
     });
   });
+
+  it("does not expose target canary bodies, cookies, or bearer tokens", async () => {
+    const error = await new RenderTargetServicesAdapter(
+      vi.fn().mockResolvedValue(
+        new Response("target-body-canary", {
+          status: 200,
+          headers: { "set-cookie": "target-cookie-canary" },
+        }),
+      ),
+    )
+      .verifyLiveCanary({
+        url: "https://api.example.test/internal/release-canary",
+        expectedCommitSha: "a".repeat(40),
+        expectedSystemIdentifier: "200",
+        expectedRecoveryWitnessSha256: recoveryWitnessSha256,
+        rolloutId: "rollout-target-1",
+        bearerToken: "target-bearer-canary",
+      })
+      .catch((value: unknown) => value);
+    const output = `${String(error)}${JSON.stringify(error)}`;
+    expect(output.length).toBeLessThan(1_536);
+    expect(output).not.toMatch(
+      /target-body-canary|target-cookie-canary|target-bearer-canary/u,
+    );
+  });
 });

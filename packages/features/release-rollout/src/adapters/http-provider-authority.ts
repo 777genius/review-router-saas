@@ -4,7 +4,10 @@ import type {
   ProviderAuthorityRequest,
 } from "../application/ports";
 import type { RenderFetch } from "./render-api";
-import { BoundedProviderHttpClient } from "./bounded-provider-io";
+import {
+  BoundedProviderHttpClient,
+  ProviderHttpError,
+} from "./bounded-provider-io";
 
 export class HttpProviderAuthorityDecisionAdapter implements ProviderAuthorityDecisionPort {
   private readonly fetchImpl: RenderFetch;
@@ -36,15 +39,30 @@ export class HttpProviderAuthorityDecisionAdapter implements ProviderAuthorityDe
       },
     );
     if (response.status !== 200)
-      throw new Error(`provider_authority_decision_denied:${response.status}`);
+      throw new ProviderHttpError(
+        "provider_authority",
+        "response_status",
+        response.status,
+        true,
+      );
     let value: unknown;
     try {
       value = await response.json();
     } catch {
-      throw new Error("provider_authority_decision_response_invalid");
+      throw new ProviderHttpError(
+        "provider_authority",
+        "response_invalid",
+        response.status,
+        true,
+      );
     }
     if (!value || typeof value !== "object" || Array.isArray(value))
-      throw new Error("provider_authority_decision_response_invalid");
+      throw new ProviderHttpError(
+        "provider_authority",
+        "response_invalid",
+        response.status,
+        true,
+      );
     return value as ProviderAuthorityDecision;
   }
 }
