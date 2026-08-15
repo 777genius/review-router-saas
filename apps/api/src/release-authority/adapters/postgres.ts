@@ -106,8 +106,8 @@ const migrationCheckpointResult = (
     )
   )
     throw new Error("release_migration_checkpoint_result_invalid");
-  let permit = null;
-  let receipt = null;
+  let permit: ReturnType<typeof migrationPermitRequest> | null;
+  let receipt: ReturnType<typeof migrationReceiptRequest> | null;
   try {
     permit = body.permit === null ? null : migrationPermitRequest(body.permit);
     receipt =

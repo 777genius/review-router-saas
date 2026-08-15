@@ -279,7 +279,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                     WHERE grantee.oid=acl.grantee AND grantee.rolname=ANY(ARRAY[
                       'reviewrouter_activation_permit_installer',
                       'reviewrouter_activation_receipt_reader','reviewrouter_role_bootstrap',
-                      'reviewrouter_release_migration'])))
+                      'reviewrouter_release_migration',
+                      'reviewrouter_release_schema_owner'])))
           FROM pg_namespace n CROSS JOIN pg_roles guard
           WHERE n.nspname='reviewrouter_activation'
             AND guard.rolname='reviewrouter_activation_receipt_guard'),false)
@@ -466,15 +467,19 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AND NOT EXISTS (SELECT 1 FROM pg_type type
             JOIN pg_namespace namespace ON namespace.oid=type.typnamespace
             WHERE namespace.nspname='public' AND type.typowner=migration.oid)
-          AND (SELECT count(*)=1 AND bool_and(edge.admin_option
-                AND NOT edge.inherit_option AND NOT edge.set_option
-                AND grantor.rolname<>bootstrap.rolname
-                AND grantor.rolname<>owner.rolname)
-            FROM pg_auth_members edge JOIN pg_roles grantor ON grantor.oid=edge.grantor
-            WHERE edge.roleid=owner.oid AND edge.member=bootstrap.oid)
-          AND NOT EXISTS (SELECT 1 FROM pg_auth_members edge
-            WHERE (edge.roleid=owner.oid OR edge.member=owner.oid)
-              AND NOT (edge.roleid=owner.oid AND edge.member=bootstrap.oid))
+          AND (NOT EXISTS (SELECT 1 FROM pg_auth_members edge
+                WHERE edge.roleid=owner.oid OR edge.member=owner.oid
+                  OR edge.grantor=owner.oid)
+            OR (SELECT count(*)=1 AND bool_and(
+                  edge.roleid=owner.oid AND edge.member=bootstrap.oid
+                  AND edge.admin_option AND NOT edge.inherit_option
+                  AND edge.set_option
+                  AND grantor.rolname<>bootstrap.rolname
+                  AND grantor.rolname<>owner.rolname)
+                FROM pg_auth_members edge
+                JOIN pg_roles grantor ON grantor.oid=edge.grantor
+                WHERE edge.roleid=owner.oid OR edge.member=owner.oid
+                  OR edge.grantor=owner.oid))
           AND (SELECT count(*)=2 AND bool_and(routine.prosecdef
                 AND routine.prokind='p' AND routine.proowner=owner.oid
                 AND routine.proconfig=ARRAY['search_path=pg_catalog, public, pg_temp']
@@ -489,7 +494,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               to_regprocedure(
                 'public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text)')))
           FROM pg_roles owner CROSS JOIN pg_roles migration
-          CROSS JOIN pg_roles bootstrap CROSS JOIN pg_namespace public_namespace
+          CROSS JOIN pg_roles bootstrap
+          CROSS JOIN pg_namespace public_namespace
           WHERE owner.rolname='reviewrouter_release_schema_owner'
             AND migration.rolname='reviewrouter_release_migration'
             AND bootstrap.rolname='reviewrouter_role_bootstrap'

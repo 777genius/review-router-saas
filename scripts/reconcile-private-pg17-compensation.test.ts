@@ -60,7 +60,7 @@ describe("private PG17 compensation artifact", () => {
   it("rejects malformed and mismatched wrapped rollouts", () => {
     expect(() =>
       parseInitialRolloutArtifact(
-        { rollout: { schemaVersion: 2, rolloutId } },
+        { rollout: { schemaVersion: 3, rolloutId } },
         rolloutId,
       ),
     ).toThrow("private_pg17_reconcile_rollout_invalid");

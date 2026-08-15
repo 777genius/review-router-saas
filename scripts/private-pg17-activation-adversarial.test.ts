@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  activationAuthorityProvisioningSql,
+  atomicMigrationAndGrantSql,
   canonicalActivationSql,
   liveV70V72CatalogDigestSql,
   roleProvisioningSql,
@@ -107,6 +109,7 @@ const psqlAs = (container: string, role: string, sql: string) => {
 };
 
 const waitForPostgres = (container: string, role: string) => {
+  let failureReason = "connection_pending";
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const result = docker([
       "exec",
@@ -123,9 +126,26 @@ const waitForPostgres = (container: string, role: string) => {
       "SELECT 1",
     ]);
     if (result.status === 0 && result.stdout.trim() === "1") return;
+    const diagnostic = `${result.stderr}\n${result.stdout}`.toLowerCase();
+    failureReason = diagnostic.includes("does not exist")
+      ? "role_or_database_missing"
+      : diagnostic.includes("is not permitted to log in")
+        ? "role_login_disabled"
+        : diagnostic.includes("authentication failed")
+          ? "authentication_failed"
+          : "psql_unready";
+    const state = docker([
+      "inspect",
+      "--format",
+      "{{.State.Status}}:{{.State.ExitCode}}",
+      container,
+    ]);
+    if (state.status !== 0) failureReason = "container_unavailable";
+    else if (!/^running:0\s*$/u.test(state.stdout))
+      failureReason = "container_not_running";
     docker(["exec", container, "sh", "-c", "sleep 1"]);
   }
-  throw new Error(`disposable_pg17_not_ready:${container}`);
+  throw new Error(`disposable_pg17_not_ready:${container}:${failureReason}`);
 };
 
 const removeContainerAndVolume = (container: string, volume: string) => {
@@ -164,6 +184,35 @@ const startContainer = (
   waitForPostgres(
     container,
     initialize ? providerAdminUsername : adversarialAdminUsername,
+  );
+};
+
+const reactivateDisposableAdversarialAdminOffline = (volume: string) => {
+  const result = docker(
+    [
+      "run",
+      "--rm",
+      "--interactive",
+      "--user",
+      "postgres",
+      "--volume",
+      `${volume}:/var/lib/postgresql/data`,
+      configuredImage,
+      "postgres",
+      "--single",
+      "-D",
+      "/var/lib/postgresql/data",
+      "-c",
+      "exit_on_error=on",
+      "-j",
+      databaseName,
+    ],
+    `ALTER ROLE ${adversarialAdminUsername} LOGIN SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS;
+CHECKPOINT;\n`,
+  );
+  assertCommand(
+    result,
+    "offline reactivation of dedicated disposable adversarial administrator",
   );
 };
 
@@ -240,10 +289,13 @@ const initializeSeed = () => {
     adminUsername,
     canonicalRoleBootstrapSetup.activationAuthorityProvisioning,
   );
+  // The immutable seed is production-canonical. Individual stopped clones
+  // reactivate this dedicated test-only role offline for hostile arrangement.
   psqlAs(
     seedContainer,
     adminUsername,
-    canonicalRoleBootstrapSetup.bootstrapDemotion,
+    `ALTER ROLE ${adversarialAdminUsername}
+       NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;`,
   );
   const bootstrapEdgesBeforeConvergence = psqlAs(
     seedContainer,
@@ -259,12 +311,70 @@ const initializeSeed = () => {
      JOIN pg_roles grantor ON grantor.oid=membership.grantor
      WHERE member.rolname='${adminUsername}';`,
   );
-  psqlAs(seedContainer, adminUsername, roleProvisioningSql(configuration));
   expect(
-    psqlAs(
-      seedContainer,
-      adminUsername,
-      `SELECT jsonb_build_object(
+    JSON.parse(bootstrapEdgesBeforeConvergence).filter(
+      (edge: { granted: string }) =>
+        edge.granted === "reviewrouter_release_schema_owner",
+    ),
+  ).toEqual([
+    {
+      admin: true,
+      granted: "reviewrouter_release_schema_owner",
+      grantor: providerAdminUsername,
+      inherit: false,
+      member: adminUsername,
+      set: true,
+    },
+  ]);
+  psqlAs(
+    seedContainer,
+    adminUsername,
+    roleProvisioningSql(configuration, {
+      ownerAuthorizedInitialRuntimeGateClosed: true,
+    }),
+  );
+  expect(
+    JSON.parse(
+      psqlAs(
+        seedContainer,
+        adminUsername,
+        `SELECT jsonb_object_agg(role.rolname,
+           has_function_privilege(
+             role.oid,
+             'reviewrouter_activation.read_activation_migration_manifest_identity()',
+             'EXECUTE'
+           ) ORDER BY role.rolname)
+         FROM pg_roles role
+         WHERE role.rolname IN (
+           'reviewrouter_release_schema_owner',
+           'reviewrouter_release_migration',
+           'reviewrouter_activation_permit_installer',
+           'reviewrouter_activation_receipt_reader',
+           'reviewrouter_role_bootstrap',
+           'reviewrouter_api',
+           'reviewrouter_web',
+           'reviewrouter_worker',
+           'reviewrouter_codex_effect_authority'
+         );`,
+      ),
+    ),
+  ).toEqual({
+    reviewrouter_activation_permit_installer: true,
+    reviewrouter_activation_receipt_reader: true,
+    reviewrouter_api: false,
+    reviewrouter_codex_effect_authority: false,
+    reviewrouter_release_migration: true,
+    reviewrouter_release_schema_owner: false,
+    reviewrouter_role_bootstrap: false,
+    reviewrouter_web: false,
+    reviewrouter_worker: false,
+  });
+  expect(
+    JSON.parse(
+      psqlAs(
+        seedContainer,
+        adminUsername,
+        `SELECT jsonb_build_object(
          'unexpectedOwnerCount',(
            SELECT count(*) FROM (
              SELECT relation.relowner AS owner_oid
@@ -286,33 +396,62 @@ const initializeSeed = () => {
            ) owned
            WHERE pg_get_userbyid(owner_oid)<>'reviewrouter_release_schema_owner'
          ),
-         'temporaryEdgeCount',(
+         'relevantDurableEdgeCount',(
            SELECT count(*)
            FROM pg_auth_members membership
            JOIN pg_roles granted ON granted.oid=membership.roleid
            JOIN pg_roles member ON member.oid=membership.member
            JOIN pg_roles grantor ON grantor.oid=membership.grantor
-           WHERE grantor.rolname='${adminUsername}' AND (
-             (granted.rolname='reviewrouter_release_schema_owner'
-               AND member.rolname='${releaseUsername}') OR
-             (granted.rolname='${releaseUsername}'
-               AND member.rolname='${adminUsername}')
+           WHERE granted.rolname='reviewrouter_release_schema_owner'
+              OR member.rolname='reviewrouter_release_schema_owner'
+              OR grantor.rolname='reviewrouter_release_schema_owner'
+         ),
+         'providerAuthorityCount',(
+           SELECT count(*)
+           FROM pg_roles role
+           WHERE role.rolname IN (
+             '${providerAdminUsername}','${adversarialAdminUsername}'
+           ) AND (
+             role.rolcanlogin OR role.rolsuper OR role.rolcreatedb
+             OR role.rolcreaterole OR role.rolreplication OR role.rolbypassrls
+             OR EXISTS (SELECT 1 FROM pg_auth_members membership
+               WHERE membership.member=role.oid OR membership.roleid=role.oid)
            )
+         ),
+         'bootstrapAuthority',(
+           SELECT jsonb_build_object(
+             'login',role.rolcanlogin,'superuser',role.rolsuper,
+             'createDatabase',role.rolcreatedb,'createRole',role.rolcreaterole,
+             'replication',role.rolreplication,'bypassRls',role.rolbypassrls
+           ) FROM pg_roles role WHERE role.rolname='${adminUsername}'
          ),
          'publicSchemaOwner',(
            SELECT pg_get_userbyid(namespace.nspowner)
            FROM pg_namespace namespace WHERE namespace.nspname='public'
          )
        );`,
+      ),
     ),
-  ).toBe(
-    '{"unexpectedOwnerCount": 0, "temporaryEdgeCount": 0, "publicSchemaOwner": "reviewrouter_release_schema_owner"}',
-  );
+  ).toEqual({
+    bootstrapAuthority: {
+      bypassRls: false,
+      createDatabase: false,
+      createRole: false,
+      login: true,
+      replication: false,
+      superuser: false,
+    },
+    unexpectedOwnerCount: 0,
+    relevantDurableEdgeCount: 0,
+    providerAuthorityCount: 0,
+    publicSchemaOwner: "reviewrouter_release_schema_owner",
+  });
   expect(
-    psqlAs(
-      seedContainer,
-      adminUsername,
-      `SELECT coalesce(jsonb_agg(jsonb_build_object(
+    JSON.parse(
+      psqlAs(
+        seedContainer,
+        adminUsername,
+        `SELECT coalesce(jsonb_agg(jsonb_build_object(
        'granted',granted.rolname,'member',member.rolname,
        'grantor',grantor.rolname,'admin',membership.admin_option,
        'inherit',membership.inherit_option,'set',membership.set_option
@@ -322,8 +461,14 @@ const initializeSeed = () => {
      JOIN pg_roles member ON member.oid=membership.member
      JOIN pg_roles grantor ON grantor.oid=membership.grantor
      WHERE member.rolname='${adminUsername}';`,
+      ),
     ),
-  ).toBe(bootstrapEdgesBeforeConvergence);
+  ).toEqual(
+    JSON.parse(bootstrapEdgesBeforeConvergence).filter(
+      (edge: { granted: string }) =>
+        edge.granted !== "reviewrouter_release_schema_owner",
+    ),
+  );
   expect(
     psqlResultAs(
       seedContainer,
@@ -331,10 +476,70 @@ const initializeSeed = () => {
       "SET ROLE reviewrouter_release_schema_owner;",
     ).status,
   ).not.toBe(0);
+  const systemIdentifier = psqlAs(
+    seedContainer,
+    installerUsername,
+    "SELECT system_identifier::text FROM pg_catalog.pg_control_system();",
+  );
+  const migrationChecksum = psqlAs(
+    seedContainer,
+    installerUsername,
+    "SELECT reviewrouter_activation.read_activation_migration_manifest_identity();",
+  );
+  const expectedPostCatalogDigest = psqlAs(
+    seedContainer,
+    installerUsername,
+    `SET search_path = pg_catalog, pg_temp;
+     ${fencedLiveV70V72CatalogDigestSql}`,
+  )
+    .split("\n")
+    .at(-1);
+  expect(expectedPostCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+  const rolloutId = "seed-runtime-grant-convergence";
+  const transitionSha256 = `sha256:${"1".repeat(64)}`;
+  const previousReceiptSha256 = `sha256:${"2".repeat(64)}`;
+  const nonce = "1".padStart(32, "0");
+  expect(
+    psqlAs(
+      seedContainer,
+      installerUsername,
+      `SELECT reviewrouter_activation.install_migration_permit(
+        '${rolloutId}','1','${systemIdentifier}','${"c".repeat(64)}',
+        '${transitionSha256}','${previousReceiptSha256}',
+        '${migrationChecksum}','${expectedPostCatalogDigest}',1,'${nonce}');`,
+    ),
+  ).toBe("t");
+  const inventory = JSON.parse(
+    psqlAs(seedContainer, releaseUsername, legacyAmbiguityInventorySql),
+  );
+  const inventorySha256 = `sha256:${createHash("sha256")
+    .update(JSON.stringify(inventory))
+    .digest("hex")}`;
   psqlAs(
     seedContainer,
-    adminUsername,
-    runtimeGrantSql(configuration, { gateClosed: true }),
+    releaseUsername,
+    atomicMigrationAndGrantSql(configuration, {
+      gateClosed: true,
+      migrationPermit: {
+        rolloutId,
+        targetSystemIdentifier: systemIdentifier,
+        targetRecoveryWitnessSha256: "c".repeat(64),
+        transitionSha256,
+        previousReceiptSha256,
+        epoch: "1",
+        nonce,
+      },
+      legacyReconciliation: {
+        receipt: {
+          version: 1,
+          acknowledgement: "all_prior_installers_and_writers_are_stopped",
+          inventory,
+          inventorySha256,
+          stableSamples: 2,
+          status: "reconciled",
+        },
+      },
+    }),
   );
   assertCommand(docker(["stop", seedContainer]), "stop immutable seed");
 };
@@ -349,7 +554,7 @@ type CaseContext = {
   migrationChecksum: string;
 };
 
-type ArrangeHook = (context: CaseContext) => void;
+type ArrangeHook = (context: CaseContext) => boolean | void;
 
 const createContext = (container: string): CaseContext => {
   const runAs = (role: string, sql: string) => psqlAs(container, role, sql);
@@ -412,7 +617,10 @@ const createContext = (container: string): CaseContext => {
   };
 };
 
-const lockDownProvider = (context: CaseContext) => {
+const lockDownProvider = (
+  context: CaseContext,
+  { trustedBootstrap = false } = {},
+) => {
   context.psqlAs(
     adversarialAdminUsername,
     `BEGIN;
@@ -440,7 +648,9 @@ COMMIT;`,
       adminUsername,
       `SELECT count(*) = 0
        FROM pg_roles
-       WHERE rolsuper OR rolcreatedb OR rolreplication OR rolbypassrls
+       WHERE ${trustedBootstrap ? `(rolsuper AND rolname<>'${adminUsername}')` : "rolsuper"}
+          OR rolcreatedb OR rolreplication OR rolbypassrls
+          OR ${trustedBootstrap ? `(rolname='${adminUsername}' AND (NOT rolcanlogin OR NOT rolsuper OR NOT rolcreaterole))` : "false"}
           OR (rolname IN ('${providerAdminUsername}','${adversarialAdminUsername}') AND
               (rolcanlogin OR rolcreaterole OR EXISTS (
                 SELECT 1 FROM pg_auth_members membership
@@ -479,10 +689,11 @@ const isolatedCase =
         ]),
         "clone immutable production-shaped seed",
       );
+      reactivateDisposableAdversarialAdminOffline(volume);
       startContainer(container, volume, false);
       const context = createContext(container);
-      arrange?.(context);
-      lockDownProvider(context);
+      const trustedBootstrap = arrange?.(context) === true;
+      lockDownProvider(context, { trustedBootstrap });
       body(context);
     } finally {
       removeContainerAndVolume(container, volume);
@@ -512,10 +723,10 @@ BEGIN
   SELECT oid::text,shobj_description(oid,'pg_database')::jsonb
   INTO STRICT live_database_oid,binding
   FROM pg_database WHERE datname=current_database();
-  live_recovery_witness_sha256 := encode(sha256(convert_to(
+  live_recovery_witness_sha256 := encode(pg_catalog.sha256(convert_to(
     'reviewrouter-pg17-adversarial:'||live_system_identifier||':'||
       live_database_oid||':'||current_database(),'UTF8')),'hex');
-  live_identity := 'rr-disposable-'||encode(sha256(convert_to(
+  live_identity := 'rr-disposable-'||encode(pg_catalog.sha256(convert_to(
     live_system_identifier||':'||live_database_oid||':'||
       live_recovery_witness_sha256,'UTF8')),'hex');
   IF binding IS NULL
@@ -536,7 +747,7 @@ BEGIN
     'systemIdentifier',live_system_identifier,
     'databaseOid',live_database_oid,
     'recoveryWitnessSha256',live_recovery_witness_sha256,
-    'nonce',encode(sha256(convert_to('attestation:'||live_identity,'UTF8')),'hex')
+    'nonce',encode(pg_catalog.sha256(convert_to('attestation:'||live_identity,'UTF8')),'hex')
   ));
   EXECUTE format('COMMENT ON DATABASE %I IS %L',current_database(),binding::text);
 END
@@ -609,9 +820,10 @@ describePg17(
             "injected release owner transfer failure",
           );
           expect(
-            context.psqlAs(
-              adminUsername,
-              `SELECT jsonb_build_object(
+            JSON.parse(
+              context.psqlAs(
+                adminUsername,
+                `SELECT jsonb_build_object(
                  'relationOwner',pg_get_userbyid((
                    SELECT relowner FROM pg_class
                    WHERE oid='${applicationRelation}'::regclass
@@ -630,19 +842,20 @@ describePg17(
                    FROM pg_auth_members membership
                    JOIN pg_roles granted ON granted.oid=membership.roleid
                    JOIN pg_roles member ON member.oid=membership.member
-                   JOIN pg_roles grantor ON grantor.oid=membership.grantor
-                   WHERE grantor.rolname='${adminUsername}' AND (
-                     (granted.rolname='reviewrouter_release_schema_owner'
+                   WHERE (granted.rolname='reviewrouter_release_schema_owner'
                        AND member.rolname='${releaseUsername}') OR
                      (granted.rolname='${releaseUsername}'
-                       AND member.rolname='${adminUsername}')
-                   )
+                       AND member.rolname='${adminUsername}'
+                       AND membership.set_option)
                  )
                );`,
+              ),
             ),
-          ).toBe(
-            `{"relationOwner": "${releaseUsername}", "routineOwner": "${releaseUsername}", "temporaryEdgeCount": 0}`,
-          );
+          ).toEqual({
+            relationOwner: releaseUsername,
+            routineOwner: releaseUsername,
+            temporaryEdgeCount: 0,
+          });
           expect(
             context.psqlResultAs(
               releaseUsername,
@@ -680,6 +893,60 @@ describePg17(
                ON ddl_command_start
                EXECUTE FUNCTION owner_transfer_failure.reject_release_routine_transfer();`,
           );
+          context.psqlAs(
+            adversarialAdminUsername,
+            `ALTER ROLE ${adminUsername} SUPERUSER CREATEROLE;`,
+          );
+          context.psqlAs(adminUsername, activationAuthorityProvisioningSql());
+          return true;
+        },
+      ),
+      120_000,
+    );
+
+    it(
+      "rejects a parallel external schema-owner handoff grantor before provisioning",
+      isolatedCase(
+        "schema-owner-parallel-grantor",
+        (context) => {
+          const rejected = context.psqlResultAs(
+            adminUsername,
+            roleProvisioningSql(configuration),
+          );
+          expect(rejected.status).not.toBe(0);
+          expect(rejected.stderr).toContain(
+            "refusing non-canonical role membership topology",
+          );
+          expect(
+            context.psqlAs(
+              adminUsername,
+              `SELECT count(*) FROM pg_auth_members membership
+               JOIN pg_roles granted ON granted.oid=membership.roleid
+               JOIN pg_roles member ON member.oid=membership.member
+               WHERE granted.rolname='reviewrouter_release_schema_owner'
+                 AND member.rolname='${adminUsername}';`,
+            ),
+          ).toBe("2");
+        },
+        ({ psqlAs: runAs, psqlResultAs: runResultAs }) => {
+          runAs(
+            adversarialAdminUsername,
+            `ALTER ROLE ${adminUsername} SUPERUSER CREATEROLE;`,
+          );
+          runAs(adminUsername, activationAuthorityProvisioningSql());
+          runAs(
+            adversarialAdminUsername,
+            `CREATE ROLE parallel_schema_owner_grantor NOLOGIN NOSUPERUSER
+               NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+             GRANT reviewrouter_release_schema_owner
+               TO parallel_schema_owner_grantor
+               WITH ADMIN TRUE, INHERIT FALSE, SET TRUE;
+             SET ROLE parallel_schema_owner_grantor;
+             GRANT reviewrouter_release_schema_owner TO ${adminUsername}
+               WITH ADMIN TRUE, INHERIT FALSE, SET TRUE;
+             RESET ROLE;`,
+          );
+          return true;
         },
       ),
       120_000,
@@ -687,252 +954,324 @@ describePg17(
 
     it(
       "detects hostile mutations across every V70-V72 catalog evidence class",
-      isolatedCase("v70-v72-catalog-drift", ({ psqlAs: runAs }) => {
-        const observeDigest = (role: string, mutation = "") => {
-          const output = runAs(
-            role,
-            `BEGIN;
+      isolatedCase(
+        "v70-v72-catalog-drift",
+        () => {},
+        ({ psqlAs: runAs, psqlResultAs: runResultAs }) => {
+          const observeDigest = (
+            role: string,
+            mutation = "",
+            allowFailClosed = false,
+          ) => {
+            const result = runResultAs(
+              role,
+              `BEGIN;
              ${mutation}
              ${liveV70V72CatalogDigestSql};
              ROLLBACK;`,
-          );
-          const digests = output.match(/sha256:[a-f0-9]{64}/gu) ?? [];
-          expect(digests).toHaveLength(1);
-          return digests[0];
-        };
+            );
+            if (result.status !== 0) {
+              expect(allowFailClosed).toBe(true);
+              expect(result.stderr).toContain(
+                "activation migration manifest read request invalid",
+              );
+              return null;
+            }
+            const digests = result.stdout.match(/sha256:[a-f0-9]{64}/gu) ?? [];
+            expect(digests).toHaveLength(1);
+            return digests[0];
+          };
 
-        const canonicalDigest = observeDigest(releaseUsername);
-        expect(canonicalDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
-        const mutations = [
-          [
-            adversarialAdminUsername,
-            `ALTER TABLE public."RuntimeCanaryChallenge"
+          const canonicalDigest = observeDigest(releaseUsername);
+          expect(canonicalDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+          const mutations = [
+            [
+              adversarialAdminUsername,
+              `ALTER TABLE public."RuntimeCanaryChallenge"
                ALTER COLUMN "expiresAt" DROP NOT NULL;`,
-          ],
-          [
-            adversarialAdminUsername,
-            `ALTER TABLE public."RuntimeCanaryChallengeProof"
+            ],
+            [
+              adversarialAdminUsername,
+              `ALTER TABLE public."RuntimeCanaryChallengeProof"
                DROP CONSTRAINT "RuntimeCanaryChallengeProof_nonce_fkey";`,
-          ],
-          [
-            adversarialAdminUsername,
-            `ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(
+            ],
+            [
+              adversarialAdminUsername,
+              `ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(
                text,text,text,text,text,text) SECURITY INVOKER
                SET search_path TO public;`,
-          ],
-          [
-            adversarialAdminUsername,
-            `GRANT SELECT ON public."RuntimeCanaryChallenge"
+            ],
+            [
+              adversarialAdminUsername,
+              `GRANT SELECT ON public."RuntimeCanaryChallenge"
                TO reviewrouter_web;
              ALTER DEFAULT PRIVILEGES IN SCHEMA public
                GRANT DELETE ON TABLES TO reviewrouter_web;`,
-          ],
-          [
-            adversarialAdminUsername,
-            `GRANT SELECT ("expiresAt") ON public."RuntimeCanaryChallenge"
+            ],
+            [
+              adversarialAdminUsername,
+              `GRANT SELECT ("expiresAt") ON public."RuntimeCanaryChallenge"
                TO reviewrouter_web;`,
-          ],
-          [
-            adversarialAdminUsername,
-            `GRANT CREATE ON SCHEMA public TO reviewrouter_web;`,
-          ],
-          [
-            adversarialAdminUsername,
-            `ALTER TABLE public."RuntimeCanaryChallenge" ENABLE ROW LEVEL SECURITY;
+            ],
+            [
+              adversarialAdminUsername,
+              `GRANT CREATE ON SCHEMA public TO reviewrouter_web;`,
+            ],
+            [
+              adversarialAdminUsername,
+              `ALTER TABLE public."RuntimeCanaryChallenge" ENABLE ROW LEVEL SECURITY;
              ALTER TABLE public."RuntimeCanaryChallenge" FORCE ROW LEVEL SECURITY;`,
-          ],
-          [
-            adversarialAdminUsername,
-            `ALTER TABLE public."RuntimeCanaryChallenge" REPLICA IDENTITY FULL;`,
-          ],
-          [
-            adversarialAdminUsername,
-            `ALTER TABLE public."RuntimeCanaryChallenge"
+            ],
+            [
+              adversarialAdminUsername,
+              `ALTER TABLE public."RuntimeCanaryChallenge" REPLICA IDENTITY FULL;`,
+            ],
+            [
+              adversarialAdminUsername,
+              `ALTER TABLE public."RuntimeCanaryChallenge"
                ADD COLUMN "identityDrift" bigint GENERATED ALWAYS AS IDENTITY;`,
-          ],
-          [
-            adversarialAdminUsername,
-            `ALTER TABLE public."RuntimeCanaryChallenge"
+            ],
+            [
+              adversarialAdminUsername,
+              `ALTER TABLE public."RuntimeCanaryChallenge"
                ALTER COLUMN "rolloutId" TYPE text COLLATE "POSIX";`,
-          ],
-          [
-            adversarialAdminUsername,
-            `ALTER TABLE public."RuntimeCanaryChallenge"
+            ],
+            [
+              adversarialAdminUsername,
+              `ALTER TABLE public."RuntimeCanaryChallenge"
                ADD COLUMN "generatedDrift" text GENERATED ALWAYS AS ("rolloutId") STORED;`,
-          ],
-          [
-            adversarialAdminUsername,
-            `CREATE INDEX "RuntimeCanaryChallenge_drift_idx"
+            ],
+            [
+              adversarialAdminUsername,
+              `CREATE INDEX "RuntimeCanaryChallenge_drift_idx"
                ON public."RuntimeCanaryChallenge" ("rolloutId");`,
-          ],
-          [
+            ],
+          ] as const;
+          for (const [role, mutation] of mutations) {
+            const observed = observeDigest(role, mutation, true);
+            expect(observed === null || observed !== canonicalDigest).toBe(
+              true,
+            );
+          }
+          const invalidManifest = runResultAs(
             adversarialAdminUsername,
-            `UPDATE public._prisma_migrations SET checksum=repeat('0',64)
-             WHERE migration_name='000072_runtime_canary_challenge';`,
-          ],
-        ] as const;
-        for (const [role, mutation] of mutations)
-          expect(observeDigest(role, mutation)).not.toBe(canonicalDigest);
-        runAs(adminUsername, "CREATE SCHEMA release_authority;");
-        expect(
-          runAs(installerUsername, fencedLiveV70V72CatalogDigestSql),
-        ).not.toBe(canonicalDigest);
-        runAs(adminUsername, "DROP SCHEMA release_authority;");
-      }),
+            `BEGIN;
+             UPDATE public._prisma_migrations SET checksum=repeat('0',64)
+             WHERE migration_name='000072_runtime_canary_challenge';
+             ${liveV70V72CatalogDigestSql};
+             ROLLBACK;`,
+          );
+          expect(invalidManifest.status).not.toBe(0);
+          expect(invalidManifest.stderr).toContain(
+            "activation migration manifest read request invalid",
+          );
+          runAs(adversarialAdminUsername, "CREATE SCHEMA release_authority;");
+          const fencedSchemaMutation = runResultAs(
+            installerUsername,
+            fencedLiveV70V72CatalogDigestSql,
+          );
+          if (fencedSchemaMutation.status === 0)
+            expect(fencedSchemaMutation.stdout).not.toBe(canonicalDigest);
+          else
+            expect(fencedSchemaMutation.stderr).toContain(
+              "activation migration manifest read request invalid",
+            );
+          runAs(adversarialAdminUsername, "DROP SCHEMA release_authority;");
+        },
+      ),
       120_000,
     );
 
     it(
       "binds one-shot migration permits and closes quarantine and stale-worker races",
-      isolatedCase("migration-permit-races", (context) => {
-        const witness = context.psqlAs(
-          installerUsername,
-          `SELECT CASE WHEN pg_input_is_valid(
+      isolatedCase(
+        "migration-permit-races",
+        (context) => {
+          const witness = context.psqlAs(
+            installerUsername,
+            `SELECT CASE WHEN pg_input_is_valid(
             shobj_description(oid,'pg_database'),'jsonb')
             THEN shobj_description(oid,'pg_database')::jsonb->>'recoveryWitnessSha256'
             ELSE '' END FROM pg_database WHERE datname=current_database();`,
-        );
-        const transition = `sha256:${"1".repeat(64)}`;
-        const previous = `sha256:${"2".repeat(64)}`;
-        const observedPostCatalogDigest = context
-          .psqlAs(
-            installerUsername,
-            `SET search_path = pg_catalog, pg_temp;
+          );
+          const transition = `sha256:${"1".repeat(64)}`;
+          const previous = `sha256:${"2".repeat(64)}`;
+          const observedPostCatalogDigest = context
+            .psqlAs(
+              installerUsername,
+              `SET search_path = pg_catalog, pg_temp;
              ${fencedLiveV70V72CatalogDigestSql}`,
-          )
-          .split("\n")
-          .at(-1);
-        expect(observedPostCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
-        const install = (rolloutId: string, epoch: number) =>
-          context.psqlAs(
-            installerUsername,
-            `SELECT reviewrouter_activation.install_migration_permit(
+            )
+            .split("\n")
+            .at(-1);
+          expect(observedPostCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+          const install = (rolloutId: string, epoch: number) =>
+            context.psqlAs(
+              installerUsername,
+              `SELECT reviewrouter_activation.install_migration_permit(
               '${rolloutId}','1','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}','${context.migrationChecksum}',
               '${observedPostCatalogDigest}',${epoch},
               '${epoch.toString(16).padStart(32, "0")}');`,
-          );
+            );
 
-        expect(install("migration-quarantine", 31)).toBe("t");
-        expect(install("migration-quarantine", 31)).toBe("f");
-        expect(
-          context.psqlResultAs(
-            installerUsername,
-            `SELECT reviewrouter_activation.install_migration_permit(
+          expect(install("migration-quarantine", 31)).toBe("t");
+          expect(install("migration-quarantine", 31)).toBe("f");
+          expect(
+            context.psqlResultAs(
+              installerUsername,
+              `SELECT reviewrouter_activation.install_migration_permit(
               'migration-quarantine','1','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}','${context.migrationChecksum}',
               'sha256:${"9".repeat(64)}',31,'${"1f".padStart(32, "0")}');`,
-          ).status,
-        ).not.toBe(0);
-        expect(
-          context.psqlAs(
-            installerUsername,
-            `SELECT reviewrouter_activation.terminalize_migration_permit(
+            ).status,
+          ).not.toBe(0);
+          expect(
+            context.psqlAs(
+              installerUsername,
+              `SELECT reviewrouter_activation.terminalize_migration_permit(
               'migration-quarantine',31,'${"1f".padStart(32, "0")}',
               'quarantined');`,
-          ),
-        ).toBe("t");
-        expect(
-          context.psqlResultAs(
-            releaseUsername,
-            `CALL public.reviewrouter_execute_release_migration(
+            ),
+          ).toBe("t");
+          expect(
+            context.psqlResultAs(
+              releaseUsername,
+              `CALL public.reviewrouter_execute_release_migration(
               'migration-quarantine','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}',31,'${"1f".padStart(32, "0")}',
               '{"status":"reconciled"}'::jsonb,true);`,
-          ).stderr,
-        ).toContain("release migration target permit unavailable");
+            ).stderr,
+          ).toContain("release migration target permit unavailable");
 
-        expect(install("migration-completed", 32)).toBe("t");
-        const nonce = "20".padStart(32, "0");
-        expect(
-          context.psqlResultAs(
-            releaseUsername,
-            `SELECT reviewrouter_activation.consume_migration_permit(
+          expect(install("migration-completed", 32)).toBe("t");
+          const nonce = "20".padStart(32, "0");
+          expect(
+            context.psqlResultAs(
+              releaseUsername,
+              `SELECT reviewrouter_activation.consume_migration_permit(
               'migration-completed','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}',32,'${nonce}');`,
-          ).status,
-        ).not.toBe(0);
-        expect(
-          context.psqlResultAs(
+            ).status,
+          ).not.toBe(0);
+          expect(
+            context.psqlAs(
+              adminUsername,
+              `SELECT has_function_privilege(
+              'reviewrouter_release_migration',
+              'reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)',
+              'EXECUTE');`,
+            ),
+          ).toBe("f");
+          const fabricatedCompletion = context.psqlResultAs(
             releaseUsername,
-            "CREATE TABLE public.release_migration_direct_ddl_denied(id integer);",
-          ).status,
-        ).not.toBe(0);
-        expect(
-          context.psqlResultAs(
-            releaseUsername,
-            "SET ROLE reviewrouter_release_schema_owner;",
-          ).status,
-        ).not.toBe(0);
-        expect(
-          context.psqlResultAs(
-            releaseUsername,
-            `GRANT SELECT ON TABLE public."RuntimeCanaryChallenge"
+            `SELECT reviewrouter_activation.complete_migration_permit(
+            'migration-completed',32,'${nonce}',jsonb_build_object(
+              'legacyReconciliation',jsonb_build_object(
+                'status','reconciled',
+                'inventorySha256','sha256:${"3".repeat(64)}'),
+              'effectFingerprint','sha256:${"4".repeat(64)}',
+              'postManifestIdentity','sha256:${"5".repeat(64)}',
+              'postCatalogDigest','sha256:${"6".repeat(64)}'));`,
+          );
+          expect(fabricatedCompletion.status).not.toBe(0);
+          expect(fabricatedCompletion.stderr).toContain("permission denied");
+          expect(
+            context.psqlResultAs(
+              releaseUsername,
+              "CREATE TABLE public.release_migration_direct_ddl_denied(id integer);",
+            ).status,
+          ).not.toBe(0);
+          expect(
+            context.psqlResultAs(
+              releaseUsername,
+              "SET ROLE reviewrouter_release_schema_owner;",
+            ).status,
+          ).not.toBe(0);
+          expect(
+            context.psqlResultAs(
+              releaseUsername,
+              `GRANT SELECT ON TABLE public."RuntimeCanaryChallenge"
              TO reviewrouter_web;`,
-          ).status,
-        ).not.toBe(0);
-        const databaseName = context.psqlAs(
-          adminUsername,
-          "SELECT current_database();",
-        );
-        expect(
-          context.psqlResultAs(
-            releaseUsername,
-            `REVOKE CONNECT ON DATABASE "${databaseName.replaceAll('"', '""')}"
+            ).status,
+          ).not.toBe(0);
+          const databaseName = context.psqlAs(
+            adminUsername,
+            "SELECT current_database();",
+          );
+          expect(
+            context.psqlResultAs(
+              releaseUsername,
+              `REVOKE CONNECT ON DATABASE "${databaseName.replaceAll('"', '""')}"
              FROM reviewrouter_web
              GRANTED BY reviewrouter_release_schema_owner;`,
-          ).status,
-        ).not.toBe(0);
-        const inventory = JSON.parse(
-          context.psqlAs(releaseUsername, legacyAmbiguityInventorySql),
-        );
-        const inventorySha256 = `sha256:${createHash("sha256")
-          .update(JSON.stringify(inventory))
-          .digest("hex")}`;
-        const legacyReceipt = JSON.stringify({
-          version: 1,
-          acknowledgement: "all_prior_installers_and_writers_are_stopped",
-          inventory,
-          inventorySha256,
-          stableSamples: 2,
-          status: "reconciled",
-        }).replaceAll("'", "''");
-        context.psqlAs(
-          releaseUsername,
-          `CALL public.reviewrouter_execute_release_migration(
+            ).status,
+          ).not.toBe(0);
+          const inventory = JSON.parse(
+            context.psqlAs(releaseUsername, legacyAmbiguityInventorySql),
+          );
+          const inventorySha256 = `sha256:${createHash("sha256")
+            .update(JSON.stringify(inventory))
+            .digest("hex")}`;
+          const legacyReceipt = JSON.stringify({
+            version: 1,
+            acknowledgement: "all_prior_installers_and_writers_are_stopped",
+            inventory,
+            inventorySha256,
+            stableSamples: 2,
+            status: "reconciled",
+          }).replaceAll("'", "''");
+          context.psqlAs(
+            releaseUsername,
+            `CALL public.reviewrouter_execute_release_migration(
             'migration-completed','${context.systemIdentifier}','${witness}',
             '${transition}','${previous}',32,'${nonce}',
             '${legacyReceipt}'::jsonb,true);`,
-        );
-        expect(
-          context.psqlResultAs(
-            installerUsername,
-            `SELECT reviewrouter_activation.terminalize_migration_permit(
+          );
+          expect(
+            context.psqlResultAs(
+              installerUsername,
+              `SELECT reviewrouter_activation.terminalize_migration_permit(
               'migration-completed',32,'${nonce}','quarantined');`,
-          ).stderr,
-        ).toContain("release migration target quarantine conflict");
-        expect(
-          context.psqlAs(
-            releaseUsername,
-            `SELECT (reviewrouter_activation.read_migration_receipt(
+            ).stderr,
+          ).toContain("release migration target quarantine conflict");
+          expect(
+            context.psqlAs(
+              releaseUsername,
+              `SELECT (reviewrouter_activation.read_migration_receipt(
               'migration-completed',32,'${nonce}')->>'effectFingerprint')
               ~ '^sha256:[a-f0-9]{64}$';`,
-          ),
-        ).toBe("t");
-        expect(
-          context.psqlAs(
-            adminUsername,
-            `SELECT bool_and(NOT has_database_privilege(
+            ),
+          ).toBe("t");
+          expect(
+            JSON.parse(
+              context.psqlAs(
+                releaseUsername,
+                `SELECT jsonb_build_object(
+                'postManifestIdentity',receipt->>'postManifestIdentity',
+                'postCatalogDigest',receipt->>'postCatalogDigest')
+               FROM (SELECT reviewrouter_activation.read_migration_receipt(
+                 'migration-completed',32,'${nonce}') AS receipt) observed;`,
+              ),
+            ),
+          ).toEqual({
+            postManifestIdentity: context.migrationChecksum,
+            postCatalogDigest: observedPostCatalogDigest,
+          });
+          expect(
+            context.psqlAs(
+              adminUsername,
+              `SELECT bool_and(NOT has_database_privilege(
                role_name,current_database(),'CONNECT'))
              FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
                'reviewrouter_worker','reviewrouter_codex_effect_authority'])
                AS roles(role_name);`,
-          ),
-        ).toBe("t");
-        expect(
-          context.psqlAs(
-            adminUsername,
-            `SELECT NOT EXISTS (
+            ),
+          ).toBe("t");
+          expect(
+            context.psqlAs(
+              adminUsername,
+              `SELECT NOT EXISTS (
                SELECT 1
                FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
                  'reviewrouter_worker','reviewrouter_codex_effect_authority'])
@@ -944,109 +1283,134 @@ describePg17(
                WHERE namespace.nspname='public'
                  AND relation.relkind IN ('r','p','v','m','f')
                  AND has_table_privilege(role_name,relation.oid,privilege));`,
-          ),
-        ).toBe("t");
+            ),
+          ).toBe("t");
 
-        context.psqlAs(
-          adminUsername,
-          `GRANT CONNECT ON DATABASE "${databaseName.replaceAll('"', '""')}"
+          context.psqlAs(
+            adminUsername,
+            `GRANT CONNECT ON DATABASE "${databaseName.replaceAll('"', '""')}"
            TO reviewrouter_web;`,
-        );
-        expect(
-          context.psqlResultAs(
-            releaseUsername,
-            `CALL public.reviewrouter_execute_release_migration(
+          );
+          expect(
+            context.psqlResultAs(
+              releaseUsername,
+              `CALL public.reviewrouter_execute_release_migration(
               'migration-completed','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}',32,'${nonce}',
               '${legacyReceipt}'::jsonb,true);`,
-          ).stderr,
-        ).toContain("release migration executor replay ACL gate mode conflict");
-        expect(
+            ).stderr,
+          ).toContain(
+            "release migration executor replay ACL gate mode conflict",
+          );
+          expect(
+            context.psqlAs(
+              adminUsername,
+              "SELECT has_database_privilege('reviewrouter_web',current_database(),'CONNECT');",
+            ),
+          ).toBe("t");
+
+          context.psqlAs(adminUsername, runtimeGrantSql(configuration));
+          const openCatalogDigest = context
+            .psqlAs(installerUsername, fencedLiveV70V72CatalogDigestSql)
+            .split("\n")
+            .at(-1);
+          expect(openCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
           context.psqlAs(
             adminUsername,
-            "SELECT has_database_privilege('reviewrouter_web',current_database(),'CONNECT');",
-          ),
-        ).toBe("t");
-
-        context.psqlAs(adminUsername, runtimeGrantSql(configuration));
-        const openCatalogDigest = context
-          .psqlAs(installerUsername, fencedLiveV70V72CatalogDigestSql)
-          .split("\n")
-          .at(-1);
-        expect(openCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
-        context.psqlAs(
-          adminUsername,
-          runtimeGrantSql(configuration, { gateClosed: true }),
-        );
-        const openNonce = "21".padStart(32, "0");
-        expect(
-          context.psqlAs(
-            installerUsername,
-            `SELECT reviewrouter_activation.install_migration_permit(
+            runtimeGrantSql(configuration, { gateClosed: true }),
+          );
+          const openNonce = "21".padStart(32, "0");
+          expect(
+            context.psqlAs(
+              installerUsername,
+              `SELECT reviewrouter_activation.install_migration_permit(
               'migration-open','1','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}','${context.migrationChecksum}',
               '${openCatalogDigest}',33,'${openNonce}');`,
-          ),
-        ).toBe("t");
-        context.psqlAs(
-          releaseUsername,
-          `CALL public.reviewrouter_execute_release_migration(
+            ),
+          ).toBe("t");
+          const projectedOpenAttempt = context.psqlResultAs(
+            releaseUsername,
+            `CALL public.reviewrouter_execute_release_migration(
             'migration-open','${context.systemIdentifier}','${witness}',
             '${transition}','${previous}',33,'${openNonce}',
             '${legacyReceipt}'::jsonb,false);`,
-        );
-        expect(
-          context.psqlAs(
-            adminUsername,
-            `SELECT bool_and(has_database_privilege(
+          );
+          expect(projectedOpenAttempt.status).not.toBe(0);
+          expect(projectedOpenAttempt.stderr).toContain(
+            "live completion mismatch:catalog_digest_observed",
+          );
+          expect(
+            context.psqlAs(
+              adminUsername,
+              `SELECT bool_and(NOT has_database_privilege(
                role_name,current_database(),'CONNECT'))
              FROM unnest(ARRAY['reviewrouter_api','reviewrouter_web',
                'reviewrouter_worker','reviewrouter_codex_effect_authority'])
                AS roles(role_name);`,
-          ),
-        ).toBe("t");
-        expect(
-          context.psqlAs(
-            releaseUsername,
+            ),
+          ).toBe("t");
+          const absentProjectedReceipt = context.psqlResultAs(
+            readerUsername,
             `SELECT reviewrouter_activation.read_migration_receipt(
-              'migration-open',33,'${openNonce}')->>'postCatalogDigest'
-              = '${openCatalogDigest}';`,
-          ),
-        ).toBe("t");
-      }),
+              'migration-open',33,'${openNonce}');`,
+          );
+          expect(absentProjectedReceipt.status).not.toBe(0);
+          expect(absentProjectedReceipt.stderr).toContain(
+            "release migration target receipt unavailable",
+          );
+        },
+        ({ psqlAs: runAs }) => {
+          // This isolated permit-race proof derives both closed and open
+          // post-state digests after the first migration. Final bootstrap
+          // self-demotion is exercised by the production-readiness cases.
+          runAs(
+            adversarialAdminUsername,
+            `ALTER ROLE ${adminUsername} SUPERUSER CREATEROLE;`,
+          );
+          return true;
+        },
+      ),
       120_000,
     );
 
     it(
       "recomputes the live V70-V72 digest through the fenced installer connection",
-      isolatedCase("fenced-v70-v72-digest", ({ psqlAs: runAs }) => {
-        const canonicalDigest = runAs(
-          installerUsername,
-          fencedLiveV70V72CatalogDigestSql,
-        );
-        expect(canonicalDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
-        runAs(
-          adversarialAdminUsername,
-          `ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(
+      isolatedCase(
+        "fenced-v70-v72-digest",
+        () => {},
+        ({ psqlAs: runAs }) => {
+          const canonicalDigest = runAs(
+            installerUsername,
+            fencedLiveV70V72CatalogDigestSql,
+          );
+          expect(canonicalDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+          runAs(
+            adversarialAdminUsername,
+            `ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(
              text,text,text,text,text,text) SECURITY INVOKER;`,
-        );
-        expect(
-          runAs(installerUsername, fencedLiveV70V72CatalogDigestSql),
-        ).not.toBe(canonicalDigest);
-      }),
+          );
+          expect(
+            runAs(installerUsername, fencedLiveV70V72CatalogDigestSql),
+          ).not.toBe(canonicalDigest);
+        },
+      ),
       120_000,
     );
 
     it(
       "keeps a hostile catalog mutator outside the shared target fence",
-      isolatedCase("shared-fence-mutator", ({ container }) => {
-        const result = docker(
-          [
-            "exec",
-            container,
-            "bash",
-            "-ec",
-            `psql --username ${installerUsername} --dbname ${databaseName} --no-psqlrc --set ON_ERROR_STOP=1 --command "BEGIN; SELECT pg_advisory_xact_lock_shared(1381126735,1129271120); SELECT pg_sleep(1); COMMIT;" >/dev/null &
+      isolatedCase(
+        "shared-fence-mutator",
+        () => {},
+        ({ container }) => {
+          const result = docker(
+            [
+              "exec",
+              container,
+              "bash",
+              "-ec",
+              `psql --username ${installerUsername} --dbname ${databaseName} --no-psqlrc --set ON_ERROR_STOP=1 --command "BEGIN; SELECT pg_advisory_xact_lock_shared(1381126735,1129271120); SELECT pg_sleep(1); COMMIT;" >/dev/null &
 holder_pid=$!
 lock_seen=0
 for attempt in $(seq 1 40); do
@@ -1067,13 +1431,14 @@ fi
 wait "$holder_pid"
 psql --username ${adversarialAdminUsername} --dbname ${databaseName} --no-psqlrc --set ON_ERROR_STOP=1 --command "BEGIN; SET LOCAL lock_timeout='1s'; SELECT pg_advisory_xact_lock(1381126735,1129271120); ALTER FUNCTION public.reviewrouter_answer_runtime_canary_challenge(text,text,text,text,text,text) SECURITY INVOKER; ROLLBACK;" >/dev/null
 printf 'hostile_mutator_excluded\n'`,
-          ],
-          undefined,
-          10_000,
-        );
-        expect(result.status, result.stderr).toBe(0);
-        expect(result.stdout.trim()).toBe("hostile_mutator_excluded");
-      }),
+            ],
+            undefined,
+            10_000,
+          );
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stdout.trim()).toBe("hostile_mutator_excluded");
+        },
+      ),
       120_000,
     );
 
@@ -1101,11 +1466,6 @@ printf 'hostile_mutator_excluded\n'`,
       isolatedCase(
         "disconnected-direct-acl",
         ({ container, psqlAs: runAs }) => {
-          runAs(adminUsername, "CREATE ROLE rr_inert_acl NOLOGIN;");
-          runAs(
-            adversarialAdminUsername,
-            `GRANT SELECT ON ${applicationRelation} TO rr_inert_acl;`,
-          );
           runAs(adminUsername, attestDisposableCaptureSql());
           const rejected = psqlResultAs(
             container,
@@ -1114,6 +1474,13 @@ printf 'hostile_mutator_excluded\n'`,
           );
           expect(rejected.status).not.toBe(0);
           expect(rejected.stderr).toContain("unexpected_grant_principal");
+        },
+        ({ psqlAs: runAs }) => {
+          runAs(adversarialAdminUsername, "CREATE ROLE rr_inert_acl NOLOGIN;");
+          runAs(
+            adversarialAdminUsername,
+            `GRANT SELECT ON ${applicationRelation} TO rr_inert_acl;`,
+          );
         },
       ),
       120_000,
@@ -1202,59 +1569,74 @@ printf 'hostile_mutator_excluded\n'`,
 
     it(
       "rejects an unexpected login with direct CONNECT/table ACL and legacy forged JSON",
-      isolatedCase("direct-acl-attack", (context) => {
-        context.installPermit("direct-acl-attack");
-        context.psqlAs(
-          adminUsername,
-          "CREATE ROLE rr_unexpected_direct LOGIN;",
-        );
-        context.psqlAs(
-          adversarialAdminUsername,
-          `GRANT CONNECT ON DATABASE review_router TO rr_unexpected_direct;
-         GRANT SELECT ON ${applicationRelation} TO rr_unexpected_direct;`,
-        );
-        const legacy = context.psqlResultAs(
-          releaseUsername,
-          `SELECT reviewrouter_activation.stage_principal_evidence(
+      isolatedCase(
+        "direct-acl-attack",
+        (context) => {
+          const legacy = context.psqlResultAs(
+            releaseUsername,
+            `SELECT reviewrouter_activation.stage_principal_evidence(
           'direct-acl-attack','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,
           '{}'::jsonb,'sha256:${"0".repeat(64)}','sha256:${"0".repeat(64)}',
           'sha256:${"0".repeat(64)}','sha256:${"0".repeat(64)}');`,
-        );
-        expect(legacy.status).not.toBe(0);
-        context.rejectedWithoutReceipt("direct-acl-attack");
-      }),
+          );
+          expect(legacy.status).not.toBe(0);
+          context.rejectedWithoutReceipt("direct-acl-attack");
+        },
+        (context) => {
+          context.installPermit("direct-acl-attack");
+          context.psqlAs(
+            adversarialAdminUsername,
+            "CREATE ROLE rr_unexpected_direct LOGIN;",
+          );
+          context.psqlAs(
+            adversarialAdminUsername,
+            `GRANT CONNECT ON DATABASE review_router TO rr_unexpected_direct;
+         GRANT SELECT ON ${applicationRelation} TO rr_unexpected_direct;`,
+          );
+        },
+      ),
       120_000,
     );
 
     it(
       "rejects nested INHERIT/SET ROLE privilege reachability",
-      isolatedCase("membership-attack", (context) => {
-        context.installPermit("membership-attack");
-        context.psqlAs(
-          adminUsername,
-          `CREATE ROLE rr_attack_parent NOLOGIN;
+      isolatedCase(
+        "membership-attack",
+        (context) => {
+          context.rejectedWithoutReceipt("membership-attack");
+        },
+        (context) => {
+          context.installPermit("membership-attack");
+          context.psqlAs(
+            adversarialAdminUsername,
+            `CREATE ROLE rr_attack_parent NOLOGIN;
          CREATE ROLE rr_attack_grandparent NOLOGIN;
          GRANT rr_attack_parent TO reviewrouter_api WITH INHERIT TRUE, SET TRUE;
          GRANT rr_attack_grandparent TO rr_attack_parent WITH INHERIT TRUE, SET TRUE;`,
-        );
-        context.psqlAs(
-          adversarialAdminUsername,
-          `GRANT SELECT ON ${applicationRelation} TO rr_attack_grandparent;`,
-        );
-        context.rejectedWithoutReceipt("membership-attack");
-      }),
+          );
+          context.psqlAs(
+            adversarialAdminUsername,
+            `GRANT SELECT ON ${applicationRelation} TO rr_attack_grandparent;`,
+          );
+        },
+      ),
       120_000,
     );
 
     it("rejects PUBLIC and unexpected-owner paths", () => {
-      isolatedCase("public-attack", (context) => {
-        context.installPermit("public-attack");
-        context.psqlAs(
-          adversarialAdminUsername,
-          `GRANT SELECT ON ${applicationRelation} TO PUBLIC;`,
-        );
-        context.rejectedWithoutReceipt("public-attack");
-      })();
+      isolatedCase(
+        "public-attack",
+        (context) => {
+          context.rejectedWithoutReceipt("public-attack");
+        },
+        (context) => {
+          context.installPermit("public-attack");
+          context.psqlAs(
+            adversarialAdminUsername,
+            `GRANT SELECT ON ${applicationRelation} TO PUBLIC;`,
+          );
+        },
+      )();
       isolatedCase(
         "owner-attack",
         (context) => context.rejectedWithoutReceipt("ownership-attack"),
@@ -1269,54 +1651,70 @@ printf 'hostile_mutator_excluded\n'`,
       )();
     }, 120_000);
 
-    it(
-      "rejects non-login administrative, ACL, and RLS authority",
-      isolatedCase("admin-acl-rls", (context) => {
-        context.installPermit("admin-acl-rls");
-        context.psqlAs(
-          adminUsername,
-          "CREATE ROLE rr_unexpected_admin NOLOGIN CREATEROLE;",
-        );
-        context.rejectedWithoutReceipt("admin-acl-rls");
-        context.psqlAs(adminUsername, "DROP ROLE rr_unexpected_admin;");
-
-        context.psqlAs(adminUsername, "CREATE ROLE rr_inert_acl NOLOGIN;");
-        context.psqlAs(
-          adversarialAdminUsername,
-          `GRANT SELECT ON ${applicationRelation} TO rr_inert_acl;`,
-        );
-        context.rejectedWithoutReceipt("admin-acl-rls");
-        context.psqlAs(
-          adversarialAdminUsername,
-          `REVOKE SELECT ON ${applicationRelation} FROM rr_inert_acl;`,
-        );
-        context.psqlAs(adminUsername, "DROP ROLE rr_inert_acl;");
-
-        context.psqlAs(adminUsername, "CREATE ROLE rr_rls_principal NOLOGIN;");
-        context.psqlAs(
-          adversarialAdminUsername,
-          `ALTER TABLE ${applicationRelation} ENABLE ROW LEVEL SECURITY;
-           CREATE POLICY rr_attack_policy ON ${applicationRelation}
-             TO rr_rls_principal USING (true);`,
-        );
-        context.rejectedWithoutReceipt("admin-acl-rls");
-      }),
-      120_000,
-    );
+    it("rejects non-login administrative, ACL, and RLS authority", () => {
+      isolatedCase(
+        "admin-authority",
+        (context) => context.rejectedWithoutReceipt("admin-authority"),
+        (context) => {
+          context.installPermit("admin-authority");
+          context.psqlAs(
+            adversarialAdminUsername,
+            "CREATE ROLE rr_unexpected_admin NOLOGIN CREATEROLE;",
+          );
+        },
+      )();
+      isolatedCase(
+        "inert-direct-acl",
+        (context) => context.rejectedWithoutReceipt("inert-direct-acl"),
+        (context) => {
+          context.installPermit("inert-direct-acl");
+          context.psqlAs(
+            adversarialAdminUsername,
+            "CREATE ROLE rr_inert_acl NOLOGIN;",
+          );
+          context.psqlAs(
+            adversarialAdminUsername,
+            `GRANT SELECT ON ${applicationRelation} TO rr_inert_acl;`,
+          );
+        },
+      )();
+      isolatedCase(
+        "rls-authority",
+        (context) => context.rejectedWithoutReceipt("rls-authority"),
+        (context) => {
+          context.installPermit("rls-authority");
+          context.psqlAs(
+            adversarialAdminUsername,
+            "CREATE ROLE rr_rls_principal NOLOGIN;",
+          );
+          context.psqlAs(
+            adversarialAdminUsername,
+            `ALTER TABLE ${applicationRelation} ENABLE ROW LEVEL SECURITY;
+               CREATE POLICY rr_attack_policy ON ${applicationRelation}
+                 TO rr_rls_principal USING (true);`,
+          );
+        },
+      )();
+    }, 120_000);
 
     it(
       "rejects an unauthorized direct grant to an approved runtime login",
-      isolatedCase("approved-direct-grant", (context) => {
-        context.installPermit("approved-direct-grant");
-        context.psqlAs(
-          adversarialAdminUsername,
-          `GRANT TRUNCATE ON ${applicationRelation} TO reviewrouter_api;`,
-        );
-        context.rejectedWithoutReceipt(
-          "approved-direct-grant",
-          "activation catalog policy mismatch",
-        );
-      }),
+      isolatedCase(
+        "approved-direct-grant",
+        (context) => {
+          context.rejectedWithoutReceipt(
+            "approved-direct-grant",
+            "activation catalog policy mismatch",
+          );
+        },
+        (context) => {
+          context.installPermit("approved-direct-grant");
+          context.psqlAs(
+            adversarialAdminUsername,
+            `GRANT TRUNCATE ON ${applicationRelation} TO reviewrouter_api;`,
+          );
+        },
+      ),
       120_000,
     );
 
@@ -1343,38 +1741,45 @@ printf 'hostile_mutator_excluded\n'`,
 
     it(
       "rejects exact ACL drift in a non-public schema",
-      isolatedCase("non-public-schema", (context) => {
-        context.installPermit("non-public-schema-grant");
-        context.psqlAs(
-          adversarialAdminUsername,
-          "CREATE SCHEMA private_sensitive;",
-        );
-        context.psqlAs(
-          adversarialAdminUsername,
-          "GRANT USAGE ON SCHEMA private_sensitive TO reviewrouter_api;",
-        );
-        context.rejectedWithoutReceipt(
-          "non-public-schema-grant",
-          "activation catalog policy mismatch",
-        );
-      }),
+      isolatedCase(
+        "non-public-schema",
+        (context) => {
+          context.rejectedWithoutReceipt("non-public-schema-grant");
+        },
+        (context) => {
+          context.installPermit("non-public-schema-grant");
+          context.psqlAs(
+            adversarialAdminUsername,
+            "CREATE SCHEMA private_sensitive;",
+          );
+          context.psqlAs(
+            adversarialAdminUsername,
+            "GRANT USAGE ON SCHEMA private_sensitive TO reviewrouter_api;",
+          );
+        },
+      ),
       120_000,
     );
 
     it(
       "rejects default ACL drift",
-      isolatedCase("default-acl-drift", (context) => {
-        context.installPermit("default-acl-drift");
-        context.psqlAs(
-          adversarialAdminUsername,
-          `ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner IN SCHEMA public
+      isolatedCase(
+        "default-acl-drift",
+        (context) => {
+          context.rejectedWithoutReceipt(
+            "default-acl-drift",
+            "activation catalog policy mismatch",
+          );
+        },
+        (context) => {
+          context.installPermit("default-acl-drift");
+          context.psqlAs(
+            adversarialAdminUsername,
+            `ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner IN SCHEMA public
          GRANT TRUNCATE ON TABLES TO reviewrouter_api;`,
-        );
-        context.rejectedWithoutReceipt(
-          "default-acl-drift",
-          "activation catalog policy mismatch",
-        );
-      }),
+          );
+        },
+      ),
       120_000,
     );
 

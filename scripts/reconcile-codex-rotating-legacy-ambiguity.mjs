@@ -175,7 +175,7 @@ export function guardedLegacyAmbiguityReconciliationProcedureSql(ownerRole) {
     .slice(start, end)
     .replace(
       "BEGIN\n",
-      `BEGIN
+      () => `BEGIN
   IF jsonb_typeof(requested_inventory) IS DISTINCT FROM 'object'
      OR requested_inventory_sha256 !~ '^sha256:[a-f0-9]{64}$'
      OR requested_recovery_witness_sha256 !~ '^[a-f0-9]{64}$'

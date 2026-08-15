@@ -471,11 +471,12 @@ WHERE rolname='${providerAdminUsername}';`
 }
 
 export function disposablePg17CanonicalRoleBootstrapSetupSql() {
+  // These are pre-provisioning preparations. roleProvisioningSql owns the
+  // bootstrap's atomic self-demotion at the end of its trusted transaction.
   return Object.freeze({
     publicTableAclCanonicalization:
       disposableTargetPublicTableAclCanonicalizationSql(),
     activationAuthorityProvisioning: activationAuthorityProvisioningSql(),
-    bootstrapDemotion: "ALTER ROLE reviewrouter_role_bootstrap NOSUPERUSER;",
   });
 }
 
@@ -681,7 +682,8 @@ export async function executeDisposableRehearsal(
     )
       throw new Error("private_pg17_rehearsal_server_version_mismatch");
     // Model a managed provider: its native bootstrap role becomes inaccessible,
-    // while the application bootstrap remains powerful but is not a superuser.
+    // while the application bootstrap retains the exact trusted
+    // SUPERUSER+CREATEROLE authority until role provisioning self-demotes it.
     sql(target, disposablePg17TargetRoleFoundationSql());
     targetAdministrativeRole = "reviewrouter_role_bootstrap";
     const publishedPort = (container) => {
@@ -1168,14 +1170,28 @@ ROLLBACK;`,
       ],
       { input: canonicalRoleBootstrapSetup.activationAuthorityProvisioning },
     );
-    sql(target, canonicalRoleBootstrapSetup.bootstrapDemotion);
-    if (
-      sql(
-        target,
-        "SELECT NOT rolsuper FROM pg_roles WHERE rolname='reviewrouter_role_bootstrap'",
-      ) !== "t"
-    )
-      throw new Error("private_pg17_rehearsal_bootstrap_demotion_failed");
+    const assertCanonicalBootstrapPrivileged = () => {
+      if (
+        sql(
+          target,
+          `SELECT rolcanlogin AND rolsuper AND NOT rolcreatedb
+             AND rolcreaterole AND NOT rolreplication AND NOT rolbypassrls
+           FROM pg_roles WHERE rolname='reviewrouter_role_bootstrap'`,
+        ) !== "t"
+      )
+        throw new Error("private_pg17_rehearsal_bootstrap_privilege_failed");
+    };
+    const assertCanonicalBootstrapDemoted = () => {
+      if (
+        sql(
+          target,
+          `SELECT rolcanlogin AND NOT rolsuper AND NOT rolcreatedb
+             AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls
+           FROM pg_roles WHERE rolname='reviewrouter_role_bootstrap'`,
+        ) !== "t"
+      )
+        throw new Error("private_pg17_rehearsal_bootstrap_demotion_failed");
+    };
     const assertCanonicalPgcryptoAcl = () => {
       const pgcryptoAclObservation = JSON.parse(
         sql(
@@ -1384,6 +1400,8 @@ ROLLBACK;`,
       sourceContainer: source,
       targetContainer: target,
       sql,
+      assertCanonicalBootstrapPrivileged,
+      assertCanonicalBootstrapDemoted,
       assertCanonicalPgcryptoAcl,
       createdContainers,
       captureOnly,
@@ -2291,10 +2309,15 @@ COMMIT;
           },
         }),
       bootstrapTargetRoles: async () => {
+        // Prove the bootstrap still has the exact trusted authority immediately
+        // before roleProvisioningSql runs, then prove its transactional
+        // self-demotion completed before any release migration or permit work.
+        facts.assertCanonicalBootstrapPrivileged();
         const result = executeCanonicalRoleBootstrap(
           facts.canonicalEnv,
           canonicalRun,
         );
+        facts.assertCanonicalBootstrapDemoted();
         facts.assertCanonicalPgcryptoAcl();
         return observed(RolloutStep.BootstrapTargetRoles, result);
       },

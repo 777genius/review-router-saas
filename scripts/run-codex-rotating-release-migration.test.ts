@@ -109,7 +109,7 @@ describe("application database release-authority isolation", () => {
     expect(sql).toContain("expected_post_manifest_identity");
     expect(sql).toContain("expected_post_catalog_digest");
     expect(sql).toContain(
-      "requested_effect_receipt->>'effectFingerprint' IS DISTINCT FROM",
+      "requested_effect_metadata->>'effectFingerprint' IS DISTINCT FROM",
     );
     expect(sql).toContain("reviewrouter_activation_permit_installer");
     expect(sql).toContain("SET LOCAL lock_timeout = '5000ms'");
@@ -253,16 +253,14 @@ describe("canonical exclusive release migration caller", () => {
       setRoleMatrix: names.flatMap((member) =>
         names.map((target) => ({ member, target, canSet: member === target })),
       ),
-      bootstrapMemberships: [...names, "reviewrouter_release_schema_owner"].map(
-        (granted) => ({
-          granted,
-          member: "reviewrouter_role_bootstrap",
-          grantor: "platform_role_authority",
-          adminOption: true,
-          inheritOption: false,
-          setOption: false,
-        }),
-      ),
+      bootstrapMemberships: names.map((granted) => ({
+        granted,
+        member: "reviewrouter_role_bootstrap",
+        grantor: "platform_role_authority",
+        adminOption: true,
+        inheritOption: false,
+        setOption: false,
+      })),
       guard: {
         username: "reviewrouter_activation_receipt_guard",
         login: false,
@@ -305,6 +303,15 @@ describe("canonical exclusive release migration caller", () => {
     expect(() =>
       assertCanonicalRoleTopology({
         ...observation,
+        bootstrapMemberships: observation.bootstrapMemberships.map((entry) => ({
+          ...entry,
+          grantor: "reviewrouter_release_schema_owner",
+        })),
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
         bootstrapMemberships: observation.bootstrapMemberships.map(
           (entry, index) =>
             index === 0 ? { ...entry, grantor: "foreign_role_admin" } : entry,
@@ -315,6 +322,22 @@ describe("canonical exclusive release migration caller", () => {
       assertCanonicalRoleTopology({
         ...observation,
         bootstrapMemberships: observation.bootstrapMemberships.slice(1),
+      }),
+    ).toThrow("release_migration_role_observation_failed");
+    expect(() =>
+      assertCanonicalRoleTopology({
+        ...observation,
+        bootstrapMemberships: [
+          ...observation.bootstrapMemberships,
+          {
+            granted: "reviewrouter_release_schema_owner",
+            member: "reviewrouter_role_bootstrap",
+            grantor: "platform_role_authority",
+            adminOption: true,
+            inheritOption: false,
+            setOption: false,
+          },
+        ],
       }),
     ).toThrow("release_migration_role_observation_failed");
     expect(() =>
@@ -358,7 +381,12 @@ describe("canonical exclusive release migration caller", () => {
       "reviewrouter_codex_effect_authority",
     ]);
     const provisioning = roleProvisioningSql(configuration);
+    const ownerAuthorizedInitialProjection = roleProvisioningSql(
+      configuration,
+      { ownerAuthorizedInitialRuntimeGateClosed: true },
+    );
     const grants = runtimeGrantSql(configuration);
+    expect(grants).toContain("BEGIN;");
     const activationAuthority = activationAuthorityProvisioningSql();
     const atomicMigration = atomicMigrationAndGrantSql(configuration, {
       migrationPermit: migrationPermit(),
@@ -403,6 +431,83 @@ describe("canonical exclusive release migration caller", () => {
     expect(activationAuthority).toContain(
       "reviewrouter_activation.migration_permit",
     );
+    expect(activationAuthority).toContain(
+      "DO $schema_owner_membership_convergence$",
+    );
+    expect(activationAuthority).toContain("GRANTED BY %I CASCADE");
+    expect(activationAuthority).toContain(
+      "release schema owner membership convergence failed",
+    );
+    expect(activationAuthority).toContain(
+      "OR edge.grantor IN (guard.oid, installer.oid, reader.oid)",
+    );
+    const schemaOwnerConvergence = "DO $schema_owner_membership_convergence$";
+    const schemaOwnerHandoff =
+      "GRANT reviewrouter_release_schema_owner TO reviewrouter_role_bootstrap\n  WITH ADMIN TRUE, INHERIT FALSE, SET TRUE;";
+    const schemaOwnerHandoffGate = "DO $schema_owner_handoff$";
+    expect(activationAuthority).toContain(schemaOwnerHandoff);
+    expect(activationAuthority).not.toContain("GRANTED BY CURRENT_ROLE");
+    expect(activationAuthority).not.toContain(
+      "schema_owner_handoff_normalization",
+    );
+    expect(activationAuthority).not.toContain("grantor.rolname<>current_role");
+    expect(activationAuthority).toContain("LIMIT 16");
+    expect(activationAuthority).toContain("left(coalesce(string_agg(format(");
+    expect(activationAuthority).toContain("bounded role/flag summary:");
+    expect(activationAuthority).toContain(schemaOwnerHandoffGate);
+    expect(activationAuthority.indexOf(schemaOwnerConvergence)).toBeLessThan(
+      activationAuthority.indexOf(schemaOwnerHandoff),
+    );
+    expect(activationAuthority.indexOf(schemaOwnerHandoff)).toBeLessThan(
+      activationAuthority.indexOf(schemaOwnerHandoffGate),
+    );
+    const receiptReaderReset =
+      "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA reviewrouter_activation FROM reviewrouter_activation_receipt_reader";
+    const migrationReceiptReaderGrant =
+      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_migration_receipt(text,bigint,text)";
+    expect(activationAuthority).toContain(receiptReaderReset);
+    expect(activationAuthority).toContain(migrationReceiptReaderGrant);
+    expect(activationAuthority.indexOf(receiptReaderReset)).toBeLessThan(
+      activationAuthority.lastIndexOf(migrationReceiptReaderGrant),
+    );
+    expect(
+      activationAuthority.slice(
+        activationAuthority.indexOf(receiptReaderReset),
+      ),
+    ).toContain(migrationReceiptReaderGrant);
+    const manifestIdentityRevoke =
+      "REVOKE ALL ON FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()";
+    const manifestIdentityGrant =
+      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()";
+    expect(activationAuthority).toContain(manifestIdentityRevoke);
+    expect(activationAuthority).toContain(manifestIdentityGrant);
+    expect(
+      activationAuthority.lastIndexOf(manifestIdentityRevoke),
+    ).toBeLessThan(activationAuthority.lastIndexOf(manifestIdentityGrant));
+    const finalManifestIdentityGrant = activationAuthority.slice(
+      activationAuthority.lastIndexOf(manifestIdentityGrant),
+      activationAuthority.indexOf(
+        "COMMIT;",
+        activationAuthority.lastIndexOf(manifestIdentityGrant),
+      ),
+    );
+    expect(finalManifestIdentityGrant).not.toContain(
+      "reviewrouter_release_schema_owner",
+    );
+    expect(finalManifestIdentityGrant).toContain(
+      "reviewrouter_activation_permit_installer",
+    );
+    expect(finalManifestIdentityGrant).toContain(
+      "reviewrouter_activation_receipt_reader",
+    );
+    for (const unrelatedLogin of [
+      "reviewrouter_api",
+      "reviewrouter_web",
+      "reviewrouter_worker",
+      "reviewrouter_codex_effect_authority",
+      "reviewrouter_role_bootstrap",
+    ])
+      expect(finalManifestIdentityGrant).not.toContain(unrelatedLogin);
     for (const routine of [
       "install_migration_permit",
       "consume_migration_permit",
@@ -419,6 +524,85 @@ describe("canonical exclusive release migration caller", () => {
     expect(gateClosedAtomicMigration).toContain("true::boolean");
     expect(gateClosedAtomicMigration).not.toContain(
       'REVOKE CONNECT ON DATABASE :"DBNAME"',
+    );
+    expect(provisioning).toContain(
+      "requested_inventory_sha256 !~ '^sha256:[a-f0-9]{64}$'",
+    );
+    expect(provisioning).not.toContain(
+      "activation_authority_boundary:schema_owner_manifest_identity_execute_missing",
+    );
+    expect(provisioning).toContain(
+      "activation_authority_boundary:unrelated_principal_manifest_identity_execute_present",
+    );
+    expect(provisioning).toContain(
+      "activation_authority_boundary:required_manifest_identity_execute_missing",
+    );
+    const activationBoundaryStart = provisioning.indexOf(
+      "DO $activation_authority_boundary$",
+    );
+    const activationBoundary = provisioning.slice(
+      activationBoundaryStart,
+      provisioning.indexOf(
+        "$activation_authority_boundary$;",
+        activationBoundaryStart,
+      ),
+    );
+    expect(activationBoundary).toContain("DECLARE failed_invariant text;");
+    for (const representativeReason of [
+      "activation_permit_relation_missing",
+      "install_activation_permit_routine_missing",
+      "activation_receipt_owner_mismatch",
+      "release_migration_install_activation_permit_execute_present",
+      "receipt_reader_activation_receipt_select_present",
+      "bootstrap_activation_receipt_select_present",
+      "schema_owner_complete_migration_permit_execute_missing",
+      "release_migration_read_migration_receipt_execute_missing",
+    ])
+      expect(activationBoundary).toContain(
+        `failed_invariant := '${representativeReason}'`,
+      );
+    const stableBoundaryReasons = Array.from(
+      activationBoundary.matchAll(/failed_invariant := '([a-z_]+)'/gu),
+      (match) => match[1],
+    );
+    expect(stableBoundaryReasons).toHaveLength(43);
+    expect(new Set(stableBoundaryReasons).size).toBe(
+      stableBoundaryReasons.length,
+    );
+    expect(activationBoundary).toContain(
+      "acl.grantee='reviewrouter_role_bootstrap'::regrole",
+    );
+    expect(activationBoundary).not.toContain(
+      "has_table_privilege('reviewrouter_role_bootstrap','reviewrouter_activation.activation_receipt','SELECT')",
+    );
+    expect(activationBoundary).toContain(
+      "RAISE EXCEPTION 'activation_authority_boundary:%', failed_invariant;",
+    );
+    expect(activationBoundary).not.toContain(
+      "external activation authority boundary is not installed canonically",
+    );
+    expect(activationBoundary).not.toMatch(
+      /IF to_regclass\('reviewrouter_activation\.activation_permit'\) IS NULL\s+OR/u,
+    );
+    expect(
+      activationBoundary.match(
+        /has_function_privilege\(\s+'reviewrouter_activation_receipt_reader',\s+'reviewrouter_activation\.read_migration_receipt\(text,bigint,text\)'/gu,
+      ),
+    ).toHaveLength(1);
+    expect(provisioning).not.toContain(
+      "A fresh target may need its first canonical ACL projection",
+    );
+    expect(ownerAuthorizedInitialProjection).toContain(
+      "A fresh target may need its first canonical ACL projection",
+    );
+    expect(ownerAuthorizedInitialProjection).toContain(
+      "REVOKE CONNECT ON DATABASE",
+    );
+    expect(provisioning).toContain(
+      "requested_recovery_witness_sha256 !~ '^[a-f0-9]{64}$'",
+    );
+    expect(provisioning).not.toMatch(
+      /\{64\}\s+LOCK TABLE "CodexOAuthProviderInstance"/u,
     );
     const postCallSql = gateClosedAtomicMigration.slice(
       gateClosedAtomicMigration.indexOf(
@@ -532,9 +716,13 @@ describe("canonical exclusive release migration caller", () => {
           "'",
       })),
     ]);
-    expect(provisioning).not.toMatch(
-      /ALTER ROLE [^;]+\b(?:SUPERUSER|NOSUPERUSER|CREATEDB|NOCREATEDB|REPLICATION|NOREPLICATION|BYPASSRLS|NOBYPASSRLS)\b/gu,
-    );
+    expect(
+      provisioning.match(
+        /ALTER ROLE [^;]+\b(?:SUPERUSER|NOSUPERUSER|CREATEDB|NOCREATEDB|REPLICATION|NOREPLICATION|BYPASSRLS|NOBYPASSRLS)\b[^;]*;/gu,
+      ),
+    ).toEqual([
+      "ALTER ROLE reviewrouter_role_bootstrap NOSUPERUSER NOCREATEROLE;",
+    ]);
     expect(provisioning).not.toContain(
       "ALTER ROLE reviewrouter_activation_receipt_guard",
     );
@@ -555,12 +743,10 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning.indexOf("DO $transfer_public_ownership$")).toBeLessThan(
       provisioning.indexOf("DO $transferred_public_routine_acl$"),
     );
-    expect(
-      provisioning.indexOf("DO $transferred_public_routine_acl_gate$"),
-    ).toBeLessThan(
-      provisioning.indexOf(
-        "REVOKE reviewrouter_release_schema_owner FROM reviewrouter_role_bootstrap",
-      ),
+    expect(provisioning).toContain("DO $trusted_bootstrap_authority$");
+    expect(provisioning).toContain("observed.rolsuper IS DISTINCT FROM true");
+    expect(provisioning).toContain(
+      "observed.rolcreaterole IS DISTINCT FROM true",
     );
     expect(provisioning).toContain("OR observed.rolcanlogin");
     expect(provisioning).toContain("OR observed.rolsuper");
@@ -605,14 +791,14 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "refusing to converge unexpectedly privileged role",
     );
-    expect(provisioning).toContain(
-      "GRANT reviewrouter_release_schema_owner TO reviewrouter_role_bootstrap WITH SET TRUE",
+    expect(provisioning).not.toContain(
+      "GRANT reviewrouter_release_schema_owner TO reviewrouter_role_bootstrap",
     );
     expect(provisioning).toContain(
       "ALTER ROUTINE %s OWNER TO reviewrouter_release_schema_owner",
     );
     expect(provisioning).toContain(
-      "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap\n  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
+      "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap\n  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE GRANTED BY CURRENT_ROLE",
     );
     expect(provisioning).toContain(
       "GRANT reviewrouter_release_schema_owner TO reviewrouter_release_migration\n  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
@@ -620,14 +806,12 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "SET LOCAL ROLE reviewrouter_release_migration;",
     );
+    expect(provisioning).toContain("DO $release_owner_transfer_edge_cleanup$");
     expect(provisioning).toContain(
-      "REVOKE reviewrouter_release_schema_owner FROM reviewrouter_release_migration GRANTED BY CURRENT_ROLE",
+      "AND grantor.rolname = 'reviewrouter_role_bootstrap'",
     );
     expect(provisioning).toContain(
-      "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
-    );
-    expect(provisioning).toContain(
-      "temporary public ownership transfer membership survived convergence",
+      "temporary release owner transfer cleanup or canonical membership failed",
     );
     expect(provisioning).toContain(
       "public ownership convergence did not reach the release schema owner",
@@ -642,16 +826,7 @@ describe("canonical exclusive release migration caller", () => {
     expect(
       provisioning.indexOf("SET LOCAL ROLE reviewrouter_release_migration;"),
     ).toBeLessThan(
-      provisioning.indexOf(
-        "REVOKE reviewrouter_release_schema_owner FROM reviewrouter_release_migration GRANTED BY CURRENT_ROLE",
-      ),
-    );
-    expect(
-      provisioning.indexOf(
-        "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
-      ),
-    ).toBeLessThan(
-      provisioning.indexOf("DO $temporary_owner_transfer_edges_absent$"),
+      provisioning.indexOf("DO $release_owner_transfer_edge_cleanup$"),
     );
     expect(provisioning).not.toContain("REASSIGN OWNED");
     expect(provisioning).toContain(
@@ -660,15 +835,18 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "refusing non-canonical role membership topology",
     );
-    expect(provisioning).toContain(
-      "REVOKE %I FROM %I GRANTED BY reviewrouter_role_bootstrap",
-    );
+    expect(provisioning).toContain("REVOKE %I FROM %I GRANTED BY %I CASCADE");
     expect(provisioning).toContain("count(DISTINCT grantor.oid)");
+    expect(provisioning).toContain("DO $schema_owner_membership_cleanup$");
     expect(provisioning).toContain(
-      "REVOKE reviewrouter_release_schema_owner FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
+      "release schema owner membership survived trusted bootstrap cleanup",
     );
-    expect(provisioning).not.toContain(
-      "TO reviewrouter_role_bootstrap WITH ADMIN TRUE",
+    expect(
+      provisioning.indexOf("DO $schema_owner_membership_cleanup$"),
+    ).toBeLessThan(
+      provisioning.indexOf(
+        "ALTER ROLE reviewrouter_role_bootstrap NOSUPERUSER NOCREATEROLE;\nCOMMIT;",
+      ),
     );
     expect(provisioning).not.toContain("ALTER DATABASE");
     expect(provisioning).toContain(
@@ -711,6 +889,133 @@ describe("canonical exclusive release migration caller", () => {
     expect(
       provisioning.indexOf("IF requested_acl_gate_closed THEN"),
     ).toBeLessThan(provisioning.indexOf("complete_migration_permit("));
+    const guardedExecutorStart = provisioning.indexOf(
+      "CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(",
+    );
+    const guardedExecutor = provisioning.slice(
+      guardedExecutorStart,
+      provisioning.indexOf(
+        "REVOKE ALL ON PROCEDURE public.reviewrouter_execute_release_migration(",
+        guardedExecutorStart,
+      ),
+    );
+    expect(guardedExecutor).toContain(
+      "'legacyReconciliation',requested_legacy_reconciliation",
+    );
+    expect(guardedExecutor).toContain("'effectFingerprint'");
+    expect(guardedExecutor).not.toContain("postManifestIdentity");
+    expect(guardedExecutor).not.toContain("postCatalogDigest");
+    expect(guardedExecutor).not.toContain("observed_post_catalog_digest");
+    const completionGuardStart = activationAuthority.indexOf(
+      "CREATE OR REPLACE FUNCTION reviewrouter_activation.complete_migration_permit(",
+    );
+    const completionGuard = activationAuthority.slice(
+      completionGuardStart,
+      activationAuthority.indexOf(
+        "ALTER FUNCTION reviewrouter_activation.complete_migration_permit(",
+        completionGuardStart,
+      ),
+    );
+    expect(completionGuard).toContain(
+      "requested_permit_nonce text, requested_effect_receipt jsonb",
+    );
+    expect(completionGuard).toContain(
+      "DECLARE requested_effect_metadata CONSTANT jsonb := requested_effect_receipt;",
+    );
+    const liveCompletionInvariants = [
+      {
+        condition:
+          "observed_manifest_identity IS DISTINCT FROM\n       current_permit.expected_post_manifest_identity",
+        reason: "manifest_identity_observed",
+      },
+      {
+        condition:
+          "observed_catalog_digest IS DISTINCT FROM\n       current_permit.expected_post_catalog_digest",
+        reason: "catalog_digest_observed",
+      },
+      {
+        condition:
+          "requested_effect_metadata->>'effectFingerprint' IS DISTINCT FROM",
+        reason: "effect_fingerprint",
+      },
+      {
+        condition:
+          "EXISTS (SELECT 1 FROM public._prisma_migrations\n       WHERE finished_at IS NULL AND rolled_back_at IS NULL)",
+        reason: "unfinished_migration",
+      },
+      {
+        condition:
+          "EXISTS (SELECT 1 FROM public.\"CodexOAuthLease\"\n       WHERE \"status\" IN ('preleased','finalized'))",
+        reason: "active_lease",
+      },
+      {
+        condition:
+          'EXISTS (SELECT 1 FROM public."CodexOAuthSetupManifest"\n       WHERE "status"=\'fetched\')',
+        reason: "fetched_setup_manifest",
+      },
+      {
+        condition:
+          "EXISTS (SELECT 1 FROM public.\"CodexOAuthWritebackIntent\"\n       WHERE \"status\" IN ('pending','remote_outcome_unknown'))",
+        reason: "unresolved_writeback_intent",
+      },
+    ] as const;
+    let previousReasonIndex = -1;
+    for (const { condition, reason } of liveCompletionInvariants) {
+      const conditionIndex = completionGuard.indexOf(condition);
+      const message = `release migration target live completion mismatch:${reason}`;
+      const reasonIndex = completionGuard.indexOf(message);
+      expect(conditionIndex, `${reason} condition was lost`).toBeGreaterThan(
+        -1,
+      );
+      expect(reasonIndex, `${reason} reason was lost`).toBeGreaterThan(
+        conditionIndex,
+      );
+      expect(
+        completionGuard.match(new RegExp(message, "gu")),
+        `${reason} must remain deterministic and unique`,
+      ).toHaveLength(1);
+      expect(reasonIndex, `${reason} evaluation order changed`).toBeGreaterThan(
+        previousReasonIndex,
+      );
+      previousReasonIndex = reasonIndex;
+    }
+    expect(completionGuard).toContain(
+      "(SELECT count(*) FROM jsonb_object_keys(requested_effect_metadata)) <> 2",
+    );
+    expect(completionGuard).toContain(
+      "'legacyReconciliation','effectFingerprint'",
+    );
+    expect(completionGuard).toContain(
+      "requested_effect_metadata->'legacyReconciliation')) <> 6",
+    );
+    expect(completionGuard).toContain(
+      "'version','acknowledgement','inventory','inventorySha256'",
+    );
+    expect(completionGuard).toContain(
+      "IS DISTINCT FROM 'all_prior_installers_and_writers_are_stopped'",
+    );
+    expect(completionGuard).not.toContain(
+      "requested_effect_metadata->>'postManifestIdentity'",
+    );
+    expect(completionGuard).not.toContain(
+      "requested_effect_metadata->>'postCatalogDigest'",
+    );
+    expect(completionGuard).not.toContain("manifest_identity_receipt");
+    expect(completionGuard).not.toContain("catalog_digest_receipt");
+    expect(completionGuard).toContain(
+      "'postManifestIdentity',observed_manifest_identity",
+    );
+    expect(completionGuard).toContain(
+      "'postCatalogDigest',observed_catalog_digest",
+    );
+    expect(
+      completionGuard.match(
+        /release migration target live completion mismatch:[a-z_]+/gu,
+      ),
+    ).toHaveLength(liveCompletionInvariants.length);
+    expect(completionGuard).not.toContain(
+      "RAISE EXCEPTION 'release migration target live completion mismatch';",
+    );
     expect(provisioning).toContain(
       "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(",
     );
@@ -906,9 +1211,20 @@ describe("canonical exclusive release migration caller", () => {
           currentUser: "reviewrouter_role_bootstrap",
           sessionUser: "reviewrouter_role_bootstrap",
           login: true,
-          superuser: false,
+          superuser: true,
           createDatabase: false,
           createRole: true,
+          replication: false,
+          bypassRls: false,
+        });
+      if (step === "verify_bootstrap_demotion")
+        return JSON.stringify({
+          currentUser: "reviewrouter_role_bootstrap",
+          sessionUser: "reviewrouter_role_bootstrap",
+          login: true,
+          superuser: false,
+          createDatabase: false,
+          createRole: false,
           replication: false,
           bypassRls: false,
         });
@@ -943,10 +1259,7 @@ describe("canonical exclusive release migration caller", () => {
               canSet: member === target,
             })),
           ),
-          bootstrapMemberships: [
-            ...roleNames,
-            "reviewrouter_release_schema_owner",
-          ].map((granted) => ({
+          bootstrapMemberships: roleNames.map((granted) => ({
             granted,
             member: "reviewrouter_role_bootstrap",
             grantor: "platform_role_authority",
@@ -1018,6 +1331,7 @@ describe("canonical exclusive release migration caller", () => {
     expect(calls.map((call) => call.step)).toEqual([
       "verify_bootstrap_authority",
       "provision_roles",
+      "verify_bootstrap_demotion",
       "verify_release_authority",
       "verify_roles",
     ]);

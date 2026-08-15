@@ -6,6 +6,7 @@ import {
   cleanupCaptureOnlyRehearsalFixtures,
   cleanupDisposableRehearsalResources,
   captureOnlyRehearsalFixtureCleanupSql,
+  disposablePg17CanonicalRoleBootstrapSetupSql,
   disposableTargetPublicTableAclCanonicalizationSql,
   normalizeRehearsalDockerInvocation,
   resolveRehearsalCaptureOnlyConfiguration,
@@ -50,6 +51,15 @@ describe("disposable dual-version rehearsal", () => {
       activatedCatalogPolicySha256:
         "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
     });
+  });
+  it("leaves bootstrap demotion exclusively to canonical role provisioning", () => {
+    const setup = disposablePg17CanonicalRoleBootstrapSetupSql();
+
+    expect(Object.keys(setup)).toEqual([
+      "publicTableAclCanonicalization",
+      "activationAuthorityProvisioning",
+    ]);
+    expect(setup).not.toHaveProperty("bootstrapDemotion");
   });
   it("enables capture-only for exact opt-in 1 and an exact disposable identity", () => {
     const identity = "rr-disposable-production-shaped-capture";
@@ -785,12 +795,47 @@ describe("disposable dual-version rehearsal", () => {
     expect(source).toContain(
       "disposableProviderRoles.bootstrapSuperuser !== true",
     );
+    expect(source).not.toContain("bootstrapDemotion");
+    expect(source).not.toContain(
+      'sql(target, "ALTER ROLE reviewrouter_role_bootstrap',
+    );
+    expect(source).toContain("rolcanlogin AND rolsuper AND NOT rolcreatedb");
     expect(source).toContain(
-      "ALTER ROLE reviewrouter_role_bootstrap NOSUPERUSER",
+      "AND rolcreaterole AND NOT rolreplication AND NOT rolbypassrls",
+    );
+    expect(source).toContain(
+      "rolcanlogin AND NOT rolsuper AND NOT rolcreatedb",
+    );
+    expect(source).toContain(
+      "AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls",
+    );
+    expect(source).toContain(
+      "private_pg17_rehearsal_bootstrap_privilege_failed",
     );
     expect(source).toContain(
       "private_pg17_rehearsal_bootstrap_demotion_failed",
     );
+    const roleBootstrap = source.indexOf(
+      "const result = executeCanonicalRoleBootstrap(",
+    );
+    const preProvisioningPrivilegeProof = source.lastIndexOf(
+      "facts.assertCanonicalBootstrapPrivileged();",
+      roleBootstrap,
+    );
+    const postProvisioningDemotionProof = source.indexOf(
+      "facts.assertCanonicalBootstrapDemoted();",
+      roleBootstrap,
+    );
+    const bootstrapStage = source.indexOf('runStage("bootstrap_target_roles"');
+    const releaseMigrationStage = source.indexOf(
+      "runRehearsalReleaseMigration({",
+      bootstrapStage,
+    );
+    expect(preProvisioningPrivilegeProof).toBeGreaterThan(-1);
+    expect(preProvisioningPrivilegeProof).toBeLessThan(roleBootstrap);
+    expect(postProvisioningDemotionProof).toBeGreaterThan(roleBootstrap);
+    expect(bootstrapStage).toBeGreaterThan(postProvisioningDemotionProof);
+    expect(bootstrapStage).toBeLessThan(releaseMigrationStage);
     expect(source).toContain("rehearsal_canonical_step_failed:${step}");
     expect(source).toContain("safePostgresErrorClassification(result.stderr)");
     expect(source).toContain("rehearsal_canonical_postgres_error:${step}");

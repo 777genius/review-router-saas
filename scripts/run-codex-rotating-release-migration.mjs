@@ -356,14 +356,101 @@ BEGIN
     SELECT 1 FROM pg_auth_members edge
     WHERE edge.roleid IN (guard.oid, installer.oid, reader.oid)
        OR edge.member IN (guard.oid, installer.oid, reader.oid)
-       OR edge.member=schema_owner.oid
+       OR edge.grantor IN (guard.oid, installer.oid, reader.oid)
   ) THEN
     RAISE EXCEPTION 'activation authority roles must have no membership edges';
   END IF;
 END
 $authority_roles$;
+-- This provider-authorized handoff precedes the trusted bootstrap transaction,
+-- whose final statement performs the atomic demotion. Remove all historical
+-- schema-owner membership records using their recorded grantors; PG17 can
+-- otherwise retain parallel grants after a current-role-only revoke.
+DO $schema_owner_membership_convergence$
+DECLARE edge record;
+BEGIN
+  FOR edge IN
+    SELECT granted.rolname AS granted_name, member.rolname AS member_name,
+      grantor.rolname AS grantor_name
+    FROM pg_auth_members membership
+    JOIN pg_roles granted ON granted.oid=membership.roleid
+    JOIN pg_roles member ON member.oid=membership.member
+    JOIN pg_roles grantor ON grantor.oid=membership.grantor
+    WHERE membership.roleid='${releaseSchemaOwnerRoleName}'::regrole
+       OR membership.member='${releaseSchemaOwnerRoleName}'::regrole
+       OR membership.grantor='${releaseSchemaOwnerRoleName}'::regrole
+  LOOP
+    EXECUTE format(
+      'REVOKE %I FROM %I GRANTED BY %I CASCADE',
+      edge.granted_name,edge.member_name,edge.grantor_name
+    );
+  END LOOP;
+  IF EXISTS (SELECT 1 FROM pg_auth_members membership
+    WHERE membership.roleid='${releaseSchemaOwnerRoleName}'::regrole
+       OR membership.member='${releaseSchemaOwnerRoleName}'::regrole
+       OR membership.grantor='${releaseSchemaOwnerRoleName}'::regrole) THEN
+    RAISE EXCEPTION 'release schema owner membership convergence failed';
+  END IF;
+END
+$schema_owner_membership_convergence$;
+-- Establish exactly one temporary handoff after the historical topology is
+-- empty. PostgreSQL 17 records a non-bootstrap superuser's grant under the
+-- bootstrap superuser that supplied the authority, so the catalog-recorded
+-- grantor is intentionally discovered and checked rather than prescribed.
 GRANT ${releaseSchemaOwnerRoleName} TO ${canonicalBootstrapRoleName}
-  WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+  WITH ADMIN TRUE, INHERIT FALSE, SET TRUE;
+DO $schema_owner_handoff$
+DECLARE total_count integer;
+DECLARE canonical_count integer;
+DECLARE external_grantor_count integer;
+DECLARE edge_summary text;
+BEGIN
+  SELECT count(*), count(*) FILTER (
+    WHERE granted.rolname='${releaseSchemaOwnerRoleName}'
+      AND member.rolname='${canonicalBootstrapRoleName}'
+      AND grantor.rolname<>'${canonicalBootstrapRoleName}'
+      AND grantor.rolname<>'${releaseSchemaOwnerRoleName}'
+      AND membership.admin_option
+      AND NOT membership.inherit_option
+      AND membership.set_option
+  ), count(DISTINCT grantor.oid) INTO total_count, canonical_count,
+     external_grantor_count
+  FROM pg_auth_members membership
+  JOIN pg_roles granted ON granted.oid=membership.roleid
+  JOIN pg_roles member ON member.oid=membership.member
+  JOIN pg_roles grantor ON grantor.oid=membership.grantor
+  WHERE membership.roleid='${releaseSchemaOwnerRoleName}'::regrole
+     OR membership.member='${releaseSchemaOwnerRoleName}'::regrole
+     OR membership.grantor='${releaseSchemaOwnerRoleName}'::regrole;
+  IF total_count <> 1 OR canonical_count <> 1 OR external_grantor_count <> 1 THEN
+    SELECT left(coalesce(string_agg(format(
+      'granted=%I member=%I grantor=%I admin=%s inherit=%s set=%s',
+      relevant.granted_name,relevant.member_name,relevant.grantor_name,
+      relevant.admin_option,relevant.inherit_option,relevant.set_option
+    ), '; ' ORDER BY relevant.granted_name,relevant.member_name,
+       relevant.grantor_name), '<none>'), 2048)
+    INTO edge_summary
+    FROM (
+      SELECT granted.rolname AS granted_name, member.rolname AS member_name,
+        grantor.rolname AS grantor_name, membership.admin_option,
+        membership.inherit_option, membership.set_option
+      FROM pg_auth_members membership
+      JOIN pg_roles granted ON granted.oid=membership.roleid
+      JOIN pg_roles member ON member.oid=membership.member
+      JOIN pg_roles grantor ON grantor.oid=membership.grantor
+      WHERE membership.roleid='${releaseSchemaOwnerRoleName}'::regrole
+         OR membership.member='${releaseSchemaOwnerRoleName}'::regrole
+         OR membership.grantor='${releaseSchemaOwnerRoleName}'::regrole
+      ORDER BY granted.rolname,member.rolname,grantor.rolname
+      LIMIT 16
+    ) relevant;
+    RAISE EXCEPTION
+      'release schema owner temporary handoff is non-canonical: total %, canonical %',
+      total_count, canonical_count
+      USING DETAIL = 'bounded role/flag summary: ' || edge_summary;
+  END IF;
+END
+$schema_owner_handoff$;
 SELECT format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC;', current_database())
 \\gexec
 SELECT format(
@@ -999,26 +1086,45 @@ CREATE OR REPLACE FUNCTION reviewrouter_activation.complete_migration_permit(
   requested_permit_nonce text, requested_effect_receipt jsonb
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $complete_migration_permit$
+-- Keep the established SQL argument name so CREATE OR REPLACE remains a safe
+-- in-place upgrade; the narrowed value is effect metadata, not a receipt.
+DECLARE requested_effect_metadata CONSTANT jsonb := requested_effect_receipt;
 DECLARE current_permit reviewrouter_activation.migration_permit%ROWTYPE;
 DECLARE completed_receipt jsonb;
 DECLARE observed_manifest_identity text;
 DECLARE observed_catalog_digest text;
 BEGIN
   IF session_user <> 'reviewrouter_release_migration'
-     OR jsonb_typeof(requested_effect_receipt) IS DISTINCT FROM 'object'
-     OR (SELECT count(*) FROM jsonb_object_keys(requested_effect_receipt)) <> 4
-     OR NOT requested_effect_receipt ?& ARRAY['postManifestIdentity',
-       'postCatalogDigest','legacyReconciliation','effectFingerprint']
-     OR EXISTS (SELECT 1 FROM unnest(ARRAY['postManifestIdentity',
-       'postCatalogDigest','effectFingerprint']) key
-       WHERE jsonb_typeof(requested_effect_receipt->key) IS DISTINCT FROM 'string'
-         OR requested_effect_receipt->>key !~ '^sha256:[a-f0-9]{64}$')
-     OR jsonb_typeof(requested_effect_receipt->'legacyReconciliation')
+     OR jsonb_typeof(requested_effect_metadata) IS DISTINCT FROM 'object' THEN
+    RAISE EXCEPTION 'release migration target completion invalid'; END IF;
+  IF (SELECT count(*) FROM jsonb_object_keys(requested_effect_metadata)) <> 2
+     OR NOT requested_effect_metadata ?& ARRAY[
+       'legacyReconciliation','effectFingerprint']
+     OR jsonb_typeof(requested_effect_metadata->'effectFingerprint')
+       IS DISTINCT FROM 'string'
+     OR requested_effect_metadata->>'effectFingerprint'
+       !~ '^sha256:[a-f0-9]{64}$'
+     OR jsonb_typeof(requested_effect_metadata->'legacyReconciliation')
+       IS DISTINCT FROM 'object' THEN
+    RAISE EXCEPTION 'release migration target completion invalid'; END IF;
+  IF (SELECT count(*) FROM jsonb_object_keys(
+       requested_effect_metadata->'legacyReconciliation')) <> 6
+     OR NOT requested_effect_metadata->'legacyReconciliation' ?& ARRAY[
+       'version','acknowledgement','inventory','inventorySha256',
+       'stableSamples','status']
+     OR requested_effect_metadata->'legacyReconciliation'->'version'
+       IS DISTINCT FROM '1'::jsonb
+     OR requested_effect_metadata->'legacyReconciliation'->>'acknowledgement'
+       IS DISTINCT FROM 'all_prior_installers_and_writers_are_stopped'
+     OR jsonb_typeof(
+       requested_effect_metadata->'legacyReconciliation'->'inventory')
        IS DISTINCT FROM 'object'
-     OR requested_effect_receipt->'legacyReconciliation'->>'status'
+     OR requested_effect_metadata->'legacyReconciliation'->>'status'
        IS DISTINCT FROM 'reconciled'
-     OR requested_effect_receipt->'legacyReconciliation'->>'inventorySha256'
-       !~ '^sha256:[a-f0-9]{64}$' THEN
+     OR requested_effect_metadata->'legacyReconciliation'->>'inventorySha256'
+       !~ '^sha256:[a-f0-9]{64}$'
+     OR requested_effect_metadata->'legacyReconciliation'->'stableSamples'
+       IS DISTINCT FROM '2'::jsonb THEN
     RAISE EXCEPTION 'release migration target completion invalid'; END IF;
   SELECT * INTO STRICT current_permit FROM reviewrouter_activation.migration_permit
   WHERE rollout_id=requested_rollout_id FOR UPDATE;
@@ -1032,29 +1138,48 @@ BEGIN
   SELECT digest INTO STRICT observed_catalog_digest
   FROM (${fencedLiveV70V72CatalogDigestSql}) live(digest);
   IF observed_manifest_identity IS DISTINCT FROM
-       current_permit.expected_post_manifest_identity
-     OR requested_effect_receipt->>'postManifestIdentity' IS DISTINCT FROM
-       current_permit.expected_post_manifest_identity
-     OR observed_catalog_digest IS DISTINCT FROM
-       current_permit.expected_post_catalog_digest
-     OR requested_effect_receipt->>'postCatalogDigest' IS DISTINCT FROM
-       current_permit.expected_post_catalog_digest
-     OR requested_effect_receipt->>'effectFingerprint' IS DISTINCT FROM
+       current_permit.expected_post_manifest_identity THEN
+    RAISE EXCEPTION
+      'release migration target live completion mismatch:manifest_identity_observed';
+  END IF;
+  IF observed_catalog_digest IS DISTINCT FROM
+       current_permit.expected_post_catalog_digest THEN
+    RAISE EXCEPTION
+      'release migration target live completion mismatch:catalog_digest_observed';
+  END IF;
+  IF requested_effect_metadata->>'effectFingerprint' IS DISTINCT FROM
        'sha256:'||encode(pg_catalog.sha256(convert_to(current_permit.rollout_id||':'||
          current_permit.transition_sha256||':'||current_permit.permit_epoch::text||':'||
-         current_permit.permit_nonce,'UTF8')),'hex')
-     OR EXISTS (SELECT 1 FROM public._prisma_migrations
-       WHERE finished_at IS NULL AND rolled_back_at IS NULL)
-     OR EXISTS (SELECT 1 FROM public."CodexOAuthLease"
-       WHERE "status" IN ('preleased','finalized'))
-     OR EXISTS (SELECT 1 FROM public."CodexOAuthSetupManifest"
-       WHERE "status"='fetched')
-     OR EXISTS (SELECT 1 FROM public."CodexOAuthWritebackIntent"
+         current_permit.permit_nonce,'UTF8')),'hex') THEN
+    RAISE EXCEPTION
+      'release migration target live completion mismatch:effect_fingerprint';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public._prisma_migrations
+       WHERE finished_at IS NULL AND rolled_back_at IS NULL) THEN
+    RAISE EXCEPTION
+      'release migration target live completion mismatch:unfinished_migration';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public."CodexOAuthLease"
+       WHERE "status" IN ('preleased','finalized')) THEN
+    RAISE EXCEPTION
+      'release migration target live completion mismatch:active_lease';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public."CodexOAuthSetupManifest"
+       WHERE "status"='fetched') THEN
+    RAISE EXCEPTION
+      'release migration target live completion mismatch:fetched_setup_manifest';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public."CodexOAuthWritebackIntent"
        WHERE "status" IN ('pending','remote_outcome_unknown')) THEN
-    RAISE EXCEPTION 'release migration target live completion mismatch'; END IF;
-  completed_receipt := current_permit.target_receipt || requested_effect_receipt ||
-    jsonb_build_object('completedAt',to_char(transaction_timestamp() AT TIME ZONE 'UTC',
-      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+    RAISE EXCEPTION
+      'release migration target live completion mismatch:unresolved_writeback_intent';
+  END IF;
+  completed_receipt := current_permit.target_receipt || requested_effect_metadata ||
+    jsonb_build_object(
+      'postManifestIdentity',observed_manifest_identity,
+      'postCatalogDigest',observed_catalog_digest,
+      'completedAt',to_char(transaction_timestamp() AT TIME ZONE 'UTC',
+        'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
   IF current_permit.state='completed' THEN
     RETURN current_permit.target_receipt;
   END IF;
@@ -2414,6 +2539,11 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA reviewrouter_activation FROM ${activationR
 REVOKE ALL ON ALL TABLES IN SCHEMA reviewrouter_activation FROM ${activationReceiptReaderRoleName};
 GRANT USAGE ON SCHEMA reviewrouter_activation TO ${activationReceiptReaderRoleName};
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_receipt(text) TO ${activationReceiptReaderRoleName};
+-- The reader-wide reset above deliberately removes every earlier routine ACL.
+-- Restore the independently guarded migration receipt reader after that reset;
+-- doing this earlier is order-dependent and silently removes the capability.
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_migration_receipt(text,bigint,text)
+  TO ${activationReceiptReaderRoleName};
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_receipt(text) TO reviewrouter_release_migration;
 CREATE OR REPLACE FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
 RETURNS text LANGUAGE plpgsql STABLE SECURITY DEFINER
@@ -2446,7 +2576,8 @@ ALTER FUNCTION reviewrouter_activation.read_activation_migration_manifest_identi
 REVOKE ALL ON FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
   FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.read_activation_migration_manifest_identity()
-  TO ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName}, reviewrouter_release_migration;
+  TO ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName},
+     reviewrouter_release_migration;
 COMMIT;
 `;
 }
@@ -2627,8 +2758,7 @@ export function assertCanonicalRoleTopology(verifiedRoles) {
     verifiedRoles.setRoleMatrix.length !==
       canonicalRoleNames.length * canonicalRoleNames.length ||
     !Array.isArray(verifiedRoles.bootstrapMemberships) ||
-    verifiedRoles.bootstrapMemberships.length !==
-      canonicalRoleNames.length + 1 ||
+    verifiedRoles.bootstrapMemberships.length !== canonicalRoleNames.length ||
     verifiedRoles.roles.some(
       (role) =>
         !canonicalRoleNames.includes(role.username) ||
@@ -2653,21 +2783,17 @@ export function assertCanonicalRoleTopology(verifiedRoles) {
       canonicalRoleNames.length * canonicalRoleNames.length ||
     verifiedRoles.bootstrapMemberships.some(
       (entry) =>
-        ![...canonicalRoleNames, releaseSchemaOwnerRoleName].includes(
-          entry.granted,
-        ) ||
+        !canonicalRoleNames.includes(entry.granted) ||
         entry.member !== canonicalBootstrapRoleName ||
         entry.grantor === canonicalBootstrapRoleName ||
-        [...canonicalRoleNames, releaseSchemaOwnerRoleName].includes(
-          entry.grantor,
-        ) ||
+        entry.grantor === releaseSchemaOwnerRoleName ||
+        canonicalRoleNames.includes(entry.grantor) ||
         entry.adminOption !== true ||
         entry.inheritOption !== false ||
         entry.setOption !== false,
     ) ||
     new Set(verifiedRoles.bootstrapMemberships.map((entry) => entry.granted))
-      .size !==
-      canonicalRoleNames.length + 1 ||
+      .size !== canonicalRoleNames.length ||
     new Set(verifiedRoles.bootstrapMemberships.map((entry) => entry.grantor))
       .size !== 1 ||
     verifiedRoles.guard?.username !== activationReceiptGuardRoleName ||
@@ -2841,7 +2967,12 @@ export function resolveRoleBootstrapConfiguration(env) {
   return { ...configuration, bootstrapUrl: bootstrapUrl.toString() };
 }
 
-export function roleProvisioningSql(configuration) {
+export function roleProvisioningSql(
+  configuration,
+  { ownerAuthorizedInitialRuntimeGateClosed = false } = {},
+) {
+  if (typeof ownerAuthorizedInitialRuntimeGateClosed !== "boolean")
+    throw new Error("release_migration_initial_runtime_gate_mode_invalid");
   const guardedBundle = guardedAtomicReleaseMigrationBundleSql();
   const guardedGrants = guardOwnedRuntimeGrantSql(configuration);
   const guardedAclGate = guardOwnedRuntimeAclGateSql(configuration);
@@ -2880,10 +3011,12 @@ DO $membership$
 DECLARE membership record;
 BEGIN
   FOR membership IN
-    SELECT granted.rolname AS granted_name, member.rolname AS member_name
+    SELECT granted.rolname AS granted_name, member.rolname AS member_name,
+      grantor.rolname AS grantor_name
     FROM pg_auth_members edge
     JOIN pg_roles granted ON granted.oid = edge.roleid
     JOIN pg_roles member ON member.oid = edge.member
+    JOIN pg_roles grantor ON grantor.oid = edge.grantor
     WHERE (granted.rolname = '${username}' OR member.rolname = '${username}')
       AND NOT (
         granted.rolname = '${username}'
@@ -2891,9 +3024,10 @@ BEGIN
       )
   LOOP
     EXECUTE format(
-      'REVOKE %I FROM %I GRANTED BY reviewrouter_role_bootstrap',
+      'REVOKE %I FROM %I GRANTED BY %I CASCADE',
       membership.granted_name,
-      membership.member_name
+      membership.member_name,
+      membership.grantor_name
     );
   END LOOP;
 END
@@ -2904,6 +3038,23 @@ $membership$;
   return `\\set ON_ERROR_STOP on
 BEGIN;
 ${activationMigrationExclusionSql}
+DO $trusted_bootstrap_authority$
+DECLARE observed pg_roles%ROWTYPE;
+BEGIN
+  IF current_user <> '${canonicalBootstrapRoleName}'
+     OR session_user <> '${canonicalBootstrapRoleName}' THEN
+    RAISE EXCEPTION 'trusted role provisioning caller is invalid';
+  END IF;
+  SELECT * INTO observed FROM pg_roles
+  WHERE rolname='${canonicalBootstrapRoleName}';
+  IF NOT FOUND OR observed.rolcanlogin IS DISTINCT FROM true
+     OR observed.rolsuper IS DISTINCT FROM true OR observed.rolcreatedb
+     OR observed.rolcreaterole IS DISTINCT FROM true
+     OR observed.rolreplication OR observed.rolbypassrls THEN
+    RAISE EXCEPTION 'trusted role bootstrap authority is not exact';
+  END IF;
+END
+$trusted_bootstrap_authority$;
 DO $receipt_guard$
 DECLARE observed record;
 BEGIN
@@ -2955,12 +3106,13 @@ ${createAndConverge}
 DO $grantor_topology$
 DECLARE total_count integer;
 DECLARE canonical_count integer;
+DECLARE schema_owner_handoff_count integer;
 DECLARE granted_role_count integer;
 DECLARE grantor_count integer;
 BEGIN
   SELECT count(*),
          count(*) FILTER (
-           WHERE granted.rolname = ANY (ARRAY[${[...canonicalRoleNames, releaseSchemaOwnerRoleName].map(quoted).join(",")}])
+             WHERE granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
              AND member.rolname = '${canonicalBootstrapRoleName}'
              AND grantor.rolname <> '${canonicalBootstrapRoleName}'
              AND grantor.rolname <> ALL (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
@@ -2968,19 +3120,36 @@ BEGIN
              AND NOT membership.inherit_option
              AND NOT membership.set_option
          ),
+         count(*) FILTER (
+             WHERE granted.rolname = '${releaseSchemaOwnerRoleName}'
+             AND member.rolname = '${canonicalBootstrapRoleName}'
+             AND grantor.rolname <> '${canonicalBootstrapRoleName}'
+             AND grantor.rolname <> '${releaseSchemaOwnerRoleName}'
+             AND grantor.rolname <> ALL (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+             AND membership.admin_option
+             AND NOT membership.inherit_option
+             AND membership.set_option
+         ),
          count(DISTINCT granted.oid) FILTER (
-           WHERE granted.rolname = ANY (ARRAY[${[...canonicalRoleNames, releaseSchemaOwnerRoleName].map(quoted).join(",")}])
+             WHERE granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
              AND member.rolname = '${canonicalBootstrapRoleName}'
          ),
-         count(DISTINCT grantor.oid)
-  INTO total_count, canonical_count, granted_role_count, grantor_count
+         count(DISTINCT grantor.oid) FILTER (
+             WHERE granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+             AND member.rolname = '${canonicalBootstrapRoleName}'
+         )
+  INTO total_count, canonical_count, schema_owner_handoff_count,
+       granted_role_count, grantor_count
   FROM pg_auth_members membership
   JOIN pg_roles granted ON granted.oid = membership.roleid
   JOIN pg_roles member ON member.oid = membership.member
   JOIN pg_roles grantor ON grantor.oid = membership.grantor
   WHERE (
-      granted.rolname = ANY (ARRAY[${[...canonicalRoleNames, releaseSchemaOwnerRoleName].map(quoted).join(",")}])
-      OR member.rolname = ANY (ARRAY[${[...canonicalRoleNames, releaseSchemaOwnerRoleName].map(quoted).join(",")}])
+      granted.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+      OR member.rolname = ANY (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+      OR granted.rolname = '${releaseSchemaOwnerRoleName}'
+      OR member.rolname = '${releaseSchemaOwnerRoleName}'
+      OR grantor.rolname = '${releaseSchemaOwnerRoleName}'
       OR granted.rolname = '${canonicalBootstrapRoleName}'
       OR member.rolname = '${canonicalBootstrapRoleName}'
     )
@@ -2988,12 +3157,14 @@ BEGIN
     AND member.rolname <> '${activationReceiptGuardRoleName}'
   ;
   IF total_count <> ${canonicalRoleNames.length + 1}
-     OR canonical_count <> ${canonicalRoleNames.length + 1}
-     OR granted_role_count <> ${canonicalRoleNames.length + 1}
+     OR canonical_count <> ${canonicalRoleNames.length}
+     OR schema_owner_handoff_count <> 1
+     OR granted_role_count <> ${canonicalRoleNames.length}
      OR grantor_count <> 1 THEN
     RAISE EXCEPTION
-      'refusing non-canonical role membership topology: total %, canonical %, roles %, grantors %',
-      total_count, canonical_count, granted_role_count, grantor_count;
+      'refusing non-canonical role membership topology: total %, canonical %, schema owner handoff %, roles %, grantors %',
+      total_count, canonical_count, schema_owner_handoff_count,
+      granted_role_count, grantor_count;
   END IF;
 END
 $grantor_topology$;
@@ -3041,7 +3212,6 @@ END
 $database_delegation$;
 GRANT USAGE ON SCHEMA public TO reviewrouter_release_migration;
 GRANT USAGE, CREATE ON SCHEMA public TO ${releaseSchemaOwnerRoleName};
-GRANT ${releaseSchemaOwnerRoleName} TO reviewrouter_role_bootstrap WITH SET TRUE;
 DO $ownership$
 DECLARE unexpected_owner text;
 BEGIN
@@ -3143,7 +3313,7 @@ $transfer_public_ownership$;
 -- path required by ALTER ... OWNER TO. Other sessions cannot observe either
 -- edge, and every later failure rolls their creation back with the transfer.
 GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap
-  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE GRANTED BY CURRENT_ROLE;
 GRANT ${releaseSchemaOwnerRoleName} TO reviewrouter_release_migration
   WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
 SET LOCAL ROLE reviewrouter_release_migration;
@@ -3206,26 +3376,46 @@ BEGIN
 END
 $transfer_release_public_ownership$;
 RESET ROLE;
-REVOKE ${releaseSchemaOwnerRoleName} FROM reviewrouter_release_migration GRANTED BY CURRENT_ROLE;
-REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE;
-DO $temporary_owner_transfer_edges_absent$
+DO $release_owner_transfer_edge_cleanup$
+DECLARE edge record;
+DECLARE canonical_count integer;
 BEGIN
-  IF EXISTS (
-    SELECT 1
+  FOR edge IN
+    SELECT granted.rolname AS granted_name, member.rolname AS member_name,
+      grantor.rolname AS grantor_name
     FROM pg_auth_members membership
     JOIN pg_roles granted ON granted.oid = membership.roleid
     JOIN pg_roles member ON member.oid = membership.member
     JOIN pg_roles grantor ON grantor.oid = membership.grantor
-    WHERE (granted.rolname = '${releaseSchemaOwnerRoleName}'
-        AND member.rolname = 'reviewrouter_release_migration')
-      OR (granted.rolname = 'reviewrouter_release_migration'
-        AND member.rolname = 'reviewrouter_role_bootstrap'
-        AND grantor.rolname = 'reviewrouter_role_bootstrap')
-  ) THEN
-    RAISE EXCEPTION 'temporary public ownership transfer membership survived convergence';
+    WHERE granted.rolname = 'reviewrouter_release_migration'
+      AND member.rolname = '${canonicalBootstrapRoleName}'
+      AND grantor.rolname = '${canonicalBootstrapRoleName}'
+  LOOP
+    EXECUTE format('REVOKE %I FROM %I GRANTED BY %I CASCADE',
+      edge.granted_name,edge.member_name,edge.grantor_name);
+  END LOOP;
+  SELECT count(*) FILTER (
+    WHERE grantor.rolname <> '${canonicalBootstrapRoleName}'
+      AND grantor.rolname <> ALL (ARRAY[${canonicalRoleNames.map(quoted).join(",")}])
+      AND membership.admin_option
+      AND NOT membership.inherit_option
+      AND NOT membership.set_option
+  ) INTO canonical_count
+  FROM pg_auth_members membership
+  JOIN pg_roles grantor ON grantor.oid=membership.grantor
+  WHERE membership.roleid='reviewrouter_release_migration'::regrole
+    AND membership.member='${canonicalBootstrapRoleName}'::regrole;
+  IF EXISTS (
+      SELECT 1 FROM pg_auth_members membership
+      WHERE membership.roleid='reviewrouter_release_migration'::regrole
+        AND membership.member='${canonicalBootstrapRoleName}'::regrole
+        AND membership.grantor='${canonicalBootstrapRoleName}'::regrole
+    ) OR canonical_count <> 1 THEN
+    RAISE EXCEPTION
+      'temporary release owner transfer cleanup or canonical membership failed';
   END IF;
 END
-$temporary_owner_transfer_edges_absent$;
+$release_owner_transfer_edge_cleanup$;
 DO $public_ownership_converged$
 BEGIN
   IF EXISTS (
@@ -3281,7 +3471,6 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $rr_guarded_release_executor_v1$
 DECLARE permit_result text;
-DECLARE observed_post_catalog_digest text;
 BEGIN
   IF session_user <> 'reviewrouter_release_migration' THEN
     RAISE EXCEPTION 'release migration executor caller invalid';
@@ -3354,13 +3543,9 @@ ${guardedAclGate}
   ) THEN
     RAISE EXCEPTION 'release migration executor runtime write gate mismatch';
   END IF;
-  SELECT digest INTO STRICT observed_post_catalog_digest
-  FROM (${fencedLiveV70V72CatalogDigestSql}) live(digest);
   PERFORM reviewrouter_activation.complete_migration_permit(
     requested_rollout_id,requested_permit_epoch,requested_permit_nonce,
     pg_catalog.jsonb_build_object(
-      'postManifestIdentity','sha256:553576dcf644278cdc464d3465e34e0814862cd44c76784d89bb61c65f04b303',
-      'postCatalogDigest',observed_post_catalog_digest,
       'legacyReconciliation',requested_legacy_reconciliation,
       'effectFingerprint','sha256:'||pg_catalog.encode(pg_catalog.sha256(
         pg_catalog.convert_to(requested_rollout_id||':'||
@@ -3418,6 +3603,16 @@ BEGIN
   END IF;
 END
 $transferred_public_routine_acl_gate$;
+${
+  ownerAuthorizedInitialRuntimeGateClosed
+    ? `-- A fresh target may need its first canonical ACL projection before the
+-- external permit can bind the expected post-catalog digest. This executes
+-- only while the transaction-local schema-owner SET edge is active. The
+-- guarded executor must still consume and complete a one-shot permit below.
+${guardedGrants}
+${guardedAclGate}`
+    : ""
+}
 GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(
   text,text,text,text,text,bigint,text,jsonb,boolean) TO reviewrouter_release_migration;
 GRANT SELECT ON TABLE public._prisma_migrations TO reviewrouter_release_migration;
@@ -3425,7 +3620,6 @@ GRANT SELECT ("id","status") ON TABLE public."CodexOAuthLease",
   public."CodexOAuthSetupManifest", public."CodexOAuthWritebackIntent"
   TO reviewrouter_release_migration;
 RESET ROLE;
-REVOKE ${releaseSchemaOwnerRoleName} FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE;
 CREATE SCHEMA IF NOT EXISTS reviewrouter_bootstrap AUTHORIZATION reviewrouter_role_bootstrap;
 DO $bootstrap_schema$
 BEGIN
@@ -3437,52 +3631,171 @@ $bootstrap_schema$;
 REVOKE ALL ON SCHEMA reviewrouter_bootstrap FROM PUBLIC;
 GRANT USAGE ON SCHEMA reviewrouter_bootstrap TO reviewrouter_release_migration;
 DO $activation_authority_boundary$
+DECLARE failed_invariant text;
 BEGIN
-  IF to_regclass('reviewrouter_activation.activation_permit') IS NULL
-     OR to_regclass('reviewrouter_activation.activation_receipt') IS NULL
-     OR to_regclass('reviewrouter_activation.activation_principal_evidence') IS NULL
-     OR to_regclass('reviewrouter_activation.migration_permit') IS NULL
-     OR to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.activate_generation(text)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()') IS NULL
-     OR to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)') IS NULL
-     OR to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)') IS NULL
-     OR pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_permit'::regclass)) <> '${activationReceiptGuardRoleName}'
-     OR pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_receipt'::regclass)) <> '${activationReceiptGuardRoleName}'
-     OR pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_principal_evidence'::regclass)) <> '${activationReceiptGuardRoleName}'
-     OR pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.migration_permit'::regclass)) <> '${activationReceiptGuardRoleName}'
-     OR has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)','EXECUTE')
-     OR has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.activate_generation(text)','EXECUTE')
-     OR has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.activate_generation(text)','EXECUTE')
-     OR has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.stage_principal_evidence(text)','EXECUTE')
-     OR has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.stage_principal_evidence(text)','EXECUTE')
-     OR has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.project_effective_principal_authority(text)','EXECUTE')
-     OR has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.validate_principal_evidence(text,bigint)','EXECUTE')
-     OR has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.canonical_json(jsonb)','EXECUTE')
-     OR has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.canonical_json(jsonb)','EXECUTE')
-     OR NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.stage_principal_evidence(text)','EXECUTE')
-     OR NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.activate_generation(text)','EXECUTE')
-     OR NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.read_activation_receipt(text)','EXECUTE')
-     OR has_table_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.activation_receipt','SELECT')
-     OR has_table_privilege('${canonicalBootstrapRoleName}','reviewrouter_activation.activation_receipt','SELECT')
-     OR NOT has_function_privilege('${canonicalBootstrapRoleName}','reviewrouter_activation.assert_no_activation_receipt()','EXECUTE')
-     OR NOT has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.read_activation_receipt(text)','EXECUTE')
-     OR NOT has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)','EXECUTE')
-     OR NOT has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)','EXECUTE')
-     OR has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)','EXECUTE')
-     OR has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)','EXECUTE')
-     OR NOT has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)','EXECUTE')
-     OR NOT has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)','EXECUTE')
-     OR NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.read_migration_receipt(text,bigint,text)','EXECUTE')
-     OR NOT has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.read_migration_receipt(text,bigint,text)','EXECUTE') THEN
-    RAISE EXCEPTION 'external activation authority boundary is not installed canonically';
+  IF EXISTS (
+    SELECT 1
+    FROM pg_proc routine
+    CROSS JOIN LATERAL aclexplode(
+      coalesce(routine.proacl, acldefault('f', routine.proowner))
+    ) acl
+    LEFT JOIN pg_roles grantee ON grantee.oid = acl.grantee
+    WHERE routine.oid =
+      'reviewrouter_activation.read_activation_migration_manifest_identity()'::regprocedure
+      AND acl.privilege_type = 'EXECUTE'
+      AND (
+        acl.grantee = 0
+        OR grantee.rolname NOT IN (
+          '${activationReceiptGuardRoleName}',
+          '${activationPermitInstallerRoleName}',
+          '${activationReceiptReaderRoleName}',
+          'reviewrouter_release_migration'
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION
+      'activation_authority_boundary:unrelated_principal_manifest_identity_execute_present';
+  END IF;
+  IF NOT has_function_privilege(
+    '${activationPermitInstallerRoleName}',
+    'reviewrouter_activation.read_activation_migration_manifest_identity()',
+    'EXECUTE'
+  ) OR NOT has_function_privilege(
+    '${activationReceiptReaderRoleName}',
+    'reviewrouter_activation.read_activation_migration_manifest_identity()',
+    'EXECUTE'
+  ) OR NOT has_function_privilege(
+    'reviewrouter_release_migration',
+    'reviewrouter_activation.read_activation_migration_manifest_identity()',
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION
+      'activation_authority_boundary:required_manifest_identity_execute_missing';
+  END IF;
+  IF NOT has_function_privilege(
+    '${activationReceiptReaderRoleName}',
+    'reviewrouter_activation.read_migration_receipt(text,bigint,text)',
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION
+      'activation_authority_boundary:receipt_reader_migration_receipt_execute_missing';
+  END IF;
+  CASE
+    WHEN to_regclass('reviewrouter_activation.activation_permit') IS NULL THEN
+      failed_invariant := 'activation_permit_relation_missing';
+    WHEN to_regclass('reviewrouter_activation.activation_receipt') IS NULL THEN
+      failed_invariant := 'activation_receipt_relation_missing';
+    WHEN to_regclass('reviewrouter_activation.activation_principal_evidence') IS NULL THEN
+      failed_invariant := 'activation_principal_evidence_relation_missing';
+    WHEN to_regclass('reviewrouter_activation.migration_permit') IS NULL THEN
+      failed_invariant := 'migration_permit_relation_missing';
+    WHEN to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)') IS NULL THEN
+      failed_invariant := 'install_activation_permit_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.project_effective_principal_authority(text)') IS NULL THEN
+      failed_invariant := 'project_effective_principal_authority_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)') IS NULL THEN
+      failed_invariant := 'validate_principal_evidence_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)') IS NULL THEN
+      failed_invariant := 'stage_principal_evidence_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.activate_generation(text)') IS NULL THEN
+      failed_invariant := 'activate_generation_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.read_activation_receipt(text)') IS NULL THEN
+      failed_invariant := 'read_activation_receipt_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()') IS NULL THEN
+      failed_invariant := 'assert_no_activation_receipt_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)') IS NULL THEN
+      failed_invariant := 'install_migration_permit_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)') IS NULL THEN
+      failed_invariant := 'consume_migration_permit_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)') IS NULL THEN
+      failed_invariant := 'complete_migration_permit_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)') IS NULL THEN
+      failed_invariant := 'terminalize_migration_permit_routine_missing';
+    WHEN to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)') IS NULL THEN
+      failed_invariant := 'read_migration_receipt_routine_missing';
+    ELSE NULL;
+  END CASE;
+  IF failed_invariant IS NULL THEN
+    CASE
+      WHEN pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_permit'::regclass)) <> '${activationReceiptGuardRoleName}' THEN
+        failed_invariant := 'activation_permit_owner_mismatch';
+      WHEN pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_receipt'::regclass)) <> '${activationReceiptGuardRoleName}' THEN
+        failed_invariant := 'activation_receipt_owner_mismatch';
+      WHEN pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.activation_principal_evidence'::regclass)) <> '${activationReceiptGuardRoleName}' THEN
+        failed_invariant := 'activation_principal_evidence_owner_mismatch';
+      WHEN pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='reviewrouter_activation.migration_permit'::regclass)) <> '${activationReceiptGuardRoleName}' THEN
+        failed_invariant := 'migration_permit_owner_mismatch';
+      ELSE NULL;
+    END CASE;
+  END IF;
+  IF failed_invariant IS NULL THEN
+    CASE
+      WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)','EXECUTE') THEN
+        failed_invariant := 'release_migration_install_activation_permit_execute_present';
+      WHEN has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.activate_generation(text)','EXECUTE') THEN
+        failed_invariant := 'permit_installer_activate_generation_execute_present';
+      WHEN has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.activate_generation(text)','EXECUTE') THEN
+        failed_invariant := 'receipt_reader_activate_generation_execute_present';
+      WHEN has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.stage_principal_evidence(text)','EXECUTE') THEN
+        failed_invariant := 'permit_installer_stage_principal_evidence_execute_present';
+      WHEN has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.stage_principal_evidence(text)','EXECUTE') THEN
+        failed_invariant := 'receipt_reader_stage_principal_evidence_execute_present';
+      WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.project_effective_principal_authority(text)','EXECUTE') THEN
+        failed_invariant := 'release_migration_project_authority_execute_present';
+      WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.validate_principal_evidence(text,bigint)','EXECUTE') THEN
+        failed_invariant := 'release_migration_validate_principal_evidence_execute_present';
+      WHEN has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.canonical_json(jsonb)','EXECUTE') THEN
+        failed_invariant := 'permit_installer_canonical_json_execute_present';
+      WHEN has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.canonical_json(jsonb)','EXECUTE') THEN
+        failed_invariant := 'receipt_reader_canonical_json_execute_present';
+      WHEN NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.stage_principal_evidence(text)','EXECUTE') THEN
+        failed_invariant := 'release_migration_stage_principal_evidence_execute_missing';
+      WHEN NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.activate_generation(text)','EXECUTE') THEN
+        failed_invariant := 'release_migration_activate_generation_execute_missing';
+      WHEN NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.read_activation_receipt(text)','EXECUTE') THEN
+        failed_invariant := 'release_migration_read_activation_receipt_execute_missing';
+      WHEN has_table_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.activation_receipt','SELECT') THEN
+        failed_invariant := 'receipt_reader_activation_receipt_select_present';
+      -- Bootstrap is intentionally still a superuser until the final atomic
+      -- cleanup/demotion. has_table_privilege() would therefore always report
+      -- true here even with no ACL. Inspect the exact catalog grant instead;
+      -- the post-commit connection proof separately rejects surviving
+      -- superuser authority.
+      WHEN EXISTS (
+        SELECT 1
+        FROM pg_class relation
+        CROSS JOIN LATERAL aclexplode(
+          coalesce(relation.relacl, acldefault('r', relation.relowner))
+        ) acl
+        WHERE relation.oid=
+          'reviewrouter_activation.activation_receipt'::regclass
+          AND acl.grantee='${canonicalBootstrapRoleName}'::regrole
+          AND acl.privilege_type='SELECT'
+      ) THEN
+        failed_invariant := 'bootstrap_activation_receipt_select_present';
+      WHEN NOT has_function_privilege('${canonicalBootstrapRoleName}','reviewrouter_activation.assert_no_activation_receipt()','EXECUTE') THEN
+        failed_invariant := 'bootstrap_assert_no_activation_receipt_execute_missing';
+      WHEN NOT has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.read_activation_receipt(text)','EXECUTE') THEN
+        failed_invariant := 'receipt_reader_read_activation_receipt_execute_missing';
+      WHEN NOT has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)','EXECUTE') THEN
+        failed_invariant := 'permit_installer_install_migration_permit_execute_missing';
+      WHEN NOT has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)','EXECUTE') THEN
+        failed_invariant := 'permit_installer_terminalize_migration_permit_execute_missing';
+      WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)','EXECUTE') THEN
+        failed_invariant := 'release_migration_consume_migration_permit_execute_present';
+      WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)','EXECUTE') THEN
+        failed_invariant := 'release_migration_complete_migration_permit_execute_present';
+      WHEN NOT has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)','EXECUTE') THEN
+        failed_invariant := 'schema_owner_consume_migration_permit_execute_missing';
+      WHEN NOT has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)','EXECUTE') THEN
+        failed_invariant := 'schema_owner_complete_migration_permit_execute_missing';
+      WHEN NOT has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.read_migration_receipt(text,bigint,text)','EXECUTE') THEN
+        failed_invariant := 'release_migration_read_migration_receipt_execute_missing';
+      ELSE NULL;
+    END CASE;
+  END IF;
+  IF failed_invariant IS NOT NULL THEN
+    RAISE EXCEPTION 'activation_authority_boundary:%', failed_invariant;
   END IF;
 END
 $activation_authority_boundary$;
@@ -3685,6 +3998,39 @@ $receipt$;
 ALTER FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) OWNER TO reviewrouter_role_bootstrap;
 REVOKE ALL ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION reviewrouter_bootstrap.consume_migration_evidence(text,text,text,text,integer,text,text,text,text,text,text) TO reviewrouter_release_migration;
+-- The trusted release-owned transaction retains superuser authority through
+-- all setup. Resolve every schema-owner-related membership by its actual PG17
+-- catalog grantor, prove the topology empty, then self-demote as the final
+-- statement before the atomic commit.
+DO $schema_owner_membership_cleanup$
+DECLARE edge record;
+BEGIN
+  LOOP
+    SELECT granted.rolname AS granted_name, member.rolname AS member_name,
+      grantor.rolname AS grantor_name INTO edge
+    FROM pg_auth_members membership
+    JOIN pg_roles granted ON granted.oid=membership.roleid
+    JOIN pg_roles member ON member.oid=membership.member
+    JOIN pg_roles grantor ON grantor.oid=membership.grantor
+    WHERE membership.roleid='${releaseSchemaOwnerRoleName}'::regrole
+       OR membership.member='${releaseSchemaOwnerRoleName}'::regrole
+       OR membership.grantor='${releaseSchemaOwnerRoleName}'::regrole
+    ORDER BY granted.rolname,member.rolname,grantor.rolname
+    LIMIT 1;
+    EXIT WHEN NOT FOUND;
+    EXECUTE format('REVOKE %I FROM %I GRANTED BY %I CASCADE',
+      edge.granted_name,edge.member_name,edge.grantor_name);
+  END LOOP;
+  IF EXISTS (SELECT 1 FROM pg_auth_members membership
+    WHERE membership.roleid='${releaseSchemaOwnerRoleName}'::regrole
+       OR membership.member='${releaseSchemaOwnerRoleName}'::regrole
+       OR membership.grantor='${releaseSchemaOwnerRoleName}'::regrole) THEN
+    RAISE EXCEPTION
+      'release schema owner membership survived trusted bootstrap cleanup';
+  END IF;
+END
+$schema_owner_membership_cleanup$;
+ALTER ROLE ${canonicalBootstrapRoleName} NOSUPERUSER NOCREATEROLE;
 COMMIT;
 `;
 }
@@ -3720,13 +4066,17 @@ function observeConnectionRole(run, step, url, env) {
   );
 }
 
-function assertConnectionRole(observed, expectedUser, expectCreateRole) {
+function assertConnectionRole(
+  observed,
+  expectedUser,
+  { expectSuperuser = false, expectCreateRole = false } = {},
+) {
   if (
     observed?.currentUser !== expectedUser ||
     observed?.sessionUser !== expectedUser ||
     observed?.login !== true ||
     observed?.createRole !== expectCreateRole ||
-    observed?.superuser !== false ||
+    observed?.superuser !== expectSuperuser ||
     observed?.createDatabase !== false ||
     observed?.replication !== false ||
     observed?.bypassRls !== false
@@ -3871,6 +4221,12 @@ REVOKE USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA public FROM ${username};`,
     .join("\n")}`;
 }
 
+/**
+ * Standalone convergence for a legitimate bootstrap/database administrator
+ * that still owns, or has grant authority over, the target catalog. Once
+ * ownership has converged, release LOGIN callers must use the permit-guarded
+ * executor instead of this administrative path.
+ */
 export function runtimeGrantSql(configuration, { gateClosed = false } = {}) {
   const runtimeRoleLiterals = configuration.roles
     .map(({ username }) => quoted(username))
@@ -4268,13 +4624,22 @@ export function executeCanonicalRoleBootstrap(
       bootstrapEnv,
     ),
     "reviewrouter_role_bootstrap",
-    true,
+    { expectSuperuser: true, expectCreateRole: true },
   );
   run(
     "provision_roles",
     "psql",
     [configuration.bootstrapUrl, "--no-psqlrc", "--quiet"],
     { env: bootstrapEnv, input: roleProvisioningSql(configuration) },
+  );
+  assertConnectionRole(
+    observeConnectionRole(
+      run,
+      "verify_bootstrap_demotion",
+      configuration.bootstrapUrl,
+      bootstrapEnv,
+    ),
+    "reviewrouter_role_bootstrap",
   );
   const releaseEnv = { ...env, DATABASE_URL: configuration.releaseUrl };
   assertConnectionRole(
@@ -4285,7 +4650,6 @@ export function executeCanonicalRoleBootstrap(
       releaseEnv,
     ),
     "reviewrouter_release_migration",
-    false,
   );
   const verifiedRoles = observeCanonicalRoleTopology(
     run,
@@ -4328,7 +4692,6 @@ export function executeCanonicalReleaseMigration(
       childEnv,
     ),
     "reviewrouter_release_migration",
-    false,
   );
   const preflightOutput = run(
     "migration_history_preflight",

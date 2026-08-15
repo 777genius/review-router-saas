@@ -716,6 +716,19 @@ docker cp "$contract_tmp/activation-authority.sql" \
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -d rr_activation_target \
   -f /tmp/activation-authority.sql >/dev/null
 
+# Exercise the same trusted-bootstrap convergence used by production before
+# asserting the final activation readiness contract. Provider authority is
+# temporary; the provisioning transaction transfers ownership, removes the
+# schema-owner handoff, and self-demotes bootstrap before commit.
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
+  "ALTER ROLE reviewrouter_role_bootstrap SUPERUSER CREATEROLE" >/dev/null
+node --import tsx -e "Promise.all([import('./scripts/run-codex-rotating-release-migration.mjs'),import('./scripts/rehearse-private-pg17-rollout.mjs')]).then(([migration,rehearsal]) => { const configuration={...rehearsal.disposableSqlConfiguration(),releaseUrl:'postgresql://reviewrouter_release_migration:migration@127.0.0.1:5432/rr_activation_target'}; process.stdout.write(migration.roleProvisioningSql(configuration,{ownerAuthorizedInitialRuntimeGateClosed:false})); })" \
+  > "$contract_tmp/activation-role-provisioning.sql"
+docker cp "$contract_tmp/activation-role-provisioning.sql" \
+  "$name:/tmp/activation-role-provisioning.sql" >/dev/null
+docker exec "$name" psql -v ON_ERROR_STOP=1 -U reviewrouter_role_bootstrap \
+  -d rr_activation_target -f /tmp/activation-role-provisioning.sql >/dev/null
+
 REVIEW_ROUTER_RELEASE_AUTHORITY_CONTROL_TEST_URL="postgresql://reviewrouter_release_control:control@127.0.0.1:$postgres_port/postgres" \
 REVIEW_ROUTER_RELEASE_AUTHORITY_WITNESS_TEST_URL="postgresql://reviewrouter_release_witness:witness@127.0.0.1:$postgres_port/postgres" \
 REVIEW_ROUTER_RELEASE_AUTHORITY_ADMIN_TEST_URL="postgresql://postgres:test@127.0.0.1:$postgres_port/postgres" \

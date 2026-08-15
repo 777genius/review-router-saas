@@ -100,34 +100,23 @@ describe("Codex rotating immutable migration history policy", () => {
     expect(source).not.toMatch(/reviewrouter_release_(?:control|witness)/u);
   });
 
-  it("loads the exact 000069 source digest and queries it plus the obsolete alias", () => {
+  it("derives migration names from the canonical manifest and validates the complete history", () => {
     const expectedMigrationNames = Object.keys(
       checkedInCodexRotatingMigrationChecksums,
     );
-    const sourceMigrationNames =
-      /const migrationNames = \[([\s\S]+?)\] as const;/u
-        .exec(preflightSource)?.[1]
-        ?.match(/"[^"]+"/gu)
-        ?.map((name) => JSON.parse(name));
-    const queriedMigrationNames = /WHERE "migration_name" IN \(([\s\S]+?)\)/u
-      .exec(preflightSource)?.[1]
-      ?.match(/'[^']+'/gu)
-      ?.map((name) => name.slice(1, -1));
-
-    expect(sourceMigrationNames).toEqual(expectedMigrationNames);
-    expect(queriedMigrationNames).toEqual([
-      ...expectedMigrationNames.slice(0, -1),
-      obsoleteReleaseRolloutLedgerMigrationAlias,
-      forwardUnpublishedCodexRotatingMigration.name,
-    ]);
-    expect(sourceMigrationNames).toContain(
+    expect(expectedMigrationNames).toContain(
       forwardUnpublishedCodexRotatingMigration.name,
     );
-    expect(queriedMigrationNames).toContain(
-      forwardUnpublishedCodexRotatingMigration.name,
+    expect(preflightSource).toContain(
+      "const migrationNames = canonicalReleaseMigrationEntries.map(",
     );
-    expect(queriedMigrationNames).toContain(
-      obsoleteReleaseRolloutLedgerMigrationAlias,
+    expect(preflightSource).toContain(
+      "for (const {\n  migrationName,\n  migrationSqlSha256: immutableChecksum,\n} of canonicalReleaseMigrationEntries)",
+    );
+    expect(preflightSource).toContain('FROM "_prisma_migrations"');
+    expect(preflightSource).not.toContain('WHERE "migration_name" IN');
+    expect(preflightSource).toContain(
+      "canonicalReleaseMigrationResumeManifestIdentities.includes(",
     );
   });
 

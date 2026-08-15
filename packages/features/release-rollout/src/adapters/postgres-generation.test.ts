@@ -103,13 +103,13 @@ describe("PostgreSQL effective-principal catalog adapter", () => {
 
   it("separates type ownership from the database ACL projection", () => {
     expect(effectivePrincipalInventorySql).toMatch(
-      /AND type\.typtype IN \('d','e','m','r','c'\)\n  UNION ALL\n  SELECT coalesce\(grantee\.rolname,'PUBLIC'\),\n    CASE acl\.privilege_type WHEN 'CONNECT' THEN 'database:connect'/u,
+      /AND type\.typtype IN \('d','e','m','r','c'\)\n {2}UNION ALL\n {2}SELECT coalesce\(grantee\.rolname,'PUBLIC'\),\n {4}CASE acl\.privilege_type WHEN 'CONNECT' THEN 'database:connect'/u,
     );
   });
 
   it("separates type ACLs from the table ACL projection", () => {
     expect(effectivePrincipalInventorySql).toMatch(
-      /AND type\.typtype IN \('d','e','m','r','c'\)\n  UNION ALL\n  SELECT coalesce\(grantee\.rolname,'PUBLIC'\),\n    CASE acl\.privilege_type WHEN 'INSERT' THEN 'table:insert'/u,
+      /AND type\.typtype IN \('d','e','m','r','c'\)\n {2}UNION ALL\n {2}SELECT coalesce\(grantee\.rolname,'PUBLIC'\),\n {4}CASE acl\.privilege_type WHEN 'INSERT' THEN 'table:insert'/u,
     );
   });
 

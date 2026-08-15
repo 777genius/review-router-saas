@@ -360,7 +360,12 @@ const targetEndpointReadiness = <T extends readonly Record<string, unknown>[]>(
   rows: T,
   manifestIdentity: string,
   postCatalogDigest: string,
-) =>
+): Array<
+  T[number] & {
+    readonly applicationMigrationManifestIdentity: string;
+    readonly applicationPostCatalogDigest: string;
+  }
+> =>
   rows.map((row) => ({
     ...row,
     applicationMigrationManifestIdentity: manifestIdentity,

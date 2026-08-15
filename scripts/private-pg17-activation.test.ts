@@ -277,7 +277,8 @@ describe("target-local PG17 activation permit", () => {
       "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
     );
     expect(source).toContain("disposablePg17CanonicalRoleBootstrapSetupSql()");
-    expect(source).toContain("roleProvisioningSql(configuration)");
+    expect(source).toContain("roleProvisioningSql(configuration, {");
+    expect(source).toContain("ownerAuthorizedInitialRuntimeGateClosed: true");
     expect(
       source.indexOf(
         "canonicalRoleBootstrapSetup.publicTableAclCanonicalization",
@@ -287,25 +288,56 @@ describe("target-local PG17 activation permit", () => {
         "canonicalRoleBootstrapSetup.activationAuthorityProvisioning",
       ),
     );
+    expect(source).not.toContain(
+      "canonicalRoleBootstrapSetup.bootstrapDemotion",
+    );
+    expect(source.indexOf("roleProvisioningSql(configuration, {")).toBeLessThan(
+      source.indexOf("atomicMigrationAndGrantSql(configuration, {"),
+    );
+    const seedInitializer = source.slice(
+      source.indexOf("const initializeSeed = () =>"),
+      source.indexOf("type CaseContext"),
+    );
+    expect(seedInitializer).not.toContain("runtimeGrantSql(");
     expect(
-      source.indexOf(
-        "canonicalRoleBootstrapSetup.activationAuthorityProvisioning",
-      ),
+      seedInitializer.indexOf("ownerAuthorizedInitialRuntimeGateClosed: true"),
     ).toBeLessThan(
-      source.indexOf("canonicalRoleBootstrapSetup.bootstrapDemotion"),
+      seedInitializer.indexOf("const expectedPostCatalogDigest ="),
     );
     expect(
-      source.indexOf("canonicalRoleBootstrapSetup.bootstrapDemotion"),
-    ).toBeLessThan(source.indexOf("roleProvisioningSql(configuration)"));
-    expect(source.indexOf("roleProvisioningSql(configuration)")).toBeLessThan(
-      source.indexOf("runtimeGrantSql(configuration, { gateClosed: true })"),
+      seedInitializer.indexOf("const expectedPostCatalogDigest ="),
+    ).toBeLessThan(
+      seedInitializer.indexOf(
+        "reviewrouter_activation.install_migration_permit(",
+      ),
+    );
+    expect(
+      seedInitializer.indexOf(
+        "reviewrouter_activation.install_migration_permit(",
+      ),
+    ).toBeLessThan(
+      seedInitializer.indexOf("atomicMigrationAndGrantSql(configuration, {"),
     );
     expect(source).toContain('"@reviewrouter/platform-db"');
     expect(source).toContain('"db:migrate:deploy"');
     expect(source).toContain("clone immutable production-shaped seed");
-    expect(source).toContain("arrange?.(context);");
-    expect(source.indexOf("arrange?.(context);")).toBeLessThan(
-      source.indexOf("lockDownProvider(context);"),
+    expect(source).toContain(
+      "const reactivateDisposableAdversarialAdminOffline =",
+    );
+    expect(source).toContain(
+      "ALTER ROLE ${adversarialAdminUsername}\n       NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    );
+    expect(source).toContain('"postgres",\n      "--single"');
+    expect(
+      source.indexOf("reactivateDisposableAdversarialAdminOffline(volume)"),
+    ).toBeLessThan(source.indexOf("startContainer(container, volume, false)"));
+    expect(source).toContain(
+      "const trustedBootstrap = arrange?.(context) === true;",
+    );
+    expect(
+      source.indexOf("const trustedBootstrap = arrange?.(context) === true;"),
+    ).toBeLessThan(
+      source.indexOf("lockDownProvider(context, { trustedBootstrap });"),
     );
     expect(source).toContain(
       "canonicalActivationCatalogPolicies.preactivation.policy",
@@ -334,7 +366,10 @@ describe("target-local PG17 activation permit", () => {
     );
     expect(preReadinessAclProof).toContain("attestDisposableCaptureSql()");
     expect(preReadinessAclProof).toContain("captureCandidateSql()");
-    expect(source).toContain("'rr-disposable-'||encode(sha256(convert_to(");
+    expect(source).toContain(
+      "'rr-disposable-'||encode(pg_catalog.sha256(convert_to(",
+    );
+    expect(source).not.toMatch(/(?<!pg_catalog\.)sha256\(convert_to\(/u);
     expect(source).toContain(
       "shobj_description(oid,'pg_database')::jsonb\n    ->'disposableCaptureAttestation'->>'identity'",
     );
@@ -401,6 +436,10 @@ describe("target-local PG17 activation permit", () => {
     );
     expect(authority).toContain(
       "TO reviewrouter_activation_permit_installer, reviewrouter_activation_receipt_reader",
+    );
+    expect(authority).toContain("reviewrouter_release_migration;");
+    expect(authority).not.toContain(
+      "reviewrouter_release_migration, reviewrouter_release_schema_owner",
     );
     expect(authority).toContain(
       "evidence->>'commit' = permit.expected_commit_sha",
@@ -543,7 +582,19 @@ describe("target-local PG17 activation permit", () => {
       "SELECT count(*) FROM reviewrouter_activation.activation_receipt",
     );
     expect(sql).toContain(
-      "external activation authority boundary is not installed canonically",
+      "RAISE EXCEPTION 'activation_authority_boundary:%', failed_invariant",
+    );
+    expect(sql).toContain(
+      "activation_authority_boundary:receipt_reader_migration_receipt_execute_missing",
+    );
+    expect(sql).not.toContain(
+      "activation_authority_boundary:schema_owner_manifest_identity_execute_missing",
+    );
+    expect(sql).toContain(
+      "activation_authority_boundary:unrelated_principal_manifest_identity_execute_present",
+    );
+    expect(sql).toContain(
+      "activation_authority_boundary:required_manifest_identity_execute_missing",
     );
     expect(sql).toContain(
       "activation receipt guard must have no membership edges",
@@ -557,6 +608,46 @@ describe("target-local PG17 activation permit", () => {
     );
     expect(sql).not.toContain(
       "CREATE TABLE IF NOT EXISTS reviewrouter_bootstrap.release_runner_job_ledger",
+    );
+  });
+
+  it("uses one canonical schema-owner handoff and removes it after role provisioning", () => {
+    const authority = activationAuthorityProvisioningSql();
+    const provisioning = roleProvisioningSql(configuration);
+    const convergence = "DO $schema_owner_membership_convergence$";
+    const handoff =
+      "GRANT reviewrouter_release_schema_owner TO reviewrouter_role_bootstrap\n  WITH ADMIN TRUE, INHERIT FALSE, SET TRUE;";
+    expect(authority).toContain(convergence);
+    expect(authority).toContain(handoff);
+    expect(
+      authority.match(
+        /GRANT reviewrouter_release_schema_owner TO reviewrouter_role_bootstrap/gu,
+      ),
+    ).toHaveLength(1);
+    expect(authority).not.toContain("GRANTED BY CURRENT_ROLE");
+    expect(authority).not.toContain("schema_owner_handoff_normalization");
+    expect(authority.indexOf(convergence)).toBeLessThan(
+      authority.indexOf(handoff),
+    );
+    expect(authority.indexOf(handoff)).toBeLessThan(
+      authority.indexOf("DO $schema_owner_handoff$"),
+    );
+    expect(authority).toContain(
+      "AND grantor.rolname<>'reviewrouter_role_bootstrap'",
+    );
+    expect(authority).toContain("DO $schema_owner_handoff$");
+    expect(provisioning).toContain(
+      "AND grantor.rolname <> 'reviewrouter_role_bootstrap'\n             AND grantor.rolname <> 'reviewrouter_release_schema_owner'",
+    );
+    expect(provisioning).toContain("DO $schema_owner_membership_cleanup$");
+    expect(provisioning).not.toContain(
+      "GRANT reviewrouter_release_schema_owner TO reviewrouter_role_bootstrap",
+    );
+    expect(provisioning).toContain(
+      "release schema owner membership survived trusted bootstrap cleanup",
+    );
+    expect(provisioning).toContain(
+      "ALTER ROLE reviewrouter_role_bootstrap NOSUPERUSER NOCREATEROLE;\nCOMMIT;",
     );
   });
 
