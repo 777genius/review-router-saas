@@ -4440,7 +4440,7 @@ BEGIN
   INTO manifest_identity
   FROM public._prisma_migrations
   WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;
-  IF manifest_identity <> 'sha256:553576dcf644278cdc464d3465e34e0814862cd44c76784d89bb61c65f04b303'
+  IF manifest_identity <> 'sha256:81dd8e6f9e3a799e462c26d1aa2684309df915416369b54f8499a8d793d5e623'
     THEN RAISE EXCEPTION 'release migration post manifest mismatch'; END IF;
   IF EXISTS (SELECT 1 FROM public._prisma_migrations
     WHERE finished_at IS NULL AND rolled_back_at IS NULL)

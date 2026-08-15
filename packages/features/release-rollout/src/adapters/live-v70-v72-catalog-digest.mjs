@@ -110,13 +110,16 @@ WITH selected_relations AS (
       FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
       WHERE n.nspname='public'),'[]'::jsonb),
     'history',CASE WHEN reviewrouter_activation.read_activation_migration_manifest_identity()
-      = 'sha256:553576dcf644278cdc464d3465e34e0814862cd44c76784d89bb61c65f04b303'
+      = 'sha256:81dd8e6f9e3a799e462c26d1aa2684309df915416369b54f8499a8d793d5e623'
       THEN jsonb_build_array(
         jsonb_build_object('name','000070_runtime_generation_witness_proof',
           'checksum','cb9c42171f9bd924d21093852a1053cb947100acef1321ec8cf62e8fd5928c6f',
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000071_transactional_service_transition',
           'checksum','36ecd5c6b880bd9cd4ad76a20fdd9e4ceafcc3e524e924eb3c7b0c78116da093',
+          'finished',true,'rolledBack',false),
+        jsonb_build_object('name','000072_retire_superseded_codex_setup_claims',
+          'checksum','a0105a5498bacf23ec59687f6b43c70cecc075665231c37d970edcf8c0855fb3',
           'finished',true,'rolledBack',false),
         jsonb_build_object('name','000072_runtime_canary_challenge',
           'checksum','48ac05b9da6031456de6b7bab2bc9ee46dc3b7bc5cb7ef45c7a5db1ee3956b68',

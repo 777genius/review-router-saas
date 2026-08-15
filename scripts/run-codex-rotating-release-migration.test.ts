@@ -4,6 +4,7 @@ import {
   liveV70V72CatalogDigestSha256 as fencedLiveV70V72CatalogDigestSha256,
   fencedLiveV70V72CatalogDigestSql,
 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
+import { canonicalReleaseMigrationArtifact } from "../packages/features/release-rollout/src/domain/release-migration-transition";
 import {
   adaptGuardedMigrationForSchemaOwner,
   activationAuthorityProvisioningSql,
@@ -484,6 +485,15 @@ describe("canonical exclusive release migration caller", () => {
           },
         },
       },
+    );
+    expect(atomicMigration).toContain(
+      canonicalReleaseMigrationArtifact.postManifestIdentity,
+    );
+    expect(fencedLiveV70V72CatalogDigestSql).toContain(
+      canonicalReleaseMigrationArtifact.postManifestIdentity,
+    );
+    expect(fencedLiveV70V72CatalogDigestSql).toContain(
+      "000072_retire_superseded_codex_setup_claims",
     );
     expect(activationAuthority).toContain(
       "reviewrouter_activation.migration_permit",
