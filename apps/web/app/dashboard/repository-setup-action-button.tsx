@@ -26,6 +26,7 @@ export function RepositorySetupActionButton({
   archived,
   setupStatus,
   workflowCurrent,
+  workflowRefresh = false,
   mutationsEnabled,
   variant = "solid",
   onComplete,
@@ -36,6 +37,7 @@ export function RepositorySetupActionButton({
   readonly archived: boolean;
   readonly setupStatus: string;
   readonly workflowCurrent: boolean;
+  readonly workflowRefresh?: boolean;
   readonly mutationsEnabled: boolean;
   readonly variant?: "solid" | "soft" | "outline" | "ghost";
   readonly onComplete?: (params: Record<string, string>) => void;
@@ -44,7 +46,11 @@ export function RepositorySetupActionButton({
   const [isPending, startTransition] = useTransition();
   const [toast, setToast] = useState<SetupActionToast | null>(null);
   const disabled =
-    !mutationsEnabled || !selected || archived || workflowCurrent || isPending;
+    !mutationsEnabled ||
+    !selected ||
+    archived ||
+    (workflowCurrent && !workflowRefresh) ||
+    isPending;
 
   function completeWithoutUrl(params: Record<string, string>): void {
     setToast((current) => ({
@@ -131,17 +137,21 @@ export function RepositorySetupActionButton({
             <span>
               {setupStatus === "setup_pr_open"
                 ? "Updating setup PR..."
-                : setupStatus === "needs_attention"
-                  ? "Recreating setup PR..."
-                  : "Creating setup PR..."}
+                : workflowRefresh
+                  ? "Updating setup PR..."
+                  : setupStatus === "needs_attention"
+                    ? "Recreating setup PR..."
+                    : "Creating setup PR..."}
             </span>
           </span>
-        ) : workflowCurrent ? (
+        ) : workflowCurrent && !workflowRefresh ? (
           "Installed"
         ) : (
           <>
             <SetupPrIcon />
-            {setupPrButtonLabel(setupStatus)}
+            {workflowRefresh
+              ? "Update setup PR"
+              : setupPrButtonLabel(setupStatus)}
           </>
         )}
       </Button>

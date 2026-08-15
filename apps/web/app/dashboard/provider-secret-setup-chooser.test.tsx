@@ -192,6 +192,28 @@ describe("ProviderSecretSetupChooser", () => {
     ).toBeNull();
   });
 
+  it("explains how to finish an incomplete rotating workflow namespace", async () => {
+    mockProviderSetupFetch().mockResolvedValueOnce(
+      providerSetupResponse({
+        params: {
+          error: "codex_rotating_workflow_namespace_not_ready",
+          workspace: "workspace_1",
+          section: "repositories",
+        },
+      }),
+    );
+
+    renderProviderSecretSetupChooser();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Verify versioned setup" }),
+    );
+
+    expect(
+      await screen.findByText(/run the fresh setup command above/i),
+    ).toBeTruthy();
+    expect(pageText()).not.toContain("could not save provider setup");
+  });
+
   it("keeps verification mode when the repository secret is missing", async () => {
     mockProviderSetupFetch().mockResolvedValueOnce(
       providerSetupResponse({
@@ -684,6 +706,50 @@ describe("ProviderSecretSetupChooser", () => {
       "all_prior_installers_and_writers_are_stopped",
     );
     expect(String(body.get("recoveryRequestId"))).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("verifies an already merged setup before forcing recovery", async () => {
+    const fetchMock = mockProviderSetupFetch()
+      .mockResolvedValueOnce(
+        setupCommandErrorResponse("codex_rotating_setup_recovery_required"),
+      )
+      .mockResolvedValueOnce(
+        providerSetupResponse({
+          params: {
+            notice: "provider_setup_confirmed",
+            workspace: "workspace_1",
+            section: "repositories",
+            repository: "777genius/plugin-kit-ai-starter-claude-python",
+          },
+        }),
+      );
+
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+
+    expect(
+      await screen.findByText(/setup pull request is already merged/i),
+    ).toBeTruthy();
+    const verifyButton = screen.getByRole("button", {
+      name: "Verify versioned setup",
+    });
+    expect((verifyButton as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(verifyButton);
+
+    expect(
+      await screen.findByText(/Authorized versioned setup is active/i),
+    ).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "/api/dashboard/provider-secret-setup/confirm",
+    );
   });
 
   it("explains setup lock contention as retryable", async () => {

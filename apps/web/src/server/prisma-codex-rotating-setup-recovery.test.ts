@@ -9,11 +9,11 @@ import {
 } from "@reviewrouter/features-provider-setup";
 import { fingerprintDatabaseRecoveryWitness } from "@reviewrouter/features-provider-setup";
 import {
-  canSupersedeUnclaimedRecoveryForAccountSwitch,
+  canSupersedeUnclaimedRecoveryRequest,
   PrismaCodexRotatingSetupRecovery,
   retirePriorNamespaceGeneration,
   supersedeMismatchedActiveRecoveryRequests,
-  supersedeUnclaimedRecoveryForAccountSwitch,
+  supersedeUnclaimedRecoveryRequest,
   validateCodexRotatingSetupRecoveryAcknowledgement,
 } from "./prisma-codex-rotating-setup-recovery";
 
@@ -145,7 +145,7 @@ describe("Prisma setup recovery status witness admission", () => {
 });
 
 describe("forced setup recovery authority retirement", () => {
-  it("admits account-switch supersession only for the fenced unclaimed manifest", async () => {
+  it("admits recovery retry supersession only for the fenced unclaimed manifest", async () => {
     const tx = {
       $queryRaw: vi
         .fn()
@@ -159,14 +159,16 @@ describe("forced setup recovery authority retirement", () => {
     };
 
     await expect(
-      canSupersedeUnclaimedRecoveryForAccountSwitch(tx as never, input),
+      canSupersedeUnclaimedRecoveryRequest(tx as never, input),
     ).resolves.toBe(true);
     await expect(
-      canSupersedeUnclaimedRecoveryForAccountSwitch(tx as never, input),
+      canSupersedeUnclaimedRecoveryRequest(tx as never, input),
     ).resolves.toBe(false);
 
     const query = sqlText(tx.$queryRaw.mock.calls[0]!);
-    expect(query).toContain("recovery.\"mode\" = 'forced_reseed'");
+    expect(query).toContain(
+      "recovery.\"mode\" IN ('forced_reseed', 'forced_reseed_account_switch')",
+    );
     expect(query).toContain('manifest."payloadClaimedAt" IS NULL');
     expect(query).toContain("provider.\"mutationOwner\" = 'setup'");
     expect(query).toContain("NOT EXISTS (");
@@ -183,17 +185,19 @@ describe("forced setup recovery authority retirement", () => {
     };
 
     await expect(
-      supersedeUnclaimedRecoveryForAccountSwitch(tx as never, input),
+      supersedeUnclaimedRecoveryRequest(tx as never, input),
     ).resolves.toBeUndefined();
     const update = sqlText(tx.$executeRaw.mock.calls[0]!);
     expect(update).toContain("SET \"state\" = 'superseded'");
-    expect(update).toContain("recovery.\"mode\" = 'forced_reseed'");
+    expect(update).toContain(
+      "recovery.\"mode\" IN ('forced_reseed', 'forced_reseed_account_switch')",
+    );
     expect(update).toContain('manifest."payloadClaimedAt" IS NULL');
     expect(update).toContain("provider.\"mutationOwner\" = 'setup'");
 
     tx.$executeRaw.mockResolvedValueOnce(0);
     await expect(
-      supersedeUnclaimedRecoveryForAccountSwitch(tx as never, input),
+      supersedeUnclaimedRecoveryRequest(tx as never, input),
     ).rejects.toThrow("codex_rotating_setup_recovery_request_conflict");
   });
 

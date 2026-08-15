@@ -350,16 +350,15 @@ const setupPullRequestTitle = "chore: add ReviewRouter workflow";
 export function preferredSetupBaseBranches(
   defaultBranch: string,
 ): readonly string[] {
-  return [
-    ...new Set(["dev", "develop", defaultBranch].filter(Boolean)),
-  ] as const;
+  return [defaultBranch] as const;
 }
 
 const setupPullRequestBody = [
   "This PR installs the ReviewRouter GitHub Actions workflows.",
   "",
   "Security defaults:",
-  "- uses pull_request, not pull_request_target",
+  "- installs trusted pull_request_target ingress on the GitHub default branch",
+  "- never checks out untrusted pull request code in secret-backed jobs",
   "- checks out code with persist-credentials: false",
   "- skips secret-backed review for fork pull requests by default",
   "- uses GitHub OIDC for SaaS runtime config",

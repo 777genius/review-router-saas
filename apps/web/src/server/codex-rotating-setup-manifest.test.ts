@@ -176,6 +176,15 @@ describe("ordinary setup recovery-witness admission", () => {
       "setup_fence_allocation",
       "setup_sql_allocation",
     ]);
+    expect(tx.codexOAuthProviderInstance.update).toHaveBeenCalledWith({
+      where: { id: provider.id },
+      data: {
+        state: "setup_pending",
+        mutationEpoch: 1n,
+        mutationOwner: "setup",
+        mutationOwnerId: expect.stringMatching(/^codex_setup_/u),
+      },
+    });
   });
 
   it("does not allocate a provider when admitted operation denies setup", async () => {

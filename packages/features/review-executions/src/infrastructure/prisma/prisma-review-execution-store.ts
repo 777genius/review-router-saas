@@ -1255,59 +1255,65 @@ export class PrismaReviewExecutionStore
       now: Date,
     ) => Promise<ObservationAttachmentDecision>,
   ): Promise<ReviewObservationAttachmentResult> {
-    try {
-      return await this.prisma.$transaction(
-        async (transaction) => {
-          await lockScope(transaction, command.scope);
-          await lockStream(transaction, command.scope);
-          await lockExecution(transaction, command.executionId);
-          await lockWorkSlot(
-            transaction,
-            command.executionId,
-            command.workSlotId,
-          );
-          const target = await loadAttachmentTarget(transaction, command);
-          if (target === null) {
-            return { status: ReviewObservationAttachmentStatus.Missing };
-          }
-          const decision = await decide(
-            transaction,
-            target,
-            await databaseNow(transaction),
-          );
-          const result = await persistObservationDecision(
-            transaction,
-            target,
-            decision,
-          );
-          if (
-            result.status === ReviewObservationAttachmentStatus.Attached &&
-            result.snapshot
-          ) {
-            await this.captureProgress(transaction, result.snapshot.execution);
-          }
-          return result;
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-      );
-    } catch (error) {
-      if (isUniqueConstraintError(error)) {
-        const restored = await this.findExecution(command.executionId);
-        const ref = restored?.observationRefs.find(
-          (entry) => entry.workSlotId === command.workSlotId,
-        );
-        return ref?.observationRefId === command.observationRefId
-          ? {
-              status: ReviewObservationAttachmentStatus.Restored,
-              snapshot: restored ?? undefined,
+    // This transaction only mutates local execution state. A complete retry
+    // reloads all fences and cannot repeat a provider or SCM side effect.
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (transaction) => {
+            await lockScope(transaction, command.scope);
+            await lockStream(transaction, command.scope);
+            await lockExecution(transaction, command.executionId);
+            await lockWorkSlot(
+              transaction,
+              command.executionId,
+              command.workSlotId,
+            );
+            const target = await loadAttachmentTarget(transaction, command);
+            if (target === null) {
+              return { status: ReviewObservationAttachmentStatus.Missing };
             }
-          : { status: ReviewObservationAttachmentStatus.Conflict };
+            const decision = await decide(
+              transaction,
+              target,
+              await databaseNow(transaction),
+            );
+            const result = await persistObservationDecision(
+              transaction,
+              target,
+              decision,
+            );
+            if (
+              result.status === ReviewObservationAttachmentStatus.Attached &&
+              result.snapshot
+            ) {
+              await this.captureProgress(
+                transaction,
+                result.snapshot.execution,
+              );
+            }
+            return result;
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          const restored = await this.findExecution(command.executionId);
+          const ref = restored?.observationRefs.find(
+            (entry) => entry.workSlotId === command.workSlotId,
+          );
+          return ref?.observationRefId === command.observationRefId
+            ? {
+                status: ReviewObservationAttachmentStatus.Restored,
+                snapshot: restored ?? undefined,
+              }
+            : { status: ReviewObservationAttachmentStatus.Conflict };
+        }
+        if (isSerializationError(error) && attempt < 3) continue;
+        throw error;
       }
-      if (isSerializationError(error)) {
-        return { status: ReviewObservationAttachmentStatus.Conflict };
-      }
-      throw error;
     }
+    throw new Error("review_execution_attachment_retry_exhausted");
   }
 
   private async transitionExecutionLifecycle(

@@ -124,11 +124,11 @@ describe("hosted live-progress canary", () => {
     ).rejects.toThrow("hosted_progress_canary_producer_pin_invalid");
   });
 
-  it("fails closed until the exact v1.0.111 release is immutable", async () => {
+  it("fails closed until the exact v1.0.113 release is immutable", async () => {
     const github = fakeGitHub();
     github.getReleaseByTag.mockResolvedValue({
       id: 108,
-      tag_name: "v1.0.111",
+      tag_name: "v1.0.113",
       draft: false,
       prerelease: false,
       immutable: false,
@@ -424,7 +424,7 @@ function fakeGitHub() {
     getFile: vi.fn(async () => workflowFile()),
     getReleaseByTag: vi.fn(async () => ({
       id: 108,
-      tag_name: "v1.0.111",
+      tag_name: "v1.0.113",
       draft: false,
       prerelease: false,
       immutable: true,
@@ -535,7 +535,7 @@ function workflowFile(
 }
 function releaseAuthority() {
   return {
-    tag: "v1.0.111",
+    tag: "v1.0.113",
     releaseId: 108,
     publishedAt: "2026-08-13T10:00:00.000Z",
     immutable: true,

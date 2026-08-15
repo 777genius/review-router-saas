@@ -429,6 +429,7 @@ describe("disposable dual-version rehearsal", () => {
       "000069_release_rollout_ledger",
       "000070_runtime_generation_witness_proof",
       "000071_transactional_service_transition",
+      "000072_retire_superseded_codex_setup_claims",
       "000072_runtime_canary_challenge",
     ]);
     expect(exclusions).not.toContain("000067_review_live_progress");

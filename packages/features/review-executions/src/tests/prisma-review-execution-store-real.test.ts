@@ -494,13 +494,15 @@ if (databaseUrl) {
       const store = harness.executions as PrismaReviewExecutionStore;
       const now = new Date();
       const executionId = `execution-prune-${randomUUID()}`;
+      const protectedExecutionId = `execution-prune-protected-${randomUUID()}`;
+      const protectedWorkSlotId = `slot-prune-protected-${randomUUID()}`;
       const leaseId = `lease-prune-${randomUUID()}`;
       const investigationId = `investigation-prune-${randomUUID()}`;
       await prisma.reviewExecutionStreamV2.create({
         data: {
           ...harness.scope,
           version: 2n,
-          lastAllocatedGeneration: 1n,
+          lastAllocatedGeneration: 2n,
           updatedAt: now,
         },
       });
@@ -534,6 +536,44 @@ if (databaseUrl) {
           retainUntil: new Date(now.getTime() - 60_000),
         },
       });
+      await prisma.reviewExecutionV2.create({
+        data: {
+          executionId: protectedExecutionId,
+          ...harness.scope,
+          generation: 2n,
+          version: 2n,
+          baseSha: "d".repeat(40),
+          mergeBaseSha: "e".repeat(40),
+          headSha: "f".repeat(40),
+          reviewRevisionHash: hashFromText(
+            `protected-revision-${protectedExecutionId}`,
+          ),
+          compatibilityKey: "compatibility-v1",
+          planHash: hashFromText(`protected-plan-${protectedExecutionId}`),
+          startIdentityHash: hashFromText(
+            `protected-start-${protectedExecutionId}`,
+          ),
+          canonicalStartHash: hashFromText(
+            `protected-canonical-${protectedExecutionId}`,
+          ),
+          state: "superseded",
+          authorizationId: harness.authorizationId,
+          producerReleaseId: harness.producerReleaseId,
+          mutationEpoch: 1n,
+          admissionSafetyDecisionHash: hashFromText(
+            `protected-safety-${protectedExecutionId}`,
+          ),
+          protocolLimitsProfileId: limitsProfileId,
+          sourceRunId: "run-prune-protected",
+          sourceRunAttempt: "1",
+          createdAt: new Date(now.getTime() - 120_000),
+          updatedAt: new Date(now.getTime() - 90_000),
+          admissionDeadlineAt: new Date(now.getTime() - 110_000),
+          admissionCheckedAt: new Date(now.getTime() - 100_000),
+          executionDeadlineAt: new Date(now.getTime() - 80_000),
+          retainUntil: new Date(now.getTime() - 60_000),
+        },
+      });
       await prisma.reviewExecutionWorkSlotV2.create({
         data: {
           executionId,
@@ -548,6 +588,66 @@ if (databaseUrl) {
           retryPolicyVersion: "retry-v1",
           state: "cancelled",
           nextAttemptOrdinal: 2,
+        },
+      });
+      await prisma.reviewExecutionWorkSlotV2.create({
+        data: {
+          executionId: protectedExecutionId,
+          workSlotId: protectedWorkSlotId,
+          planOrdinal: 0,
+          taskKind: "finding_discovery",
+          providerKind: "codex",
+          providerVoteIdentityHash: hashFromText(
+            `protected-vote-${protectedExecutionId}`,
+          ),
+          shardKey: "shard-prune-protected",
+          required: true,
+          attemptBudget: 1,
+          retryPolicyVersion: "retry-v1",
+          state: "cancelled",
+          nextAttemptOrdinal: 1,
+        },
+      });
+      await prisma.reviewInvestigation.create({
+        data: {
+          investigationId: `investigation-prune-protected-${randomUUID()}`,
+          naturalIdentityHash: hashFromText(
+            `protected-investigation-${protectedExecutionId}`,
+          ),
+          ...harness.scope,
+          trustDomain: "disposable_test",
+          baseSha: "d".repeat(40),
+          mergeBaseSha: "e".repeat(40),
+          headSha: "f".repeat(40),
+          reviewRevisionHash: hashFromText(
+            `protected-revision-${protectedExecutionId}`,
+          ),
+          executionId: protectedExecutionId,
+          workSlotId: protectedWorkSlotId,
+          stableReviewUnitKey: `protected-unit-${protectedExecutionId}`,
+          providerVoteLaneId: hashFromText(
+            `protected-lane-${protectedExecutionId}`,
+          ),
+          providerStrategyId: "codex-disposable-test",
+          runtimeProfile: "gateway_attested_agent_v1",
+          coverageContractVersion: "coverage-prune.v1",
+          expansionRulesVersion: "expansion-prune.v1",
+          criticPolicyVersion: "critic-prune.v1",
+          gatewayPolicyVersion: "gateway-prune.v1",
+          probePolicyVersion: "probe-prune.v1",
+          producerReleaseId: harness.producerReleaseId,
+          runtimeProfileVersion: "runtime-prune.v1",
+          searchPolicyVersion: "search-prune.v1",
+          policy: {},
+          state: "provisional",
+          findings: [],
+          turnProvenance: [],
+          dossierDigest: hashFromText(
+            `protected-dossier-${protectedExecutionId}`,
+          ),
+          createdAt: now,
+          updatedAt: now,
+          retainUntil: new Date(now.getTime() + 60_000),
         },
       });
       await prisma.reviewInvocationLeaseV2.create({
@@ -686,6 +786,11 @@ if (databaseUrl) {
         deletedWorkSlots: 0,
         deletedExecutions: 0,
       });
+      await expect(
+        prisma.reviewExecutionV2.findUnique({
+          where: { executionId: protectedExecutionId },
+        }),
+      ).resolves.not.toBeNull();
     });
 
     it("uses database time rather than a caller-supplied future claim clock", async () => {
@@ -1146,6 +1251,7 @@ async function cleanupScope(workspaceId: string): Promise<void> {
   }
   await prisma.reviewEvidenceObservation.deleteMany({ where: { workspaceId } });
   await prisma.reviewInvocationLeaseV2.deleteMany({ where: { workspaceId } });
+  await prisma.reviewInvestigation.deleteMany({ where: { workspaceId } });
   await prisma.reviewInvocationLeaseTombstoneV2.deleteMany({
     where: {
       authorizationId: {

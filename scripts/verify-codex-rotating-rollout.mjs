@@ -1713,6 +1713,9 @@ function exactIndexDefinition(entry) {
       "recoveryEpoch",
     ],
     CodexOAuthSetupPayloadClaim_confirmedAttemptId_key: ["confirmedAttemptId"],
+    CodexOAuthSetupPayloadClaim_one_active_per_provider_key: [
+      "providerInstanceRowId",
+    ],
     CodexOAuthSetupPayloadClaim_provider_status_idx: [
       "providerInstanceRowId",
       "status",
@@ -1757,6 +1760,10 @@ function exactIndexDefinition(entry) {
       "state",
       "active",
       "manifest_issued",
+    ],
+    CodexOAuthSetupPayloadClaim_one_active_per_provider_key: [
+      "status",
+      "active",
     ],
     CodexOAuthWritebackIntent_versioned_lease_key: [
       "databaseIncarnation",
@@ -1806,6 +1813,7 @@ function exactIndexDefinition(entry) {
         "CodexOAuthSetupRecoveryRequest_provider_request_key",
         "CodexOAuthSetupRecoveryRequest_latestManifestId_key",
         "CodexOAuthSetupRecoveryRequest_one_active_provider_key",
+        "CodexOAuthSetupPayloadClaim_one_active_per_provider_key",
         "CodexOAuthSetupPayloadClaim_provider_operation_key",
         "CodexOAuthSetupPayloadClaim_provider_epoch_key",
         "CodexOAuthSetupPayloadClaim_confirmedAttemptId_key",

@@ -219,6 +219,10 @@ export function ProviderSecretSetupChooser({
     shouldFetchRotatingSetupCommand && rotatingSetupCommand.status === "ready"
       ? rotatingSetupCommand.command
       : staticActiveCommand;
+  const canVerifyRecoveredRotatingSetup =
+    rotatingCodexSelected &&
+    rotatingSetupCommand.status === "error" &&
+    rotatingSetupCommand.error === "codex_rotating_setup_recovery_required";
   const secretNames = rotatingCodexSelected
     ? "Server-authorized versioned secret"
     : (activeCommand?.secretNames.join(", ") ?? "GitHub secret");
@@ -513,6 +517,10 @@ export function ProviderSecretSetupChooser({
             {rotatingSetupCommand.error ===
             "codex_rotating_setup_recovery_required" ? (
               <div className="mt-3 border-t border-red-200/15 pt-3">
+                <p className="mb-3 text-red-50">
+                  If the setup pull request is already merged, verify that
+                  versioned setup below before issuing another command.
+                </p>
                 <label className="flex items-start gap-3 text-sm text-red-50">
                   <input
                     type="checkbox"
@@ -727,7 +735,11 @@ export function ProviderSecretSetupChooser({
               variant="solid"
               size="sm"
               className="min-h-11 rounded-xl px-5"
-              disabled={isSubmitting || confirmed || !activeCommand}
+              disabled={
+                isSubmitting ||
+                confirmed ||
+                (!activeCommand && !canVerifyRecoveredRotatingSetup)
+              }
               aria-busy={isSubmitting}
             >
               {isSubmitting ? (
@@ -899,6 +911,8 @@ function providerSetupSubmitErrorText(error: string): string {
       return "Rotating Codex OAuth is not enabled for this ReviewRouter deployment.";
     case "codex_rotating_setup_not_ready":
       return "ReviewRouter could not prove an active server-authorized versioned setup. Finish the versioned write and merge its exact workflow before retrying.";
+    case "codex_rotating_workflow_namespace_not_ready":
+      return "ReviewRouter has an unfinished versioned setup. Run the fresh setup command above, merge its exact workflow, then verify again.";
     default:
       return "The dashboard could not save provider setup. Retry once, then check server logs if it repeats.";
   }

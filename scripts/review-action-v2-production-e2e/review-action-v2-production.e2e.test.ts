@@ -361,6 +361,70 @@ describeWithDatabase.sequential(
       expect(body).toContain("Units not completed after retries: 1");
       expect(body).not.toContain("complete (100%)");
     }, 60_000);
+
+    it("finalizes exhausted work without regressing durable progress", async () => {
+      const fixture = requiredHarness(harness);
+      const flow = await fixture.createCommittedFlow({ attachSlotCount: 0 });
+
+      await fixture.releaseProviderLease(flow);
+      await fixture.terminalizeProgressSlot(flow.executionId, 0);
+      const finalized = await fixture.finalize(flow, { allowPartial: true });
+
+      expect(finalized.result.status).toBe(
+        ReviewExecutionMutationResultStatus.Applied,
+      );
+      await expect(
+        fixture.prisma.reviewExecutionProgressV1.findUniqueOrThrow({
+          where: { executionId: flow.executionId },
+          select: {
+            phase: true,
+            requiredExhausted: true,
+            requiredCancelled: true,
+            terminalOutcome: true,
+          },
+        }),
+      ).resolves.toEqual({
+        phase: "assembling",
+        requiredExhausted: 1,
+        requiredCancelled: 0,
+        terminalOutcome: null,
+      });
+    }, 60_000);
+
+    it("admits a successor over an exhausted active execution", async () => {
+      const fixture = requiredHarness(harness);
+      const authorization = await fixture.authorize();
+      const exhausted = await fixture.createCommittedFlow({
+        attachSlotCount: 0,
+        authorization,
+      });
+
+      await fixture.releaseProviderLease(exhausted);
+      await fixture.terminalizeProgressSlot(exhausted.executionId, 0);
+      const successor = await fixture.createCommittedFlow({
+        attachSlotCount: 0,
+        authorization,
+      });
+
+      await expect(
+        fixture.prisma.reviewExecutionV2.findUniqueOrThrow({
+          where: { executionId: exhausted.executionId },
+          select: { state: true },
+        }),
+      ).resolves.toEqual({ state: "superseded" });
+      await expect(
+        fixture.prisma.reviewExecutionWorkSlotV2.findMany({
+          where: { executionId: exhausted.executionId },
+          select: { state: true },
+        }),
+      ).resolves.toEqual([{ state: "exhausted" }]);
+      await expect(
+        fixture.prisma.reviewExecutionV2.findUniqueOrThrow({
+          where: { executionId: successor.executionId },
+          select: { state: true },
+        }),
+      ).resolves.toEqual({ state: "running" });
+    }, 60_000);
   },
 );
 

@@ -246,8 +246,7 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         );
         const maySupersedeActiveOtherRequest =
           activeOtherRequest !== null &&
-          input.accountSwitch &&
-          (await canSupersedeUnclaimedRecoveryForAccountSwitch(tx, {
+          (await canSupersedeUnclaimedRecoveryRequest(tx, {
             providerInstanceRowId: provider.id,
             recoveryRequestRowId: activeOtherRequest.id,
             currentWitness,
@@ -335,7 +334,9 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         const decision = input.decide({
           canonicalIdentity,
           quarantined: quarantine !== null,
-          mutationOwnership: ownership.classification,
+          mutationOwnership: maySupersedeActiveOtherRequest
+            ? "recoverable"
+            : ownership.classification,
           versionedNamespaceRecoveryAvailable: true,
           externalRecoveryWitnessRelation,
           recoveryRequestAlreadyApplied:
@@ -357,7 +358,7 @@ export class PrismaCodexRotatingSetupRecovery implements CodexRotatingSetupRecov
         }
 
         if (activeOtherRequest) {
-          await supersedeUnclaimedRecoveryForAccountSwitch(tx, {
+          await supersedeUnclaimedRecoveryRequest(tx, {
             providerInstanceRowId: provider.id,
             recoveryRequestRowId: activeOtherRequest.id,
             currentWitness,
@@ -520,7 +521,7 @@ async function findOtherActiveRecoveryRequest(
   return rows[0] ?? null;
 }
 
-export async function canSupersedeUnclaimedRecoveryForAccountSwitch(
+export async function canSupersedeUnclaimedRecoveryRequest(
   tx: Prisma.TransactionClient,
   input: {
     readonly providerInstanceRowId: string;
@@ -540,7 +541,7 @@ export async function canSupersedeUnclaimedRecoveryForAccountSwitch(
       WHERE recovery."id" = ${input.recoveryRequestRowId}
         AND recovery."providerInstanceRowId" = ${input.providerInstanceRowId}
         AND recovery."state" = 'manifest_issued'
-        AND recovery."mode" = 'forced_reseed'
+        AND recovery."mode" IN ('forced_reseed', 'forced_reseed_account_switch')
         AND recovery."databaseRecoveryWitness" IS NOT DISTINCT FROM ${input.currentWitness}
         AND manifest."status" IN ('issued', 'fetched')
         AND manifest."payloadClaimedAt" IS NULL
@@ -558,7 +559,7 @@ export async function canSupersedeUnclaimedRecoveryForAccountSwitch(
   return rows[0]?.allowed === true;
 }
 
-export async function supersedeUnclaimedRecoveryForAccountSwitch(
+export async function supersedeUnclaimedRecoveryRequest(
   tx: Prisma.TransactionClient,
   input: {
     readonly providerInstanceRowId: string;
@@ -574,7 +575,7 @@ export async function supersedeUnclaimedRecoveryForAccountSwitch(
     WHERE recovery."id" = ${input.recoveryRequestRowId}
       AND recovery."providerInstanceRowId" = ${input.providerInstanceRowId}
       AND recovery."state" = 'manifest_issued'
-      AND recovery."mode" = 'forced_reseed'
+      AND recovery."mode" IN ('forced_reseed', 'forced_reseed_account_switch')
       AND recovery."databaseRecoveryWitness" IS NOT DISTINCT FROM ${input.currentWitness}
       AND EXISTS (
         SELECT 1

@@ -80,6 +80,10 @@ const atomicReleaseMigrationEntries = Object.freeze([
     "36ecd5c6b880bd9cd4ad76a20fdd9e4ceafcc3e524e924eb3c7b0c78116da093",
   ],
   [
+    "000072_retire_superseded_codex_setup_claims",
+    "a0105a5498bacf23ec59687f6b43c70cecc075665231c37d970edcf8c0855fb3",
+  ],
+  [
     "000072_runtime_canary_challenge",
     "48ac05b9da6031456de6b7bab2bc9ee46dc3b7bc5cb7ef45c7a5db1ee3956b68",
   ],

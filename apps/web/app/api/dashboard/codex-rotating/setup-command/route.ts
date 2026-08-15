@@ -103,6 +103,12 @@ function codexRotatingSetupCommandErrorCode(error: unknown): string {
     return "rate_limited";
   }
   if (
+    message === "invalid_codex_rotating_installer_url" ||
+    message === "invalid_codex_rotating_installer_version"
+  ) {
+    return "server_misconfigured";
+  }
+  if (
     [
       "repository_not_found",
       "repository_not_selected",

@@ -50,7 +50,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
 
     expect(inventory).toBeDefined();
     expect(
-      [...(inventory ?? "").matchAll(/migration\d+Name/gu)].map(
+      [...(inventory ?? "").matchAll(/migration\d+[A-Za-z]*Name/gu)].map(
         ([name]) => name,
       ),
     ).toEqual([
@@ -66,7 +66,8 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration69Name",
       "migration70Name",
       "migration71Name",
-      "migration72Name",
+      "migration72RetireName",
+      "migration72CanaryName",
     ]);
     expect(source).toContain(
       'const migration67Name = "000067_review_live_progress"',
@@ -84,7 +85,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       'const migration71Name = "000071_transactional_service_transition"',
     );
     expect(source).toContain(
-      'const migration72Name = "000072_runtime_canary_challenge"',
+      'const migration72RetireName = "000072_retire_superseded_codex_setup_claims"',
+    );
+    expect(source).toContain(
+      'const migration72CanaryName = "000072_runtime_canary_challenge"',
     );
     expect(source).not.toContain("000067_release_rollout_ledger");
   });

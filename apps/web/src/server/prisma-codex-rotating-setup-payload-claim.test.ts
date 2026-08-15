@@ -838,7 +838,7 @@ describe("Prisma rotating setup writer proof", () => {
     }
   });
 
-  it("activates a confirmed namespace after dispatch expiry within the recovery window", async () => {
+  it("retires the previous active setup evidence before activating a confirmed namespace", async () => {
     const now = new Date("2999-01-01T00:11:00.000Z");
     const confirmedClaim = {
       ...claim,
@@ -857,15 +857,7 @@ describe("Prisma rotating setup writer proof", () => {
     };
     const tx = {
       $executeRawUnsafe: vi.fn().mockResolvedValue(0),
-      $executeRaw: vi
-        .fn()
-        .mockResolvedValueOnce(0)
-        .mockResolvedValueOnce(1)
-        .mockResolvedValueOnce(1)
-        .mockResolvedValueOnce(1)
-        .mockResolvedValueOnce(1)
-        .mockResolvedValueOnce(1)
-        .mockResolvedValueOnce(0),
+      $executeRaw: vi.fn().mockResolvedValue(1).mockResolvedValueOnce(0),
       $queryRaw: vi
         .fn()
         .mockResolvedValueOnce([confirmedClaim])
@@ -918,6 +910,15 @@ describe("Prisma rotating setup writer proof", () => {
         sourceTrust: "trusted_default_branch_revision",
       }),
     ).resolves.toEqual({ status: "active" });
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(6);
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(8);
+    const activationSql = tx.$executeRaw.mock.calls.map((call) =>
+      Array.from(call[0] as readonly string[]).join("?"),
+    );
+    expect(activationSql[0]).toContain(
+      'UPDATE "CodexOAuthSetupDispatchAttempt"',
+    );
+    expect(activationSql[0]).toContain("'retired_confirmed'");
+    expect(activationSql[1]).toContain('UPDATE "CodexOAuthSetupPayloadClaim"');
+    expect(activationSql[1]).toContain("'retired_active'");
   });
 });
