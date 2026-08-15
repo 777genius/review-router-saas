@@ -42,7 +42,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     "utf8",
   );
 
-  it("rehearses every canonical migration from 000060 through 000072 in order", () => {
+  it("rehearses every canonical migration from 000060 through 000073 in order", () => {
     const inventory =
       /JSON\.stringify\(\[([\s\S]+?)\]\),\n\s+"rehearsal migration inventory/u.exec(
         source,
@@ -67,6 +67,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "migration70Name",
       "migration71Name",
       "migration72Name",
+      "migration73Name",
     ]);
     expect(source).toContain(
       'const migration67Name = "000067_review_live_progress"',
@@ -85,6 +86,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain(
       'const migration72Name = "000072_retire_superseded_codex_setup_claims"',
+    );
+    expect(source).toContain(
+      'const migration73Name = "000073_codex_oauth_active_namespace_refresh"',
     );
     expect(source).not.toContain("000067_release_rollout_ledger");
   });
@@ -731,94 +735,114 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(ledgerProof).toContain("proof:rollback");
     expect(ledgerProof).toContain("proof:confirmed-restart");
     expect(ledgerProof).toContain("initialSetupTombstone");
-    expect(ledgerProof).toContain("recoverySetupTombstone");
-    expect(ledgerProof).toContain("definiteRuntimeTombstone");
-    expect(ledgerProof).toContain("ambiguousRuntimeTombstone");
-    expect(ledgerProof).toContain("activeRuntimeNamespace");
-    expect(ledgerProof).toContain("confirmedRestartRuntimeTombstone");
+    expect(ledgerProof).toContain("activeRecoverySetupNamespace");
+    expect(ledgerProof).toContain("definiteIntentOnRetiredInitialNamespace");
     expect(ledgerProof).toContain(
-      'evidence.recoverySetupTombstone?.claimStatus === "active"',
+      "recoveredAmbiguousIntentOnRetiredInitialNamespace",
+    );
+    expect(ledgerProof).toContain("completedIntentOnActiveRecoveryNamespace");
+    expect(ledgerProof).toContain(
+      "confirmedRestartUnknownIntentOnActiveRecoveryNamespace",
     );
     expect(ledgerProof).toContain(
-      'evidence.recoverySetupTombstone.attemptStatus === "confirmed"',
+      'evidence.activeRecoverySetupNamespace?.claimStatus === "active"',
     );
     expect(ledgerProof).toContain(
-      'evidence.recoverySetupTombstone.namespaceStatus ===\n        "retired_superseded"',
+      'evidence.activeRecoverySetupNamespace.attemptStatus === "confirmed"',
     );
     expect(ledgerProof).toContain(
-      "evidence.recoverySetupTombstone.permanentlyRetired === true",
+      'evidence.activeRecoverySetupNamespace.namespaceStatus === "active"',
     );
     expect(ledgerProof).toContain(
-      'evidence.definiteRuntimeTombstone?.intentStatus === "completed"',
+      "evidence.activeRecoverySetupNamespace.permanentlyRetired === false",
+    );
+    expect(ledgerProof).toMatch(
+      /evidence\.activeRecoverySetupNamespace\.namespaceId ===\s+evidence\.completedIntentOnActiveRecoveryNamespace\?\.namespaceId/u,
+    );
+    expect(ledgerProof).toMatch(
+      /evidence\.activeRecoverySetupNamespace\.namespaceId ===\s+evidence\.confirmedRestartUnknownIntentOnActiveRecoveryNamespace\s+\?\.namespaceId/u,
     );
     expect(ledgerProof).toContain(
-      'evidence.definiteRuntimeTombstone.namespaceStatus ===\n        "retired_superseded"',
+      'evidence.definiteIntentOnRetiredInitialNamespace?.intentStatus ===\n      "completed"',
     );
     expect(ledgerProof).toContain(
-      "evidence.definiteRuntimeTombstone.permanentlyRetired === true",
+      'evidence.definiteIntentOnRetiredInitialNamespace.namespaceStatus ===\n        "retired_superseded"',
     );
     expect(ledgerProof).toContain(
-      'evidence.confirmedRestartRuntimeTombstone?.intentStatus ===\n      "remote_outcome_unknown"',
+      "evidence.definiteIntentOnRetiredInitialNamespace.namespaceId ===\n        evidence.initialSetupTombstone.namespaceId",
     );
     expect(ledgerProof).toContain(
-      'evidence.confirmedRestartRuntimeTombstone.namespaceStatus ===\n        "retired_ambiguous"',
+      'evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace\n      ?.namespaceStatus === "retired_superseded"',
     );
     expect(ledgerProof).toContain(
-      "evidence.confirmedRestartRuntimeTombstone.permanentlyRetired === true",
+      "evidence.recoveredAmbiguousIntentOnRetiredInitialNamespace.namespaceId ===\n        evidence.initialSetupTombstone.namespaceId",
+    );
+    expect(ledgerProof).toMatch(
+      /evidence\.confirmedRestartUnknownIntentOnActiveRecoveryNamespace\s+\?\.intentStatus ===\s+"remote_outcome_unknown"/u,
+    );
+    expect(ledgerProof).toMatch(
+      /evidence\.confirmedRestartUnknownIntentOnActiveRecoveryNamespace\s+\.namespaceStatus === "active"/u,
+    );
+    expect(ledgerProof).toMatch(
+      /evidence\.confirmedRestartUnknownIntentOnActiveRecoveryNamespace\s+\.permanentlyRetired === false/u,
     );
     const confirmedRestartEvidence =
-      /'confirmedRestartRuntimeTombstone', \(([\s\S]+?)\n {8}\),\n {8}'provider'/u.exec(
+      /'confirmedRestartUnknownIntentOnActiveRecoveryNamespace', \(([\s\S]+?)\n {8}\),\n {8}'provider'/u.exec(
         ledgerProof ?? "",
       )?.[1];
     expect(confirmedRestartEvidence).toBeDefined();
     expect(confirmedRestartEvidence).not.toContain("recoveryRequestRowId");
     expect(ledgerProof).toContain(
-      "quoteLiteral(recoverySetupTombstone.claimId)",
+      "quoteLiteral(activeRecoverySetupNamespace.claimId)",
     );
     expect(ledgerProof).toContain(
-      "quoteLiteral(recoverySetupTombstone.attemptId)",
+      "quoteLiteral(activeRecoverySetupNamespace.attemptId)",
     );
     expect(ledgerProof).toContain(
-      'evidence.activeRuntimeNamespace?.intentStatus === "completed"',
+      'evidence.completedIntentOnActiveRecoveryNamespace?.intentStatus ===\n      "completed"',
     );
     expect(ledgerProof).toContain(
-      'evidence.activeRuntimeNamespace.namespaceStatus === "active"',
+      'evidence.completedIntentOnActiveRecoveryNamespace.namespaceStatus ===\n        "active"',
     );
     expect(ledgerProof).toContain(
-      "evidence.activeRuntimeNamespace.namespaceId",
+      "evidence.completedIntentOnActiveRecoveryNamespace.namespaceId",
     );
-    expect(ledgerProof).not.toContain("activeRuntimeNamespace.claimId");
-    expect(ledgerProof).not.toContain("activeRuntimeNamespace.attemptId");
+    expect(ledgerProof).not.toContain(
+      "completedIntentOnActiveRecoveryNamespace.claimId",
+    );
+    expect(ledgerProof).not.toContain(
+      "completedIntentOnActiveRecoveryNamespace.attemptId",
+    );
     expect(source).toContain(
-      '"confirmedAttemptId"=${quoteLiteral(evidence.recoverySetupTombstone.attemptId)}',
+      '"confirmedAttemptId"=${quoteLiteral(evidence.activeRecoverySetupNamespace.attemptId)}',
     );
     expect(source).toContain("intent.\"idempotencyKey\"='proof:rollback'");
     expect(source).toContain(
-      '"activeAccountIdentityHash"=${quoteLiteral(evidence.activeRuntimeNamespace.accountIdentityHash)}',
+      '"activeAccountIdentityHash"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.accountIdentityHash)}',
     );
     expect(source).toContain(
-      '"latestGenerationHash"=${quoteLiteral(evidence.activeRuntimeNamespace.latestGenerationHash)}',
+      '"latestGenerationHash"=${quoteLiteral(evidence.completedIntentOnActiveRecoveryNamespace.latestGenerationHash)}',
     );
     expect(ledgerProof).toMatch(
-      /evidence\.provider\?\.activeSecretNamespaceId ===\s+evidence\.activeRuntimeNamespace\.namespaceId/u,
+      /evidence\.provider\?\.activeSecretNamespaceId ===\s+evidence\.completedIntentOnActiveRecoveryNamespace\.namespaceId/u,
     );
     expect(ledgerProof).toMatch(
-      /evidence\.provider\.activeSecretNamespaceEpoch ===\s+evidence\.activeRuntimeNamespace\.namespaceEpoch/u,
+      /evidence\.provider\.activeSecretNamespaceEpoch ===\s+evidence\.completedIntentOnActiveRecoveryNamespace\.namespaceEpoch/u,
     );
     expect(ledgerProof).toMatch(
-      /evidence\.provider\.activeSecretNamespaceName ===\s+evidence\.activeRuntimeNamespace\.secretName/u,
+      /evidence\.provider\.activeSecretNamespaceName ===\s+evidence\.completedIntentOnActiveRecoveryNamespace\.secretName/u,
     );
     expect(ledgerProof).toMatch(
-      /evidence\.provider\.latestGenerationHash ===\s+evidence\.activeRuntimeNamespace\.latestGenerationHash/u,
+      /evidence\.provider\.latestGenerationHash ===\s+evidence\.completedIntentOnActiveRecoveryNamespace\.latestGenerationHash/u,
     );
     expect(source).toContain(
       '"status"=\'active\' AND NOT "permanentlyRetired"',
     );
     expect(ledgerProof).toContain(
-      "BigInt(evidence.initialSetupTombstone.namespaceEpoch) <",
+      "BigInt(evidence.initialSetupTombstone.namespaceEpoch) ===",
     );
     expect(ledgerProof).toContain(
-      "BigInt(evidence.activeRuntimeNamespace.namespaceEpoch) <\n        BigInt(evidence.confirmedRestartRuntimeTombstone.namespaceEpoch)",
+      "BigInt(evidence.activeRecoverySetupNamespace.namespaceEpoch) ===",
     );
     expect(ledgerProof).toContain("CodexOAuthSecretNamespace_secretName_key");
     expect(ledgerProof).not.toContain("claim-proof");

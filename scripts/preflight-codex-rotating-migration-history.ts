@@ -16,6 +16,7 @@ const migrationNames = [
   "000064_codex_oauth_versioned_secret_namespaces",
   "000065_codex_oauth_authority_acl_hardening",
   "000066_codex_oauth_rotating_cascade_authority",
+  "000073_codex_oauth_active_namespace_refresh",
   "000069_release_rollout_ledger",
 ] as const;
 
@@ -74,6 +75,7 @@ try {
             '000064_codex_oauth_versioned_secret_namespaces',
             '000065_codex_oauth_authority_acl_hardening',
             '000066_codex_oauth_rotating_cascade_authority',
+            '000073_codex_oauth_active_namespace_refresh',
             '000067_release_rollout_ledger',
             '000069_release_rollout_ledger'
           )

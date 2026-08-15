@@ -343,7 +343,7 @@ function ProviderSecretNotice({
             ? "ReviewRouter is validating the exact server-owned claim, confirmed attempt, active namespace, workflow evidence, and provider activation outcome."
             : secretStatus === "available_repository" ||
                 secretStatus === "available_organization"
-              ? "Readiness comes from the confirmed versioned claim and namespace activation chain; GitHub-hosted runs can now refresh into new versioned namespaces."
+              ? "Readiness comes from the confirmed versioned claim and namespace activation chain; GitHub-hosted runs refresh the active namespace without rewriting the protected default branch."
               : "Run the rotating OAuth setup command from the provider setup panel. A generic repository secret cannot satisfy this readiness check."}
         </p>
         {sharedProviderCopy ? (
