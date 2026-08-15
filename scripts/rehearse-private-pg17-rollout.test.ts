@@ -254,34 +254,24 @@ describe("disposable dual-version rehearsal", () => {
     );
     expect(sql).not.toMatch(/DROP SCHEMA (?:public|reviewrouter_)/u);
   });
-  it("cleans capture-only fixtures with release-migration authority and fails closed", () => {
-    const releaseMigrationDatabaseUrl =
-      "postgresql://reviewrouter_release_migration:secret@target/review_router";
-    const canonicalRun = vi.fn(() => ({ stdout: "" }));
+  it("delegates capture-only fixture cleanup to the attested disposable admin adapter", () => {
+    const executeSql = vi.fn(() => "cleaned");
 
     expect(
       cleanupCaptureOnlyRehearsalFixtures({
-        canonicalRun,
-        releaseMigrationDatabaseUrl,
+        executeSql,
       }),
-    ).toEqual({ stdout: "" });
-    expect(canonicalRun).toHaveBeenCalledWith(
-      "cleanup_capture_only_rehearsal_fixtures",
-      "psql",
-      [releaseMigrationDatabaseUrl, "--no-psqlrc", "--quiet"],
-      {
-        env: { DATABASE_URL: releaseMigrationDatabaseUrl },
-        input: captureOnlyRehearsalFixtureCleanupSql(),
-      },
+    ).toBe("cleaned");
+    expect(executeSql).toHaveBeenCalledWith(
+      captureOnlyRehearsalFixtureCleanupSql(),
     );
 
     const failure = new Error("must be owner of table rehearsal_items");
     expect(() =>
       cleanupCaptureOnlyRehearsalFixtures({
-        canonicalRun: vi.fn(() => {
+        executeSql: vi.fn(() => {
           throw failure;
         }),
-        releaseMigrationDatabaseUrl,
       }),
     ).toThrow(failure);
   });
@@ -976,6 +966,7 @@ describe("disposable dual-version rehearsal", () => {
       "cleanupCaptureOnlyRehearsalFixtures({",
       releaseMigration,
     );
+    expect(source).toContain("facts.sql(facts.targetContainer, statement)");
     const stageTarget = source.indexOf(
       "useCases.stageTargetServices(migratedRollout)",
     );
@@ -989,10 +980,13 @@ describe("disposable dual-version rehearsal", () => {
     expect(stageTarget).toBeLessThan(activate);
     const fixtureCleanupBranch = source.slice(fixtureCleanup, marker);
     expect(fixtureCleanupBranch).toContain(
-      "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
+      "facts.sql(facts.targetContainer, statement)",
     );
     expect(fixtureCleanupBranch).not.toContain(
       "REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL",
+    );
+    expect(fixtureCleanupBranch).not.toContain(
+      "REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL",
     );
     const captureBranch = source.slice(marker, stageTarget);
     expect(captureBranch).toContain(

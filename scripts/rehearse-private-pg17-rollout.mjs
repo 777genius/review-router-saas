@@ -175,19 +175,8 @@ $capture_fixture_cleanup$;
 COMMIT;`;
 }
 
-export function cleanupCaptureOnlyRehearsalFixtures({
-  canonicalRun,
-  releaseMigrationDatabaseUrl,
-}) {
-  return canonicalRun(
-    "cleanup_capture_only_rehearsal_fixtures",
-    "psql",
-    [releaseMigrationDatabaseUrl, "--no-psqlrc", "--quiet"],
-    {
-      env: { DATABASE_URL: releaseMigrationDatabaseUrl },
-      input: captureOnlyRehearsalFixtureCleanupSql(),
-    },
-  );
+export function cleanupCaptureOnlyRehearsalFixtures({ executeSql }) {
+  return executeSql(captureOnlyRehearsalFixtureCleanupSql());
 }
 
 export function validateRehearsalConfiguration(env) {
@@ -2981,9 +2970,7 @@ COMMIT;
         `${identity}:${facts.targetSystemIdentifier}:${facts.canonicalEnv.REVIEW_ROUTER_TARGET_RECOVERY_WITNESS_SHA256}`,
       );
       cleanupCaptureOnlyRehearsalFixtures({
-        canonicalRun,
-        releaseMigrationDatabaseUrl:
-          facts.canonicalEnv.REVIEW_ROUTER_RELEASE_MIGRATION_DATABASE_URL,
+        executeSql: (statement) => facts.sql(facts.targetContainer, statement),
       });
       canonicalRun(
         "mark_disposable_activation_catalog_database",
