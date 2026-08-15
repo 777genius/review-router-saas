@@ -122,6 +122,31 @@ export function stripAtomicMigrationEnvelope(source, migrationName) {
     .join("\n");
 }
 
+const schemaOwnerGuardedCompatibilityMigrations = new Set([
+  "000064_codex_oauth_versioned_secret_namespaces",
+  "000066_codex_oauth_rotating_cascade_authority",
+]);
+const legacyReleaseMigrationOwnerTransfer =
+  "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_release_migration') THEN";
+
+export function adaptGuardedMigrationForSchemaOwner(source, migrationName) {
+  if (!schemaOwnerGuardedCompatibilityMigrations.has(migrationName))
+    return source;
+
+  const occurrenceCount =
+    source.split(legacyReleaseMigrationOwnerTransfer).length - 1;
+  if (occurrenceCount !== 1)
+    throw new Error(
+      `release_migration_schema_owner_compatibility_invalid:${migrationName}`,
+    );
+
+  return source.replace(
+    legacyReleaseMigrationOwnerTransfer,
+    `${legacyReleaseMigrationOwnerTransfer.slice(0, -5)}
+     AND pg_has_role(current_user, 'reviewrouter_release_migration', 'SET') THEN`,
+  );
+}
+
 export function atomicReleaseMigrationBundleSql() {
   return atomicReleaseMigrationEntries
     .map(([migrationName, checksum], index) => {
@@ -173,7 +198,10 @@ function guardedAtomicReleaseMigrationBundleSql(entries) {
         throw new Error(
           `release_migration_bundle_source_mismatch:${migrationName}`,
         );
-      const body = stripAtomicMigrationEnvelope(source, migrationName);
+      const body = adaptGuardedMigrationForSchemaOwner(
+        stripAtomicMigrationEnvelope(source, migrationName),
+        migrationName,
+      );
       return `IF NOT EXISTS (
   SELECT 1 FROM public._prisma_migrations
   WHERE migration_name='${migrationName}' AND checksum='${checksum}'

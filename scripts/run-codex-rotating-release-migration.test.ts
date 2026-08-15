@@ -5,6 +5,7 @@ import {
   fencedLiveV70V72CatalogDigestSql,
 } from "../packages/features/release-rollout/src/adapters/live-v70-v72-catalog-digest.mjs";
 import {
+  adaptGuardedMigrationForSchemaOwner,
   activationAuthorityProvisioningSql,
   atomicMigrationAndGrantSql,
   activationPrincipalRoleCapabilityMatrix,
@@ -66,6 +67,30 @@ const migrationPermit = () => ({
 });
 
 describe("application database release-authority isolation", () => {
+  it("skips legacy owner transfers without granting schema-owner role reachability", () => {
+    const legacy =
+      "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'reviewrouter_release_migration') THEN\n  SELECT 1;\nEND IF;";
+    expect(
+      adaptGuardedMigrationForSchemaOwner(
+        legacy,
+        "000064_codex_oauth_versioned_secret_namespaces",
+      ),
+    ).toContain(
+      "AND pg_has_role(current_user, 'reviewrouter_release_migration', 'SET') THEN",
+    );
+    expect(adaptGuardedMigrationForSchemaOwner(legacy, "000070_other")).toBe(
+      legacy,
+    );
+    expect(() =>
+      adaptGuardedMigrationForSchemaOwner(
+        "SELECT 1;",
+        "000066_codex_oauth_rotating_cascade_authority",
+      ),
+    ).toThrow(
+      "release_migration_schema_owner_compatibility_invalid:000066_codex_oauth_rotating_cascade_authority",
+    );
+  });
+
   it("strips only a valid top-level migration transaction envelope", () => {
     expect(
       stripAtomicMigrationEnvelope(
@@ -968,6 +993,11 @@ describe("canonical exclusive release migration caller", () => {
     expect(guardedExecutor).not.toContain("observed_post_catalog_digest");
     expect(guardedExecutor).not.toMatch(/^(?:BEGIN|COMMIT);$/gmu);
     expect(guardedExecutor).toContain("ON COMMIT DROP");
+    expect(
+      guardedExecutor.match(
+        /AND pg_has_role\(current_user, 'reviewrouter_release_migration', 'SET'\) THEN/gu,
+      ),
+    ).toHaveLength(2);
     const completionGuardStart = activationAuthority.indexOf(
       "CREATE OR REPLACE FUNCTION reviewrouter_activation.complete_migration_permit(",
     );
