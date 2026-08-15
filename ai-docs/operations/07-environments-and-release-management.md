@@ -316,7 +316,13 @@ For a rotating A -> B release, use this fail-closed order:
 1. Keep primary A and deploy a trusted overlap containing B to every web/API
    instance. Wait for all exact deployments to be live.
 2. Change the rotating primary to B for new setup candidates while retaining A
-   in the overlap.
+   in the overlap. Update the installer descriptor as one release tuple at the
+   same time: `REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_VERSION`,
+   `REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_URL`, and
+   `REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_SHA256`. The immutable installer URL
+   must contain B's exact Action SHA, even when the script digest did not change
+   between releases. Deploy web, API, and worker only after every value in the
+   tuple has been staged; a partial tuple intentionally blocks setup issuance.
 3. Do not rewrite an active A namespace in place. Existing namespaces remain
    pinned to their already-attested Action SHA; migrate them only through a
    fenced drain and fresh setup/namespace activation.
