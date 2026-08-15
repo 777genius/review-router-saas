@@ -1346,6 +1346,7 @@ ROLLBACK;`,
       throw new Error(
         "private_pg17_rehearsal_pre_migration_readiness_unproven",
       );
+    process.stderr.write("rehearsal_control_stage_started:create_app\n");
     releaseControl = await createReleaseControlApp({
       controlPrisma,
       providerAuthorityPrisma,
@@ -1374,21 +1375,27 @@ ROLLBACK;`,
         ),
       readinessPolicy: rehearsalReadinessPolicy,
     });
+    process.stderr.write("rehearsal_control_stage_completed:create_app\n");
     releaseControl.addHook("onError", async (_request, _reply, error) => {
       process.stderr.write(
         `rehearsal_control_error:${redactedErrorChain(error)}\n`,
       );
     });
+    process.stderr.write("rehearsal_control_stage_started:app_ready\n");
     await releaseControl.ready();
-    await waitForRehearsalControlReady(
-      async () =>
-        (
-          await releaseControl.inject({
-            method: "GET",
-            url: "/health",
-          })
-        ).statusCode,
-    );
+    process.stderr.write("rehearsal_control_stage_completed:app_ready\n");
+    process.stderr.write("rehearsal_control_stage_started:health_ready\n");
+    await waitForRehearsalControlReady(async () => {
+      const status = (
+        await releaseControl.inject({ method: "GET", url: "/health" })
+      ).statusCode;
+      if (status !== 200)
+        process.stderr.write(
+          `rehearsal_control_health_not_ready:status=${status}\n`,
+        );
+      return status;
+    });
+    process.stderr.write("rehearsal_control_stage_completed:health_ready\n");
     const controlFetch = async (input, init) => {
       const requestUrl = new URL(String(input));
       const response = await releaseControl.inject({

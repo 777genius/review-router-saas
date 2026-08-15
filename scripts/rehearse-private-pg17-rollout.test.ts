@@ -887,6 +887,10 @@ describe("disposable dual-version rehearsal", () => {
     expect(bootstrapStage).toBeLessThan(releaseMigrationStage);
     expect(source).toContain("rehearsal_canonical_step_failed:${step}");
     expect(source).toContain("safePostgresErrorClassification(result.stderr)");
+    expect(source).toContain("rehearsal_control_stage_started:health_ready");
+    expect(source).toContain(
+      "rehearsal_control_health_not_ready:status=${status}",
+    );
     expect(source).toContain("rehearsal_canonical_postgres_error:${step}");
     expect(source).toContain(
       "rehearsal_stage_failed:${safeName}:${redactedErrorChain(error)}",
