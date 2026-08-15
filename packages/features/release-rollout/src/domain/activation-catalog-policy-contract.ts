@@ -1,13 +1,9 @@
 import { sha256Canonical } from "./release-rollout";
 import generatedActivationCatalogPolicyArtifact from "./activation-catalog-policy-artifact.generated.js";
-import {
-  canonicalActivationPrincipalNames,
-  canonicalBootstrapMembershipRoleNames,
-  type ActivationCatalogPolicy,
-} from "./effective-principal-inventory";
+import { type ActivationCatalogPolicy } from "./effective-principal-inventory";
 import {
   assertActivationCatalogPolicyNormalizationForProfile,
-  type ActivationCatalogPolicyNormalizationProfile,
+  productionActivationCatalogPolicyNormalizationProfile,
 } from "./activation-catalog-policy-normalization";
 
 export type ActivationCatalogPolicyPhase = "preactivation" | "activated";
@@ -22,30 +18,13 @@ export type ActivationCatalogPolicyDigests = Readonly<{
   activatedCatalogPolicySha256: string;
 }>;
 
-// The checked-in v20 artifact remains independently pinned until the rollout
-// orchestrator captures and promotes the schema-owner topology. Live capture
-// uses canonicalActivationPrincipalNames; this validator deliberately proves
-// only the immutable artifact that is currently promoted.
-const promotedArtifactPrincipalNames = canonicalActivationPrincipalNames.filter(
-  (name) => name !== "reviewrouter_release_schema_owner",
-);
-const promotedArtifactNormalizationProfile: ActivationCatalogPolicyNormalizationProfile =
-  Object.freeze({
-    principalNames: promotedArtifactPrincipalNames,
-    bootstrapMembershipRoleNames: canonicalBootstrapMembershipRoleNames,
-    noLoginPrincipalNames: Object.freeze([
-      "reviewrouter_activation_receipt_guard",
-    ]),
-    createRolePrincipalNames: Object.freeze(["reviewrouter_role_bootstrap"]),
-  });
-
 export const canonicalActivationCatalogPolicyTrustRootReadiness: Readonly<{
   status: "blocked" | "ready";
   reason: string;
 }> = Object.freeze({
   status: "ready",
   reason:
-    "reviewed-v20-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
+    "reviewed-v21-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
 });
 
 export function assertCanonicalActivationCatalogPolicyTrustRootReady(): void {
@@ -127,9 +106,9 @@ export const canonicalActivationCatalogPolicyDigests = Object.freeze({
 
 export const reviewedActivationCatalogPolicyDigests = Object.freeze({
   preactivationCatalogPolicySha256:
-    "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
+    "sha256:fd10781b8716338b98191bc5f1631afb40b956f8027321eb2f2352bca658fe25",
   activatedCatalogPolicySha256:
-    "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
+    "sha256:f3245ae1409631c6ceb31228e642b787bb591f682cc5c7be8e4c3621a50933e7",
 });
 
 if (
@@ -177,7 +156,7 @@ export function assertActivationCatalogPolicyNormalization(
     assertActivationCatalogPolicyNormalizationForProfile(
       value,
       phase,
-      promotedArtifactNormalizationProfile,
+      productionActivationCatalogPolicyNormalizationProfile,
     );
   } catch {
     throw new Error(`activation_catalog_policy_normalization_invalid:${phase}`);

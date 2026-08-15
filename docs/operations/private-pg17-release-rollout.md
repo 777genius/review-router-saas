@@ -139,11 +139,13 @@ kinds make projection fail closed. The built-in languages and tablespaces are
 accepted only in their immutable default shape. No catalog-local OID is admitted
 to the artifact.
 
-The promoted trust root is generated from the independently reviewed v19
-candidate. Immutable capture, image, phase-digest, and final-review evidence is
-recorded in the adjacent `activation-catalog-policy-provenance.json`. It is the
-machine-readable source for the precise ready state; stale capture blockers are
-not retained after promotion.
+The promoted trust root is generated from the independently reviewed v21
+candidate. Immutable capture, image, phase-digest, audited-HEAD, and final-review
+evidence is recorded in the adjacent
+`activation-catalog-policy-provenance.json`. The immutable review report is
+stored under `docs/release-evidence/` and its byte SHA-256 is bound by provenance
+v3. These files are the machine-readable source for the precise ready state;
+stale capture blockers are not retained after promotion.
 
 The command has no permit-installation or activation capability. It reads the
 preactivation candidate only after a capture-only transaction drops the exact
@@ -157,9 +159,9 @@ for the other. Review the complete diff, verify that no provider identity is
 present, then promote only the reviewed bytes with the exact operator opt-in:
 
 ```bash
-REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v19 \
+REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v21 \
   pnpm release-rollout:promote-activation-catalog-policy \
-  --candidate /tmp/rr-activation-catalog-candidate-v19.json --write
+  --candidate /secure/evidence/rr-activation-catalog-candidate-v21.json --write
 ```
 
 Omit `--write` to verify that the checked-in generated module is byte-exact.

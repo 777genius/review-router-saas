@@ -13,16 +13,16 @@ import {
 import { assertActivationCatalogPolicyPromotionProvenance } from "../packages/features/release-rollout/src/domain/activation-catalog-policy-provenance-contract.ts";
 
 export const activationCatalogPromotionOptIn =
-  "promote-reviewed-activation-catalog-v20";
+  "promote-reviewed-activation-catalog-v21";
 export const reviewedActivationCatalogCandidate = Object.freeze({
-  sha256: "84a59601c3a3ae25260ba02fa6102115e60aac70abc205b63d33ad27c393af4c",
-  bytes: 2_073_874,
+  sha256: "321e9ec9a1a525640df0e82df37066301ebf74b6298d8e6dc4beee72b2b0cab5",
+  bytes: 2_147_606,
   preactivationCatalogPolicySha256:
-    "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
+    "sha256:fd10781b8716338b98191bc5f1631afb40b956f8027321eb2f2352bca658fe25",
   activatedCatalogPolicySha256:
-    "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
+    "sha256:f3245ae1409631c6ceb31228e642b787bb591f682cc5c7be8e4c3621a50933e7",
   artifactCanonicalSha256:
-    "sha256:359128995fd88a0f88efd5119bfd3b5eb342da3646266c723f1f2e82adf02f4f",
+    "sha256:0d8b873c7523390cbc9fbb48c41f3ab83a827e978203af0926c67b3785896877",
 });
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -38,10 +38,10 @@ export const activationCatalogPromotionProvenancePath = resolve(
 export const reviewedActivationCatalogPromotionExpectation = Object.freeze({
   readinessReason:
     "reviewed-v21-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
-  captureBaseCommit: "03329fc89abe441e094fc9cc15ca6e056bb38452",
-  auditedHead: "0000000000000000000000000000000000000000",
+  captureBaseCommit: "56944d0167c5298958556a8a51f7aeac2bb87958",
+  auditedHead: "6b50e36fce2dacbbfc1da3bcfe0b7fe2302183f3",
   reviewArtifactSha256:
-    "0000000000000000000000000000000000000000000000000000000000000000",
+    "c3149f0c2f8a9151b30f1a0a351a0fbd44d9d760dd45c0698912417ef6c20ca8",
   candidateBytes: reviewedActivationCatalogCandidate.bytes,
   candidateSha256: reviewedActivationCatalogCandidate.sha256,
   sourcePg16Image:

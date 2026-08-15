@@ -1,43 +1,50 @@
 {
   "kind": "reviewrouter-activation-catalog-policy-promotion-provenance",
-  "version": 1,
+  "version": 3,
   "status": "ready",
-  "readinessReason": "reviewed-v20-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
-  "promotedAt": "2026-08-15",
+  "readinessReason": "reviewed-v21-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
+  "promotedAt": "2026-08-15T18:30:31.798Z",
+  "captureBaseCommit": "56944d0167c5298958556a8a51f7aeac2bb87958",
   "candidate": {
-    "reviewedPathLabel": "/tmp/rr-xhigh-v36-candidate2.json",
-    "bytes": 2073874,
-    "sha256": "84a59601c3a3ae25260ba02fa6102115e60aac70abc205b63d33ad27c393af4c",
-    "byteIdenticalCaptureLabels": ["rr-xhigh-v36-candidate"],
-    "captureSha256": {
-      "v20": "84a59601c3a3ae25260ba02fa6102115e60aac70abc205b63d33ad27c393af4c"
-    }
+    "bytes": 2147606,
+    "sha256": "321e9ec9a1a525640df0e82df37066301ebf74b6298d8e6dc4beee72b2b0cab5",
+    "captures": [
+      {
+        "label": "rr-pg17-candidate-v191",
+        "sha256": "321e9ec9a1a525640df0e82df37066301ebf74b6298d8e6dc4beee72b2b0cab5"
+      },
+      {
+        "label": "rr-pg17-candidate-v192",
+        "sha256": "321e9ec9a1a525640df0e82df37066301ebf74b6298d8e6dc4beee72b2b0cab5"
+      }
+    ]
   },
   "postgresImages": {
     "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
     "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
   },
   "canonicalDigests": {
-    "preactivation": "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
-    "activated": "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
-    "artifact": "sha256:359128995fd88a0f88efd5119bfd3b5eb342da3646266c723f1f2e82adf02f4f"
+    "preactivation": "sha256:fd10781b8716338b98191bc5f1631afb40b956f8027321eb2f2352bca658fe25",
+    "activated": "sha256:f3245ae1409631c6ceb31228e642b787bb591f682cc5c7be8e4c3621a50933e7",
+    "artifact": "sha256:0d8b873c7523390cbc9fbb48c41f3ab83a827e978203af0926c67b3785896877"
   },
   "independentReview": {
-    "result": "NO-GO_REMEDIATION_PENDING_REAL_GATE",
-    "resultLabel": "rr-xhigh-remediation-v36",
-    "resultRecordedAt": "2026-08-15",
-    "baseCommit": "87bda4a8"
-  },
-  "evidenceLabels": [
-    "production-shaped-disposable-pg16-to-pg17-rehearsal",
-    "full-pg17-v20-capture",
-    "raw-unexpected-grant-principal-pre-normalization-gate",
-    "external-bootstrap-grantor-exact-five-edge-topology-gate",
-    "effective-permissions-recomputed-for-all-18-phase-principal-records",
-    "rr-xhigh-remediation-v36-real-gate-pending"
-  ],
-  "commands": {
-    "promote": "REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v20 pnpm release-rollout:promote-activation-catalog-policy --candidate /tmp/rr-xhigh-v36-candidate2.json --write",
-    "verify": "REVIEW_ROUTER_ACTIVATION_CATALOG_PROMOTION=promote-reviewed-activation-catalog-v20 pnpm release-rollout:promote-activation-catalog-policy --candidate /tmp/rr-xhigh-v36-candidate2.json"
+    "result": "GO",
+    "reviewerRunId": "rr-v200-final-policy-go",
+    "reviewedAt": "2026-08-15T18:30:31.798Z",
+    "baseCommit": "56944d0167c5298958556a8a51f7aeac2bb87958",
+    "auditedHead": "6b50e36fce2dacbbfc1da3bcfe0b7fe2302183f3",
+    "reviewArtifactSha256": "c3149f0c2f8a9151b30f1a0a351a0fbd44d9d760dd45c0698912417ef6c20ca8",
+    "candidateBytes": 2147606,
+    "candidateSha256": "321e9ec9a1a525640df0e82df37066301ebf74b6298d8e6dc4beee72b2b0cab5",
+    "postgresImages": {
+      "sourcePg16": "postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60",
+      "targetPg17": "postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4"
+    },
+    "canonicalDigests": {
+      "preactivation": "sha256:fd10781b8716338b98191bc5f1631afb40b956f8027321eb2f2352bca658fe25",
+      "activated": "sha256:f3245ae1409631c6ceb31228e642b787bb591f682cc5c7be8e4c3621a50933e7",
+      "artifact": "sha256:0d8b873c7523390cbc9fbb48c41f3ab83a827e978203af0926c67b3785896877"
+    }
   }
 }
