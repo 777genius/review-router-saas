@@ -976,6 +976,9 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
       expect(tx.codexOAuthSecretNamespace.update).toHaveBeenCalledTimes(
         mutatesNamespace ? 1 : 0,
       );
+      expect(tx.codexOAuthSecretNamespace.updateMany).toHaveBeenCalledTimes(
+        mutatesNamespace ? 1 : 0,
+      );
     },
   );
 });
@@ -1060,7 +1063,7 @@ describe("durable runtime database clock", () => {
         repositoryId: "123456",
         providerInstanceId: "codex-rotating:123456",
       },
-      epoch: 3,
+      epoch: 3n,
       randomBytes: () => new Uint8Array(16).fill(0x33),
     });
     const request = {

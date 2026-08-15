@@ -198,6 +198,9 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
         },
       })
       .mockResolvedValueOnce({
+        data: { name: "main", commit: { sha: "a".repeat(40) } },
+      })
+      .mockResolvedValueOnce({
         data: {
           type: "file",
           encoding: "base64",
@@ -252,7 +255,7 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
       sourceTrust: "trusted_default_branch_revision",
     });
     expect(mocks.request).toHaveBeenNthCalledWith(
-      3,
+      4,
       "PUT /repos/{owner}/{repo}/contents/{path}",
       expect.objectContaining({
         branch: "main",
@@ -262,7 +265,7 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     );
   });
 
-  it("verifies an unchanged active namespace without writing the protected default branch", async () => {
+  it("pins an unchanged active namespace before the default branch moves", async () => {
     const activeNamespace = allocateVersionedProviderSecretNamespace({
       scope: {
         repositoryId: "123456",
@@ -282,7 +285,8 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
         CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
       activeSecretNamespace: activeNamespace,
     });
-    const headSha = "a".repeat(40);
+    const pinnedHeadSha = "a".repeat(40);
+    const movedHeadSha = "b".repeat(40);
     mocks.auth
       .mockResolvedValueOnce({
         token: "ghs_contents_write_token",
@@ -303,15 +307,15 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
         },
       })
       .mockResolvedValueOnce({
+        data: { name: "main", commit: { sha: pinnedHeadSha } },
+      })
+      .mockResolvedValueOnce({
         data: {
           type: "file",
           encoding: "base64",
           sha: gitBlobSha(current),
           content: Buffer.from(current).toString("base64"),
         },
-      })
-      .mockResolvedValueOnce({
-        data: { name: "main", commit: { sha: headSha } },
       })
       .mockResolvedValueOnce({
         data: {
@@ -329,8 +333,9 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
         },
       })
       .mockResolvedValueOnce({
-        data: { name: "main", commit: { sha: headSha } },
-      });
+        data: { name: "main", commit: { sha: movedHeadSha } },
+      })
+      .mockResolvedValueOnce({ data: { status: "ahead" } });
     const gateway = new OctokitCodexRotatingGitHubSecretGateway({
       appId: "123",
       privateKey: "private-key",
@@ -355,7 +360,7 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
       }),
     ).resolves.toMatchObject({
       repositoryId: "123456",
-      workflowSourceCommitSha: headSha,
+      workflowSourceCommitSha: pinnedHeadSha,
       secretNamespace: activeNamespace,
       sourceTrust: "trusted_default_branch_revision",
     });
@@ -364,6 +369,11 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
         ([route]) => route === "PUT /repos/{owner}/{repo}/contents/{path}",
       ),
     ).toBe(false);
+    expect(mocks.request).toHaveBeenNthCalledWith(
+      3,
+      "GET /repos/{owner}/{repo}/contents/{path}",
+      expect.objectContaining({ ref: pinnedHeadSha }),
+    );
   });
 
   it("mints a repository-scoped read token for safe checkout and PR loading", async () => {

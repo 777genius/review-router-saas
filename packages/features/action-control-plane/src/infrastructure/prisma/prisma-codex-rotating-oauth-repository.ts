@@ -1246,9 +1246,10 @@ export class PrismaCodexRotatingOAuthRepository
         };
       }
 
+      const repository = requireGitHubRepositoryContext(provider.repository);
       const namespace = mapActiveVersionedProviderSecretNamespace({
         scope: {
-          repositoryId: provider.repository.githubRepositoryId!.toString(),
+          repositoryId: repository.githubRepositoryId.toString(),
           providerInstanceId: provider.providerInstanceId,
         },
         row: provider,
@@ -1288,7 +1289,6 @@ export class PrismaCodexRotatingOAuthRepository
           executorLeaseExpiresAt,
         },
       });
-      const repository = requireGitHubRepositoryContext(provider.repository);
       return {
         status: "ready" as const,
         intentId: intent.id,

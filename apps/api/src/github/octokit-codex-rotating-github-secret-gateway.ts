@@ -314,13 +314,19 @@ export class OctokitCodexRotatingGitHubSecretGateway
       input.repository.githubRepositoryId,
       input.repository.fullName,
     );
+    const defaultBranchHead = await this.readBranchHead({
+      token: token.token,
+      owner: input.repository.owner,
+      repo,
+      branch: defaultBranch,
+    });
     const currentResponse = (await githubRequest(
       "GET /repos/{owner}/{repo}/contents/{path}",
       {
         owner: input.repository.owner,
         repo,
         path: managedCodexWorkflowPath,
-        ref: defaultBranch,
+        ref: defaultBranchHead,
         headers,
       },
     )) as ContentsResponse;
@@ -363,12 +369,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
       currentSource,
       nextSource,
     )
-      ? await this.readBranchHead({
-          token: token.token,
-          owner: input.repository.owner,
-          repo,
-          branch: defaultBranch,
-        })
+      ? defaultBranchHead
       : decodeContentsWriteCommitSha(
           (
             (await githubRequest("PUT /repos/{owner}/{repo}/contents/{path}", {
