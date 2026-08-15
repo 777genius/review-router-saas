@@ -34,6 +34,7 @@ type DatabaseIdentityProbe = Readonly<{
   authorityRoleTopologyExact: boolean;
   activationMigrationBoundaryExact: boolean;
   activationBootstrapRoutinePrivilegesExact: boolean;
+  activationBootstrapRoleDemotedExact: boolean;
   activationGuardCatalogReadExact: boolean;
   activationApplicationOwnershipExact: boolean;
   activationRecoveryWitnessExact: boolean;
@@ -61,6 +62,7 @@ const absentAuthorityReadiness = (
   const {
     activationMigrationBoundaryExact,
     activationBootstrapRoutinePrivilegesExact,
+    activationBootstrapRoleDemotedExact,
     activationGuardCatalogReadExact,
     activationApplicationOwnershipExact,
     activationRecoveryWitnessExact,
@@ -76,6 +78,7 @@ const absentAuthorityReadiness = (
     activationGuardExact:
       preMigrationPermitBoundaryExact &&
       activationBootstrapRoutinePrivilegesExact &&
+      activationBootstrapRoleDemotedExact &&
       activationApplicationOwnershipExact,
     schemaVersion: 0,
     migrationManifest: [],
@@ -341,6 +344,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                   FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
                   JOIN pg_roles grantee ON grantee.oid=acl.grantee
                   WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                    AND NOT acl.is_grantable
                     AND grantee.rolname='reviewrouter_role_bootstrap')
               OR p.oid IN (
                   to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
@@ -349,6 +353,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                   FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
                   JOIN pg_roles grantee ON grantee.oid=acl.grantee
                   WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
+                    AND NOT acl.is_grantable
                     AND grantee.rolname='reviewrouter_release_migration')
               OR p.oid NOT IN (
                   to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()'),
@@ -361,14 +366,15 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
               LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
               WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
-                AND grantee.rolname IS DISTINCT FROM CASE
-                  WHEN p.oid=to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()')
-                    THEN 'reviewrouter_role_bootstrap'
-                  WHEN p.oid IN (
-                    to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
-                    to_regprocedure('reviewrouter_activation.activate_generation(text)'))
-                    THEN 'reviewrouter_release_migration'
-                  ELSE NULL END))
+                AND (acl.is_grantable
+                  OR grantee.rolname IS DISTINCT FROM CASE
+                    WHEN p.oid=to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()')
+                      THEN 'reviewrouter_role_bootstrap'
+                    WHEN p.oid IN (
+                      to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'),
+                      to_regprocedure('reviewrouter_activation.activate_generation(text)'))
+                      THEN 'reviewrouter_release_migration'
+                    ELSE NULL END)))
           FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           JOIN pg_language l ON l.oid=p.prolang
           CROSS JOIN pg_roles guard WHERE n.nspname='reviewrouter_activation'
@@ -412,21 +418,21 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
               LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee
               WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
-                AND NOT (
-                  grantee.rolname='reviewrouter_activation_permit_installer'
-                    AND p.oid IN (
-                      to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
-                      to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'))
-                  OR grantee.rolname='reviewrouter_release_migration'
-                    AND p.oid=to_regprocedure(
-                      'reviewrouter_activation.read_migration_receipt(text,bigint,text)')
-                  OR grantee.rolname='reviewrouter_release_schema_owner'
-                    AND p.oid IN (
-                      to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)'),
-                      to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)'))
-                  OR grantee.rolname='reviewrouter_activation_receipt_reader'
-                    AND p.oid=to_regprocedure(
-                      'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))))
+                AND (acl.is_grantable OR NOT (
+                    grantee.rolname='reviewrouter_activation_permit_installer'
+                      AND p.oid IN (
+                        to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                        to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'))
+                    OR grantee.rolname='reviewrouter_release_migration'
+                      AND p.oid=to_regprocedure(
+                        'reviewrouter_activation.read_migration_receipt(text,bigint,text)')
+                    OR grantee.rolname='reviewrouter_release_schema_owner'
+                      AND p.oid IN (
+                        to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)'),
+                        to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)'))
+                    OR grantee.rolname='reviewrouter_activation_receipt_reader'
+                      AND p.oid=to_regprocedure(
+                        'reviewrouter_activation.read_migration_receipt(text,bigint,text)')))))
           FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           JOIN pg_language l ON l.oid=p.prolang CROSS JOIN pg_roles guard
           WHERE n.nspname='reviewrouter_activation'
@@ -451,6 +457,34 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           to_regprocedure('reviewrouter_activation.activate_generation(text)'),
           to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)'))),false)
         AS "activationBootstrapRoutinePrivilegesExact",
+      coalesce((SELECT bootstrap.rolcanlogin AND NOT bootstrap.rolsuper
+          AND NOT bootstrap.rolcreatedb AND NOT bootstrap.rolcreaterole
+          AND NOT bootstrap.rolreplication AND NOT bootstrap.rolbypassrls
+          AND (SELECT count(*)=5
+              AND count(DISTINCT granted.oid)=5
+              AND count(DISTINCT grantor.oid)=1
+              AND bool_and(granted.rolname=ANY(ARRAY['reviewrouter_api',
+                    'reviewrouter_web','reviewrouter_worker',
+                    'reviewrouter_codex_effect_authority',
+                    'reviewrouter_release_migration'])
+                AND member.oid=bootstrap.oid
+                AND grantor.oid<>bootstrap.oid
+                AND grantor.rolname<>'reviewrouter_release_schema_owner'
+                AND grantor.rolname<>ALL(ARRAY['reviewrouter_api',
+                    'reviewrouter_web','reviewrouter_worker',
+                    'reviewrouter_codex_effect_authority',
+                    'reviewrouter_release_migration'])
+                AND edge.admin_option AND NOT edge.inherit_option
+                AND NOT edge.set_option)
+            FROM pg_auth_members edge
+            JOIN pg_roles granted ON granted.oid=edge.roleid
+            JOIN pg_roles member ON member.oid=edge.member
+            JOIN pg_roles grantor ON grantor.oid=edge.grantor
+            WHERE edge.roleid=bootstrap.oid OR edge.member=bootstrap.oid
+              OR edge.grantor=bootstrap.oid)
+        FROM pg_roles bootstrap
+        WHERE bootstrap.rolname='reviewrouter_role_bootstrap'),false)
+        AS "activationBootstrapRoleDemotedExact",
       coalesce((SELECT
           has_table_privilege(guard.oid,
             to_regclass('public."_prisma_migrations"'),'SELECT')
@@ -645,9 +679,9 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AND NOT has_function_privilege('public',p.oid,'EXECUTE')
           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
             WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
-              AND NOT EXISTS (SELECT 1 FROM pg_roles grantee
+              AND (acl.is_grantable OR NOT EXISTS (SELECT 1 FROM pg_roles grantee
                 WHERE grantee.oid=acl.grantee
-                  AND grantee.rolname='reviewrouter_activation_permit_installer'))
+                  AND grantee.rolname='reviewrouter_activation_permit_installer')))
         FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
         WHERE p.oid=to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)')),false)
         AS "installerRoutine",
@@ -659,9 +693,9 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           AND NOT has_function_privilege('public',p.oid,'EXECUTE')
           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
             WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>p.proowner
-              AND NOT EXISTS (SELECT 1 FROM pg_roles grantee
+              AND (acl.is_grantable OR NOT EXISTS (SELECT 1 FROM pg_roles grantee
                 WHERE grantee.oid=acl.grantee
-                  AND grantee.rolname IN ('reviewrouter_activation_receipt_reader','reviewrouter_release_migration')))
+                  AND grantee.rolname IN ('reviewrouter_activation_receipt_reader','reviewrouter_release_migration'))))
         FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
         WHERE p.oid=to_regprocedure('reviewrouter_activation.read_activation_receipt(text)')),false)
         AS "readerRoutine"

@@ -135,6 +135,9 @@ describe("atomic catalog-attested mutation boundary", () => {
 
     expect(observe).toHaveBeenCalledOnce();
     expect(mutationDatabaseIsReady).toHaveBeenCalledOnce();
+    expect((mutationDatabaseIsReady.mock.calls as unknown[][])[0]?.[2]).toBe(
+      "control_only",
+    );
     expect(mutation).toHaveBeenCalledOnce();
     expect(events.filter((event) => event === "lock")).toHaveLength(1);
     expect(entries[0]!.prisma.$transaction).toHaveBeenCalledOnce();
@@ -164,6 +167,9 @@ describe("atomic catalog-attested mutation boundary", () => {
 
     expect(clients.control.prisma.$transaction).not.toHaveBeenCalled();
     expect(clients.installer.prisma.$transaction).toHaveBeenCalledOnce();
+    expect((mutationDatabaseIsReady.mock.calls as unknown[][])[0]?.[2]).toBe(
+      "pre_migration",
+    );
     const lockQuery = clients.installer.connection.$queryRaw.mock
       .calls[1]?.[0] as {
       values?: readonly unknown[];

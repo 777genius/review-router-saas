@@ -911,6 +911,16 @@ activationDescribe("activation target semantic readiness", () => {
         "ALTER ROLE reviewrouter_api NOCREATEDB",
         "activationRuntimePrivilegesExact",
       ],
+      [
+        "ALTER ROLE reviewrouter_role_bootstrap CREATEROLE",
+        "ALTER ROLE reviewrouter_role_bootstrap NOCREATEROLE",
+        "activationGuardExact",
+      ],
+      [
+        "GRANT EXECUTE ON FUNCTION reviewrouter_activation.assert_no_activation_receipt() TO reviewrouter_role_bootstrap WITH GRANT OPTION",
+        "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION reviewrouter_activation.assert_no_activation_receipt() FROM reviewrouter_role_bootstrap",
+        "activationGuardExact",
+      ],
     ] as const;
     for (const [mutate, restore, field] of cases) {
       await admin.$executeRawUnsafe(mutate);
