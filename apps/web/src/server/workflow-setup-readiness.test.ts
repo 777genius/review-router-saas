@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
-import type {
-  RepositoryWorkflowCheck,
-  RepositoryWorkflowProbeInput,
-  RepositoryWorkflowProbePort,
+import {
+  OctokitRepositoryWorkflowProbe,
+  type RepositoryWorkflowCheck,
+  type RepositoryWorkflowProbeInput,
+  type RepositoryWorkflowProbePort,
 } from "@reviewrouter/features-repo-health";
 import {
   CodexRotatingReviewActionV2Mode,
   CodexRotatingT0WorkflowSchemaVersion,
+  createVersionedProviderSecretNamespace,
   defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
+  renderCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-workflow-provisioning";
 import { isWorkflowSetupAlreadyCurrent } from "./workflow-setup-readiness";
 
@@ -335,5 +338,52 @@ describe("workflow setup readiness", () => {
         "review_timeout_minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '240') }}",
       ]),
     );
+  });
+
+  it("accepts a canonical schema-v4 workflow when setup PR metadata is missing", async () => {
+    const actionRef =
+      "777genius/review-router@0123456789abcdef0123456789abcdef01234567";
+    const providerInstanceId = "codex-rotating:123456";
+    const activeSecretNamespace = createVersionedProviderSecretNamespace({
+      scope: { repositoryId: "123456", providerInstanceId },
+      namespaceId: "sns_0123456789abcdef0123456789abcdef",
+      epoch: 4,
+      name: "REVIEWROUTER_CODEX_AUTH_JSON_R123456_Pb3d5f6be619a10be_E4_0123456789abcdef0123456789abcdef",
+    });
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+      activeSecretNamespace,
+    });
+    const probe = new OctokitRepositoryWorkflowProbe({
+      createRequester: async () => ({
+        request: async () => ({
+          data: {
+            type: "file",
+            encoding: "base64",
+            content: Buffer.from(workflow).toString("base64"),
+          },
+        }),
+      }),
+    });
+
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        {
+          ...readinessInput,
+          actionRef,
+          codexRotatingProviderInstanceId: providerInstanceId,
+          codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+          codexRotatingWorkflowSchemaVersion:
+            CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+          codexRotatingWorkflowSecretNamespace: activeSecretNamespace,
+        },
+        { workflowProbe: probe },
+      ),
+    ).resolves.toBe(true);
   });
 });

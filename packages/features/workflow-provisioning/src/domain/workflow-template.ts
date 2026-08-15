@@ -14,6 +14,7 @@ import {
   CodexRotatingReviewActionV2Mode,
   CodexRotatingT0WorkflowSchemaVersion,
   isClientTriggeredT0WorkflowSchemaVersion,
+  isTrustedDefaultBranchTriggeredCodexWorkflowSchemaVersion,
   type VersionedProviderSecretNamespace,
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
@@ -907,14 +908,20 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
     const defaultTimeoutMinutes = codexRotatingT0DefaultTimeoutMinutesForSchema(
       workflowSchemaVersion,
     );
+    const reviewEventName =
+      isTrustedDefaultBranchTriggeredCodexWorkflowSchemaVersion(
+        workflowSchemaVersion,
+      )
+        ? "pull_request_target"
+        : "pull_request";
     const markers = [
       input.activeSecretNamespace
         ? `name: ReviewRouter Codex OAuth [namespace=${input.activeSecretNamespace.namespaceId};epoch=${input.activeSecretNamespace.epoch};secret=${input.activeSecretNamespace.name}]`
         : "name: ReviewRouter Codex OAuth",
       "run-name: ${{ format('ReviewRouter review PR {0} at {1}'",
-      "pull_request:",
+      `${reviewEventName}:`,
       "permissions: {}\n\njobs:",
-      "github.event_name == 'pull_request'",
+      `github.event_name == '${reviewEventName}'`,
       "    permissions:\n      contents: read\n      pull-requests: read\n      id-token: write",
       ".github/workflows/reviewrouter-t0-reusable.yml@",
       `provider_instance_id: ${JSON.stringify(input.providerInstanceId)}`,
