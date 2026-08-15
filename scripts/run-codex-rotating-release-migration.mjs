@@ -3088,7 +3088,7 @@ BEGIN
     JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
     JOIN pg_roles owner ON owner.oid = relation.relowner
     WHERE namespace.nspname = 'public'
-      AND owner.rolname IN ('reviewrouter_role_bootstrap','reviewrouter_release_migration')
+      AND owner.rolname = 'reviewrouter_role_bootstrap'
       AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
       AND (
         relation.relkind <> 'S'
@@ -3116,7 +3116,7 @@ BEGIN
     JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
     JOIN pg_roles owner ON owner.oid = routine.proowner
     WHERE namespace.nspname = 'public'
-      AND owner.rolname IN ('reviewrouter_role_bootstrap','reviewrouter_release_migration')
+      AND owner.rolname = 'reviewrouter_role_bootstrap'
   LOOP
     EXECUTE format('ALTER ROUTINE %s OWNER TO ${releaseSchemaOwnerRoleName}', owned_object.oid::regprocedure);
   END LOOP;
@@ -3126,7 +3126,7 @@ BEGIN
     JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
     JOIN pg_roles owner ON owner.oid = type.typowner
     WHERE namespace.nspname = 'public'
-      AND owner.rolname IN ('reviewrouter_role_bootstrap','reviewrouter_release_migration')
+      AND owner.rolname = 'reviewrouter_role_bootstrap'
       AND type.typtype IN ('d', 'e', 'm', 'r')
   LOOP
     IF owned_object.typtype = 'd' THEN
@@ -3137,6 +3137,123 @@ BEGIN
   END LOOP;
 END
 $transfer_public_ownership$;
+-- The release LOGIN owns objects created by Prisma migrations. Admit a SET
+-- path only in this uncommitted transaction so the current session can act as
+-- that owner, and give that current role the equally transaction-local SET
+-- path required by ALTER ... OWNER TO. Other sessions cannot observe either
+-- edge, and every later failure rolls their creation back with the transfer.
+GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap
+  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+GRANT ${releaseSchemaOwnerRoleName} TO reviewrouter_release_migration
+  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+SET LOCAL ROLE reviewrouter_release_migration;
+DO $transfer_release_public_ownership$
+DECLARE owned_object record;
+BEGIN
+  FOR owned_object IN
+    SELECT relation.oid, relation.relkind
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_roles owner ON owner.oid = relation.relowner
+    WHERE namespace.nspname = 'public'
+      AND owner.rolname = 'reviewrouter_release_migration'
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+      AND (
+        relation.relkind <> 'S'
+        OR NOT EXISTS (
+          SELECT 1
+          FROM pg_depend dependency
+          WHERE dependency.classid = 'pg_class'::regclass
+            AND dependency.objid = relation.oid
+            AND dependency.refclassid = 'pg_class'::regclass
+            AND dependency.deptype IN ('a', 'i')
+        )
+      )
+  LOOP
+    EXECUTE CASE owned_object.relkind
+      WHEN 'S' THEN format('ALTER SEQUENCE %s OWNER TO ${releaseSchemaOwnerRoleName}', owned_object.oid::regclass)
+      WHEN 'v' THEN format('ALTER VIEW %s OWNER TO ${releaseSchemaOwnerRoleName}', owned_object.oid::regclass)
+      WHEN 'm' THEN format('ALTER MATERIALIZED VIEW %s OWNER TO ${releaseSchemaOwnerRoleName}', owned_object.oid::regclass)
+      WHEN 'f' THEN format('ALTER FOREIGN TABLE %s OWNER TO ${releaseSchemaOwnerRoleName}', owned_object.oid::regclass)
+      ELSE format('ALTER TABLE %s OWNER TO ${releaseSchemaOwnerRoleName}', owned_object.oid::regclass)
+    END;
+  END LOOP;
+  FOR owned_object IN
+    SELECT routine.oid
+    FROM pg_proc routine
+    JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+    JOIN pg_roles owner ON owner.oid = routine.proowner
+    WHERE namespace.nspname = 'public'
+      AND owner.rolname = 'reviewrouter_release_migration'
+  LOOP
+    EXECUTE format('ALTER ROUTINE %s OWNER TO ${releaseSchemaOwnerRoleName}', owned_object.oid::regprocedure);
+  END LOOP;
+  FOR owned_object IN
+    SELECT type.typname, type.typtype
+    FROM pg_type type
+    JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+    JOIN pg_roles owner ON owner.oid = type.typowner
+    WHERE namespace.nspname = 'public'
+      AND owner.rolname = 'reviewrouter_release_migration'
+      AND type.typtype IN ('d', 'e', 'm', 'r')
+  LOOP
+    IF owned_object.typtype = 'd' THEN
+      EXECUTE format('ALTER DOMAIN public.%I OWNER TO ${releaseSchemaOwnerRoleName}', owned_object.typname);
+    ELSE
+      EXECUTE format('ALTER TYPE public.%I OWNER TO ${releaseSchemaOwnerRoleName}', owned_object.typname);
+    END IF;
+  END LOOP;
+END
+$transfer_release_public_ownership$;
+RESET ROLE;
+REVOKE ${releaseSchemaOwnerRoleName} FROM reviewrouter_release_migration GRANTED BY CURRENT_ROLE;
+REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE;
+DO $temporary_owner_transfer_edges_absent$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_auth_members membership
+    JOIN pg_roles granted ON granted.oid = membership.roleid
+    JOIN pg_roles member ON member.oid = membership.member
+    JOIN pg_roles grantor ON grantor.oid = membership.grantor
+    WHERE (granted.rolname = '${releaseSchemaOwnerRoleName}'
+        AND member.rolname = 'reviewrouter_release_migration')
+      OR (granted.rolname = 'reviewrouter_release_migration'
+        AND member.rolname = 'reviewrouter_role_bootstrap'
+        AND grantor.rolname = 'reviewrouter_role_bootstrap')
+  ) THEN
+    RAISE EXCEPTION 'temporary public ownership transfer membership survived convergence';
+  END IF;
+END
+$temporary_owner_transfer_edges_absent$;
+DO $public_ownership_converged$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM (
+      SELECT relation.relowner AS owner_oid
+      FROM pg_class relation
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'public'
+        AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+      UNION ALL
+      SELECT routine.proowner
+      FROM pg_proc routine
+      JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+      WHERE namespace.nspname = 'public'
+      UNION ALL
+      SELECT type.typowner
+      FROM pg_type type
+      JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+      WHERE namespace.nspname = 'public'
+        AND type.typtype IN ('d', 'e', 'm', 'r')
+    ) owned
+    WHERE pg_get_userbyid(owned.owner_oid) <> '${releaseSchemaOwnerRoleName}'
+  ) THEN
+    RAISE EXCEPTION 'public ownership convergence did not reach the release schema owner';
+  END IF;
+END
+$public_ownership_converged$;
 SELECT 'ALTER SCHEMA public OWNER TO ${releaseSchemaOwnerRoleName}'
 WHERE (SELECT owner.rolname FROM pg_namespace namespace JOIN pg_roles owner ON owner.oid = namespace.nspowner WHERE namespace.nspname = 'public') <> '${releaseSchemaOwnerRoleName}'
 \\gexec

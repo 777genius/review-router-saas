@@ -611,6 +611,48 @@ describe("canonical exclusive release migration caller", () => {
     expect(provisioning).toContain(
       "ALTER ROUTINE %s OWNER TO reviewrouter_release_schema_owner",
     );
+    expect(provisioning).toContain(
+      "GRANT reviewrouter_release_migration TO reviewrouter_role_bootstrap\n  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
+    );
+    expect(provisioning).toContain(
+      "GRANT reviewrouter_release_schema_owner TO reviewrouter_release_migration\n  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
+    );
+    expect(provisioning).toContain(
+      "SET LOCAL ROLE reviewrouter_release_migration;",
+    );
+    expect(provisioning).toContain(
+      "REVOKE reviewrouter_release_schema_owner FROM reviewrouter_release_migration GRANTED BY CURRENT_ROLE",
+    );
+    expect(provisioning).toContain(
+      "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
+    );
+    expect(provisioning).toContain(
+      "temporary public ownership transfer membership survived convergence",
+    );
+    expect(provisioning).toContain(
+      "public ownership convergence did not reach the release schema owner",
+    );
+    expect(
+      provisioning.indexOf(
+        "GRANT reviewrouter_release_schema_owner TO reviewrouter_release_migration\n  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
+      ),
+    ).toBeLessThan(
+      provisioning.indexOf("SET LOCAL ROLE reviewrouter_release_migration;"),
+    );
+    expect(
+      provisioning.indexOf("SET LOCAL ROLE reviewrouter_release_migration;"),
+    ).toBeLessThan(
+      provisioning.indexOf(
+        "REVOKE reviewrouter_release_schema_owner FROM reviewrouter_release_migration GRANTED BY CURRENT_ROLE",
+      ),
+    );
+    expect(
+      provisioning.indexOf(
+        "REVOKE reviewrouter_release_migration FROM reviewrouter_role_bootstrap GRANTED BY CURRENT_ROLE",
+      ),
+    ).toBeLessThan(
+      provisioning.indexOf("DO $temporary_owner_transfer_edges_absent$"),
+    );
     expect(provisioning).not.toContain("REASSIGN OWNED");
     expect(provisioning).toContain(
       "refusing to take over public objects owned by unexpected role",

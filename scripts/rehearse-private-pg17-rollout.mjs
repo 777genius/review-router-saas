@@ -390,6 +390,8 @@ function safePostgresErrorClassification(stderr) {
 }
 
 export const disposableSqlConfiguration = () => ({
+  releaseUrl:
+    "postgresql://reviewrouter_release_migration:disposable-release@127.0.0.1:5432/review_router",
   roles: [
     { role: "api", username: "reviewrouter_api", password: "disposable-api" },
     { role: "web", username: "reviewrouter_web", password: "disposable-web" },

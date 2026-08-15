@@ -245,7 +245,92 @@ const initializeSeed = () => {
     adminUsername,
     canonicalRoleBootstrapSetup.bootstrapDemotion,
   );
+  const bootstrapEdgesBeforeConvergence = psqlAs(
+    seedContainer,
+    adminUsername,
+    `SELECT coalesce(jsonb_agg(jsonb_build_object(
+       'granted',granted.rolname,'member',member.rolname,
+       'grantor',grantor.rolname,'admin',membership.admin_option,
+       'inherit',membership.inherit_option,'set',membership.set_option
+     ) ORDER BY granted.rolname,member.rolname,grantor.rolname),'[]'::jsonb)
+     FROM pg_auth_members membership
+     JOIN pg_roles granted ON granted.oid=membership.roleid
+     JOIN pg_roles member ON member.oid=membership.member
+     JOIN pg_roles grantor ON grantor.oid=membership.grantor
+     WHERE member.rolname='${adminUsername}';`,
+  );
   psqlAs(seedContainer, adminUsername, roleProvisioningSql(configuration));
+  expect(
+    psqlAs(
+      seedContainer,
+      adminUsername,
+      `SELECT jsonb_build_object(
+         'unexpectedOwnerCount',(
+           SELECT count(*) FROM (
+             SELECT relation.relowner AS owner_oid
+             FROM pg_class relation
+             JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+             WHERE namespace.nspname='public'
+               AND relation.relkind IN ('r','p','v','m','S','f')
+             UNION ALL
+             SELECT routine.proowner
+             FROM pg_proc routine
+             JOIN pg_namespace namespace ON namespace.oid=routine.pronamespace
+             WHERE namespace.nspname='public'
+             UNION ALL
+             SELECT type.typowner
+             FROM pg_type type
+             JOIN pg_namespace namespace ON namespace.oid=type.typnamespace
+             WHERE namespace.nspname='public'
+               AND type.typtype IN ('d','e','m','r')
+           ) owned
+           WHERE pg_get_userbyid(owner_oid)<>'reviewrouter_release_schema_owner'
+         ),
+         'temporaryEdgeCount',(
+           SELECT count(*)
+           FROM pg_auth_members membership
+           JOIN pg_roles granted ON granted.oid=membership.roleid
+           JOIN pg_roles member ON member.oid=membership.member
+           JOIN pg_roles grantor ON grantor.oid=membership.grantor
+           WHERE grantor.rolname='${adminUsername}' AND (
+             (granted.rolname='reviewrouter_release_schema_owner'
+               AND member.rolname='${releaseUsername}') OR
+             (granted.rolname='${releaseUsername}'
+               AND member.rolname='${adminUsername}')
+           )
+         ),
+         'publicSchemaOwner',(
+           SELECT pg_get_userbyid(namespace.nspowner)
+           FROM pg_namespace namespace WHERE namespace.nspname='public'
+         )
+       );`,
+    ),
+  ).toBe(
+    '{"unexpectedOwnerCount": 0, "temporaryEdgeCount": 0, "publicSchemaOwner": "reviewrouter_release_schema_owner"}',
+  );
+  expect(
+    psqlAs(
+      seedContainer,
+      adminUsername,
+      `SELECT coalesce(jsonb_agg(jsonb_build_object(
+       'granted',granted.rolname,'member',member.rolname,
+       'grantor',grantor.rolname,'admin',membership.admin_option,
+       'inherit',membership.inherit_option,'set',membership.set_option
+     ) ORDER BY granted.rolname,member.rolname,grantor.rolname),'[]'::jsonb)
+     FROM pg_auth_members membership
+     JOIN pg_roles granted ON granted.oid=membership.roleid
+     JOIN pg_roles member ON member.oid=membership.member
+     JOIN pg_roles grantor ON grantor.oid=membership.grantor
+     WHERE member.rolname='${adminUsername}';`,
+    ),
+  ).toBe(bootstrapEdgesBeforeConvergence);
+  expect(
+    psqlResultAs(
+      seedContainer,
+      releaseUsername,
+      "SET ROLE reviewrouter_release_schema_owner;",
+    ).status,
+  ).not.toBe(0);
   psqlAs(
     seedContainer,
     adminUsername,
@@ -507,6 +592,96 @@ describePg17(
         expect(observed.readerExecuteCount).toBe(0);
         expect(observed.publicExecuteCount).toBe(0);
       }),
+      120_000,
+    );
+
+    it(
+      "rolls back converged owners and every temporary SET edge after a mid-transfer failure",
+      isolatedCase(
+        "owner-transfer-rollback",
+        (context) => {
+          const failed = context.psqlResultAs(
+            adminUsername,
+            roleProvisioningSql(configuration),
+          );
+          expect(failed.status).not.toBe(0);
+          expect(failed.stderr).toContain(
+            "injected release owner transfer failure",
+          );
+          expect(
+            context.psqlAs(
+              adminUsername,
+              `SELECT jsonb_build_object(
+                 'relationOwner',pg_get_userbyid((
+                   SELECT relowner FROM pg_class
+                   WHERE oid='${applicationRelation}'::regclass
+                 )),
+                 'routineOwner',(
+                   SELECT owner.rolname
+                   FROM pg_proc routine
+                   JOIN pg_namespace namespace ON namespace.oid=routine.pronamespace
+                   JOIN pg_roles owner ON owner.oid=routine.proowner
+                   WHERE namespace.nspname='public'
+                     AND routine.proname='codex_oauth_database_authority_challenge'
+                   ORDER BY routine.oid LIMIT 1
+                 ),
+                 'temporaryEdgeCount',(
+                   SELECT count(*)
+                   FROM pg_auth_members membership
+                   JOIN pg_roles granted ON granted.oid=membership.roleid
+                   JOIN pg_roles member ON member.oid=membership.member
+                   JOIN pg_roles grantor ON grantor.oid=membership.grantor
+                   WHERE grantor.rolname='${adminUsername}' AND (
+                     (granted.rolname='reviewrouter_release_schema_owner'
+                       AND member.rolname='${releaseUsername}') OR
+                     (granted.rolname='${releaseUsername}'
+                       AND member.rolname='${adminUsername}')
+                   )
+                 )
+               );`,
+            ),
+          ).toBe(
+            `{"relationOwner": "${releaseUsername}", "routineOwner": "${releaseUsername}", "temporaryEdgeCount": 0}`,
+          );
+          expect(
+            context.psqlResultAs(
+              releaseUsername,
+              "SET ROLE reviewrouter_release_schema_owner;",
+            ).status,
+          ).not.toBe(0);
+        },
+        (context) => {
+          context.psqlAs(
+            adversarialAdminUsername,
+            `ALTER TABLE ${applicationRelation} OWNER TO ${releaseUsername};
+             DO $release_owned_routine$
+             DECLARE target regprocedure;
+             BEGIN
+               SELECT routine.oid::regprocedure INTO STRICT target
+               FROM pg_proc routine
+               JOIN pg_namespace namespace ON namespace.oid=routine.pronamespace
+               WHERE namespace.nspname='public'
+                 AND routine.proname='codex_oauth_database_authority_challenge'
+               ORDER BY routine.oid LIMIT 1;
+               EXECUTE format('ALTER ROUTINE %s OWNER TO ${releaseUsername}',target);
+             END
+             $release_owned_routine$;
+             CREATE SCHEMA owner_transfer_failure;
+             CREATE FUNCTION owner_transfer_failure.reject_release_routine_transfer()
+             RETURNS event_trigger LANGUAGE plpgsql AS $reject$
+             BEGIN
+               IF current_user='${releaseUsername}'
+                  AND tg_tag IN ('ALTER FUNCTION','ALTER PROCEDURE','ALTER ROUTINE') THEN
+                 RAISE EXCEPTION 'injected release owner transfer failure';
+               END IF;
+             END
+             $reject$;
+             CREATE EVENT TRIGGER reject_release_routine_transfer
+               ON ddl_command_start
+               EXECUTE FUNCTION owner_transfer_failure.reject_release_routine_transfer();`,
+          );
+        },
+      ),
       120_000,
     );
 
