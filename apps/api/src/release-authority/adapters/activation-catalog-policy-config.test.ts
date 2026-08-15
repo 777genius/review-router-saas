@@ -55,19 +55,13 @@ describe("activation catalog policy deployment authorization", () => {
     ).toThrow("activation_catalog_policy_digest_mismatch");
   });
 
-  it("loads the ready artifact only with both exact authorizing digests", () => {
+  it("blocks the changed artifact until PG17 policy recapture is reviewed", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
-      status: "ready",
+      status: "blocked",
       reason:
-        "reviewed-v20-production-shaped-pg17-candidate-promoted-with-pinned-phase-digests",
+        "pg17-recapture-required-after-migration-permit-contract-change",
     });
-    const policies =
-      trustedActivationCatalogPoliciesFromEnvironment(configured);
-    expect(policies.preactivation.sha256).toBe(
-      configured.REVIEW_ROUTER_TARGET_PREACTIVATION_CATALOG_POLICY_SHA256,
-    );
-    expect(policies.activated.sha256).toBe(
-      configured.REVIEW_ROUTER_TARGET_ACTIVATED_CATALOG_POLICY_SHA256,
-    );
+    expect(() => trustedActivationCatalogPoliciesFromEnvironment(configured))
+      .toThrow("activation_catalog_policy_trust_root_blocked");
   });
 });

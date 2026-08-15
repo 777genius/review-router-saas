@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { canonicalJson, sha256Canonical } from "./canonical-json";
+export { canonicalJson, sha256Canonical } from "./canonical-json";
 import { isNormalizedServicePostcondition } from "./service-transition";
 import {
   assertReleaseMigrationTransitionIntegrity,
@@ -6,6 +7,10 @@ import {
   type ReleaseMigrationPermit,
   type ReleaseMigrationTransitionV1,
 } from "./release-migration-transition";
+import {
+  assertLegacyAmbiguityEvidence,
+  type LegacyAmbiguityEvidence,
+} from "./trusted-rollout-evidence";
 
 /** Authority-owned evidence captured before dispatching provider creation. */
 export type ProviderCreationBoundary = Readonly<{
@@ -366,21 +371,6 @@ export interface ReleaseRollout {
   readonly activationUncertain: boolean;
   readonly sourcePermanentlyIneligible: boolean;
   readonly activationReceipt?: ActivationReceipt;
-}
-
-export function canonicalJson(value: unknown): string {
-  if (value === undefined) return "null";
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
-}
-
-export function sha256Canonical(value: unknown): string {
-  return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
 export function targetMigrationReceiptEvidence(value: unknown): Readonly<{
@@ -1219,6 +1209,7 @@ export function transitionFromObservation(
 export function beginReleaseMigrationAttempt(
   rollout: ReleaseRollout,
   permit: ReleaseMigrationPermit,
+  sourceLegacyAmbiguity?: LegacyAmbiguityEvidence,
 ): ReleaseRollout {
   const previousReceiptSha256 =
     rollout.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
@@ -1235,11 +1226,19 @@ export function beginReleaseMigrationAttempt(
       rollout.target.recoveryWitnessSha256 ||
     permit.transitionSha256 !== rollout.migrationTransition.transitionSha256 ||
     permit.expectedPreviousReceiptSha256 !== previousReceiptSha256 ||
+    !Number.isFinite(Date.parse(permit.eligibilityCutoff)) ||
     !Number.isSafeInteger(permit.epoch) ||
     permit.epoch < 1 ||
     !/^[a-f0-9]{32}$/u.test(permit.nonce)
   )
     throw new Error("release_migration_permit_invalid");
+  const trustedSource = assertLegacyAmbiguityEvidence(
+    sourceLegacyAmbiguity ?? permit.sourceLegacyAmbiguity,
+  );
+  if (
+    canonicalJson(permit.sourceLegacyAmbiguity) !== canonicalJson(trustedSource)
+  )
+    throw new Error("release_migration_source_evidence_binding_invalid");
   if (
     rollout.migrationPermit &&
     canonicalJson(rollout.migrationPermit) !== canonicalJson(permit)
@@ -1256,8 +1255,13 @@ export function recoverCompletedReleaseMigration(
   rollout: ReleaseRollout,
   permit: ReleaseMigrationPermit,
   receipt: ReleaseMigrationReceipt,
+  sourceLegacyAmbiguity?: LegacyAmbiguityEvidence,
 ): ReleaseRollout {
-  const migrating = beginReleaseMigrationAttempt(rollout, permit);
+  const migrating = beginReleaseMigrationAttempt(
+    rollout,
+    permit,
+    sourceLegacyAmbiguity,
+  );
   const previousReceiptSha256 =
     rollout.receipts.at(-1)?.receiptSha256 ?? `sha256:${"0".repeat(64)}`;
   const { receiptSha256, ...unsigned } = receipt;
@@ -1434,6 +1438,7 @@ export interface AuthoritativeGenerationLedger {
     targetRecoveryWitnessSha256: string;
     transitionSha256: string;
     expectedPreviousReceiptSha256: string;
+    sourceLegacyAmbiguity: LegacyAmbiguityEvidence;
   }): Promise<ReleaseMigrationPermit>;
   completeReleaseMigration?(input: {
     permit: ReleaseMigrationPermit;

@@ -1,4 +1,4 @@
-import { canonicalJson, sha256Canonical } from "./release-rollout";
+import { canonicalJson, sha256Canonical } from "./canonical-json";
 
 export interface ReleaseImageIdentity {
   readonly schemaVersion: "reviewrouter.hosted-runtime-image.v1";

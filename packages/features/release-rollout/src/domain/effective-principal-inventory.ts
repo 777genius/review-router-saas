@@ -1,4 +1,4 @@
-import { canonicalJson, sha256Canonical } from "./release-rollout";
+import { canonicalJson, sha256Canonical } from "./canonical-json";
 
 export const PrincipalCapability = Object.freeze({
   Connect: "database:connect",

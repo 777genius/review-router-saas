@@ -181,7 +181,7 @@ describe("release authority ACL readiness observation", () => {
           },
         },
       ],
-      [{ schemaVersion: 13, migrationManifest: [] }],
+      [{ schemaVersion: 14, migrationManifest: [] }],
       [{ migrationManifest: manifest }],
     ]);
     const harness = transactionHarness(queryRaw);

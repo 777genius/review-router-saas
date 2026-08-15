@@ -493,6 +493,32 @@ describe("release authority database installation", () => {
     expect(migration).not.toContain("{2,511}");
     expect(migration).not.toContain("'timestamptz'::pg_catalog.regtype");
   });
+  it("binds immutable source evidence and an authority-owned cutoff in migration 14", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000014_source_ambiguity_migration_permit/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain(
+      "CREATE TABLE release_authority.release_migration_evidence",
+    );
+    expect(migration).toContain("release_migration_evidence_immutable_guard");
+    expect(migration).toContain(
+      "date_trunc('milliseconds',transaction_timestamp())",
+    );
+    expect(migration).toContain(
+      "release migration source evidence digest invalid",
+    );
+    expect(migration).toContain(
+      "release migration source evidence replay conflict",
+    );
+    expect(migration).toContain(
+      "permit-'sourceLegacyAmbiguity'-'eligibilityCutoff'",
+    );
+    expect(migration).toContain(
+      "REVOKE ALL ON FUNCTION release_authority.release_migration_begin_v13(jsonb)",
+    );
+    expect(migration).not.toContain("clock_timestamp()");
+  });
   it("keeps generated PostgreSQL regex bounds within the ARE limit", () => {
     const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const bounds = [...bundle.matchAll(/\{(\d+)(?:,(\d+))?\}/gu)];
@@ -530,6 +556,7 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000011_default_and_final_acl_exactness/migration.sql",
       "packages/platform/release-authority-db/migrations/000012_provider_mutation_resource_fence/migration.sql",
       "packages/platform/release-authority-db/migrations/000013_phase_aware_application_manifest/migration.sql",
+      "packages/platform/release-authority-db/migrations/000014_source_ambiguity_migration_permit/migration.sql",
     ]);
     expect(
       releaseAuthorityMigrationPaths.map((path) =>
@@ -550,6 +577,7 @@ describe("release authority database installation", () => {
       "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
       "45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
       "c14c52ce2594f49a23663a22a16ca789454e059bdb9abd6070d1b773cc847465",
+      "63d76bef93fc6041000a76e9451349333a2c9dbcb296ed4611ef5a97349dd529",
     ]);
     const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const first = bundle.indexOf("CREATE SCHEMA release_authority");

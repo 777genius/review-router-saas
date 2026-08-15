@@ -8,6 +8,7 @@ import {
   targetMigrationReceiptEvidence,
   type ReleaseMigrationPermit,
   type ReleaseMigrationTransitionV1,
+  type LegacyAmbiguityEvidence,
 } from "../../packages/features/release-rollout/src/index";
 import { executePrivateGenerationActivation } from "../activate-private-pg17-generation.mjs";
 import {
@@ -31,6 +32,7 @@ export class PrivatePg17CanonicalAdapter {
     env: NodeJS.ProcessEnv,
     transition: ReleaseMigrationTransitionV1,
     permit: ReleaseMigrationPermit,
+    sourceLegacyAmbiguity: LegacyAmbiguityEvidence,
   ): StepObservation {
     assertReleaseMigrationTransition(
       transition,
@@ -83,6 +85,12 @@ export class PrivatePg17CanonicalAdapter {
           permit.expectedPreviousReceiptSha256,
         REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: String(permit.epoch),
         REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: permit.nonce,
+        REVIEW_ROUTER_MIGRATION_PERMIT_SOURCE_LEGACY_AMBIGUITY_BASE64URL:
+          Buffer.from(JSON.stringify(sourceLegacyAmbiguity)).toString(
+            "base64url",
+          ),
+        REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF:
+          permit.eligibilityCutoff,
       },
       secureCanonicalRun,
     );
@@ -113,6 +121,9 @@ export class PrivatePg17CanonicalAdapter {
         ...targetReceiptEvidence,
         targetSystemIdentifier: permit.targetSystemIdentifier,
         targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
+        sourceLegacyAmbiguitySha256:
+          permit.sourceLegacyAmbiguity.inventorySha256,
+        eligibilityCutoff: permit.eligibilityCutoff,
       },
     };
   }

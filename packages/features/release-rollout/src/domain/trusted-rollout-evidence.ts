@@ -14,7 +14,7 @@ import {
   type VerifiedReleaseImageProvenance,
 } from "./release-image-provenance";
 import { releaseAuthoritySchemaVersion } from "./release-authority-contract";
-import { createPublicKey, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { activationCatalogPolicyDigestsEqual } from "./activation-catalog-policy-contract";
 
 export interface TrustedReleaseWitnessVerificationPolicy {
@@ -133,6 +133,83 @@ export interface LegacyAmbiguityEvidence {
     { readonly observedAt: string; readonly inventorySha256: string },
   ];
   readonly stable: true;
+}
+
+const legacyDigest = /^sha256:[a-f0-9]{64}$/u;
+
+/** Strict boundary parser for source-owned raw ambiguity evidence. */
+export function assertLegacyAmbiguityEvidence(
+  value: unknown,
+): LegacyAmbiguityEvidence {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("legacy_ambiguity_evidence_invalid");
+  const item = value as Record<string, unknown>;
+  const keys = [
+    "inventorySha256",
+    "activeLeaseIds",
+    "fetchedSetupIds",
+    "pendingIntentIds",
+    "intentStatuses",
+    "observations",
+    "stable",
+  ];
+  const stringArrays = [
+    "activeLeaseIds",
+    "fetchedSetupIds",
+    "pendingIntentIds",
+    "intentStatuses",
+  ] as const;
+  if (
+    Object.keys(item).length !== keys.length ||
+    keys.some((key) => !Object.hasOwn(item, key)) ||
+    item.stable !== true ||
+    typeof item.inventorySha256 !== "string" ||
+    !legacyDigest.test(item.inventorySha256) ||
+    stringArrays.some(
+      (key) =>
+        !Array.isArray(item[key]) ||
+        item[key].some((entry) => typeof entry !== "string"),
+    ) ||
+    !Array.isArray(item.observations) ||
+    item.observations.length !== 2
+  )
+    throw new Error("legacy_ambiguity_evidence_invalid");
+  const observations = item.observations as unknown[];
+  for (const observation of observations) {
+    if (
+      observation === null ||
+      typeof observation !== "object" ||
+      Array.isArray(observation) ||
+      Object.keys(observation).length !== 2 ||
+      !Object.hasOwn(observation, "observedAt") ||
+      !Object.hasOwn(observation, "inventorySha256")
+    )
+      throw new Error("legacy_ambiguity_evidence_invalid");
+    const record = observation as Record<string, unknown>;
+    if (
+      typeof record.observedAt !== "string" ||
+      !Number.isFinite(Date.parse(record.observedAt)) ||
+      record.inventorySha256 !== item.inventorySha256
+    )
+      throw new Error("legacy_ambiguity_evidence_invalid");
+  }
+  if (
+    Date.parse((observations[1]! as Record<string, string>).observedAt!) <=
+    Date.parse((observations[0]! as Record<string, string>).observedAt!)
+  )
+    throw new Error("legacy_ambiguity_evidence_invalid");
+  const inventory = {
+    activeLeaseIds: item.activeLeaseIds,
+    fetchedSetupIds: item.fetchedSetupIds,
+    pendingIntentIds: item.pendingIntentIds,
+    intentStatuses: item.intentStatuses,
+  };
+  const actual = `sha256:${createHash("sha256")
+    .update(JSON.stringify(inventory))
+    .digest("hex")}`;
+  if (actual !== item.inventorySha256)
+    throw new Error("legacy_ambiguity_evidence_digest_invalid");
+  return Object.freeze(value as LegacyAmbiguityEvidence);
 }
 export interface EquivalenceEvidence {
   readonly tables: readonly {
@@ -257,6 +334,7 @@ export function assertTrustedRolloutEvidence(
   trustedImagePolicy: TrustedReleaseImagePolicy,
   trustedWitnessPolicy: TrustedReleaseWitnessVerificationPolicy,
 ): TrustedRolloutEvidence {
+  assertLegacyAmbiguityEvidence(value.quiescence.legacyAmbiguity);
   if (
     !exact(value, [
       "schemaVersion",

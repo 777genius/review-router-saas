@@ -148,7 +148,7 @@ realDescribe("release authority exact catalog readiness", () => {
     const observed = await readiness();
     expect(observed).toMatchObject({
       postgresMajor: 17,
-      schemaVersion: 13,
+      schemaVersion: 14,
       catalogVerifier: "complete_catalog_v3_acl_exact",
       defaultAclExact: true,
       finalAclExact: true,
@@ -922,8 +922,8 @@ activationDescribe("activation target semantic readiness", () => {
         "activationGuardExact",
       ],
       [
-        "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean) TO reviewrouter_release_migration WITH GRANT OPTION",
-        "REVOKE GRANT OPTION FOR EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean) FROM reviewrouter_release_migration",
+        "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration WITH GRANT OPTION",
+        "REVOKE GRANT OPTION FOR EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) FROM reviewrouter_release_migration",
         "activationGuardExact",
       ],
     ] as const;

@@ -12,8 +12,6 @@ import {
   RenderTransactionalServicesAdapter,
   TransactionalServiceCutover,
   RolloutPhase,
-  type ReleaseRollout,
-  type RunnerIdentity,
   type StepObservation,
   type ProtectedSourceEnvironment,
   type TargetServiceRelease,
@@ -23,29 +21,25 @@ import {
   sameReleaseImageProvenance,
   type VerifiedReleaseImageProvenance,
   type EffectivePrincipalPolicy,
-  type SourceDatabaseFenceEvidence,
 } from "../packages/features/release-rollout/src/index";
 import { PrivatePg17CanonicalAdapter } from "./lib/private-pg17-canonical-adapter";
 import { privatePg17ReleaseImagePolicy } from "./lib/private-pg17-release-image-policy";
 import { createPrivatePg17SourceFreezeRecovery } from "./lib/private-pg17-source-freeze-recovery";
+import { parsePrivatePg17CopyEvidence } from "./lib/private-pg17-copy-evidence";
 
 const required = (name: string): string => {
   const value = process.env[name];
   if (!value) throw new Error(`private_pg17_rollout_required:${name}`);
   return value;
 };
-const copy = JSON.parse(
-  readFileSync(required("REVIEW_ROUTER_COPY_BOOTSTRAP_EVIDENCE_FILE"), "utf8"),
-) as {
-  rollout: ReleaseRollout;
-  releaseImageProvenance: VerifiedReleaseImageProvenance;
-  roleBootstrapRunner: RunnerIdentity;
-  backup: unknown;
-  quiescence: {
-    readonly evidence: { readonly fence: SourceDatabaseFenceEvidence };
-  };
-  equivalence: unknown;
-};
+const copy = parsePrivatePg17CopyEvidence(
+  JSON.parse(
+    readFileSync(
+      required("REVIEW_ROUTER_COPY_BOOTSTRAP_EVIDENCE_FILE"),
+      "utf8",
+    ),
+  ),
+);
 let rollout = copy.rollout;
 const trustedImagePolicy = privatePg17ReleaseImagePolicy({
   sourceRepository: required("REVIEW_ROUTER_RELEASE_CONTROL_REPOSITORY"),
@@ -257,7 +251,7 @@ const compensation = new ReleaseCompensationReconciliationUseCase({
     generation.restoreSourceFence({
       adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
       source: rollout.source,
-      fence: copy.quiescence.evidence.fence,
+      fence: copy.quiescence.fence,
       beforePolicy: sourcePrincipalPolicy,
     }),
   observeDatabaseCompensation: async () =>
@@ -316,11 +310,17 @@ const useCases = new ReleaseRolloutUseCases({
     copy: unavailable,
     verifyEquivalence: unavailable,
     bootstrapTargetRoles: unavailable,
-    runReleaseMigration: async (_target, transition, permit) => {
+    runReleaseMigration: async (
+      _target,
+      transition,
+      permit,
+      sourceLegacyAmbiguity,
+    ) => {
       const observation = canonical.runReleaseMigration(
         canonicalReleaseEnvironment,
         transition,
         permit,
+        sourceLegacyAmbiguity,
       );
       migration = observation.facts;
       return observation;
@@ -419,7 +419,10 @@ const useCases = new ReleaseRolloutUseCases({
 try {
   rollout = await useCases.cleanupRoleRunner(rollout, copy.roleBootstrapRunner);
   ({ rollout } = await useCases.provisionCutoverRunner(rollout));
-  rollout = await useCases.runReleaseMigration(rollout);
+  rollout = await useCases.runReleaseMigration(
+    rollout,
+    copy.quiescence.legacyAmbiguity,
+  );
   rollout = await useCases.stageTargetServices(rollout);
 } catch (error) {
   try {
@@ -458,13 +461,13 @@ try {
   generation.markSourceFenceForwardOnly({
     adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
     source: rollout.source,
-    fence: copy.quiescence.evidence.fence,
+    fence: copy.quiescence.fence,
   });
 } catch (error) {
   generation.markSourceFenceForwardOnly({
     adminUrl: required("REVIEW_ROUTER_SOURCE_DATABASE_URL"),
     source: rollout.source,
-    fence: copy.quiescence.evidence.fence,
+    fence: copy.quiescence.fence,
   });
   rollout = await useCases.recoverFromFailure(rollout, "activation_uncertain");
   throw new Error(

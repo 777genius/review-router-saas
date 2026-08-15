@@ -20,6 +20,27 @@ import {
 } from "./release-migration-transition";
 
 const digest = `sha256:${"a".repeat(64)}`;
+const sourceLegacyAmbiguity = {
+  inventorySha256:
+    "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+  activeLeaseIds: [],
+  fetchedSetupIds: [],
+  pendingIntentIds: [],
+  intentStatuses: [],
+  observations: [
+    {
+      observedAt: "2026-08-12T00:00:00.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+    {
+      observedAt: "2026-08-12T00:00:01.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+  ],
+  stable: true,
+} as const;
 
 describe("target migration receipt evidence", () => {
   it("derives both rollout evidence fields from the exact canonical receipt", () => {
@@ -514,6 +535,8 @@ describe("release rollout domain policy", () => {
       targetRecoveryWitnessSha256: rollout.target.recoveryWitnessSha256,
       transitionSha256: rollout.migrationTransition.transitionSha256,
       expectedPreviousReceiptSha256: rollout.receipts.at(-1)!.receiptSha256,
+      sourceLegacyAmbiguity,
+      eligibilityCutoff: "2026-08-12T00:00:02.000Z",
       epoch: 1,
       nonce: "a".repeat(32),
     };
@@ -568,6 +591,8 @@ describe("release rollout domain policy", () => {
           expectedPreviousReceiptSha256:
             rollout.receipts.at(-1)?.receiptSha256 ??
             `sha256:${"0".repeat(64)}`,
+          sourceLegacyAmbiguity,
+          eligibilityCutoff: "2026-08-12T00:00:02.000Z",
           epoch: 1,
           nonce: "a".repeat(32),
         });

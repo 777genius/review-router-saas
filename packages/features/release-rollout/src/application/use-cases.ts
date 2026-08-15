@@ -11,6 +11,10 @@ import {
   type RunnerIdentity,
   type StepObservation,
 } from "../domain/release-rollout";
+import {
+  assertLegacyAmbiguityEvidence,
+  type LegacyAmbiguityEvidence,
+} from "../domain/trusted-rollout-evidence";
 import type {
   DatabaseRolloutPort,
   ProviderAuthorityDecisionPort,
@@ -222,7 +226,13 @@ export class ReleaseRolloutUseCases {
       RolloutStep.CleanupRoleRunner,
     );
   }
-  async runReleaseMigration(r: ReleaseRollout) {
+  async runReleaseMigration(
+    r: ReleaseRollout,
+    sourceLegacyAmbiguity: LegacyAmbiguityEvidence,
+  ) {
+    const trustedSourceLegacyAmbiguity = assertLegacyAmbiguityEvidence(
+      sourceLegacyAmbiguity,
+    );
     if (
       !this.ports.ledger.beginReleaseMigration ||
       !this.ports.ledger.completeReleaseMigration ||
@@ -243,6 +253,7 @@ export class ReleaseRolloutUseCases {
         r,
         checkpoint.permit,
         checkpoint.receipt,
+        trustedSourceLegacyAmbiguity,
       );
     }
     const previousReceiptSha256 =
@@ -257,8 +268,13 @@ export class ReleaseRolloutUseCases {
       targetRecoveryWitnessSha256: r.target.recoveryWitnessSha256,
       transitionSha256: r.migrationTransition.transitionSha256,
       expectedPreviousReceiptSha256: previousReceiptSha256,
+      sourceLegacyAmbiguity: trustedSourceLegacyAmbiguity,
     });
-    const migrating = beginReleaseMigrationAttempt(r, permit);
+    const migrating = beginReleaseMigrationAttempt(
+      r,
+      permit,
+      trustedSourceLegacyAmbiguity,
+    );
     // A transport failure leaves the durable authority checkpoint in
     // `migrating`; an exact retry uses the stored permit and target receipt.
     const observation: StepObservation =
@@ -266,6 +282,7 @@ export class ReleaseRolloutUseCases {
         r.target,
         r.migrationTransition,
         permit,
+        trustedSourceLegacyAmbiguity,
       );
     let completed: ReleaseRollout;
     let receipt: ReleaseMigrationReceipt;

@@ -499,6 +499,22 @@ const initializeSeed = () => {
   const transitionSha256 = `sha256:${"1".repeat(64)}`;
   const previousReceiptSha256 = `sha256:${"2".repeat(64)}`;
   const nonce = "1".padStart(32, "0");
+  const inventory = JSON.parse(
+    psqlAs(seedContainer, releaseUsername, legacyAmbiguityInventorySql),
+  );
+  const inventorySha256 = `sha256:${createHash("sha256")
+    .update(JSON.stringify(inventory))
+    .digest("hex")}`;
+  const sourceLegacyAmbiguity = {
+    ...inventory,
+    inventorySha256,
+    observations: [
+      { observedAt: "2026-08-15T00:00:00.000Z", inventorySha256 },
+      { observedAt: "2026-08-15T00:00:01.000Z", inventorySha256 },
+    ],
+    stable: true,
+  } as const;
+  const eligibilityCutoff = new Date().toISOString();
   expect(
     psqlAs(
       seedContainer,
@@ -506,15 +522,11 @@ const initializeSeed = () => {
       `SELECT reviewrouter_activation.install_migration_permit(
         '${rolloutId}','1','${systemIdentifier}','${"c".repeat(64)}',
         '${transitionSha256}','${previousReceiptSha256}',
-        '${migrationChecksum}','${expectedPostCatalogDigest}',1,'${nonce}');`,
+        '${migrationChecksum}','${expectedPostCatalogDigest}',
+        '${JSON.stringify(sourceLegacyAmbiguity).replaceAll("'", "''")}'::jsonb,
+        '${eligibilityCutoff}'::timestamptz,1,'${nonce}');`,
     ),
   ).toBe("t");
-  const inventory = JSON.parse(
-    psqlAs(seedContainer, releaseUsername, legacyAmbiguityInventorySql),
-  );
-  const inventorySha256 = `sha256:${createHash("sha256")
-    .update(JSON.stringify(inventory))
-    .digest("hex")}`;
   psqlAs(
     seedContainer,
     releaseUsername,
@@ -526,19 +538,12 @@ const initializeSeed = () => {
         targetRecoveryWitnessSha256: "c".repeat(64),
         transitionSha256,
         previousReceiptSha256,
+        sourceLegacyAmbiguity,
+        eligibilityCutoff,
         epoch: "1",
         nonce,
       },
-      legacyReconciliation: {
-        receipt: {
-          version: 1,
-          acknowledgement: "all_prior_installers_and_writers_are_stopped",
-          inventory,
-          inventorySha256,
-          stableSamples: 2,
-          status: "reconciled",
-        },
-      },
+      legacyReconciliation: { evidence: sourceLegacyAmbiguity },
     }),
   );
   assertCommand(docker(["stop", seedContainer]), "stop immutable seed");
@@ -1283,13 +1288,37 @@ describePg17(
             .split("\n")
             .at(-1);
           expect(observedPostCatalogDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+          const eligibilityCutoff = new Date().toISOString();
+          const evidenceByRollout = new Map<string, string>();
+          const evidenceFor = (rolloutId: string) => {
+            const existing = evidenceByRollout.get(rolloutId);
+            if (existing) return existing;
+            const inventory = JSON.parse(
+              context.psqlAs(releaseUsername, legacyAmbiguityInventorySql),
+            );
+            const inventorySha256 = `sha256:${createHash("sha256")
+              .update(JSON.stringify(inventory))
+              .digest("hex")}`;
+            const evidence = JSON.stringify({
+              ...inventory,
+              inventorySha256,
+              observations: [
+                { observedAt: "2026-08-15T00:00:00.000Z", inventorySha256 },
+                { observedAt: "2026-08-15T00:00:01.000Z", inventorySha256 },
+              ],
+              stable: true,
+            }).replaceAll("'", "''");
+            evidenceByRollout.set(rolloutId, evidence);
+            return evidence;
+          };
           const install = (rolloutId: string, epoch: number) =>
             context.psqlAs(
               installerUsername,
               `SELECT reviewrouter_activation.install_migration_permit(
               '${rolloutId}','1','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}','${context.migrationChecksum}',
-              '${observedPostCatalogDigest}',${epoch},
+              '${observedPostCatalogDigest}','${evidenceFor(rolloutId)}'::jsonb,
+              '${eligibilityCutoff}'::timestamptz,${epoch},
               '${epoch.toString(16).padStart(32, "0")}');`,
             );
 
@@ -1301,7 +1330,8 @@ describePg17(
               `SELECT reviewrouter_activation.install_migration_permit(
               'migration-quarantine','1','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}','${context.migrationChecksum}',
-              'sha256:${"9".repeat(64)}',31,'${"1f".padStart(32, "0")}');`,
+              'sha256:${"9".repeat(64)}','${evidenceFor("migration-quarantine")}'::jsonb,
+              '${eligibilityCutoff}'::timestamptz,31,'${"1f".padStart(32, "0")}');`,
             ).status,
           ).not.toBe(0);
           expect(
@@ -1318,7 +1348,8 @@ describePg17(
               `CALL public.reviewrouter_execute_release_migration(
               'migration-quarantine','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}',31,'${"1f".padStart(32, "0")}',
-              '{"status":"reconciled"}'::jsonb,true);`,
+              '${evidenceFor("migration-quarantine")}'::jsonb,
+              '${eligibilityCutoff}'::timestamptz,true);`,
             ).stderr,
           ).toContain("release migration target permit unavailable");
 
@@ -1329,7 +1360,9 @@ describePg17(
               releaseUsername,
               `SELECT reviewrouter_activation.consume_migration_permit(
               'migration-completed','${context.systemIdentifier}','${witness}',
-              '${transition}','${previous}',32,'${nonce}');`,
+              '${transition}','${previous}',
+              '${evidenceFor("migration-completed")}'::jsonb,
+              '${eligibilityCutoff}'::timestamptz,32,'${nonce}');`,
             ).status,
           ).not.toBe(0);
           expect(
@@ -1385,26 +1418,13 @@ describePg17(
              GRANTED BY reviewrouter_release_schema_owner;`,
             ).status,
           ).not.toBe(0);
-          const inventory = JSON.parse(
-            context.psqlAs(releaseUsername, legacyAmbiguityInventorySql),
-          );
-          const inventorySha256 = `sha256:${createHash("sha256")
-            .update(JSON.stringify(inventory))
-            .digest("hex")}`;
-          const legacyReceipt = JSON.stringify({
-            version: 1,
-            acknowledgement: "all_prior_installers_and_writers_are_stopped",
-            inventory,
-            inventorySha256,
-            stableSamples: 2,
-            status: "reconciled",
-          }).replaceAll("'", "''");
           context.psqlAs(
             releaseUsername,
             `CALL public.reviewrouter_execute_release_migration(
             'migration-completed','${context.systemIdentifier}','${witness}',
             '${transition}','${previous}',32,'${nonce}',
-            '${legacyReceipt}'::jsonb,true);`,
+            '${evidenceFor("migration-completed")}'::jsonb,
+            '${eligibilityCutoff}'::timestamptz,true);`,
           );
           expect(
             context.psqlResultAs(
@@ -1475,7 +1495,8 @@ describePg17(
               `CALL public.reviewrouter_execute_release_migration(
               'migration-completed','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}',32,'${nonce}',
-              '${legacyReceipt}'::jsonb,true);`,
+              '${evidenceFor("migration-completed")}'::jsonb,
+              '${eligibilityCutoff}'::timestamptz,true);`,
             ).stderr,
           ).toContain(
             "release migration executor replay ACL gate mode conflict",
@@ -1504,7 +1525,8 @@ describePg17(
               `SELECT reviewrouter_activation.install_migration_permit(
               'migration-open','1','${context.systemIdentifier}','${witness}',
               '${transition}','${previous}','${context.migrationChecksum}',
-              '${openCatalogDigest}',33,'${openNonce}');`,
+              '${openCatalogDigest}','${evidenceFor("migration-open")}'::jsonb,
+              '${eligibilityCutoff}'::timestamptz,33,'${openNonce}');`,
             ),
           ).toBe("t");
           const projectedOpenAttempt = context.psqlResultAs(
@@ -1512,7 +1534,8 @@ describePg17(
             `CALL public.reviewrouter_execute_release_migration(
             'migration-open','${context.systemIdentifier}','${witness}',
             '${transition}','${previous}',33,'${openNonce}',
-            '${legacyReceipt}'::jsonb,false);`,
+            '${evidenceFor("migration-open")}'::jsonb,
+            '${eligibilityCutoff}'::timestamptz,false);`,
           );
           expect(projectedOpenAttempt.status).not.toBe(0);
           expect(projectedOpenAttempt.stderr).toContain(

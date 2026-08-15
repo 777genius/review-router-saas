@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
   createReleaseRollout,
   RolloutStep,
@@ -18,6 +18,16 @@ import { canonicalActivationCatalogPolicyDigests } from "./activation-catalog-po
 import { createReleaseMigrationTransition } from "./release-migration-transition";
 
 const digest = `sha256:${"a".repeat(64)}`;
+const legacyInventorySha256 = `sha256:${createHash("sha256")
+  .update(
+    JSON.stringify({
+      activeLeaseIds: ["legacy-lease"],
+      fetchedSetupIds: ["legacy-setup"],
+      pendingIntentIds: [],
+      intentStatuses: ["completed", "failed"],
+    }),
+  )
+  .digest("hex")}`;
 const base = createReleaseRollout({
   rolloutId: "rollout-evidence",
   expectedCommitSha: "d".repeat(40),
@@ -373,7 +383,7 @@ const create = () =>
           observedAt: "2026-08-12T00:00:03.000Z",
         },
         legacyAmbiguity: {
-          inventorySha256: digest,
+          inventorySha256: legacyInventorySha256,
           activeLeaseIds: ["legacy-lease"],
           fetchedSetupIds: ["legacy-setup"],
           pendingIntentIds: [],
@@ -381,11 +391,11 @@ const create = () =>
           observations: [
             {
               observedAt: "2026-08-12T00:00:02.000Z",
-              inventorySha256: digest,
+              inventorySha256: legacyInventorySha256,
             },
             {
               observedAt: "2026-08-12T00:00:03.000Z",
-              inventorySha256: digest,
+              inventorySha256: legacyInventorySha256,
             },
           ],
           stable: true,
@@ -431,7 +441,7 @@ const create = () =>
           pendingIntentIds: [],
           intentStatuses: ["completed", "failed"],
         },
-        inventorySha256: digest,
+        inventorySha256: legacyInventorySha256,
         stableSamples: 2,
         after: {
           activeLeaseIds: [],
@@ -476,7 +486,7 @@ const create = () =>
   );
 
 describe("trusted post-cleanup evidence", () => {
-  it("assembles and verifies full schema-13 evidence", () => {
+  it("assembles and verifies full schema-14 evidence", () => {
     expect(create().releaseWitness.releaseAuthority.schemaVersion).toBe(
       releaseAuthoritySchemaVersion,
     );

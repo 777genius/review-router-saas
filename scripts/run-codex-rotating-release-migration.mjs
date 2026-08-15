@@ -942,6 +942,8 @@ CREATE TABLE IF NOT EXISTS reviewrouter_activation.migration_permit (
   previous_receipt_sha256 text NOT NULL CHECK (previous_receipt_sha256 ~ '^sha256:[a-f0-9]{64}$'),
   expected_post_manifest_identity text NOT NULL CHECK (expected_post_manifest_identity ~ '^sha256:[a-f0-9]{64}$'),
   expected_post_catalog_digest text NOT NULL CHECK (expected_post_catalog_digest ~ '^sha256:[a-f0-9]{64}$'),
+  source_legacy_ambiguity jsonb NOT NULL,
+  eligibility_cutoff timestamptz NOT NULL,
   permit_epoch bigint NOT NULL CHECK (permit_epoch > 0),
   permit_nonce text NOT NULL CHECK (permit_nonce ~ '^[a-f0-9]{32}$'),
   state text NOT NULL DEFAULT 'installed' CHECK (state IN ('installed','consumed','completed','quarantined')),
@@ -954,6 +956,18 @@ CREATE TABLE IF NOT EXISTS reviewrouter_activation.migration_permit (
     (state IN ('consumed','completed') AND target_receipt IS NOT NULL)),
   UNIQUE (permit_epoch,permit_nonce)
 );
+ALTER TABLE reviewrouter_activation.migration_permit
+  ADD COLUMN IF NOT EXISTS source_legacy_ambiguity jsonb,
+  ADD COLUMN IF NOT EXISTS eligibility_cutoff timestamptz;
+DO $migration_permit_evidence_upgrade$
+BEGIN
+  IF EXISTS (SELECT 1 FROM reviewrouter_activation.migration_permit
+             WHERE source_legacy_ambiguity IS NULL OR eligibility_cutoff IS NULL)
+  THEN RAISE EXCEPTION 'legacy migration permit cannot be upgraded without source evidence'; END IF;
+END $migration_permit_evidence_upgrade$;
+ALTER TABLE reviewrouter_activation.migration_permit
+  ALTER COLUMN source_legacy_ambiguity SET NOT NULL,
+  ALTER COLUMN eligibility_cutoff SET NOT NULL;
 ALTER TABLE reviewrouter_activation.activation_permit
   ADD COLUMN IF NOT EXISTS preactivation_catalog_policy jsonb,
   ADD COLUMN IF NOT EXISTS preactivation_catalog_policy_sha256 text,
@@ -1127,6 +1141,8 @@ $canonical_json$;
 ALTER FUNCTION reviewrouter_activation.canonical_json(jsonb) OWNER TO ${activationReceiptGuardRoleName};
 REVOKE ALL ON FUNCTION reviewrouter_activation.canonical_json(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION reviewrouter_activation.canonical_json(jsonb) FROM ${activationPermitInstallerRoleName}, ${activationReceiptReaderRoleName}, ${canonicalBootstrapRoleName}, reviewrouter_release_migration;
+DROP FUNCTION IF EXISTS reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text);
+DROP FUNCTION IF EXISTS reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text);
 CREATE OR REPLACE FUNCTION reviewrouter_activation.install_migration_permit(
   requested_rollout_id text, requested_source_system_identifier text,
   requested_target_system_identifier text,
@@ -1134,6 +1150,8 @@ CREATE OR REPLACE FUNCTION reviewrouter_activation.install_migration_permit(
   requested_transition_sha256 text, requested_previous_receipt_sha256 text,
   requested_expected_post_manifest_identity text,
   requested_expected_post_catalog_digest text,
+  requested_source_legacy_ambiguity jsonb,
+  requested_eligibility_cutoff timestamptz,
   requested_permit_epoch bigint, requested_permit_nonce text
 ) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $install_migration_permit$
@@ -1163,20 +1181,48 @@ BEGIN
      OR requested_previous_receipt_sha256 !~ '^sha256:[a-f0-9]{64}$'
      OR requested_expected_post_manifest_identity !~ '^sha256:[a-f0-9]{64}$'
      OR requested_expected_post_catalog_digest !~ '^sha256:[a-f0-9]{64}$'
+     OR jsonb_typeof(requested_source_legacy_ambiguity) IS DISTINCT FROM 'object'
+     OR (SELECT count(*) FROM jsonb_object_keys(requested_source_legacy_ambiguity)) <> 7
+     OR NOT requested_source_legacy_ambiguity ?& ARRAY['inventorySha256',
+       'activeLeaseIds','fetchedSetupIds','pendingIntentIds','intentStatuses',
+       'observations','stable']
+     OR requested_source_legacy_ambiguity->'stable' IS DISTINCT FROM 'true'::jsonb
+     OR requested_source_legacy_ambiguity->>'inventorySha256' !~ '^sha256:[a-f0-9]{64}$'
+     OR EXISTS (SELECT 1 FROM unnest(ARRAY['activeLeaseIds','fetchedSetupIds',
+       'pendingIntentIds','intentStatuses']) key
+       WHERE jsonb_typeof(requested_source_legacy_ambiguity->key) IS DISTINCT FROM 'array'
+         OR EXISTS (SELECT 1 FROM jsonb_array_elements(requested_source_legacy_ambiguity->key) item
+           WHERE jsonb_typeof(item) IS DISTINCT FROM 'string'))
+     OR jsonb_typeof(requested_source_legacy_ambiguity->'observations') IS DISTINCT FROM 'array'
+     OR jsonb_array_length(requested_source_legacy_ambiguity->'observations') <> 2
+     OR EXISTS (SELECT 1 FROM jsonb_array_elements(
+         requested_source_legacy_ambiguity->'observations') sample
+       WHERE jsonb_typeof(sample) IS DISTINCT FROM 'object'
+         OR (SELECT count(*) FROM jsonb_object_keys(sample)) <> 2
+         OR NOT sample ?& ARRAY['observedAt','inventorySha256']
+         OR sample->>'inventorySha256' IS DISTINCT FROM
+           requested_source_legacy_ambiguity->>'inventorySha256'
+         OR NOT pg_input_is_valid(sample->>'observedAt','timestamptz'))
+     OR requested_eligibility_cutoff IS NULL
      OR requested_permit_epoch < 1
      OR requested_permit_nonce !~ '^[a-f0-9]{32}$' THEN
     RAISE EXCEPTION 'release migration target permit invalid';
   END IF;
+  IF (requested_source_legacy_ambiguity->'observations'->1->>'observedAt')::timestamptz
+       <= (requested_source_legacy_ambiguity->'observations'->0->>'observedAt')::timestamptz
+  THEN RAISE EXCEPTION 'release migration target source evidence ordering invalid'; END IF;
   INSERT INTO reviewrouter_activation.migration_permit(
     rollout_id,source_system_identifier,target_system_identifier,
     target_database_identity,target_database_name,target_recovery_witness_sha256,
     transition_sha256,previous_receipt_sha256,expected_post_manifest_identity,
-    expected_post_catalog_digest,permit_epoch,permit_nonce)
+    expected_post_catalog_digest,source_legacy_ambiguity,eligibility_cutoff,
+    permit_epoch,permit_nonce)
   VALUES(requested_rollout_id,requested_source_system_identifier,
     requested_target_system_identifier,observed_database_identity,current_database(),
     requested_target_recovery_witness_sha256,requested_transition_sha256,
     requested_previous_receipt_sha256,requested_expected_post_manifest_identity,
-    requested_expected_post_catalog_digest,requested_permit_epoch,requested_permit_nonce)
+    requested_expected_post_catalog_digest,requested_source_legacy_ambiguity,
+    requested_eligibility_cutoff,requested_permit_epoch,requested_permit_nonce)
   ON CONFLICT (rollout_id) DO NOTHING;
   IF FOUND THEN RETURN true; END IF;
   SELECT * INTO STRICT existing FROM reviewrouter_activation.migration_permit
@@ -1190,20 +1236,26 @@ BEGIN
      AND existing.previous_receipt_sha256=requested_previous_receipt_sha256
      AND existing.expected_post_manifest_identity=requested_expected_post_manifest_identity
      AND existing.expected_post_catalog_digest=requested_expected_post_catalog_digest
+     AND existing.source_legacy_ambiguity=requested_source_legacy_ambiguity
+     AND existing.eligibility_cutoff=requested_eligibility_cutoff
      AND existing.permit_epoch=requested_permit_epoch
      AND existing.permit_nonce=requested_permit_nonce
      AND existing.state IN ('installed','consumed','completed') THEN RETURN false; END IF;
   RAISE EXCEPTION 'release migration target permit binding conflict';
 END
 $install_migration_permit$;
-ALTER FUNCTION reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text) OWNER TO ${activationReceiptGuardRoleName};
-REVOKE ALL ON FUNCTION reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text) TO ${activationPermitInstallerRoleName};
+ALTER FUNCTION reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text) OWNER TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text) TO ${activationPermitInstallerRoleName};
 
+DROP FUNCTION IF EXISTS reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text);
+DROP FUNCTION IF EXISTS reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text);
 CREATE OR REPLACE FUNCTION reviewrouter_activation.consume_migration_permit(
   requested_rollout_id text, requested_target_system_identifier text,
   requested_target_recovery_witness_sha256 text,
   requested_transition_sha256 text, requested_previous_receipt_sha256 text,
+  requested_source_legacy_ambiguity jsonb,
+  requested_eligibility_cutoff timestamptz,
   requested_permit_epoch bigint, requested_permit_nonce text
 ) RETURNS text LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $consume_migration_permit$
@@ -1233,6 +1285,8 @@ BEGIN
      OR current_permit.target_recovery_witness_sha256 IS DISTINCT FROM observed_witness
      OR current_permit.transition_sha256 IS DISTINCT FROM requested_transition_sha256
      OR current_permit.previous_receipt_sha256 IS DISTINCT FROM requested_previous_receipt_sha256
+     OR current_permit.source_legacy_ambiguity IS DISTINCT FROM requested_source_legacy_ambiguity
+     OR current_permit.eligibility_cutoff IS DISTINCT FROM requested_eligibility_cutoff
      OR current_permit.permit_epoch IS DISTINCT FROM requested_permit_epoch
      OR current_permit.permit_nonce IS DISTINCT FROM requested_permit_nonce THEN
     RAISE EXCEPTION 'release migration target permit binding conflict'; END IF;
@@ -1247,22 +1301,23 @@ BEGIN
       'targetDatabaseIdentity',target_database_identity,'targetDatabaseName',target_database_name,
       'targetRecoveryWitnessSha256',target_recovery_witness_sha256,
       'transitionSha256',transition_sha256,'previousReceiptSha256',previous_receipt_sha256,
+      'sourceLegacyAmbiguity',source_legacy_ambiguity,
+      'eligibilityCutoff',to_char(eligibility_cutoff AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
       'permitEpoch',permit_epoch,'permitNonce',permit_nonce)
   WHERE rollout_id=requested_rollout_id;
   RETURN 'execute';
 END
 $consume_migration_permit$;
-ALTER FUNCTION reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text) OWNER TO ${activationReceiptGuardRoleName};
-REVOKE ALL ON FUNCTION reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text) TO ${releaseSchemaOwnerRoleName};
+ALTER FUNCTION reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text) OWNER TO ${activationReceiptGuardRoleName};
+REVOKE ALL ON FUNCTION reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text) TO ${releaseSchemaOwnerRoleName};
 
 CREATE OR REPLACE FUNCTION reviewrouter_activation.complete_migration_permit(
   requested_rollout_id text, requested_permit_epoch bigint,
   requested_permit_nonce text, requested_effect_receipt jsonb
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $complete_migration_permit$
--- Keep the established SQL argument name so CREATE OR REPLACE remains a safe
--- in-place upgrade; the narrowed value is effect metadata, not a receipt.
+-- The caller supplies no effect claims. The database owns the receipt.
 DECLARE requested_effect_metadata CONSTANT jsonb := requested_effect_receipt;
 DECLARE current_permit reviewrouter_activation.migration_permit%ROWTYPE;
 DECLARE completed_receipt jsonb;
@@ -1270,36 +1325,7 @@ DECLARE observed_manifest_identity text;
 DECLARE observed_catalog_digest text;
 BEGIN
   IF session_user <> 'reviewrouter_release_migration'
-     OR jsonb_typeof(requested_effect_metadata) IS DISTINCT FROM 'object' THEN
-    RAISE EXCEPTION 'release migration target completion invalid'; END IF;
-  IF (SELECT count(*) FROM jsonb_object_keys(requested_effect_metadata)) <> 2
-     OR NOT requested_effect_metadata ?& ARRAY[
-       'legacyReconciliation','effectFingerprint']
-     OR jsonb_typeof(requested_effect_metadata->'effectFingerprint')
-       IS DISTINCT FROM 'string'
-     OR requested_effect_metadata->>'effectFingerprint'
-       !~ '^sha256:[a-f0-9]{64}$'
-     OR jsonb_typeof(requested_effect_metadata->'legacyReconciliation')
-       IS DISTINCT FROM 'object' THEN
-    RAISE EXCEPTION 'release migration target completion invalid'; END IF;
-  IF (SELECT count(*) FROM jsonb_object_keys(
-       requested_effect_metadata->'legacyReconciliation')) <> 6
-     OR NOT requested_effect_metadata->'legacyReconciliation' ?& ARRAY[
-       'version','acknowledgement','inventory','inventorySha256',
-       'stableSamples','status']
-     OR requested_effect_metadata->'legacyReconciliation'->'version'
-       IS DISTINCT FROM '1'::jsonb
-     OR requested_effect_metadata->'legacyReconciliation'->>'acknowledgement'
-       IS DISTINCT FROM 'all_prior_installers_and_writers_are_stopped'
-     OR jsonb_typeof(
-       requested_effect_metadata->'legacyReconciliation'->'inventory')
-       IS DISTINCT FROM 'object'
-     OR requested_effect_metadata->'legacyReconciliation'->>'status'
-       IS DISTINCT FROM 'reconciled'
-     OR requested_effect_metadata->'legacyReconciliation'->>'inventorySha256'
-       !~ '^sha256:[a-f0-9]{64}$'
-     OR requested_effect_metadata->'legacyReconciliation'->'stableSamples'
-       IS DISTINCT FROM '2'::jsonb THEN
+     OR requested_effect_metadata IS DISTINCT FROM '{}'::jsonb THEN
     RAISE EXCEPTION 'release migration target completion invalid'; END IF;
   SELECT * INTO STRICT current_permit FROM reviewrouter_activation.migration_permit
   WHERE rollout_id=requested_rollout_id FOR UPDATE;
@@ -1325,13 +1351,6 @@ BEGIN
         'expected=%s observed=%s',
         current_permit.expected_post_catalog_digest,observed_catalog_digest);
   END IF;
-  IF requested_effect_metadata->>'effectFingerprint' IS DISTINCT FROM
-       'sha256:'||encode(pg_catalog.sha256(convert_to(current_permit.rollout_id||':'||
-         current_permit.transition_sha256||':'||current_permit.permit_epoch::text||':'||
-         current_permit.permit_nonce,'UTF8')),'hex') THEN
-    RAISE EXCEPTION
-      'release migration target live completion mismatch:effect_fingerprint';
-  END IF;
   IF EXISTS (SELECT 1 FROM public._prisma_migrations
        WHERE finished_at IS NULL AND rolled_back_at IS NULL) THEN
     RAISE EXCEPTION
@@ -1352,8 +1371,31 @@ BEGIN
     RAISE EXCEPTION
       'release migration target live completion mismatch:unresolved_writeback_intent';
   END IF;
-  completed_receipt := current_permit.target_receipt || requested_effect_metadata ||
+  completed_receipt := current_permit.target_receipt ||
     jsonb_build_object(
+      'legacyReconciliation',jsonb_build_object(
+        'version',1,
+        'acknowledgement','all_prior_installers_and_writers_are_stopped',
+        'inventory',jsonb_build_object(
+          'activeLeaseIds',current_permit.source_legacy_ambiguity->'activeLeaseIds',
+          'fetchedSetupIds',current_permit.source_legacy_ambiguity->'fetchedSetupIds',
+          'pendingIntentIds',current_permit.source_legacy_ambiguity->'pendingIntentIds',
+          'intentStatuses',current_permit.source_legacy_ambiguity->'intentStatuses'),
+        'inventorySha256',current_permit.source_legacy_ambiguity->>'inventorySha256',
+        'stableSamples',2,
+        'after',jsonb_build_object(
+          'activeLeaseIds','[]'::jsonb,'fetchedSetupIds','[]'::jsonb,
+          'pendingIntentIds','[]'::jsonb,
+          'intentStatuses',coalesce((SELECT jsonb_agg(DISTINCT "status" ORDER BY "status")
+            FROM public."CodexOAuthWritebackIntent"),'[]'::jsonb)),
+        'status','reconciled'),
+      'effectFingerprint','sha256:'||encode(pg_catalog.sha256(convert_to(
+        current_permit.rollout_id||':'||current_permit.transition_sha256||':'||
+        current_permit.permit_epoch::text||':'||current_permit.permit_nonce||':'||
+        current_permit.source_legacy_ambiguity->>'inventorySha256'||':'||
+        to_char(current_permit.eligibility_cutoff AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')||':'||observed_manifest_identity||':'||
+        observed_catalog_digest,'UTF8')),'hex'),
       'postManifestIdentity',observed_manifest_identity,
       'postCatalogDigest',observed_catalog_digest,
       'completedAt',to_char(transaction_timestamp() AT TIME ZONE 'UTC',
@@ -3222,9 +3264,9 @@ export function roleProvisioningSql(
   const reconciliationPrerequisiteIndex =
     atomicReleaseMigrationEntries.findIndex(
       ([migrationName]) =>
-        migrationName === "000061_codex_oauth_provider_mutation_fence",
+        migrationName === "000064_codex_oauth_versioned_secret_namespaces",
     );
-  if (reconciliationPrerequisiteIndex !== 1)
+  if (reconciliationPrerequisiteIndex !== 4)
     throw new Error("release_migration_reconciliation_boundary_invalid");
   const guardedPreReconciliationBundle = guardedAtomicReleaseMigrationBundleSql(
     atomicReleaseMigrationEntries.slice(0, reconciliationPrerequisiteIndex + 1),
@@ -3238,10 +3280,9 @@ export function roleProvisioningSql(
   const runtimeRoleLiterals = configuration.roles
     .map(({ username }) => quoted(username))
     .join(",");
-  const guardedLegacyReconciliation =
-    guardedLegacyAmbiguityReconciliationProcedureSql(
-      releaseSchemaOwnerRoleName,
-    );
+  const guardedLegacyReconciliation = `${guardedLegacyAmbiguityReconciliationProcedureSql(
+    releaseSchemaOwnerRoleName,
+  )}`;
   const createAndConverge = [
     ...configuration.roles,
     {
@@ -3722,6 +3763,8 @@ SET LOCAL ROLE ${releaseSchemaOwnerRoleName};
 ${guardedLegacyReconciliation}
 DROP PROCEDURE IF EXISTS public.reviewrouter_execute_release_migration(
   text,text,text,text,text,bigint,text,jsonb);
+DROP PROCEDURE IF EXISTS public.reviewrouter_execute_release_migration(
+  text,text,text,text,text,bigint,text,jsonb,boolean);
 CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(
   requested_rollout_id text,
   requested_target_system_identifier text,
@@ -3730,7 +3773,8 @@ CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration(
   requested_previous_receipt_sha256 text,
   requested_permit_epoch bigint,
   requested_permit_nonce text,
-  requested_legacy_reconciliation jsonb,
+  requested_source_legacy_ambiguity jsonb,
+  requested_eligibility_cutoff timestamptz,
   requested_acl_gate_closed boolean
 )
 LANGUAGE plpgsql
@@ -3740,6 +3784,8 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $rr_guarded_release_executor_v1$
 DECLARE permit_result text;
+DECLARE requested_inventory jsonb;
+DECLARE observed_inventory jsonb;
 BEGIN
   IF session_user <> 'reviewrouter_release_migration' THEN
     RAISE EXCEPTION 'release migration executor caller invalid';
@@ -3750,7 +3796,8 @@ BEGIN
   permit_result := reviewrouter_activation.consume_migration_permit(
     requested_rollout_id,requested_target_system_identifier,
     requested_target_recovery_witness_sha256,requested_transition_sha256,
-    requested_previous_receipt_sha256,requested_permit_epoch,
+    requested_previous_receipt_sha256,requested_source_legacy_ambiguity,
+    requested_eligibility_cutoff,requested_permit_epoch,
     requested_permit_nonce);
   IF permit_result='replay' THEN
     IF EXISTS (
@@ -3767,11 +3814,37 @@ BEGIN
   IF permit_result IS DISTINCT FROM 'execute' THEN
     RAISE EXCEPTION 'release migration executor permit invalid';
   END IF;
+  IF jsonb_typeof(requested_source_legacy_ambiguity) IS DISTINCT FROM 'object'
+     OR requested_source_legacy_ambiguity->'stable' IS DISTINCT FROM 'true'::jsonb
+     OR jsonb_array_length(requested_source_legacy_ambiguity->'observations') <> 2
+  THEN RAISE EXCEPTION 'legacy_reconciliation_source_evidence_invalid'; END IF;
+  requested_inventory := jsonb_build_object(
+    'activeLeaseIds',requested_source_legacy_ambiguity->'activeLeaseIds',
+    'fetchedSetupIds',requested_source_legacy_ambiguity->'fetchedSetupIds',
+    'pendingIntentIds',requested_source_legacy_ambiguity->'pendingIntentIds',
+    'intentStatuses',requested_source_legacy_ambiguity->'intentStatuses');
+  LOCK TABLE public."CodexOAuthProviderInstance" IN SHARE ROW EXCLUSIVE MODE;
+  LOCK TABLE public."RepositoryConnection" IN SHARE ROW EXCLUSIVE MODE;
+  LOCK TABLE public."CodexOAuthSetupManifest" IN SHARE ROW EXCLUSIVE MODE;
+  LOCK TABLE public."CodexOAuthLease" IN SHARE ROW EXCLUSIVE MODE;
+  LOCK TABLE public."CodexOAuthWritebackIntent" IN SHARE ROW EXCLUSIVE MODE;
+  SELECT jsonb_build_object(
+    'activeLeaseIds',coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM public."CodexOAuthLease" WHERE "status" IN ('preleased','finalized')),'[]'::jsonb),
+    'fetchedSetupIds',coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM public."CodexOAuthSetupManifest" WHERE "status"='fetched'),'[]'::jsonb),
+    'pendingIntentIds',coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM public."CodexOAuthWritebackIntent" WHERE "status"='pending'),'[]'::jsonb),
+    'intentStatuses',coalesce((SELECT jsonb_agg(DISTINCT "status" ORDER BY "status") FROM public."CodexOAuthWritebackIntent"),'[]'::jsonb))
+  INTO STRICT observed_inventory;
+  IF EXISTS (SELECT 1 FROM public."CodexOAuthWritebackIntent"
+             WHERE "status" NOT IN ('completed','failed','pending','remote_outcome_unknown'))
+  THEN RAISE EXCEPTION 'legacy_reconciliation_intent_status_unclassified'; END IF;
+  IF observed_inventory IS DISTINCT FROM requested_inventory
+  THEN RAISE EXCEPTION 'legacy_reconciliation_inventory_changed'; END IF;
 ${guardedPreReconciliationBundle}
   CALL public.reviewrouter_reconcile_legacy_ambiguity(
     requested_rollout_id,requested_target_recovery_witness_sha256,
-    requested_legacy_reconciliation->'inventory',
-    requested_legacy_reconciliation->>'inventorySha256');
+    requested_inventory,
+    requested_source_legacy_ambiguity->>'inventorySha256',
+    requested_eligibility_cutoff);
 ${guardedPostReconciliationBundle}
 ${guardedGrants}
   IF requested_acl_gate_closed THEN
@@ -3815,18 +3888,13 @@ ${guardedAclGate}
   END IF;
   PERFORM reviewrouter_activation.complete_migration_permit(
     requested_rollout_id,requested_permit_epoch,requested_permit_nonce,
-    pg_catalog.jsonb_build_object(
-      'legacyReconciliation',requested_legacy_reconciliation,
-      'effectFingerprint','sha256:'||pg_catalog.encode(pg_catalog.sha256(
-        pg_catalog.convert_to(requested_rollout_id||':'||
-          requested_transition_sha256||':'||requested_permit_epoch::text||':'||
-          requested_permit_nonce,'UTF8')),'hex')));
+    '{}'::jsonb);
 END
 $rr_guarded_release_executor_v1$;
 REVOKE ALL ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb,boolean) FROM PUBLIC;
+  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) FROM PUBLIC;
 GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb,boolean) TO reviewrouter_release_migration;
+  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration;
 DO $transferred_public_routine_acl$
 DECLARE routine_row record;
 BEGIN
@@ -3981,9 +4049,9 @@ BEGIN
       failed_invariant := 'read_activation_receipt_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.assert_no_activation_receipt()') IS NULL THEN
       failed_invariant := 'assert_no_activation_receipt_routine_missing';
-    WHEN to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)') IS NULL THEN
+    WHEN to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)') IS NULL THEN
       failed_invariant := 'install_migration_permit_routine_missing';
-    WHEN to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)') IS NULL THEN
+    WHEN to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)') IS NULL THEN
       failed_invariant := 'consume_migration_permit_routine_missing';
     WHEN to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)') IS NULL THEN
       failed_invariant := 'complete_migration_permit_routine_missing';
@@ -4065,15 +4133,15 @@ BEGIN
         failed_invariant := 'bootstrap_assert_no_activation_receipt_execute_missing';
       WHEN NOT has_function_privilege('${activationReceiptReaderRoleName}','reviewrouter_activation.read_activation_receipt(text)','EXECUTE') THEN
         failed_invariant := 'receipt_reader_read_activation_receipt_execute_missing';
-      WHEN NOT has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)','EXECUTE') THEN
+      WHEN NOT has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)','EXECUTE') THEN
         failed_invariant := 'permit_installer_install_migration_permit_execute_missing';
       WHEN NOT has_function_privilege('${activationPermitInstallerRoleName}','reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)','EXECUTE') THEN
         failed_invariant := 'permit_installer_terminalize_migration_permit_execute_missing';
-      WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)','EXECUTE') THEN
+      WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)','EXECUTE') THEN
         failed_invariant := 'release_migration_consume_migration_permit_execute_present';
       WHEN has_function_privilege('reviewrouter_release_migration','reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)','EXECUTE') THEN
         failed_invariant := 'release_migration_complete_migration_permit_execute_present';
-      WHEN NOT has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)','EXECUTE') THEN
+      WHEN NOT has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)','EXECUTE') THEN
         failed_invariant := 'schema_owner_consume_migration_permit_execute_missing';
       WHEN NOT has_function_privilege('${releaseSchemaOwnerRoleName}','reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)','EXECUTE') THEN
         failed_invariant := 'schema_owner_complete_migration_permit_execute_missing';
@@ -4588,6 +4656,19 @@ export function releaseMigrationPermitFromEnv(env) {
     ),
     epoch: required(env, "REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH"),
     nonce: required(env, "REVIEW_ROUTER_MIGRATION_PERMIT_NONCE"),
+    sourceLegacyAmbiguity: JSON.parse(
+      Buffer.from(
+        required(
+          env,
+          "REVIEW_ROUTER_MIGRATION_PERMIT_SOURCE_LEGACY_AMBIGUITY_BASE64URL",
+        ),
+        "base64url",
+      ).toString("utf8"),
+    ),
+    eligibilityCutoff: required(
+      env,
+      "REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF",
+    ),
   };
   if (
     !/^[A-Za-z0-9][A-Za-z0-9._:/@-]{2,255}$/u.test(permit.rolloutId) ||
@@ -4596,7 +4677,9 @@ export function releaseMigrationPermitFromEnv(env) {
     !/^sha256:[a-f0-9]{64}$/u.test(permit.transitionSha256) ||
     !/^sha256:[a-f0-9]{64}$/u.test(permit.previousReceiptSha256) ||
     !/^[1-9][0-9]{0,18}$/u.test(permit.epoch) ||
-    !/^[a-f0-9]{32}$/u.test(permit.nonce)
+    !/^[a-f0-9]{32}$/u.test(permit.nonce) ||
+    !Number.isFinite(Date.parse(permit.eligibilityCutoff)) ||
+    permit.sourceLegacyAmbiguity?.stable !== true
   )
     throw new Error("release_migration_target_permit_invalid");
   return Object.freeze(permit);
@@ -4615,7 +4698,7 @@ export function atomicMigrationAndGrantSql(
     throw new Error("release_migration_target_permit_missing");
   if (migrationBundleSql !== atomicReleaseMigrationBundleSql())
     throw new Error("release_migration_bundle_override_forbidden");
-  if (!legacyReconciliation?.receipt)
+  if (!legacyReconciliation?.evidence)
     throw new Error("release_migration_legacy_reconciliation_missing");
   return `\\set ON_ERROR_STOP on
 BEGIN;
@@ -4633,7 +4716,8 @@ CALL public.reviewrouter_execute_release_migration(
   ${quoted(migrationPermit.previousReceiptSha256)},
   ${migrationPermit.epoch}::bigint,
   ${quoted(migrationPermit.nonce)},
-  ${quoted(JSON.stringify(legacyReconciliation.receipt))}::jsonb,
+  ${quoted(JSON.stringify(legacyReconciliation.evidence))}::jsonb,
+  ${quoted(migrationPermit.eligibilityCutoff)}::timestamptz,
   ${gateClosed ? "true" : "false"}::boolean);
 SET LOCAL search_path = pg_catalog, pg_temp;
 DO $phase_aware_manifest_postcondition$
@@ -4987,6 +5071,8 @@ export function executeCanonicalReleaseMigration(
       databaseUrl: configuration.releaseUrl,
       recoveryWitnessSha256: migrationPermit.targetRecoveryWitnessSha256,
       rolloutId: migrationPermit.rolloutId,
+      legacyAmbiguity: migrationPermit.sourceLegacyAmbiguity,
+      eligibilityCutoff: migrationPermit.eligibilityCutoff,
       env: childEnv,
     },
     run,

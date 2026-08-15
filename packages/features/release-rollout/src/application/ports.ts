@@ -11,6 +11,7 @@ import type {
   ReleaseMigrationPermit,
   ReleaseMigrationTransitionV1,
 } from "../domain/release-migration-transition";
+import type { LegacyAmbiguityEvidence } from "../domain/trusted-rollout-evidence";
 
 export interface ProviderControlPort {
   freezeAndObserve(): Promise<StepObservation>;
@@ -108,6 +109,7 @@ export interface DatabaseRolloutPort {
     target: DatabaseGenerationIdentity,
     transition: ReleaseMigrationTransitionV1,
     permit: ReleaseMigrationPermit,
+    sourceLegacyAmbiguity: LegacyAmbiguityEvidence,
   ): Promise<
     StepObservation<ReleaseMigrationObservation & Record<string, unknown>>
   >;

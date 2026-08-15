@@ -1,4 +1,4 @@
-import { canonicalJson } from "./release-rollout";
+import { canonicalJson } from "./canonical-json";
 import {
   PrincipalCapability,
   canonicalActivationPrincipalNames,

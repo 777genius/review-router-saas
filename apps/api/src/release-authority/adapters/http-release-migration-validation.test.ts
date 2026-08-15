@@ -13,6 +13,27 @@ const transition = createReleaseMigrationTransition({
   commitSha: "a".repeat(40),
   releaseImageDigest: digest("b"),
 });
+const sourceLegacyAmbiguity = {
+  inventorySha256:
+    "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+  activeLeaseIds: [],
+  fetchedSetupIds: [],
+  pendingIntentIds: [],
+  intentStatuses: [],
+  observations: [
+    {
+      observedAt: "2026-08-14T12:34:54.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+    {
+      observedAt: "2026-08-14T12:34:55.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+  ],
+  stable: true,
+} as const;
 const claim = () => ({
   rolloutId,
   expectedCommitSha: "a".repeat(40),
@@ -30,6 +51,7 @@ const begin = () => {
     ...binding,
     transitionSha256: transition.transitionSha256,
     expectedPreviousReceiptSha256: digest("0"),
+    sourceLegacyAmbiguity,
   };
 };
 const permit = () => ({
@@ -41,6 +63,8 @@ const permit = () => ({
   targetRecoveryWitnessSha256: "c".repeat(64),
   transitionSha256: transition.transitionSha256,
   expectedPreviousReceiptSha256: digest("0"),
+  sourceLegacyAmbiguity,
+  eligibilityCutoff: "2026-08-14T12:34:56.000Z",
   epoch: 1,
   nonce: "d".repeat(32),
 });
@@ -108,6 +132,30 @@ describe("release migration HTTP DTO validation", () => {
         rolloutId,
       ),
     );
+    rejects(() =>
+      migrationBeginRequest(
+        {
+          ...valid,
+          sourceLegacyAmbiguity: {
+            ...sourceLegacyAmbiguity,
+            inventorySha256: digest("0"),
+          },
+        },
+        rolloutId,
+      ),
+    );
+    rejects(() =>
+      migrationBeginRequest(
+        {
+          ...valid,
+          sourceLegacyAmbiguity: {
+            ...sourceLegacyAmbiguity,
+            unexpected: true,
+          },
+        },
+        rolloutId,
+      ),
+    );
     rejects(() => migrationBeginRequest(valid, "different-rollout"));
   });
 
@@ -125,6 +173,15 @@ describe("release migration HTTP DTO validation", () => {
     rejects(() =>
       migrationCompleteRequest(
         { ...valid, permit: { ...valid.permit, epoch: "1" } },
+        rolloutId,
+      ),
+    );
+    rejects(() =>
+      migrationCompleteRequest(
+        {
+          ...valid,
+          permit: { ...valid.permit, eligibilityCutoff: "2026-08-14" },
+        },
         rolloutId,
       ),
     );

@@ -52,6 +52,51 @@ export type ReleaseRolloutLedgerRouteDependencies = {
 };
 
 const mutationFingerprint = /^sha256:[a-f0-9]{64}$/u;
+const legacyAmbiguityRequest = (value: unknown) => {
+  const item = record(value);
+  const arrayKeys = [
+    "activeLeaseIds",
+    "fetchedSetupIds",
+    "pendingIntentIds",
+    "intentStatuses",
+  ] as const;
+  if (
+    !exactKeys(item, [
+      ...arrayKeys,
+      "inventorySha256",
+      "observations",
+      "stable",
+    ]) ||
+    item.stable !== true ||
+    !stringMatching(item.inventorySha256, sha256Digest) ||
+    arrayKeys.some(
+      (key) =>
+        !Array.isArray(item[key]) ||
+        item[key].some((entry) => typeof entry !== "string"),
+    ) ||
+    !Array.isArray(item.observations) ||
+    item.observations.length !== 2
+  )
+    invalidMigrationRequest();
+  const observations = item.observations as Record<string, unknown>[];
+  if (
+    observations.some(
+      (sample) =>
+        !exactKeys(sample, ["observedAt", "inventorySha256"]) ||
+        !exactTimestamp(sample.observedAt) ||
+        sample.inventorySha256 !== item.inventorySha256,
+    ) ||
+    Date.parse(String(observations[1]!.observedAt)) <=
+      Date.parse(String(observations[0]!.observedAt))
+  )
+    invalidMigrationRequest();
+  const inventory = Object.fromEntries(
+    arrayKeys.map((key) => [key, item[key]]),
+  );
+  const digest = `sha256:${createHash("sha256").update(JSON.stringify(inventory)).digest("hex")}`;
+  if (digest !== item.inventorySha256) invalidMigrationRequest();
+  return item as unknown as ReleaseMigrationPermit["sourceLegacyAmbiguity"];
+};
 const mutationResource = (value: unknown) => {
   const item = record(value);
   if (
@@ -433,6 +478,8 @@ export const migrationPermitRequest = (
       "targetRecoveryWitnessSha256",
       "transitionSha256",
       "expectedPreviousReceiptSha256",
+      "sourceLegacyAmbiguity",
+      "eligibilityCutoff",
       "epoch",
       "nonce",
     ]) ||
@@ -444,6 +491,7 @@ export const migrationPermitRequest = (
     !stringMatching(body.targetRecoveryWitnessSha256, rawSha256) ||
     !stringMatching(body.transitionSha256, sha256Digest) ||
     !stringMatching(body.expectedPreviousReceiptSha256, sha256Digest) ||
+    !exactTimestamp(body.eligibilityCutoff) ||
     !Number.isSafeInteger(body.epoch) ||
     Number(body.epoch) < 1 ||
     !stringMatching(body.nonce, permitNonce)
@@ -467,6 +515,10 @@ export const migrationPermitRequest = (
       body.expectedPreviousReceiptSha256,
       sha256Digest,
     ),
+    sourceLegacyAmbiguity: legacyAmbiguityRequest(body.sourceLegacyAmbiguity),
+    eligibilityCutoff: exactTimestamp(body.eligibilityCutoff)
+      ? body.eligibilityCutoff
+      : invalidMigrationRequest(),
     epoch: Number(body.epoch),
     nonce: requiredPattern(body.nonce, permitNonce),
   };
@@ -606,6 +658,7 @@ export const migrationBeginRequest = (
       "targetRecoveryWitnessSha256",
       "transitionSha256",
       "expectedPreviousReceiptSha256",
+      "sourceLegacyAmbiguity",
     ]) ||
     body.rolloutId !== routeRolloutId
   )
@@ -645,6 +698,7 @@ export const migrationBeginRequest = (
       body.expectedPreviousReceiptSha256,
       sha256Digest,
     ),
+    sourceLegacyAmbiguity: legacyAmbiguityRequest(body.sourceLegacyAmbiguity),
   };
 };
 

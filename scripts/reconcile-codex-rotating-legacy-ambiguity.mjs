@@ -16,22 +16,75 @@ const quoted = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const sha256 = (value) =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
 
+const inventoryKeys = Object.freeze([
+  "activeLeaseIds",
+  "fetchedSetupIds",
+  "pendingIntentIds",
+  "intentStatuses",
+]);
+
+const inventoryProjectionSql = (jsonType = "jsonb") => String.raw`${
+  jsonType === "json" ? "json_build_object" : "jsonb_build_object"
+}(
+    'activeLeaseIds', coalesce((SELECT ${jsonType === "json" ? "json_agg" : "jsonb_agg"}("id" ORDER BY "id") FROM "CodexOAuthLease" WHERE "status" IN ('preleased','finalized')), '[]'::${jsonType}),
+    'fetchedSetupIds', coalesce((SELECT ${jsonType === "json" ? "json_agg" : "jsonb_agg"}("id" ORDER BY "id") FROM "CodexOAuthSetupManifest" WHERE "status" = 'fetched'), '[]'::${jsonType}),
+    'pendingIntentIds', coalesce((SELECT ${jsonType === "json" ? "json_agg" : "jsonb_agg"}("id" ORDER BY "id") FROM "CodexOAuthWritebackIntent" WHERE "status" = 'pending'), '[]'::${jsonType}),
+    'intentStatuses', coalesce((SELECT ${jsonType === "json" ? "json_agg" : "jsonb_agg"}(DISTINCT "status" ORDER BY "status") FROM "CodexOAuthWritebackIntent"), '[]'::${jsonType})
+  )`;
+
 export const legacyAmbiguityInventorySql = String.raw`
-SELECT json_build_object(
-  'activeLeaseIds', coalesce((SELECT json_agg("id" ORDER BY "id") FROM "CodexOAuthLease" WHERE "status" IN ('preleased','finalized')), '[]'::json),
-  'fetchedSetupIds', coalesce((SELECT json_agg("id" ORDER BY "id") FROM "CodexOAuthSetupManifest" WHERE "status" = 'fetched'), '[]'::json),
-  'pendingIntentIds', coalesce((SELECT json_agg("id" ORDER BY "id") FROM "CodexOAuthWritebackIntent" WHERE "status" = 'pending'), '[]'::json),
-  'intentStatuses', coalesce((SELECT json_agg(DISTINCT "status" ORDER BY "status") FROM "CodexOAuthWritebackIntent"), '[]'::json)
-)::text`;
+SELECT ${inventoryProjectionSql("json")}::text`;
+
+const canonicalInventoryTextSql = (inventoryExpression) => String.raw`(
+    SELECT '{"activeLeaseIds":[' || coalesce((
+      SELECT string_agg(to_jsonb(value)::text, ',' ORDER BY ordinal)
+      FROM jsonb_array_elements_text(${inventoryExpression}->'activeLeaseIds')
+        WITH ORDINALITY AS elements(value, ordinal)
+    ), '') || '],"fetchedSetupIds":[' || coalesce((
+      SELECT string_agg(to_jsonb(value)::text, ',' ORDER BY ordinal)
+      FROM jsonb_array_elements_text(${inventoryExpression}->'fetchedSetupIds')
+        WITH ORDINALITY AS elements(value, ordinal)
+    ), '') || '],"pendingIntentIds":[' || coalesce((
+      SELECT string_agg(to_jsonb(value)::text, ',' ORDER BY ordinal)
+      FROM jsonb_array_elements_text(${inventoryExpression}->'pendingIntentIds')
+        WITH ORDINALITY AS elements(value, ordinal)
+    ), '') || '],"intentStatuses":[' || coalesce((
+      SELECT string_agg(to_jsonb(value)::text, ',' ORDER BY ordinal)
+      FROM jsonb_array_elements_text(${inventoryExpression}->'intentStatuses')
+        WITH ORDINALITY AS elements(value, ordinal)
+    ), '') || ']}'
+  )`;
+
+const inventoryInputValidationSql = (inventory, digest) => String.raw`
+  IF jsonb_typeof(${inventory}) IS DISTINCT FROM 'object'
+     OR (SELECT count(*) FROM jsonb_object_keys(${inventory})) <> 4
+     OR NOT ${inventory} ?& ARRAY[${inventoryKeys.map(quoted).join(",")}]
+     OR ${digest} !~ '^sha256:[a-f0-9]{64}$'
+     OR EXISTS (
+       SELECT 1 FROM unnest(ARRAY[${inventoryKeys.map(quoted).join(",")}]) key
+       WHERE jsonb_typeof(${inventory}->key) IS DISTINCT FROM 'array'
+          OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(${inventory}->key) item
+            WHERE jsonb_typeof(item) IS DISTINCT FROM 'string'
+          )
+     )
+  THEN RAISE EXCEPTION 'legacy_reconciliation_guard_input_invalid'; END IF;
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements_text(${inventory}->'intentStatuses') status
+    WHERE status NOT IN (${knownIntentStatuses.map(quoted).join(",")})
+  ) THEN RAISE EXCEPTION 'legacy_reconciliation_intent_status_unclassified'; END IF;`;
 
 function parseInventory(value) {
   const parsed = JSON.parse(value.trim());
-  for (const key of [
-    "activeLeaseIds",
-    "fetchedSetupIds",
-    "pendingIntentIds",
-    "intentStatuses",
-  ]) {
+  if (
+    parsed === null ||
+    Array.isArray(parsed) ||
+    typeof parsed !== "object" ||
+    Object.keys(parsed).length !== inventoryKeys.length ||
+    inventoryKeys.some((key) => !Object.hasOwn(parsed, key))
+  )
+    throw new Error("legacy_reconciliation_inventory_invalid");
+  for (const key of inventoryKeys) {
     if (
       !Array.isArray(parsed[key]) ||
       parsed[key].some((item) => typeof item !== "string")
@@ -49,40 +102,40 @@ function parseInventory(value) {
 }
 
 export function legacyAmbiguityReconciliationEffectSql(input) {
-  const expected = JSON.stringify({
-    activeLeaseIds: input.inventory.activeLeaseIds,
-    fetchedSetupIds: input.inventory.fetchedSetupIds,
-    pendingIntentIds: input.inventory.pendingIntentIds,
-    intentStatuses: input.inventory.intentStatuses,
-  });
   const ambiguous = ambiguousIntentStatuses.map(quoted).join(",");
+  const requestedInventory = `${quoted(JSON.stringify(input.inventory))}::jsonb`;
   return String.raw`
 DO $reconcile$
 DECLARE
-  observed jsonb;
   target record;
   request_id text;
   next_epoch bigint;
 BEGIN
-  LOCK TABLE "CodexOAuthProviderInstance", "CodexOAuthLease", "CodexOAuthSetupManifest", "CodexOAuthWritebackIntent", "CodexOAuthSetupRecoveryRequest" IN SHARE ROW EXCLUSIVE MODE;
-  SELECT jsonb_build_object(
-    'activeLeaseIds', coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM "CodexOAuthLease" WHERE "status" IN ('preleased','finalized')), '[]'::jsonb),
-    'fetchedSetupIds', coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM "CodexOAuthSetupManifest" WHERE "status" = 'fetched'), '[]'::jsonb),
-    'pendingIntentIds', coalesce((SELECT jsonb_agg("id" ORDER BY "id") FROM "CodexOAuthWritebackIntent" WHERE "status" = 'pending'), '[]'::jsonb),
-    'intentStatuses', coalesce((SELECT jsonb_agg(DISTINCT "status" ORDER BY "status") FROM "CodexOAuthWritebackIntent"), '[]'::jsonb)
-  ) INTO observed;
-  IF observed <> ${quoted(expected)}::jsonb THEN
-    RAISE EXCEPTION 'legacy_reconciliation_inventory_changed';
-  END IF;
   IF EXISTS (
     SELECT 1 FROM "CodexOAuthWritebackIntent"
     WHERE "status" NOT IN (${knownIntentStatuses.map(quoted).join(",")})
   ) THEN RAISE EXCEPTION 'legacy_reconciliation_intent_status_unclassified'; END IF;
+  IF jsonb_array_length(${requestedInventory}->'pendingIntentIds') > 0
+     OR EXISTS (
+       SELECT 1 FROM "CodexOAuthWritebackIntent"
+       WHERE "status" IN (${ambiguous})
+     )
+  THEN RAISE EXCEPTION 'legacy_reconciliation_unresolved_intent'; END IF;
+  IF EXISTS (
+    SELECT 1 FROM "CodexOAuthLease"
+    WHERE "status" IN ('preleased','finalized')
+      AND NOT (${requestedInventory}->'activeLeaseIds' ? "id")
+  ) OR EXISTS (
+    SELECT 1 FROM "CodexOAuthSetupManifest"
+    WHERE "status"='fetched'
+      AND NOT (${requestedInventory}->'fetchedSetupIds' ? "id")
+  ) THEN RAISE EXCEPTION 'legacy_reconciliation_inventory_addition'; END IF;
   IF EXISTS (
     SELECT 1 FROM "CodexOAuthLease" lease
     JOIN "CodexOAuthProviderInstance" provider ON provider."id"=lease."providerInstanceRowId"
-    WHERE lease."status" IN ('preleased','finalized') AND NOT (
-      lease."expiresAt" <= clock_timestamp()
+    WHERE lease."status" IN ('preleased','finalized')
+      AND (${requestedInventory}->'activeLeaseIds' ? lease."id") AND NOT (
+      lease."expiresAt" <= ${quoted(input.eligibilityCutoff)}::timestamptz
       AND lease."mutationEpoch" < provider."mutationEpoch"
       AND provider."mutationOwner"='recovery'
       AND provider."mutationOwnerId"='versioned-namespace-cutover:'||provider."id"
@@ -92,8 +145,9 @@ BEGIN
   IF EXISTS (
     SELECT 1 FROM "CodexOAuthSetupManifest" manifest
     JOIN "CodexOAuthProviderInstance" provider ON provider."id"=manifest."providerInstanceRowId"
-    WHERE manifest."status"='fetched' AND NOT (
-      manifest."expiresAt" <= clock_timestamp()
+    WHERE manifest."status"='fetched'
+      AND (${requestedInventory}->'fetchedSetupIds' ? manifest."id") AND NOT (
+      manifest."expiresAt" <= ${quoted(input.eligibilityCutoff)}::timestamptz
       AND manifest."mutationEpoch" < provider."mutationEpoch"
       AND provider."mutationOwner"='recovery'
       AND provider."mutationOwnerId"='versioned-namespace-cutover:'||provider."id"
@@ -105,6 +159,7 @@ BEGIN
     FROM "CodexOAuthSetupManifest" manifest
     JOIN "CodexOAuthProviderInstance" provider ON provider."id"=manifest."providerInstanceRowId"
     WHERE manifest."status"='fetched'
+      AND (${requestedInventory}->'fetchedSetupIds' ? manifest."id")
     ORDER BY provider."id"
   LOOP
     request_id := 'legacy-cutover:${input.rolloutId}:' || target."id";
@@ -133,14 +188,16 @@ BEGIN
           'recoveryEpoch', next_epoch::text,
           'legacyInventorySha256', ${quoted(input.inventorySha256)}
         )
-    WHERE "providerInstanceRowId"=target."id" AND "status"='fetched';
+    WHERE "providerInstanceRowId"=target."id" AND "status"='fetched'
+      AND (${requestedInventory}->'fetchedSetupIds' ? "id");
     UPDATE "CodexOAuthSetupRecoveryRequest"
     SET "state"='superseded', "completedAt"=clock_timestamp(), "updatedAt"=clock_timestamp()
     WHERE "id"=request_id;
   END LOOP;
 
   UPDATE "CodexOAuthLease" SET "status"='expired'
-  WHERE "status" IN ('preleased','finalized');
+  WHERE "status" IN ('preleased','finalized')
+    AND (${requestedInventory}->'activeLeaseIds' ? "id");
 END
 $reconcile$;
 `;
@@ -164,6 +221,7 @@ export function guardedLegacyAmbiguityReconciliationProcedureSql(ownerRole) {
     inventorySha256: `sha256:${"1".repeat(64)}`,
     recoveryWitnessSha256: "2".repeat(64),
     rolloutId: "rr-sentinel-rollout",
+    eligibilityCutoff: "2026-08-15T00:00:00.000Z",
   };
   const expected = JSON.stringify(sentinel.inventory);
   const effect = legacyAmbiguityReconciliationEffectSql(sentinel);
@@ -176,14 +234,17 @@ export function guardedLegacyAmbiguityReconciliationProcedureSql(ownerRole) {
     .replace(
       "BEGIN\n",
       () => `BEGIN
-  IF jsonb_typeof(requested_inventory) IS DISTINCT FROM 'object'
-     OR requested_inventory_sha256 !~ '^sha256:[a-f0-9]{64}$'
-     OR requested_recovery_witness_sha256 !~ '^[a-f0-9]{64}$'
+${inventoryInputValidationSql("requested_inventory", "requested_inventory_sha256")}
+  IF requested_recovery_witness_sha256 !~ '^[a-f0-9]{64}$'
      OR requested_rollout_id !~ '^[A-Za-z0-9][A-Za-z0-9._:/@-]{2,255}$'
   THEN RAISE EXCEPTION 'legacy_reconciliation_guard_input_invalid'; END IF;
+  IF 'sha256:'||encode(sha256(convert_to(
+       ${canonicalInventoryTextSql("requested_inventory")},'UTF8')),'hex')
+       IS DISTINCT FROM requested_inventory_sha256
+  THEN RAISE EXCEPTION 'legacy_reconciliation_inventory_digest_invalid'; END IF;
 `,
     )
-    .replace(quoted(expected), "requested_inventory")
+    .replaceAll(quoted(expected), "requested_inventory")
     .replaceAll(
       `'legacy-cutover:${sentinel.rolloutId}:'`,
       `'legacy-cutover:'||requested_rollout_id||':'`,
@@ -197,18 +258,25 @@ export function guardedLegacyAmbiguityReconciliationProcedureSql(ownerRole) {
       "requested_recovery_witness_sha256",
     )
     .replaceAll(quoted(sentinel.inventorySha256), "requested_inventory_sha256");
-  return `CREATE OR REPLACE PROCEDURE public.reviewrouter_reconcile_legacy_ambiguity(
+  const cutoffBoundBody = body.replaceAll(
+    `${quoted(sentinel.eligibilityCutoff)}::timestamptz`,
+    "requested_eligibility_cutoff",
+  );
+  return `DROP PROCEDURE IF EXISTS public.reviewrouter_reconcile_legacy_ambiguity(
+  text,text,jsonb,text);
+CREATE OR REPLACE PROCEDURE public.reviewrouter_reconcile_legacy_ambiguity(
   requested_rollout_id text, requested_recovery_witness_sha256 text,
-  requested_inventory jsonb, requested_inventory_sha256 text
+  requested_inventory jsonb, requested_inventory_sha256 text,
+  requested_eligibility_cutoff timestamptz
 )
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $rr_guarded_legacy_reconciliation_v1$
-${body}
+${cutoffBoundBody}
 $rr_guarded_legacy_reconciliation_v1$;
-ALTER PROCEDURE public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text)
+ALTER PROCEDURE public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamptz)
   OWNER TO ${ownerRole};
-REVOKE ALL ON PROCEDURE public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text)
+REVOKE ALL ON PROCEDURE public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamptz)
   FROM PUBLIC;`;
 }
 
@@ -223,62 +291,62 @@ COMMIT;
 }
 
 export function prepareLegacyAmbiguityReconciliation(input, run) {
-  const observe = (step) =>
-    parseInventory(
-      run(
-        step,
-        "psql",
-        [
-          input.databaseUrl,
-          "--no-psqlrc",
-          "--tuples-only",
-          "--no-align",
-          "--command",
-          legacyAmbiguityInventorySql,
-        ],
-        { env: input.env },
-      ),
-    );
-  const first = observe("legacy_ambiguity_inventory_first");
-  run(
-    "legacy_ambiguity_stabilization",
-    "psql",
-    [
-      input.databaseUrl,
-      "--no-psqlrc",
-      "--quiet",
-      "--command",
-      "SELECT pg_sleep(0.2)",
-    ],
-    { env: input.env },
+  void run;
+  const evidence = input.legacyAmbiguity;
+  const evidenceKeys = [
+    ...inventoryKeys,
+    "inventorySha256",
+    "observations",
+    "stable",
+  ];
+  if (
+    !evidence ||
+    evidence.stable !== true ||
+    evidence.observations?.length !== 2 ||
+    Object.keys(evidence).length !== evidenceKeys.length ||
+    evidenceKeys.some((key) => !Object.hasOwn(evidence, key)) ||
+    evidence.observations.some(
+      (sample) =>
+        !sample ||
+        Object.keys(sample).length !== 2 ||
+        !Number.isFinite(Date.parse(sample.observedAt)),
+    ) ||
+    Date.parse(evidence.observations[1].observedAt) <=
+      Date.parse(evidence.observations[0].observedAt)
+  )
+    throw new Error("legacy_reconciliation_source_evidence_invalid");
+  const inventory = parseInventory(
+    JSON.stringify({
+      activeLeaseIds: evidence.activeLeaseIds,
+      fetchedSetupIds: evidence.fetchedSetupIds,
+      pendingIntentIds: evidence.pendingIntentIds,
+      intentStatuses: evidence.intentStatuses,
+    }),
   );
-  const second = observe("legacy_ambiguity_inventory_second");
-  const firstCanonical = JSON.stringify(first);
-  const secondCanonical = JSON.stringify(second);
-  if (firstCanonical !== secondCanonical)
-    throw new Error("legacy_reconciliation_inventory_not_stable");
-  const inventorySha256 = sha256(secondCanonical);
+  const inventorySha256 = sha256(JSON.stringify(inventory));
+  if (
+    inventorySha256 !== evidence.inventorySha256 ||
+    evidence.observations.some(
+      (sample) => sample.inventorySha256 !== evidence.inventorySha256,
+    )
+  )
+    throw new Error("legacy_reconciliation_source_evidence_invalid");
   return Object.freeze({
     input: Object.freeze({
-      inventory: second,
+      inventory,
       inventorySha256,
       recoveryWitnessSha256: input.recoveryWitnessSha256,
       rolloutId: input.rolloutId,
+      eligibilityCutoff: input.eligibilityCutoff,
     }),
     effectSql: legacyAmbiguityReconciliationEffectSql({
-      inventory: second,
+      inventory,
       inventorySha256,
       recoveryWitnessSha256: input.recoveryWitnessSha256,
       rolloutId: input.rolloutId,
+      eligibilityCutoff: input.eligibilityCutoff,
     }),
-    receipt: Object.freeze({
-      version: 1,
-      acknowledgement: exactAcknowledgement,
-      inventory: second,
-      inventorySha256,
-      stableSamples: 2,
-      status: "reconciled",
-    }),
+    evidence: Object.freeze(evidence),
   });
 }
 
@@ -304,7 +372,9 @@ export function verifyLegacyAmbiguityReconciliation(input, run, prepared) {
     after.pendingIntentIds.length
   )
     throw new Error("legacy_reconciliation_raw_status_not_zero");
-  return Object.freeze({ ...prepared.receipt, after });
+  if (!prepared.receipt || prepared.receipt.status !== "reconciled")
+    throw new Error("legacy_reconciliation_database_receipt_invalid");
+  return Object.freeze(prepared.receipt);
 }
 
 export function reconcileLegacyAmbiguity(input, run) {

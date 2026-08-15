@@ -155,6 +155,28 @@ describe("release authority postgres JSONB bindings", () => {
       targetRecoveryWitnessSha256: "b".repeat(64),
       transitionSha256: receipt.transitionSha256,
       expectedPreviousReceiptSha256: zeroReceipt,
+      sourceLegacyAmbiguity: {
+        inventorySha256:
+          "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+        activeLeaseIds: [],
+        fetchedSetupIds: [],
+        pendingIntentIds: [],
+        intentStatuses: [],
+        observations: [
+          {
+            observedAt: "2026-08-11T23:59:58.000Z",
+            inventorySha256:
+              "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+          },
+          {
+            observedAt: "2026-08-11T23:59:59.000Z",
+            inventorySha256:
+              "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+          },
+        ] as const,
+        stable: true as const,
+      },
+      eligibilityCutoff: observedAt,
       epoch: 1,
       nonce: receipt.permitNonce,
     };

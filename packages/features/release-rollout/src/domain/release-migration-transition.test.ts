@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   assertReleaseMigrationTransition,
+  assertReleaseMigrationObservation,
   canonicalReleaseMigrationArtifact,
   canonicalReleaseMigrationEntries,
   canonicalReleaseMigrationResumeManifestIdentities,
@@ -48,7 +49,7 @@ describe("canonical release migration transition", () => {
     );
   });
 
-  it("pins every exact crash-resume root from pre through V72 post", () => {
+  it("accepts only the trusted pre-manifest and completed post-manifest replay", () => {
     const pending = new Set<string>(
       canonicalReleaseMigrationEntries.map((entry) => entry.migrationName),
     );
@@ -76,7 +77,13 @@ describe("canonical release migration transition", () => {
       installed.push([entry.migrationName, entry.migrationSqlSha256]);
       roots.push(root());
     }
-    expect(roots).toEqual(canonicalReleaseMigrationResumeManifestIdentities);
+    expect(canonicalReleaseMigrationResumeManifestIdentities).toEqual([
+      roots[0],
+      roots.at(-1),
+    ]);
+    expect(roots.slice(1, -1)).not.toContain(
+      canonicalReleaseMigrationResumeManifestIdentities[0],
+    );
   });
 
   it("rejects any worker alteration of a server-trusted transition", () => {
@@ -93,5 +100,73 @@ describe("canonical release migration transition", () => {
         trusted,
       ),
     ).toThrow("release_migration_transition_untrusted");
+  });
+
+  it("binds the target observation to the source inventory and fixed cutoff", () => {
+    const transition = createReleaseMigrationTransition({
+      commitSha: "d".repeat(40),
+      releaseImageDigest: `sha256:${"e".repeat(64)}`,
+    });
+    const inventorySha256 =
+      "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f";
+    const permit = {
+      schemaVersion: 1 as const,
+      rolloutId: "rollout-binding",
+      runId: "1",
+      runAttempt: 1,
+      targetSystemIdentifier: "2",
+      targetRecoveryWitnessSha256: "a".repeat(64),
+      transitionSha256: transition.transitionSha256,
+      expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      sourceLegacyAmbiguity: {
+        inventorySha256,
+        activeLeaseIds: [],
+        fetchedSetupIds: [],
+        pendingIntentIds: [],
+        intentStatuses: [],
+        observations: [
+          { observedAt: "2026-08-15T00:00:00.000Z", inventorySha256 },
+          { observedAt: "2026-08-15T00:00:01.000Z", inventorySha256 },
+        ] as const,
+        stable: true as const,
+      },
+      eligibilityCutoff: "2026-08-15T00:00:02.000Z",
+      epoch: 1,
+      nonce: "b".repeat(32),
+    };
+    const observation = {
+      transitionSha256: transition.transitionSha256,
+      migrationArtifactDigest: transition.migrationArtifactDigest,
+      migrationBundleSha256: transition.migrationBundleSha256,
+      preManifestIdentity: transition.preManifestIdentity,
+      postManifestIdentity: transition.postManifestIdentity,
+      postCatalogDigest: transition.postCatalogDigest,
+      permitEpoch: 1,
+      permitNonce: permit.nonce,
+      targetSystemIdentifier: permit.targetSystemIdentifier,
+      targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
+      sourceLegacyAmbiguitySha256: inventorySha256,
+      eligibilityCutoff: permit.eligibilityCutoff,
+    };
+    expect(() =>
+      assertReleaseMigrationObservation(observation, transition, permit),
+    ).not.toThrow();
+    expect(() =>
+      assertReleaseMigrationObservation(
+        { ...observation, eligibilityCutoff: "2026-08-15T00:00:03.000Z" },
+        transition,
+        permit,
+      ),
+    ).toThrow("release_migration_observation_binding_invalid");
+    expect(() =>
+      assertReleaseMigrationObservation(
+        {
+          ...observation,
+          sourceLegacyAmbiguitySha256: `sha256:${"f".repeat(64)}`,
+        },
+        transition,
+        permit,
+      ),
+    ).toThrow("release_migration_observation_binding_invalid");
   });
 });

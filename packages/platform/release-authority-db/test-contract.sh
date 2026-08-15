@@ -170,7 +170,7 @@ fi
 
 # Install the exact origin/main published history in a second disposable
 # database, advance it through the immutable 000012 boundary, then run the
-# candidate append-only 000012 -> 000013 upgrade. The published portion is
+# candidate append-only 000012 -> 000014 upgrade. The published portion is
 # intentionally sourced from git objects rather than the candidate worktree.
 docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres -c \
   "CREATE DATABASE rr_authority_origin_upgrade" >/dev/null
@@ -211,7 +211,7 @@ docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
   -d rr_authority_origin_upgrade -f /tmp/release-authority-install.sql >/dev/null
 test "$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
   -d rr_authority_origin_upgrade -Atc \
-  "SELECT count(*)||':'||max(position) FROM release_authority.schema_migration")" = 14:14
+  "SELECT count(*)||':'||max(position) FROM release_authority.schema_migration")" = 15:15
 fresh_catalog_identity=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgres \
   -d rr_authority_gate -Atc \
   "SELECT obj_description('release_authority'::regnamespace,'pg_namespace')")
@@ -220,7 +220,7 @@ upgrade_catalog_identity=$(docker exec "$name" psql -v ON_ERROR_STOP=1 -U postgr
   "SELECT obj_description('release_authority'::regnamespace,'pg_namespace')")
 test "$upgrade_catalog_identity" = "$fresh_catalog_identity"
 # The catalog attestation above covers ACLs, but keep a focused normalized ACL
-# projection so a fresh install and the 000012 -> 000013 path mechanically
+# projection so a fresh install and the 000012 -> 000014 path mechanically
 # prove identical owners and explicit object edges as well.
 cat > /tmp/release-authority-final-acl-state-$$.sql <<'SQL'
 WITH target AS (

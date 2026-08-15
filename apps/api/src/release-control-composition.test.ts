@@ -163,7 +163,7 @@ const authorityReadiness = (
     recoveryWitnessSha256: "",
     databaseIdentity: trustedDatabaseIdentity.authorityDatabaseIdentity,
     postgresMajor: 17,
-    schemaVersion: 13,
+    schemaVersion: 14,
     catalogFingerprint: "sha256:canonical-catalog",
     expectedCatalogFingerprint: "sha256:canonical-catalog",
     catalogVerifier: "complete_catalog_v3_acl_exact",
@@ -226,6 +226,10 @@ const authorityReadiness = (
       [
         "000013_phase_aware_application_manifest",
         "c14c52ce2594f49a23663a22a16ca789454e059bdb9abd6070d1b773cc847465",
+      ],
+      [
+        "000014_source_ambiguity_migration_permit",
+        "63d76bef93fc6041000a76e9451349333a2c9dbcb296ed4611ef5a97349dd529",
       ],
     ].map(([migrationName, checksum], index) => ({
       position: index + 1,

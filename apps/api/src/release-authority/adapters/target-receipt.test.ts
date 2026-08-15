@@ -102,6 +102,28 @@ describe("target migration receipt reader", () => {
     targetRecoveryWitnessSha256: "a".repeat(64),
     transitionSha256: digest("b"),
     expectedPreviousReceiptSha256: digest("c"),
+    sourceLegacyAmbiguity: {
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+      activeLeaseIds: [],
+      fetchedSetupIds: [],
+      pendingIntentIds: [],
+      intentStatuses: [],
+      observations: [
+        {
+          observedAt: "2026-08-13T23:59:58.000Z",
+          inventorySha256:
+            "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+        },
+        {
+          observedAt: "2026-08-13T23:59:59.000Z",
+          inventorySha256:
+            "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+        },
+      ] as const,
+      stable: true as const,
+    },
+    eligibilityCutoff: "2026-08-14T00:00:00.000Z",
     epoch: 2,
     nonce: "d".repeat(32),
   };

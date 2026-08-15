@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { LegacyAmbiguityEvidence } from "./trusted-rollout-evidence";
 
 export const TargetManifestPhase = Object.freeze({
   PreMigration: "pre_migration",
@@ -39,6 +40,8 @@ export type ReleaseMigrationPermit = Readonly<{
   targetRecoveryWitnessSha256: string;
   transitionSha256: string;
   expectedPreviousReceiptSha256: string;
+  sourceLegacyAmbiguity: LegacyAmbiguityEvidence;
+  eligibilityCutoff: string;
   epoch: number;
   nonce: string;
 }>;
@@ -54,6 +57,8 @@ export type ReleaseMigrationObservation = Readonly<{
   permitNonce: string;
   targetSystemIdentifier: string;
   targetRecoveryWitnessSha256: string;
+  sourceLegacyAmbiguitySha256: string;
+  eligibilityCutoff: string;
 }>;
 
 const digest = /^sha256:[a-f0-9]{64}$/u;
@@ -145,17 +150,6 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
 
 export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([
   canonicalReleaseMigrationArtifact.preManifestIdentity,
-  "sha256:6bae1e93f51b024faaf56d606ede32633dd7de33a9f198369492515d0cef9bc8",
-  "sha256:7f94f8695f7e18f9e2327a01e243dc1568207b4b1d10636b9b6ed4aae95ff923",
-  "sha256:0410f762db05d37fdc12aa5b6f55b206cf87e308b1be750bd28b8f9fed4b690a",
-  "sha256:8f7594478433a77dc3a1a3e662613cabf4cc8827a4b301637bca466cc344ab70",
-  "sha256:a1ab0431a32b2b469802f9f0f98d246e9d2d8a80e92e001d3d326251ca2caa5c",
-  "sha256:685f48a03a8120673bcf129b8e698d425d7df92e0d5422a4fcc2868fde3a2533",
-  "sha256:47ba129fb453a5d97603cbc78af6cce94bd6b4a4ae9c6f7ba362db7e0dca3f2b",
-  "sha256:4b09dd9c7edc993c299054c6b63e02facbcea61c581f9e4a26a2a400725c266f",
-  "sha256:741f4dffd0a5e66c3507d524fe00586fd070543e19c4b547db17eb3902e16c66",
-  "sha256:122b0c7d62cdef78750d8e4cbeeed0e86e06af5b4558965257cefb711b051440",
-  "sha256:319bc469387a0853d9fb4731b455906426ca5c99cea02f6c9f33b224a54d9722",
   canonicalReleaseMigrationArtifact.postManifestIdentity,
 ]);
 
@@ -229,7 +223,10 @@ export function assertReleaseMigrationObservation(
     observation.permitNonce !== permit.nonce ||
     observation.targetSystemIdentifier !== permit.targetSystemIdentifier ||
     observation.targetRecoveryWitnessSha256 !==
-      permit.targetRecoveryWitnessSha256
+      permit.targetRecoveryWitnessSha256 ||
+    observation.sourceLegacyAmbiguitySha256 !==
+      permit.sourceLegacyAmbiguity.inventorySha256 ||
+    observation.eligibilityCutoff !== permit.eligibilityCutoff
   )
     throw new Error("release_migration_observation_binding_invalid");
 }

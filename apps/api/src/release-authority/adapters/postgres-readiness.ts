@@ -152,8 +152,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           (6,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.validate_principal_evidence(text,bigint)')),'')),
           (7,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.stage_principal_evidence(text)')),'')),
           (8,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.activate_generation(text)')),'')),
-          (9,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)')),'')),
-          (10,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)')),'')),
+          (9,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)')),'')),
+          (10,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)')),'')),
           (11,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')),'')),
           (12,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')),'')),
           (13,coalesce((SELECT encode(sha256(convert_to(prosrc,'UTF8')),'hex') FROM pg_proc WHERE oid=to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)')),''))
@@ -180,7 +180,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 WHEN 'activation_permit' THEN 15
                 WHEN 'activation_receipt' THEN 22
                 WHEN 'activation_principal_evidence' THEN 23
-                WHEN 'migration_permit' THEN 17
+                WHEN 'migration_permit' THEN 19
               END
           AND NOT EXISTS (SELECT 1 FROM unnest(CASE c.relname
               WHEN 'activation_permit' THEN ARRAY['rollout_id','source_system_identifier',
@@ -212,6 +212,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 'target_system_identifier','target_database_identity','target_database_name',
                 'target_recovery_witness_sha256','transition_sha256','previous_receipt_sha256',
                 'expected_post_manifest_identity','expected_post_catalog_digest',
+                'source_legacy_ambiguity','eligibility_cutoff',
                 'permit_epoch','permit_nonce','state','target_receipt','installed_at',
                 'consumed_at','terminalized_at']
               END) expected_column
@@ -229,9 +230,11 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                   WHEN attribute.attname IN ('postgres_major') THEN 'integer'::regtype
                   WHEN attribute.attname IN ('target_deploy_ids','preactivation_catalog_policy',
                     'activated_catalog_policy','before_inventory','before_policy',
-                    'activated_inventory','activated_policy','target_receipt') THEN 'jsonb'::regtype
+                    'activated_inventory','activated_policy','target_receipt',
+                    'source_legacy_ambiguity') THEN 'jsonb'::regtype
                   WHEN attribute.attname IN ('permit_epoch','transaction_id') THEN 'bigint'::regtype
                   WHEN attribute.attname IN ('installed_at','consumed_at','terminalized_at',
+                    'eligibility_cutoff',
                     'activated_at','staged_at') THEN 'timestamptz'::regtype
                   ELSE 'text'::regtype END
                 OR attribute.attnotnull IS DISTINCT FROM
@@ -414,22 +417,22 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               THEN 's'::"char" ELSE 'v'::"char" END
             AND p.prorettype=CASE
               WHEN p.oid IN (
-                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
                 to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'))
                 THEN 'boolean'::regtype
-              WHEN p.oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)')
+              WHEN p.oid=to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)')
                 THEN 'text'::regtype ELSE 'jsonb'::regtype END
             AND NOT has_function_privilege('public',p.oid,'EXECUTE')
             AND has_function_privilege('reviewrouter_activation_permit_installer',p.oid,'EXECUTE')
               IS NOT DISTINCT FROM (p.oid IN (
-                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
                 to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')))
             AND has_function_privilege('reviewrouter_release_migration',p.oid,'EXECUTE')
               IS NOT DISTINCT FROM (p.oid=to_regprocedure(
                 'reviewrouter_activation.read_migration_receipt(text,bigint,text)'))
             AND has_function_privilege('reviewrouter_release_schema_owner',p.oid,'EXECUTE')
               IS NOT DISTINCT FROM (p.oid IN (
-                to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
                 to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')))
             AND has_function_privilege('reviewrouter_activation_receipt_reader',p.oid,'EXECUTE')
               IS NOT DISTINCT FROM (p.oid=to_regprocedure(
@@ -440,7 +443,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
                 AND grantee.rolname='reviewrouter_activation_permit_installer'))
               IS NOT DISTINCT FROM (p.oid IN (
-                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
                 to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)')))
             AND (EXISTS (SELECT 1
               FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
@@ -455,7 +458,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
                 AND grantee.rolname='reviewrouter_release_schema_owner'))
               IS NOT DISTINCT FROM (p.oid IN (
-                to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
                 to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)')))
             AND (EXISTS (SELECT 1
               FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
@@ -471,14 +474,14 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 AND (acl.is_grantable OR NOT (
                     grantee.rolname='reviewrouter_activation_permit_installer'
                       AND p.oid IN (
-                        to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                        to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
                         to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'))
                     OR grantee.rolname='reviewrouter_release_migration'
                       AND p.oid=to_regprocedure(
                         'reviewrouter_activation.read_migration_receipt(text,bigint,text)')
                     OR grantee.rolname='reviewrouter_release_schema_owner'
                       AND p.oid IN (
-                        to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)'),
+                        to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
                         to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)'))
                     OR grantee.rolname='reviewrouter_activation_receipt_reader'
                       AND p.oid=to_regprocedure(
@@ -488,8 +491,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           WHERE n.nspname='reviewrouter_activation'
             AND guard.rolname='reviewrouter_activation_receipt_guard'
             AND p.oid IN (
-                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
-              to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
+              to_regprocedure('reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
               to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)'),
               to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'),
               to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)'))),false)
@@ -630,21 +633,21 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 AND routine.prokind='p' AND routine.proowner=owner.oid
                 AND routine.proconfig=CASE
                   WHEN routine.oid=to_regprocedure(
-                    'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)')
+                    'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)')
                     THEN ARRAY['search_path=public, pg_temp']
                   ELSE ARRAY['search_path=pg_catalog, public, pg_temp'] END
                 AND NOT has_function_privilege('public',routine.oid,'EXECUTE')
                 AND has_function_privilege(migration.oid,routine.oid,'EXECUTE')
                   IS NOT DISTINCT FROM
                     (routine.oid=to_regprocedure(
-                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'))
+                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'))
                 AND (EXISTS (SELECT 1
                   FROM aclexplode(coalesce(routine.proacl,
                     acldefault('f',routine.proowner))) acl
                   WHERE acl.privilege_type='EXECUTE' AND NOT acl.is_grantable
                     AND acl.grantee=migration.oid)) IS NOT DISTINCT FROM
                     (routine.oid=to_regprocedure(
-                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'))
+                      'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'))
                 AND NOT EXISTS (SELECT 1
                   FROM aclexplode(coalesce(routine.proacl,
                     acldefault('f',routine.proowner))) acl
@@ -653,13 +656,13 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                     AND acl.grantee<>routine.proowner
                     AND (acl.is_grantable OR grantee.oid IS DISTINCT FROM CASE
                       WHEN routine.oid=to_regprocedure(
-                        'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)')
+                        'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)')
                         THEN migration.oid ELSE NULL END)))
             FROM pg_proc routine WHERE routine.oid IN (
               to_regprocedure(
-                'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'),
+                'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'),
               to_regprocedure(
-                'public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text)')))
+                'public.reviewrouter_reconcile_legacy_ambiguity(text,text,jsonb,text,timestamptz)')))
           AND (SELECT count(*)=2 AND bool_and(routine.prosecdef
                 AND routine.prokind='f' AND routine.proowner=owner.oid
                 AND routine.proconfig=ARRAY['search_path=pg_catalog, pg_temp']
@@ -741,7 +744,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 AND NOT (
                   role.rolname='reviewrouter_activation_permit_installer' AND p.oid IN (
                     to_regprocedure('reviewrouter_activation.install_activation_permit(text,text,text,integer,text,text,jsonb,bigint,text,jsonb,text,jsonb,text)'),
-                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,bigint,text)'),
+                to_regprocedure('reviewrouter_activation.install_migration_permit(text,text,text,text,text,text,text,text,jsonb,timestamptz,bigint,text)'),
                     to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'),
                     to_regprocedure('reviewrouter_activation.read_activation_migration_manifest_identity()'))
                   OR role.rolname='reviewrouter_activation_receipt_reader' AND p.oid IN (

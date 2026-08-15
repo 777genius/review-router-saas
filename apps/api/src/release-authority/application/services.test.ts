@@ -28,6 +28,28 @@ const targetAttestation = {
   systemIdentifier: "200",
   recoveryWitnessSha256: "e".repeat(64),
 };
+const sourceLegacyAmbiguity = {
+  inventorySha256:
+    "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+  activeLeaseIds: [],
+  fetchedSetupIds: [],
+  pendingIntentIds: [],
+  intentStatuses: [],
+  observations: [
+    {
+      observedAt: "2026-08-12T00:00:00.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+    {
+      observedAt: "2026-08-12T00:00:01.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+  ],
+  stable: true as const,
+} as const;
+const migrationEligibilityCutoff = "2026-08-12T00:00:02.000Z";
 const explicitTestGate: ReleaseAuthorityHighRiskMutationGate = {
   execute: async (sequence) =>
     sequence(async (_target, mutation) => mutation(targetAttestation)),
@@ -307,6 +329,8 @@ describe("high-risk activation mutation policy", () => {
       targetRecoveryWitnessSha256: "e".repeat(64),
       transitionSha256: transition.transitionSha256,
       expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      sourceLegacyAmbiguity,
+      eligibilityCutoff: migrationEligibilityCutoff,
       epoch: 1,
       nonce: "f".repeat(32),
     };
@@ -345,6 +369,7 @@ describe("high-risk activation mutation policy", () => {
       targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
       transitionSha256: transition.transitionSha256,
       expectedPreviousReceiptSha256: permit.expectedPreviousReceiptSha256,
+      sourceLegacyAmbiguity,
     };
 
     await service.beginReleaseMigration(input);
@@ -394,6 +419,8 @@ describe("high-risk activation mutation policy", () => {
       targetRecoveryWitnessSha256: targetAttestation.recoveryWitnessSha256,
       transitionSha256: transition.transitionSha256,
       expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      sourceLegacyAmbiguity,
+      eligibilityCutoff: migrationEligibilityCutoff,
       epoch: 1,
       nonce: "f".repeat(32),
     };
@@ -516,6 +543,8 @@ describe("high-risk activation mutation policy", () => {
       targetRecoveryWitnessSha256: targetAttestation.recoveryWitnessSha256,
       transitionSha256: `sha256:${"a".repeat(64)}`,
       expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      sourceLegacyAmbiguity,
+      eligibilityCutoff: migrationEligibilityCutoff,
       epoch: 1,
       nonce: "f".repeat(32),
     };
@@ -586,6 +615,8 @@ describe("high-risk activation mutation policy", () => {
           targetRecoveryWitnessSha256: targetAttestation.recoveryWitnessSha256,
           transitionSha256: `sha256:${"a".repeat(64)}`,
           expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+          sourceLegacyAmbiguity,
+          eligibilityCutoff: migrationEligibilityCutoff,
           epoch: 1,
           nonce: "f".repeat(32),
         },
@@ -624,6 +655,8 @@ describe("high-risk activation mutation policy", () => {
           targetRecoveryWitnessSha256: targetAttestation.recoveryWitnessSha256,
           transitionSha256: `sha256:${"a".repeat(64)}`,
           expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+          sourceLegacyAmbiguity,
+          eligibilityCutoff: migrationEligibilityCutoff,
           epoch: 1,
           nonce: "f".repeat(32),
         },
@@ -643,6 +676,8 @@ describe("high-risk activation mutation policy", () => {
       targetRecoveryWitnessSha256: targetAttestation.recoveryWitnessSha256,
       transitionSha256: `sha256:${"a".repeat(64)}`,
       expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+      sourceLegacyAmbiguity,
+      eligibilityCutoff: migrationEligibilityCutoff,
       epoch: 1,
       nonce: "f".repeat(32),
     };

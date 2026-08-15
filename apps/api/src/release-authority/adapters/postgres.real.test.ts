@@ -58,6 +58,28 @@ const preMigrationSteps = [
   "provision_cutover_runner",
 ] as const;
 
+const sourceLegacyAmbiguity = {
+  inventorySha256:
+    "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+  activeLeaseIds: [],
+  fetchedSetupIds: [],
+  pendingIntentIds: [],
+  intentStatuses: [],
+  observations: [
+    {
+      observedAt: "2026-08-14T01:02:00.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+    {
+      observedAt: "2026-08-14T01:02:01.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+  ],
+  stable: true as const,
+} as const;
+
 const migrationBoundaryReceiptSequence = (rolloutId: string) =>
   preMigrationSteps.map((step, index) =>
     migrationBoundaryReceiptSha256(rolloutId, step, index),
@@ -596,6 +618,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         targetRecoveryWitnessSha256: binding.targetRecoveryWitnessSha256,
         transitionSha256: binding.migrationTransition.transitionSha256,
         expectedPreviousReceiptSha256: `sha256:${"0".repeat(64)}`,
+        sourceLegacyAmbiguity,
       }),
     ).rejects.toThrow();
     const provisionReceiptSha256 = await advanceToMigrationBoundary(binding);
@@ -609,6 +632,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       targetRecoveryWitnessSha256: binding.targetRecoveryWitnessSha256,
       transitionSha256: binding.migrationTransition.transitionSha256,
       expectedPreviousReceiptSha256: provisionReceiptSha256,
+      sourceLegacyAmbiguity,
     });
     const migrationReceipt = (observedAt: string, receiptId: string) => {
       const unsigned = {
@@ -637,6 +661,8 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         permitNonce: permit.nonce,
         targetMigrationReceiptSha256: `sha256:${"3".repeat(64)}`,
         targetMigrationEffectFingerprint: `sha256:${"4".repeat(64)}`,
+        sourceLegacyAmbiguitySha256: sourceLegacyAmbiguity.inventorySha256,
+        eligibilityCutoff: permit.eligibilityCutoff,
       };
       return {
         ...unsigned,
@@ -702,6 +728,7 @@ realDescribe("release authority API/Postgres runtime contract", () => {
       targetRecoveryWitnessSha256: quarantined.targetRecoveryWitnessSha256,
       transitionSha256: quarantined.migrationTransition.transitionSha256,
       expectedPreviousReceiptSha256: quarantineProvisionReceiptSha256,
+      sourceLegacyAmbiguity,
     });
     await ledger.failReleaseMigration({
       permit: quarantinePermit,

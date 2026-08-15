@@ -29,6 +29,28 @@ import {
   stripAtomicMigrationEnvelope,
 } from "./run-codex-rotating-release-migration.mjs";
 
+const legacyEvidence = {
+  inventorySha256:
+    "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+  activeLeaseIds: [],
+  fetchedSetupIds: [],
+  pendingIntentIds: [],
+  intentStatuses: [],
+  observations: [
+    {
+      observedAt: "2026-08-15T00:00:00.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+    {
+      observedAt: "2026-08-15T00:00:01.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+  ],
+  stable: true,
+} as const;
+
 function environment() {
   return {
     REVIEW_ROUTER_ROLE_BOOTSTRAP_DATABASE_URL:
@@ -54,6 +76,10 @@ function environment() {
     REVIEW_ROUTER_MIGRATION_PERMIT_PREVIOUS_RECEIPT_SHA256: `sha256:${"e".repeat(64)}`,
     REVIEW_ROUTER_MIGRATION_PERMIT_EPOCH: "1",
     REVIEW_ROUTER_MIGRATION_PERMIT_NONCE: "f".repeat(32),
+    REVIEW_ROUTER_MIGRATION_PERMIT_SOURCE_LEGACY_AMBIGUITY_BASE64URL:
+      Buffer.from(JSON.stringify(legacyEvidence)).toString("base64url"),
+    REVIEW_ROUTER_MIGRATION_PERMIT_ELIGIBILITY_CUTOFF:
+      "2026-08-15T00:00:02.000Z",
   };
 }
 
@@ -65,6 +91,8 @@ const migrationPermit = () => ({
   previousReceiptSha256: `sha256:${"e".repeat(64)}`,
   epoch: "1",
   nonce: "f".repeat(32),
+  sourceLegacyAmbiguity: legacyEvidence,
+  eligibilityCutoff: "2026-08-15T00:00:02.000Z",
 });
 
 describe("application database release-authority isolation", () => {
@@ -166,9 +194,7 @@ describe("application database release-authority isolation", () => {
     expect(sql).toContain("reviewrouter_activation.activation_receipt");
     expect(sql).toContain("expected_post_manifest_identity");
     expect(sql).toContain("expected_post_catalog_digest");
-    expect(sql).toContain(
-      "requested_effect_metadata->>'effectFingerprint' IS DISTINCT FROM",
-    );
+    expect(sql).toContain("The database owns the receipt");
     expect(sql).toContain("reviewrouter_activation_permit_installer");
     expect(sql).toContain("SET LOCAL lock_timeout = '5000ms'");
     expect(sql).toContain("pg_advisory_xact_lock(1381126735, 1129271120)");
@@ -449,19 +475,7 @@ describe("canonical exclusive release migration caller", () => {
     const atomicMigration = atomicMigrationAndGrantSql(configuration, {
       migrationPermit: migrationPermit(),
       legacyReconciliation: {
-        receipt: {
-          version: 1,
-          acknowledgement: "all_prior_installers_and_writers_are_stopped",
-          inventory: {
-            activeLeaseIds: [],
-            fetchedSetupIds: [],
-            pendingIntentIds: [],
-            intentStatuses: [],
-          },
-          inventorySha256: `sha256:${"1".repeat(64)}`,
-          stableSamples: 2,
-          status: "reconciled",
-        },
+        evidence: legacyEvidence,
       },
     });
     const gateClosedAtomicMigration = atomicMigrationAndGrantSql(
@@ -470,19 +484,7 @@ describe("canonical exclusive release migration caller", () => {
         gateClosed: true,
         migrationPermit: migrationPermit(),
         legacyReconciliation: {
-          receipt: {
-            version: 1,
-            acknowledgement: "all_prior_installers_and_writers_are_stopped",
-            inventory: {
-              activeLeaseIds: [],
-              fetchedSetupIds: [],
-              pendingIntentIds: [],
-              intentStatuses: [],
-            },
-            inventorySha256: `sha256:${"1".repeat(64)}`,
-            stableSamples: 2,
-            status: "reconciled",
-          },
+          evidence: legacyEvidence,
         },
       },
     );
@@ -706,6 +708,13 @@ describe("canonical exclusive release migration caller", () => {
     const reconciliationCall = provisioning.indexOf(
       "CALL public.reviewrouter_reconcile_legacy_ambiguity",
     );
+    const migrationExecutorStart = provisioning.indexOf(
+      "CREATE OR REPLACE PROCEDURE public.reviewrouter_execute_release_migration",
+    );
+    const inventoryLock = provisioning.indexOf(
+      'LOCK TABLE public."CodexOAuthLease" IN SHARE ROW EXCLUSIVE MODE',
+      migrationExecutorStart,
+    );
     const migration60 = provisioning.indexOf(
       "'000060_codex_oauth_setup_serialization'",
     );
@@ -715,10 +724,20 @@ describe("canonical exclusive release migration caller", () => {
     const migration62 = provisioning.indexOf(
       "'000062_codex_oauth_remote_outcome_unknown'",
     );
+    const migration64 = provisioning.indexOf(
+      "'000064_codex_oauth_versioned_secret_namespaces'",
+    );
+    const migration65 = provisioning.indexOf(
+      "'000065_codex_oauth_authority_acl_hardening'",
+    );
     expect(migration60).toBeGreaterThan(-1);
+    expect(migrationExecutorStart).toBeGreaterThan(-1);
+    expect(inventoryLock).toBeGreaterThan(migrationExecutorStart);
+    expect(inventoryLock).toBeLessThan(migration60);
     expect(migration60).toBeLessThan(migration61);
-    expect(migration61).toBeLessThan(reconciliationCall);
-    expect(reconciliationCall).toBeLessThan(migration62);
+    expect(migration61).toBeLessThan(migration62);
+    expect(migration64).toBeLessThan(reconciliationCall);
+    expect(reconciliationCall).toBeLessThan(migration65);
     for (const migrationName of [
       "000060_codex_oauth_setup_serialization",
       "000061_codex_oauth_provider_mutation_fence",
@@ -972,7 +991,7 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(provisioning).toContain("requested_acl_gate_closed boolean");
     expect(provisioning).toContain(
-      "text,text,text,text,text,bigint,text,jsonb,boolean",
+      "text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean",
     );
     expect(provisioning).toContain(
       "release migration executor ACL gate mode invalid",
@@ -996,10 +1015,21 @@ describe("canonical exclusive release migration caller", () => {
         guardedExecutorStart,
       ),
     );
+    expect(guardedExecutor).toContain("requested_source_legacy_ambiguity");
+    expect(guardedExecutor).toContain("requested_eligibility_cutoff");
     expect(guardedExecutor).toContain(
-      "'legacyReconciliation',requested_legacy_reconciliation",
+      "legacy_reconciliation_inventory_changed",
     );
-    expect(guardedExecutor).toContain("'effectFingerprint'");
+    expect(
+      guardedExecutor.indexOf('LOCK TABLE public."CodexOAuthLease"'),
+    ).toBeLessThan(guardedExecutor.indexOf("INTO STRICT observed_inventory"));
+    expect(
+      guardedExecutor.indexOf("INTO STRICT observed_inventory"),
+    ).toBeLessThan(
+      guardedExecutor.indexOf("legacy_reconciliation_inventory_changed"),
+    );
+    expect(guardedExecutor).toContain("requested_eligibility_cutoff");
+    expect(guardedExecutor).toContain("'{}'::jsonb");
     expect(guardedExecutor).toContain("SET search_path = public, pg_temp");
     expect(guardedExecutor).not.toContain(
       "SET search_path = pg_catalog, public, pg_temp",
@@ -1043,11 +1073,6 @@ describe("canonical exclusive release migration caller", () => {
       },
       {
         condition:
-          "requested_effect_metadata->>'effectFingerprint' IS DISTINCT FROM",
-        reason: "effect_fingerprint",
-      },
-      {
-        condition:
           "EXISTS (SELECT 1 FROM public._prisma_migrations\n       WHERE finished_at IS NULL AND rolled_back_at IS NULL)",
         reason: "unfinished_migration",
       },
@@ -1088,19 +1113,15 @@ describe("canonical exclusive release migration caller", () => {
       previousReasonIndex = reasonIndex;
     }
     expect(completionGuard).toContain(
-      "(SELECT count(*) FROM jsonb_object_keys(requested_effect_metadata)) <> 2",
+      "requested_effect_metadata IS DISTINCT FROM '{}'::jsonb",
     );
+    expect(completionGuard).toContain("The database owns the receipt");
     expect(completionGuard).toContain(
-      "'legacyReconciliation','effectFingerprint'",
+      "'legacyReconciliation',jsonb_build_object(",
     );
+    expect(completionGuard).toContain("current_permit.eligibility_cutoff");
     expect(completionGuard).toContain(
-      "requested_effect_metadata->'legacyReconciliation')) <> 6",
-    );
-    expect(completionGuard).toContain(
-      "'version','acknowledgement','inventory','inventorySha256'",
-    );
-    expect(completionGuard).toContain(
-      "IS DISTINCT FROM 'all_prior_installers_and_writers_are_stopped'",
+      "'acknowledgement','all_prior_installers_and_writers_are_stopped'",
     );
     expect(completionGuard).not.toContain(
       "requested_effect_metadata->>'postManifestIdentity'",
@@ -1131,7 +1152,7 @@ describe("canonical exclusive release migration caller", () => {
       "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(",
     );
     expect(provisioning).not.toContain(
-      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.consume_migration_permit(text,text,text,text,text,bigint,text) TO reviewrouter_release_migration",
+      "GRANT EXECUTE ON FUNCTION reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text) TO reviewrouter_release_migration",
     );
     expect(grants).toContain(
       "ALTER DEFAULT PRIVILEGES FOR ROLE reviewrouter_release_schema_owner",
@@ -1438,8 +1459,14 @@ describe("canonical exclusive release migration caller", () => {
               pendingIntentIds: [],
               intentStatuses: [],
             },
-            inventorySha256: `sha256:${"1".repeat(64)}`,
+            inventorySha256: legacyEvidence.inventorySha256,
             stableSamples: 2,
+            after: {
+              activeLeaseIds: [],
+              fetchedSetupIds: [],
+              pendingIntentIds: [],
+              intentStatuses: [],
+            },
             status: "reconciled",
           },
         });
@@ -1467,9 +1494,6 @@ describe("canonical exclusive release migration caller", () => {
     expect(calls.map((call) => call.step)).toEqual([
       "verify_release_authority",
       "migration_history_preflight",
-      "legacy_ambiguity_inventory_first",
-      "legacy_ambiguity_stabilization",
-      "legacy_ambiguity_inventory_second",
       "deploy_migrations_and_converge_grants",
       "read_target_migration_receipt",
       "legacy_ambiguity_inventory_after",

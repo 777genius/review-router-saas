@@ -15,6 +15,7 @@ import type {
   ReleaseMigrationTransitionV1,
   TargetManifestPhase,
   ProviderMutationAuthorityPort,
+  LegacyAmbiguityEvidence,
 } from "@reviewrouter/features-release-rollout";
 import type {
   ServiceTransitionCheckpoint,
@@ -150,6 +151,7 @@ export interface ReleaseAuthorityLedgerPort {
       targetRecoveryWitnessSha256: string;
       transitionSha256: string;
       expectedPreviousReceiptSha256: string;
+      sourceLegacyAmbiguity: LegacyAmbiguityEvidence;
     },
   ): Promise<ReleaseMigrationPermit>;
   completeReleaseMigration(input: {

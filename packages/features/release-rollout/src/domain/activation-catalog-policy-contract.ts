@@ -1,4 +1,4 @@
-import { sha256Canonical } from "./release-rollout";
+import { sha256Canonical } from "./canonical-json";
 import generatedActivationCatalogPolicyArtifact from "./activation-catalog-policy-artifact.generated.js";
 import { type ActivationCatalogPolicy } from "./effective-principal-inventory";
 import {
@@ -22,9 +22,8 @@ export const canonicalActivationCatalogPolicyTrustRootReadiness: Readonly<{
   status: "blocked" | "ready";
   reason: string;
 }> = Object.freeze({
-  status: "ready",
-  reason:
-    "reviewed-v21-production-shaped-pg17-candidate-promoted-with-exact-go-evidence",
+  status: "blocked",
+  reason: "pg17-recapture-required-after-migration-permit-contract-change",
 });
 
 export function assertCanonicalActivationCatalogPolicyTrustRootReady(): void {
@@ -112,6 +111,7 @@ export const reviewedActivationCatalogPolicyDigests = Object.freeze({
 });
 
 if (
+  canonicalActivationCatalogPolicyTrustRootReadiness.status === "ready" &&
   !activationCatalogPolicyDigestsEqual(
     canonicalActivationCatalogPolicyDigests,
     reviewedActivationCatalogPolicyDigests,

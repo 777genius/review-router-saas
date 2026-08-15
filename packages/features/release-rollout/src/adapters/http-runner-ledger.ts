@@ -16,6 +16,7 @@ import type {
   TargetSwitchFence,
 } from "../domain/release-rollout";
 import type { ReleaseMigrationPermit } from "../domain/release-migration-transition";
+import { assertLegacyAmbiguityEvidence } from "../domain/trusted-rollout-evidence";
 import type { ServiceTransitionCheckpoint } from "../application/transactional-service-cutover";
 import type { ServiceTransitionLedger } from "../application/transactional-service-cutover";
 import type { RunnerIdentity } from "../domain/release-rollout";
@@ -64,6 +65,8 @@ const migrationPermitResponse = (value: unknown): ReleaseMigrationPermit => {
       "targetRecoveryWitnessSha256",
       "transitionSha256",
       "expectedPreviousReceiptSha256",
+      "sourceLegacyAmbiguity",
+      "eligibilityCutoff",
       "epoch",
       "nonce",
     ]) ||
@@ -79,12 +82,15 @@ const migrationPermitResponse = (value: unknown): ReleaseMigrationPermit => {
     !migrationDigest.test(item.transitionSha256) ||
     typeof item.expectedPreviousReceiptSha256 !== "string" ||
     !migrationDigest.test(item.expectedPreviousReceiptSha256) ||
+    typeof item.eligibilityCutoff !== "string" ||
+    !Number.isFinite(Date.parse(item.eligibilityCutoff)) ||
     !Number.isSafeInteger(item.epoch) ||
     Number(item.epoch) < 1 ||
     typeof item.nonce !== "string" ||
     !/^[a-f0-9]{32}$/u.test(item.nonce)
   )
     throw new Error("runner_ledger_migration_permit_invalid");
+  assertLegacyAmbiguityEvidence(item.sourceLegacyAmbiguity);
   return item as ReleaseMigrationPermit;
 };
 

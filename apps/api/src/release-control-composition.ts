@@ -241,6 +241,8 @@ export function composeReleaseControlDependencies(
                 ${permit.expectedPreviousReceiptSha256},
                 ${expectedPostManifestIdentity},
                 ${expectedPostCatalogDigest},
+                ${JSON.stringify(permit.sourceLegacyAmbiguity)}::jsonb,
+                ${permit.eligibilityCutoff}::timestamptz,
                 ${permit.epoch}, ${permit.nonce}) AS result
             `);
             const rows =

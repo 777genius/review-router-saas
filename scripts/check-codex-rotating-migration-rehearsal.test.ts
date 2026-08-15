@@ -97,6 +97,41 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).not.toContain("000067_release_rollout_ledger");
   });
 
+  it("reproduces the trusted production pre-migration manifest", () => {
+    expect(source).toContain("applyCanonicalPreMigrationBaseline");
+    expect(source).toContain("directory === migration67Name");
+    expect(source).toContain("directory === migration68Name");
+    expect(source).toContain(
+      "rehearsal baseline must reproduce the trusted pre-migration manifest",
+    );
+    expect(source).not.toContain("applyBaselineThrough59");
+  });
+
+  it("splits safe canonical fixtures from rollback-only legacy negatives", () => {
+    expect(source).toContain("canonicalSuccess: true");
+    expect(source).toContain("retainUnexpiredLease: true");
+    expect(source).toContain('name: "inventory_race"');
+    expect(source).toContain('name: "ttl_crossing"');
+    expect(source).toContain('name: "unknown_status"');
+    expect(source).toContain('name: "forged_digest"');
+    expect(source).toContain(
+      'step === "deploy_migrations_and_converge_grants"',
+    );
+    expect(source).toContain("canonical_fixture_terminal");
+    expect(source).toContain(
+      "pending-to-failed-to-remote-outcome-unknown proof failed",
+    );
+    expect(source).toContain('rollback.permitState === "installed"');
+    expect(source).toContain("rollback.targetReceipt === null");
+    expect(source).toContain("rollback.committedTargetMigrations === 0");
+    expect(source).toContain("transformSourceEvidence");
+    expect(source).toContain("interval '100 milliseconds'");
+    expect(source).toContain("SELECT pg_sleep(0.2)");
+    expect(source).toContain(
+      "canonical replay did not return the immutable original receipt",
+    );
+  });
+
   it("reads the database generation binding as shared-object metadata", () => {
     expect(source).toContain("shobj_description(oid, 'pg_database')");
     expect(source).not.toMatch(/\bobj_description\(oid, 'pg_database'\)/u);
@@ -205,7 +240,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       "'reviewrouter_release_migration', namespace.oid, 'CREATE'",
     );
     expect(privilegeProof).toContain(
-      "'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,boolean)'::regprocedure",
+      "'public.reviewrouter_execute_release_migration(text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean)'::regprocedure",
     );
     expect(privilegeProof).toContain('public."_prisma_migrations"');
     expect(privilegeProof).toContain("attribute.attname IN ('id','status')");
@@ -221,6 +256,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
         source,
       )?.[1];
     expect(provisioning).toBeDefined();
+    expect(provisioning).toContain("const targetDatabaseName");
+    expect(provisioning).toContain("databaseUrl(url, targetDatabaseName)");
+    expect(provisioning).not.toContain("databaseUrl(url, databaseName)");
     expect(provisioning).toContain("runSecretSafePostgresCommand({");
     expect(provisioning).toContain(
       'expectFailureContaining:\n        "refusing non-canonical role membership topology"',
@@ -361,7 +399,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     const prepareIndex = orchestration.indexOf("prepareCanonicalReleaseRoles(");
     const fixtureSeedIndex = orchestration.indexOf(
-      "seedDirtyFixtures(providerAdmin)",
+      "seedDirtyFixtures(providerAdmin, { canonicalSuccess: true })",
     );
     const authorityIndex = orchestration.indexOf(
       "rehearsalAuthority = rehearsalRelease.authority",
@@ -369,12 +407,17 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     const helperIndex = orchestration.indexOf(
       "executeCanonicalReleaseMigration(",
     );
-    const rehearsalHistoryResetIndex = orchestration.indexOf(
-      "discardRehearsalOnlyRolledBackMigrationHistory(providerAdmin)",
+    const migrationSpecificIndex = orchestration.indexOf(
+      "await proveMigrationSpecificLegacyBehavior()",
+    );
+    const negativeCasesIndex = orchestration.indexOf(
+      "proveCanonicalLegacyReconciliationNegativeCases()",
     );
     expect(prepareIndex).toBeGreaterThan(-1);
     expect(authorityIndex).toBeGreaterThan(prepareIndex);
     expect(fixtureSeedIndex).toBeGreaterThan(authorityIndex);
+    expect(migrationSpecificIndex).toBeLessThan(prepareIndex);
+    expect(negativeCasesIndex).toBeLessThan(prepareIndex);
     expect(source).toContain(
       "proveMigration60LockTimeout(providerAdmin, providerAdmin)",
     );
@@ -389,8 +432,13 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
       'output.includes("current transaction is aborted")',
     );
     expect(prepareIndex).toBeLessThan(helperIndex);
-    expect(rehearsalHistoryResetIndex).toBeGreaterThan(prepareIndex);
-    expect(rehearsalHistoryResetIndex).toBeLessThan(helperIndex);
+    expect(source).toContain(
+      "discardRehearsalOnlyRolledBackMigrationHistory(providerAdmin)",
+    );
+    expect(source).toContain('{ name: "unresolved"');
+    expect(source).toContain("retainUnexpiredLease: true");
+    expect(source).toContain('rollback.permitState === "installed"');
+    expect(source).toContain("rollback.committedTargetMigrations === 0");
     expect(source).not.toContain("psqlInput");
     expect(source).not.toContain("let rehearsalUrl");
     expect(source).not.toContain("rehearsalRoleClients");
@@ -775,10 +823,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain("Codex OAuth runtime least privilege mismatch");
     expect(source).toMatch(
-      /relation\.relname NOT IN \([\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof/u,
+      /relation\.relname NOT IN \([\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof[\s\S]+?RuntimeGenerationWitnessProof/u,
     );
     expect(source).toMatch(
-      /relation\.relname IN \([\s\S]+?CodexOAuthDatabaseAuthorityReceipt[\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof[\s\S]+?has_table_privilege/u,
+      /relation\.relname IN \([\s\S]+?CodexOAuthDatabaseAuthorityReceipt[\s\S]+?RuntimeCanaryChallenge[\s\S]+?RuntimeCanaryChallengeProof[\s\S]+?RuntimeGenerationWitnessProof[\s\S]+?has_table_privilege/u,
     );
     expect(source).toContain(
       "Codex OAuth release migration privilege mismatch",

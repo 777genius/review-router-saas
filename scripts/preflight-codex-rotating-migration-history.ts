@@ -119,9 +119,9 @@ try {
     .join(",");
   const manifestIdentity = `sha256:${createHash("sha256").update(successful).digest("hex")}`;
   if (
-    !canonicalReleaseMigrationResumeManifestIdentities.includes(
-      manifestIdentity,
-    )
+    !(
+      canonicalReleaseMigrationResumeManifestIdentities as readonly string[]
+    ).includes(manifestIdentity)
   )
     throw new Error("release_migration_history_resume_root_untrusted");
   process.stdout.write(

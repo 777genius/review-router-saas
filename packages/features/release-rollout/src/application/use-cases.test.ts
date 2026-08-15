@@ -74,6 +74,27 @@ const observed = (step: StepObservation["step"]): StepObservation => ({
   observedAt: "2026-08-12T00:00:00.000Z",
   facts: { ok: true },
 });
+const legacyEvidence = {
+  inventorySha256:
+    "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+  activeLeaseIds: [],
+  fetchedSetupIds: [],
+  pendingIntentIds: [],
+  intentStatuses: [],
+  observations: [
+    {
+      observedAt: "2026-08-12T00:00:00.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+    {
+      observedAt: "2026-08-12T00:00:01.000Z",
+      inventorySha256:
+        "sha256:ee9ab3e1f9d9f0e88e96addb3a20b70a04a166f0d979fd5ce3fc59e1dcdbf55f",
+    },
+  ],
+  stable: true,
+} as const;
 const stagedRollout = {
   ...rollout,
   phase: RolloutPhase.TargetStaged,
@@ -167,6 +188,8 @@ const basePorts = () => ({
       targetRecoveryWitnessSha256: input.targetRecoveryWitnessSha256,
       transitionSha256: input.transitionSha256,
       expectedPreviousReceiptSha256: input.expectedPreviousReceiptSha256,
+      sourceLegacyAmbiguity: input.sourceLegacyAmbiguity,
+      eligibilityCutoff: "2026-08-12T00:00:02.000Z",
       epoch: 1,
       nonce: "f".repeat(32),
     })),
@@ -341,7 +364,10 @@ describe("release rollout application boundary", () => {
     }));
     ports.database = { runReleaseMigration } as never;
     const useCases = new ReleaseRolloutUseCases(ports);
-    const completed = await useCases.runReleaseMigration(beforeMigration);
+    const completed = await useCases.runReleaseMigration(
+      beforeMigration,
+      legacyEvidence,
+    );
     expect(completed.targetManifestPhase).toBe("post_migration");
     expect(ports.ledger.beginReleaseMigration).toHaveBeenCalledOnce();
     expect(ports.ledger.completeReleaseMigration).toHaveBeenCalledOnce();
@@ -359,7 +385,10 @@ describe("release rollout application boundary", () => {
       receipt: completed.receipts.at(-1),
     });
     runReleaseMigration.mockClear();
-    const recovered = await useCases.runReleaseMigration(beforeMigration);
+    const recovered = await useCases.runReleaseMigration(
+      beforeMigration,
+      legacyEvidence,
+    );
     expect(recovered.receipts.at(-1)?.receiptSha256).toBe(
       completed.receipts.at(-1)?.receiptSha256,
     );
@@ -386,6 +415,7 @@ describe("release rollout application boundary", () => {
     await expect(
       new ReleaseRolloutUseCases(ports).runReleaseMigration(
         rolloutBeforeMigration(),
+        legacyEvidence,
       ),
     ).rejects.toThrow("release_migration_quarantined");
   });
@@ -398,6 +428,7 @@ describe("release rollout application boundary", () => {
     await expect(
       new ReleaseRolloutUseCases(ports).runReleaseMigration(
         rolloutBeforeMigration(),
+        legacyEvidence,
       ),
     ).rejects.toThrow("sql_failed");
     expect(ports.ledger.failReleaseMigration).not.toHaveBeenCalled();
@@ -418,6 +449,7 @@ describe("release rollout application boundary", () => {
       transitionSha256: beforeMigration.migrationTransition.transitionSha256,
       expectedPreviousReceiptSha256:
         beforeMigration.receipts.at(-1)!.receiptSha256,
+      sourceLegacyAmbiguity: legacyEvidence,
     });
     ports.ledger.beginReleaseMigration.mockClear();
     ports.ledger.beginReleaseMigration.mockResolvedValue(permit);
@@ -466,12 +498,12 @@ describe("release rollout application boundary", () => {
         .mockResolvedValueOnce(replayObservation),
     } as never;
     const useCases = new ReleaseRolloutUseCases(ports);
-    await expect(useCases.runReleaseMigration(beforeMigration)).rejects.toThrow(
-      "response_lost_after_commit",
-    );
+    await expect(
+      useCases.runReleaseMigration(beforeMigration, legacyEvidence),
+    ).rejects.toThrow("response_lost_after_commit");
     expect(ports.ledger.failReleaseMigration).not.toHaveBeenCalled();
     await expect(
-      useCases.runReleaseMigration(beforeMigration),
+      useCases.runReleaseMigration(beforeMigration, legacyEvidence),
     ).resolves.toMatchObject({
       targetManifestPhase: "post_migration",
     });
@@ -493,6 +525,7 @@ describe("release rollout application boundary", () => {
     await expect(
       new ReleaseRolloutUseCases(ports).runReleaseMigration(
         rolloutBeforeMigration(),
+        legacyEvidence,
       ),
     ).rejects.toThrow("migration_observation_invalid");
     expect(ports.ledger.failReleaseMigration).toHaveBeenCalledOnce();
