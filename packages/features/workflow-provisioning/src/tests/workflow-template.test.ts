@@ -3,6 +3,7 @@ import {
   areWorkflowDocumentsSemanticallyEqual,
   CodexRotatingReviewActionV2Mode,
   CodexRotatingT0WorkflowSchemaVersion,
+  createVersionedProviderSecretNamespace,
   workflowDocumentSemanticSha256,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import {
@@ -452,6 +453,37 @@ describe("renderReviewRouterWorkflow", () => {
       ]),
     ]);
     expect(markers[0]).not.toContain("workflow_schema_version: 2");
+    expect(markers[0]).toContain("pull_request:");
+    expect(markers[0]).toContain("github.event_name == 'pull_request'");
+    expect(markers[0]).not.toContain("pull_request_target:");
+  });
+
+  it("exports trusted default-branch trigger markers for schema v4", () => {
+    const markers = getCodexRotatingWorkflowSetupContentMarkerGroups({
+      providerInstanceId: "codex-rotating:123456",
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4,
+      activeSecretNamespace: createVersionedProviderSecretNamespace({
+        scope: {
+          repositoryId: "123456",
+          providerInstanceId: "codex-rotating:123456",
+        },
+        namespaceId: "sns_0123456789abcdef0123456789abcdef",
+        epoch: 4,
+        name: "REVIEWROUTER_CODEX_AUTH_JSON_R123456_Pb3d5f6be619a10be_E4_0123456789abcdef0123456789abcdef",
+      }),
+    });
+
+    expect(markers[0]).toEqual(
+      expect.arrayContaining([
+        "pull_request_target:",
+        "github.event_name == 'pull_request_target'",
+        "workflow_schema_version: 4",
+      ]),
+    );
+    expect(markers[0]).not.toContain("pull_request:");
+    expect(markers[0]).not.toContain("github.event_name == 'pull_request'");
   });
 
   it("renders a review-only pull request workflow", () => {

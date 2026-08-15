@@ -10,6 +10,7 @@ export type RepositoryWorkflowProbeInput = {
   readonly workflowPath: string;
   readonly expectedActionRef: string;
   readonly expectedContentMarkerGroups?: readonly (readonly string[])[];
+  readonly expectedContentValidator?: (workflow: string) => boolean;
 };
 
 export interface RepositoryWorkflowProbePort {

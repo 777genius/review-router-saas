@@ -61,6 +61,14 @@ export function isClientTriggeredT0WorkflowSchemaVersion(
   );
 }
 
+export function isTrustedDefaultBranchTriggeredCodexWorkflowSchemaVersion(
+  value: number | null | undefined,
+): value is CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4 {
+  return (
+    value === CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4
+  );
+}
+
 export function codexRotatingT0DefaultTimeoutMinutesForSchema(
   value: CodexRotatingT0WorkflowSchemaVersion,
 ): number {
@@ -1889,8 +1897,9 @@ function renderCanonicalCodexRotatingClientTriggeredT0Workflow(
     ? `ReviewRouter Codex OAuth [${serializeVersionedProviderSecretNamespaceMetadata(input.activeSecretNamespace)}]`
     : "ReviewRouter Codex OAuth";
   const trustedDefaultBranchTriggered =
-    input.workflowSchemaVersion ===
-    CodexRotatingT0WorkflowSchemaVersion.VersionedSecretNamespaceV4;
+    isTrustedDefaultBranchTriggeredCodexWorkflowSchemaVersion(
+      input.workflowSchemaVersion,
+    );
   const reviewEventName = trustedDefaultBranchTriggered
     ? "pull_request_target"
     : "pull_request";

@@ -483,6 +483,26 @@ describe("repository health", () => {
       expectedActionRefFound: true,
       expectedContentMarkersFound: false,
     });
+    for (const expectedContentValidator of [
+      () => false,
+      () => {
+        throw new Error("validator rejected workflow");
+      },
+    ]) {
+      await expect(
+        probe.probeWorkflow({
+          ...probeInput(),
+          expectedContentMarkerGroups: [
+            [".github/workflows/reviewrouter-reusable.yml"],
+          ],
+          expectedContentValidator,
+        }),
+      ).resolves.toEqual({
+        status: "present",
+        expectedActionRefFound: true,
+        expectedContentMarkersFound: false,
+      });
+    }
     expect(JSON.stringify(result)).not.toContain("CLAUDE_CODE_OAUTH_TOKEN:");
   });
 

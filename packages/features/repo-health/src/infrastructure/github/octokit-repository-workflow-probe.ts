@@ -43,17 +43,23 @@ export class OctokitRepositoryWorkflowProbe implements RepositoryWorkflowProbePo
       if (!yaml) {
         return { status: "unavailable", reason: "workflow_file_not_decodable" };
       }
-      const expectedContentMarkersFound = workflowContainsExpectedMarkerGroup(
-        yaml,
-        input.expectedContentMarkerGroups,
-      );
+      const expectedContentMarkersFound =
+        workflowContainsExpectedMarkerGroup(
+          yaml,
+          input.expectedContentMarkerGroups,
+        ) &&
+        workflowPassesExpectedContentValidator(
+          yaml,
+          input.expectedContentValidator,
+        );
       return {
         status: "present",
         expectedActionRefFound: workflowUsesActionRef(
           yaml,
           input.expectedActionRef,
         ),
-        ...(input.expectedContentMarkerGroups !== undefined
+        ...(input.expectedContentMarkerGroups !== undefined ||
+        input.expectedContentValidator !== undefined
           ? { expectedContentMarkersFound }
           : {}),
       };
@@ -63,6 +69,19 @@ export class OctokitRepositoryWorkflowProbe implements RepositoryWorkflowProbePo
       }
       return { status: "unavailable", reason: safeProbeErrorReason(error) };
     }
+  }
+}
+
+function workflowPassesExpectedContentValidator(
+  yaml: string,
+  validator?: (workflow: string) => boolean,
+): boolean {
+  if (!validator) return true;
+
+  try {
+    return validator(yaml);
+  } catch {
+    return false;
   }
 }
 
