@@ -39,6 +39,16 @@ describe("disposable dual-version rehearsal", () => {
         "psql: ERROR: public ownership convergence failed\nDETAIL: token=secret",
       ),
     ).toBe("public ownership convergence failed");
+    expect(
+      safePostgresErrorClassification(
+        "psql: ERROR: codex_oauth_provider_identity_mismatch\nDETAIL: token=secret",
+      ),
+    ).toBe("codex_oauth_provider_identity_mismatch");
+    expect(
+      safePostgresErrorClassification(
+        'psql: ERROR: relation "CodexOAuthSetupManifest" does not exist\nDETAIL: token=secret',
+      ),
+    ).toBe('relation "codexoauthsetupmanifest" does not exist');
   });
   it("requires explicit opt-in and immutable PG16.13/PG17 images", () => {
     expect(

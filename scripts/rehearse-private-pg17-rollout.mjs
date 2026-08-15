@@ -399,6 +399,14 @@ export function safePostgresErrorClassification(stderr) {
     return "permission denied";
   if (/ERROR:\s*release migration/iu.test(stderr ?? ""))
     return "release migration invariant rejected";
+  const namedInvariant = stderr?.match(
+    /ERROR:\s*((?:codex_oauth|reviewrouter|runtime|release)_[a-z0-9_]{2,160})(?:\n|$)/iu,
+  )?.[1];
+  if (namedInvariant) return namedInvariant.toLowerCase();
+  const missingObject = stderr?.match(
+    /ERROR:\s*((?:relation|role|schema|function|procedure) "[A-Za-z][A-Za-z0-9_.]{0,127}" does not exist)(?:\n|$)/iu,
+  )?.[1];
+  if (missingObject) return missingObject.toLowerCase();
   const staticInvariant = stderr?.match(
     /ERROR:\s*([a-z][a-z ]{2,100})(?:\n|$)/iu,
   )?.[1];
