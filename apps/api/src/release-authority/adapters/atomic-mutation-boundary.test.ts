@@ -126,6 +126,7 @@ describe("atomic catalog-attested mutation boundary", () => {
         clients as never,
         "control",
         {} as never,
+        "control_only" as never,
         mutation,
         timing,
         () => Object.assign(new Error("unavailable"), { statusCode: 503 }),
@@ -149,6 +150,7 @@ describe("atomic catalog-attested mutation boundary", () => {
       clients as never,
       "installer",
       {} as never,
+      "pre_migration" as never,
       () =>
         executeSameConnectionFenced(
           clients.installer.prisma as never,
@@ -184,6 +186,7 @@ describe("atomic catalog-attested mutation boundary", () => {
       clients as never,
       "installer",
       {} as never,
+      "pre_migration" as never,
       async () => {
         await expect(
           observeAtomicConnectionAwareReadiness(
@@ -236,6 +239,7 @@ describe("atomic catalog-attested mutation boundary", () => {
         clients as never,
         "installer",
         {} as never,
+        "pre_migration" as never,
         async () => {
           await Promise.all(
             Object.values(clients).map((entry) =>
@@ -252,6 +256,7 @@ describe("atomic catalog-attested mutation boundary", () => {
             clients as never,
             "control",
             {} as never,
+            "control_only" as never,
             () => "claimed",
             timing,
             () => new Error("unavailable"),
@@ -279,6 +284,7 @@ describe("atomic catalog-attested mutation boundary", () => {
       clients as never,
       "installer",
       {} as never,
+      "pre_migration" as never,
       async () => {
         await expect(
           observeAtomicConnectionAwareReadiness(
@@ -320,6 +326,7 @@ describe("atomic catalog-attested mutation boundary", () => {
         clients as never,
         "control",
         {} as never,
+        "control_only" as never,
         () =>
           executeSameConnectionFenced(
             clients.provider.prisma as never,
@@ -353,6 +360,7 @@ describe("atomic catalog-attested mutation boundary", () => {
         clients as never,
         "control",
         {} as never,
+        "control_only" as never,
         mutation,
         timing,
         () => Object.assign(new Error("unavailable"), { statusCode: 503 }),
@@ -378,6 +386,7 @@ describe("atomic catalog-attested mutation boundary", () => {
         clients as never,
         "control",
         {} as never,
+        "control_only" as never,
         () =>
           executeSameConnectionFenced(
             clients.control.prisma as never,
@@ -415,6 +424,7 @@ describe("atomic catalog-attested mutation boundary", () => {
         clients as never,
         "control",
         {} as never,
+        "control_only" as never,
         mutation,
         timing,
         () => new Error("unavailable"),
@@ -432,6 +442,7 @@ describe("atomic catalog-attested mutation boundary", () => {
         clients as never,
         "control",
         {} as never,
+        "control_only" as never,
         () =>
           executeSameConnectionFenced(
             clients.control.prisma as never,

@@ -30,6 +30,7 @@ import {
   type ReadinessTimingPolicy,
 } from "./release-authority/application/attestation-lease.js";
 import {
+  ReleaseControlReadinessPhase,
   releaseControlDatabaseSetIsReady,
   releaseControlMutationDatabaseIsReady,
   type TrustedReleaseControlDatabaseIdentity,
@@ -73,6 +74,21 @@ type TargetManifestPhase =
   | "migration_recovery"
   | "post_migration"
   | "control_only";
+
+const readinessPhaseFor = (
+  phase: TargetManifestPhase,
+): ReleaseControlReadinessPhase => {
+  switch (phase) {
+    case "pre_migration":
+      return ReleaseControlReadinessPhase.PreMigration;
+    case "migration_recovery":
+      return ReleaseControlReadinessPhase.MigrationRecovery;
+    case "post_migration":
+      return ReleaseControlReadinessPhase.PostMigration;
+    case "control_only":
+      return ReleaseControlReadinessPhase.ControlOnly;
+  }
+};
 
 export function trustedTargetIdentityForPhase(
   configured: TrustedReleaseControlDatabaseIdentity,
@@ -433,10 +449,12 @@ export async function createReleaseControlApp(input: {
         !releaseControlMutationDatabaseIsReady(
           control,
           trustedDatabaseIdentity,
+          ReleaseControlReadinessPhase.ControlOnly,
         ) ||
         !releaseControlMutationDatabaseIsReady(
           provider,
           trustedDatabaseIdentity,
+          ReleaseControlReadinessPhase.ControlOnly,
         )
       )
         throw new DefinitiveAttestationMismatchError();
@@ -502,6 +520,12 @@ export async function createReleaseControlApp(input: {
           attestationSubject.targetManifestPhase ?? "pre_migration",
           attestationSubject.targetManifestIdentity,
         ),
+        readinessPhaseFor(
+          attestationSubject.targetManifestPhase ?? "pre_migration",
+        ) as Exclude<
+          ReleaseControlReadinessPhase,
+          ReleaseControlReadinessPhase.ControlOnly
+        >,
       )
     )
       throw new DefinitiveAttestationMismatchError();
@@ -656,6 +680,7 @@ export async function createReleaseControlApp(input: {
                 },
                 target,
                 phaseTrustedIdentity,
+                readinessPhaseFor(targetManifestPhase ?? "pre_migration"),
                 mutation,
                 atomicMutationTiming,
                 () =>

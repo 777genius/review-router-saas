@@ -39,6 +39,7 @@ export type ReleaseAuthorityDatabaseReadiness = Readonly<{
   applicationPostCatalogDigest: string;
   activationNamespaceFingerprint: string;
   authorityRoleTopologyExact: boolean;
+  preMigrationPermitBoundaryExact: boolean;
   activationGuardExact: boolean;
   activationRuntimePrivilegesExact: boolean;
   externalEffectProtocol: boolean;
@@ -55,6 +56,13 @@ export type ReleaseAuthorityDatabaseReadiness = Readonly<{
   publicAuthorityRevoked: boolean;
   authorityTablesRevoked: boolean;
 }>;
+
+export enum ReleaseControlReadinessPhase {
+  PreMigration = "pre_migration",
+  MigrationRecovery = "migration_recovery",
+  PostMigration = "post_migration",
+  ControlOnly = "control_only",
+}
 
 export type ReleaseControlDatabaseSet = Readonly<{
   control: ReleaseAuthorityDatabaseReadiness;
@@ -126,6 +134,10 @@ export const releaseAuthoritySchemaIsReady = (
 export function releaseControlDatabaseSetIsReady(
   input: ReleaseControlDatabaseSet,
   trusted: TrustedReleaseControlDatabaseIdentity,
+  phase: Exclude<
+    ReleaseControlReadinessPhase,
+    ReleaseControlReadinessPhase.ControlOnly
+  >,
 ): boolean {
   const { control, provider, installer, reader } = input;
   const roleName = /^[a-z_][a-z0-9_]{0,62}$/u;
@@ -212,7 +224,7 @@ export function releaseControlDatabaseSetIsReady(
     ) &&
     installer.activationNamespaceFingerprint ===
       trusted.activationNamespaceFingerprint &&
-    installer.activationGuardExact &&
+    targetActivationPhaseIsReady(installer, trusted, phase) &&
     installer.activationRuntimePrivilegesExact &&
     reader.readerRoutine &&
     reader.readerRoutineBodySha256 === trusted.readerRoutineBodySha256 &&
@@ -223,15 +235,34 @@ export function releaseControlDatabaseSetIsReady(
     ) &&
     reader.activationNamespaceFingerprint ===
       trusted.activationNamespaceFingerprint &&
-    reader.activationGuardExact &&
+    targetActivationPhaseIsReady(reader, trusted, phase) &&
     reader.activationRuntimePrivilegesExact
   );
 }
+
+const targetActivationPhaseIsReady = (
+  readiness: ReleaseAuthorityDatabaseReadiness,
+  trusted: TrustedReleaseControlDatabaseIdentity,
+  phase: ReleaseControlReadinessPhase,
+): boolean => {
+  if (
+    phase === ReleaseControlReadinessPhase.ControlOnly ||
+    !readiness.preMigrationPermitBoundaryExact
+  )
+    return false;
+  const finalGuardRequired =
+    phase === ReleaseControlReadinessPhase.PostMigration ||
+    (phase === ReleaseControlReadinessPhase.MigrationRecovery &&
+      readiness.applicationMigrationManifestIdentity !==
+        trusted.targetMigrationManifestIdentity);
+  return !finalGuardRequired || readiness.activationGuardExact;
+};
 
 /** Exact policy for the database connection that performs one high-risk write. */
 export function releaseControlMutationDatabaseIsReady(
   readiness: ReleaseAuthorityDatabaseReadiness,
   trusted: TrustedReleaseControlDatabaseIdentity,
+  phase: ReleaseControlReadinessPhase,
 ): boolean {
   if (
     readiness.postgresMajor !== 17 ||
@@ -251,6 +282,7 @@ export function releaseControlMutationDatabaseIsReady(
       );
     case "reviewrouter_activation_permit_installer":
       return (
+        phase !== ReleaseControlReadinessPhase.ControlOnly &&
         runtimeDatabaseIdentityEquals(
           readiness.databaseIdentity,
           trusted.targetDatabaseIdentity,
@@ -265,11 +297,12 @@ export function releaseControlMutationDatabaseIsReady(
         ) &&
         readiness.activationNamespaceFingerprint ===
           trusted.activationNamespaceFingerprint &&
-        readiness.activationGuardExact &&
+        targetActivationPhaseIsReady(readiness, trusted, phase) &&
         readiness.activationRuntimePrivilegesExact
       );
     case "reviewrouter_activation_receipt_reader":
       return (
+        phase !== ReleaseControlReadinessPhase.ControlOnly &&
         runtimeDatabaseIdentityEquals(
           readiness.databaseIdentity,
           trusted.targetDatabaseIdentity,
@@ -283,7 +316,7 @@ export function releaseControlMutationDatabaseIsReady(
         ) &&
         readiness.activationNamespaceFingerprint ===
           trusted.activationNamespaceFingerprint &&
-        readiness.activationGuardExact &&
+        targetActivationPhaseIsReady(readiness, trusted, phase) &&
         readiness.activationRuntimePrivilegesExact
       );
     default:

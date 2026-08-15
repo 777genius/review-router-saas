@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
+  type ReleaseControlReadinessPhase,
   releaseControlMutationDatabaseIsReady,
   type ReleaseAuthorityDatabaseReadiness,
   type TrustedReleaseControlDatabaseIdentity,
@@ -192,6 +193,7 @@ export async function executeAtomicReleaseControlMutation<T>(
   clients: AtomicReleaseControlConnections,
   target: ReleaseAuthorityMutationTarget,
   trusted: TrustedReleaseControlDatabaseIdentity,
+  phase: ReleaseControlReadinessPhase,
   mutation: (attestation: ReleaseAuthorityFencedAttestation) => Promise<T> | T,
   timing: AtomicMutationTiming,
   unavailableError: () => Error,
@@ -238,7 +240,7 @@ export async function executeAtomicReleaseControlMutation<T>(
           readiness.databaseIdentity.databaseName !==
             selected.expected.databaseIdentity.databaseName ||
           readiness.postgresMajor !== selected.expected.postgresMajor ||
-          !releaseControlMutationDatabaseIsReady(readiness, trusted)
+          !releaseControlMutationDatabaseIsReady(readiness, trusted, phase)
         )
           throw new Error("release_authority_atomic_attestation_mismatch");
         mutationStarted = true;

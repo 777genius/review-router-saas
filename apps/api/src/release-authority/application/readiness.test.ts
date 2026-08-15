@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { releaseAuthoritySchemaVersion } from "@reviewrouter/features-release-rollout";
 import {
+  ReleaseControlReadinessPhase,
   releaseControlDatabaseSetIsReady,
   releaseControlMutationDatabaseIsReady,
   releaseAuthoritySchemaIsReady,
@@ -51,6 +52,7 @@ const canonical = (): ReleaseAuthorityDatabaseReadiness => ({
   applicationPostCatalogDigest: "",
   activationNamespaceFingerprint: "",
   authorityRoleTopologyExact: true,
+  preMigrationPermitBoundaryExact: false,
   activationGuardExact: false,
   activationRuntimePrivilegesExact: false,
   externalEffectProtocol: true,
@@ -89,13 +91,18 @@ describe("release authority exact readiness contract", () => {
       targetMigrationManifestIdentity: `sha256:${"c".repeat(64)}`,
       activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
     };
-    expect(releaseControlMutationDatabaseIsReady(readiness, trusted)).toBe(
-      true,
-    );
+    expect(
+      releaseControlMutationDatabaseIsReady(
+        readiness,
+        trusted,
+        ReleaseControlReadinessPhase.ControlOnly,
+      ),
+    ).toBe(true);
     expect(
       releaseControlMutationDatabaseIsReady(
         { ...readiness, catalogExact: false },
         trusted,
+        ReleaseControlReadinessPhase.ControlOnly,
       ),
     ).toBe(false);
     expect(
@@ -108,6 +115,7 @@ describe("release authority exact readiness contract", () => {
           },
         },
         trusted,
+        ReleaseControlReadinessPhase.ControlOnly,
       ),
     ).toBe(false);
   });
@@ -134,6 +142,7 @@ describe("release authority exact readiness contract", () => {
       readerRoutineBodySha256: "b".repeat(64),
       applicationMigrationManifestIdentity: `sha256:${"c".repeat(64)}`,
       activationNamespaceFingerprint: `sha256:${"d".repeat(64)}`,
+      preMigrationPermitBoundaryExact: true,
       activationGuardExact: true,
       activationRuntimePrivilegesExact: true,
     };
@@ -155,6 +164,7 @@ describe("release authority exact readiness contract", () => {
       releaseControlDatabaseSetIsReady(
         { control, provider, installer: activation, reader },
         trusted,
+        ReleaseControlReadinessPhase.PreMigration,
       ),
     ).toBe(true);
     const guardDriftedInstaller = {
@@ -162,12 +172,24 @@ describe("release authority exact readiness contract", () => {
       activationGuardExact: false,
     };
     expect(
-      releaseControlMutationDatabaseIsReady(guardDriftedInstaller, trusted),
+      releaseControlMutationDatabaseIsReady(
+        guardDriftedInstaller,
+        trusted,
+        ReleaseControlReadinessPhase.PreMigration,
+      ),
+    ).toBe(true);
+    expect(
+      releaseControlMutationDatabaseIsReady(
+        guardDriftedInstaller,
+        trusted,
+        ReleaseControlReadinessPhase.PostMigration,
+      ),
     ).toBe(false);
     expect(
       releaseControlDatabaseSetIsReady(
         { control, provider, installer: guardDriftedInstaller, reader },
         trusted,
+        ReleaseControlReadinessPhase.PostMigration,
       ),
     ).toBe(false);
     const postMigrationActivation = {
@@ -175,19 +197,49 @@ describe("release authority exact readiness contract", () => {
       applicationMigrationManifestIdentity: `sha256:${"e".repeat(64)}`,
     };
     expect(
-      releaseControlMutationDatabaseIsReady(postMigrationActivation, trusted),
+      releaseControlMutationDatabaseIsReady(
+        postMigrationActivation,
+        trusted,
+        ReleaseControlReadinessPhase.MigrationRecovery,
+      ),
     ).toBe(false);
     expect(
-      releaseControlMutationDatabaseIsReady(postMigrationActivation, {
-        ...trusted,
-        allowedTargetMigrationEndpoints: [
-          {
-            manifestIdentity:
-              postMigrationActivation.applicationMigrationManifestIdentity,
-          },
-        ],
-      }),
+      releaseControlMutationDatabaseIsReady(
+        postMigrationActivation,
+        {
+          ...trusted,
+          allowedTargetMigrationEndpoints: [
+            {
+              manifestIdentity:
+                postMigrationActivation.applicationMigrationManifestIdentity,
+            },
+          ],
+        },
+        ReleaseControlReadinessPhase.MigrationRecovery,
+      ),
     ).toBe(true);
+    expect(
+      releaseControlMutationDatabaseIsReady(
+        { ...postMigrationActivation, activationGuardExact: false },
+        {
+          ...trusted,
+          allowedTargetMigrationEndpoints: [
+            {
+              manifestIdentity:
+                postMigrationActivation.applicationMigrationManifestIdentity,
+            },
+          ],
+        },
+        ReleaseControlReadinessPhase.MigrationRecovery,
+      ),
+    ).toBe(false);
+    expect(
+      releaseControlMutationDatabaseIsReady(
+        { ...activation, preMigrationPermitBoundaryExact: false },
+        trusted,
+        ReleaseControlReadinessPhase.PreMigration,
+      ),
+    ).toBe(false);
     const exactPostCatalog = `sha256:${"f".repeat(64)}`;
     expect(
       releaseControlMutationDatabaseIsReady(
@@ -205,6 +257,7 @@ describe("release authority exact readiness contract", () => {
             },
           ],
         },
+        ReleaseControlReadinessPhase.MigrationRecovery,
       ),
     ).toBe(true);
     expect(
@@ -223,6 +276,7 @@ describe("release authority exact readiness contract", () => {
             },
           ],
         },
+        ReleaseControlReadinessPhase.MigrationRecovery,
       ),
     ).toBe(false);
     const postInstaller = {
@@ -243,6 +297,7 @@ describe("release authority exact readiness contract", () => {
       releaseControlDatabaseSetIsReady(
         { control, provider, installer: postInstaller, reader: postReader },
         postPolicy,
+        ReleaseControlReadinessPhase.PostMigration,
       ),
     ).toBe(true);
     expect(
@@ -257,6 +312,7 @@ describe("release authority exact readiness contract", () => {
           reader: postReader,
         },
         postPolicy,
+        ReleaseControlReadinessPhase.PostMigration,
       ),
     ).toBe(false);
     expect(
@@ -266,6 +322,7 @@ describe("release authority exact readiness contract", () => {
           ...postPolicy,
           targetMigrationManifestIdentity: `sha256:${"1".repeat(64)}`,
         },
+        ReleaseControlReadinessPhase.PostMigration,
       ),
     ).toBe(false);
     expect(
@@ -284,6 +341,7 @@ describe("release authority exact readiness contract", () => {
           reader,
         },
         trusted,
+        ReleaseControlReadinessPhase.PreMigration,
       ),
     ).toBe(false);
     expect(
@@ -293,6 +351,7 @@ describe("release authority exact readiness contract", () => {
           ...trusted,
           targetMigrationManifestIdentity: undefined as unknown as string,
         },
+        ReleaseControlReadinessPhase.PreMigration,
       ),
     ).toBe(false);
     expect(
@@ -307,6 +366,7 @@ describe("release authority exact readiness contract", () => {
           reader,
         },
         trusted,
+        ReleaseControlReadinessPhase.PreMigration,
       ),
     ).toBe(false);
     expect(
@@ -321,6 +381,7 @@ describe("release authority exact readiness contract", () => {
           reader,
         },
         trusted,
+        ReleaseControlReadinessPhase.PreMigration,
       ),
     ).toBe(false);
   });

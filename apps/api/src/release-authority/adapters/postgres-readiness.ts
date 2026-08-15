@@ -32,7 +32,10 @@ type DatabaseIdentityProbe = Readonly<{
   applicationPostCatalogDigest: string;
   activationNamespaceFingerprint: string;
   authorityRoleTopologyExact: boolean;
-  activationGuardExact: boolean;
+  activationMigrationBoundaryExact: boolean;
+  activationGuardCatalogReadExact: boolean;
+  activationApplicationOwnershipExact: boolean;
+  activationRecoveryWitnessExact: boolean;
   activationRuntimePrivilegesExact: boolean;
 }>;
 
@@ -53,32 +56,48 @@ type ReleaseAuthorityExactness = Omit<
 
 const absentAuthorityReadiness = (
   probe: DatabaseIdentityProbe,
-): ReleaseAuthorityDatabaseReadiness => ({
-  ...probe,
-  schemaVersion: 0,
-  migrationManifest: [],
-  catalogFingerprint: "",
-  expectedCatalogFingerprint: "",
-  catalogVerifier: "",
-  catalogExact: false,
-  defaultAclExact: false,
-  finalAclExact: false,
-  controlRoutine: false,
-  providerRoutine: false,
-  externalEffectProtocol: false,
-  sourceFreezeProtocol: false,
-  selectiveRecoveryProtocol: false,
-  lateRunnerEffectProtocol: false,
-  recoveryEffectProtocol: false,
-  compensationCheckpointDefinition: false,
-  runnerProviderBoundary: false,
-  cleanupWitnessTemporalSemantics: false,
-  requiredTriggers: false,
-  authorityOwnershipExact: false,
-  authorityAclExact: false,
-  publicAuthorityRevoked: false,
-  authorityTablesRevoked: false,
-});
+): ReleaseAuthorityDatabaseReadiness => {
+  const {
+    activationMigrationBoundaryExact,
+    activationGuardCatalogReadExact,
+    activationApplicationOwnershipExact,
+    activationRecoveryWitnessExact,
+    ...identity
+  } = probe;
+  const preMigrationPermitBoundaryExact =
+    activationMigrationBoundaryExact &&
+    activationGuardCatalogReadExact &&
+    activationRecoveryWitnessExact;
+  return {
+    ...identity,
+    preMigrationPermitBoundaryExact,
+    activationGuardExact:
+      preMigrationPermitBoundaryExact && activationApplicationOwnershipExact,
+    schemaVersion: 0,
+    migrationManifest: [],
+    catalogFingerprint: "",
+    expectedCatalogFingerprint: "",
+    catalogVerifier: "",
+    catalogExact: false,
+    defaultAclExact: false,
+    finalAclExact: false,
+    controlRoutine: false,
+    providerRoutine: false,
+    externalEffectProtocol: false,
+    sourceFreezeProtocol: false,
+    selectiveRecoveryProtocol: false,
+    lateRunnerEffectProtocol: false,
+    recoveryEffectProtocol: false,
+    compensationCheckpointDefinition: false,
+    runnerProviderBoundary: false,
+    cleanupWitnessTemporalSemantics: false,
+    requiredTriggers: false,
+    authorityOwnershipExact: false,
+    authorityAclExact: false,
+    publicAuthorityRevoked: false,
+    authorityTablesRevoked: false,
+  };
+};
 
 export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
   prisma: ReleaseAuthorityReadinessConnection,
@@ -395,7 +414,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
               to_regprocedure('reviewrouter_activation.complete_migration_permit(text,bigint,text,jsonb)'),
               to_regprocedure('reviewrouter_activation.terminalize_migration_permit(text,bigint,text,text)'),
               to_regprocedure('reviewrouter_activation.read_migration_receipt(text,bigint,text)'))),false)
-        AND coalesce((SELECT
+        AS "activationMigrationBoundaryExact",
+      coalesce((SELECT
           has_table_privilege(guard.oid,
             to_regclass('public."_prisma_migrations"'),'SELECT')
           AND NOT has_database_privilege(guard.oid,current_database(),'CREATE')
@@ -426,7 +446,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
                 IS DISTINCT FROM (a.attname='status'))
           FROM pg_roles guard
           WHERE guard.rolname='reviewrouter_activation_receipt_guard'),false)
-        AND coalesce((SELECT
+        AS "activationGuardCatalogReadExact",
+      coalesce((SELECT
           NOT owner.rolcanlogin AND NOT owner.rolsuper
           AND NOT owner.rolcreatedb AND NOT owner.rolcreaterole
           AND NOT owner.rolreplication AND NOT owner.rolbypassrls
@@ -500,7 +521,8 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
             AND migration.rolname='reviewrouter_release_migration'
             AND bootstrap.rolname='reviewrouter_role_bootstrap'
             AND public_namespace.nspname='public'),false)
-        AND coalesce(CASE WHEN pg_catalog.pg_input_is_valid(
+        AS "activationApplicationOwnershipExact",
+      coalesce(CASE WHEN pg_catalog.pg_input_is_valid(
           pg_catalog.shobj_description((SELECT oid FROM pg_database
             WHERE datname=current_database()),'pg_database'),
           'jsonb')
@@ -508,7 +530,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
             WHERE datname=current_database()),'pg_database')::jsonb
               ->>'recoveryWitnessSha256' ~ '^[a-f0-9]{64}$'
           ELSE false END,false)
-        AS "activationGuardExact",
+        AS "activationRecoveryWitnessExact",
       (SELECT count(*)=8 AND bool_and(role.rolcanlogin IS NOT DISTINCT FROM
           (role.rolname NOT IN ('reviewrouter_activation_receipt_guard',
             'reviewrouter_release_schema_owner')))
@@ -730,6 +752,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
         '' AS "applicationPostCatalogDigest",
         '' AS "activationNamespaceFingerprint",
         role_topology_exact AS "authorityRoleTopologyExact",
+        false AS "preMigrationPermitBoundaryExact",
         false AS "activationGuardExact",
         false AS "activationRuntimePrivilegesExact",
         catalog_exact AND owner_membership_exact AS "externalEffectProtocol",

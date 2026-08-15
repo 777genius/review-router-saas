@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { ReleaseAuthorityDatabaseReadiness } from "./release-authority/application/readiness";
-import { releaseControlDatabaseSetIsReady } from "./release-authority/application/readiness";
+import {
+  ReleaseControlReadinessPhase,
+  releaseControlDatabaseSetIsReady,
+} from "./release-authority/application/readiness";
 import {
   composeReleaseControlDependencies,
   createReleaseControlApp as createReleaseControlAppBase,
@@ -240,6 +243,7 @@ const authorityReadiness = (
     applicationPostCatalogDigest: "",
     activationNamespaceFingerprint: "",
     authorityRoleTopologyExact: true,
+    preMigrationPermitBoundaryExact: false,
     activationGuardExact: false,
     activationRuntimePrivilegesExact: false,
     externalEffectProtocol: true,
@@ -285,6 +289,7 @@ const installerReadiness = [
     activationNamespaceFingerprint:
       trustedDatabaseIdentity.activationNamespaceFingerprint,
     authorityRoleTopologyExact: false,
+    preMigrationPermitBoundaryExact: true,
     activationGuardExact: true,
     activationRuntimePrivilegesExact: true,
     externalEffectProtocol: false,
@@ -330,6 +335,7 @@ const readerReadiness = [
     activationNamespaceFingerprint:
       trustedDatabaseIdentity.activationNamespaceFingerprint,
     authorityRoleTopologyExact: false,
+    preMigrationPermitBoundaryExact: true,
     activationGuardExact: true,
     activationRuntimePrivilegesExact: true,
     externalEffectProtocol: false,
@@ -518,6 +524,10 @@ describe("release authority process composition", () => {
             )[0]!,
           },
           trusted,
+          phase as Exclude<
+            ReleaseControlReadinessPhase,
+            ReleaseControlReadinessPhase.ControlOnly
+          >,
         ),
       ).toBe(expected);
     },
@@ -1292,6 +1302,7 @@ describe("release authority process composition", () => {
           reader: readerReadiness[0]!,
         },
         trustedDatabaseIdentity,
+        ReleaseControlReadinessPhase.PreMigration,
       ),
     ).toBe(true);
     const claim = () =>

@@ -1330,6 +1330,14 @@ ROLLBACK;`,
     witnessPrisma = createPrismaClient({ databaseUrl: witnessUrl, poolMax: 1 });
     const activationAttestation =
       await observeReleaseAuthorityDatabaseReadiness(permitInstallerPrisma);
+    if (
+      !activationAttestation.preMigrationPermitBoundaryExact ||
+      activationAttestation.activationGuardExact ||
+      !activationAttestation.activationRuntimePrivilegesExact
+    )
+      throw new Error(
+        "private_pg17_rehearsal_pre_migration_readiness_unproven",
+      );
     releaseControl = await createReleaseControlApp({
       controlPrisma,
       providerAuthorityPrisma,
@@ -1443,6 +1451,7 @@ ROLLBACK;`,
       authorityOrigin,
       controlToken,
       providerAuthorityToken,
+      permitInstallerPrisma,
       witnessPrisma,
       authorityContainer: authority,
       sourceContainer: source,
@@ -1504,6 +1513,17 @@ ROLLBACK;`,
 
 async function verifyProductionPathRehearsal(facts) {
   const digest = facts.equivalenceSha256;
+  const assertTargetActivationReadiness = async (stage, expectedFullGuard) => {
+    const readiness = await observeReleaseAuthorityDatabaseReadiness(
+      facts.permitInstallerPrisma,
+    );
+    if (
+      !readiness.preMigrationPermitBoundaryExact ||
+      !readiness.activationRuntimePrivilegesExact ||
+      readiness.activationGuardExact !== expectedFullGuard
+    )
+      throw new Error(`private_pg17_rehearsal_${stage}_readiness_unproven`);
+  };
   const redirect = (value) =>
     typeof value === "string"
       ? value.replace(
@@ -2367,6 +2387,7 @@ COMMIT;
         );
         facts.assertCanonicalBootstrapDemoted();
         facts.assertCanonicalPgcryptoAcl();
+        await assertTargetActivationReadiness("post_bootstrap", true);
         return observed(RolloutStep.BootstrapTargetRoles, result);
       },
       runReleaseMigration: runReleaseMigrationPort,
@@ -2935,6 +2956,7 @@ $attest_disposable_capture_database$;\n`,
         useCases.stageTargetServices(migratedRollout),
       ),
   });
+  await assertTargetActivationReadiness("post_migration", true);
   if (postMigration.mode === "capture-only") return postMigration.candidate;
   rollout = postMigration.rollout;
   rollout = await runStage("activate_target_generation", () =>
