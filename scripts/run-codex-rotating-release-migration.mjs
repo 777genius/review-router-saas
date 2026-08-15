@@ -1206,7 +1206,10 @@ BEGIN
   IF observed_catalog_digest IS DISTINCT FROM
        current_permit.expected_post_catalog_digest THEN
     RAISE EXCEPTION
-      'release migration target live completion mismatch:catalog_digest_observed';
+      'release migration target live completion mismatch:catalog_digest_observed'
+      USING DETAIL=pg_catalog.format(
+        'expected=%s observed=%s',
+        current_permit.expected_post_catalog_digest,observed_catalog_digest);
   END IF;
   IF requested_effect_metadata->>'effectFingerprint' IS DISTINCT FROM
        'sha256:'||encode(pg_catalog.sha256(convert_to(current_permit.rollout_id||':'||

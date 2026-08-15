@@ -51,10 +51,10 @@ describe("disposable dual-version rehearsal", () => {
     ).toBe("release migration v70-v72 live catalog digest mismatch");
     expect(
       safePostgresErrorClassification(
-        "psql: ERROR:  P0001: release migration target live completion mismatch:catalog_digest_observed\nDETAIL: token=secret",
+        `psql: ERROR:  P0001: release migration target live completion mismatch:catalog_digest_observed\nDETAIL: expected=sha256:${"1".repeat(64)} observed=sha256:${"2".repeat(64)}\nCONTEXT: token=secret`,
       ),
     ).toBe(
-      "release migration target live completion mismatch:catalog_digest_observed",
+      `release migration target live completion mismatch:catalog_digest_observed:expected=sha256:${"1".repeat(64)}:observed=sha256:${"2".repeat(64)}`,
     );
     expect(
       safePostgresErrorClassification(

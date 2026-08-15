@@ -1100,6 +1100,9 @@ describe("canonical exclusive release migration caller", () => {
     expect(completionGuard).toContain(
       "'postCatalogDigest',observed_catalog_digest",
     );
+    expect(completionGuard).toContain(
+      "'expected=%s observed=%s',\n        current_permit.expected_post_catalog_digest,observed_catalog_digest",
+    );
     expect(
       completionGuard.match(
         /release migration target live completion mismatch:[a-z_]+/gu,

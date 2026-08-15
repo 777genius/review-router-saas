@@ -454,7 +454,18 @@ export function safePostgresErrorClassification(stderr) {
   const releaseInvariant = safeReleaseMigrationInvariantMessages.find(
     (message) => normalizedStderr?.includes(message),
   );
-  if (releaseInvariant) return releaseInvariant.toLowerCase();
+  if (releaseInvariant) {
+    const digestEvidence =
+      releaseInvariant ===
+      "release migration target live completion mismatch:catalog_digest_observed"
+        ? stderr?.match(
+            /DETAIL:\s*expected=(sha256:[a-f0-9]{64}) observed=(sha256:[a-f0-9]{64})(?:\n|$)/u,
+          )
+        : undefined;
+    return digestEvidence
+      ? `${releaseInvariant.toLowerCase()}:expected=${digestEvidence[1]}:observed=${digestEvidence[2]}`
+      : releaseInvariant.toLowerCase();
+  }
   if (/ERROR:\s*release migration/iu.test(normalizedStderr ?? ""))
     return "release migration invariant rejected";
   if (sqlState) return `postgres sqlstate ${sqlState}`;
