@@ -374,6 +374,34 @@ function redactedErrorChain(error) {
   return JSON.stringify(safe);
 }
 
+const safeReleaseMigrationInvariantMessages = Object.freeze([
+  "release migration target permit invalid",
+  "release migration target permit binding conflict",
+  "release migration target permit caller invalid",
+  "release migration target permit unavailable",
+  "release migration target completion invalid",
+  "release migration target completion binding conflict",
+  "release migration target completion state conflict",
+  "release migration target terminalization invalid",
+  "release migration target terminalization binding conflict",
+  "release migration target completion missing",
+  "release migration target quarantine conflict",
+  "release migration target receipt caller invalid",
+  "release migration target receipt unavailable",
+  "release migration database delegation is non-canonical",
+  "release migration executor caller invalid",
+  "release migration executor ACL gate mode invalid",
+  "release migration executor replay ACL gate mode conflict",
+  "release migration executor permit invalid",
+  "release migration executor runtime CONNECT gate mismatch",
+  "release migration executor runtime write gate mismatch",
+  "release migration post manifest mismatch",
+  "release migration unresolved history",
+  "release migration V72 catalog postcondition missing",
+  "release migration V72 routine security invalid",
+  "release migration V70-V72 live catalog digest mismatch",
+]);
+
 export function safePostgresErrorClassification(stderr) {
   const sqlState = stderr?.match(/ERROR:\s*([0-9A-Z]{5}):/u)?.[1];
   const normalizedStderr = stderr?.replace(
@@ -416,6 +444,10 @@ export function safePostgresErrorClassification(stderr) {
     /ERROR:\s*([a-z][a-z0-9 -]{2,100})(?:\n|$)/iu,
   )?.[1];
   if (staticInvariant) return staticInvariant.toLowerCase();
+  const releaseInvariant = safeReleaseMigrationInvariantMessages.find(
+    (message) => normalizedStderr?.includes(message),
+  );
+  if (releaseInvariant) return releaseInvariant.toLowerCase();
   if (/ERROR:\s*release migration/iu.test(normalizedStderr ?? ""))
     return "release migration invariant rejected";
   if (sqlState) return `postgres sqlstate ${sqlState}`;
