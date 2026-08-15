@@ -2028,9 +2028,7 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
   } finally {
     psql(url, [
       "-c",
-      `SET ROLE ${foreignGrantor};
-       REVOKE reviewrouter_api FROM reviewrouter_role_bootstrap GRANTED BY ${foreignGrantor};
-       RESET ROLE;
+      `REVOKE reviewrouter_api FROM reviewrouter_role_bootstrap GRANTED BY ${foreignGrantor};
        REVOKE reviewrouter_api FROM ${foreignGrantor};
        DROP ROLE ${foreignGrantor};`,
     ]);
