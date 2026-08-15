@@ -34,6 +34,11 @@ describe("disposable dual-version rehearsal", () => {
         "psql: ERROR: permission denied for function internal_fn\\nCONTEXT: token=secret",
       ),
     ).toBe("permission denied for function internal_fn");
+    expect(
+      safePostgresErrorClassification(
+        "psql: ERROR: public ownership convergence failed\nDETAIL: token=secret",
+      ),
+    ).toBe("public ownership convergence failed");
   });
   it("requires explicit opt-in and immutable PG16.13/PG17 images", () => {
     expect(

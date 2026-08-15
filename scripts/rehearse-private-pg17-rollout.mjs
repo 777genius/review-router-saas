@@ -399,6 +399,10 @@ export function safePostgresErrorClassification(stderr) {
     return "permission denied";
   if (/ERROR:\s*release migration/iu.test(stderr ?? ""))
     return "release migration invariant rejected";
+  const staticInvariant = stderr?.match(
+    /ERROR:\s*([a-z][a-z ]{2,100})(?:\n|$)/iu,
+  )?.[1];
+  if (staticInvariant) return staticInvariant.toLowerCase();
   if (/ERROR:/u.test(stderr ?? "")) return "postgres error";
   return undefined;
 }
