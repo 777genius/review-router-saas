@@ -374,7 +374,7 @@ function redactedErrorChain(error) {
   return JSON.stringify(safe);
 }
 
-function safePostgresErrorClassification(stderr) {
+export function safePostgresErrorClassification(stderr) {
   const prismaCode = stderr?.match(/\b(P[0-9]{4})\b/u)?.[1];
   if (prismaCode) {
     const migration = stderr?.match(
@@ -390,6 +390,11 @@ function safePostgresErrorClassification(stderr) {
     /ERROR:\s*function\s+((?:public|reviewrouter_[a-z_]+)\.(?:"[a-z0-9_]+"|[a-z0-9_]+))\([^\n]*\) does not exist/iu,
   )?.[1];
   if (missingRoutine) return `function ${missingRoutine} does not exist`;
+  const deniedObject = stderr?.match(
+    /ERROR:\s*permission denied for (table|schema|function|procedure|sequence|relation) ([A-Za-z_][A-Za-z0-9_$.-]*)/iu,
+  );
+  if (deniedObject)
+    return `permission denied for ${deniedObject[1]?.toLowerCase()} ${deniedObject[2]}`;
   if (/ERROR:\s*permission denied/iu.test(stderr ?? ""))
     return "permission denied";
   if (/ERROR:\s*release migration/iu.test(stderr ?? ""))

@@ -11,6 +11,7 @@ import {
   normalizeRehearsalDockerInvocation,
   resolveRehearsalCaptureOnlyConfiguration,
   resolvePreReleaseMigrationExclusions,
+  safePostgresErrorClassification,
   rehearsalActivationCatalogPolicyAuthorization,
   rehearsalReadinessPolicy,
   routeRehearsalAfterReleaseMigration,
@@ -22,6 +23,18 @@ import {
 
 const digest = "d".repeat(64);
 describe("disposable dual-version rehearsal", () => {
+  it("classifies a denied catalog object without exposing surrounding stderr", () => {
+    expect(
+      safePostgresErrorClassification(
+        "psql: ERROR: permission denied for table CodexOAuthSetupManifest\\nDETAIL: secret=value",
+      ),
+    ).toBe("permission denied for table CodexOAuthSetupManifest");
+    expect(
+      safePostgresErrorClassification(
+        "psql: ERROR: permission denied for function internal_fn\\nCONTEXT: token=secret",
+      ),
+    ).toBe("permission denied for function internal_fn");
+  });
   it("requires explicit opt-in and immutable PG16.13/PG17 images", () => {
     expect(
       validateRehearsalConfiguration({
