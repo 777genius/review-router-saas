@@ -36,6 +36,7 @@ import {
   environmentSha256,
   normalizedServicePostconditionSha256,
   sha256Canonical,
+  targetMigrationReceiptEvidence,
   fromRenderSourceRecoveryManifestV1,
   renderSourceRecoveryManifestSha256,
   renderSourceServiceContractSha256,
@@ -2147,6 +2148,9 @@ async function verifyProductionPathRehearsal(facts) {
       "rehearsal_migration_substep_completed:canonical_migration\n",
     );
     legacyReconciliation = migration.legacyReconciliation;
+    const targetReceiptEvidence = targetMigrationReceiptEvidence(
+      migration.targetMigrationReceipt,
+    );
     process.stderr.write(
       "rehearsal_migration_substep_started:migration_checksum\n",
     );
@@ -2256,6 +2260,7 @@ COMMIT;
             permitNonce: permit.nonce,
             targetSystemIdentifier: permit.targetSystemIdentifier,
             targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
+            ...targetReceiptEvidence,
           }
         : {}),
     });

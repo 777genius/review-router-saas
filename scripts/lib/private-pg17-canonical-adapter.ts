@@ -5,7 +5,7 @@ import {
   type StepObservation,
   assertReleaseMigrationTransition,
   createReleaseMigrationTransition,
-  sha256Canonical,
+  targetMigrationReceiptEvidence,
   type ReleaseMigrationPermit,
   type ReleaseMigrationTransitionV1,
 } from "../../packages/features/release-rollout/src/index";
@@ -93,16 +93,9 @@ export class PrivatePg17CanonicalAdapter {
       throw new Error("private_pg17_rollout_migration_checksum_unproven");
     if (migrationChecksum !== transition.postManifestIdentity)
       throw new Error("private_pg17_rollout_post_manifest_mismatch");
-    const targetMigrationReceipt = (
-      facts as {
-        targetMigrationReceipt?: Record<string, unknown>;
-      }
-    ).targetMigrationReceipt;
-    if (
-      !targetMigrationReceipt ||
-      typeof targetMigrationReceipt.effectFingerprint !== "string"
-    )
-      throw new Error("private_pg17_rollout_target_receipt_unproven");
+    const targetReceiptEvidence = targetMigrationReceiptEvidence(
+      (facts as { targetMigrationReceipt?: unknown }).targetMigrationReceipt,
+    );
     return {
       step: RolloutStep.RunReleaseMigration,
       observedAt: new Date().toISOString(),
@@ -117,11 +110,7 @@ export class PrivatePg17CanonicalAdapter {
         postCatalogDigest: transition.postCatalogDigest,
         permitEpoch: permit.epoch,
         permitNonce: permit.nonce,
-        targetMigrationReceiptSha256: `sha256:${sha256Canonical(
-          targetMigrationReceipt,
-        )}`,
-        targetMigrationEffectFingerprint:
-          targetMigrationReceipt.effectFingerprint,
+        ...targetReceiptEvidence,
         targetSystemIdentifier: permit.targetSystemIdentifier,
         targetRecoveryWitnessSha256: permit.targetRecoveryWitnessSha256,
       },

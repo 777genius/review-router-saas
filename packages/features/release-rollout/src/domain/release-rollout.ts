@@ -383,6 +383,25 @@ export function sha256Canonical(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
+export function targetMigrationReceiptEvidence(value: unknown): Readonly<{
+  targetMigrationReceiptSha256: string;
+  targetMigrationEffectFingerprint: string;
+}> {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("target_migration_receipt_unproven");
+  const effectFingerprint = (value as Record<string, unknown>)
+    .effectFingerprint;
+  if (
+    typeof effectFingerprint !== "string" ||
+    !digestPattern.test(effectFingerprint)
+  )
+    throw new Error("target_migration_receipt_unproven");
+  return Object.freeze({
+    targetMigrationReceiptSha256: `sha256:${sha256Canonical(value)}`,
+    targetMigrationEffectFingerprint: effectFingerprint,
+  });
+}
+
 function assertIdentifier(value: string, label: string): void {
   if (!identifierPattern.test(value)) throw new Error(`${label}_invalid`);
 }

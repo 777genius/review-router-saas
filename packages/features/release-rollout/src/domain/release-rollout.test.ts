@@ -9,6 +9,7 @@ import {
   RolloutPhase,
   RolloutStep,
   sha256Canonical,
+  targetMigrationReceiptEvidence,
   transitionFailure,
   transitionFromObservation,
   type ReleaseMigrationReceipt,
@@ -19,6 +20,30 @@ import {
 } from "./release-migration-transition";
 
 const digest = `sha256:${"a".repeat(64)}`;
+
+describe("target migration receipt evidence", () => {
+  it("derives both rollout evidence fields from the exact canonical receipt", () => {
+    const receipt = {
+      effectFingerprint: `sha256:${"b".repeat(64)}`,
+      epoch: 7,
+      nonce: "receipt-nonce",
+    };
+
+    expect(targetMigrationReceiptEvidence(receipt)).toEqual({
+      targetMigrationReceiptSha256: `sha256:${sha256Canonical(receipt)}`,
+      targetMigrationEffectFingerprint: receipt.effectFingerprint,
+    });
+  });
+
+  it.each([null, [], {}, { effectFingerprint: "not-a-digest" }])(
+    "rejects an unproven receipt: %j",
+    (receipt) => {
+      expect(() => targetMigrationReceiptEvidence(receipt)).toThrow(
+        "target_migration_receipt_unproven",
+      );
+    },
+  );
+});
 const migrationTransitionFixture = createReleaseMigrationTransition({
   commitSha: "d".repeat(40),
   releaseImageDigest: `sha256:${"e".repeat(64)}`,
