@@ -735,22 +735,28 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(ledgerProof).toContain("proof:rollback");
     expect(ledgerProof).toContain("proof:confirmed-restart");
     expect(ledgerProof).toContain("initialSetupTombstone");
-    expect(ledgerProof).toContain("recoverySetupTombstone");
+    expect(ledgerProof).toContain("activeRecoverySetupNamespace");
     expect(ledgerProof).toContain("definiteRuntimeTombstone");
     expect(ledgerProof).toContain("ambiguousRuntimeTombstone");
     expect(ledgerProof).toContain("activeRuntimeNamespace");
     expect(ledgerProof).toContain("confirmedRestartRuntimeTombstone");
     expect(ledgerProof).toContain(
-      'evidence.recoverySetupTombstone?.claimStatus === "active"',
+      'evidence.activeRecoverySetupNamespace?.claimStatus === "active"',
     );
     expect(ledgerProof).toContain(
-      'evidence.recoverySetupTombstone.attemptStatus === "confirmed"',
+      'evidence.activeRecoverySetupNamespace.attemptStatus === "confirmed"',
     );
     expect(ledgerProof).toContain(
-      'evidence.recoverySetupTombstone.namespaceStatus ===\n        "retired_superseded"',
+      'evidence.activeRecoverySetupNamespace.namespaceStatus === "active"',
     );
     expect(ledgerProof).toContain(
-      "evidence.recoverySetupTombstone.permanentlyRetired === true",
+      "evidence.activeRecoverySetupNamespace.permanentlyRetired === false",
+    );
+    expect(ledgerProof).toMatch(
+      /evidence\.activeRecoverySetupNamespace\.namespaceId ===\s+evidence\.activeRuntimeNamespace\?\.namespaceId/u,
+    );
+    expect(ledgerProof).toMatch(
+      /BigInt\(evidence\.activeRecoverySetupNamespace\.namespaceEpoch\) ===\s+BigInt\(evidence\.activeRuntimeNamespace\.namespaceEpoch\)/u,
     );
     expect(ledgerProof).toContain(
       'evidence.definiteRuntimeTombstone?.intentStatus === "completed"',
@@ -777,10 +783,10 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(confirmedRestartEvidence).toBeDefined();
     expect(confirmedRestartEvidence).not.toContain("recoveryRequestRowId");
     expect(ledgerProof).toContain(
-      "quoteLiteral(recoverySetupTombstone.claimId)",
+      "quoteLiteral(activeRecoverySetupNamespace.claimId)",
     );
     expect(ledgerProof).toContain(
-      "quoteLiteral(recoverySetupTombstone.attemptId)",
+      "quoteLiteral(activeRecoverySetupNamespace.attemptId)",
     );
     expect(ledgerProof).toContain(
       'evidence.activeRuntimeNamespace?.intentStatus === "completed"',
@@ -794,7 +800,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(ledgerProof).not.toContain("activeRuntimeNamespace.claimId");
     expect(ledgerProof).not.toContain("activeRuntimeNamespace.attemptId");
     expect(source).toContain(
-      '"confirmedAttemptId"=${quoteLiteral(evidence.recoverySetupTombstone.attemptId)}',
+      '"confirmedAttemptId"=${quoteLiteral(evidence.activeRecoverySetupNamespace.attemptId)}',
     );
     expect(source).toContain("intent.\"idempotencyKey\"='proof:rollback'");
     expect(source).toContain(
