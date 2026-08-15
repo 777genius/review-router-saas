@@ -29,6 +29,7 @@ const migration68Name = "000068_validate_review_assignment_manifest";
 const migration69Name = "000069_release_rollout_ledger";
 const migration70Name = "000070_runtime_generation_witness_proof";
 const migration71Name = "000071_transactional_service_transition";
+const migration72Name = "000072_retire_superseded_codex_setup_claims";
 const migration60 = join(migrationsDirectory, migration60Name, "migration.sql");
 const migration61 = join(migrationsDirectory, migration61Name, "migration.sql");
 const migration62 = join(migrationsDirectory, migration62Name, "migration.sql");
@@ -54,6 +55,7 @@ assert(
       migration69Name,
       migration70Name,
       migration71Name,
+      migration72Name,
     ]),
   "rehearsal migration inventory must exactly match every checked-in migration from 000060 onward",
 );
@@ -132,7 +134,7 @@ try {
   const observation = collectObservation(rehearsalUrl);
   process.stdout.write(`${JSON.stringify(observation)}\n`);
   process.stderr.write(
-    "Codex rotating PostgreSQL 17 combined 000060 through 000071 rehearsal passed.\n",
+    "Codex rotating PostgreSQL 17 combined 000060 through 000072 rehearsal passed.\n",
   );
 } finally {
   psql(
@@ -3223,6 +3225,7 @@ function proveMigrateDeployNoOp(url) {
   proveMigrationRunnerHistory(url, migration69Name, true);
   proveMigrationRunnerHistory(url, migration70Name, true);
   proveMigrationRunnerHistory(url, migration71Name, true);
+  proveMigrationRunnerHistory(url, migration72Name, true);
 }
 
 function collectObservation(url) {

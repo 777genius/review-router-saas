@@ -604,6 +604,23 @@ export class PrismaCodexRotatingSetupPayloadClaim implements CodexRotatingSetupP
         )
           throw new Error("codex_rotating_setup_activation_mismatch");
         await tx.$executeRaw`
+        UPDATE "CodexOAuthSetupDispatchAttempt"
+        SET "status" = 'retired_confirmed', "retiredAt" = ${now},
+            "updatedAt" = ${now}
+        WHERE "claimId" IN (
+          SELECT "id" FROM "CodexOAuthSetupPayloadClaim"
+          WHERE "providerInstanceRowId" = ${claim.providerInstanceRowId}
+            AND "status" = 'active'
+        )
+          AND "status" = 'confirmed'
+      `;
+        await tx.$executeRaw`
+        UPDATE "CodexOAuthSetupPayloadClaim"
+        SET "status" = 'retired_active', "updatedAt" = ${now}
+        WHERE "providerInstanceRowId" = ${claim.providerInstanceRowId}
+          AND "status" = 'active'
+      `;
+        await tx.$executeRaw`
         UPDATE "CodexOAuthSecretNamespace"
         SET "status" = 'retired_superseded', "permanentlyRetired" = true,
             "retiredAt" = ${now}
