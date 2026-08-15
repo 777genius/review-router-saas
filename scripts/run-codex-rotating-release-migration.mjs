@@ -311,10 +311,10 @@ REVOKE ALL ON FUNCTION reviewrouter_activation.capture_runtime_acl_policy_pair()
 GRANT EXECUTE ON FUNCTION reviewrouter_activation.capture_runtime_acl_policy_pair()
   TO ${activationReceiptGuardRoleName};
 DO $runtime_acl_routine_boundary$
-DECLARE routine record;
+DECLARE routine_fact record;
 DECLARE unexpected_grantee text;
 BEGIN
-  FOR routine IN
+  FOR routine_fact IN
     SELECT routine.oid, routine.prosrc, routine.prosecdef,
       routine.proconfig, owner.rolname AS owner_name
     FROM pg_catalog.pg_proc routine
@@ -324,9 +324,9 @@ BEGIN
       'reviewrouter_activation.capture_runtime_acl_policy_pair()'::regprocedure
     )
   LOOP
-    IF routine.owner_name <> '${releaseSchemaOwnerRoleName}'
-       OR NOT routine.prosecdef
-       OR routine.proconfig IS DISTINCT FROM
+    IF routine_fact.owner_name <> '${releaseSchemaOwnerRoleName}'
+       OR NOT routine_fact.prosecdef
+       OR routine_fact.proconfig IS DISTINCT FROM
           ARRAY['search_path=pg_catalog, pg_temp']::text[] THEN
       RAISE EXCEPTION 'runtime ACL routine authority boundary invalid';
     END IF;

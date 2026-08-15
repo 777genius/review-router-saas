@@ -685,6 +685,7 @@ describe("target-local PG17 activation permit", () => {
     expect(provisioning).toContain(
       "runtime ACL routine integrity binding invalid",
     );
+    expect(provisioning).not.toContain("DECLARE routine record;");
     expect(provisioning).toContain("runtime ACL routine execute ACL invalid");
     expect(provisioning).toContain(
       "REVOKE CREATE ON SCHEMA reviewrouter_activation",
