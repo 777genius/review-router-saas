@@ -58,10 +58,10 @@ describe("activation catalog policy deployment authorization", () => {
   it("blocks the changed artifact until PG17 policy recapture is reviewed", () => {
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
       status: "blocked",
-      reason:
-        "pg17-recapture-required-after-migration-permit-contract-change",
+      reason: "pg17-recapture-required-after-migration-permit-contract-change",
     });
-    expect(() => trustedActivationCatalogPoliciesFromEnvironment(configured))
-      .toThrow("activation_catalog_policy_trust_root_blocked");
+    expect(() =>
+      trustedActivationCatalogPoliciesFromEnvironment(configured),
+    ).toThrow("activation_catalog_policy_trust_root_blocked");
   });
 });

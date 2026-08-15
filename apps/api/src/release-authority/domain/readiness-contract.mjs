@@ -67,7 +67,7 @@ export const releaseAuthorityMigrationContract = Object.freeze([
   ],
   [
     "000014_source_ambiguity_migration_permit",
-    "sha256:63d76bef93fc6041000a76e9451349333a2c9dbcb296ed4611ef5a97349dd529",
+    "sha256:8130c2bfbb05389172995a26ca541f57a0b4deed8b08d6e512ca7378bb05da42",
   ],
 ]);
 

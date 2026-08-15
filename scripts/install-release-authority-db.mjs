@@ -382,6 +382,7 @@ export function releaseAuthorityMigrationBundle(
        END IF;
        EXECUTE pg_catalog.format('COMMENT ON SCHEMA release_authority IS %L',
          jsonb_build_object('catalogFingerprint','sha256:'||expected_digest,
+           'schemaVersion',14,
            'verifier','${releaseAuthorityCatalogVerifier}')::text);
      END
      $final_catalog$;`,

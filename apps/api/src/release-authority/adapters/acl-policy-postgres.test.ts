@@ -41,6 +41,18 @@ describe("release authority PostgreSQL ACL policy adapter", () => {
     expect(finalAcl).toContain("type_record.typacl IS NOT NULL");
     expect(finalAcl).toContain("pg_catalog.pg_auth_members");
     expect(finalAcl).toContain("acl.is_grantable");
+    // Migration 000014 adds one immutable relation and retains the four v13
+    // implementations as owner-only helpers behind the public entry points.
+    // All five objects must be part of the exact matrix, not merely the
+    // catalog fingerprint assembled in a verification schema.
+    expect(finalAcl).toContain("release_migration_evidence");
+    for (const helper of [
+      "release_migration_begin_v13",
+      "release_migration_checkpoint_v13",
+      "release_migration_complete_v13",
+      "release_migration_fail_v13",
+    ])
+      expect(finalAcl).toContain(helper);
   });
 
   it("rejects untrusted schema interpolation", () => {

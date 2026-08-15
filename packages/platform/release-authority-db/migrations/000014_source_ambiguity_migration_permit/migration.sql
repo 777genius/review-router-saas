@@ -1,4 +1,4 @@
--- Bind source-owned legacy ambiguity evidence and an authority-owned cutoff to
+-- Bind source-owned legacy ambiguity evidence and its observation cutoff to
 -- every target migration permit without rewriting the phase-aware migration.
 BEGIN;
 
@@ -75,7 +75,7 @@ BEGIN
   INSERT INTO release_authority.release_migration_evidence(
     rollout_id,source_legacy_ambiguity,eligibility_cutoff)
   VALUES(p_input->>'rolloutId',source_evidence,
-    date_trunc('milliseconds',transaction_timestamp()))
+    (source_evidence->'observations'->1->>'observedAt')::timestamptz)
   ON CONFLICT (rollout_id) DO NOTHING;
   SELECT * INTO STRICT evidence_row
   FROM release_authority.release_migration_evidence
@@ -176,5 +176,20 @@ BEGIN
     GRANT EXECUTE ON FUNCTION release_authority.release_migration_checkpoint(text,text) TO reviewrouter_release_control;
   END IF;
 END $operational_acl$;
+
+-- The schema comment is the database-owned version marker consumed by the
+-- readiness adapter.  Advance it in this migration's transaction so an
+-- incremental installation can never expose the v14 catalog with a v13
+-- marker (or vice versa).  The installer adds the verified catalog digest to
+-- this same object after its shadow-catalog comparison succeeds.
+DO $schema_version_marker$
+DECLARE marker jsonb := coalesce(pg_catalog.obj_description(
+  'release_authority'::pg_catalog.regnamespace,'pg_namespace')::jsonb,'{}'::jsonb);
+BEGIN
+  IF pg_catalog.jsonb_typeof(marker) IS DISTINCT FROM 'object'
+  THEN RAISE EXCEPTION 'release authority schema version marker invalid'; END IF;
+  EXECUTE pg_catalog.format('COMMENT ON SCHEMA release_authority IS %L',
+    (marker||pg_catalog.jsonb_build_object('schemaVersion',14))::text);
+END $schema_version_marker$;
 
 COMMIT;

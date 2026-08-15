@@ -1392,7 +1392,7 @@ BEGIN
       'effectFingerprint','sha256:'||encode(pg_catalog.sha256(convert_to(
         current_permit.rollout_id||':'||current_permit.transition_sha256||':'||
         current_permit.permit_epoch::text||':'||current_permit.permit_nonce||':'||
-        current_permit.source_legacy_ambiguity->>'inventorySha256'||':'||
+        (current_permit.source_legacy_ambiguity->>'inventorySha256')||':'||
         to_char(current_permit.eligibility_cutoff AT TIME ZONE 'UTC',
           'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')||':'||observed_manifest_identity||':'||
         observed_catalog_digest,'UTF8')),'hex'),
@@ -3952,7 +3952,7 @@ ${guardedAclGate}`
     : ""
 }
 GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(
-  text,text,text,text,text,bigint,text,jsonb,boolean) TO reviewrouter_release_migration;
+  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration;
 GRANT SELECT ON TABLE public._prisma_migrations TO reviewrouter_release_migration;
 GRANT SELECT ("id","status") ON TABLE public."CodexOAuthLease",
   public."CodexOAuthSetupManifest", public."CodexOAuthWritebackIntent"

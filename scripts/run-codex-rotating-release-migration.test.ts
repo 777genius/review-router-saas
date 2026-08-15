@@ -1121,6 +1121,12 @@ describe("canonical exclusive release migration caller", () => {
     );
     expect(completionGuard).toContain("current_permit.eligibility_cutoff");
     expect(completionGuard).toContain(
+      "(current_permit.source_legacy_ambiguity->>'inventorySha256')||':'||",
+    );
+    expect(completionGuard).not.toContain(
+      "current_permit.source_legacy_ambiguity->>'inventorySha256'||':'||",
+    );
+    expect(completionGuard).toContain(
       "'acknowledgement','all_prior_installers_and_writers_are_stopped'",
     );
     expect(completionGuard).not.toContain(
@@ -1149,7 +1155,10 @@ describe("canonical exclusive release migration caller", () => {
       "RAISE EXCEPTION 'release migration target live completion mismatch';",
     );
     expect(provisioning).toContain(
-      "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(",
+      "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(\n  text,text,text,text,text,bigint,text,jsonb,timestamptz,boolean) TO reviewrouter_release_migration;",
+    );
+    expect(provisioning).not.toContain(
+      "GRANT EXECUTE ON PROCEDURE public.reviewrouter_execute_release_migration(\n  text,text,text,text,text,bigint,text,jsonb,boolean) TO reviewrouter_release_migration;",
     );
     expect(provisioning).not.toContain(
       "GRANT EXECUTE ON FUNCTION reviewrouter_activation.consume_migration_permit(text,text,text,text,text,jsonb,timestamptz,bigint,text) TO reviewrouter_release_migration",

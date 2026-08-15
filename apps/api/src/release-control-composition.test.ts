@@ -229,7 +229,7 @@ const authorityReadiness = (
       ],
       [
         "000014_source_ambiguity_migration_permit",
-        "63d76bef93fc6041000a76e9451349333a2c9dbcb296ed4611ef5a97349dd529",
+        "8130c2bfbb05389172995a26ca541f57a0b4deed8b08d6e512ca7378bb05da42",
       ],
     ].map(([migrationName, checksum], index) => ({
       position: index + 1,

@@ -27,8 +27,7 @@ describe("promoted activation catalog policy trust root", () => {
     );
     expect(canonicalActivationCatalogPolicyTrustRootReadiness).toEqual({
       status: "blocked",
-      reason:
-        "pg17-recapture-required-after-migration-permit-contract-change",
+      reason: "pg17-recapture-required-after-migration-permit-contract-change",
     });
     expect(
       canonicalActivationCatalogPolicies.preactivation.policy.grants,

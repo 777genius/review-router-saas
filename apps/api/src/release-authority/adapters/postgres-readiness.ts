@@ -856,7 +856,9 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
           )::jsonb AS attestation
       ), exactness AS (
         SELECT facts.*,
-          attestation->>'verifier' = ${releaseAuthorityCatalogVerifier}
+          attestation->'schemaVersion' =
+            pg_catalog.to_jsonb(${releaseAuthoritySchemaVersion}::integer)
+          AND attestation->>'verifier' = ${releaseAuthorityCatalogVerifier}
           AND attestation->>'catalogFingerprint' = 'sha256:' || catalog_digest
           AS catalog_exact,
           ${Prisma.raw(defaultAclExact)} AS default_acl_exact,
@@ -912,7 +914,7 @@ export const observeReleaseAuthorityDatabaseReadinessOnConnection = async (
       )
       SELECT CASE WHEN catalog_exact AND default_acl_exact AND final_acl_exact
           AND owner_membership_exact AND role_topology_exact
-          THEN ${releaseAuthoritySchemaVersion} ELSE 0 END
+          THEN (attestation->>'schemaVersion')::integer ELSE 0 END
           AS "schemaVersion",
         '[]'::jsonb AS "migrationManifest",
         'sha256:' || catalog_digest AS "catalogFingerprint",

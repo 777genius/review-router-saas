@@ -65,6 +65,7 @@ try {
     },
     {
       expectedReasons: [
+        "codex_oauth_setup_manifest_delete_forbidden",
         "CodexOAuthSetupPayloadClaim_provider_fkey",
         "CodexOAuthSecretNamespace_provider_fkey",
       ],
@@ -75,6 +76,7 @@ try {
     },
     {
       expectedReasons: [
+        "codex_oauth_setup_manifest_delete_forbidden",
         "CodexOAuthSetupPayloadClaim_repository_fkey",
         "CodexOAuthSetupPayloadClaim_provider_fkey",
         "CodexOAuthSecretNamespace_provider_fkey",
@@ -86,6 +88,7 @@ try {
     },
     {
       expectedReasons: [
+        "codex_oauth_setup_manifest_delete_forbidden",
         "CodexOAuthSetupPayloadClaim_workspace_fkey",
         "CodexOAuthSetupPayloadClaim_repository_fkey",
         "CodexOAuthSetupPayloadClaim_provider_fkey",

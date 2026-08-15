@@ -636,6 +636,29 @@ realDescribe("release authority exact catalog readiness", () => {
       );
     }
   });
+
+  it("rejects a stale authoritative schema-version marker", async () => {
+    if (!admin) throw new Error("real_postgres_test_unconfigured");
+    const comments = await admin.$queryRawUnsafe<{ comment: string }[]>(
+      "SELECT obj_description('release_authority'::regnamespace,'pg_namespace') AS comment",
+    );
+    const comment = comments[0]?.comment;
+    if (!comment) throw new Error("real_postgres_catalog_attestation_missing");
+    const stale = { ...(JSON.parse(comment) as object), schemaVersion: 13 };
+    await admin.$executeRawUnsafe(
+      `COMMENT ON SCHEMA release_authority IS '${JSON.stringify(stale).replaceAll("'", "''")}'`,
+    );
+    try {
+      const observed = await readiness();
+      expect(observed.schemaVersion).toBe(0);
+      expect(observed.catalogExact).toBe(false);
+      expect(releaseAuthoritySchemaIsReady(observed)).toBe(false);
+    } finally {
+      await admin.$executeRawUnsafe(
+        `COMMENT ON SCHEMA release_authority IS '${comment.replaceAll("'", "''")}'`,
+      );
+    }
+  });
 });
 
 const activationAdminUrl =

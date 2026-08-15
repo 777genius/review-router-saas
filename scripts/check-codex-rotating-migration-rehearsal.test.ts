@@ -132,6 +132,27 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
   });
 
+  it("keeps a post-observation TTL crossing outside release reconciliation", () => {
+    const proof =
+      /async function proveMigrationSpecificLegacyBehavior\(\) \{([\s\S]+?)\n\}/u.exec(
+        source,
+      )?.[1];
+    expect(proof).toBeDefined();
+    expect(proof).toContain("id = 'issued-crossing') <> 'expired'");
+    expect(proof).toContain(
+      `"mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 0`,
+    );
+    expect(proof).toContain(
+      `"mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') IS NOT NULL`,
+    );
+    expect(proof).toContain(
+      "made a post-observation TTL crossing newly eligible for reconciliation",
+    );
+    expect(proof).not.toContain(
+      `"mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 'recovery'`,
+    );
+  });
+
   it("reads the database generation binding as shared-object metadata", () => {
     expect(source).toContain("shobj_description(oid, 'pg_database')");
     expect(source).not.toMatch(/\bobj_description\(oid, 'pg_database'\)/u);
@@ -557,6 +578,14 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     );
     expect(source).toContain("schema_owner_cleanup_dependencies_present");
     expect(source).toContain("dependency.deptype IN ('a','o')");
+    expect(source).toContain("DO $rehearsal_schema_owner_membership_cleanup$");
+    expect(source).toContain(
+      "refusing non-rehearsal schema-owner membership cleanup",
+    );
+    expect(source).toContain("REVOKE %I FROM %I GRANTED BY %I CASCADE");
+    expect(
+      source.indexOf("$rehearsal_schema_owner_membership_cleanup$;"),
+    ).toBeLessThan(source.indexOf('cleanupSafety === "0:0:0"'));
     expect(source).toContain('cleanupSafety === "0:0:0"');
     expect(source).toContain(
       "rehearsal_database_removal_not_proven_before_role_cleanup",
@@ -621,6 +650,7 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     for (const expectedReason of [
       "codex_oauth_setup_attempt_delete_forbidden",
       "codex_oauth_setup_claim_delete_forbidden",
+      "codex_oauth_setup_manifest_delete_forbidden",
       "codex_oauth_secret_namespace_delete_forbidden",
       "CodexOAuthSetupPayloadClaim_provider_fkey",
       "CodexOAuthSetupPayloadClaim_repository_fkey",
@@ -629,6 +659,14 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     ]) {
       expect(prismaRetentionProofSource).toContain(expectedReason);
     }
+    expect(
+      prismaRetentionProofSource.match(
+        /codex_oauth_setup_manifest_delete_forbidden/gu,
+      ),
+    ).toHaveLength(3);
+    expect(
+      source.match(/codex_oauth_setup_manifest_delete_forbidden/gu),
+    ).toHaveLength(4);
   });
 
   it("requires runtime Prisma negative proofs to identify the receipt guard", () => {

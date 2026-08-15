@@ -222,9 +222,10 @@ async function proveMigrationSpecificLegacyBehavior() {
         END IF;
         IF (SELECT status FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') <> 'expired'
           OR (SELECT "mutationEpoch" FROM "CodexOAuthSetupManifest" WHERE id = 'issued-crossing') IS NOT NULL
-          OR (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 1
-          OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 'recovery'
-        THEN RAISE EXCEPTION '000061 did not re-expire the TTL-crossing issued manifest safely';
+          OR (SELECT "mutationEpoch" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') <> 0
+          OR (SELECT "mutationOwner" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') IS NOT NULL
+          OR (SELECT "mutationOwnerId" FROM "CodexOAuthProviderInstance" WHERE id = 'p-crossing') IS NOT NULL
+        THEN RAISE EXCEPTION '000061 made a post-observation TTL crossing newly eligible for reconciliation';
         END IF;
       END $$;`,
     ]);
@@ -1476,6 +1477,7 @@ function proveVersionedNamespaceLedger(url) {
       "CodexOAuthProviderInstance",
       provider.id,
       [
+        "codex_oauth_setup_manifest_delete_forbidden",
         "CodexOAuthSetupPayloadClaim_provider_fkey",
         "CodexOAuthSecretNamespace_provider_fkey",
       ],
@@ -1484,6 +1486,7 @@ function proveVersionedNamespaceLedger(url) {
       "RepositoryConnection",
       provider.repositoryId,
       [
+        "codex_oauth_setup_manifest_delete_forbidden",
         "CodexOAuthSetupPayloadClaim_repository_fkey",
         "CodexOAuthSetupPayloadClaim_provider_fkey",
         "CodexOAuthSecretNamespace_provider_fkey",
@@ -1493,6 +1496,7 @@ function proveVersionedNamespaceLedger(url) {
       "Workspace",
       provider.workspaceId,
       [
+        "codex_oauth_setup_manifest_delete_forbidden",
         "CodexOAuthSetupPayloadClaim_workspace_fkey",
         "CodexOAuthSetupPayloadClaim_repository_fkey",
         "CodexOAuthSetupPayloadClaim_provider_fkey",
@@ -2903,6 +2907,42 @@ function cleanupRuntimeRoles(url) {
     );
     if (marker.status === 0 && marker.stdout.trim() === rehearsalRoleMarker) {
       if (role === "reviewrouter_release_schema_owner") {
+        // The role handoff used while transferring migration-created objects is
+        // cluster-global.  A failed or completed rehearsal must remove any
+        // remaining edge by its PG17 catalog-recorded grantor after the
+        // disposable database has gone away.  Only edges whose two endpoints
+        // belong to this rehearsal are eligible for cleanup.
+        psql(url, [
+          "-c",
+          `DO $rehearsal_schema_owner_membership_cleanup$
+           DECLARE edge record;
+           BEGIN
+             FOR edge IN
+               SELECT granted.rolname AS granted_name,
+                 member.rolname AS member_name,
+                 grantor.rolname AS grantor_name,
+                 coalesce(shobj_description(granted.oid, 'pg_authid'), '') AS granted_marker,
+                 coalesce(shobj_description(member.oid, 'pg_authid'), '') AS member_marker
+               FROM pg_auth_members membership
+               JOIN pg_roles granted ON granted.oid=membership.roleid
+               JOIN pg_roles member ON member.oid=membership.member
+               JOIN pg_roles grantor ON grantor.oid=membership.grantor
+               WHERE membership.roleid='reviewrouter_release_schema_owner'::regrole
+                  OR membership.member='reviewrouter_release_schema_owner'::regrole
+                  OR membership.grantor='reviewrouter_release_schema_owner'::regrole
+             LOOP
+               IF edge.granted_marker IS DISTINCT FROM ${quoteLiteral(rehearsalRoleMarker)}
+                  OR edge.member_marker IS DISTINCT FROM ${quoteLiteral(rehearsalRoleMarker)} THEN
+                 RAISE EXCEPTION
+                   'refusing non-rehearsal schema-owner membership cleanup: % -> % granted by %',
+                   edge.granted_name,edge.member_name,edge.grantor_name;
+               END IF;
+               EXECUTE format('REVOKE %I FROM %I GRANTED BY %I CASCADE',
+                 edge.granted_name,edge.member_name,edge.grantor_name);
+             END LOOP;
+           END
+           $rehearsal_schema_owner_membership_cleanup$;`,
+        ]);
         const cleanupSafety = psql(url, [
           "-Atc",
           `SELECT

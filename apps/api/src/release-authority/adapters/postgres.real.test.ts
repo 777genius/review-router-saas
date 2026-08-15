@@ -661,8 +661,6 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         permitNonce: permit.nonce,
         targetMigrationReceiptSha256: `sha256:${"3".repeat(64)}`,
         targetMigrationEffectFingerprint: `sha256:${"4".repeat(64)}`,
-        sourceLegacyAmbiguitySha256: sourceLegacyAmbiguity.inventorySha256,
-        eligibilityCutoff: permit.eligibilityCutoff,
       };
       return {
         ...unsigned,
@@ -683,6 +681,34 @@ realDescribe("release authority API/Postgres runtime contract", () => {
         JSON.stringify({ permit, receipt: invalidTimestampReceipt }),
       ),
     ).rejects.toThrow();
+    const sourceEvidenceReplayPermit = {
+      ...permit,
+      sourceLegacyAmbiguity: {
+        ...permit.sourceLegacyAmbiguity,
+        observations: [
+          {
+            ...permit.sourceLegacyAmbiguity.observations[0],
+            observedAt: "2026-08-14T01:01:59.999Z",
+          },
+          permit.sourceLegacyAmbiguity.observations[1],
+        ] as const,
+      },
+    };
+    await expect(
+      ledger.completeReleaseMigration({
+        permit: sourceEvidenceReplayPermit,
+        receipt: first,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      ledger.completeReleaseMigration({
+        permit: {
+          ...permit,
+          eligibilityCutoff: "2026-08-14T01:02:01.001Z",
+        },
+        receipt: first,
+      }),
+    ).rejects.toThrow();
     await expect(
       ledger.completeReleaseMigration({ permit, receipt: first }),
     ).resolves.toEqual(first);
@@ -693,6 +719,12 @@ realDescribe("release authority API/Postgres runtime contract", () => {
     await expect(
       ledger.completeReleaseMigration({ permit, receipt: retry }),
     ).resolves.toEqual(first);
+    await expect(
+      ledger.completeReleaseMigration({
+        permit: sourceEvidenceReplayPermit,
+        receipt: retry,
+      }),
+    ).rejects.toThrow();
     const conflictingUnsignedReceipt = {
       ...retry,
       observationSha256: `sha256:${"2".repeat(64)}`,

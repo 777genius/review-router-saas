@@ -493,7 +493,7 @@ describe("release authority database installation", () => {
     expect(migration).not.toContain("{2,511}");
     expect(migration).not.toContain("'timestamptz'::pg_catalog.regtype");
   });
-  it("binds immutable source evidence and an authority-owned cutoff in migration 14", () => {
+  it("binds immutable source evidence and its second-observation cutoff in migration 14", () => {
     const migration = readFileSync(
       "packages/platform/release-authority-db/migrations/000014_source_ambiguity_migration_permit/migration.sql",
       "utf8",
@@ -503,7 +503,7 @@ describe("release authority database installation", () => {
     );
     expect(migration).toContain("release_migration_evidence_immutable_guard");
     expect(migration).toContain(
-      "date_trunc('milliseconds',transaction_timestamp())",
+      "(source_evidence->'observations'->1->>'observedAt')::timestamptz",
     );
     expect(migration).toContain(
       "release migration source evidence digest invalid",
@@ -517,8 +517,27 @@ describe("release authority database installation", () => {
     expect(migration).toContain(
       "REVOKE ALL ON FUNCTION release_authority.release_migration_begin_v13(jsonb)",
     );
+    expect(migration).toContain("DO $schema_version_marker$");
+    expect(migration).toContain(
+      "marker||pg_catalog.jsonb_build_object('schemaVersion',14)",
+    );
     expect(migration).not.toContain("clock_timestamp()");
   });
+  it.each(["fresh-install", "incremental-upgrade"] as const)(
+    "persists the authoritative schema version in the %s catalog attestation",
+    (mode) => {
+      const bundle = releaseAuthorityMigrationBundle(mode);
+      expect(bundle).toContain("DO $schema_version_marker$");
+      expect(bundle).toContain("'schemaVersion',14");
+      const finalCatalog = bundle.indexOf("DO $final_catalog$");
+      const finalMarker = bundle.indexOf("'schemaVersion',14", finalCatalog);
+      expect(finalCatalog).toBeGreaterThan(-1);
+      expect(finalMarker).toBeGreaterThan(finalCatalog);
+      expect(bundle.indexOf("COMMIT;", finalMarker)).toBeGreaterThan(
+        finalMarker,
+      );
+    },
+  );
   it("keeps generated PostgreSQL regex bounds within the ARE limit", () => {
     const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const bounds = [...bundle.matchAll(/\{(\d+)(?:,(\d+))?\}/gu)];
@@ -559,9 +578,11 @@ describe("release authority database installation", () => {
       "packages/platform/release-authority-db/migrations/000014_source_ambiguity_migration_permit/migration.sql",
     ]);
     expect(
-      releaseAuthorityMigrationPaths.map((path) =>
-        createHash("sha256").update(readFileSync(path)).digest("hex"),
-      ),
+      releaseAuthorityMigrationPaths
+        .slice(0, -1)
+        .map((path) =>
+          createHash("sha256").update(readFileSync(path)).digest("hex"),
+        ),
     ).toEqual([
       "eb4039b43228a07c241593d4d6dd863eceac7731d5898b0264e9bc67b3d746cf",
       "66a1cd48303f31691596ae4e64d952d0fe3543444d042b17243c1a60efb10201",
@@ -577,7 +598,6 @@ describe("release authority database installation", () => {
       "727a6615bb6c1af3aee4e69ed33648726b581adb4f4b2f7610be9f5518347420",
       "45eb81a2715cf8c254cdacc2ca4ce8c80fc6c6527c009fe9dce63c3f80a510b1",
       "c14c52ce2594f49a23663a22a16ca789454e059bdb9abd6070d1b773cc847465",
-      "63d76bef93fc6041000a76e9451349333a2c9dbcb296ed4611ef5a97349dd529",
     ]);
     const bundle = releaseAuthorityMigrationBundle("fresh-install");
     const first = bundle.indexOf("CREATE SCHEMA release_authority");
@@ -673,7 +693,7 @@ describe("release authority database installation", () => {
     }
   });
 
-  it("compares the exact fresh and 000012-to-000013 ACL states", () => {
+  it("compares the exact fresh and 000012-to-000014 ACL states", () => {
     const contract = readFileSync(
       "packages/platform/release-authority-db/test-contract.sh",
       "utf8",
@@ -691,6 +711,28 @@ describe("release authority database installation", () => {
     expect(contract).toContain(
       'test "$upgrade_acl_state" = "$fresh_acl_state"',
     );
+  });
+
+  it("binds the migration cutoff to source observation[1] and declares every 000014 ACL object", () => {
+    const migration = readFileSync(
+      "packages/platform/release-authority-db/migrations/000014_source_ambiguity_migration_permit/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain(
+      "(source_evidence->'observations'->1->>'observedAt')::timestamptz",
+    );
+    expect(migration).not.toContain(
+      "date_trunc('milliseconds',transaction_timestamp())",
+    );
+    const bundle = releaseAuthorityMigrationBundle("fresh-install");
+    expect(bundle).toContain("release_migration_evidence");
+    for (const helper of [
+      "release_migration_begin_v13",
+      "release_migration_checkpoint_v13",
+      "release_migration_complete_v13",
+      "release_migration_fail_v13",
+    ])
+      expect(bundle).toContain(helper);
   });
 
   it("builds the activation target from the canonical pre-release application fixture", () => {
