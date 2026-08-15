@@ -2006,12 +2006,14 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
          OR member.rolname = 'reviewrouter_role_bootstrap'`,
     ]).stdout.trim();
   const foreignGrantor = "reviewrouter_rehearsal_foreign_grantor";
+  const foreignGrantedRole = "reviewrouter_rehearsal_foreign_role";
   psql(url, [
     "-c",
-    `CREATE ROLE ${foreignGrantor} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-     GRANT reviewrouter_api TO ${foreignGrantor} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+    `CREATE ROLE ${foreignGrantedRole} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+     CREATE ROLE ${foreignGrantor} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+     GRANT ${foreignGrantedRole} TO ${foreignGrantor} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
      SET ROLE ${foreignGrantor};
-     GRANT reviewrouter_api TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+     GRANT ${foreignGrantedRole} TO reviewrouter_role_bootstrap WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
      RESET ROLE;`,
   ]);
   assert(
@@ -2021,11 +2023,16 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
        JOIN pg_roles granted ON granted.oid=membership.roleid
        JOIN pg_roles member ON member.oid=membership.member
        JOIN pg_roles grantor ON grantor.oid=membership.grantor
-       WHERE granted.rolname='reviewrouter_api'
-         AND member.rolname='reviewrouter_role_bootstrap'
-         AND grantor.rolname='${foreignGrantor}'`,
-    ]).stdout.trim() === "1",
-    "adversarial foreign grantor edge was not installed",
+       WHERE granted.rolname='${foreignGrantedRole}'
+         AND (
+           member.rolname='${foreignGrantor}'
+           OR (
+             member.rolname='reviewrouter_role_bootstrap'
+             AND grantor.rolname='${foreignGrantor}'
+           )
+         )`,
+    ]).stdout.trim() === "2",
+    "independent adversarial membership chain was not installed",
   );
   let expectedFailure;
   try {
@@ -2041,9 +2048,10 @@ function prepareCanonicalReleaseRoles(url, installHistoricalSchema) {
   } finally {
     psql(url, [
       "-c",
-      `REVOKE reviewrouter_api FROM reviewrouter_role_bootstrap GRANTED BY ${foreignGrantor};
-       REVOKE reviewrouter_api FROM ${foreignGrantor};
-       DROP ROLE ${foreignGrantor};`,
+      `REVOKE ${foreignGrantedRole} FROM reviewrouter_role_bootstrap GRANTED BY ${foreignGrantor};
+       REVOKE ${foreignGrantedRole} FROM ${foreignGrantor};
+       DROP ROLE ${foreignGrantor};
+       DROP ROLE ${foreignGrantedRole};`,
     ]);
   }
   assert(

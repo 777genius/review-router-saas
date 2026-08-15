@@ -210,9 +210,22 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(source).toContain(
       "adversarial grantor retained role membership revoke authority",
     );
-    expect(source).toContain(
-      "adversarial foreign grantor edge was not installed",
+    expect(provisioning).toContain(
+      'const foreignGrantedRole = "reviewrouter_rehearsal_foreign_role"',
     );
+    expect(source).toContain(
+      "independent adversarial membership chain was not installed",
+    );
+    expect(provisioning).toContain(
+      "GRANT ${foreignGrantedRole} TO ${foreignGrantor}",
+    );
+    expect(provisioning).toContain(
+      "GRANT ${foreignGrantedRole} TO reviewrouter_role_bootstrap",
+    );
+    expect(provisioning).toContain(
+      "REVOKE ${foreignGrantedRole} FROM reviewrouter_role_bootstrap GRANTED BY ${foreignGrantor}",
+    );
+    expect(provisioning).toContain("DROP ROLE ${foreignGrantedRole}");
     expect(source).toContain("membership_grantor_count <> 1");
     expect(source).toContain(
       "granted.rolname <> 'reviewrouter_activation_receipt_guard'",
