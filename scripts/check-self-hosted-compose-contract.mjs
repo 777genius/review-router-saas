@@ -18,7 +18,7 @@ const ciWorkflow = readFileSync(
   "utf8",
 );
 const selfHostedCiJob =
-  /^  self-hosted-e2e:\n[\s\S]*?(?=^  [a-z][\w-]*:\n|(?![\s\S]))/mu.exec(
+  /^ {2}self-hosted-e2e:\n[\s\S]*?(?=^ {2}[a-z][\w-]*:\n|(?![\s\S]))/mu.exec(
     ciWorkflow,
   )?.[0] ?? "";
 const selfHostedE2e = readFileSync(
