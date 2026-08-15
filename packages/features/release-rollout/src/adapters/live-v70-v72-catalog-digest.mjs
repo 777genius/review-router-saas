@@ -130,4 +130,4 @@ SELECT 'sha256:'||encode(pg_catalog.sha256(convert_to(value::text,'UTF8')),'hex'
 FROM facts`;
 
 export const liveV70V72CatalogDigestSha256 =
-  "sha256:edad85736a7f65af596470816fd65b937e44512d5572bcb729f54b3de8549c8a";
+  "sha256:eeead1a6e8ec36f32e550e275ee961ac4620f9c6ee35646d007abb1de54b6945";

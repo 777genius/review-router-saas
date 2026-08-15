@@ -136,7 +136,7 @@ export const canonicalReleaseMigrationArtifact = Object.freeze({
     "sha256:553576dcf644278cdc464d3465e34e0814862cd44c76784d89bb61c65f04b303",
   // Captured digest of the canonical live V70-V72 catalog projection.
   postCatalogDigest:
-    "sha256:edad85736a7f65af596470816fd65b937e44512d5572bcb729f54b3de8549c8a",
+    "sha256:eeead1a6e8ec36f32e550e275ee961ac4620f9c6ee35646d007abb1de54b6945",
 });
 
 export const canonicalReleaseMigrationResumeManifestIdentities = Object.freeze([
