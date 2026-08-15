@@ -71,6 +71,15 @@ export const rehearsalActivationCatalogPolicyAuthorization = Object.freeze({
   activatedCatalogPolicySha256:
     "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
 });
+export const rehearsalReadinessPolicy = Object.freeze({
+  poolWaitMilliseconds: 5_000,
+  lockTimeoutMilliseconds: 5_000,
+  statementTimeoutMilliseconds: 45_000,
+  transactionTimeoutMilliseconds: 50_000,
+  observationDeadlineMilliseconds: 60_000,
+  leaseMilliseconds: 120_000,
+  refreshAfterMilliseconds: 90_000,
+});
 import { releaseAuthorityMigrationBundle } from "./install-release-authority-db.mjs";
 import { executePrivateGenerationActivation } from "./activate-private-pg17-generation.mjs";
 import { createSecureCanonicalRun } from "./private-pg17-secure-canonical.ts";
@@ -1318,6 +1327,7 @@ ROLLBACK;`,
         authorizeCanonicalActivationCatalogPolicies(
           rehearsalActivationCatalogPolicyAuthorization,
         ),
+      readinessPolicy: rehearsalReadinessPolicy,
     });
     releaseControl.addHook("onError", async (_request, _reply, error) => {
       process.stderr.write(

@@ -12,6 +12,7 @@ import {
   resolveRehearsalCaptureOnlyConfiguration,
   resolvePreReleaseMigrationExclusions,
   rehearsalActivationCatalogPolicyAuthorization,
+  rehearsalReadinessPolicy,
   routeRehearsalAfterReleaseMigration,
   runRehearsalReleaseMigration,
   validateRehearsalConfiguration,
@@ -50,6 +51,17 @@ describe("disposable dual-version rehearsal", () => {
         "sha256:c133bacb4a813540245430151ffd80f3380a4123ccc379250828d0317ac514d9",
       activatedCatalogPolicySha256:
         "sha256:7930dc496e760ae4f0577b50db1251f44c55f2db68bf97f790ce290edc8d5253",
+    });
+  });
+  it("allows loaded disposable catalog observations without changing production timing", () => {
+    expect(rehearsalReadinessPolicy).toEqual({
+      poolWaitMilliseconds: 5_000,
+      lockTimeoutMilliseconds: 5_000,
+      statementTimeoutMilliseconds: 45_000,
+      transactionTimeoutMilliseconds: 50_000,
+      observationDeadlineMilliseconds: 60_000,
+      leaseMilliseconds: 120_000,
+      refreshAfterMilliseconds: 90_000,
     });
   });
   it("leaves bootstrap demotion exclusively to canonical role provisioning", () => {
