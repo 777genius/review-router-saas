@@ -1079,7 +1079,7 @@ ROLLBACK;`,
       throw new Error("private_pg17_rehearsal_equivalence_failed");
     sql(source, "DROP SCHEMA app_private CASCADE");
     sql(target, "DROP SCHEMA app_private CASCADE");
-    if (facts.captureOnly) {
+    if (captureOnly) {
       sql(source, "DROP TABLE public.rehearsal_items CASCADE");
       sql(target, "DROP TABLE public.rehearsal_items CASCADE");
     }
@@ -1090,7 +1090,7 @@ ROLLBACK;`,
       target,
       `ALTER DATABASE review_router OWNER TO reviewrouter_role_bootstrap;
        ${
-         facts.captureOnly
+         captureOnly
            ? ""
            : `ALTER TABLE rehearsal_items OWNER TO reviewrouter_role_bootstrap;
        ALTER SEQUENCE rehearsal_items_id_seq OWNER TO reviewrouter_role_bootstrap;`
