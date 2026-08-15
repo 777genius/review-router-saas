@@ -1976,6 +1976,11 @@ function observedFixture(): any {
             true,
           ],
           [
+            "CodexOAuthSetupPayloadClaim_one_active_per_provider_key",
+            "providerInstanceRowId",
+            true,
+          ],
+          [
             "CodexOAuthSetupPayloadClaim_provider_status_idx",
             "providerInstanceRowId status",
             false,
@@ -2044,14 +2049,16 @@ function observedFixture(): any {
           definitionSha256:
             indexDefinitionDigests.get(String(name)) ?? "0".repeat(64),
           predicate:
-            name === "CodexOAuthSetupManifest_one_active_provider_key"
-              ? "status IN (issued, fetched)"
-              : name ===
-                  "CodexOAuthSetupRecoveryRequest_one_active_provider_key"
-                ? "state IN (active, manifest_issued)"
-                : name === "CodexOAuthWritebackIntent_versioned_lease_key"
-                  ? "databaseIncarnation IS NOT NULL"
-                  : "",
+            name === "CodexOAuthSetupPayloadClaim_one_active_per_provider_key"
+              ? "status = 'active'::text"
+              : name === "CodexOAuthSetupManifest_one_active_provider_key"
+                ? "status IN (issued, fetched)"
+                : name ===
+                    "CodexOAuthSetupRecoveryRequest_one_active_provider_key"
+                  ? "state IN (active, manifest_issued)"
+                  : name === "CodexOAuthWritebackIntent_versioned_lease_key"
+                    ? "databaseIncarnation IS NOT NULL"
+                    : "",
           predicateSha256: predicateDigests.get(String(name)) ?? null,
           unique,
           valid: true,

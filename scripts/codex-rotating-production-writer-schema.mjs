@@ -627,6 +627,11 @@ export const codexRotatingCheckDefinitions = Object.freeze([
 
 export const codexRotatingPartialIndexPredicates = Object.freeze([
   Object.freeze({
+    name: "CodexOAuthSetupPayloadClaim_one_active_per_provider_key",
+    predicateSha256:
+      "cba7a77eedf78f435d324e19d11f25291222eda90307e787458701259dd01c87",
+  }),
+  Object.freeze({
     name: "CodexOAuthSetupManifest_one_active_provider_key",
     predicateSha256:
       "b6ac8a83f3f2e47bd70f903937a980fc82419474a3719a63cd30b4479d544fbd",
@@ -819,6 +824,11 @@ export const codexRotatingIndexDefinitions = Object.freeze([
       "fad278906eb3a143d5a251de7cfb9fb3ee006a0b881857a681bd3780f4a42008",
   }),
   Object.freeze({
+    name: "CodexOAuthSetupPayloadClaim_one_active_per_provider_key",
+    definitionSha256:
+      "31822c5783686fe1abf062256bc475f392bafdcfe1c633193cd6334d15674582",
+  }),
+  Object.freeze({
     name: "CodexOAuthSetupPayloadClaim_provider_status_idx",
     definitionSha256:
       "31283ca1ccffe54e50b9f7c2da215f0d9609bed410c7f10ae3a24cbfb0555a08",
@@ -919,6 +929,7 @@ export const codexRotatingCatalogIndexNames = Object.freeze([
   "CodexOAuthSetupPayloadClaim_confirmedAttemptId_key",
   "CodexOAuthSetupPayloadClaim_pkey",
   "CodexOAuthSetupPayloadClaim_provider_epoch_key",
+  "CodexOAuthSetupPayloadClaim_one_active_per_provider_key",
   "CodexOAuthSetupPayloadClaim_provider_operation_key",
   "CodexOAuthSetupPayloadClaim_provider_status_idx",
   "CodexOAuthSetupRecoveryRequest_latestManifestId_key",
