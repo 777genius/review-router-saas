@@ -311,6 +311,9 @@ describe("Codex rotating PostgreSQL 17 rehearsal contract", () => {
     expect(provisioning).toBeDefined();
     expect(provisioning).toContain("reviewrouter_role_bootstrap");
     expect(provisioning).toContain(
+      "CREATE ROLE reviewrouter_role_bootstrap LOGIN SUPERUSER NOCREATEDB CREATEROLE",
+    );
+    expect(provisioning).toContain(
       "CREATE ROLE reviewrouter_activation_receipt_guard NOLOGIN",
     );
     expect(provisioning).toContain(
